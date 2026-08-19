@@ -10,95 +10,117 @@
 // The only other map test (`per-level-pipeline-real-agents.test.ts`) runs
 // the runtime in-memory with a test `buildEnv`, so it never drives the
 // sidecar's scoped-id lookup sites -- which is why the scoped-id bug was
-// invisible to CI. This test deploys a top-level map through the real hub
-// + real sidecar subprocess + mock inference fixture and asserts each
-// iteration's committed output is the agent's deterministic reply.
+// invisible to CI. This test deploys a top-level map BY SOURCE-REF (bundle a
+// source entry module into a hub asset, probe it, approve+freeze it against a
+// real DB, deploy the source-ref frame) through the real hub + real sidecar
+// subprocess + mock inference fixture and asserts each iteration's committed
+// output is the agent's deterministic reply.
 //
 // The workflow is deliberately multi-step (a leading `seed` step plus the
-// `fanout` map) so the deploy takes the orchestrator's multi-step branch,
-// the only path that stages per-step assets at a per-step address. A
-// single-step deploy would collapse its lone step onto the head address, a
-// different resolution path from the scoped-id-to-base-address one under test.
-// A regressed lookup throws (or materializes nothing) on the scoped id, so
-// the run would terminate `RunFailed` or the reply would omit the expected
+// `fanout` map) so the deploy stages per-step assets at a per-step address. A
+// regressed lookup throws (or materializes nothing) on the scoped id, so the
+// run would terminate `RunFailed` or the reply would omit the expected
 // content; the assertions below are the regression tripwires.
 //
-// Two cases share the same deploy:
-//   - No tool pin: each iteration's reply is the empty-tool-set prefix,
-//     guarding the inference-source resolver (a regressed lookup throws ->
-//     RunFailed).
-//   - A pinned tool package: each iteration's reply lists the tool, guarding
-//     the tool-deploy-tree base resolution (a regressed lookup reads the
-//     unstaged scoped address -> empty tools -> the tool is absent from the
-//     reply).
+// Two cases share the same fixture shape:
+//   - No tool: each iteration's reply is the empty-tool-set prefix, guarding
+//     the inference-source resolver (a regressed lookup throws -> RunFailed).
+//   - An inline tool: the per-item agent carries the inline `mail_send` tool,
+//     so each iteration's reply lists the tool, guarding the tool-deploy-tree
+//     base resolution (a regressed lookup reads the unstaged scoped address ->
+//     empty tools -> the tool is absent from the reply).
 // The grant scoped-id lookup keeps its unit coverage
 // (`credentials-backed-authorize.test.ts`).
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { defineAgent, createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
-import type { ToolPackagePin } from "@intx/types/tool-packages";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  defineWorkflow,
-  map,
-  step,
-  type WorkflowDefinition,
-} from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import type { RepoId } from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   readWorkflowRunEvents,
   startDeployFlowEnv,
+  waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
   type WorkflowRunEvent,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { mapFanOutEntry } from "./fixtures/map-fan-out";
+import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_map-fan-out-real-agent-1";
 const TOOL_DEPLOYMENT_ID = "run_map-fan-out-real-agent-tool-1";
-const WORKFLOW_RUN_REF = "refs/heads/main";
 const SEED_STEP_ID = "seed";
 const MAP_STEP_ID = "fanout";
 const ITEM_COUNT = 2;
+const MAP_ITEM_AGENT_ID = "map-fan-out-item-agent";
 
 // The mock inference server's reply for an empty tool set: it builds
 // `I see these tools: <names>` from the tool names it was handed, so with
 // no tools the reply is the stable prefix (trailing whitespace trimmed).
 const EXPECTED_REPLY = "I see these tools:";
 
-// The synthetic tool package the deploy-flow fixture seeds into its
-// registry, and the qualified tool name the loader namespaces it under.
-const TOOL_PINS: readonly ToolPackagePin[] = [
-  { name: "@intx/tools-mail", version: "0.1.2" },
-];
-const TOOL_NAME = "@intx/tools-mail/sidecar-bundle:mail_send";
+// The inline tool the item agent carries in the tool case; the mock echoes its
+// exposed name into the reply.
+const TOOL_NAME = MAIL_TOOL_NAME;
+
+// The definition's own tenant, the caller principal that creates the
+// definition assets, and the two `workflow`-kind assets the frozen definitions
+// project over (one per deploy). The install/approve freeze and the anchor
+// `workflow_run` insert both write against these, so they must exist in the
+// real DB before each deploy runs.
+const TENANT_ID = "tnt_map_fan_out";
+const CALLER_PRINCIPAL_ID = "prn_map_fan_out";
+const DEFINITION_ASSET_ID = "ast_map_fan_out_wf";
+const TOOL_DEFINITION_ASSET_ID = "ast_map_fan_out_tool_wf";
 
 let env: DeployFlowEnv;
+let h: TestDb;
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  for (const id of [DEFINITION_ASSET_ID, TOOL_DEFINITION_ASSET_ID]) {
+    await seedAsset(h.db, {
+      id,
+      tenantId: TENANT_ID,
+      kind: "workflow",
+      name: id,
+      creatorPrincipalId: CALLER_PRINCIPAL_ID,
+    });
+  }
+
   env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
 });
 
 /**
@@ -167,59 +189,37 @@ function iterationReply(
 }
 
 /**
- * Deploy the multi-step `{ seed, fanout }` map workflow through the real hub
- * + sidecar, fire the mail trigger, wait for the run to complete, and return
- * the committed run events plus the per-item agent id and the number of
- * inference requests this run drove (a delta, since the mock's request log is
- * cumulative across the shared fixture). Optionally pins a tool package,
- * staged into every step's deploy tree.
+ * Deploy the multi-step `{ seed, fanout }` map workflow BY SOURCE-REF through
+ * the real hub + sidecar, fire the mail trigger, wait for the run to complete,
+ * and return the committed run events plus the per-item agent id and the number
+ * of inference requests this run drove (a delta, since the mock's request log
+ * is cumulative across the shared fixture). Optionally carries the inline tool
+ * on the per-item agent.
  */
 async function deployAndRunMap(opts: {
   anchorRunId: string;
-  toolPackagePins?: readonly ToolPackagePin[];
+  definitionAssetId: string;
+  withTool?: boolean;
 }): Promise<{
   events: readonly WorkflowRunEvent[];
   mapAgentId: string;
   inferenceRequestCount: number;
 }> {
   const requestsBefore = env.inference.requests.length;
-
-  const seedAgent = defineAgent({
-    id: "agent-seed",
-    systemPrompt: "You are the seed step agent.",
-    tools: [],
-    capabilities: [],
-    inference: {
-      sources: [{ provider: "anthropic", model: "mock-model" }],
-    },
-  });
-  const mapAgent = defineAgent({
-    id: "agent-fanout-item",
-    systemPrompt: "You are the map fan-out per-item agent.",
-    tools: [],
-    capabilities: [],
-    inference: {
-      sources: [{ provider: "anthropic", model: "mock-model" }],
-    },
-  });
+  const withTool = opts.withTool ?? false;
 
   const deploymentMailAddress = deriveRunAddress({
     runId: opts.anchorRunId,
     domain: DEPLOYMENT_DOMAIN,
   });
 
-  const workflow: WorkflowDefinition = defineWorkflow({
-    id: `wf_${opts.anchorRunId}`,
-    trigger: { type: "mail", to: deploymentMailAddress },
-    steps: {
-      [SEED_STEP_ID]: step({ agent: seedAgent }),
-      [MAP_STEP_ID]: map({
-        over: { literal: [{ id: "a" }, { id: "b" }] },
-        step: step({ agent: mapAgent }),
-        after: [SEED_STEP_ID],
-      }),
-    },
-  });
+  const inferenceSource: InferenceSource = {
+    id: "anthropic:mock-model",
+    provider: "anthropic",
+    baseURL: `http://localhost:${env.inference.server.port}`,
+    apiKey: "sk-mock",
+    model: "mock-model",
+  };
 
   const config: HarnessConfig = {
     sessionId: SESSION_ID,
@@ -227,18 +227,10 @@ async function deployAndRunMap(opts: {
     tenantId: "tenant-1",
     principalId: "prin_integration-1",
     agentAddress: deploymentMailAddress,
-    systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
+    systemPrompt: "Fallback prompt (overridden per step by the definition)",
     tools: [],
     grants: [],
-    sources: [
-      {
-        id: "anthropic:mock-model",
-        provider: "anthropic",
-        baseURL: `http://localhost:${env.inference.server.port}`,
-        apiKey: "sk-mock",
-        model: "mock-model",
-      },
-    ],
+    sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
   };
 
@@ -247,102 +239,45 @@ async function deployAndRunMap(opts: {
     "director:@intx/agent/default",
     `mail.address:${deploymentMailAddress}`,
     `mail.send:${DEPLOYMENT_DOMAIN}`,
+    ...(withTool ? [`tool:${TOOL_NAME}`] : []),
   ]);
 
-  const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-    await env.hub.sessionService.stageWorkflowStep({
-      agentAddress: orchestratorParams.agentAddress,
-      agentId: orchestratorParams.agentId,
-      runId: orchestratorParams.runId,
-      config: orchestratorParams.config,
-      deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
-      ...(orchestratorParams.toolPackagePins !== undefined
-        ? { toolPackagePins: orchestratorParams.toolPackagePins }
-        : {}),
-    });
-  };
-
-  const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-    env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-      definition: {
-        id: params.definition.id,
-        triggers: [...params.definition.triggers],
-        stepOrder: [...params.definition.stepOrder],
-        steps: params.definition.steps as Record<string, unknown>,
-        ...(params.definition.state !== undefined
-          ? { state: params.definition.state }
-          : {}),
-      },
-      sources: params.sources,
-    });
-
-  const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-    env.hub.sessionService.deploySingleStepAtHead(params);
-
-  const workflowRepo: WorkflowRepoWriter = {
-    async writeWorkflowRepo(args) {
-      const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-      const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-      const files: Record<string, string> = {};
-      for (const [k, v] of args.files) {
-        files[k] = v;
-      }
-      await env.hub.agentRepoStore.repoStore.writeTree(
-        principal,
-        repoId,
-        DEFAULT_ASSET_REF,
-        {
-          files,
-          message: `map-fan-out-real-agent test: write workflow repo ${args.workflowRepoId}`,
-        },
-      );
-    },
-  };
-
-  const orchestrator = createWorkflowDeployOrchestrator({
-    directorRegistry: createDefaultDirectorRegistry(),
-    workflowRepo,
-    launchSession,
-    sendMultiStepDeploy,
-    deploySingleStepAtHead,
+  const entryModule = mapFanOutEntry({
+    address: deploymentMailAddress,
+    seedStepId: SEED_STEP_ID,
+    mapStepId: MAP_STEP_ID,
+    seedSystemPrompt: "You are the seed step agent.",
+    itemSystemPrompt: "You are the map fan-out per-item agent.",
+    itemCount: ITEM_COUNT,
+    itemAgentId: MAP_ITEM_AGENT_ID,
+    workflowId: `wf_${opts.anchorRunId}`,
+    ...(withTool ? { withTool: true } : {}),
   });
 
-  try {
-    await orchestrator.deployWorkflow({
-      workflow,
-      config,
-      deployContent: { systemPrompt: config.systemPrompt },
-      operatorApprovals,
-      runId: opts.anchorRunId,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-      hubPublicKey: "00".repeat(32),
-      ...(opts.toolPackagePins !== undefined
-        ? { toolPackagePins: opts.toolPackagePins }
-        : {}),
-    });
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    const diag = env.sidecarDiagnostics();
-    throw new Error(
-      `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-      { cause },
-    );
-  }
-
-  const workflowRunRepoId: RepoId = {
-    kind: "workflow-run",
-    id: deriveDeploymentId(deploymentMailAddress),
-  };
-  env.registerDeployment({
+  const handle = await deployWorkflowSourceForTest(env, {
+    entryModule,
+    db: h.db,
+    tenantId: TENANT_ID,
+    definitionAssetId: opts.definitionAssetId,
     anchorRunId: opts.anchorRunId,
-    workflowDefinition: workflow,
-    workflowRunRepoId,
-    workflowRunRef: WORKFLOW_RUN_REF,
-    mailAddress: deploymentMailAddress,
+    deploymentDomain: DEPLOYMENT_DOMAIN,
+    agentAddress: deploymentMailAddress,
+    approvals: operatorApprovals,
+    config,
+    sources: {
+      [SEED_STEP_ID]: [inferenceSource],
+      [MAP_STEP_ID]: [inferenceSource],
+    },
   });
+  expect(handle.publicKey).toBeTruthy();
 
-  expect(env.hub.router.getRoutableAddresses()).toContain(
-    deploymentMailAddress,
+  const workflowRunRepoId: RepoId = handle.workflowRunRepoId;
+
+  // The source-ref frame round-trips through the real sidecar subprocess, so
+  // routability is asynchronous. Wait for it before firing the trigger.
+  await waitFor(
+    () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
   );
 
   await fireMailTrigger(env, deploymentMailAddress, {
@@ -371,78 +306,82 @@ async function deployAndRunMap(opts: {
   const events = await readWorkflowRunEvents(env, opts.anchorRunId, runId);
   return {
     events,
-    mapAgentId: mapAgent.id,
+    mapAgentId: MAP_ITEM_AGENT_ID,
     inferenceRequestCount: env.inference.requests.length - requestsBefore,
   };
 }
 
-describe("map fan-out real-agent round-trip", () => {
-  test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
-  });
-
-  test("a top-level map runs a real agent per item and commits real output", async () => {
-    const { events, mapAgentId, inferenceRequestCount } = await deployAndRunMap(
-      {
-        anchorRunId: DEPLOYMENT_ID,
-      },
-    );
-
-    // The leading step runs a real agent and completes before the map.
-    const seedReply = replyOf(
-      parseInlineOutput(stepCompletedFor(events, SEED_STEP_ID).body),
-    );
-    expect(seedReply).toBe(EXPECTED_REPLY);
-
-    // Each iteration runs under a distinct scoped step id and commits the
-    // real agent reply -- not the old placeholder `req.agent.id`.
-    for (let i = 0; i < ITEM_COUNT; i += 1) {
-      const reply = iterationReply(events, i);
-      expect(reply).toBe(EXPECTED_REPLY);
-      expect(reply).not.toBe(mapAgentId);
-    }
-
-    // The map assembles its per-item outputs into one array on the base
-    // step's completion; every element is real agent output.
-    const mapOutput = parseInlineOutput(
-      stepCompletedFor(events, MAP_STEP_ID).body,
-    );
-    if (!Array.isArray(mapOutput)) {
-      throw new Error(
-        `map step output is not an array: ${JSON.stringify(mapOutput)}`,
-      );
-    }
-    expect(mapOutput).toHaveLength(ITEM_COUNT);
-    for (const itemOutput of mapOutput) {
-      const reply = replyOf(itemOutput);
-      expect(reply).toBe(EXPECTED_REPLY);
-      expect(reply).not.toBe(mapAgentId);
-    }
-
-    // One real inference call per agent invocation: the seed step plus one
-    // per map item. An exact count proves two DISTINCT real invocations,
-    // closing the "ran the same item twice" failure mode that a constant
-    // reply alone could hide.
-    expect(inferenceRequestCount).toBe(1 + ITEM_COUNT);
-  });
-
-  test("each map iteration materializes a pinned tool via base-step resolution", async () => {
-    // Pinning a tool package stages its manifest in the map step's deploy
-    // tree, keyed by the BASE step id. Each iteration resolves its scoped id
-    // `fanout[i]` back to the base to find that tree, materializes the tool,
-    // and exposes it to inference -- the mock echoes the exposed tool names
-    // into the reply. Without the tool-deploy-tree base resolution the
-    // iteration reads the unstaged scoped address, materializes no tools, and
-    // the reply omits the tool name.
-    const { events, inferenceRequestCount } = await deployAndRunMap({
-      anchorRunId: TOOL_DEPLOYMENT_ID,
-      toolPackagePins: TOOL_PINS,
+describe.skipIf(!harnessDbEnvAvailable())(
+  "map fan-out real-agent round-trip",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    for (let i = 0; i < ITEM_COUNT; i += 1) {
-      expect(iterationReply(events, i)).toContain(TOOL_NAME);
-    }
+    test("a top-level map runs a real agent per item and commits real output", async () => {
+      const { events, mapAgentId, inferenceRequestCount } =
+        await deployAndRunMap({
+          anchorRunId: DEPLOYMENT_ID,
+          definitionAssetId: DEFINITION_ASSET_ID,
+        });
 
-    expect(inferenceRequestCount).toBe(1 + ITEM_COUNT);
-  });
-});
+      // The leading step runs a real agent and completes before the map.
+      const seedReply = replyOf(
+        parseInlineOutput(stepCompletedFor(events, SEED_STEP_ID).body),
+      );
+      expect(seedReply).toBe(EXPECTED_REPLY);
+
+      // Each iteration runs under a distinct scoped step id and commits the
+      // real agent reply -- not the old placeholder `req.agent.id`.
+      for (let i = 0; i < ITEM_COUNT; i += 1) {
+        const reply = iterationReply(events, i);
+        expect(reply).toBe(EXPECTED_REPLY);
+        expect(reply).not.toBe(mapAgentId);
+      }
+
+      // The map assembles its per-item outputs into one array on the base
+      // step's completion; every element is real agent output.
+      const mapOutput = parseInlineOutput(
+        stepCompletedFor(events, MAP_STEP_ID).body,
+      );
+      if (!Array.isArray(mapOutput)) {
+        throw new Error(
+          `map step output is not an array: ${JSON.stringify(mapOutput)}`,
+        );
+      }
+      expect(mapOutput).toHaveLength(ITEM_COUNT);
+      for (const itemOutput of mapOutput) {
+        const reply = replyOf(itemOutput);
+        expect(reply).toBe(EXPECTED_REPLY);
+        expect(reply).not.toBe(mapAgentId);
+      }
+
+      // One real inference call per agent invocation: the seed step plus one
+      // per map item. An exact count proves two DISTINCT real invocations,
+      // closing the "ran the same item twice" failure mode that a constant
+      // reply alone could hide.
+      expect(inferenceRequestCount).toBe(1 + ITEM_COUNT);
+    });
+
+    test("each map iteration materializes an inline tool via base-step resolution", async () => {
+      // The per-item agent carries the inline `mail_send` tool, staged in the
+      // map step's deploy tree keyed by the BASE step id. Each iteration
+      // resolves its scoped id `fanout[i]` back to the base to find that tree,
+      // materializes the tool, and exposes it to inference -- the mock echoes
+      // the exposed tool names into the reply. Without the tool-deploy-tree
+      // base resolution the iteration reads the unstaged scoped address,
+      // materializes no tools, and the reply omits the tool name.
+      const { events, inferenceRequestCount } = await deployAndRunMap({
+        anchorRunId: TOOL_DEPLOYMENT_ID,
+        definitionAssetId: TOOL_DEFINITION_ASSET_ID,
+        withTool: true,
+      });
+
+      for (let i = 0; i < ITEM_COUNT; i += 1) {
+        expect(iterationReply(events, i)).toContain(TOOL_NAME);
+      }
+
+      expect(inferenceRequestCount).toBe(1 + ITEM_COUNT);
+    });
+  },
+);

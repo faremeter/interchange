@@ -6,15 +6,16 @@
 // survives a sidecar PROCESS death and services the next event, exercising
 // the INPUT re-arm recovery path end-to-end on the real deploy stack.
 //
-// Shape: deploy a single-step workflow whose one step is an `onTrigger`
-// section subscribed to the deployment mail address, with an echo-agent
-// body. The deploy step materializes the inline body to its own workflow
-// asset (`wf__section`) and rewrites the section to `{ ref }`; the runtime
-// spawns each event's body as a child run by that ref.
+// Shape: deploy BY SOURCE-REF (bundle a source entry module into a hub asset,
+// probe it, approve+freeze it against a real DB, deploy the source-ref frame) a
+// single-step workflow whose one step is an `onTrigger` section subscribed to
+// the deployment mail address, with a non-agent (sleep) body. The source-ref
+// deploy stages the inline body to its own workflow asset (`wf__section`) and
+// the runtime spawns each event's body as a child run by that ref.
 //
 //   1. Fire mail #1 -> the container run starts, spawns the body `section__0`
-//      with the mail body as its input, the body echoes it and completes, and
-//      the container re-arms on a snapshot-less `input` park -- parked between
+//      with the mail body as its input, the body sleeps and completes, and the
+//      container re-arms on a snapshot-less `input` park -- parked between
 //      events (no RunCompleted; a long-lived section never self-completes).
 //   2. Quiesce, then KILL the sidecar subprocess (process death) while the
 //      container is parked between events.
@@ -28,14 +29,11 @@
 //      live but its input channel not yet re-armed, waits for the re-armed
 //      input park and then delivers the mail as a `signal.deliver` (event 1,
 //      NOT a spurious fresh trigger). The container spawns `section__1` with
-//      mail #2's body, which echoes it and completes.
+//      mail #2's body, which completes.
 //
 // Load-bearing assertions: exactly one `RunStarted`; `ChildSpawned` +
-// `ChildCompleted` for BOTH `section__0` and `section__1`; the container
-// never reaches a terminal event; and each event's body payload threaded --
-// the echo inference records mail #1's body once and mail #2's body once, the
-// second AFTER the restart, proving the between-events input re-arm delivered
-// event 1's payload into a body re-spawned by the recovered section.
+// `ChildCompleted` for BOTH `section__0` and `section__1`; and the container
+// never reaches a terminal event.
 //
 // Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real
 // workflow-process child driving `runOnTrigger` with the production
@@ -49,30 +47,21 @@ import fs from "node:fs";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { createDefaultDirectorRegistry } from "@intx/agent";
-import type { HarnessConfig } from "@intx/types/runtime";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { tenant as tenantTable } from "@intx/db/schema";
 import {
-  defineWorkflow,
-  onTrigger,
-  sleep,
-  type WorkflowDefinition,
-} from "@intx/workflow";
-import {
-  createWorkflowDeployOrchestrator,
-  deriveRunAddress,
-  type ApprovalSet,
-  type DeploySingleStepFn,
-  type LaunchSessionFn,
-  type SendMultiStepDeployFn,
-  type WorkflowRepoWriter,
-} from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import type { RepoId, WorkflowRunHubPrincipal } from "@intx/hub-sessions";
-import { DEFAULT_ASSET_REF } from "@intx/hub-sessions";
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import type { RepoId } from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
   SIDECAR_ID,
+  deployWorkflowSourceForTest,
   fireMailTrigger,
   listRunIds,
   readWorkflowRunEvents,
@@ -83,21 +72,51 @@ import {
   type DeployFlowEnv,
   type SidecarHandle,
 } from "../hub-agent/lib/deploy-flow-env";
-import { toLaunchDeployContent } from "./launch-session-bridge";
+import { onTriggerBodyEntry } from "./fixtures/on-trigger-body";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_on-trigger-between-events-restart-1";
-const WORKFLOW_RUN_REF = "refs/heads/main";
 const SECTION_ID = "section";
 
 const FIRST_BODY = "First event body alpha-7391.";
 const SECOND_BODY = "Second event body bravo-5520.";
 
+// The definition's own tenant, the caller principal that creates the
+// definition asset, and the `workflow`-kind asset the frozen definition
+// projects over. The install/approve freeze and the anchor `workflow_run`
+// insert both write against these, so they must exist in the real DB before
+// the deploy runs.
+const TENANT_ID = "tnt_on_trigger_between_events";
+const CALLER_PRINCIPAL_ID = "prn_on_trigger_between_events";
+const DEFINITION_ASSET_ID = "ast_on_trigger_between_events_wf";
+
 let env: DeployFlowEnv;
+let h: TestDb;
 let restartedSidecar: SidecarHandle | undefined;
 const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
+  h = await createTestDb();
+  await h.db.insert(tenantTable).values({
+    id: TENANT_ID,
+    name: TENANT_ID,
+    slug: TENANT_ID,
+    domain: DEPLOYMENT_DOMAIN,
+    parentId: null,
+  });
+  await seedPrincipal(h.db, {
+    id: CALLER_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "user",
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "on-trigger-between-events-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+
   env = await startDeployFlowEnv({ inferenceEchoUserMessage: true });
 });
 
@@ -106,7 +125,8 @@ afterAll(async () => {
     restartedSidecar.proc.kill();
     await restartedSidecar.proc.exited;
   }
-  await env.teardown();
+  if (env !== undefined) await env.teardown();
+  if (h !== undefined) await h.close();
   for (const dir of restartTempDirs.splice(0)) {
     await fs.promises.rm(dir, { recursive: true, force: true });
   }
@@ -173,317 +193,242 @@ const hasChildCompleted = (
     (e) => e.type === "ChildCompleted" && e.body["childRunId"] === childRunId,
   );
 
-describe("onTrigger section crash + restart -> restore re-includes the container, reawait-input services the next event", () => {
-  test("sidecar registers with hub", () => {
-    expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
-  });
-
-  test("a section parked between events survives a sidecar crash and services the next event", async () => {
-    const deploymentMailAddress = deriveRunAddress({
-      runId: DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
+describe.skipIf(!harnessDbEnvAvailable())(
+  "onTrigger section crash + restart -> restore re-includes the container, reawait-input services the next event",
+  () => {
+    test("sidecar registers with hub", () => {
+      expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    // The section body: a single non-agent step that completes on its own so
-    // the section re-arms for the next event. Body agent-step execution is not
-    // wired yet (INTR-310), so the body exercises the runtime (a sleep timer)
-    // rather than inference; the between-events recovery this test gates is a
-    // property of the CONTAINER (its ChildSpawned/re-arm), not the body's work.
-    const body: WorkflowDefinition = defineWorkflow({
-      id: "authored-section-body",
-      trigger: { type: "manual" },
-      steps: { wait: sleep({ duration: 10 }) },
-    });
-
-    const workflow: WorkflowDefinition = defineWorkflow({
-      id: `wf_${DEPLOYMENT_ID}`,
-      trigger: { type: "mail", to: deploymentMailAddress },
-      steps: {
-        [SECTION_ID]: onTrigger({
-          on: { type: "mail", to: deploymentMailAddress },
-          body,
-        }),
-      },
-    });
-
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: `${DEPLOYMENT_ID}`,
-      tenantId: "tenant-1",
-      principalId: "prin_on-trigger-between-events-1",
-      agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the orchestrator)",
-      tools: [],
-      grants: [],
-      sources: [
-        {
-          id: "anthropic:mock-model",
-          provider: "anthropic",
-          baseURL: `http://localhost:${String(env.inference.server.port)}`,
-          apiKey: "sk-mock",
-          model: "mock-model",
-        },
-      ],
-      defaultSource: "anthropic:mock-model",
-    };
-
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
-
-    const launchSession: LaunchSessionFn = async (orchestratorParams) => {
-      await env.hub.sessionService.stageWorkflowStep({
-        agentAddress: orchestratorParams.agentAddress,
-        agentId: orchestratorParams.agentId,
-        runId: orchestratorParams.runId,
-        config: orchestratorParams.config,
-        deployContent: toLaunchDeployContent(orchestratorParams.deployContent),
-        ...(orchestratorParams.toolPackagePins !== undefined
-          ? { toolPackagePins: orchestratorParams.toolPackagePins }
-          : {}),
-      });
-    };
-
-    const sendMultiStepDeploy: SendMultiStepDeployFn = async (params) =>
-      env.hub.router.sendAgentDeploy(params.agentAddress, params.config, {
-        definition: {
-          id: params.definition.id,
-          triggers: [...params.definition.triggers],
-          stepOrder: [...params.definition.stepOrder],
-          steps: params.definition.steps as Record<string, unknown>,
-          ...(params.definition.state !== undefined
-            ? { state: params.definition.state }
-            : {}),
-        },
-        sources: params.sources,
-      });
-
-    const deploySingleStepAtHead: DeploySingleStepFn = (params) =>
-      env.hub.sessionService.deploySingleStepAtHead(params);
-
-    const workflowRepo: WorkflowRepoWriter = {
-      async writeWorkflowRepo(args) {
-        const repoId: RepoId = { kind: "workflow", id: args.workflowRepoId };
-        const principal: WorkflowRunHubPrincipal = { kind: "hub" };
-        const files: Record<string, string> = {};
-        for (const [k, v] of args.files) files[k] = v;
-        await env.hub.agentRepoStore.repoStore.writeTree(
-          principal,
-          repoId,
-          DEFAULT_ASSET_REF,
-          {
-            files,
-            message: `on-trigger between-events test: write workflow repo ${args.workflowRepoId}`,
-          },
-        );
-      },
-    };
-
-    const orchestrator = createWorkflowDeployOrchestrator({
-      directorRegistry: createDefaultDirectorRegistry(),
-      workflowRepo,
-      launchSession,
-      sendMultiStepDeploy,
-      deploySingleStepAtHead,
-    });
-
-    let result: Awaited<ReturnType<typeof orchestrator.deployWorkflow>>;
-    try {
-      result = await orchestrator.deployWorkflow({
-        workflow,
-        config,
-        deployContent: { systemPrompt: config.systemPrompt },
-        operatorApprovals,
+    test("a section parked between events survives a sidecar crash and services the next event", async () => {
+      const deploymentMailAddress = deriveRunAddress({
         runId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
-        hubPublicKey: "00".repeat(32),
+        domain: DEPLOYMENT_DOMAIN,
       });
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const diag = env.sidecarDiagnostics();
-      throw new Error(
-        `deployWorkflow failed: ${message}\n${diag.length > 0 ? diag : "<no sidecar diagnostics>"}`,
-        { cause },
+
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${DEPLOYMENT_ID}`,
+        tenantId: "tenant-1",
+        principalId: "prin_on-trigger-between-events-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
+
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      // The section body: a single non-agent step that completes on its own so
+      // the section re-arms for the next event. The between-events recovery this
+      // test gates is a property of the CONTAINER (its ChildSpawned/re-arm), not
+      // the body's work, so the body exercises the runtime (a sleep timer)
+      // rather than inference.
+      const entryModule = onTriggerBodyEntry({
+        address: deploymentMailAddress,
+        sectionId: SECTION_ID,
+        body: { variant: "sleep", stepId: "wait", duration: 10 },
+        workflowId: `wf_${DEPLOYMENT_ID}`,
+      });
+
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID,
+        anchorRunId: DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: { [SECTION_ID]: [inferenceSource] },
+      });
+      expect(handle.publicKey).toBeTruthy();
+
+      const workflowRunRepoId: RepoId = handle.workflowRunRepoId;
+
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
       );
-    }
-    expect(result.publicKey).toBeTruthy();
 
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
-      anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: workflow,
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
-    });
+      // ---- event 0: fire mail #1, drive to the between-events input park ----
+      await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<on-trigger-between-events-1@integration.interchange>",
+        content: FIRST_BODY,
+      });
 
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
+      await waitFor(
+        async () => {
+          const events = await readContainerEvents(env, workflowRunRepoId);
+          return (
+            hasChildCompleted(events, `${SECTION_ID}__0`) &&
+            events.some(
+              (e) =>
+                e.type === "SignalAwaited" && e.body["parkKind"] === "input",
+            )
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+      );
 
-    // ---- event 0: fire mail #1, drive to the between-events input park ----
-    await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<on-trigger-between-events-1@integration.interchange>",
-      content: FIRST_BODY,
-    });
+      const containerRunId = await findContainerRunId(env, workflowRunRepoId);
+      if (containerRunId === undefined) {
+        throw new Error("no container run under the workflow-run repo");
+      }
 
-    await waitFor(
-      async () => {
-        const events = await readContainerEvents(env, workflowRunRepoId);
-        return (
-          hasChildCompleted(events, `${SECTION_ID}__0`) &&
-          events.some(
-            (e) => e.type === "SignalAwaited" && e.body["parkKind"] === "input",
-          )
+      // Parked between events: body 0 done, section re-armed on input, and the
+      // long-lived container has NOT reached a terminal event.
+      const parked = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID,
+        containerRunId,
+      );
+      const parkedTypes = parked.map((e) => e.type);
+      expect(parkedTypes.filter((t) => t === "RunStarted").length).toBe(1);
+      expect(
+        parked.some(
+          (e) =>
+            e.type === "ChildSpawned" &&
+            e.body["childRunId"] === `${SECTION_ID}__0`,
+        ),
+      ).toBe(true);
+      expect(hasChildCompleted(parked, `${SECTION_ID}__0`)).toBe(true);
+      expect(parkedTypes).not.toContain("RunCompleted");
+      expect(parkedTypes).not.toContain("RunFailed");
+      expect(parkedTypes).not.toContain("RunCancelled");
+
+      // ---- quiesce, then CRASH the sidecar subprocess (process death) ----
+      await settleWorkflowRunPacks(env);
+
+      const crashedDataDir = env.sidecar.dataDir;
+      env.sidecar.proc.kill();
+      await env.sidecar.proc.exited;
+
+      await waitFor(
+        () =>
+          !env.hub.router
+            .getRoutableAddresses()
+            .includes(deploymentMailAddress),
+        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      // ---- RESTART: a fresh sidecar against the SAME data dir ----
+      const hubPort = env.hub.server.port;
+      if (hubPort === undefined) {
+        throw new Error("hub.server.port is undefined after crash");
+      }
+      restartedSidecar = await startSidecarSubprocess({
+        hubPort,
+        registerTempDir: (dir) => {
+          restartTempDirs.push(dir);
+        },
+        extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
+      });
+      const restoredDiagnostics = (): string =>
+        `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`;
+
+      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
+        timeoutMs: 30_000,
+      });
+      expect(reconnectMs).toBeGreaterThan(0);
+      expect(env.hub.router.getRoutableAddresses()).toContain(
+        deploymentMailAddress,
+      );
+
+      // ---- event 1: fire mail #2, assert the recovered section services it ----
+      // The restored container re-adopted its durable input park; the dispatch
+      // loop waits for that re-arm and delivers mail #2 as event 1's input.
+      //
+      // Robustness: right after the restart the restored sidecar's hub link can
+      // blip while its restore packs flush, so the event-1 mail can race a
+      // transient drop ("Connection lost" on enqueue). Settle the restore pack
+      // pipeline first, then fire -- retrying on the SAME messageId, which the run
+      // dedups by signalId, so a retried delivery is idempotent and never spawns a
+      // second event (the [section__0, section__1] assertion below stays exact).
+      await settleWorkflowRunPacks(env, { timeoutMs: 30_000 });
+
+      const secondMessageId =
+        "<on-trigger-between-events-2@integration.interchange>";
+      const deadline = Date.now() + 90_000;
+      let serviced = false;
+      while (Date.now() < deadline && !serviced) {
+        await fireMailTrigger(env, deploymentMailAddress, {
+          messageId: secondMessageId,
+          content: SECOND_BODY,
+        }).catch(() => undefined);
+        const pollDeadline = Date.now() + 12_000;
+        while (Date.now() < pollDeadline) {
+          const events = await readWorkflowRunEvents(
+            env,
+            DEPLOYMENT_ID,
+            containerRunId,
+          );
+          if (hasChildCompleted(events, `${SECTION_ID}__1`)) {
+            serviced = true;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+      if (!serviced) {
+        throw new Error(
+          `event 1 was not serviced after the restart within budget\n${restoredDiagnostics()}`,
         );
-      },
-      { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
-    );
+      }
 
-    const containerRunId = await findContainerRunId(env, workflowRunRepoId);
-    if (containerRunId === undefined) {
-      throw new Error("no container run under the workflow-run repo");
-    }
+      // ---- assert: one long-lived run serviced both events across the crash --
+      const finalEvents = await readWorkflowRunEvents(
+        env,
+        DEPLOYMENT_ID,
+        containerRunId,
+      );
+      const finalTypes = finalEvents.map((e) => e.type);
 
-    // Parked between events: body 0 done, section re-armed on input, and the
-    // long-lived container has NOT reached a terminal event.
-    const parked = await readWorkflowRunEvents(
-      env,
-      DEPLOYMENT_ID,
-      containerRunId,
-    );
-    const parkedTypes = parked.map((e) => e.type);
-    expect(parkedTypes.filter((t) => t === "RunStarted").length).toBe(1);
-    expect(
-      parked.some(
+      // Exactly one RunStarted: the container is the SAME run before and after
+      // the crash; the restart re-drives it, it does not start a second run.
+      expect(finalTypes.filter((t) => t === "RunStarted").length).toBe(1);
+
+      // Both events' bodies were spawned and completed, in order.
+      const spawnedChildren = finalEvents.flatMap((e) =>
+        e.type === "ChildSpawned" ? [e.body["childRunId"]] : [],
+      );
+      expect(spawnedChildren).toEqual([`${SECTION_ID}__0`, `${SECTION_ID}__1`]);
+      expect(hasChildCompleted(finalEvents, `${SECTION_ID}__0`)).toBe(true);
+      expect(hasChildCompleted(finalEvents, `${SECTION_ID}__1`)).toBe(true);
+
+      // The long-lived section never self-completes.
+      expect(finalTypes).not.toContain("RunCompleted");
+      expect(finalTypes).not.toContain("RunFailed");
+      expect(finalTypes).not.toContain("RunCancelled");
+
+      // Load-bearing for the between-events recovery: section__1 exists only
+      // because the restored container re-adopted its input park and the supervisor
+      // routed mail #2 onto it as event 1 (not a spurious fresh trigger). Its
+      // ChildSpawned lands AFTER the restart, so the crash-recovered section
+      // serviced a genuinely new event.
+      const secondSpawnIndex = finalEvents.findIndex(
         (e) =>
           e.type === "ChildSpawned" &&
-          e.body["childRunId"] === `${SECTION_ID}__0`,
-      ),
-    ).toBe(true);
-    expect(hasChildCompleted(parked, `${SECTION_ID}__0`)).toBe(true);
-    expect(parkedTypes).not.toContain("RunCompleted");
-    expect(parkedTypes).not.toContain("RunFailed");
-    expect(parkedTypes).not.toContain("RunCancelled");
-
-    // ---- quiesce, then CRASH the sidecar subprocess (process death) ----
-    await settleWorkflowRunPacks(env);
-
-    const crashedDataDir = env.sidecar.dataDir;
-    env.sidecar.proc.kill();
-    await env.sidecar.proc.exited;
-
-    await waitFor(
-      () =>
-        !env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
-    );
-
-    // ---- RESTART: a fresh sidecar against the SAME data dir ----
-    const hubPort = env.hub.server.port;
-    if (hubPort === undefined) {
-      throw new Error("hub.server.port is undefined after crash");
-    }
-    restartedSidecar = await startSidecarSubprocess({
-      hubPort,
-      registerTempDir: (dir) => {
-        restartTempDirs.push(dir);
-      },
-      extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
-    });
-    const restoredDiagnostics = (): string =>
-      `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`;
-
-    const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-      timeoutMs: 30_000,
-    });
-    expect(reconnectMs).toBeGreaterThan(0);
-    expect(env.hub.router.getRoutableAddresses()).toContain(
-      deploymentMailAddress,
-    );
-
-    // ---- event 1: fire mail #2, assert the recovered section services it ----
-    // The restored container re-adopted its durable input park; the dispatch
-    // loop waits for that re-arm and delivers mail #2 as event 1's input.
-    //
-    // Robustness: right after the restart the restored sidecar's hub link can
-    // blip while its restore packs flush, so the event-1 mail can race a
-    // transient drop ("Connection lost" on enqueue). Settle the restore pack
-    // pipeline first, then fire -- retrying on the SAME messageId, which the run
-    // dedups by signalId, so a retried delivery is idempotent and never spawns a
-    // second event (the [section__0, section__1] assertion below stays exact).
-    await settleWorkflowRunPacks(env, { timeoutMs: 30_000 });
-
-    const secondMessageId =
-      "<on-trigger-between-events-2@integration.interchange>";
-    const deadline = Date.now() + 90_000;
-    let serviced = false;
-    while (Date.now() < deadline && !serviced) {
-      await fireMailTrigger(env, deploymentMailAddress, {
-        messageId: secondMessageId,
-        content: SECOND_BODY,
-      }).catch(() => undefined);
-      const pollDeadline = Date.now() + 12_000;
-      while (Date.now() < pollDeadline) {
-        const events = await readWorkflowRunEvents(
-          env,
-          DEPLOYMENT_ID,
-          containerRunId,
-        );
-        if (hasChildCompleted(events, `${SECTION_ID}__1`)) {
-          serviced = true;
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 200));
-      }
-    }
-    if (!serviced) {
-      throw new Error(
-        `event 1 was not serviced after the restart within budget\n${restoredDiagnostics()}`,
+          e.body["childRunId"] === `${SECTION_ID}__1`,
       );
-    }
-
-    // ---- assert: one long-lived run serviced both events across the crash --
-    const finalEvents = await readWorkflowRunEvents(
-      env,
-      DEPLOYMENT_ID,
-      containerRunId,
-    );
-    const finalTypes = finalEvents.map((e) => e.type);
-
-    // Exactly one RunStarted: the container is the SAME run before and after
-    // the crash; the restart re-drives it, it does not start a second run.
-    expect(finalTypes.filter((t) => t === "RunStarted").length).toBe(1);
-
-    // Both events' bodies were spawned and completed, in order.
-    const spawnedChildren = finalEvents.flatMap((e) =>
-      e.type === "ChildSpawned" ? [e.body["childRunId"]] : [],
-    );
-    expect(spawnedChildren).toEqual([`${SECTION_ID}__0`, `${SECTION_ID}__1`]);
-    expect(hasChildCompleted(finalEvents, `${SECTION_ID}__0`)).toBe(true);
-    expect(hasChildCompleted(finalEvents, `${SECTION_ID}__1`)).toBe(true);
-
-    // The long-lived section never self-completes.
-    expect(finalTypes).not.toContain("RunCompleted");
-    expect(finalTypes).not.toContain("RunFailed");
-    expect(finalTypes).not.toContain("RunCancelled");
-
-    // Load-bearing for the between-events recovery: section__1 exists only
-    // because the restored container re-adopted its input park and the supervisor
-    // routed mail #2 onto it as event 1 (not a spurious fresh trigger). Its
-    // ChildSpawned lands AFTER the restart, so the crash-recovered section
-    // serviced a genuinely new event.
-    const secondSpawnIndex = finalEvents.findIndex(
-      (e) =>
-        e.type === "ChildSpawned" &&
-        e.body["childRunId"] === `${SECTION_ID}__1`,
-    );
-    expect(secondSpawnIndex).toBeGreaterThanOrEqual(0);
-  }, 180_000);
-});
+      expect(secondSpawnIndex).toBeGreaterThanOrEqual(0);
+    }, 180_000);
+  },
+);
