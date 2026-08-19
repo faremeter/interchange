@@ -74,7 +74,6 @@ import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 import { decodeToolName } from "@intx/inference";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
-import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import type { ApprovalSet } from "@intx/workflow-deploy";
 import type { WorkflowDefinition } from "@intx/workflow";
@@ -947,25 +946,10 @@ export async function startHub(
         : {}),
     },
   });
-  // The harness stands in for the hub, which stamps the hub-approved wire hash
-  // onto every workflow deploy frame before it reaches the sidecar (production
-  // does this in `sendMultiStepDeployFrame`). The sidecar refuses to recompute
-  // a missing hash, so wrap `sendAgentDeploy` to stamp it when a workflow frame
-  // arrives without one -- mirroring the hub across the integration suite's
-  // per-test deploy callbacks rather than duplicating the computation in each.
-  const baseSendAgentDeploy = router.sendAgentDeploy.bind(router);
-  router.sendAgentDeploy = async (agentAddress, config, workflow) => {
-    const stamped =
-      workflow !== undefined && workflow.approvedWireHash === undefined
-        ? {
-            ...workflow,
-            approvedWireHash: await computeWireDefinitionHash(
-              workflow.definition,
-            ),
-          }
-        : workflow;
-    return baseSendAgentDeploy(agentAddress, config, stamped);
-  };
+  // The hub stamps the hub-approved wire hash onto every source-ref workflow
+  // deploy frame before it reaches the sidecar (production does this in
+  // `sendMultiStepDeployFrame`), so a frame reaching the sidecar always carries
+  // one -- no harness-side stamping is needed.
   router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
     agentEvents.push({ addr: agentAddress, sid: sessionId, event });
   });

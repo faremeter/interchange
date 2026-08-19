@@ -22,12 +22,10 @@ export {
 } from "./adapters/step-invoker";
 export {
   createInMemorySpawnChild,
-  createWorkflowSpawnSuspendableChild,
   createInMemorySpawnSuspendableChild,
   type ChildTerminalStatus,
   type RunChildWorkflow,
   type RunSuspendableChild,
-  type WorkflowSpawnSuspendableChildOpts,
 } from "./adapters/spawn-child";
 export {
   createWorkflowSupervisor,
@@ -145,7 +143,6 @@ export {
   createSupervisorBackedTransport,
   createWarmAgentCache,
   discoverInFlightRuns,
-  loadVerifiedWorkflowDefinition,
   parseSpawnTimeEnv,
   runWorkflowChild,
   runWorkflowChildFromProcessEnv,
@@ -162,7 +159,6 @@ export {
   type DrainController,
   type GrantEvaluator,
   type LoadParkedApproval,
-  type LoadVerifiedWorkflowDefinitionOpts,
   type RunWorkflowChildBindings,
   type RunWorkflowChildFromProcessEnvOpts,
   type RunWorkflowChildOpts,

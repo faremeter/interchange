@@ -65,6 +65,7 @@ import {
   type SubprocessSpawner,
 } from "@intx/workflow-host";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
+import type { WorkflowDefinition } from "@intx/workflow";
 import {
   createSidecarDeployRouter,
   type SidecarDeployRouter,
@@ -303,6 +304,43 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
 }
 
 /**
+ * The injected closure materializer stub. Source-ref is the only deploy
+ * lineage, so the router derives each deployment's definition through this
+ * dependency on both the deploy and the restore path. Returns a valid
+ * single-step `step-1` live definition (its step carries an agent so it survives
+ * `projectLiveToInert`) keyed to the deployment id, so each of the N deployments
+ * materializes a distinct, deterministic definition.
+ */
+const stubApplyFrozenWorkflowClosure: NonNullable<
+  Parameters<typeof createSidecarDeployRouter>[0]["applyFrozenWorkflowClosure"]
+> = (applyArgs) => {
+  const deploymentId = path.basename(applyArgs.instanceDir);
+  return Promise.resolve({
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
+    definition: {
+      id: `wf-${deploymentId}`,
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1"],
+      steps: {
+        "step-1": {
+          kind: "step",
+          id: "step-1",
+          agent: {
+            id: "agent-step-1",
+            systemPrompt: "sys",
+            capabilities: [],
+            toolFactories: [],
+            inference: { sources: [] },
+          },
+        },
+      },
+    } as unknown as WorkflowDefinition,
+    packageDir: path.join(applyArgs.instanceDir, "package"),
+    deployDir: path.join(applyArgs.instanceDir, "deploy"),
+  });
+};
+
+/**
  * Build a `SidecarDeployRouter` over `dataDir` with the same stubbed
  * host bindings the wiring test's `buildMultistepFixture` uses: a stub
  * `sessions`/`keyStore` (the single-step head deploy only inits its repo and
@@ -345,13 +383,26 @@ async function buildRouter(args: {
     registerDeployment: () => undefined,
     unregisterDeployment: () => undefined,
     multistepSubprocessSpawner: args.spawner,
-    multistepSubstrateEnv: { SIDECAR_DATA_DIR: args.dataDir },
+    multistepSubstrateEnv: {
+      SIDECAR_DATA_DIR: args.dataDir,
+      // Source-ref materialization reads both byte caps from the substrate env.
+      SIDECAR_CACHE_MAX_BYTES: "1000000",
+      SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
+    },
+    // Source-ref is the only deploy lineage: the router derives each
+    // deployment's runnable definition by materializing the pin's closure
+    // through this dependency, on both the deploy and the restore path. The stub
+    // returns a valid single-step `step-1` live definition (its step carries an
+    // agent so it survives `projectLiveToInert`) whose id is keyed to the
+    // deployment id, so each of the N deployments materializes a distinct,
+    // deterministic definition on both deploy and restore.
+    applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure,
   });
 }
 
 function singleStepFrame(
   agentAddress: string,
-  definitionId: string,
+  _definitionId: string,
 ): AgentDeployFrame {
   return {
     type: "agent.deploy",
@@ -361,11 +412,14 @@ function singleStepFrame(
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path reads only config.sessionId/config.grants, which tolerate undefined
     config: {} as AgentDeployFrame["config"],
     workflow: {
-      definition: {
-        id: definitionId,
-        triggers: [{ type: "manual" }],
-        stepOrder: ["step-1"],
-        steps: { "step-1": { kind: "step" } },
+      // Source-ref is the only deploy lineage: the frame carries no inline
+      // definition, only the pin the router re-materializes (the injected
+      // closure stub evaluates it to a single-step `step-1` definition). The
+      // hub-approved wire hash is a placeholder; production always stamps it.
+      approvedWireHash: "a".repeat(64),
+      sourceRef: {
+        source: { kind: "registry", registry: "test-registry" },
+        closure: { schemaVersion: "1", topLevel: [], entries: [] },
       },
       sources: {
         "step-1": [

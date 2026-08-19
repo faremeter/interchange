@@ -53,7 +53,18 @@ const SINGLE_STEP: WorkflowRunRecord = {
     "body-a": "a".repeat(64),
     "body-b": "b".repeat(64),
   },
-  lineage: "live-authored",
+  // Source-ref is the only lineage: every record carries the pin + approved
+  // hash the restore re-verifies the re-materialized closure against.
+  approvedWireHash: "d".repeat(64),
+  lineage: "source-ref",
+  sourceRef: {
+    source: { kind: "registry", registry: "npm" },
+    closure: {
+      schemaVersion: "1",
+      topLevel: [{ name: "@x/wf", version: "1.0.0" }],
+      entries: [],
+    },
+  },
 };
 
 // A multi-step deployment records no head hub key and may carry no session
@@ -81,6 +92,16 @@ const MULTI_STEP: WorkflowRunRecord = {
         model: "gpt-mock",
       },
     ],
+  },
+  approvedWireHash: "e".repeat(64),
+  lineage: "source-ref",
+  sourceRef: {
+    source: { kind: "registry", registry: "npm" },
+    closure: {
+      schemaVersion: "1",
+      topLevel: [{ name: "@x/wf-multi", version: "2.0.0" }],
+      entries: [],
+    },
   },
 };
 

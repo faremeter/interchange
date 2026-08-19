@@ -28,6 +28,7 @@ import {
   type SubprocessSpawner,
 } from "@intx/workflow-host";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
+import type { WorkflowDefinition } from "@intx/workflow";
 
 import {
   createSidecarDeployRouter,
@@ -272,7 +273,39 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       multistepSubprocessSpawner: spawner,
       multistepSubstrateEnv: {
         SIDECAR_DATA_DIR: dataDir,
+        // Source-ref materialization reads both byte caps from the substrate env.
+        SIDECAR_CACHE_MAX_BYTES: "1000000",
+        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
+      // Source-ref is the only deploy lineage: the router derives the runnable
+      // definition by materializing the pin's closure through this dependency.
+      // The stub returns a valid single-step `step-1` live definition (its step
+      // carries an agent so it survives `projectLiveToInert`) so the deploy
+      // reaches the spawn/undeploy behavior this test exercises.
+      applyFrozenWorkflowClosure: (applyArgs) =>
+        Promise.resolve({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
+          definition: {
+            id: "wf-undeploy-supervisor",
+            triggers: [{ type: "manual" }],
+            stepOrder: ["step-1"],
+            steps: {
+              "step-1": {
+                kind: "step",
+                id: "step-1",
+                agent: {
+                  id: "agent-step-1",
+                  systemPrompt: "sys",
+                  capabilities: [],
+                  toolFactories: [],
+                  inference: { sources: [] },
+                },
+              },
+            },
+          } as unknown as WorkflowDefinition,
+          packageDir: path.join(applyArgs.instanceDir, "package"),
+          deployDir: path.join(applyArgs.instanceDir, "deploy"),
+        }),
       multistepMailRouter: mailRouter,
       multistepSignalRouter: signalRouter,
       multistepDrainRouter: drainRouter,
@@ -292,11 +325,12 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         // Placeholder hub-approved wire hash so the deploy path's fail-loud
         // guard passes; production always stamps it.
         approvedWireHash: "a".repeat(64),
-        definition: {
-          id: "wf-undeploy-supervisor",
-          triggers: [{ type: "manual" }],
-          stepOrder: ["step-1"],
-          steps: { "step-1": { kind: "step" } },
+        // Source-ref is the only deploy lineage: the frame carries no inline
+        // definition, only the pin the sidecar re-materializes (the injected
+        // closure stub above evaluates it to a single-step `step-1` definition).
+        sourceRef: {
+          source: { kind: "registry", registry: "test-registry" },
+          closure: { schemaVersion: "1", topLevel: [], entries: [] },
         },
         sources: {
           "step-1": [

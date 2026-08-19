@@ -515,10 +515,70 @@ function makeInferenceSource(id: string): InferenceSourceFixture {
   };
 }
 
+/**
+ * Live definitions the source-ref deploy/restore path reconstructs, keyed by
+ * derived deployment id. `makeMultistepFrame` registers one per frame it builds;
+ * `buildMultistepFixture`'s default closure stub returns the matching entry so a
+ * deploy or restore evaluates the exact topology the test described. Module-level
+ * so a restore fixture built over the same on-disk data dir (a simulated
+ * restart) reads the same entry the deploy fixture registered.
+ */
+const deployDefinitionRegistry = new Map<string, WorkflowDefinition>();
+
+/**
+ * Upgrade a test's inert-ish definition to a valid LIVE definition: every step
+ * gets a real agent so the definition survives `projectLiveToInert` (a bare
+ * `{ kind: "step" }` with no agent throws). `stepOrder` is preserved verbatim,
+ * so a definition whose `stepOrder` names a step absent from `steps` still
+ * projects to the same "no such entry" throw the deploy path rejects on.
+ */
+function toLiveClosureDefinition(
+  definition: MultistepDeployArgs["definition"],
+): WorkflowDefinition {
+  const steps: Record<string, unknown> = {};
+  for (const stepId of Object.keys(definition.steps)) {
+    steps[stepId] = {
+      kind: "step",
+      id: stepId,
+      agent: {
+        id: `agent-${stepId}`,
+        systemPrompt: "sys",
+        capabilities: [],
+        toolFactories: [],
+        inference: { sources: [] },
+      },
+    };
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full `WorkflowDefinition` nominal type; it stands in for a real closure evaluation, exactly as the restore test's `closureDefinition` does
+  return {
+    id: definition.id,
+    triggers: definition.triggers,
+    stepOrder: definition.stepOrder,
+    steps,
+  } as unknown as WorkflowDefinition;
+}
+
+/**
+ * Build a source-ref deploy frame. The deploy lineage is source-ref only, so the
+ * frame carries NO inline `definition`: it pins each step's inference sources,
+ * the hub-approved wire hash, and a placeholder source-ref pin. The runnable
+ * definition is decoupled from the frame exactly as production decouples it --
+ * the sidecar re-materializes it through the injected `applyFrozenWorkflowClosure`.
+ * The helper registers the intended live definition (the caller's `definition`
+ * arg, upgraded so each step carries a valid agent) under the frame's derived
+ * deployment id; `buildMultistepFixture`'s default closure stub looks it up by
+ * that id, so a deploy or restore reconstructs the exact topology the caller
+ * described without threading it through the frame.
+ */
 function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
+  const agentAddress = args.agentAddress ?? "multi@example.com";
+  deployDefinitionRegistry.set(
+    deriveDeploymentId(agentAddress),
+    toLiveClosureDefinition(args.definition),
+  );
   return {
     type: "agent.deploy",
-    agentAddress: args.agentAddress ?? "multi@example.com",
+    agentAddress,
     agentId: "multi-agent",
     hubPublicKey: "hub-pk",
     // The wire-side HarnessConfig has many required fields. On the
@@ -529,8 +589,15 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path reads only config.sessionId/config.grants, which tolerate undefined
     config: {} as AgentDeployFrame["config"],
     workflow: {
-      definition: args.definition,
       sources: args.sources,
+      // Placeholder source-ref pin. The deploy/restore path re-materializes the
+      // definition through the injected closure stub, which keys off the
+      // deployment id -- not this pin's contents -- so the pin only has to be a
+      // well-formed `SourceRefPin`.
+      sourceRef: {
+        source: { kind: "registry", registry: "test-registry" },
+        closure: { schemaVersion: "1", topLevel: [], entries: [] },
+      },
       // Production always stamps the hub-approved hash; default a placeholder
       // so a deploy test need not compute one, and only omit it when a test
       // explicitly exercises the fail-loud guard.
@@ -684,19 +751,50 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const keyPair = await generateKeyPair();
     const tempBase = await createTempBaseDir("sidecar-multistep-");
     const repoStore = createSpawnTestRepoStore(tempBase);
-    // The deploy router's multi-step branch materializes
-    // `workflow.json` under `${SIDECAR_DATA_DIR}/assets/workflow/<id>/`
-    // before invoking the spawner. The test fixture defaults the data
-    // dir to a per-test mkdtemp so the wiring tests do not have to
-    // touch a real /tmp path; callers can override
-    // `SIDECAR_DATA_DIR` (and any other key) by passing
-    // `multistepSubstrateEnv`.
+    // The deploy router's source-ref branch materializes the pinned closure
+    // under `${SIDECAR_DATA_DIR}/workflow-definition-closures/<id>/` before
+    // invoking the spawner. The test fixture defaults the data dir to a
+    // per-test mkdtemp so the wiring tests do not have to touch a real /tmp
+    // path; callers can override `SIDECAR_DATA_DIR` (and any other key) by
+    // passing `multistepSubstrateEnv`.
     const defaultSubstrateEnv: Record<string, string> = {
       SIDECAR_DATA_DIR: await createTempBaseDir("sidecar-multistep-data-"),
+      // Source-ref is the only deploy lineage: every deploy materializes the
+      // pin's frozen closure, and the materializer requires both substrate byte
+      // caps in the env. Default them so a deploy test need not thread them; a
+      // test that overrides `multistepSubstrateEnv` keeps these unless it sets
+      // its own.
+      SIDECAR_CACHE_MAX_BYTES: "1000000",
+      SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
     };
     const mergedSubstrateEnv: Record<string, string> = {
       ...defaultSubstrateEnv,
       ...(opts.multistepSubstrateEnv ?? {}),
+    };
+    // The source-ref deploy/restore path derives the runnable definition by
+    // materializing the pin's closure through this injected dependency. The
+    // default stub returns the live definition `makeMultistepFrame` registered
+    // under the deployment id (the last segment of the per-deployment
+    // instance dir), so the deploy/restore evaluates the exact topology the
+    // frame described. A test that hand-writes a record (no frame) or wants a
+    // bespoke closure result passes its own `applyFrozenWorkflowClosure`.
+    const defaultApplyFrozenWorkflowClosure: NonNullable<
+      Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["applyFrozenWorkflowClosure"]
+    > = (applyArgs) => {
+      const deploymentId = path.basename(applyArgs.instanceDir);
+      const definition = deployDefinitionRegistry.get(deploymentId);
+      if (definition === undefined) {
+        throw new Error(
+          `test default applyFrozenWorkflowClosure: no registered definition for deploymentId ${deploymentId} (instanceDir ${applyArgs.instanceDir}). Build the deploy frame via makeMultistepFrame/singleStepFrame, or pass an explicit applyFrozenWorkflowClosure when hand-writing a record.`,
+        );
+      }
+      return Promise.resolve({
+        definition,
+        packageDir: path.join(tempBase, "closure-package", deploymentId),
+        deployDir: path.join(tempBase, "closure-deploy", deploymentId),
+      });
     };
     const router = createSidecarDeployRouter({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path never invokes provisionAgent/persistHubPublicKey (single-step uses the narrow initRepo; the child mints its own key); the stubs throw if it does. initRepo is a no-op for the single-step head repo.
@@ -763,9 +861,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
             writeWorkflowRunRecord: opts.writeWorkflowRunRecord,
           }
         : {}),
-      ...(opts.applyFrozenWorkflowClosure !== undefined
-        ? { applyFrozenWorkflowClosure: opts.applyFrozenWorkflowClosure }
-        : {}),
+      applyFrozenWorkflowClosure:
+        opts.applyFrozenWorkflowClosure ?? defaultApplyFrozenWorkflowClosure,
     });
     return {
       router,
@@ -1469,8 +1566,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       },
     });
 
+    // The closure-derived definition is structurally invalid: `stepOrder` names
+    // `step-missing`, which the `steps` record does not define. Source-ref is the
+    // only deploy lineage, so the definition is projected from the materialized
+    // closure BEFORE the projection guard; the live->inert projector rejects the
+    // dangling stepOrder entry at the router boundary, before any spawn fires.
     await expect(router.deploy(frame)).rejects.toThrow(
-      /workflow\.definition\.steps is missing entry/,
+      /stepOrder names "step-missing" .* the steps record has no such entry/,
     );
     expect(spawnerInvoked).toBe(false);
   });
@@ -1480,7 +1582,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // hash. A frame that carries none is a wiring bug, not a legacy case: the
     // sidecar must fail loud rather than substitute its own recompute, which
     // would collapse the re-verify to a self-check. Production always stamps
-    // it, so only a malformed frame reaches this guard.
+    // it, so only a malformed frame reaches this guard. Source-ref is the only
+    // deploy lineage, so the durable run record the deploy path builds before
+    // the spawn is the first gate to reject the missing hash.
     let spawnerInvoked = false;
     const spawner: SubprocessSpawner = () => {
       spawnerInvoked = true;
@@ -1505,7 +1609,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
 
     await expect(router.deploy(frame)).rejects.toThrow(
-      /carries no approvedWireHash/,
+      /must carry approvedWireHash/,
     );
     expect(spawnerInvoked).toBe(false);
   });
@@ -2064,7 +2168,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(isRegistered(freshTransport, head)).toBe(true);
   });
 
-  test("restore soft-fails a record whose workflow.json is missing and restores the rest", async () => {
+  test("restore soft-fails a record whose closure will not materialize and restores the rest", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-softfail-data-");
     const goodHead = "run_good@example.com";
     const badHead = "run_bad@example.com";
@@ -2081,17 +2185,37 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await first.driveReadyFor(1);
     await deployBad;
 
-    // Remove the bad deployment's definition so its restore read faults.
-    await fs.rm(
-      path.join(dataDir, "assets", "workflow", "wf-bad", "workflow.json"),
-    );
-
+    // Source-ref is the only deploy lineage: a restore re-materializes each
+    // record's pinned closure to derive its definition. Make the bad
+    // deployment's closure materialization fault (the pinned code no longer
+    // resolves) so its restore soft-fails, while the good one materializes and
+    // re-spawns.
+    const badDeploymentId = deriveDeploymentId(badHead);
     const second = makeReadyDrivingSpawner(9400);
     const freshTransport = createInMemoryTransport();
     const { router: routerB } = await buildMultistepFixture({
       spawner: second.spawner,
       transport: freshTransport,
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      applyFrozenWorkflowClosure: (applyArgs) => {
+        const deploymentId = path.basename(applyArgs.instanceDir);
+        if (deploymentId === badDeploymentId) {
+          throw new Error(
+            `closure materialization faulted for ${deploymentId}: pinned code did not resolve`,
+          );
+        }
+        const definition = deployDefinitionRegistry.get(deploymentId);
+        if (definition === undefined) {
+          throw new Error(
+            `test applyFrozenWorkflowClosure: no registered definition for ${deploymentId}`,
+          );
+        }
+        return Promise.resolve({
+          definition,
+          packageDir: path.join(dataDir, "closure-package", deploymentId),
+          deployDir: path.join(dataDir, "closure-deploy", deploymentId),
+        });
+      },
     });
 
     // The good deployment re-spawns (exactly one handshake to drive);
@@ -2108,43 +2232,32 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(await recordExists(dataDir, deriveDeploymentId(badHead))).toBe(true);
   });
 
-  test("restore applies validateWorkflowProjection: a stepOrder entry with no matching steps is skipped", async () => {
+  test("restore rejects a closure-derived definition whose stepOrder names a step with no matching entry", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-validator-data-");
     const head = "run_validator@example.com";
     const anchorRunId = deriveDeploymentId(head);
 
-    // Hand-write a record plus a workflow.json whose `stepOrder` names a step
-    // `steps` does not define. This clears the wire arktype
-    // (`AgentDeployWorkflow` only checks that `sources` cover `stepOrder`) but
-    // MUST be rejected by `validateWorkflowProjection`, the second gate the
-    // deploy path applies. If restore ran only the arktype it would spawn a
-    // child for a structurally invalid definition.
+    // Write a well-formed source-ref record: it clears the record schema and the
+    // scan boundary, so restore reaches the projection gate. The closure it
+    // re-materializes, though, evaluates to a structurally invalid definition --
+    // its `stepOrder` names a step the `steps` record does not define. The
+    // source-ref restore arm projects the closure-derived definition
+    // (`projectLiveToInert`) before spawning, so it rejects the dangling
+    // stepOrder entry and never spawns a child for a broken definition.
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
       definitionId: "wf-missing-step",
       sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
+      approvedWireHash: "a".repeat(64),
+      lineage: "source-ref",
+      sourceRef: {
+        source: { kind: "registry", registry: "test-registry" },
+        closure: { schemaVersion: "1", topLevel: [], entries: [] },
+      },
     };
     await writeWorkflowRunRecord(dataDir, anchorRunId, record);
-    const workflowJsonPath = path.join(
-      dataDir,
-      "assets",
-      "workflow",
-      "wf-missing-step",
-      "workflow.json",
-    );
-    await fs.mkdir(path.dirname(workflowJsonPath), { recursive: true });
-    await fs.writeFile(
-      workflowJsonPath,
-      JSON.stringify({
-        id: "wf-missing-step",
-        triggers: [{ type: "manual" }],
-        stepOrder: ["step-1"],
-        steps: {},
-      }),
-      "utf8",
-    );
 
     const spawner = makeReadyDrivingSpawner(9500);
     const freshTransport = createInMemoryTransport();
@@ -2152,6 +2265,30 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       spawner: spawner.spawner,
       transport: freshTransport,
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      applyFrozenWorkflowClosure: (applyArgs) =>
+        Promise.resolve({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; this stands in for a closure that evaluates to a structurally invalid definition
+          definition: {
+            id: "wf-missing-step",
+            triggers: [{ type: "manual" }],
+            stepOrder: ["step-1", "step-missing"],
+            steps: {
+              "step-1": {
+                kind: "step",
+                id: "step-1",
+                agent: {
+                  id: "agent-step-1",
+                  systemPrompt: "sys",
+                  capabilities: [],
+                  toolFactories: [],
+                  inference: { sources: [] },
+                },
+              },
+            },
+          } as unknown as WorkflowDefinition,
+          packageDir: path.join(applyArgs.instanceDir, "package"),
+          deployDir: path.join(applyArgs.instanceDir, "deploy"),
+        }),
     });
 
     await router.restoreWorkflowRuns();
@@ -2315,10 +2452,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(spawner.spawnCount()).toBe(1);
     expect(isRegistered(freshTransport, head)).toBe(true);
     // The child came back on the source-ref (evaluate-the-closure) load path:
-    // the spawn env carries the source-ref lineage marker and the freshly
-    // re-materialized package dir, not the inert-read live-authored path.
+    // the spawn env carries the freshly re-materialized closure package dir, so
+    // the child evaluates the pinned code rather than reading a definition off
+    // disk. Source-ref is the only lineage now, so the env always carries it.
     const spawnEnv = spawner.envFor(0);
-    expect(spawnEnv?.WORKFLOW_LINEAGE).toBe("source-ref");
     expect(spawnEnv?.CLOSURE_PACKAGE_DIR).toBe(fakePackageDir);
   });
 
@@ -2383,12 +2520,21 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // a corrupt or misplaced record that must not be restored under the
     // wrong slug.
     const wrongDir = "not-the-right-slug";
+    // Otherwise-valid source-ref record so the scan admits it and the restore
+    // loop reaches (and rejects on) the address-vs-directory mismatch -- not the
+    // schema. Source-ref is the only lineage, so it must carry the pin + hash.
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
       definitionId: "wf-mismatch",
       sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
+      approvedWireHash: "a".repeat(64),
+      lineage: "source-ref",
+      sourceRef: {
+        source: { kind: "registry", registry: "test-registry" },
+        closure: { schemaVersion: "1", topLevel: [], entries: [] },
+      },
     };
     await writeWorkflowRunRecord(dataDir, wrongDir, record);
 

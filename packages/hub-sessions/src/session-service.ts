@@ -46,7 +46,6 @@ import {
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type {
   SourceRefPin,
-  WorkflowProjectionDefinition,
   WorkflowProjectionWithSources,
   WorkflowSourceAssetMount,
 } from "@intx/types/sidecar";
@@ -439,25 +438,19 @@ type DeployFrameCommonArgs = {
 /**
  * For a code-sourced (npm) deploy the hub never holds the live
  * `WorkflowDefinition` -- it lives only in the airlocked child. The gate/freeze
- * layer already projected the definition to its inert `WorkflowProjectionDefinition`
- * and hashed THAT; this frame carries both verbatim. The content hash is owned
- * by the gate, so this frame never recomputes it -- recomputing over a live
- * wire lineage would diverge from the inert projection the child re-verifies
- * against.
+ * layer hashed the inert projection; the deploy frame carries that hash and the
+ * source-ref pin, and the sidecar re-materializes and evaluates the pinned code
+ * from the pin, so no inline definition rides the frame. The content hash is
+ * owned by the gate, so this frame never recomputes it -- recomputing over a
+ * live wire lineage would diverge from the inert projection the child
+ * re-verifies against.
  */
 export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
   lineage: "source-ref";
   /**
-   * The inert wire projection the gate froze -- the same closed
-   * `WorkflowProjectionDefinition` a `workflow.probe.result` carries. Placed on
-   * the frame's `definition` field verbatim; it is already that field's type,
-   * so no coercion is needed.
-   */
-  projection: WorkflowProjectionDefinition;
-  /**
-   * The gate-frozen wire hash of `projection` -- stamped onto the frame VERBATIM.
-   * This arm does not recompute it: the freeze layer owns the content hash, and
-   * the child re-verifies its recompute over the inert projection against this
+   * The gate-frozen wire hash of the approved projection -- stamped onto the
+   * frame VERBATIM. This arm does not recompute it: the freeze layer owns the
+   * content hash, and the child re-verifies its closure evaluation against this
    * exact value.
    */
   approvedWireHash: string;
@@ -515,10 +508,9 @@ export async function sendMultiStepDeployFrame(
   args: SendMultiStepDeployFrameArgs,
 ): Promise<{ publicKey: string }> {
   const workflow = {
-    // The inert projection and its gate-frozen hash ride the frame verbatim;
-    // neither is re-derived here. `projection` is already the frame's
-    // `definition` type, so it is assigned with no coercion.
-    definition: args.projection,
+    // The deploy frame carries no inline definition: the sidecar evaluates the
+    // pinned code closure from `sourceRef` and re-verifies it against
+    // `approvedWireHash`. Only the gate-frozen hash and the pin ride the frame.
     sources: args.sources,
     approvedWireHash: args.approvedWireHash,
     sourceRef: args.sourceRef,
@@ -731,30 +723,25 @@ async function emitSourceRefDeployFrame(
   }
 
   // Pin per-step inference sources for the projection's inline onTrigger bodies.
-  // The live-authored path pins these off the live AgentDefinition; the
-  // source-ref hub holds only the frozen inert projection, so it enumerates the
-  // inline bodies from the wire form and resolves each body step's source
-  // through the SAME resolver + operator-approval gate the live path uses
+  // The hub holds only the frozen inert projection, so it enumerates the inline
+  // bodies from the wire form and resolves each body step's source through the
+  // same resolver + operator-approval gate the top-level steps use
   // (`pickStepInferenceSource` against `approval.approvedGrants`). Each body's
   // wire hash is recomputed from the inert body verbatim, so a body child's
   // re-verify over the re-evaluated closure clears the same barrier a top-level
-  // re-verify does. The pinned sources ride OUTSIDE the hash (as on the live
-  // path); their trust comes from being resolved here under the approval gate,
-  // which is why the pin stays hub-side and is never caller-supplied.
+  // re-verify does. The pinned sources ride OUTSIDE the hash; their trust comes
+  // from being resolved here under the approval gate, which is why the pin stays
+  // hub-side and is never caller-supplied.
   //
-  // These entries reuse the live-authored `referencedDefinitions` wire field, so
-  // the sidecar stages them through its one lineage-agnostic loop with no
-  // source-ref-specific handling. Each entry's `definition` is the approved
-  // inert body def straight from the frozen, hash-covered projection (id set to
-  // the ref). On source-ref the sidecar stages that as a body workflow.json that
-  // is written REDUNDANTLY and NEVER read: the run child resolves bodies
-  // in-memory from the re-verified closure and hard-fails rather than reading a
-  // body workflow.json off disk (see the staging loop in workflow-host-wiring.ts
-  // and the anti-fallback guard in workflow-host run-child.ts). Only the
-  // co-staged sources.json is read on this path. Reuse is chosen over a
-  // dedicated sources-only field so the two lineages share one staging path and
-  // cannot drift; the redundant file is inert and approval-covered, not
-  // authoritative.
+  // These entries ride the `referencedDefinitions` wire field. Each entry's
+  // `definition` is the approved inert body def straight from the frozen,
+  // hash-covered projection (id set to the ref); the sidecar reads that id to
+  // key the per-body approved hash and to stage the body's `sources.json`, which
+  // the body child reads to pin its steps. The body child resolves the body
+  // DEFINITION itself in-memory from the re-verified closure and hard-fails
+  // rather than reading it off disk, so no body workflow.json is staged (see the
+  // staging loop in workflow-host-wiring.ts and the anti-fallback guard in
+  // workflow-host run-child.ts).
   const referencedDefinitions: WorkflowProjectionWithSources[] =
     await Promise.all(
       enumerateInertOnTriggerBodies(projection).map(async (body) => {
@@ -821,7 +808,6 @@ async function emitSourceRefDeployFrame(
     agentAddress: args.agentAddress,
     config: args.config,
     sources: args.sources,
-    projection,
     approvedWireHash: approval.approvedWireHash,
     sourceRef: { source: args.source, closure },
     ...(credentials !== undefined ? { credentials } : {}),
@@ -1418,8 +1404,7 @@ export function createSessionService(
     }
 
     // Pin every top-level step's inference source under the frozen approval,
-    // exactly as the live-authored orchestrator's per-step loop does, then hand
-    // the frozen bundle to the source-ref deploy.
+    // then hand the frozen bundle to the source-ref deploy.
     const sources = buildInertProjectionStepSources({
       projection: approved.projection,
       config: params.config,
@@ -1591,7 +1576,7 @@ export function createSessionService(
     });
 
     // Restore the Hub-authoritative run ref onto the exact allocation generation
-    // before its address is routed, mirroring the live-authored prepared path.
+    // before its address is routed.
     await restoreWorkflowRunToAllocation({
       agentRepoStore,
       allocationRouter,

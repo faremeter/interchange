@@ -77,31 +77,23 @@ const SpawnTimeEnvShape = type({
   // bodies with approved hashes sets it; absent otherwise. Parsed to a record
   // below; malformed JSON or a non-string value throws.
   "REFERENCED_DEFINITION_HASHES?": "string",
-  // Deployment lineage marker selecting the child's definition load path.
-  // `"source-ref"` for a deployment whose definition was sourced from a pinned
-  // code closure the sidecar materialized; the child evaluates that closure to
-  // a LIVE definition and re-verifies it by project-then-hash. Absent (or
-  // `"live-authored"`) means the child reads the inert `workflow.json` off the
-  // deploy tree. Optional so a live-authored deployment, which ships no marker,
-  // still parses; parsed to the `lineage` field below and cross-checked against
-  // CLOSURE_PACKAGE_DIR.
-  "WORKFLOW_LINEAGE?": "string > 0",
-  // Sidecar-local directory of the materialized workflow-definition closure a
-  // source-ref deployment evaluates. The sidecar computes it when it applies
-  // the frozen closure and threads it here; it never travels on the hub deploy
-  // frame. Present iff the lineage is `"source-ref"`; a mismatch between the
-  // two throws below.
-  "CLOSURE_PACKAGE_DIR?": "string > 0",
+  // Sidecar-local directory of the materialized workflow-definition closure the
+  // deployment evaluates. Source-ref is the only deploy lineage, so the child
+  // always evaluates a pinned code closure to a LIVE definition and re-verifies
+  // it by project-then-hash; there is nothing to evaluate without this dir, so
+  // it is required. The sidecar computes it when it applies the frozen closure
+  // and threads it here; it never travels on the hub deploy frame.
+  CLOSURE_PACKAGE_DIR: "string > 0",
 }).onUndeclaredKey("ignore");
 
 /**
- * The lineage-independent fields of the parsed spawn-time env. The hex-encoded
- * trust anchors decode to their raw byte representations so the IPC channel
- * constructors can consume them without re-validating the hex shape. The
- * lineage-correlated pair (`lineage` + `closurePackageDir`) rides the
- * `SpawnTimeEnv` union below.
+ * The parsed spawn-time env. The hex-encoded trust anchors decode to their raw
+ * byte representations so the IPC channel constructors can consume them without
+ * re-validating the hex shape. Source-ref is the only deploy lineage, so every
+ * child evaluates the pinned code closure at `closurePackageDir`; the field is
+ * always present.
  */
-export interface SpawnTimeEnvBase {
+export interface SpawnTimeEnv {
   /** Channel identifier minted by the supervisor for this spawn. */
   channelId: string;
   /** 32-byte shared HMAC key for the event channel. */
@@ -141,36 +133,13 @@ export interface SpawnTimeEnvBase {
    * cache when set and keeps cold instantiate-send-teardown otherwise.
    */
   warmKeep: boolean;
+  /**
+   * Sidecar-local dir of the materialized workflow-definition closure the child
+   * evaluates to a live definition and re-verifies by project-then-hash.
+   * Source-ref is the only deploy lineage, so it is always present.
+   */
+  closurePackageDir: string;
 }
-
-/**
- * Parsed and validated spawn-time env. `lineage` and `closurePackageDir` form a
- * discriminated pair rather than two independent fields: a source-ref
- * deployment always carries the closure dir it evaluates, and a live-authored
- * one never does. `parseLineage` enforces that correlation at the boundary, and
- * modeling it here lets a consumer that narrows on `lineage` read
- * `closurePackageDir` with the right type and no redundant presence check.
- */
-export type SpawnTimeEnv = SpawnTimeEnvBase &
-  (
-    | {
-        /**
-         * Evaluate the pinned code closure at `closurePackageDir` to a live
-         * definition and re-verify it by project-then-hash.
-         */
-        lineage: "source-ref";
-        /** Sidecar-local dir of the materialized workflow-definition closure. */
-        closurePackageDir: string;
-      }
-    | {
-        /**
-         * Read the inert `workflow.json` off the deploy tree. An absent lineage
-         * marker parses as this arm.
-         */
-        lineage: "live-authored";
-        closurePackageDir?: undefined;
-      }
-  );
 
 /**
  * Parse and validate `process.env`-shaped input into the typed
@@ -225,13 +194,6 @@ export function parseSpawnTimeEnv(
   const referencedDefinitionHashes = parseReferencedDefinitionHashes(
     validated.REFERENCED_DEFINITION_HASHES,
   );
-  // Spread the correlated lineage pair verbatim so the discriminated union is
-  // preserved -- destructuring into separate fields would erase the
-  // source-ref-implies-closurePackageDir correlation the union encodes.
-  const lineageEnv = parseLineage(
-    validated.WORKFLOW_LINEAGE,
-    validated.CLOSURE_PACKAGE_DIR,
-  );
   return {
     channelId: validated.IPC_CHANNEL_ID,
     hmacKey,
@@ -245,46 +207,8 @@ export function parseSpawnTimeEnv(
     // absence) reads false. Warm-keep is opt-in and deterministic; a
     // typo'd or partial value must not silently enable it.
     warmKeep: validated.WARM_KEEP === "true",
-    ...lineageEnv,
+    closurePackageDir: validated.CLOSURE_PACKAGE_DIR,
   };
-}
-
-/**
- * Resolve the deployment lineage and its closure package directory from the
- * two optional spawn-env keys, cross-checking them so an inconsistent pair
- * fails closed rather than loading the wrong definition path.
- *
- * An absent `WORKFLOW_LINEAGE` marker is the live-authored common case. A
- * source-ref lineage MUST carry `CLOSURE_PACKAGE_DIR` (there is nothing to
- * evaluate without it); a live-authored lineage must NOT carry one (only a
- * source-ref deployment materializes a closure). Any other pairing is a
- * boundary wiring bug and throws.
- */
-function parseLineage(
-  rawLineage: string | undefined,
-  rawClosurePackageDir: string | undefined,
-):
-  | { lineage: "source-ref"; closurePackageDir: string }
-  | { lineage: "live-authored"; closurePackageDir?: undefined } {
-  if (rawLineage === undefined || rawLineage === "live-authored") {
-    if (rawClosurePackageDir !== undefined) {
-      throw new Error(
-        "workflow-child live-authored deployment must not carry CLOSURE_PACKAGE_DIR; only a source-ref deployment evaluates a closure",
-      );
-    }
-    return { lineage: "live-authored" };
-  }
-  if (rawLineage === "source-ref") {
-    if (rawClosurePackageDir === undefined) {
-      throw new Error(
-        "workflow-child source-ref deployment requires CLOSURE_PACKAGE_DIR; the sidecar must thread the materialized closure package directory",
-      );
-    }
-    return { lineage: "source-ref", closurePackageDir: rawClosurePackageDir };
-  }
-  throw new Error(
-    `workflow-child WORKFLOW_LINEAGE must be "source-ref" or "live-authored"; got ${JSON.stringify(rawLineage)}`,
-  );
 }
 
 /** A JSON object of `bodyId -> approved wire hash`, each a non-empty string. */

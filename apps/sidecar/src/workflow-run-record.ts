@@ -43,7 +43,7 @@ function isENOENT(cause: unknown): boolean {
   );
 }
 
-// Fields common to both lineages.
+// The base fields every run record carries, spread into the full schema below.
 const workflowRunRecordBase = {
   version: "1",
   agentAddress: "string > 0",
@@ -70,25 +70,21 @@ const workflowRunRecordBase = {
  * reader can reject or migrate a stale record rather than parse it blindly.
  * Validated at read time (the boot scan) at the trust boundary.
  *
- * A discriminated union on `lineage` encodes the source-ref coupling in the
- * schema itself: a "source-ref" record MUST carry a `sourceRef` pin (its
- * co-required source + frozen closure, so a restore can re-materialize the
- * pinned closure) AND `approvedWireHash` (so the restored child re-verifies the
- * evaluated closure against the hub-approved pin rather than against a sidecar
- * recompute of the on-disk inert projection -- the latter would collapse the
- * out-of-band-pin property the barrier exists for). A malformed source-ref
- * record therefore fails validation at the scan boundary and is soft-skipped as
- * corruption, so the restore loop needs no bespoke source-ref guard. A
- * "live-authored" record (or a legacy record with `lineage` absent) carries no
- * `sourceRef`, and its `approvedWireHash` stays optional (a record predating
- * that field omits it, and the spawn core recomputes for that legacy case
- * alone).
+ * Source-ref is the only deploy lineage, so the record REQUIRES a `sourceRef`
+ * pin (its co-required source + frozen closure, so a restore can re-materialize
+ * the pinned closure) AND `approvedWireHash` (so the restored child re-verifies
+ * the evaluated closure against the hub-approved pin rather than against a
+ * sidecar recompute of the inert projection -- the latter would collapse the
+ * out-of-band-pin property the barrier exists for). A record missing either --
+ * including a legacy live-authored record written before this collapse -- fails
+ * validation at the scan boundary and is soft-skipped as corruption, so the
+ * restore loop needs no bespoke source-ref guard.
  */
 export const WorkflowRunRecord = type({
   ...workflowRunRecordBase,
   lineage: "'source-ref'",
-  // Required for source-ref: the hub-approved wire hash the restored child
-  // re-verifies the evaluated closure against.
+  // The hub-approved wire hash the restored child re-verifies the evaluated
+  // closure against.
   approvedWireHash: "string > 0",
   // The source-ref pin a restore re-runs `applyFrozenWorkflowClosure` with:
   // `source` names the registry the definition package is published to (its
@@ -97,16 +93,6 @@ export const WorkflowRunRecord = type({
   // versions + integrity SRIs) -- plain strings, no secrets. Both rode the
   // signed frame and co-travel (see `SourceRefPin`).
   sourceRef: SourceRefPin,
-}).or({
-  ...workflowRunRecordBase,
-  // Absent for a legacy record; that path only produced live-authored
-  // deployments, so an absent value is treated as "live-authored".
-  "lineage?": "'live-authored'",
-  // Optional: the hub-approved wire hash a restore feeds the child as
-  // `DEFINITION_HASH` rather than recomputing it. A record predating this
-  // field omits it, and the spawn core recomputes off the on-disk projection
-  // for that legacy case alone.
-  "approvedWireHash?": "string > 0",
 });
 export type WorkflowRunRecord = typeof WorkflowRunRecord.infer;
 

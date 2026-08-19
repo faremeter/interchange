@@ -37,11 +37,6 @@ export {
 export { parseSpawnTimeEnv, type SpawnTimeEnv } from "./env-bootstrap";
 
 export {
-  loadVerifiedWorkflowDefinition,
-  type LoadVerifiedWorkflowDefinitionOpts,
-} from "./verified-definition-loader";
-
-export {
   discoverInFlightRuns,
   type DiscoverRunsOpts,
   type DiscoveredRun,

@@ -21,6 +21,7 @@ import { createInMemoryTransport } from "@intx/mail-memory";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
+import type { WorkflowDefinition } from "@intx/workflow";
 import type { SubprocessSpawner } from "@intx/workflow-host";
 
 import {
@@ -68,6 +69,43 @@ function stubFailingSessions(): Parameters<
       throw new Error("provisionAgent forced failure");
     },
   } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["sessions"];
+}
+
+// Source-ref is the only deploy lineage: the router derives the runnable
+// definition by materializing the pin's closure through this dependency. These
+// spawn-failure tests need the closure to SUCCEED so the deploy reaches the
+// spawn it exercises, so the stub returns a valid single-step live definition
+// (its one step carries an agent so it survives `projectLiveToInert`), keyed to
+// the frame's single source id `s1`.
+function stubApplyFrozenWorkflowClosure(
+  definitionId: string,
+): NonNullable<
+  Parameters<typeof createSidecarDeployRouter>[0]["applyFrozenWorkflowClosure"]
+> {
+  return (applyArgs) =>
+    Promise.resolve({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
+      definition: {
+        id: definitionId,
+        triggers: [{ type: "manual" }],
+        stepOrder: ["s1"],
+        steps: {
+          s1: {
+            kind: "step",
+            id: "s1",
+            agent: {
+              id: "agent-s1",
+              systemPrompt: "sys",
+              capabilities: [],
+              toolFactories: [],
+              inference: { sources: [] },
+            },
+          },
+        },
+      } as unknown as WorkflowDefinition,
+      packageDir: pathJoin(applyArgs.instanceDir, "package"),
+      deployDir: pathJoin(applyArgs.instanceDir, "deploy"),
+    });
 }
 
 function makeRouterDeps() {
@@ -196,8 +234,12 @@ describe("deploy-failure registry leak", () => {
         SIDECAR_ID: "sc",
         SIDECAR_TOKEN: "tok",
         PATH: "/usr/bin",
+        // Source-ref materialization reads both byte caps from the substrate env.
+        SIDECAR_CACHE_MAX_BYTES: "1000000",
+        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
       multistepSubprocessSpawner: failingSpawner,
+      applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure("wf-1"),
     });
 
     const frame: AgentDeployFrame = {
@@ -222,11 +264,12 @@ describe("deploy-failure registry leak", () => {
         // satisfies the deploy path's fail-loud guard so this test reaches the
         // spawn-failure behavior it exercises.
         approvedWireHash: "a".repeat(64),
-        definition: {
-          id: "wf-1",
-          triggers: [{ type: "manual" }],
-          stepOrder: ["s1"],
-          steps: { s1: { kind: "step" } },
+        // Source-ref is the only deploy lineage: the frame carries no inline
+        // definition, only the pin the sidecar re-materializes (the injected
+        // closure stub above evaluates it to a single-step `s1` definition).
+        sourceRef: {
+          source: { kind: "registry", registry: "test-registry" },
+          closure: { schemaVersion: "1", topLevel: [], entries: [] },
         },
         sources: {
           s1: [
@@ -346,8 +389,12 @@ describe("deploy-failure registry leak", () => {
         SIDECAR_ID: "sc",
         SIDECAR_TOKEN: "tok",
         PATH: "/usr/bin",
+        // Source-ref materialization reads both byte caps from the substrate env.
+        SIDECAR_CACHE_MAX_BYTES: "1000000",
+        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
       },
       multistepSubprocessSpawner: failingSpawner,
+      applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure("wf-single"),
     });
 
     const frame: AgentDeployFrame = {
@@ -368,11 +415,12 @@ describe("deploy-failure registry leak", () => {
         // Placeholder hub-approved wire hash so the deploy path's fail-loud
         // guard passes; production always stamps it.
         approvedWireHash: "a".repeat(64),
-        definition: {
-          id: "wf-single",
-          triggers: [{ type: "manual" }],
-          stepOrder: ["s1"],
-          steps: { s1: { kind: "step" } },
+        // Source-ref is the only deploy lineage: the frame carries no inline
+        // definition, only the pin the sidecar re-materializes (the injected
+        // closure stub above evaluates it to a single-step `s1` definition).
+        sourceRef: {
+          source: { kind: "registry", registry: "test-registry" },
+          closure: { schemaVersion: "1", topLevel: [], entries: [] },
         },
         sources: {
           s1: [
