@@ -717,6 +717,27 @@ export interface SidecarStepBuildEnvDeps {
    */
   recordToolMarkFloor: (baseStepId: string, grants: GrantRule[]) => void;
   /**
+   * Feed the step agent's OWN evaluated tool factories into the
+   * materialization slot, instead of reading a pinned tool-package manifest
+   * off the deploy tree. Set for the source-ref lineage, whose child holds
+   * the live `WorkflowDefinition` (re-verified against the approved wire hash
+   * at run start) and threads each step's live `agent.toolFactories` in as
+   * `req.agent.toolFactories`. Those are the same `AnnotatedToolFactory`
+   * callables `materializeStepTools` would produce, bare-named (no
+   * namespacing loader runs), so the existing tool-bearing agent factory
+   * consumes them unchanged. Mutually exclusive with `toolless`.
+   *
+   * The source-ref lineage stages no `tool-packages-manifest.json`, so
+   * `materializeStepTools` would find nothing and return empty tools; this
+   * arm is what actually runs a source workflow's tools. No tool-mark floor
+   * is recorded on this lineage: a source tool's runtime name is the bare
+   * `definition.name` the probe's capability walk already emitted a
+   * `tool:<name>` grant for into the frozen credentials snapshot, so the
+   * snapshot authorizes it directly (unlike a pinned tool, whose namespaced
+   * name the walk never saw and which the floor exists to compensate for).
+   */
+  sourceTools: boolean;
+  /**
    * Build a TOOLLESS env: skip tool materialization entirely and attach an
    * empty tool runtime. Set for an onTrigger body step. A body agent is
    * guaranteed toolless by the deploy-time guard (a tool-bearing body agent is
@@ -892,29 +913,55 @@ export function createSidecarStepBuildEnv(
     const workdir = path.join(storeDir, "workspace");
     await fs.promises.mkdir(workdir, { recursive: true });
 
-    // Materialize the step's pinned tool-package closure (posix, LSP,
-    // mail, ...) from its on-disk deploy tree, rooted per step under
-    // `storeDir` so concurrent steps in one child never collide on the
-    // tarball cache or the apply-state tree. A deploy with no manifest
-    // yields empty tools (the legitimate `rawManifestBytes === undefined`
-    // case); a present-but-broken manifest surfaces loudly through
-    // `materializeStepTools` rather than degrading to empty tools.
+    // Assemble the step's tool runtime. Three arms:
     //
-    // A toolless body step skips this entirely (empty tools), so a body stepId
-    // that collides with a parent step id can never read the parent's deploy
-    // tree; the body agent is guaranteed toolless by the deploy guard, so there
-    // is nothing to materialize and no floor to record.
+    //   - Toolless body step: empty tools, no manifest read. A body stepId
+    //     that collides with a parent step id can never read the parent's
+    //     deploy tree; the body agent is guaranteed toolless by the deploy
+    //     guard, so there is nothing to materialize and no floor to record.
+    //
+    //   - Source-ref lineage (`sourceTools`): run the step agent's OWN
+    //     evaluated tool factories. The child holds the live re-verified
+    //     `WorkflowDefinition`, and the runtime threads each step's live agent
+    //     in as `req.agent`, so `req.agent.toolFactories` are the real callable
+    //     `AnnotatedToolFactory`s -- the same shape `materializeStepTools`
+    //     produces (`LoadedToolFactory === AnnotatedToolFactory<BaseEnv>`),
+    //     bare-named because no namespacing loader runs. The source deploy
+    //     stages no `tool-packages-manifest.json`, so `materializeStepTools`
+    //     would find nothing here; feeding the evaluated factories straight
+    //     into the slot is what runs a source workflow's tools. `packageName`
+    //     is the factory's bundle `id` (the credential Gate-2 key; a mail/plain
+    //     tool declares no credentials, so it stays inert) and
+    //     `pluginFactories` is empty (a plugin package contributes no
+    //     agent-visible factory and is a later task).
+    //
+    //   - Live-authored lineage: materialize the pinned tool-package closure
+    //     (posix, LSP, mail, ...) from its on-disk deploy tree, rooted per step
+    //     under `storeDir` so concurrent steps in one child never collide on
+    //     the tarball cache or the apply-state tree. A deploy with no manifest
+    //     yields empty tools (the legitimate `rawManifestBytes === undefined`
+    //     case); a present-but-broken manifest surfaces loudly through
+    //     `materializeStepTools` rather than degrading to empty tools.
     const materialization: StepToolMaterialization =
       deps.toolless === true
         ? { factories: [], pluginFactories: [] }
-        : await materializeStepTools({
-            dataDir: deps.dataDir,
-            mailboxAddress: deps.mailboxAddress,
-            stepId,
-            stepCount: deps.stepCount,
-            storeDir,
-            cache: deps.cache,
-          });
+        : deps.sourceTools === true
+          ? {
+              factories: req.agent.toolFactories.map((factory) => ({
+                packageName: factory.id,
+                declaredCredentials: [],
+                factory,
+              })),
+              pluginFactories: [],
+            }
+          : await materializeStepTools({
+              dataDir: deps.dataDir,
+              mailboxAddress: deps.mailboxAddress,
+              stepId,
+              stepCount: deps.stepCount,
+              storeDir,
+              cache: deps.cache,
+            });
 
     // Derive and record the step's tool-mark floor from the just-loaded
     // factories' static definitions. A pinned tool loads here in the
@@ -923,10 +970,16 @@ export function createSidecarStepBuildEnv(
     // recorded floor is what lets the grant evaluator authorize a pinned
     // tool against its own static mark. Keyed by base step id so the
     // evaluator's `baseStepId(stepId)` lookup resolves for both a plain
-    // step and a `map` iteration's scoped id. Skipped in the toolless mode:
-    // there are no factories, so recording an empty floor would only risk
-    // clobbering a colliding parent step id's real floor in a shared map.
-    if (deps.toolless !== true) {
+    // step and a `map` iteration's scoped id.
+    //
+    // Skipped in the toolless mode: there are no factories, so recording an
+    // empty floor would only risk clobbering a colliding parent step id's
+    // real floor in a shared map. Skipped on the source-ref lineage too: a
+    // source tool's runtime name is the bare `definition.name` the capability
+    // walk already emitted a `tool:<name>` grant for, so the credentials
+    // snapshot authorizes it directly with the correct effect -- no floor is
+    // needed, and recording one would blur that invariant.
+    if (deps.toolless !== true && deps.sourceTools !== true) {
       deps.recordToolMarkFloor(
         baseStepId(stepId),
         deriveToolMarkFloorGrants(
@@ -1961,6 +2014,11 @@ export function createSidecarSubstrateFactory(
         toolMarkFloorByStep.set(stepId, grants);
       },
       toolless: false,
+      // A source-ref child runs each step agent's own evaluated tool factories
+      // (fed from `req.agent.toolFactories`); a live-authored child reads the
+      // pinned tool-package manifest off the deploy tree. A child is one
+      // lineage or the other for its whole life, so this is fixed here.
+      sourceTools: env.spawn.lineage === "source-ref",
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
 
@@ -2035,6 +2093,10 @@ export function createSidecarSubstrateFactory(
         );
       },
       toolless: true,
+      // A body agent is guaranteed toolless (the deploy guard rejects a
+      // tool-bearing body), so the source-ref tool arm never applies here even
+      // on a source-ref parent; the toolless arm wins regardless.
+      sourceTools: false,
     });
     const bodyInvokeStep: SidecarBodyStepInvoker = (
       req,

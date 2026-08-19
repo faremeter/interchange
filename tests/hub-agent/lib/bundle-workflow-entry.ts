@@ -48,7 +48,14 @@ export async function bundleWorkflowEntry(
     throw new Error("bundleWorkflowEntry: Bun.build produced no output");
   }
   const code = await artifact.text();
-  if (code.includes("@intx/")) {
+  // A workflow's own source legitimately carries `@intx/` string values (a
+  // tool bundle id, a package name), so a bare substring check would false-
+  // positive on those. Detect an UNRESOLVED bare specifier instead: an
+  // `import`/`export ... from`, a dynamic `import(...)`, or a `require(...)`
+  // whose specifier still starts with `@intx/`. The plugin rewrites every such
+  // specifier to on-disk source, so any survivor is a genuine unresolved edge.
+  const BARE_INTX_SPECIFIER = /(?:from|import|require)\s*\(?\s*["'`]@intx\//;
+  if (BARE_INTX_SPECIFIER.test(code)) {
     throw new Error(
       "bundleWorkflowEntry: bundle still carries a bare @intx import",
     );
