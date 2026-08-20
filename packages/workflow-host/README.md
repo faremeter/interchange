@@ -144,9 +144,61 @@ signed shape as the operator and drain origins.
 `shutdown()` unregisters the mail address, kills the child, and
 disposes subscriptions.
 
-`drain` and `recycle` are stubs in this commit; the full
-implementations land with the drain controller and recycle paths
-respectively.
+`drain(opts)` sends the drain control mail and waits for in-flight
+runs to drain per each step's `drainBehavior`; on the drain-timeout it
+escalates to a signed `CancelRequested{origin: "supervisor-drain"}`.
+
+`recycle(opts)` tears the current child down and stands a fresh one up
+against the SAME deploy tree (same materialized source closure, same
+per-step credential repos). It is strictly orthogonal to redeploy,
+which mints a new deploy tree. Operator, supervisor-policy (max-uptime
+/ max-rss / grants-staleness), and workflow-process-self-initiated
+origins all funnel through the same path.
+
+### Respawn policy
+
+An UNEXPECTED child exit — a crash, OOM, panic, or signal, as opposed
+to a supervisor-initiated shutdown or recycle — is detected by watching
+the child process's `exited`, not the IPC channel: a clean process
+death ends the channel readers without a protocol-level crash callback,
+so `exited` is the only universal death signal. The supervisor
+classifies the exit by cohort generation and lifecycle phase — an exit
+of the current running cohort that no planned teardown owns is
+unexpected.
+
+On an unexpected exit the supervisor, with no external intervention:
+
+1. Replays any mail stranded mid-flight — entries the dead child's
+   in-flight dispatch left in the per-address `processing/` subtree —
+   back into `inbox/` under their original `<receivedAt>-<messageId>`
+   keys. Those keys sort ahead of any mail that arrived during the
+   kill/respawn gap, so the stranded entry is re-dispatched first and
+   FIFO ordering holds across the respawn boundary.
+2. Spawns a fresh workflow-process child against the same deploy tree
+   (reusing the recycle path's respawn machinery) and resumes dispatch.
+
+The respawn is bounded so a persistently-broken child cannot saturate
+the host. Every bound is operator-overridable via
+`WorkflowSupervisorBindings`; the defaults are:
+
+- **Exponential backoff.** Each respawn waits before spawning, starting
+  at `respawnBackoffInitialMs` (1s) and doubling to a
+  `respawnBackoffMaxMs` (30s) cap.
+- **Crash-loop guard.** If the child exits unexpectedly
+  `crashLoopMaxCount` (3) times within `crashLoopWindowMs` (60s), the
+  supervisor stops respawning and latches the deployment to a terminal
+  `crash-looping` state.
+- **Stable-run reset.** Once a crash-respawned child stays up for
+  `crashLoopStableResetMs` (60s), the crash counter and the backoff
+  reset, so a flap followed by stability does not permanently latch.
+
+`crash-looping` is an in-memory, per-process phase — no external reader
+observes it. The durable, externally-queryable signal is the run's
+status: on latch the supervisor (the sole writer of the workflow-run
+repo) commits a `RunFailed` for the deployment's stable run, flipping
+its `workflow_run.status` to `failed` through the same pack path every
+other terminal run uses. External automation that watches run status
+sees the crash-loop as a failed run.
 
 ### Host wiring
 
@@ -207,12 +259,6 @@ the snapshot in place, so subsequent steps see fresh grants
 without reconstructing the env. The closure looks up the
 originating step's grants by `stepId` and delegates to a
 host-supplied `GrantEvaluator`.
-
-### Placeholders
-
-`DrainController` is a no-op placeholder in this commit; the real
-controller lands separately. `recycle` is a no-op pending the
-recycle path.
 
 ## Hosting the workflow-process child
 
