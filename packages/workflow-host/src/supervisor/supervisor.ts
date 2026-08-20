@@ -96,6 +96,7 @@ import {
   type CredentialsSnapshot,
 } from "./credentials";
 import { commitCancelRequested } from "./cancel-signing";
+import { commitRunFailed } from "./terminal-commit";
 import { buildChildSpawnEnv } from "./spawn-env";
 import { compactRunEvents } from "./run-event-compaction";
 import { extractConversationText } from "../conversation-text";
@@ -851,10 +852,46 @@ export function createWorkflowSupervisor(
     pruneCrashTimestamps(nowMs);
     if (crashTimestamps.length >= crashLoopMaxCount) {
       // Crash-loop latch. The deployment stops respawning and tears down
-      // to a terminal state so a rapidly-flapping child cannot saturate
-      // the host.
-      logger.error`workflow-process crash-looped: ${String(crashTimestamps.length)} unexpected exits within ${String(crashLoopWindowMs)}ms; stopping the deployment (${reason})`;
-      await shutdownInternal({ reason: `crash-loop: ${reason}` });
+      // to the terminal `crash-looping` state so a rapidly-flapping child
+      // cannot saturate the host.
+      const crashCount = crashTimestamps.length;
+      logger.error`workflow-process crash-looped: ${String(crashCount)} unexpected exits within ${String(crashLoopWindowMs)}ms; stopping the deployment (${reason})`;
+      await shutdownInternal({
+        reason: `crash-loop: ${reason}`,
+        terminalPhase: "crash-looping",
+      });
+      // Commit the RunFailed tombstone AFTER teardown: shutdownInternal has
+      // quiesced the drain accumulators (stop + await disposed), so the
+      // run-event tree is settled and no escalation commit races this write.
+      // This RunFailed is the SOLE durable, externally-queryable signal of
+      // the crash-loop (the `crash-looping` phase is in-memory only), so a
+      // failure to write it is logged loudly rather than swallowed. Best-
+      // effort: the deployment is already terminal, so the write not landing
+      // costs observability, not correctness.
+      try {
+        // `anchorRunId` and the tombstone's `runId` are DISTINCT ids and must
+        // not be conflated. `bindings.anchorRunId` is the workflow-run repo
+        // slug (`deriveWorkflowRunRepoId`), which the supervisor principal's
+        // authz check keys on (`repoId.id === anchorRunId`). The RunFailed must
+        // land on the deployment's ONE top-level run, whose id is the local
+        // part of the deployment's mail address (`deriveWorkflowRunId`) -- the
+        // same id the dispatch loop writes every run event under. For a domain
+        // like `integration.interchange` the two ids differ (the repo slug
+        // carries a domain suffix), so writing the tombstone under the repo
+        // slug would strand it in a run subtree no reader consults.
+        await commitRunFailed({
+          substrate: bindings.repoStore,
+          repoId: bindings.workflowRunRepoId,
+          ref: bindings.workflowRunRef,
+          anchorRunId: bindings.anchorRunId,
+          runId: deriveWorkflowRunId(bindings.deploymentMailAddress),
+          at: new Date(nowMs).toISOString(),
+          message: `workflow-process crash-looped: ${String(crashCount)} unexpected exits within ${String(crashLoopWindowMs)}ms`,
+        });
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`crash-loop RunFailed commit failed; deployment has no durable failure tombstone: ${message}`;
+      }
       return;
     }
     logger.warn`workflow-process exited unexpectedly; respawning (${reason})`;
@@ -895,7 +932,8 @@ export function createWorkflowSupervisor(
     if (
       state.phase === "idle" ||
       state.phase === "stopping" ||
-      state.phase === "stopped"
+      state.phase === "stopped" ||
+      state.phase === "crash-looping"
     ) {
       // The host's higher-level lifecycle is already tearing the deployment
       // down; nothing is enqueued. Reject rather than silently drop so the
@@ -2772,8 +2810,19 @@ export function createWorkflowSupervisor(
     await shutdownInternal({ reason: "shutdown requested" });
   }
 
-  async function shutdownInternal(opts: { reason: string }): Promise<void> {
-    if (state.phase === "idle" || state.phase === "stopped") return;
+  async function shutdownInternal(opts: {
+    reason: string;
+    // Terminal phase the teardown lands in. Defaults to `stopped` (a clean
+    // shutdown); the crash-loop latch passes `crash-looping` so the terminal
+    // state records why the deployment is down.
+    terminalPhase?: "stopped" | "crash-looping";
+  }): Promise<void> {
+    if (
+      state.phase === "idle" ||
+      state.phase === "stopped" ||
+      state.phase === "crash-looping"
+    )
+      return;
     const prior = state;
     state = { phase: "stopping" };
     // shutdownInternal is designed to be TOTAL: when a child is up it must
@@ -2948,7 +2997,7 @@ export function createWorkflowSupervisor(
           /* swallowed for the same reason as above. */
         });
       }
-      state = { phase: "stopped" };
+      state = { phase: opts.terminalPhase ?? "stopped" };
     }
     logger.info`supervisor shutdown complete (${opts.reason})`;
   }
@@ -2980,11 +3029,11 @@ export function createWorkflowSupervisor(
     ctx: { fromRecycle: boolean },
   ): Promise<void> {
     // Drain is meaningful only when a workflow-process child is up;
-    // calling it from `idle`/`stopping`/`stopped` is a no-op so the
-    // higher-level host shutdown sequence can call drain
-    // unconditionally without sniffing the phase. The recycle path
-    // calls drain via `drainImpl({}, { fromRecycle: true })` and
-    // admits `recycling` because the drain step runs against a
+    // calling it from any non-active phase (`idle`/`stopping`/`stopped`/
+    // `crash-looping`) is a no-op so the higher-level host shutdown
+    // sequence can call drain unconditionally without sniffing the phase.
+    // The recycle path calls drain via `drainImpl({}, { fromRecycle: true })`
+    // and admits `recycling` because the drain step runs against a
     // still-live controlSender before the kill lands.
     if (
       state.phase !== "running" &&
@@ -3338,14 +3387,18 @@ export function createWorkflowSupervisor(
       // level shutdown. Tear the prior cohort down through the same
       // path a real shutdown uses so the supervisor reaches a clean
       // `stopped` state, then re-throw so the operator sees the
-      // recycle failure and can redeploy.
+      // failure and can redeploy.
       //
-      // Future seam: the failure disposition is caller-specific once the
-      // crash-respawn origin exists. Today the sole caller reaches
-      // `stopped`; a failed crash-respawn will instead feed the crash-loop
-      // guard and, past its threshold, reach the crash-looping terminal
-      // state. Not parameterized here because that disposition does not
-      // exist yet.
+      // This teardown-to-`stopped` is shared by both callers, and that is
+      // deliberate. A crash-origin respawn whose spawn/wire/handshake fails
+      // is a broken deploy (a bad binary, unreadable credentials), NOT a
+      // flapping child, so it does NOT feed the crash-loop exit counter and
+      // does NOT reach `crash-looping`; conflating a mechanism failure with
+      // a flap would muddy what that counter means. It reaches `stopped`,
+      // the same terminal a failed operator recycle reaches. (Consequence:
+      // this path leaves no `RunFailed` tombstone, unlike the exit-count
+      // latch; the crash-respawn happy path -- a clean child death whose
+      // respawn succeeds -- is what the crash-loop guard bounds.)
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`recycle failed; tearing supervisor down: ${message}`;
       await shutdownInternal({
@@ -3464,6 +3517,12 @@ type SupervisorState =
   | { phase: "idle" }
   | { phase: "stopping" }
   | { phase: "stopped" }
+  // Terminal: the crash-loop guard latched after too many unexpected child
+  // exits. Distinct from `stopped` (a clean shutdown) so the supervisor
+  // does not respawn and a re-entrant `shutdown()` is idempotent. The
+  // durable external signal is the run's `RunFailed` status, not this
+  // in-memory phase.
+  | { phase: "crash-looping" }
   | ({ phase: "starting" } & ActiveState)
   | ({ phase: "running" } & ActiveState)
   | ({ phase: "recycling" } & ActiveState);

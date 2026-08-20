@@ -182,12 +182,16 @@ function createMockMailBus(): MailBusBindings & {
   };
 }
 
-function createStubRepoStore(baseDir: string): RepoStore {
+function createStubRepoStore(
+  baseDir: string,
+  writtenPrefixes?: string[],
+): RepoStore {
   const stub: Partial<RepoStore> = {
     getRepoDir(repoId: RepoId): string {
       return path.join(baseDir, repoId.kind, repoId.id);
     },
-    async writeTreePreservingPrefix(_principal, _repoId, _ref, _args) {
+    async writeTreePreservingPrefix(_principal, _repoId, _ref, args) {
+      writtenPrefixes?.push(args.preservePrefix);
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
   };
@@ -452,8 +456,9 @@ async function buildBindings(opts: {
   crashLoopStableResetMs?: number;
   setTimer?: (cb: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
+  writtenPrefixes?: string[];
 }): Promise<WorkflowSupervisorBindings> {
-  const repoStore = createStubRepoStore(opts.baseDir);
+  const repoStore = createStubRepoStore(opts.baseDir, opts.writtenPrefixes);
   return {
     repoStore,
     signAsPrincipal: async (): Promise<SignedPayload> => ({
@@ -498,6 +503,7 @@ async function spawnSupervisor(opts: {
   crashLoopStableResetMs?: number;
   setTimer?: (cb: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
+  writtenPrefixes?: string[];
 }) {
   await seedStepGrants(
     opts.baseDir,
@@ -518,6 +524,9 @@ async function spawnSupervisor(opts: {
       : {}),
     ...(opts.setTimer !== undefined ? { setTimer: opts.setTimer } : {}),
     ...(opts.clearTimer !== undefined ? { clearTimer: opts.clearTimer } : {}),
+    ...(opts.writtenPrefixes !== undefined
+      ? { writtenPrefixes: opts.writtenPrefixes }
+      : {}),
   });
   const supervisor = createWorkflowSupervisor(bindings);
   const spawnPromise = supervisor.spawn({
@@ -702,6 +711,7 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     const mailBus = createMockMailBus();
     const tracker = createSpawnTracker();
     const inbox = createMemoryInboxPrimitives();
+    const writtenPrefixes: string[] = [];
     // Latch on the 2nd unexpected exit. The default stable-reset window
     // (60s) never fires within this test, so the counter does not reset.
     const { supervisor } = await spawnSupervisor({
@@ -711,6 +721,7 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
       ipcKeypair,
       inboxPrimitives: inbox,
       crashLoopMaxCount: 2,
+      writtenPrefixes,
     });
 
     // Crash 1: under the threshold -> respawn (child 2).
@@ -722,14 +733,24 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     if (second === undefined) throw new Error("second child missing");
     await driveReady(second, ipcKeypair);
 
-    // Crash 2: reaches the threshold -> latch, no further respawn.
+    // Crash 2: reaches the threshold -> latch, no further respawn. Wait for
+    // the latch's post-teardown RunFailed commit to land.
     second.crash();
-    // Give a would-be third respawn ample time to appear.
-    await new Promise((r) => setTimeout(r, 30));
+    const deadline = Date.now() + 2_000;
+    while (
+      !writtenPrefixes.includes("runs/run_deployment-x/events/") &&
+      Date.now() < deadline
+    ) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
     expect(tracker.totalSpawns).toBe(2);
 
-    // The deployment latched to a terminal state: recycle is rejected
-    // because the supervisor is no longer running.
+    // The latch committed a RunFailed tombstone to the deployment's stable
+    // run so its external status flips to `failed`.
+    expect(writtenPrefixes).toContain("runs/run_deployment-x/events/");
+
+    // The deployment latched to the terminal `crash-looping` state
+    // specifically (not a clean `stopped`): recycle is rejected naming it.
     let caught: unknown;
     try {
       await supervisor.recycle({ reason: "after-latch" });
@@ -738,7 +759,7 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     }
     expect(caught).toBeInstanceOf(Error);
     expect(caught instanceof Error && caught.message).toMatch(
-      /expected running/,
+      /in phase crash-looping/,
     );
   });
 

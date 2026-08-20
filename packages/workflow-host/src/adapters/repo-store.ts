@@ -308,9 +308,11 @@ function onDiskToWorkflowEvent(
  * Translate a state-machine `WorkflowEvent` (using `kind` as the
  * discriminator) into the on-disk envelope shape (`{seq, type,
  * ...rest}`) the workflow-run kind handler validates and the
- * substrate's `subscribeKind` helper filters on.
+ * substrate's `subscribeKind` helper filters on. Exported so the
+ * supervisor's terminal-commit path encodes a supervisor-authored
+ * `RunFailed` through the same single source of the on-disk shape.
  */
-function workflowEventToOnDisk(
+export function workflowEventToOnDisk(
   event: WorkflowEvent,
   seq: number,
 ): Record<string, unknown> {
