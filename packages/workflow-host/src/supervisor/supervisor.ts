@@ -665,7 +665,11 @@ export function createWorkflowSupervisor(
    */
   let spawnContext: SpawnContext | null = null;
   let recyclePolicy: RecyclePolicy | null = null;
-  let recycleInProgress = false;
+  // Mutual-exclusion latch shared by every respawn path (operator/policy/
+  // self recycle today; crash-respawn once it lands). `runRespawn` owns the
+  // set/clear; each caller owns the contention read because the two paths
+  // diverge on contention (recycle throws, crash-respawn declines silently).
+  let respawnInProgress = false;
 
   function onChildCrash(reason: string): void {
     logger.error`workflow-process control channel crash: {reason}`;
@@ -2817,7 +2821,7 @@ export function createWorkflowSupervisor(
   }
 
   async function recycle(opts: RecycleOpts): Promise<RecycleAttempt> {
-    if (recycleInProgress) {
+    if (respawnInProgress) {
       throw new Error("supervisor: recycle already in progress");
     }
     if (state.phase !== "running") {
@@ -2830,10 +2834,50 @@ export function createWorkflowSupervisor(
         "supervisor: recycle called without a spawn context; spawn() must complete first",
       );
     }
-    recycleInProgress = true;
-    const origin: RecycleOrigin = opts.origin ?? "operator";
-    const prior = state;
-    const priorContext = spawnContext;
+    // The contention read (`respawnInProgress`) stays here in the caller's
+    // precondition zone rather than inside `runRespawn`: an operator double-
+    // recycle is an error and must throw. `runRespawn` sets the latch
+    // synchronously at entry, so this read and that set are never separated
+    // by an await, and no second respawn can interleave between them.
+    return runRespawn({
+      origin: opts.origin ?? "operator",
+      reason: opts.reason,
+      prior: state,
+      priorContext: spawnContext,
+      drain: async (deadlineMs) => {
+        // The recycle path's drain step shares the drain primitive but
+        // bypasses the public surface's `recycling` silent-no-op so the
+        // still-live controlSender (this step runs BEFORE abortPriorCohort
+        // + kill) receives the frame. The public `drain()` silently no-ops
+        // on `recycling` for external callers because the kill/respawn gap
+        // can leave the controlSender dying.
+        await drainImpl({ deadlineMs }, { fromRecycle: true });
+      },
+    });
+  }
+
+  /**
+   * Shared kill/replay/respawn/install driver. The caller has already
+   * verified the supervisor is `running` with a live spawn context and
+   * snapshotted both as `prior`/`priorContext`; this function transitions
+   * to `recycling`, runs the six-step `triggerRecycle` sequence with the
+   * caller-supplied `drain` step, and swaps in the new cohort via the
+   * inline `installNewChild` callback. The operator/policy/self recycle
+   * path is the sole caller today; the crash-respawn path will call it with
+   * a no-op drain (its child is already dead).
+   */
+  async function runRespawn(args: {
+    origin: RecycleOrigin;
+    reason: string;
+    prior: ActiveState;
+    priorContext: SpawnContext;
+    drain: (deadlineMs: number) => Promise<void>;
+  }): Promise<RecycleAttempt> {
+    // Set synchronously at entry (before any await) so the caller's
+    // contention read and this set cannot be separated by an event-loop
+    // turn; two respawns can never interleave.
+    respawnInProgress = true;
+    const { origin, reason, prior, priorContext, drain } = args;
     // The cohort abort no longer fires up-front. triggerRecycle drives
     // the drain and replay steps against a LIVE cohort first, then
     // invokes `abortPriorCohort` (the callback below) between replay
@@ -2878,16 +2922,7 @@ export function createWorkflowSupervisor(
             channelId: prior.channelId,
             eventPump: prior.eventPump,
           },
-          drain: async (deadlineMs) => {
-            // The recycle path's drain step shares the drain
-            // primitive but bypasses the public surface's `recycling`
-            // silent-no-op so the still-live controlSender (this
-            // step runs BEFORE abortPriorCohort + kill) receives the
-            // frame. The public `drain()` silently no-ops on
-            // `recycling` for external callers because the
-            // kill/respawn gap can leave the controlSender dying.
-            await drainImpl({ deadlineMs }, { fromRecycle: true });
-          },
+          drain,
           replayProcessingToInbox: async () => {
             await inboxPrimitives.replayProcessingToInbox(
               bindings.repoStore,
@@ -2903,6 +2938,13 @@ export function createWorkflowSupervisor(
             prior.terminalCohortAbort.abort();
             wakeDispatch();
           },
+          // Kept inline rather than extracted: this cohort-swap closes over
+          // the supervisor's full mutable cohort state (drainAccumulators,
+          // cohortRunIds, runInputChannels, parkNotifyWaiters, parkGenerations,
+          // rejectCohortAwaiters, spawnContext, plus `prior`/`priorContext`).
+          // A standalone helper would take all of it as parameters for zero
+          // reuse -- the crash-respawn path reaches this callback transitively
+          // through `runRespawn`, so it needs no separate extraction.
           installNewChild: ({
             wiring,
             credentialsSnapshot,
@@ -3052,7 +3094,7 @@ export function createWorkflowSupervisor(
             ? { clearTimer: bindings.recyclePolicyClearTimer }
             : {}),
         },
-        { origin, reason: opts.reason },
+        { origin, reason },
       );
       // After the recycle, await the previous cohort's dispatch
       // loop so a teardown coroutine cannot survive past the
@@ -3071,6 +3113,13 @@ export function createWorkflowSupervisor(
       // path a real shutdown uses so the supervisor reaches a clean
       // `stopped` state, then re-throw so the operator sees the
       // recycle failure and can redeploy.
+      //
+      // Future seam: the failure disposition is caller-specific once the
+      // crash-respawn origin exists. Today the sole caller reaches
+      // `stopped`; a failed crash-respawn will instead feed the crash-loop
+      // guard and, past its threshold, reach the crash-looping terminal
+      // state. Not parameterized here because that disposition does not
+      // exist yet.
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.error`recycle failed; tearing supervisor down: ${message}`;
       await shutdownInternal({
@@ -3084,7 +3133,7 @@ export function createWorkflowSupervisor(
       });
       throw cause;
     } finally {
-      recycleInProgress = false;
+      respawnInProgress = false;
     }
     return attempt;
   }
