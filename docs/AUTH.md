@@ -2,7 +2,7 @@
 
 ## Overview
 
-Interchange uses a unified principal model where users and agents share the same authorization system. Authentication establishes global identity. Authorization is tenant-scoped and evaluated through capability grants attached to principals.
+Interchange uses a unified principal model where users and workflow runs share the same authorization system. Authentication establishes global identity. Authorization is tenant-scoped and evaluated through capability grants attached to principals.
 
 ## Authentication
 
@@ -17,24 +17,24 @@ Supported auth methods:
 
 A user can belong to many tenants. Tenant context is always encoded in the URL path as `/api/tenants/:tenantId/...` -- no headers, no implicit context.
 
-| Path scope                 | Example                        | Behavior                                                                             |
-| -------------------------- | ------------------------------ | ------------------------------------------------------------------------------------ |
-| Tenant-scoped              | `/api/tenants/tnt_abc/agents`  | Principal resolved from `(user_id, tnt_abc)`, grants evaluated                       |
-| User-scoped (cross-tenant) | `/api/me/principals`           | All of the user's principals resolved, results aggregated and tagged with `tenantId` |
-| Global                     | `/api/tenants`, `/api/auth/**` | No tenant context needed                                                             |
+| Path scope                 | Example                          | Behavior                                                                             |
+| -------------------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
+| Tenant-scoped              | `/api/tenants/tnt_abc/workflows` | Principal resolved from `(user_id, tnt_abc)`, grants evaluated                       |
+| User-scoped (cross-tenant) | `/api/me/principals`             | All of the user's principals resolved, results aggregated and tagged with `tenantId` |
+| Global                     | `/api/tenants`, `/api/auth/**`   | No tenant context needed                                                             |
 
 ## Principals
 
-A principal represents an identity within a tenant. It is the universal join between an entity (user or agent) and a tenant. A principal does not grant authorization by itself -- it establishes that an entity exists in a tenant and tracks their membership status.
+A principal represents an identity within a tenant. It is the universal join between an entity (user or workflow run) and a tenant. A principal does not grant authorization by itself -- it establishes that an entity exists in a tenant and tracks their membership status.
 
-A user in three tenants has three principal rows. An agent in a tenant has one principal row. Every authorization question starts by resolving the principal.
+A user in three tenants has three principal rows. A workflow run in a tenant has one principal row. Every authorization question starts by resolving the principal.
 
 ```
 principal
   id              text PK        -- prn_...
   tenant_id       text FK -> tenant
-  kind            text NOT NULL  -- 'user' | 'agent'
-  ref_id          text NOT NULL  -- user.id or agent id (run_...)
+  kind            text NOT NULL  -- 'user' | 'agent' | 'workflow'
+  ref_id          text NOT NULL  -- user.id, or a workflow_run (run_...) or workflow_definition (wfd_...) id
   status          text NOT NULL  -- 'active' | 'suspended' | 'invited' | 'deactivated'
   created_at      timestamptz
   updated_at      timestamptz
@@ -60,11 +60,11 @@ Request to /api/me/...
   -> aggregate results across tenants, each tagged with tenantId
 ```
 
-Agent requests follow the same flow. The principal is resolved by `(run_id, tenant_id)` rather than `(user_id, tenant_id)`. The agent's materialized grants are evaluated against the requested operation.
+Workflow-run requests follow the same flow. The principal is resolved by `(run_id, tenant_id)` rather than `(user_id, tenant_id)`. The run principal's materialized grants are evaluated against the requested operation.
 
 ## Roles
 
-Roles are named bundles of capability grants scoped to a tenant. Both users and agents can be assigned roles.
+Roles are named bundles of capability grants scoped to a tenant. Both users and workflow runs can be assigned roles.
 
 ```
 role
@@ -90,7 +90,7 @@ principal_role
 
 ## Grant Requirements on Definitions
 
-Agent definitions declare grant requirements — the capabilities an agent needs to function. Requirements are not live grants. They are a manifest that the control plane resolves at launch time to produce materialized grants on the agent's principal. This mirrors the credential requirement model described in CREDENTIALS.md.
+Workflow definitions declare grant requirements — the capabilities a workflow run needs to function. Requirements are not live grants. They are a manifest that the control plane resolves at launch time to produce materialized grants on the run principal. This mirrors the credential requirement model described in CREDENTIALS.md.
 
 Each requirement specifies:
 
@@ -107,7 +107,7 @@ Each requirement specifies:
 The `source` field declares where the delegated authority should come from:
 
 - `source: "creator"` — The definition author must delegate this. Resolved at launch against the creator's own grants (identified by `creatorPrincipalId` on the definition). The control plane validates that the creator currently holds the authority being delegated — a creator cannot delegate what they don't have. Materializes as a `grant` with `origin = 'creator'`. This is the setuid model: the definition author's authority travels with the definition.
-- `source: "invoker"` — The person launching the agent must provide this. Resolved at launch against the invoker's grants. Materializes as a `grant` with `origin = 'invoker'` and a fixed 24-hour `expires_at` (`INVOKER_GRANT_TTL_MS`).
+- `source: "invoker"` — The person launching the workflow run must provide this. Resolved at launch against the invoker's grants. Materializes as a `grant` with `origin = 'invoker'` and a fixed 24-hour `expires_at` (`INVOKER_GRANT_TTL_MS`).
 
 Tenant-owned credential use is not a `source` on a grant requirement: it is authorized by ownership at resolution, and its consumer-scoping `credential:{id}` / `use` grant (`origin = 'system'`) is stamped directly rather than materialized from a requirement. See CREDENTIALS.md.
 
@@ -117,15 +117,15 @@ The definition stores a `creatorPrincipalId` field identifying the definition au
 
 ### Resolution at Launch
 
-When an agent is launched, the control plane processes each grant requirement:
+When a workflow run is launched, the control plane processes each grant requirement:
 
 1. Look at the `source` field
 2. Resolve the authority against the requirement's `source`: the creator's or the invoker's own grants
 3. Confirm the delegating principal holds the capability being delegated
-4. Create a `grant` row on the agent's new principal with the appropriate `origin` value
+4. Create a `grant` row on the run's new principal with the appropriate `origin` value
 5. Ship the effective grant set to the harness in the deploy frame
 
-The `initialGrants` field on `CreateAgent` is a grant requirements manifest — it specifies requirements with source annotations, not live grants. Each launch resolves these requirements against the current state of creator, tenant, and invoker authority.
+The `grantRequirements` field on a workflow definition is a grant requirements manifest — it specifies `GrantRequirement` entries with source annotations, not live grants. Each launch resolves these requirements against the current state of creator, tenant, and invoker authority.
 
 ## Definition Approval and Re-Verification
 
@@ -195,7 +195,7 @@ grant
   principal_id    text FK -> principal
 
   -- What is being authorized
-  resource        text NOT NULL  -- glob pattern: "agent:*", "wallet:wal_abc", "tool:bash"
+  resource        text NOT NULL  -- glob pattern: "workflow-run:*", "wallet:wal_abc", "tool:bash"
   action          text NOT NULL  -- glob pattern: "invoke", "read", "spend", "*"
   effect          text NOT NULL  -- 'allow' | 'deny' | 'ask'
 
@@ -214,8 +214,8 @@ grant
 
 Resources use a `type:identifier` format with glob support:
 
-- `agent:*` -- all agents
-- `agent:agt_abc123` -- a specific agent
+- `workflow-run:*` -- all workflow runs
+- `workflow-run:run_abc123` -- a specific workflow run
 - `wallet:wal_*` -- all wallets
 - `tool:bash` -- the bash tool
 - `tool:*` -- all tools
@@ -261,11 +261,11 @@ Conditions are evaluated at runtime by the authorization engine: a grant whose r
 
 Grant revocation is policy-driven with a default of fail-secure.
 
-**Creator grant revocation**: If the creator's authority is revoked after agents have been launched with creator-sourced grants, running agents must lose the affected grants. The harness authorizes each tool call against its live materialized grant set before the call executes, so a revoked capability is blocked once that set no longer contains it; a tool call already in flight is not interrupted. Propagating a revocation to an already-running deployment is not currently implemented — the earlier `grants.update` wire mechanism has been retired, and its supervised replacement is designed separately. Until then, the change takes effect when the deployment next loads its grants (the deploy pack at spawn and the supervisor's IPC credentials snapshot at recycle). Tenants can configure grace periods or notification-only behavior for specific grant types.
+**Creator grant revocation**: If the creator's authority is revoked after workflow runs have been launched with creator-sourced grants, those running workflow runs must lose the affected grants. The harness authorizes each tool call against its live materialized grant set before the call executes, so a revoked capability is blocked once that set no longer contains it; a tool call already in flight is not interrupted. Propagating a revocation to an already-running deployment is not currently implemented — the earlier `grants.update` wire mechanism has been retired, and its supervised replacement is designed separately. Until then, the change takes effect when the deployment next loads its grants (the deploy pack at spawn and the supervisor's IPC credentials snapshot at recycle). Tenants can configure grace periods or notification-only behavior for specific grant types.
 
-**Invoker grant revocation**: Invoker-granted capabilities carry a fixed 24-hour TTL from launch (`INVOKER_GRANT_TTL_MS`), not a lifetime tied to when the agent stops. A capability the user explicitly persists (approving with `always`) becomes a non-expiring grant.
+**Invoker grant revocation**: Invoker-granted capabilities carry a fixed 24-hour TTL from launch (`INVOKER_GRANT_TTL_MS`), not a lifetime tied to when the run stops. A capability the user explicitly persists (approving with `always`) becomes a non-expiring grant.
 
-**Tenant policy changes**: When tenant policies change (role modifications, system role updates), the control plane re-evaluates affected agents. Propagating the resulting grant changes to already-running deployments shares the retired-mechanism gap described above; a change takes effect when each deployment next loads its grants.
+**Tenant policy changes**: When tenant policies change (role modifications, system role updates), the control plane re-evaluates affected runs. Propagating the resulting grant changes to already-running deployments shares the retired-mechanism gap described above; a change takes effect when each deployment next loads its grants.
 
 This parallels the credential revocation model described in CREDENTIALS.md — both follow the same fail-secure default with configurable tenant policies.
 
@@ -288,7 +288,7 @@ git_token
   name                  text NOT NULL
   kind                  text NOT NULL   -- 'pat' | 'svc'
   token_hash_sha256     bytea NOT NULL UNIQUE
-  resource              text NOT NULL   -- 'asset:*', 'asset:def_xxx', 'agent-state:run_xxx', ...
+  resource              text NOT NULL   -- 'asset:*', 'asset:ast_xxx', 'agent-state:run_xxx', ...
   ref_pattern           text NOT NULL   -- simple-glob
   actions               text[] NOT NULL -- RepoActions
   expires_at            timestamptz NOT NULL
@@ -303,7 +303,7 @@ The partial unique on `(user_id, name)` filtered by `revoked_at IS NULL` lets a 
 
 Three columns bound a token's authority:
 
-- `resource` — a single substrate authz resource string, e.g. `asset:*`, `asset:def_xxx`, `agent-state:run_xxx`. Glob patterns are honored by the substrate; a token with `resource: "asset:*"` reaches every asset row in the tenant the token is bound to.
+- `resource` — a single substrate authz resource string, e.g. `asset:*`, `asset:ast_xxx`, `agent-state:run_xxx`. Glob patterns are honored by the substrate; a token with `resource: "asset:*"` reaches every asset row in the tenant the token is bound to.
 - `ref_pattern` — a glob restricting which refs within the resource the token may read or write. Grammar: `*` matches within a `/`-segment, `**` crosses segments. Worked examples appear in `docs/GIT_ACCESS.md`.
 - `actions` — the `RepoAction` vocabulary the token is allowed to invoke (`receivePack`, `createPack`, `resolveRef`, ...). The mint API accepts the user-facing aliases `can_read` (expands to `["createPack", "resolveRef"]`) and `can_push` (expands to `["receivePack"]`), and stores the canonical names so the lookup path never re-runs the alias table.
 - `expires_at` — required, server-enforced floor of one minute. The bearer middleware checks `expires_at > now()` on every request.
@@ -340,7 +340,7 @@ This table shows how Interchange authorization concepts map to materialized gran
 | Credential use               | A tenant-owned credential's use is authorized by ownership at resolution (no grant requirement); a consumer-scoping `credential:{id}` / `use` grant with `origin = 'system'` is stamped for the runtime gate. Principal-owned credential use is not yet supported. See CREDENTIALS.md |
 | User roles (RBAC)            | Grants attached to roles, roles assigned to user principals                                                                                                                                                                                                                           |
 | Human approval gates         | Grants with `effect = 'ask'`                                                                                                                                                                                                                                                          |
-| Agent delegation chain       | Child agent's grants are a subset of parent agent's grants, enforced at launch time                                                                                                                                                                                                   |
+| Delegation containment       | A delegator cannot delegate authority it does not currently hold — each creator/invoker requirement is validated at launch against that principal's own grants. Invoker grants are non-re-delegatable and expire in 24h                                                               |
 
 ## Personal Tenant
 
@@ -351,7 +351,7 @@ On user registration:
 3. Assign the system `owner` role.
 4. The owner role includes a broad default grant: `resource = "*", action = "*", effect = "allow"`.
 
-The personal tenant has the same authorization machinery as any other tenant. When the user creates agents there, those agents get principals and grants through the same system. The onboarding UX is simple, but the underlying model is uniform.
+The personal tenant has the same authorization machinery as any other tenant. When the user creates workflows there, those runs get principals and grants through the same system. The onboarding UX is simple, but the underlying model is uniform.
 
 ## Tenant Schema
 
