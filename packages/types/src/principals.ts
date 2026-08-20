@@ -27,10 +27,10 @@ export const PrincipalResponse = type({
   id: "string",
   tenantId: "string",
   kind: Kind.describe(
-    "Whether this principal represents a `user` (a human account), an `agent`, or a `workflow` (a workflow deployment).",
+    "Whether this principal represents a `user` (a human account), an `agent`, or a `workflow` (a workflow run).",
   ),
   refId: type("string").describe(
-    "Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, the agent id when `kind` is `agent`, or the run id when `kind` is `workflow`. Unique per tenant and kind.",
+    "Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, an agent-instance id when `kind` is `agent`, or a workflow run (`run_...`) or workflow definition (`wfd_...`) id when `kind` is `workflow`. Unique per tenant and kind.",
   ),
   displayName: "string",
   "email?": "string",

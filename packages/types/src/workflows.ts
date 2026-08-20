@@ -1,6 +1,5 @@
 // Status vocabulary for the first-class workflow definition model, kept in its
-// own workflow-scoped module so no workflow table or validator depends on a
-// type from the agent surface.
+// own workflow-scoped module.
 export const workflowDefinitionStatuses = ["deployed", "stopped"] as const;
 export type WorkflowDefinitionStatus =
   (typeof workflowDefinitionStatuses)[number];
@@ -43,8 +42,7 @@ export const WorkflowDefinitionResponse = type({
   updatedAt: "string",
 });
 
-// Rollback a definition to a prior version. Kept separate from the agent
-// RollbackRequest so the workflow surface carries no agent-type dependency.
+// Rollback a definition to a prior version.
 export const WorkflowRollbackRequest = type({
   version: "string",
 });
