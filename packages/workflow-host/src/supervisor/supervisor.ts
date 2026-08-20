@@ -761,6 +761,39 @@ export function createWorkflowSupervisor(
     resolve: () => void;
   }>();
 
+  // =====================================================================
+  // CRASH-RESPAWN -- auto-recovery from an unexpected workflow-process exit
+  // =====================================================================
+  //
+  // An UNEXPECTED child exit (crash, OOM, panic, signal -- not a
+  // supervisor-initiated shutdown, drain, or recycle) is detected by
+  // watching `handle.exited`, the only universal death signal: a clean
+  // process death ends the IPC channel readers without a protocol-level
+  // crash callback (see `onChildCrash`). `armChildForRunning` arms that
+  // watcher and bumps `childGeneration` on every transition to `running`;
+  // an exit is classified as unexpected iff its generation is still current
+  // AND the phase is still `running` (a planned kill is observed in a
+  // non-running phase, or against a superseded generation).
+  //
+  // On an unexpected exit `handleUnexpectedChildExit` runs: it records the
+  // crash against the crash-loop guard and either
+  //   - RESPAWNS -- after an exponential backoff (`waitRespawnBackoff`,
+  //     1s doubling to a 30s cap), it reuses the recycle path's
+  //     `runRespawn` with a no-op drain (the child is already dead) so the
+  //     stranded-mail replay and fresh-child spawn happen exactly as a
+  //     recycle's do; or
+  //   - LATCHES -- once the guard trips (`crashLoopMaxCount` exits within
+  //     `crashLoopWindowMs`), it tears down to the terminal `crash-looping`
+  //     phase and commits a `RunFailed` for the deployment's run so the
+  //     crash-loop is durably observable as a failed run status.
+  //
+  // A respawned child that survives `crashLoopStableResetMs`
+  // (`armStableRunResetTimer`) resets both the crash counter and the
+  // backoff. The backoff wait sits OUTSIDE the `respawnInProgress` latch,
+  // so the generation re-check after the wait is what stops a recycle that
+  // installed a fresh cohort mid-wait from being respawned a second time.
+  // Full policy: `packages/workflow-host/README.md` "Respawn policy".
+
   // A protocol violation on a live cohort's control or event channel. The
   // channel receiver ends its iterator and invokes this; a clean process
   // death does NOT (it just ends the reader with no crash callback), so
