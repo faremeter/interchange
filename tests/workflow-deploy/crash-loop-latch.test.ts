@@ -138,43 +138,53 @@ async function waitForSidecarLog(
   }
 }
 
+// The marker the recycle path logs the instant a crash-respawned child passes
+// its ready handshake. `installNewChild` -- the transition to the `running`
+// phase that arms the exit-watcher -- runs SYNCHRONOUSLY on the next line
+// (recycle.ts), with no await between the log and the state swap. So by the
+// time this line drains into the test's stderr buffer, the replacement child
+// is already running and a kill lands on it as an unexpected exit. Keying each
+// kill on this marker (rather than a pid-stability heuristic, which can elapse
+// while the child is still mid-handshake on a slow/contended runner) is what
+// makes the sequence deterministic in CI.
+const CRASH_CHILD_READY = "recycle 'crash': child ready (pid=";
+
+/** Count non-overlapping occurrences of `needle` in `text`. */
+function countOccurrences(text: string, needle: string): number {
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(needle, from);
+    if (at === -1) return count;
+    count += 1;
+    from = at + needle.length;
+  }
+}
+
 /**
- * Wait for a workflow-process child whose pid is not in `excludePids` and
- * that stays present for a stability window -- proof it survived the ready
- * handshake and reached the `running` phase (a child killed mid-handshake
- * vanishes before the window elapses, and the respawn then fails to
- * `stopped` with no stable replacement). Returns the stable pid.
+ * Wait until the sidecar's (ANSI-stripped) stderr contains at least `minCount`
+ * occurrences of `needle`. Each crash-respawn logs `CRASH_CHILD_READY` exactly
+ * once, so waiting for the count to reach the respawn's ordinal proves that
+ * respawn's child reached `running` before the next kill.
  */
-async function waitForStableRunningChild(
+async function waitForSidecarLogCount(
   target: DeployFlowEnv,
-  excludePids: number[],
-  opts: { timeoutMs?: number; stableMs?: number } = {},
-): Promise<number> {
+  needle: string,
+  minCount: number,
+  opts: { timeoutMs?: number } = {},
+): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
-  const stableMs = opts.stableMs ?? 2_000;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const candidate = listWorkflowHostChildren(target).find(
-      (pid) => !excludePids.includes(pid),
-    );
-    if (candidate !== undefined) {
-      const stableUntil = Date.now() + stableMs;
-      let stable = true;
-      while (Date.now() < stableUntil) {
-        await new Promise((r) => setTimeout(r, 100));
-        if (!listWorkflowHostChildren(target).includes(candidate)) {
-          stable = false;
-          break;
-        }
-      }
-      if (stable) return candidate;
-    }
+    const text = target.sidecar.stderr.join("").replace(ANSI_ESCAPE_RE, "");
+    const count = countOccurrences(text, needle);
+    if (count >= minCount) return;
     if (Date.now() > deadline) {
       throw new Error(
-        `waitForStableRunningChild: no stable new child (excluding ${excludePids.join(",")}) within ${String(timeoutMs)}ms\n${target.sidecarDiagnostics()}`,
+        `waitForSidecarLogCount: sidecar stderr contained ${JSON.stringify(needle)} ${String(count)}/${String(minCount)} times within ${String(timeoutMs)}ms\n${target.sidecarDiagnostics()}`,
       );
     }
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 50));
   }
 }
 
@@ -242,8 +252,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       expect(handle.publicKey).toBeTruthy();
 
-      // Gate the first kill on a routable deployment (its child has passed
-      // the ready handshake) plus a stable child pid.
+      // Gate the first kill on a routable deployment: the hub routes an
+      // address only after its child has passed the ready handshake and the
+      // supervisor has reached `running`, so the initial child is killable as
+      // an unexpected exit.
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
@@ -251,20 +263,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       await settleWorkflowRunPacks(env);
       const killed: number[] = [];
-      await waitForStableRunningChild(env, killed);
 
-      // Crash 1: under the threshold -> the supervisor logs a 1s backoff
-      // and respawns. Waiting for the distinct backoff marker proves the
-      // exit was counted (not mistaken for a planned kill).
+      // Each crash sequences off two markers: the distinct per-crash backoff
+      // line proves the exit was counted as unexpected (not mistaken for a
+      // planned kill), and the crash-respawn `child ready` marker -- one per
+      // respawn -- proves the replacement reached `running` before the next
+      // kill lands. Keying on the ready marker (not a pid-stability window,
+      // which can elapse mid-handshake on a slow runner) is what keeps the
+      // sequence deterministic under CI load.
+
+      // Crash 1: under the threshold -> a 1s backoff and respawn 1.
       killed.push(...killWorkflowHostChild(env));
       await waitForSidecarLog(env, "respawning after '1000'ms backoff");
-      await waitForStableRunningChild(env, killed);
+      await waitForSidecarLogCount(env, CRASH_CHILD_READY, 1);
 
-      // Crash 2: still under the threshold -> a 2s backoff (distinct
-      // marker) and another respawn.
+      // Crash 2: still under the threshold -> a 2s backoff and respawn 2.
       killed.push(...killWorkflowHostChild(env));
       await waitForSidecarLog(env, "respawning after '2000'ms backoff");
-      await waitForStableRunningChild(env, killed);
+      await waitForSidecarLogCount(env, CRASH_CHILD_READY, 2);
 
       // Crash 3: reaches the threshold -> latch. No further respawn; the
       // deployment tears down to `crash-looping`.
