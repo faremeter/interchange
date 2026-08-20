@@ -1,7 +1,7 @@
 {
   "name": "@intx/example-agent-rewind",
   "description": "Example: rewinding an @intx/agent conversation to an older commit in a cloned contextDir",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "private": true,
   "type": "module",

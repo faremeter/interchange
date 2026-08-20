@@ -1,7 +1,7 @@
 {
   "name": "@intx/types",
   "description": "Runtime validators, API contract types, runtime interfaces, and sidecar wire frames for Interchange",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "type": "module",
   "exports": {

@@ -1,7 +1,7 @@
 {
   "name": "@intx/example-agent-quickstart",
   "description": "Example: the smallest runnable @intx/agent program — construct, send, print, close",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "private": true,
   "type": "module",

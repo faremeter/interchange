@@ -1,7 +1,7 @@
 {
   "name": "@intx/inference-testing",
   "description": "Deterministic test harness for the @intx/inference streaming pipeline",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "type": "module",
   "exports": {

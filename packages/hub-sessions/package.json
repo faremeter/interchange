@@ -1,7 +1,7 @@
 {
   "name": "@intx/hub-sessions",
   "description": "Session-orchestration substrate for the hub: sidecar router, session, and asset services",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "type": "module",
   "exports": {

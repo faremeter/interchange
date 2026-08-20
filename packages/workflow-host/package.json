@@ -1,7 +1,7 @@
 {
   "name": "@intx/workflow-host",
   "description": "Production-host implementations of the abstract WorkflowRuntimeEnv from @intx/workflow",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "type": "module",
   "exports": {

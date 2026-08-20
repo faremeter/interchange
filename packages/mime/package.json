@@ -1,7 +1,7 @@
 {
   "name": "@intx/mime",
   "description": "RFC 2822 message assembly and parsing with PGP detached signatures",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "type": "module",
   "exports": {

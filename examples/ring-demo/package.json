@@ -1,7 +1,7 @@
 {
   "name": "@intx/example-ring-demo",
   "description": "Example: a braintrust ring of agents circulating a question over in-process mail",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "private": true,
   "type": "module",

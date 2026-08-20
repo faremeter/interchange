@@ -1,7 +1,7 @@
 {
   "name": "@intx/example-agent-audit-log",
   "description": "Example: an @intx/agent audit record is a real git repo with one commit per reactor cycle",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "private": true,
   "type": "module",

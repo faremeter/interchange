@@ -1,7 +1,7 @@
 {
   "name": "@intx/example-agent-multi-provider",
   "description": "Example: model-per-task, failover, and routing policies over @intx/agent sources",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "private": true,
   "type": "module",

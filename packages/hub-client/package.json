@@ -1,7 +1,7 @@
 {
   "name": "@intx/hub-client",
   "description": "Browser-side client for the Interchange hub REST API and SSE instance sessions",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "exports": {
