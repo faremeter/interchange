@@ -219,6 +219,14 @@ function createSpawnTracker() {
       failWrites: false,
     };
     children.push(child);
+    // `exited` models the live child's process: it stays pending until the
+    // supervisor kills the handle. Resolving it up front would signal an
+    // immediate process exit, which the supervisor's exit-watcher reads as
+    // a crash and respawns.
+    let resolveExited: (code: number) => void = () => undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExited = resolve;
+    });
     const handle: SubprocessHandle = {
       pid: child.pid,
       controlWriter: {
@@ -232,8 +240,9 @@ function createSpawnTracker() {
       kill: () => {
         events.close();
         c2s.close();
+        resolveExited(0);
       },
-      exited: Promise.resolve(0),
+      exited,
     };
     return handle;
   };
