@@ -579,6 +579,31 @@ export interface WorkflowSupervisorBindings {
    */
   crashLoopStableResetMs?: number;
   /**
+   * Initial respawn backoff (ms): the wait before the FIRST respawn after
+   * an unexpected exit. Each subsequent respawn doubles the wait, capped at
+   * `respawnBackoffMaxMs`; a stable run resets it to this value. Absent,
+   * `DEFAULT_RESPAWN_BACKOFF_INITIAL_MS` (1s) applies.
+   */
+  respawnBackoffInitialMs?: number;
+  /**
+   * Maximum respawn backoff (ms) the exponential doubling is capped at, so
+   * a rapidly-flapping child does not saturate the host. Absent,
+   * `DEFAULT_RESPAWN_BACKOFF_MAX_MS` (30s) applies.
+   *
+   * Config invariant: keep this comfortably below `crashLoopWindowMs`.
+   * Crashes must fall within the window to accumulate toward the latch, and
+   * the backoff spaces them apart; a cap at or above the window guarantees a
+   * slow flapper's timestamps age out before the count reaches
+   * `crashLoopMaxCount`, so the guard never latches. This is necessary but
+   * not sufficient: the child's own lifetime also spaces crashes, so a child
+   * whose healthy lifetime approaches `crashLoopStableResetMs` can still
+   * out-space the window (and never earn a counter reset either), respawning
+   * indefinitely. Windowed crash detection cannot catch an arbitrarily slow
+   * flapper; the window/backoff/stable-reset trio bounds the FAST flap this
+   * guard targets.
+   */
+  respawnBackoffMaxMs?: number;
+  /**
    * Watchdog timeout (ms) for `reEmitParkedCorrelations`' wait on the
    * child's `parked-correlations.response`. Caps the wait so a
    * wedged-but-alive child (whose cohort never tears down, so the

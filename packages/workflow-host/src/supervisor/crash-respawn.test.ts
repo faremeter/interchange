@@ -454,6 +454,8 @@ async function buildBindings(opts: {
   inboxPrimitives: InboxPrimitives;
   crashLoopMaxCount?: number;
   crashLoopStableResetMs?: number;
+  respawnBackoffInitialMs?: number;
+  respawnBackoffMaxMs?: number;
   setTimer?: (cb: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   writtenPrefixes?: string[];
@@ -488,6 +490,12 @@ async function buildBindings(opts: {
     ...(opts.crashLoopStableResetMs !== undefined
       ? { crashLoopStableResetMs: opts.crashLoopStableResetMs }
       : {}),
+    ...(opts.respawnBackoffInitialMs !== undefined
+      ? { respawnBackoffInitialMs: opts.respawnBackoffInitialMs }
+      : {}),
+    ...(opts.respawnBackoffMaxMs !== undefined
+      ? { respawnBackoffMaxMs: opts.respawnBackoffMaxMs }
+      : {}),
     ...(opts.setTimer !== undefined ? { setTimer: opts.setTimer } : {}),
     ...(opts.clearTimer !== undefined ? { clearTimer: opts.clearTimer } : {}),
   };
@@ -501,6 +509,8 @@ async function spawnSupervisor(opts: {
   inboxPrimitives: InboxPrimitives;
   crashLoopMaxCount?: number;
   crashLoopStableResetMs?: number;
+  respawnBackoffInitialMs?: number;
+  respawnBackoffMaxMs?: number;
   setTimer?: (cb: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   writtenPrefixes?: string[];
@@ -521,6 +531,12 @@ async function spawnSupervisor(opts: {
       : {}),
     ...(opts.crashLoopStableResetMs !== undefined
       ? { crashLoopStableResetMs: opts.crashLoopStableResetMs }
+      : {}),
+    ...(opts.respawnBackoffInitialMs !== undefined
+      ? { respawnBackoffInitialMs: opts.respawnBackoffInitialMs }
+      : {}),
+    ...(opts.respawnBackoffMaxMs !== undefined
+      ? { respawnBackoffMaxMs: opts.respawnBackoffMaxMs }
       : {}),
     ...(opts.setTimer !== undefined ? { setTimer: opts.setTimer } : {}),
     ...(opts.clearTimer !== undefined ? { clearTimer: opts.clearTimer } : {}),
@@ -582,6 +598,9 @@ function createFakeTimers() {
       }
       return fired;
     },
+    // Delays of every currently-armed (uncleared) timer, in arm order.
+    pendingDelays: (): number[] =>
+      timers.filter((t) => !t.cleared).map((t) => t.delayMs),
   };
 }
 
@@ -615,6 +634,9 @@ describe("supervisor crash-respawn: unexpected exit", () => {
       mailBus,
       ipcKeypair,
       inboxPrimitives: inbox,
+      // Near-zero backoff: this test uses real timers and asserts the
+      // respawn happens, not its timing.
+      respawnBackoffInitialMs: 1,
     });
 
     const firstChild = tracker.children[0];
@@ -721,6 +743,8 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
       ipcKeypair,
       inboxPrimitives: inbox,
       crashLoopMaxCount: 2,
+      // Near-zero backoff: real timers, asserting the latch not its timing.
+      respawnBackoffInitialMs: 1,
       writtenPrefixes,
     });
 
@@ -770,9 +794,11 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     const tracker = createSpawnTracker();
     const inbox = createMemoryInboxPrimitives();
     const timers = createFakeTimers();
-    // Latch on the 2nd exit, with a distinctive stable-reset delay driven
-    // deterministically through the injectable timer seam. Firing that
-    // timer (not a wall-clock wait) is what clears the crash counter.
+    // Latch on the 2nd exit, with distinctive backoff and stable-reset
+    // delays driven deterministically through the injectable timer seam.
+    // The backoff is pinned (initial == max) so each respawn's wait fires
+    // at the same delay.
+    const backoffMs = 100_000;
     const stableResetMs = 500_000;
     const { supervisor } = await spawnSupervisor({
       baseDir,
@@ -782,16 +808,33 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
       inboxPrimitives: inbox,
       crashLoopMaxCount: 2,
       crashLoopStableResetMs: stableResetMs,
+      respawnBackoffInitialMs: backoffMs,
+      respawnBackoffMaxMs: backoffMs,
       setTimer: timers.setTimer,
       clearTimer: timers.clearTimer,
     });
 
-    // Crash 1 -> respawn (child 2). The respawn arms the stable-run reset
-    // timer against child 2's generation.
+    // Fire the armed backoff wait (poll until it is armed), then await the
+    // respawned child.
+    const fireBackoffAndAwaitChild = async (
+      nextCount: number,
+    ): Promise<void> => {
+      const deadline = Date.now() + 2_000;
+      while (timers.fireByDelay(backoffMs) === 0) {
+        if (Date.now() > deadline) {
+          throw new Error("respawn backoff timer was never armed");
+        }
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      await waitForChildren(tracker, nextCount);
+    };
+
+    // Crash 1 -> backoff -> respawn (child 2). The respawn arms the
+    // stable-run reset timer against child 2's generation.
     const first = tracker.children[0];
     if (first === undefined) throw new Error("first child missing");
     first.crash();
-    await waitForChildren(tracker, 2);
+    await fireBackoffAndAwaitChild(2);
     const second = tracker.children[1];
     if (second === undefined) throw new Error("second child missing");
     await driveReady(second, ipcKeypair);
@@ -809,12 +852,330 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     // Crash 2: with the counter reset by the stable run, this is again
     // under the threshold, so it respawns (child 3) rather than latching.
     second.crash();
-    await waitForChildren(tracker, 3);
+    await fireBackoffAndAwaitChild(3);
     const third = tracker.children[2];
     if (third === undefined) throw new Error("third child missing");
     await driveReady(third, ipcKeypair);
     expect(tracker.totalSpawns).toBe(3);
 
     await supervisor.shutdown();
+  });
+});
+
+/**
+ * Crash `child`, fire the armed backoff timer at exactly `backoffMs` (poll
+ * until it is armed), await the respawned child at `nextCount`, and drive
+ * its ready. Firing the EXACT expected delay is the assertion: if the
+ * backoff were a different value, `fireByDelay` would never match and the
+ * poll would time out.
+ */
+async function crashFireBackoffAndReady(opts: {
+  timers: ReturnType<typeof createFakeTimers>;
+  tracker: SpawnTracker;
+  ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
+  child: FakeChild;
+  backoffMs: number;
+  nextCount: number;
+  stableResetMs: number;
+}): Promise<void> {
+  opts.child.crash();
+  const deadline = Date.now() + 2_000;
+  while (opts.timers.fireByDelay(opts.backoffMs) === 0) {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `respawn backoff of ${String(opts.backoffMs)}ms was never armed`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  await waitForChildren(opts.tracker, opts.nextCount);
+  const next = opts.tracker.children[opts.nextCount - 1];
+  if (next === undefined) throw new Error("respawned child missing");
+  await driveReady(next, opts.ipcKeypair);
+  // Wait until the respawn fully settles: `handleUnexpectedChildExit` arms
+  // the stable-run reset timer as its final step, after the async ready
+  // handshake completes. Returning before that would let a subsequent
+  // crash's entry-clear race the not-yet-armed timer.
+  const settleDeadline = Date.now() + 2_000;
+  while (!opts.timers.pendingDelays().includes(opts.stableResetMs)) {
+    if (Date.now() > settleDeadline) {
+      throw new Error("respawn did not settle (stable-run timer not armed)");
+    }
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
+describe("supervisor crash-respawn: exponential backoff", () => {
+  test("the respawn backoff doubles per crash and caps at the maximum", async () => {
+    const baseDir = await makeTempDir("crash-backoff-double-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker();
+    const inbox = createMemoryInboxPrimitives();
+    const timers = createFakeTimers();
+    // A high crash threshold so the guard never latches; the backoff
+    // sequence 1000 -> 2000 -> 4000 -> 4000 (capped) is what we pin. A
+    // distinctive stable-reset delay lets the helper detect when each
+    // respawn has fully settled.
+    const stableResetMs = 777_000;
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      inboxPrimitives: inbox,
+      crashLoopMaxCount: 100,
+      crashLoopStableResetMs: stableResetMs,
+      respawnBackoffInitialMs: 1_000,
+      respawnBackoffMaxMs: 4_000,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+
+    // Each call fires the EXACT expected backoff, proving the doubling and
+    // the cap: 1s, then 2s, then 4s, then 4s again (capped, not 8s).
+    await crashFireBackoffAndReady({
+      timers,
+      tracker,
+      ipcKeypair,
+      child: first,
+      backoffMs: 1_000,
+      nextCount: 2,
+      stableResetMs,
+    });
+    await crashFireBackoffAndReady({
+      timers,
+      tracker,
+      ipcKeypair,
+      child: tracker.children[1] ?? first,
+      backoffMs: 2_000,
+      nextCount: 3,
+      stableResetMs,
+    });
+    await crashFireBackoffAndReady({
+      timers,
+      tracker,
+      ipcKeypair,
+      child: tracker.children[2] ?? first,
+      backoffMs: 4_000,
+      nextCount: 4,
+      stableResetMs,
+    });
+    await crashFireBackoffAndReady({
+      timers,
+      tracker,
+      ipcKeypair,
+      child: tracker.children[3] ?? first,
+      backoffMs: 4_000,
+      nextCount: 5,
+      stableResetMs,
+    });
+    expect(tracker.totalSpawns).toBe(5);
+
+    await supervisor.shutdown();
+  });
+
+  test("a recycle during the backoff wait does not cause a spurious respawn", async () => {
+    const baseDir = await makeTempDir("crash-backoff-recycle-race-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker();
+    const inbox = createMemoryInboxPrimitives();
+    const timers = createFakeTimers();
+    // A large backoff that stays parked so a recycle can race it.
+    const backoffMs = 100_000;
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      inboxPrimitives: inbox,
+      crashLoopMaxCount: 100,
+      respawnBackoffInitialMs: backoffMs,
+      respawnBackoffMaxMs: backoffMs,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+
+    // Crash 1: the crash-respawn coroutine parks on the (unfired) backoff.
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    first.crash();
+    // Wait until the backoff is armed (the coroutine reached the wait).
+    const armedDeadline = Date.now() + 2_000;
+    while (!timers.pendingDelays().includes(backoffMs)) {
+      if (Date.now() > armedDeadline) {
+        throw new Error("respawn backoff was never armed");
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+
+    // An operator recycle runs WHILE the backoff is parked. It installs a
+    // fresh cohort (child 2), advancing the generation.
+    const recyclePromise = supervisor.recycle({ reason: "race-the-backoff" });
+    await waitForChildren(tracker, 2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recyclePromise;
+
+    // Now fire the parked backoff. The crash coroutine wakes, sees the
+    // generation has advanced past the cohort it was armed for, and bails
+    // -- it must NOT respawn the healthy cohort the recycle just installed.
+    timers.fireByDelay(backoffMs);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(tracker.totalSpawns).toBe(2);
+
+    await supervisor.shutdown();
+  });
+
+  test("a crash disarms the prior cohort's stable-run reset timer so it cannot clear the counter mid-backoff", async () => {
+    const baseDir = await makeTempDir("crash-backoff-stable-disarm-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker();
+    const inbox = createMemoryInboxPrimitives();
+    const timers = createFakeTimers();
+    const backoffMs = 100_000;
+    const stableResetMs = 500_000;
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      inboxPrimitives: inbox,
+      crashLoopMaxCount: 3,
+      crashLoopStableResetMs: stableResetMs,
+      respawnBackoffInitialMs: backoffMs,
+      respawnBackoffMaxMs: backoffMs,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+
+    // Crash 1 -> backoff -> respawn (child 2). The respawn arms child 2's
+    // stable-run reset timer.
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    await crashFireBackoffAndReady({
+      timers,
+      tracker,
+      ipcKeypair,
+      child: first,
+      backoffMs,
+      nextCount: 2,
+      stableResetMs,
+    });
+
+    // Crash 2 BEFORE child 2's stable timer fires. The handler disarms that
+    // timer at entry, so firing the stable delay now matches nothing -- the
+    // crash that just happened must not be rewarded as a stable run.
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    second.crash();
+    const armedDeadline = Date.now() + 2_000;
+    while (!timers.pendingDelays().includes(backoffMs)) {
+      if (Date.now() > armedDeadline) {
+        throw new Error("respawn backoff was never armed after crash 2");
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(timers.fireByDelay(stableResetMs)).toBe(0);
+
+    // Fire crash 2's backoff -> respawn (child 3). Crash 3 then reaches the
+    // threshold and latches -- proving the counter was never wrongly
+    // cleared (with the disarm bug, crashes 1-2 would have been reset).
+    timers.fireByDelay(backoffMs);
+    await waitForChildren(tracker, 3);
+    const third = tracker.children[2];
+    if (third === undefined) throw new Error("third child missing");
+    await driveReady(third, ipcKeypair);
+
+    third.crash();
+    const latchDeadline = Date.now() + 2_000;
+    let caught: unknown;
+    while (Date.now() < latchDeadline) {
+      try {
+        await supervisor.recycle({ reason: "probe-latch" });
+      } catch (err) {
+        caught = err;
+        if (
+          err instanceof Error &&
+          /in phase crash-looping/.test(err.message)
+        ) {
+          break;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught instanceof Error && caught.message).toMatch(
+      /in phase crash-looping/,
+    );
+    // No 4th child: crash 3 latched rather than respawning.
+    expect(tracker.totalSpawns).toBe(3);
+  });
+
+  test("shutdown cancels every parked backoff wait, even overlapping ones", async () => {
+    const baseDir = await makeTempDir("crash-backoff-multi-cancel-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker();
+    const inbox = createMemoryInboxPrimitives();
+    const timers = createFakeTimers();
+    // A large pinned backoff so waits stay parked; a distinctive
+    // stable-reset delay so it never collides with the backoff.
+    const backoffMs = 100_000;
+    const { supervisor } = await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      inboxPrimitives: inbox,
+      crashLoopMaxCount: 100,
+      crashLoopStableResetMs: 700_000,
+      respawnBackoffInitialMs: backoffMs,
+      respawnBackoffMaxMs: backoffMs,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+
+    const pendingBackoffCount = (): number =>
+      timers.pendingDelays().filter((d) => d === backoffMs).length;
+    const awaitPendingBackoffs = async (n: number): Promise<void> => {
+      const deadline = Date.now() + 2_000;
+      while (pendingBackoffCount() < n) {
+        if (Date.now() > deadline) {
+          throw new Error(`expected ${String(n)} parked backoff waits`);
+        }
+        await new Promise((r) => setTimeout(r, 1));
+      }
+    };
+
+    // Crash 1: coroutine A parks on its backoff (never fired).
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    first.crash();
+    await awaitPendingBackoffs(1);
+
+    // A recycle installs a fresh, LIVE child (child 2) while A is parked.
+    const recyclePromise = supervisor.recycle({ reason: "install-live" });
+    await waitForChildren(tracker, 2);
+    const second = tracker.children[1];
+    if (second === undefined) throw new Error("second child missing");
+    await driveReady(second, ipcKeypair);
+    await recyclePromise;
+
+    // Crash the recycled child: coroutine B parks on ITS backoff. Now two
+    // backoff waits are armed at once -- the case a single-slot tracker
+    // would drop, leaking the earlier timer past shutdown.
+    second.crash();
+    await awaitPendingBackoffs(2);
+
+    // Shutdown must cancel BOTH parked waits: no backoff timer survives.
+    await supervisor.shutdown();
+    expect(pendingBackoffCount()).toBe(0);
   });
 });
