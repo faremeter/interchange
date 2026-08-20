@@ -1474,8 +1474,8 @@ Source: packages/types/src/catalog.ts
 `{ createdAt: string, displayName: string, id: string, kind: "agent" | "user" | "workflow", refId: string, roles: { id: string, name: string }[], status: "active" | "deactivated" | "invited" | "suspended", tenantId: string, updatedAt: string, email?: string }`
 Source: packages/types/src/principals.ts
 
-**kind**: Whether this principal represents a `user` (a human account), an `agent`, or a `workflow` (a workflow deployment).
-**refId**: Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, the agent id when `kind` is `agent`, or the run id when `kind` is `workflow`. Unique per tenant and kind.
+**kind**: Whether this principal represents a `user` (a human account), an `agent`, or a `workflow` (a workflow run).
+**refId**: Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, an agent-instance id when `kind` is `agent`, or a workflow run (`run_...`) or workflow definition (`wfd_...`) id when `kind` is `workflow`. Unique per tenant and kind.
 **status**: Account state of the principal: `active`, `suspended`, `invited` (membership pending acceptance), or `deactivated`.
 
 ### ProviderResponse

@@ -126,7 +126,7 @@ export const CredentialRequirement = type({
   providerName: "string",
   "scopes?": "string[]",
   source: CredentialSourceType.describe(
-    "Whose credential satisfies this requirement at launch: `tenant` (a credential owned by the tenant), `creator` (the definition author's), or `invoker` (whoever launched the agent).",
+    "Whose credential satisfies this requirement at launch: `tenant` (a credential owned by the tenant), `creator` (the definition author's), or `invoker` (whoever launched the workflow run).",
   ),
   "name?": "string",
 });
