@@ -21,6 +21,15 @@
 //
 // Six-step sequence (locked):
 //
+// The `drain` step and the `SubprocessHandle` handed in as `current` are
+// caller-parameterized. For the operator/policy/self recycle origins the
+// child is live: `drain` sends the real drain control mail and `kill`
+// terminates a running process. For the `crash` origin the child has
+// already exited unexpectedly, so the caller supplies a no-op `drain`
+// (there is nothing to drain) and the `kill` in step 2 lands on an
+// already-dead handle as a cheap no-op. Steps 3-6 are identical for every
+// origin.
+//
 //   1. `drain` -- send the existing drain control mail. Wait for
 //      in-flight runs to drain per each step's `drainBehavior`.
 //      `drainTimeout` escalation applies normally; the drain-timeout
@@ -132,9 +141,12 @@ export const DEFAULT_POLICY_INTERVAL_MS = 60_000;
 /**
  * Origin tag the recycle path stamps onto its log messages so an
  * operator scanning logs can distinguish operator-initiated,
- * policy-initiated, and self-initiated recycles at a glance.
+ * policy-initiated, self-initiated, and crash-respawn origins at a
+ * glance. The `crash` origin drives the same respawn sequence after an
+ * unexpected child exit; see the six-step header note about steps 1-2
+ * degrading to no-ops for it.
  */
-export type RecycleOrigin = "operator" | "policy" | "self";
+export type RecycleOrigin = "operator" | "policy" | "self" | "crash";
 
 export interface RecycleAttempt {
   /** Origin the recycle was initiated from. */

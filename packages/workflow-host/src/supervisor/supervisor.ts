@@ -139,6 +139,29 @@ import {
 const logger = getLogger(["workflow-host", "supervisor"]);
 
 /**
+ * Default crash-loop bound: the supervisor stops respawning and latches
+ * the deployment once the workflow-process child exits unexpectedly this
+ * many times within `DEFAULT_CRASH_LOOP_WINDOW_MS`. Overridable via
+ * `WorkflowSupervisorBindings.crashLoopMaxCount`.
+ */
+export const DEFAULT_CRASH_LOOP_MAX_COUNT = 3;
+
+/**
+ * Default sliding window (ms) over which `DEFAULT_CRASH_LOOP_MAX_COUNT`
+ * unexpected exits latch the deployment. Overridable via
+ * `WorkflowSupervisorBindings.crashLoopWindowMs`.
+ */
+export const DEFAULT_CRASH_LOOP_WINDOW_MS = 60_000;
+
+/**
+ * Default stable-run duration (ms): once a respawned child stays up this
+ * long, the crash counter resets so flapping followed by stability does
+ * not permanently latch. Overridable via
+ * `WorkflowSupervisorBindings.crashLoopStableResetMs`.
+ */
+export const DEFAULT_CRASH_LOOP_STABLE_RESET_MS = 60_000;
+
+/**
  * Default watchdog for `reEmitParkedCorrelations`' wait on the child's
  * `parked-correlations.response`. 30s is generous enough for a healthy child
  * to enumerate its in-flight runs and load each parked snapshot, tight
@@ -631,6 +654,18 @@ export function createWorkflowSupervisor(
   const readyTimeoutMs = bindings.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
   const readySetTimer = bindings.setTimer ?? defaultSetTimer;
   const readyClearTimer = bindings.clearTimer ?? defaultClearTimer;
+  // Resolve the crash-loop guard bounds once at the bindings edge (the
+  // layer that owns the operator config). The stable-run reset timer
+  // reuses the same injectable `setTimer`/`clearTimer` pair as the ready
+  // handshake, and the wall clock reuses the recycle-policy `now` seam, so
+  // tests drive the whole guard deterministically through existing knobs.
+  const crashLoopMaxCount =
+    bindings.crashLoopMaxCount ?? DEFAULT_CRASH_LOOP_MAX_COUNT;
+  const crashLoopWindowMs =
+    bindings.crashLoopWindowMs ?? DEFAULT_CRASH_LOOP_WINDOW_MS;
+  const crashLoopStableResetMs =
+    bindings.crashLoopStableResetMs ?? DEFAULT_CRASH_LOOP_STABLE_RESET_MS;
+  const crashNow = bindings.recyclePolicyNow ?? defaultNow;
   /**
    * Resolved on every successful `enqueueInbox`; the dispatch loop
    * awaits this promise after a null dequeue so it returns to
@@ -666,14 +701,179 @@ export function createWorkflowSupervisor(
   let spawnContext: SpawnContext | null = null;
   let recyclePolicy: RecyclePolicy | null = null;
   // Mutual-exclusion latch shared by every respawn path (operator/policy/
-  // self recycle today; crash-respawn once it lands). `runRespawn` owns the
-  // set/clear; each caller owns the contention read because the two paths
-  // diverge on contention (recycle throws, crash-respawn declines silently).
+  // self recycle and crash-respawn). `runRespawn` owns the set/clear; each
+  // caller owns the contention read because the two paths diverge on
+  // contention (recycle throws, crash-respawn declines silently).
   let respawnInProgress = false;
+  // Monotonic child-cohort generation, bumped atomically with each
+  // transition to `running` (initial spawn and every respawn's
+  // `installNewChild`). The exit-watcher captures the generation it was
+  // armed for; a watcher whose generation is no longer current is stale
+  // (a newer child already superseded it) and is ignored. Generation plus
+  // the phase guard plus `respawnInProgress` together classify every child
+  // exit as planned or unexpected without a separate per-handle marker.
+  let childGeneration = 0;
+  // An unexpected child exit that could not be handled the instant it was
+  // observed (a respawn was already in flight). Recorded generation-tagged
+  // and drained by `maybeHandleChildExit` once `runRespawn` clears the
+  // latch; a pending exit for a superseded generation is dropped as stale.
+  let pendingChildExit: { generation: number; reason: string } | null = null;
+  // Monotonic timestamps (ms, from `crashNow`) of recent unexpected exits,
+  // pruned to `crashLoopWindowMs`. The crash-loop guard latches when the
+  // count within the window reaches `crashLoopMaxCount`.
+  const crashTimestamps: number[] = [];
+  // Handle for the armed stable-run reset timer (or null). Cleared and
+  // re-armed on every transition to `running`; cleared on teardown.
+  let stableRunResetTimer: unknown = null;
 
+  // A protocol violation on a live cohort's control or event channel. The
+  // channel receiver ends its iterator and invokes this; a clean process
+  // death does NOT (it just ends the reader with no crash callback), so
+  // the exit-watcher on `handle.exited` is the universal death signal and
+  // this path only covers the frame-level violations the receiver detects.
+  // On the live (`running`) cohort, force the child down so its `exited`
+  // fires the exit-watcher and the crash flows through the SAME
+  // respawn/crash-loop path a clean death takes -- a violation that emits a
+  // garbage frame just before dying must not divert to `stopped` while a
+  // clean SIGKILL respawns. In any other phase the owning lifecycle path
+  // (spawn handshake, recycle reap, shutdown) owns teardown.
   function onChildCrash(reason: string): void {
-    logger.error`workflow-process control channel crash: {reason}`;
+    if (state.phase === "running") {
+      logger.error`workflow-process channel crash on live cohort; forcing child down to respawn: {reason}`;
+      state.handle.kill();
+      return;
+    }
+    logger.error`workflow-process channel crash: {reason}`;
     void shutdownInternal({ reason });
+  }
+
+  // Prune crash timestamps older than the sliding window relative to `nowMs`.
+  function pruneCrashTimestamps(nowMs: number): void {
+    const cutoff = nowMs - crashLoopWindowMs;
+    while (true) {
+      const oldest = crashTimestamps[0];
+      if (oldest === undefined || oldest > cutoff) break;
+      crashTimestamps.shift();
+    }
+  }
+
+  function clearStableRunResetTimer(): void {
+    if (stableRunResetTimer !== null) {
+      readyClearTimer(stableRunResetTimer);
+      stableRunResetTimer = null;
+    }
+  }
+
+  // Arm (or re-arm) the stable-run reset for the cohort that just reached
+  // `running`. If the child is still that same live cohort when the timer
+  // fires, the run has been stable for `crashLoopStableResetMs` and the
+  // crash counter is cleared so a flap-then-stabilize sequence does not
+  // latch. A crash before the timer fires re-arms it for the next cohort;
+  // teardown clears it.
+  function armStableRunResetTimer(generation: number): void {
+    clearStableRunResetTimer();
+    stableRunResetTimer = readySetTimer(() => {
+      stableRunResetTimer = null;
+      if (generation === childGeneration && state.phase === "running") {
+        crashTimestamps.length = 0;
+      }
+    }, crashLoopStableResetMs);
+  }
+
+  // Bump the generation and arm the `handle.exited` watcher for a child
+  // that just became the `running` cohort. Called atomically with the
+  // state swap to `running` (no await between the swap and this call).
+  // `exited` resolving OR rejecting both mean the process is gone. The
+  // stable-run reset timer is NOT armed here: on the pristine first spawn
+  // there is no crash counter to reset, so it is armed only after a
+  // respawn (see `handleUnexpectedChildExit`).
+  function armChildForRunning(handle: SubprocessHandle): void {
+    childGeneration += 1;
+    const generation = childGeneration;
+    void handle.exited
+      .then(() => {
+        onChildExited(generation, "workflow-process child exited");
+      })
+      .catch(() => {
+        onChildExited(
+          generation,
+          "workflow-process child exited (exit promise rejected)",
+        );
+      });
+  }
+
+  // Record a child exit and try to act on it. Stale exits (a newer cohort
+  // already installed) are dropped.
+  function onChildExited(generation: number, reason: string): void {
+    if (generation !== childGeneration) return;
+    pendingChildExit = { generation, reason };
+    maybeHandleChildExit();
+  }
+
+  // Drain a recorded child exit if the supervisor is in a state to act on
+  // it. Declines (leaving the exit pending) while a respawn is in flight;
+  // `runRespawn`'s `finally` re-invokes this after clearing the latch so
+  // an exit observed during the respawn is not lost. A pending exit for a
+  // superseded generation, or one observed after the deployment left the
+  // `running` phase (shutdown/recycle owns that teardown), is dropped.
+  function maybeHandleChildExit(): void {
+    if (respawnInProgress) return;
+    const pending = pendingChildExit;
+    if (pending === null) return;
+    if (pending.generation !== childGeneration) {
+      pendingChildExit = null;
+      return;
+    }
+    if (state.phase !== "running") return;
+    pendingChildExit = null;
+    void handleUnexpectedChildExit(pending.reason).catch((cause) => {
+      // Fire-and-forget context (the exit-watcher has no caller to catch
+      // this). `runRespawn` already ran its own failure teardown to a
+      // terminal state before rethrowing, so the deployment is not wedged;
+      // surface the failure and stop.
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`crash-respawn handling failed; deployment torn down: ${message}`;
+    });
+  }
+
+  // Handle one unexpected child exit: record it against the crash-loop
+  // guard and either latch the deployment (guard tripped) or respawn.
+  async function handleUnexpectedChildExit(reason: string): Promise<void> {
+    if (state.phase !== "running" || spawnContext === null) {
+      // Raced a shutdown/recycle between the drain check and here; the
+      // owning lifecycle path handles teardown.
+      return;
+    }
+    const priorRunning = state;
+    const priorContext = spawnContext;
+    const nowMs = crashNow();
+    crashTimestamps.push(nowMs);
+    pruneCrashTimestamps(nowMs);
+    if (crashTimestamps.length >= crashLoopMaxCount) {
+      // Crash-loop latch. The deployment stops respawning and tears down
+      // to a terminal state so a rapidly-flapping child cannot saturate
+      // the host.
+      logger.error`workflow-process crash-looped: ${String(crashTimestamps.length)} unexpected exits within ${String(crashLoopWindowMs)}ms; stopping the deployment (${reason})`;
+      await shutdownInternal({ reason: `crash-loop: ${reason}` });
+      return;
+    }
+    logger.warn`workflow-process exited unexpectedly; respawning (${reason})`;
+    await runRespawn({
+      origin: "crash",
+      reason,
+      prior: priorRunning,
+      priorContext,
+      // The child is already dead: there is nothing to drain, and
+      // `runRespawn`'s kill step is a no-op on a dead handle. The replay
+      // step still runs, moving any mail stranded mid-flight back to the
+      // inbox tail before dispatch resumes.
+      drain: async () => undefined,
+    });
+    // The respawned child is now the running cohort. Arm the stable-run
+    // reset against its generation: if it survives `crashLoopStableResetMs`
+    // the crash counter clears, so a flap followed by stability does not
+    // latch on a later, unrelated crash.
+    armStableRunResetTimer(childGeneration);
   }
 
   // Resolves once the inbound mail is durably accepted (its inbox write landed
@@ -1466,10 +1666,11 @@ export function createWorkflowSupervisor(
       hmacKey: args.hmacKey,
       channelId: args.channelId,
       reader: args.handle.eventReader,
-      onCrash: (reason) => {
-        logger.error`workflow-process event channel crash: {reason}`;
-        void shutdownInternal({ reason });
-      },
+      // Route event-channel crashes through the same funnel as
+      // control-channel crashes so both drive the respawn/crash-loop path
+      // uniformly on the live cohort (and defer to the owning lifecycle
+      // path in every other phase).
+      onCrash: onChildCrash,
     });
     const eventPump = pumpEvents(eventIter, args.onInferenceEvent);
 
@@ -1763,6 +1964,11 @@ export function createWorkflowSupervisor(
         dispatchLoop,
         replayDone,
       };
+      // Bump the generation and arm the exit-watcher atomically with the
+      // running transition (no await between the swap above and this call)
+      // so an unexpected exit of this child is classified against the
+      // right generation.
+      armChildForRunning(handle);
       // Kick the dispatch loop in case mail landed in the inbox
       // before the loop's first `await dispatchWake`. A wake against a
       // freshly-minted promise is a no-op; the dispatch loop's first
@@ -2678,6 +2884,20 @@ export function createWorkflowSupervisor(
         }
         recyclePolicy = null;
       }
+      // Disarm the crash-loop stable-run reset timer so it cannot fire
+      // against a torn-down supervisor. Also drop any pending child exit
+      // that `maybeHandleChildExit` recorded but declined to act on -- it
+      // leaves one pending when a respawn was in flight, or when the phase
+      // had already left `running`. (The crash-loop latch path does NOT
+      // leave one pending: `maybeHandleChildExit` nulls `pendingChildExit`
+      // before invoking the handler that latches.) A shutdown-initiated
+      // kill of a live child in the `finally` below resolves its
+      // `handle.exited`, so the watcher may re-record a pending exit AFTER
+      // this clear -- harmless: the phase is terminal, so
+      // `maybeHandleChildExit` no-ops on it, and `spawn()` requires `idle`,
+      // so the stale slot is never re-examined.
+      clearStableRunResetTimer();
+      pendingChildExit = null;
       spawnContext = null;
       if (
         prior.phase === "starting" ||
@@ -3040,6 +3260,12 @@ export function createWorkflowSupervisor(
               dispatchLoop: newDispatchLoop,
               replayDone: null,
             };
+            // Bump the generation and arm the exit-watcher for the
+            // respawned child atomically with this running transition, so
+            // the predecessor's watcher (already stale by generation) never
+            // drives a spurious respawn and a crash of THIS child is
+            // classified against the new generation.
+            armChildForRunning(wiring.handle);
             // Cache fresh spawn context with the updated spawnedAt
             // so the policy timer's uptime check resets on recycle.
             const now = bindings.recyclePolicyNow ?? defaultNow;
@@ -3134,6 +3360,11 @@ export function createWorkflowSupervisor(
       throw cause;
     } finally {
       respawnInProgress = false;
+      // Drain any child exit observed during the respawn. A crash of the
+      // freshly-installed child that raced this respawn's completion was
+      // deferred (respawnInProgress was set); handle it now that the latch
+      // is clear. A pending exit for a superseded generation drops as stale.
+      maybeHandleChildExit();
     }
     return attempt;
   }

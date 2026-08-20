@@ -556,6 +556,29 @@ export interface WorkflowSupervisorBindings {
    */
   readyTimeoutMs?: number;
   /**
+   * Crash-loop guard: the maximum number of UNEXPECTED workflow-process
+   * child exits (crash, OOM, panic, signal) the supervisor tolerates
+   * within `crashLoopWindowMs` before it stops respawning and latches the
+   * deployment to a terminal state. The boot edge resolves the operator's
+   * config and supplies it; absent, `DEFAULT_CRASH_LOOP_MAX_COUNT` (3)
+   * applies. The operator owns this bound.
+   */
+  crashLoopMaxCount?: number;
+  /**
+   * Sliding window (ms) over which `crashLoopMaxCount` unexpected exits
+   * latch the deployment. Absent, `DEFAULT_CRASH_LOOP_WINDOW_MS` (60s)
+   * applies.
+   */
+  crashLoopWindowMs?: number;
+  /**
+   * Stable-run duration (ms) after a respawn: once a respawned child has
+   * stayed up this long, the crash counter resets, so a burst of crashes
+   * followed by stability does not permanently latch. Absent,
+   * `DEFAULT_CRASH_LOOP_STABLE_RESET_MS` (60s) applies. Driven by the
+   * injectable `setTimer`/`clearTimer` pair so tests are deterministic.
+   */
+  crashLoopStableResetMs?: number;
+  /**
    * Watchdog timeout (ms) for `reEmitParkedCorrelations`' wait on the
    * child's `parked-correlations.response`. Caps the wait so a
    * wedged-but-alive child (whose cohort never tears down, so the
