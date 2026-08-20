@@ -15,7 +15,7 @@ import { type } from "arktype";
 /**
  * A tool package's static declaration of one provider-backed credential it
  * needs: an abstract handle plus optional scopes. Advisory only -- a request
- * the agent definition later binds to a concrete credential and the launch-time
+ * the workflow definition later binds to a concrete credential and the launch-time
  * grant gate authorizes; a declaration consents to nothing on its own. The
  * handle is the key the binding and the runtime delivery use.
  */

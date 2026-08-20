@@ -37,7 +37,6 @@ export interface WorkflowDefinition {
    * invoker's authority at trigger time. Each entry declares a resource,
    * action, and source (`creator` or `invoker`); the trigger route
    * materializes the satisfied ones as grants on the run principal.
-   * Mirrors an agent definition's `grantRequirements`.
    */
   grantRequirements?: readonly GrantRequirement[];
   /**
@@ -46,7 +45,7 @@ export interface WorkflowDefinition {
    * concrete provider and authorizing the delegation against the
    * binding's authority. The launch reads these from the folded body and
    * materializes a consumer-scoped `credential:{id}` / `use` grant per
-   * binding. Mirrors an agent definition's `credentialBindings`.
+   * binding.
    */
   credentialBindings?: readonly CredentialBinding[];
 }
