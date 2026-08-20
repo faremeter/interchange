@@ -1282,7 +1282,7 @@ Source: packages/types/src/tenants.ts
 Source: packages/types/src/grants.ts
 
 **effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
-**origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the agent definition author), or `invoker` (delegated by whoever launched the agent). Origin is provenance only; it does not affect evaluation precedence.
+**origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the workflow definition author), or `invoker` (delegated by whoever launched the workflow run). Origin is provenance only; it does not affect evaluation precedence.
 **conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
 
 ### CreateModel
@@ -1399,7 +1399,7 @@ Source: packages/types/src/agent-data.ts
 Source: packages/types/src/grants.ts
 
 **effect**: Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).
-**origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the agent definition author), or `invoker` (delegated by whoever launched the agent). Origin is provenance only; it does not affect evaluation precedence.
+**origin**: Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the workflow definition author), or `invoker` (delegated by whoever launched the workflow run). Origin is provenance only; it does not affect evaluation precedence.
 **conditions**: Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.
 
 ### HistoryEntry

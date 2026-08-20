@@ -5,10 +5,10 @@
  * No other glob syntax is supported (no `?`, `**`, or character classes).
  *
  * Examples:
- *   matchPattern("*", "agent:agt_abc")          => true
- *   matchPattern("agent:*", "agent:agt_abc")    => true
- *   matchPattern("agent:agt_abc", "agent:agt_abc") => true
- *   matchPattern("agent:agt_abc", "agent:agt_xyz") => false
+ *   matchPattern("*", "workflow-run:run_abc")                   => true
+ *   matchPattern("workflow-run:*", "workflow-run:run_abc")      => true
+ *   matchPattern("workflow-run:run_abc", "workflow-run:run_abc") => true
+ *   matchPattern("workflow-run:run_abc", "workflow-run:run_xyz") => false
  *   matchPattern("wallet:wal_*", "wallet:wal_123") => true
  *   matchPattern("wallet:wal_*", "wallet:xyz")     => false
  */

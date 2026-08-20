@@ -17,7 +17,7 @@ const effectDescription =
   "Outcome when this grant is the one resolved for a request: `allow` permits the action, `deny` blocks it, `ask` requires interactive approval before proceeding. When several grants match, the most specific wins, and at equal specificity the strongest effect wins (`deny` over `ask` over `allow`).";
 
 const originDescription =
-  "Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the agent definition author), or `invoker` (delegated by whoever launched the agent). Origin is provenance only; it does not affect evaluation precedence.";
+  "Records where the grant came from: `system` (built-in), `role` (granted via a role), `creator` (from the workflow definition author), or `invoker` (delegated by whoever launched the workflow run). Origin is provenance only; it does not affect evaluation precedence.";
 
 const conditionsDescription =
   "Optional map of named conditions that must all pass for the grant to apply, evaluated against a condition registry at authorization time. A grant with conditions is skipped (fails closed) when no registry is available to evaluate them.";
@@ -107,7 +107,7 @@ export const GrantRequirement = type({
     "Effect to assign the materialized grant: `allow`, `deny`, or `ask`. Defaults to `allow` when omitted.",
   ),
   source: GrantSourceType.describe(
-    "Whose authority the grant is resolved against at launch: `creator` (the definition author) or `invoker` (whoever launched the agent) -- satisfied only if that party actually holds the requested capability. Tenant-owned credential use is not a grant requirement: it is authorized by ownership at resolution and its consumer-scoping grant is stamped directly (see CREDENTIALS.md).",
+    "Whose authority the grant is resolved against at launch: `creator` (the definition author) or `invoker` (whoever launched the workflow run) -- satisfied only if that party actually holds the requested capability. Tenant-owned credential use is not a grant requirement: it is authorized by ownership at resolution and its consumer-scoping grant is stamped directly (see CREDENTIALS.md).",
   ),
   "conditions?": "Record<string, unknown> | null",
 });

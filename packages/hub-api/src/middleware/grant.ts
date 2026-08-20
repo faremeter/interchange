@@ -34,7 +34,7 @@ export type CreateRequireGrantDeps = {
  * grant store and condition registry. Usage:
  *
  *   const requireGrant = createRequireGrant({ grantStore, conditionRegistry });
- *   app.get("/", requireGrant("agent:*", "read"), handler);
+ *   app.get("/", requireGrant("workflow-run:*", "read"), handler);
  */
 export function createRequireGrant({
   grantStore,
@@ -92,8 +92,8 @@ export function createRequireGrant({
  * Helper that builds a resource string from a URL parameter.
  *
  * Usage:
- *   requireGrant(idResource("agent", "agentId"), "manage")
- *   // resolves to "agent:agt_abc123" from the URL
+ *   requireGrant(idResource("workflow-run", "runId"), "manage")
+ *   // resolves to "workflow-run:run_abc123" from the URL
  */
 export function idResource(
   resourceType: string,
