@@ -2293,3 +2293,114 @@ export async function settleThenDrop(
   }
   dropHubLink(env);
 }
+
+/**
+ * Wait for the workflow-run pack-push pipeline to go quiet (the same
+ * quiescence signal `settleThenDrop` uses) WITHOUT dropping the hub link.
+ * Used before a mid-run child SIGKILL so no pack push is mid-flight when
+ * the child dies -- killing mid-push risks stranding pack state and
+ * flaking the respawn. "Quiet" is `quietMs` with no newly-accepted
+ * workflow-run pack (`env.hub.workflowRunPackReceipts`).
+ */
+export async function settleWorkflowRunPacks(
+  env: DeployFlowEnv,
+  opts: { quietMs?: number; timeoutMs?: number } = {},
+): Promise<void> {
+  const quietMs = opts.quietMs ?? 500;
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const start = Date.now();
+  let lastCount = env.hub.workflowRunPackReceipts.count;
+  let lastChange = Date.now();
+  for (;;) {
+    const current = env.hub.workflowRunPackReceipts.count;
+    if (current !== lastCount) {
+      lastCount = current;
+      lastChange = Date.now();
+    }
+    if (Date.now() - lastChange >= quietMs) return;
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(
+        `settleWorkflowRunPacks: pack stream did not go quiet for ${String(quietMs)}ms within ${String(timeoutMs)}ms\n${env.sidecarDiagnostics()}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/**
+ * Enumerate the live workflow-process child pids under the sidecar
+ * subprocess. The supervisor spawns each child by launching the sidecar's
+ * `bin/workflow-child` bun binary; the child is a descendant of the
+ * sidecar (`env.sidecar.proc.pid`), identified by `bin/workflow-child` in
+ * its argv. The process tree is walked transitively (the sidecar itself is
+ * a `bun run` process, so depth is not assumed).
+ *
+ * Non-throwing by design: returns `[]` when no child is up -- during the
+ * respawn backoff gap there is legitimately none, so a poll can watch a
+ * child appear or disappear without an empty result being an error.
+ */
+export function listWorkflowHostChildren(env: DeployFlowEnv): number[] {
+  const sidecarPid = env.sidecar.proc.pid;
+  if (sidecarPid === undefined) return [];
+  // `-o args=` gives the full argv (including the script path) on both
+  // darwin and linux; `command`/`comm` are darwin-only / truncated.
+  const result = Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid=,args="]);
+  const text = new TextDecoder().decode(result.stdout);
+  const childrenOf = new Map<number, number[]>();
+  const argsOf = new Map<number, string>();
+  for (const line of text.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+    if (match === null) continue;
+    const [, pidStr, ppidStr, args] = match;
+    if (pidStr === undefined || ppidStr === undefined || args === undefined) {
+      continue;
+    }
+    const pid = Number.parseInt(pidStr, 10);
+    const ppid = Number.parseInt(ppidStr, 10);
+    argsOf.set(pid, args);
+    const siblings = childrenOf.get(ppid) ?? [];
+    siblings.push(pid);
+    childrenOf.set(ppid, siblings);
+  }
+  const found: number[] = [];
+  const seen = new Set<number>();
+  const queue = [sidecarPid];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined || seen.has(current)) continue;
+    seen.add(current);
+    for (const child of childrenOf.get(current) ?? []) {
+      queue.push(child);
+      const args = argsOf.get(child) ?? "";
+      // `workflow-probe-child` does not contain the `workflow-child`
+      // substring, but exclude it explicitly so an argv layout change
+      // cannot silently target the probe.
+      if (
+        args.includes("bin/workflow-child") &&
+        !args.includes("workflow-probe-child")
+      ) {
+        found.push(child);
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * SIGKILL every live workflow-process child under the sidecar and return
+ * the killed pids. Throws if none is found: the caller kills a running
+ * child on purpose, so a mis-discovery must fail loudly rather than
+ * silently no-op. The sidecar process itself is left untouched -- only its
+ * child dies, so the in-process supervisor's respawn (not a sidecar
+ * restart) is what recovers the deployment.
+ */
+export function killWorkflowHostChild(env: DeployFlowEnv): number[] {
+  const pids = listWorkflowHostChildren(env);
+  if (pids.length === 0) {
+    throw new Error(
+      `killWorkflowHostChild: no live workflow-process child under sidecar pid ${String(env.sidecar.proc.pid)}\n${env.sidecarDiagnostics()}`,
+    );
+  }
+  for (const pid of pids) process.kill(pid, "SIGKILL");
+  return pids;
+}

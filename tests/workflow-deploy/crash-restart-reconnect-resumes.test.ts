@@ -54,6 +54,7 @@ import {
   injectSignal,
   listRunIds,
   readWorkflowRunEvents,
+  settleWorkflowRunPacks,
   startDeployFlowEnv,
   startSidecarSubprocess,
   waitFor,
@@ -117,36 +118,6 @@ afterAll(async () => {
     await fs.promises.rm(dir, { recursive: true, force: true });
   }
 });
-
-/**
- * Settle the workflow-run pack-push pipeline (no drop). The crash below is
- * the drop (a process death), so only the quiescence guarantee is needed.
- */
-async function settleWorkflowRunPacks(
-  target: DeployFlowEnv,
-  opts: { quietMs?: number; timeoutMs?: number } = {},
-): Promise<void> {
-  const quietMs = opts.quietMs ?? 500;
-  const timeoutMs = opts.timeoutMs ?? 10_000;
-  const start = Date.now();
-  let lastCount = target.hub.workflowRunPackReceipts.count;
-  let lastChange = Date.now();
-  for (;;) {
-    const current = target.hub.workflowRunPackReceipts.count;
-    if (current !== lastCount) {
-      lastCount = current;
-      lastChange = Date.now();
-    }
-    if (Date.now() - lastChange >= quietMs) return;
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(
-        `settleWorkflowRunPacks: pack stream did not go quiet for ${String(quietMs)}ms within ${String(timeoutMs)}ms` +
-          `\n${target.sidecarDiagnostics()}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}
 
 async function readAllRunEvents(
   target: DeployFlowEnv,
