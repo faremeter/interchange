@@ -30,7 +30,7 @@ const CredType = type.enumerated(...credentialTypes);
 const CredStatus = type.enumerated(...credentialStatuses);
 const CredentialSourceType = type.enumerated(...credentialRequirementSources);
 
-// A credential binding on an agent definition maps a tool package's declared
+// A credential binding on a workflow definition maps a tool package's declared
 // credential handle -- keyed `(package, handle)` against the tool-package
 // declaration -- to a concrete credential resolved fresh at launch. `locator`
 // is which credential namespace the name is resolved in; today only `tenant`
