@@ -283,7 +283,7 @@ Revoke federation trust
 ### GET /api/tenants/:tenantId/principals
 List principals in the tenant
 
-Lists all principals (users, agents, and workflow deployments) in the tenant. Filterable by kind and status.
+Lists all principals (users, agents, and workflow runs) in the tenant. Filterable by kind and status.
 
 Query: kind?: user|agent|workflow, status?: active|suspended|invited|deactivated, cursor?, limit?
 
@@ -310,7 +310,7 @@ Body: UpdatePrincipal
 ### DELETE /api/tenants/:tenantId/principals/:principalId
 Remove principal from tenant
 
-Removes a user or agent principal from the tenant. For agents, use agent deletion instead.
+Removes a principal from the tenant.
 
 204: (no content) -- Principal removed
 403: ErrorResponse -- Insufficient grants

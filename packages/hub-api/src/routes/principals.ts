@@ -112,7 +112,7 @@ export function createPrincipalRoutes({
       tags: ["Principals"],
       summary: "List principals in the tenant",
       description:
-        "Lists all principals (users, agents, and workflow deployments) in the tenant. Filterable by kind and status.",
+        "Lists all principals (users, agents, and workflow runs) in the tenant. Filterable by kind and status.",
       parameters: [
         {
           name: "kind",
@@ -329,8 +329,7 @@ export function createPrincipalRoutes({
     describeRoute({
       tags: ["Principals"],
       summary: "Remove principal from tenant",
-      description:
-        "Removes a user or agent principal from the tenant. For agents, use agent deletion instead.",
+      description: "Removes a principal from the tenant.",
       responses: {
         204: {
           description: "Principal removed",
