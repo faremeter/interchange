@@ -422,6 +422,31 @@ describe("workflowRunKindHandler.validatePush — newly-terminal signal", () => 
     ]);
   });
 
+  test("reports a lone seq-1 RunFailed with no preceding RunStarted", async () => {
+    // The exact artifact the crash-loop guard's supervisor-authored tombstone
+    // produces: the anchor run's events subtree is empty when the guard
+    // latches, so the RunFailed lands as the sole event at seq 1 (the
+    // runtime's first-event convention) with no RunStarted ahead of it. The
+    // validator keys contiguity off the first filename seq, not a fixed 0, and
+    // enforces no "RunStarted precedes terminal" rule, so this is accepted and
+    // flips the run to `failed`.
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/1.json`]: eventBody(
+        1,
+        "RunFailed",
+      ),
+    });
+    if (!r.ok) throw new Error(`expected ok, got: ${r.reason}`);
+    expect(r.newlyTerminalRuns).toEqual([
+      {
+        runId: "run-a",
+        status: "failed",
+        terminalEventJson: eventBody(1, "RunFailed"),
+      },
+    ]);
+  });
+
   test("reports no terminal run for a commit that adds only non-terminal events", async () => {
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
