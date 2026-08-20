@@ -143,6 +143,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         runId: string;
         terminalType?: string;
         signalId?: string;
+        // When true, omit the seq-0 RunStarted and emit the terminal event
+        // alone at seq 1 -- the exact artifact the crash-loop guard's
+        // supervisor-authored RunFailed produces on an anchor run whose event
+        // log is otherwise empty.
+        terminalOnlyAtSeq1?: boolean;
       }[],
     ): Promise<{ pack: Uint8Array; tip: string }> {
       const srcDir = await makeTempDir("wfr-terminal-src-");
@@ -160,7 +165,25 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const files: Record<string, string> = {};
-      for (const { runId, terminalType, signalId } of runs) {
+      for (const {
+        runId,
+        terminalType,
+        signalId,
+        terminalOnlyAtSeq1,
+      } of runs) {
+        if (terminalOnlyAtSeq1 === true) {
+          if (terminalType === undefined) {
+            throw new Error("terminalOnlyAtSeq1 requires a terminalType");
+          }
+          if (signalId !== undefined) {
+            throw new Error(
+              "terminalOnlyAtSeq1 cannot be combined with a signalId",
+            );
+          }
+          files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/1.json`] =
+            eventBody(1, terminalType);
+          continue;
+        }
         files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/0.json`] = eventBody(
           0,
           "RunStarted",
@@ -300,6 +323,37 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(workflowRun)
         .where(eq(workflowRun.id, "run-cancelled"));
       expect(cancelled?.status).toBe("cancelled");
+    });
+
+    test("flips a deployed run to failed from a lone seq-1 RunFailed tombstone", async () => {
+      // The crash-loop guard's supervisor-authored RunFailed is the sole event
+      // on the deployment's anchor run: seq 1, no preceding RunStarted, on a run
+      // still in its pre-trigger `deployed` window. This drives that exact
+      // artifact through the full pack-receive path -- not validatePush in
+      // isolation -- and asserts the run's status flips to `failed`.
+      await seedWorkflowRun(h.db, {
+        id: "run-crashloop",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        status: "deployed",
+      });
+
+      const { pack, tip } = await buildPack([
+        {
+          runId: "run-crashloop",
+          terminalType: "RunFailed",
+          terminalOnlyAtSeq1: true,
+        },
+      ]);
+      const verdict = await receiveWith(h.db, pack, tip);
+      expect(verdict).toEqual({ accepted: true });
+
+      const [row] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-crashloop"));
+      expect(row?.status).toBe("failed");
+      expect(row?.endedAt).not.toBeNull();
     });
 
     test("deactivates only the run's own principal, not a bystander", async () => {
