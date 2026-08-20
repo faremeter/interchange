@@ -163,6 +163,21 @@ export const DEFAULT_CRASH_LOOP_WINDOW_MS = 60_000;
 export const DEFAULT_CRASH_LOOP_STABLE_RESET_MS = 60_000;
 
 /**
+ * Default initial respawn backoff (ms): the wait before the first respawn
+ * after an unexpected exit. Overridable via
+ * `WorkflowSupervisorBindings.respawnBackoffInitialMs`.
+ */
+export const DEFAULT_RESPAWN_BACKOFF_INITIAL_MS = 1_000;
+
+/**
+ * Default cap (ms) on the exponential respawn backoff. Kept below
+ * `DEFAULT_CRASH_LOOP_WINDOW_MS` so a slow flapper's crashes still fall
+ * within the window and latch the guard. Overridable via
+ * `WorkflowSupervisorBindings.respawnBackoffMaxMs`.
+ */
+export const DEFAULT_RESPAWN_BACKOFF_MAX_MS = 30_000;
+
+/**
  * Default watchdog for `reEmitParkedCorrelations`' wait on the child's
  * `parked-correlations.response`. 30s is generous enough for a healthy child
  * to enumerate its in-flight runs and load each parked snapshot, tight
@@ -666,6 +681,10 @@ export function createWorkflowSupervisor(
     bindings.crashLoopWindowMs ?? DEFAULT_CRASH_LOOP_WINDOW_MS;
   const crashLoopStableResetMs =
     bindings.crashLoopStableResetMs ?? DEFAULT_CRASH_LOOP_STABLE_RESET_MS;
+  const respawnBackoffInitialMs =
+    bindings.respawnBackoffInitialMs ?? DEFAULT_RESPAWN_BACKOFF_INITIAL_MS;
+  const respawnBackoffMaxMs =
+    bindings.respawnBackoffMaxMs ?? DEFAULT_RESPAWN_BACKOFF_MAX_MS;
   const crashNow = bindings.recyclePolicyNow ?? defaultNow;
   /**
    * Resolved on every successful `enqueueInbox`; the dispatch loop
@@ -726,6 +745,21 @@ export function createWorkflowSupervisor(
   // Handle for the armed stable-run reset timer (or null). Cleared and
   // re-armed on every transition to `running`; cleared on teardown.
   let stableRunResetTimer: unknown = null;
+  // Current exponential respawn backoff (ms). Advances by doubling on each
+  // respawn (capped at `respawnBackoffMaxMs`) and resets to the initial
+  // value when a respawned child runs stably. See `waitRespawnBackoff`.
+  let respawnBackoffMs = respawnBackoffInitialMs;
+  // Every armed backoff wait: the injected timer handle plus the promise
+  // resolver, so a shutdown can cancel all of them and unblock the parked
+  // respawn coroutines (each then bails at its phase/generation re-check).
+  // A SET, not a single slot: more than one coroutine can be parked at once
+  // -- a recycle can install a fresh, live child DURING one crash's backoff
+  // wait, and that child crashing parks a second coroutine. A single slot
+  // would drop the earlier one's timer and leak it past shutdown.
+  const respawnBackoffWaits = new Set<{
+    timer: unknown;
+    resolve: () => void;
+  }>();
 
   // A protocol violation on a live cohort's control or event channel. The
   // channel receiver ends its iterator and invokes this; a clean process
@@ -776,9 +810,42 @@ export function createWorkflowSupervisor(
     stableRunResetTimer = readySetTimer(() => {
       stableRunResetTimer = null;
       if (generation === childGeneration && state.phase === "running") {
+        // The cohort ran stably: reset both the crash counter and the
+        // exponential backoff so a flap followed by stability starts over.
         crashTimestamps.length = 0;
+        respawnBackoffMs = respawnBackoffInitialMs;
       }
     }, crashLoopStableResetMs);
+  }
+
+  // Wait the current respawn backoff before a respawn. The wait uses the
+  // injected timer so tests drive it deterministically, and is cancellable:
+  // `cancelRespawnBackoffWaits` (called on shutdown) clears the timer and
+  // resolves the promise early so the parked respawn coroutine unblocks and
+  // bails at its phase/generation re-check rather than sleeping out a full
+  // 30s backoff against a torn-down supervisor.
+  function waitRespawnBackoff(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const entry: { timer: unknown; resolve: () => void } = {
+        timer: null,
+        resolve,
+      };
+      entry.timer = readySetTimer(() => {
+        respawnBackoffWaits.delete(entry);
+        resolve();
+      }, ms);
+      respawnBackoffWaits.add(entry);
+    });
+  }
+
+  // Cancel every armed backoff wait. Idempotent: an empty set is a no-op,
+  // and each entry's own fire path has already removed it.
+  function cancelRespawnBackoffWaits(): void {
+    for (const entry of respawnBackoffWaits) {
+      readyClearTimer(entry.timer);
+      entry.resolve();
+    }
+    respawnBackoffWaits.clear();
   }
 
   // Bump the generation and arm the `handle.exited` watcher for a child
@@ -845,8 +912,17 @@ export function createWorkflowSupervisor(
       // owning lifecycle path handles teardown.
       return;
     }
-    const priorRunning = state;
-    const priorContext = spawnContext;
+    // A cohort that just crashed did not earn a stability reward: disarm its
+    // stable-run reset timer up front so it cannot fire during the backoff
+    // wait below (where the phase is still `running` and the generation is
+    // still this dead cohort's -- exactly the state the timer's own guard
+    // reads as "alive and stable") and wrongly clear the crash counter.
+    clearStableRunResetTimer();
+    // Capture the crashing cohort's generation. If a recycle or policy
+    // respawn installs a fresh cohort while the backoff wait below is
+    // parked, the generation advances and this handler must NOT respawn
+    // that healthy cohort -- the post-wait guard bails on the mismatch.
+    const armedGeneration = childGeneration;
     const nowMs = crashNow();
     crashTimestamps.push(nowMs);
     pruneCrashTimestamps(nowMs);
@@ -894,7 +970,27 @@ export function createWorkflowSupervisor(
       }
       return;
     }
-    logger.warn`workflow-process exited unexpectedly; respawning (${reason})`;
+    const thisBackoffMs = respawnBackoffMs;
+    logger.warn`workflow-process exited unexpectedly; respawning after ${String(thisBackoffMs)}ms backoff (${reason})`;
+    await waitRespawnBackoff(thisBackoffMs);
+    // A recycle/policy respawn, or a shutdown, may have run during the
+    // backoff wait. Bail unless THIS dead cohort is still the current
+    // running one: the generation guard prevents respawning a healthy
+    // cohort a recycle just installed, and the phase guard prevents acting
+    // after teardown. No await separates this re-check from `runRespawn`'s
+    // synchronous `respawnInProgress` set, so nothing can interleave.
+    if (
+      childGeneration !== armedGeneration ||
+      state.phase !== "running" ||
+      spawnContext === null
+    ) {
+      return;
+    }
+    const priorRunning = state;
+    const priorContext = spawnContext;
+    // Advance the backoff only now that a respawn is actually happening, so
+    // a bail above does not inflate the wait for a respawn that never ran.
+    respawnBackoffMs = Math.min(respawnBackoffMs * 2, respawnBackoffMaxMs);
     await runRespawn({
       origin: "crash",
       reason,
@@ -908,8 +1004,8 @@ export function createWorkflowSupervisor(
     });
     // The respawned child is now the running cohort. Arm the stable-run
     // reset against its generation: if it survives `crashLoopStableResetMs`
-    // the crash counter clears, so a flap followed by stability does not
-    // latch on a later, unrelated crash.
+    // the crash counter and backoff reset, so a flap followed by stability
+    // does not latch on a later, unrelated crash.
     armStableRunResetTimer(childGeneration);
   }
 
@@ -2946,6 +3042,10 @@ export function createWorkflowSupervisor(
       // `maybeHandleChildExit` no-ops on it, and `spawn()` requires `idle`,
       // so the stale slot is never re-examined.
       clearStableRunResetTimer();
+      // Cancel every armed respawn backoff wait. The phase was flipped to
+      // `stopping` synchronously above, so each parked respawn coroutine
+      // this unblocks re-checks the phase and bails without respawning.
+      cancelRespawnBackoffWaits();
       pendingChildExit = null;
       spawnContext = null;
       if (
