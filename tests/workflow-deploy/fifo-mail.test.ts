@@ -25,21 +25,9 @@
 // not exercise the claim-check substrate, so a "trivial workflow that
 // handles mail" would not test the FIFO surface this commit pins.
 //
-// Crash-replay follow-up. A second test case for the supervisor's
-// spawn-time `replayProcessingToInbox` behaviour -- writing a mock
-// `processing/<messageId>.json` entry via `simulateProcessingCrash`
-// before the supervisor spawns, then asserting the replay moves it
-// back into `inbox/` and the dispatch loop consumes it -- is a
-// follow-up. The fixture's `simulateProcessingCrash` helper composes
-// `enqueueInbox` plus `dequeueToProcessing` against the workflow-run
-// repo, but the existing fixture has no clean handle to seed that
-// state BEFORE the supervisor spawns: the deployment is set up by
-// the orchestrator (which spawns the supervisor synchronously) and
-// the supervisor's replay runs once at spawn, off the critical path.
-// A faithful crash-replay assertion requires either a supervisor
-// recycle hook (which the fixture does not currently expose end-to-
-// end) or a pre-spawn seeding hook on `deployWorkflow`. Adding either
-// is a separate landing.
+// Crash-replay across a real child SIGKILL -- the respawn-time
+// `replayProcessingToInbox` that keeps FIFO across an unexpected child
+// exit -- is covered end to end in `crash-respawn-fifo.test.ts`.
 //
 // The deployment is deployed BY SOURCE-REF (bundle a source entry module into a
 // hub asset, probe it, approve+freeze it against a real DB, deploy the
