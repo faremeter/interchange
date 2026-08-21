@@ -37,6 +37,7 @@ import type {
   ContextStore,
   InboundMessage,
   InferenceSource,
+  Mail,
 } from "@intx/types/runtime";
 
 import {
@@ -63,6 +64,25 @@ import {
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+// Build the minimal decoded `Mail` for a plain-text body: a single
+// `text/plain` part whose decoded text is inlined (its `ref` is never read
+// for text parts). This is the shape a `trigger.fire` / `signal.deliver`
+// control-frame payload now carries.
+function textMail(body: string): Mail {
+  return {
+    headers: {
+      from: "user@integration",
+      to: ["run@integration"],
+      date: "",
+      messageId: "<m@integration>",
+    },
+    rawHeaders: {},
+    parts: [
+      { contentType: "text/plain", ref: "mail-part:///r/m/0-text", text: body },
+    ],
+  };
 }
 
 function createMemoryNdjsonStream() {
@@ -668,6 +688,7 @@ describe("runWorkflowChild", () => {
         runId: "run-1",
         messageId: "msg-1",
         receivedAt: 1,
+        payload: textMail("hello from the inbox"),
       },
     });
     await supervisorSender.send({
@@ -834,11 +855,21 @@ describe("runWorkflowChild", () => {
     // run with that run's id.
     await supervisorSender.send({
       type: "trigger.fire",
-      data: { runId: "run-1", messageId: "msg-1", receivedAt: 1 },
+      data: {
+        runId: "run-1",
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: textMail("body msg-1"),
+      },
     });
     await supervisorSender.send({
       type: "trigger.fire",
-      data: { runId: "run-2", messageId: "msg-2", receivedAt: 2 },
+      data: {
+        runId: "run-2",
+        messageId: "msg-2",
+        receivedAt: 2,
+        payload: textMail("body msg-2"),
+      },
     });
     // Both runs reach terminal asynchronously; the run-loop fires cleanup
     // in each run's completion continuation. Wait for both reclamations
@@ -944,7 +975,12 @@ describe("runWorkflowChild", () => {
 
     await supervisorSender.send({
       type: "trigger.fire",
-      data: { runId: "run-1", messageId: "msg-1", receivedAt: 1 },
+      data: {
+        runId: "run-1",
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: textMail("warm body"),
+      },
     });
 
     let terminalSeq: number | null = null;
@@ -1222,7 +1258,12 @@ describe("runWorkflowChild", () => {
       // resumeFromEvents. The guard must decline this second drive.
       await supervisorSender.send({
         type: "trigger.fire",
-        data: { runId, messageId: runId, receivedAt: 1 },
+        data: {
+          runId,
+          messageId: runId,
+          receivedAt: 1,
+          payload: textMail("re-fired inbound"),
+        },
       });
 
       // Wait for the run's terminal, counting every terminal.event for the
@@ -1614,6 +1655,7 @@ describe("runWorkflowChild", () => {
         runId: "run-bad",
         messageId: "msg-bad",
         receivedAt: 1,
+        payload: textMail("test input"),
       },
     });
     supervisorToChild.close();
@@ -1720,7 +1762,11 @@ function buildWarmAgentSpy(): { agent: Agent; spy: WarmAgentSpy } {
       if (!spy.lspAlive) {
         throw new Error("warm spy: send after LSP disposed");
       }
-      const text = typeof content === "string" ? content : "message";
+      // A mail-derived input reaches `agent.send` as an `InboundMessage`; its
+      // `content` carries the conversation text (absent for an attachments-only
+      // message). A plain string arrives verbatim.
+      const text =
+        typeof content === "string" ? content : (content.content ?? "");
       // The child frames the inbound mail as the conversation text; the
       // seeded body is the substring we assert on. Record just the
       // running transcript so continuity is observable.
@@ -1958,6 +2004,9 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       onEvent,
       authorize,
       warmCache,
+      _sourcesRef,
+      _credentialWiring,
+      mailPartReader,
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
@@ -1967,6 +2016,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
           return agent;
         },
         onEvent: (event) => onEvent(event),
+        mailPartReader,
         ...(warmCache !== undefined ? { warmCache } : {}),
       })(req);
 
@@ -2035,7 +2085,12 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     // First message.
     await supervisorSender.send({
       type: "trigger.fire",
-      data: { runId: "run-1", messageId: "msg-1", receivedAt: 1 },
+      data: {
+        runId: "run-1",
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: textMail("alpha body"),
+      },
     });
     await waitForTriggeredRun(childToSupervisor, () => spy.replies.length >= 1);
 
@@ -2048,7 +2103,12 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     // Second message.
     await supervisorSender.send({
       type: "trigger.fire",
-      data: { runId: "run-2", messageId: "msg-2", receivedAt: 2 },
+      data: {
+        runId: "run-2",
+        messageId: "msg-2",
+        receivedAt: 2,
+        payload: textMail("bravo body"),
+      },
     });
     await waitForTriggeredRun(childToSupervisor, () => spy.replies.length >= 2);
 
@@ -2134,6 +2194,9 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       onEvent,
       authorize,
       warmCache,
+      _sourcesRef,
+      _credentialWiring,
+      mailPartReader,
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
@@ -2143,6 +2206,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
           return agent;
         },
         onEvent: (event) => onEvent(event),
+        mailPartReader,
         ...(warmCache !== undefined ? { warmCache } : {}),
       })(req);
 
@@ -2206,7 +2270,12 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
     // Build the warm agent with one message so the cache holds an entry.
     await supervisorSender.send({
       type: "trigger.fire",
-      data: { runId: "run-1", messageId: "msg-1", receivedAt: 1 },
+      data: {
+        runId: "run-1",
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: textMail("alpha body"),
+      },
     });
     await waitForTriggeredRun(childToSupervisor, () => spy.replies.length >= 1);
     expect(factoryCalls).toBe(1);

@@ -170,6 +170,14 @@ export const ControlPayload = type(
       runId: "string",
       messageId: "string",
       receivedAt: "number",
+      // The run's inbound-mail input, resolved by the supervisor (the sole
+      // mail owner) before the frame: a decoded `Mail` (headers plus part
+      // descriptors that reference the part bytes committed to the workflow-run
+      // substrate). The child hands this straight to the runtime as the trigger
+      // payload. Refs, not raw mail bytes, ride here; the committed part files
+      // stay in the substrate. Typed `unknown` -- `Mail` is a nested structural
+      // type validated at the consumption boundary by `isMail`.
+      payload: "unknown",
     },
   },
   "|",
@@ -182,9 +190,10 @@ export const ControlPayload = type(
       // The resume decision in FINAL form -- the child commits it as the
       // SignalReceived payload verbatim. Each sender owns any
       // provenance-specific preparation BEFORE this frame: the dispatch loop
-      // resolves an inbound mail to conversation text (like the turn-1
-      // trigger), while `deliverSignal` ships a structured signal payload
-      // unchanged. Do NOT ship raw inbound mail bytes through here.
+      // resolves an inbound mail to a decoded `Mail` (headers plus part
+      // references, like the turn-1 trigger), while `deliverSignal` ships a
+      // structured signal payload unchanged -- so this field stays
+      // polymorphic. Do NOT ship raw inbound mail bytes through here.
       payload: "unknown",
     },
   },

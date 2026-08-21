@@ -34,7 +34,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+import { base64Encode, hexEncode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -227,6 +227,7 @@ function createMemoryInbox(): InboxPrimitives & {
     messageId: string;
     receivedAt: number;
     mailAuditRef: { store: string; path: string };
+    rawMessage?: string;
   };
   const st = new Map<
     string,
@@ -255,6 +256,9 @@ function createMemoryInbox(): InboxPrimitives & {
         messageId: args.messageId,
         receivedAt: args.receivedAt,
         mailAuditRef: args.mailAuditRef,
+        ...(args.rawMessage !== undefined
+          ? { rawMessage: args.rawMessage }
+          : {}),
       };
       s.inbox.set(key, env);
       return {
@@ -287,6 +291,9 @@ function createMemoryInbox(): InboxPrimitives & {
           receivedAt: env.receivedAt,
           address,
           mailAuditRef: env.mailAuditRef,
+          ...(env.rawMessage !== undefined
+            ? { rawMessage: env.rawMessage }
+            : {}),
         },
       };
     },
@@ -328,6 +335,9 @@ function createMemoryInbox(): InboxPrimitives & {
         messageId,
         receivedAt,
         mailAuditRef: { store: "memory", path: messageId },
+        rawMessage: base64Encode(
+          new TextEncoder().encode(`Message-ID: ${messageId}\r\n\r\nbody`),
+        ),
       });
     },
   };

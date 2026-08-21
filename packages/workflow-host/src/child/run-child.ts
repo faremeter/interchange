@@ -51,14 +51,13 @@
 
 import { getLogger } from "@intx/log";
 import { generateKeyPair } from "@intx/crypto";
-import { base64Decode, hexEncode } from "@intx/types";
+import { hexEncode } from "@intx/types";
 
 import type {
   Principal,
   RepoId,
   RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions/substrate";
-import { readProcessingEntry } from "@intx/hub-sessions/substrate";
 import type { DirectorRegistry } from "@intx/agent";
 import {
   rewriteInlineOnTriggerBodies,
@@ -88,11 +87,12 @@ import {
   type WorkflowHostDrainController,
 } from "../drain-controller";
 
-import type { InferenceSource } from "@intx/types/runtime";
+import type { InferenceSource, MailPartReader } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/sidecar";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
+import { createMailPartReader } from "../adapters/mail-part-store";
 import type {
   HostSpawnSuspendableChild,
   RunSuspendableChild,
@@ -114,7 +114,6 @@ import {
   type NdjsonWriter,
 } from "../ipc/index";
 import { createWorkflowHostSignalChannel } from "../seams/signal-channel";
-import { extractConversationText } from "../conversation-text";
 import type { CredentialsSnapshot } from "../supervisor/credentials";
 import { hashGrants } from "../supervisor/credentials";
 
@@ -295,6 +294,7 @@ export type ChildStepInvoker = (
   warmCache: WarmAgentCache | undefined,
   sourcesRef: SourcesSnapshotRef,
   credentialWiring: CredentialWiring,
+  mailPartReader: MailPartReader,
 ) => Promise<StepInvokeResult>;
 
 /**
@@ -985,23 +985,15 @@ async function handleControlPayload(
         ctx.triggeredRunIds.push(payload.data.runId);
         return false;
       }
-      // Resolve the inbound mail bytes for this messageId from the
-      // claim-check processing entry the supervisor created when it
-      // dequeued the message. The bytes become the run's trigger
-      // payload; the one-step workflow's first step defaults its input
-      // selector to `trigger.payload` (defineWorkflow's default-input
-      // convention), so the step input resolves to the inbound message
-      // and `agent.send` receives it. A missing or unreadable entry
-      // surfaces loudly -- the run cannot proceed without its input,
-      // and silently running the agent with empty input would mask a
-      // real mailbox-ownership failure.
-      const triggerPayload = await resolveTriggerPayload({
-        substrate: ctx.bindings.substrate,
-        principal: ctx.bindings.principal,
-        workflowRunRepoId: ctx.bindings.workflowRunRepoId,
-        mailboxAddress: ctx.env.mailboxAddress,
-        messageId: payload.data.messageId,
-      });
+      // The supervisor resolved the inbound mail to the run's input (the
+      // conversation text plus references to attachment bytes it committed to
+      // the workflow-run substrate) and shipped it in the frame. It becomes
+      // the run's trigger payload; the one-step workflow's first step defaults
+      // its input selector to `trigger.payload` (defineWorkflow's default-input
+      // convention), so the step input resolves to the inbound message and
+      // `agent.send` receives it once its attachment references are resolved to
+      // bytes at send time.
+      const triggerPayload = payload.data.payload;
       const env = buildRuntimeEnv({
         runId: payload.data.runId,
         bindings: ctx.bindings,
@@ -1396,6 +1388,17 @@ function buildRuntimeEnv(args: {
     runId: args.runId,
     ref: args.bindings.workflowRunRef,
   });
+  // Reader for inbound-mail parts, a sibling of `blobs` over the same
+  // workflow-run repo. The step invoker resolves a `Mail` part's `ref` to its
+  // bytes through it at `agent.send` time; the supervisor committed the bytes
+  // before the trigger. Deployment-scoped (the ref encodes the owning run), so
+  // one reader resolves any run's parts.
+  const mailPartReader = createMailPartReader({
+    substrate: args.bindings.substrate,
+    repoId: args.bindings.workflowRunRepoId,
+    principal: args.bindings.principal,
+    ref: args.bindings.workflowRunRef,
+  });
   // Wrap the step invoker so every `InferenceEvent` the harness emits
   // funnels through the per-run `onEvent` closure, which forwards
   // the event up the HMAC-authenticated event channel. The wrap is
@@ -1411,6 +1414,7 @@ function buildRuntimeEnv(args: {
       args.warmCache,
       args.sourcesRef,
       args.credentialWiring,
+      mailPartReader,
     );
   };
   // Adapt the host binding (which takes the run's `onEvent` sink) down to the
@@ -1623,47 +1627,6 @@ function reclaimRunStorageIfCold(opts: {
     const message = cause instanceof Error ? cause.message : String(cause);
     logger.warn`workflow-step-state cleanup failed for runId=${opts.runId}: ${message}`;
   });
-}
-
-/**
- * Resolve the run's trigger payload from the inbound mail message the
- * supervisor moved to the claim-check processing queue. Reads the
- * processing entry by messageId (a read-only snapshot of the
- * `refs/heads/events` tip that cannot race the supervisor's
- * `markConsumed` write), decodes the inlined raw MIME bytes, and
- * extracts the conversation text the agent's `agent.send` receives.
- *
- * Defensive: a missing processing entry, an entry with no inlined
- * bytes, or unparseable mail all throw. The run cannot proceed without
- * its input, and a placeholder would mask a mailbox-ownership failure.
- */
-async function resolveTriggerPayload(args: {
-  substrate: SubstrateRepoStore;
-  principal: Principal;
-  workflowRunRepoId: RepoId;
-  mailboxAddress: string;
-  messageId: string;
-}): Promise<string> {
-  const entry = await readProcessingEntry(
-    args.substrate,
-    args.principal,
-    args.workflowRunRepoId,
-    args.mailboxAddress,
-    args.messageId,
-  );
-  if (entry === null) {
-    throw new Error(
-      `workflow-child trigger.fire: no claim-check processing entry for messageId ${args.messageId} at ${args.mailboxAddress}; the run has no input to deliver to the agent`,
-    );
-  }
-  const rawMessageBase64 = entry.envelope.rawMessage;
-  if (rawMessageBase64 === undefined) {
-    throw new Error(
-      `workflow-child trigger.fire: processing entry for messageId ${args.messageId} carries no inlined rawMessage; the supervisor must inline the inbound mail bytes for the child to deliver them as the step input`,
-    );
-  }
-  const raw = base64Decode(rawMessageBase64);
-  return extractConversationText(raw, args.messageId);
 }
 
 function defaultClock(): Date {

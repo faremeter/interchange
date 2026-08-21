@@ -6,8 +6,9 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
-import { hexDecode, hexEncode, signalName } from "@intx/types";
+import { base64Encode, hexDecode, hexEncode, signalName } from "@intx/types";
 import type { InferenceSource } from "@intx/types/runtime";
+import { isMail } from "@intx/types/runtime";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import { StaleInboxEnqueueError } from "@intx/hub-sessions";
 import type { EnqueueInboxOutcome } from "@intx/hub-sessions";
@@ -3641,7 +3642,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.supervisor.shutdown();
   });
 
-  test("a mail resumes a parked run with the conversation text, not raw MIME", async () => {
+  test("a mail resumes a parked run with the decoded Mail, not raw MIME", async () => {
     const baseDir = await makeTempDir("supervisor-signal-text-");
     await seedStepGrants(
       baseDir,
@@ -3688,9 +3689,14 @@ describe("createWorkflowSupervisor", () => {
     }
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(1);
-    // The frame carries the EXTRACTED conversation text, resolved at the
-    // dispatch site, not the raw base64 MIME envelope.
-    expect(signals[0]?.payload).toBe("hello turn two");
+    // The frame carries the decoded Mail, resolved at the dispatch site, not
+    // the raw base64 MIME envelope. The text/plain part's inline text is the
+    // conversation body.
+    const payload = signals[0]?.payload;
+    if (!isMail(payload)) throw new Error("signal payload is not a Mail");
+    expect(payload.parts).toHaveLength(1);
+    expect(payload.parts[0]?.contentType).toBe("text/plain");
+    expect(payload.parts[0]?.text).toBe("hello turn two");
 
     await wired.childSender.send({
       type: "terminal.event",
@@ -3775,10 +3781,11 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    // A malformed multipart mail whose part 1 cannot be parsed: extraction
-    // throws. It must be dropped and CONSUMED, not thrown-and-replayed forever.
+    // A mail whose only leaf part declares an unsupported content-transfer-
+    // encoding: decodeMail throws deterministically. It must be dropped and
+    // CONSUMED, not thrown-and-replayed forever.
     const bad = new TextEncoder().encode(
-      "Content-Type: multipart/mixed; boundary=zzz\r\n\r\nno parts here",
+      "Content-Type: text/plain\r\nContent-Transfer-Encoding: banana\r\n\r\nx",
     );
     wired.mailBus.deliver(address, bad);
 
@@ -3809,7 +3816,9 @@ describe("createWorkflowSupervisor", () => {
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(1);
     expect(signals[0]?.signalName).toBe(signalName("corr-input-1"));
-    expect(signals[0]?.payload).toBe("hello");
+    const goodPayload = signals[0]?.payload;
+    if (!isMail(goodPayload)) throw new Error("signal payload is not a Mail");
+    expect(goodPayload.parts[0]?.text).toBe("hello");
 
     await wired.childSender.send({
       type: "terminal.event",
@@ -3820,6 +3829,67 @@ describe("createWorkflowSupervisor", () => {
         at: "test",
       },
     });
+    await wired.supervisor.shutdown();
+  });
+
+  test("a transient commit failure leaves the mail reclaimable and the loop alive", async () => {
+    const baseDir = await makeTempDir("supervisor-transient-commit-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const wired = await spawnWithRunStart({
+      baseDir,
+      // Fail ONLY the mail-parts commit -- credential and cancel writes still
+      // succeed -- to model a transient substrate fault reaching prepareMail.
+      beforeWrite: ({ preservePrefix }) => {
+        if (preservePrefix.includes("/parts/")) {
+          throw new Error("substrate boom (transient)");
+        }
+      },
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
+        });
+      },
+    });
+    const address = "run_deployment-x@example.com";
+
+    // Park the run so a mail routes as signal.deliver.
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: "run_deployment-x",
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+
+    // A well-formed mail whose parts commit throws a NON-deterministic fault.
+    // Unlike a malformed mail (deterministic drop), it must NOT be consumed --
+    // it stays reclaimable in processing -- and no signal is delivered.
+    const good = new TextEncoder().encode(
+      "Content-Type: text/plain\r\n\r\nhello",
+    );
+    wired.mailBus.deliver(address, good);
+
+    // Give the dispatch loop time to dequeue, fail the commit, and move on.
+    await new Promise((r) => setTimeout(r, 200));
+
+    const snap = wired.inboxPrimitives.snapshot(address);
+    expect(snap.consumed.size).toBe(0);
+    expect(snap.processing.size).toBe(1);
+    expect(parseSignalDelivers(wired.supervisorToChild.flushed()).length).toBe(
+      0,
+    );
+
+    // The loop survived the throw rather than crashing: shutdown completes.
     await wired.supervisor.shutdown();
   });
 
@@ -4479,6 +4549,11 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       messageId: "msg-orphan",
       receivedAt: 1000,
       mailAuditRef: { store: "test", path: "test/orphan" },
+      // The recovered entry must carry decodable mail bytes: the dispatch loop
+      // decodes and commits them before forwarding the trigger.fire.
+      rawMessage: base64Encode(
+        new TextEncoder().encode("Content-Type: text/plain\r\n\r\norphan body"),
+      ),
     });
     // In the unified-dispatch path markConsumed waits for the child to
     // reach terminal or park before consuming the message.

@@ -23,6 +23,9 @@ import type {
   InboundMessage,
   InferenceEvent,
   InferenceSource,
+  Mail,
+  MailPart,
+  MailPartReader,
 } from "@intx/types/runtime";
 
 import { createWorkflowStepInvoker, type StepEnvBase } from "./step-invoker";
@@ -1178,3 +1181,264 @@ function readReply(output: unknown): string {
   }
   throw new Error(`unexpected step output shape: ${JSON.stringify(output)}`);
 }
+
+describe("workflow-host StepInvoker adapter - inbound mail input", () => {
+  const allowAll: WorkflowAuthorizeFn = async () => ({
+    effect: "allow",
+    matchingGrants: [],
+    resolvedBy: null,
+  });
+
+  function buildCapturingAgent(): {
+    agent: Agent;
+    captured: { message: string | InboundMessage | undefined };
+  } {
+    const captured: { message: string | InboundMessage | undefined } = {
+      message: undefined,
+    };
+    const agent: Agent = {
+      async send(content): Promise<SendResult> {
+        captured.message = content;
+        return {
+          type: "reply",
+          reply: "ok",
+          turn: {
+            role: "assistant",
+            content: [{ type: "text", text: "ok" }],
+            model: STUB_SOURCE.model,
+            timestamp: 0,
+          },
+        };
+      },
+      stream() {
+        throw new Error("stub stream() not used");
+      },
+      deliver(_message: InboundMessage) {
+        throw new Error("stub deliver() not used");
+      },
+      async close() {
+        /* no-op */
+      },
+      setSource(_source: InferenceSource) {
+        throw new Error("stub setSource() not used");
+      },
+      setSources(_sources: InferenceSource[], _defaultSource: string) {
+        throw new Error("stub setSources() not used");
+      },
+      async history() {
+        return [];
+      },
+      async checkpoints() {
+        return [];
+      },
+      async readAt() {
+        return [];
+      },
+      blobReader: stubBlobReader(),
+    };
+    return { agent, captured };
+  }
+
+  function stubReader(bytes: Record<string, string>): MailPartReader {
+    return {
+      async read(ref: string): Promise<Uint8Array> {
+        const value = bytes[ref];
+        if (value === undefined) {
+          throw new Error(`stub reader has no bytes for ${ref}`);
+        }
+        return new TextEncoder().encode(value);
+      },
+    };
+  }
+
+  function mail(parts: MailPart[]): Mail {
+    return {
+      headers: {
+        from: "sender@example.com",
+        to: ["run@deployment.example.com"],
+        date: "2026-01-02T03:04:05Z",
+        messageId: "<m@example.com>",
+      },
+      rawHeaders: {},
+      parts,
+    };
+  }
+
+  test("projects a Mail's parts into the InboundMessage, resolving part bytes", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+      mailPartReader: stubReader({ "mail-part:///r/m/1-photo.png": "PNGDATA" }),
+    });
+    await invoker(
+      buildRequest({
+        input: mail([
+          {
+            contentType: "text/plain",
+            ref: "mail-part:///r/m/0-text",
+            text: "look at this",
+          },
+          {
+            contentType: "image/png",
+            ref: "mail-part:///r/m/1-photo.png",
+            filename: "photo.png",
+          },
+        ]),
+      }),
+    );
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    // The real From: header rides through.
+    expect(msg.headers.from).toBe("sender@example.com");
+    expect(msg.content).toBe("look at this");
+    expect(msg.attachments).toHaveLength(1);
+    expect(msg.attachments?.[0]?.name).toBe("photo.png");
+    expect(msg.attachments?.[0]?.contentType).toBe("image/png");
+    expect(new TextDecoder().decode(msg.attachments?.[0]?.data)).toBe(
+      "PNGDATA",
+    );
+  });
+
+  test("routes an attachment-disposition text part and an html part to attachments", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+      mailPartReader: stubReader({
+        "mail-part:///r/m/1-notes.txt": "SECRET FILE",
+        "mail-part:///r/m/2-body.html": "<html>hi</html>",
+      }),
+    });
+    await invoker(
+      buildRequest({
+        input: mail([
+          {
+            contentType: "text/plain",
+            ref: "mail-part:///r/m/0-body",
+            text: "the body",
+          },
+          {
+            contentType: "text/plain",
+            ref: "mail-part:///r/m/1-notes.txt",
+            filename: "notes.txt",
+            disposition: "attachment",
+            text: "SECRET FILE",
+          },
+          { contentType: "text/html", ref: "mail-part:///r/m/2-body.html" },
+        ]),
+      }),
+    );
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    // Only the inline plain-text body reaches the turn. The attached .txt (a
+    // text part, but disposition attachment) and the text/html alternative are
+    // delivered as attachments, not concatenated into the conversation body.
+    expect(msg.content).toBe("the body");
+    expect(msg.attachments).toHaveLength(2);
+    expect(msg.attachments?.map((a) => a.name).sort()).toEqual([
+      "notes.txt",
+      "text/html",
+    ]);
+    const notes = msg.attachments?.find((a) => a.name === "notes.txt");
+    expect(new TextDecoder().decode(notes?.data)).toBe("SECRET FILE");
+  });
+
+  test("delivers an attachments-only Mail with empty content omitted", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+      mailPartReader: stubReader({ "mail-part:///r/m/0-a.mp3": "AUDIOBYTES" }),
+    });
+    await invoker(
+      buildRequest({
+        input: mail([
+          {
+            contentType: "audio/mpeg",
+            ref: "mail-part:///r/m/0-a.mp3",
+            filename: "a.mp3",
+          },
+        ]),
+      }),
+    );
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    // No text part: createInboundMessage omits the empty content string.
+    expect(msg.content).toBeUndefined();
+    expect(msg.attachments).toHaveLength(1);
+    expect(new TextDecoder().decode(msg.attachments?.[0]?.data)).toBe(
+      "AUDIOBYTES",
+    );
+  });
+
+  test("refuses a Mail whose part bytes must be read when no reader is wired", async () => {
+    const { agent } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+      // no mailPartReader (mirrors a body step)
+    });
+    await expect(
+      invoker(
+        buildRequest({
+          input: mail([
+            {
+              contentType: "application/octet-stream",
+              ref: "mail-part:///r/m/0-f.bin",
+              filename: "f.bin",
+            },
+          ]),
+        }),
+      ),
+    ).rejects.toThrow(/no mail-part reader wired/);
+  });
+
+  test("delivers a text-only Mail from inline text without a reader", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+      // no reader: a text-only mail whose parts inlined their text still delivers
+    });
+    await invoker(
+      buildRequest({
+        input: mail([
+          {
+            contentType: "text/plain",
+            ref: "mail-part:///r/m/0-text",
+            text: "just text",
+          },
+        ]),
+      }),
+    );
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    expect(msg.content).toBe("just text");
+  });
+
+  test("an arbitrary non-mail step input is still delivered as synthesized text", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+      mailPartReader: stubReader({}),
+    });
+    await invoker(buildRequest({ input: { some: "object", n: 1 } }));
+    expect(captured.message).toBe(JSON.stringify({ some: "object", n: 1 }));
+  });
+});

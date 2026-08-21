@@ -579,7 +579,12 @@ describe("source-ref run child", () => {
 
     await supervisorSender.send({
       type: "trigger.fire",
-      data: { runId, messageId: "msg-1", receivedAt: 1 },
+      data: {
+        runId,
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: { content: "hello from the inbox", attachments: [] },
+      },
     });
 
     let terminalSeq: number | null = null;

@@ -34,7 +34,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+import { base64Encode, hexEncode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 
 import {
@@ -436,6 +436,11 @@ async function seedOrphanedProcessing(
     messageId,
     receivedAt,
     mailAuditRef: { store: "memory", path: `audit/${messageId}` },
+    // Decodable mail bytes: the dispatch loop decodes and commits them
+    // before forwarding the trigger.fire for the recovered orphan.
+    rawMessage: base64Encode(
+      new TextEncoder().encode(`Message-ID: ${messageId}\r\n\r\nbody`),
+    ),
   });
   const dequeued = await primitives.dequeueToProcessing(
     store,

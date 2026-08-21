@@ -6,6 +6,7 @@ import path from "node:path";
 import { generateKeyPair } from "@intx/crypto";
 import { hexDecode, hexEncode } from "@intx/types";
 import { APPROVAL_SNAPSHOT_MAX_BYTES } from "@intx/types/runtime";
+import type { Mail } from "@intx/types/runtime";
 
 import {
   ControlPayload,
@@ -42,6 +43,25 @@ import type {
  * exercise bootstrap mode supply a real keypair's public half.
  */
 const TEST_CHILD_PUBKEY_HEX = "ab".repeat(32);
+
+// Build the minimal decoded `Mail` for a plain-text body: a single
+// `text/plain` part whose decoded text is inlined (its `ref` is never read
+// for text parts). This is the shape a `trigger.fire` control-frame payload
+// now carries.
+function textMail(body: string): Mail {
+  return {
+    headers: {
+      from: "user@integration",
+      to: ["run@integration"],
+      date: "",
+      messageId: "<m@integration>",
+    },
+    rawHeaders: {},
+    parts: [
+      { contentType: "text/plain", ref: "mail-part:///r/m/0-text", text: body },
+    ],
+  };
+}
 
 function createMemoryNdjsonStream(): {
   writer: NdjsonWriter;
@@ -301,6 +321,9 @@ describe("Control channel", () => {
       }
     })();
 
+    // The same `Mail` object is sent and asserted as received, so the
+    // round-trip equality holds on the decoded payload shape.
+    const firedMail = textMail("test input");
     await sender.send({
       type: "ready",
       data: { childPid: 42, childPublicKey: TEST_CHILD_PUBKEY_HEX },
@@ -308,7 +331,12 @@ describe("Control channel", () => {
     await sender.send({ type: "drain", data: { deadlineMs: 5_000 } });
     await sender.send({
       type: "trigger.fire",
-      data: { runId: "r1", messageId: "m1", receivedAt: 100 },
+      data: {
+        runId: "r1",
+        messageId: "m1",
+        receivedAt: 100,
+        payload: firedMail,
+      },
     });
 
     await consumer;
@@ -323,7 +351,12 @@ describe("Control channel", () => {
       { type: "drain", data: { deadlineMs: 5_000 } },
       {
         type: "trigger.fire",
-        data: { runId: "r1", messageId: "m1", receivedAt: 100 },
+        data: {
+          runId: "r1",
+          messageId: "m1",
+          receivedAt: 100,
+          payload: firedMail,
+        },
       },
     ]);
   });
