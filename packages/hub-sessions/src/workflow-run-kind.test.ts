@@ -24,6 +24,7 @@ import {
   WORKFLOW_RUN_PROCESSING_DIR,
   WORKFLOW_RUN_CONSUMED_DIR,
   WORKFLOW_RUN_BLOBS_DIR,
+  WORKFLOW_RUN_PARTS_DIR,
   WORKFLOW_RUN_GRANTS_FILE,
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_WATERMARK_FILE,
@@ -1308,6 +1309,212 @@ describe("workflowRunKindHandler.validatePush — blobs subtree", () => {
     });
     const r = await validate(prospective, { priorFiles: prior });
     expect(r.ok).toBe(true);
+  });
+});
+
+describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
+  // The workflow-host ingest commits inbound-mail mail part bytes as real
+  // files under `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>`,
+  // one directory per inbound message and one file per mail part. The bytes
+  // are opaque and immutable; immutability is enforced by prior-tree git-OID
+  // equality (the filename is not content-addressed, so a same-path rewrite
+  // must be caught by comparing content, and the OID compare avoids re-reading
+  // the bytes on every commit that touches the run).
+
+  const SEGMENT = encodeURIComponent("<msg-1@host>");
+  const SEGMENT_B = encodeURIComponent("<msg-2@host>");
+
+  function partsTree(
+    runId: string,
+    files: Record<string, string>,
+    opts: { withEvent?: boolean } = {},
+  ): Record<string, string> {
+    const tree: Record<string, string> = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+    };
+    if (opts.withEvent !== false) {
+      tree[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/0.json`] = eventBody(
+        0,
+        "RunStarted",
+      );
+    }
+    for (const [rel, body] of Object.entries(files)) {
+      tree[
+        `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_PARTS_DIR}/${rel}`
+      ] = body;
+    }
+    return tree;
+  }
+
+  test("accepts a valid mail part tree alongside the run's events", async () => {
+    const r = await validate(
+      partsTree("run-a", {
+        [`${SEGMENT}/0-photo.png`]: "png-bytes",
+        [`${SEGMENT}/1-report.pdf`]: "pdf-bytes",
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts mail parts in the pre-first-event window (grants.json, no events)", async () => {
+    // The supervisor commits mail part bytes before firing the trigger, so
+    // the mail parts land in a commit that carries no `events/` subtree yet.
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_GRANTS_FILE}`]: "{}",
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/${WORKFLOW_RUN_PARTS_DIR}/${SEGMENT}/0-photo.png`]:
+        "png-bytes",
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects a message segment that does not round-trip URL-encoding", async () => {
+    const r = await validate(
+      partsTree("run-a", { ["a b/0-photo.png"]: "png-bytes" }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mail part message segment .* does not round-trip/,
+    );
+  });
+
+  test("rejects a filename that does not match <index>-<name>", async () => {
+    const r = await validate(
+      partsTree("run-a", { [`${SEGMENT}/photo.png`]: "png-bytes" }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mail part filename .* does not match <index>-<name>/,
+    );
+  });
+
+  test("rejects a blob dangling directly at parts/<segment>", async () => {
+    // A blob committed at the message-segment path (no <index>-<name> file
+    // beneath it) lists as an empty directory and must be rejected, matching
+    // the agent-state dangling-blob guard.
+    const r = await validate(
+      partsTree("run-a", { [SEGMENT]: "not-a-directory" }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mail part message segment .* is not a directory carrying mail part files/,
+    );
+  });
+
+  test("rejects a message segment over the path-component byte limit", async () => {
+    const longSegment = "a".repeat(256);
+    const r = await validate(
+      partsTree("run-a", { [`${longSegment}/0-photo.png`]: "png-bytes" }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/exceeds the 255-byte path-component limit/);
+  });
+
+  test("rejects a mail part filename over the path-component byte limit", async () => {
+    const longName = `0-${"a".repeat(254)}`;
+    const r = await validate(
+      partsTree("run-a", { [`${SEGMENT}/${longName}`]: "png-bytes" }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/exceeds the 255-byte path-component limit/);
+  });
+
+  test("rejects a mutated mail part whose prior-tree bytes differ", async () => {
+    const prior = partsTree("run-a", {
+      [`${SEGMENT}/0-photo.png`]: "original-bytes",
+    });
+    const prospective = partsTree("run-a", {
+      [`${SEGMENT}/0-photo.png`]: "mutated-bytes!",
+    });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mail part runs\/run-a\/parts\/.* bytes diverge from the prior tree/,
+    );
+  });
+
+  test("accepts an idempotent re-write of a mail part with identical bytes", async () => {
+    const bytes = "stable-bytes";
+    const prior = partsTree("run-a", {
+      [`${SEGMENT}/0-photo.png`]: bytes,
+    });
+    const prospective = partsTree("run-a", {
+      [`${SEGMENT}/0-photo.png`]: bytes,
+    });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects deleting a prior mail part (append-only)", async () => {
+    const prior = partsTree("run-a", {
+      [`${SEGMENT}/0-photo.png`]: "png-bytes",
+    });
+    // Prospective keeps the run and its event but drops the mail part file.
+    const prospective = partsTree("run-a", {}, { withEvent: true });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mail part runs\/run-a\/parts\/.* present in the prior tree is missing/,
+    );
+  });
+
+  test("accepts appending a new mail part alongside an existing immutable one", async () => {
+    const prior = partsTree("run-a", {
+      [`${SEGMENT}/0-photo.png`]: "first-bytes",
+    });
+    const prospective = partsTree("run-a", {
+      [`${SEGMENT}/0-photo.png`]: "first-bytes",
+      [`${SEGMENT_B}/0-audio.mp3`]: "second-bytes",
+    });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects a nested directory in place of a mail part file", async () => {
+    // The `<index>-<name>` shape is permissive, so a directory named `0-foo`
+    // must be rejected rather than admitting a nested subtree.
+    const r = await validate(
+      partsTree("run-a", { [`${SEGMENT}/0-foo/deep.png`]: "png-bytes" }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mail part runs\/run-a\/parts\/.* is a directory; each mail part must be a single file/,
+    );
+  });
+
+  test("enforces mail part immutability under changedPathPrefixes scoping", async () => {
+    // The production write path validates a bounded change set; exercise the
+    // scoped path rather than only the validate-all path the cases above use.
+    const scope = new Set([`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/`]);
+    const prior = partsTree("run-a", {
+      [`${SEGMENT}/0-photo.png`]: "original-bytes",
+    });
+
+    const mutated = await validate(
+      partsTree("run-a", {
+        [`${SEGMENT}/0-photo.png`]: "mutated-bytes!",
+      }),
+      { priorFiles: prior, changedPathPrefixes: scope },
+    );
+    expect(mutated.ok).toBe(false);
+    if (mutated.ok) throw new Error("unreachable");
+    expect(mutated.reason).toMatch(/bytes diverge from the prior tree/);
+
+    const deleted = await validate(
+      partsTree("run-a", {}, { withEvent: true }),
+      { priorFiles: prior, changedPathPrefixes: scope },
+    );
+    expect(deleted.ok).toBe(false);
+    if (deleted.ok) throw new Error("unreachable");
+    expect(deleted.reason).toMatch(/present in the prior tree is missing/);
   });
 });
 
