@@ -20,6 +20,7 @@
 // echoed reply would be `echo:` with no body -- this test fails there.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { type } from "arktype";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
@@ -51,6 +52,14 @@ const STEP_ID = "step1";
 const AGENT_ID = "agent-step1";
 
 const FIRST_BODY = "First inbound body alpha-7391.";
+
+// A non-text attachment MIME-encoded into the same inbound message. Its
+// presence exercises the full attachment ingest: the supervisor commits the
+// bytes to the workflow-run substrate and threads a reference through the
+// trigger payload, and the child resolves the reference back to bytes before
+// `agent.send` (a resolve failure would fail the run rather than complete it).
+const ATTACHMENT_NAME = "photo.png";
+const ATTACHMENT_BYTES = new TextEncoder().encode("fake-png-bytes-4821");
 
 // The definition's own tenant, the caller principal that creates the
 // definition asset, and the `workflow`-kind asset the frozen definition
@@ -172,6 +181,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const first = await fireMailTrigger(env, deploymentMailAddress, {
         messageId: "<single-step-message-input-1@integration.interchange>",
         content: FIRST_BODY,
+        attachments: [
+          {
+            name: ATTACHMENT_NAME,
+            contentType: "image/png",
+            data: ATTACHMENT_BYTES,
+          },
+        ],
       });
 
       const firstRunId = await waitForFirstRunId(env, workflowRunRepoId, {
@@ -197,6 +213,40 @@ describe.skipIf(!harnessDbEnvAvailable())(
       )?.body;
       if (firstStartedBody === undefined) throw new Error("missing RunStarted");
       expect(firstStartedBody["consumedMessageId"]).toBe(first.messageId);
+
+      // The mail decoded end to end: the trigger payload is a `Mail` whose
+      // parts include the text body AND the attachment, the supervisor having
+      // committed each part's bytes to the workflow-run substrate and recorded
+      // a ref. The run reaching RunCompleted (asserted above) is the proof the
+      // child resolved the attachment ref back to bytes -- an unresolvable ref
+      // fails the step rather than completing it.
+      const RunStartedTrigger = type({
+        trigger: {
+          payload: {
+            headers: "object",
+            rawHeaders: "object",
+            parts: type({
+              contentType: "string",
+              ref: "string",
+              "filename?": "string",
+              "disposition?": "'inline' | 'attachment'",
+              "text?": "string",
+            }).array(),
+          },
+        },
+      });
+      const startedTrigger = RunStartedTrigger(firstStartedBody);
+      if (startedTrigger instanceof type.errors) {
+        throw new Error(
+          `RunStarted trigger payload shape unexpected: ${startedTrigger.summary}`,
+        );
+      }
+      const parts = startedTrigger.trigger.payload.parts;
+      const textPart = parts.find((p) => p.contentType === "text/plain");
+      expect(textPart?.text).toBe(FIRST_BODY);
+      const imagePart = parts.find((p) => p.contentType === "image/png");
+      expect(imagePart?.filename).toBe(ATTACHMENT_NAME);
+      expect(imagePart?.ref.startsWith("mail-part:///")).toBe(true);
 
       const firstReply = readStepReply(stepCompletedBody(firstEvents));
 

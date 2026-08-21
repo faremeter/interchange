@@ -75,6 +75,7 @@ import { RepoId, type CredentialDelivery } from "@intx/types/sidecar";
 import type {
   ApprovalSnapshot,
   InferenceSource,
+  Mail,
   OutboundMessage,
 } from "@intx/types/runtime";
 import type { CancelOrigin } from "@intx/workflow";
@@ -99,7 +100,8 @@ import { commitCancelRequested } from "./cancel-signing";
 import { commitRunFailed } from "./terminal-commit";
 import { buildChildSpawnEnv } from "./spawn-env";
 import { compactRunEvents } from "./run-event-compaction";
-import { extractConversationText } from "../conversation-text";
+import { decodeMail } from "@intx/mime";
+import { commitMail, InvalidMailError } from "../adapters/mail-part-store";
 import {
   createDrainTimeoutAccumulator,
   DEFAULT_DRAIN_TIMEOUT_MS,
@@ -2313,15 +2315,17 @@ export function createWorkflowSupervisor(
    * Forward one dequeued inbox entry to the child as `trigger.fire`
    * and record its runId as in-flight. The runId is the local part of the
    * deployment's mail address (see `deriveWorkflowRunId`), identifying its one
-   * top-level run; the `messageId` rides alongside it so the child can
-   * recover the trigger's mail bytes by claim-check. The runId is the
-   * same value the dispatch loop waits on via `terminalEventSource`.
+   * top-level run. The resolved `Mail` (headers plus committed part references)
+   * rides in the frame as the run's trigger payload; the `messageId`
+   * accompanies it for correlation and audit. The runId is the same value the
+   * dispatch loop waits on via `terminalEventSource`.
    */
   async function forwardDispatchedEntry(
     sender: ControlChannelSender,
     messageId: string,
     receivedAt: number,
     runId: string,
+    payload: Mail,
   ): Promise<string> {
     await sender.send({
       type: "trigger.fire",
@@ -2329,10 +2333,84 @@ export function createWorkflowSupervisor(
         runId,
         messageId,
         receivedAt,
+        payload,
       },
     });
     cohortRunIds.add(runId);
     return runId;
+  }
+
+  /**
+   * Resolve a dequeued inbound mail to the run's input: a decoded `Mail`
+   * (headers plus part descriptors that reference the part bytes committed to
+   * the workflow-run substrate). The supervisor is the sole mail owner and
+   * commits the parts here (a direct workflow-run write; the workflow child's
+   * control loop cannot do a synchronous proxied write without deadlock), so
+   * both turns share this one preparation site.
+   *
+   * The two failure modes are deliberately distinct:
+   *   - A DETERMINISTIC input rejection -- missing bytes, unparseable MIME, or
+   *     a messageId that cannot form a path segment -- returns `{ ok: false }`
+   *     so the caller drops the mail. Replaying it would fail identically.
+   *   - A TRANSIENT substrate write failure propagates (thrown), so the caller
+   *     treats it as a dispatch fault and leaves the mail reclaimable rather
+   *     than silently discarding it on an infrastructure hiccup.
+   */
+  async function prepareMail(
+    envelope: { messageId: string; rawMessage?: string },
+    runId: string,
+  ): Promise<
+    | { ok: true; mail: Mail }
+    | { ok: false; rejection: { code: string; message: string } }
+  > {
+    if (envelope.rawMessage === undefined) {
+      return {
+        ok: false,
+        rejection: {
+          code: "malformed_mail",
+          message: `inbound mail ${envelope.messageId} carries no rawMessage bytes`,
+        },
+      };
+    }
+    let decoded: ReturnType<typeof decodeMail>;
+    try {
+      decoded = decodeMail(base64Decode(envelope.rawMessage));
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      return {
+        ok: false,
+        rejection: {
+          code: "malformed_mail",
+          message: `inbound mail ${envelope.messageId} could not be decoded: ${message}`,
+        },
+      };
+    }
+    const writePrincipal: WorkflowRunSupervisorPrincipal = {
+      kind: "supervisor",
+      anchorRunId: bindings.anchorRunId,
+    };
+    try {
+      const mail = await commitMail(
+        {
+          substrate: bindings.repoStore,
+          repoId: bindings.workflowRunRepoId,
+          principal: writePrincipal,
+          runId,
+          ref: bindings.workflowRunRef,
+        },
+        envelope.messageId,
+        decoded,
+      );
+      return { ok: true, mail };
+    } catch (cause) {
+      if (cause instanceof InvalidMailError) {
+        return {
+          ok: false,
+          rejection: { code: "malformed_mail", message: cause.message },
+        };
+      }
+      throw cause;
+    }
   }
 
   /**
@@ -2538,33 +2616,24 @@ export function createWorkflowSupervisor(
           }
           const inputChannel = runInputChannels.get(runId);
           if (inputChannel !== undefined) {
-            // Resolve the inbound mail to conversation text HERE, the single
-            // site that knows this payload's provenance is mail, applying the
-            // SAME extraction the turn-1 trigger does (resolveTriggerPayload).
-            // The signal.deliver frame's payload is the resume decision in FINAL
-            // form; deliverSignal's structured signals ship their own payload
-            // unchanged. Done BEFORE minting the terminal watcher so a failure
-            // here cannot leak an un-finalized iterator.
-            let inputText: string;
-            try {
-              if (envelope.rawMessage === undefined) {
-                throw new Error("inbound mail carries no rawMessage bytes");
-              }
-              inputText = extractConversationText(
-                base64Decode(envelope.rawMessage),
-                envelope.messageId,
-              );
-            } catch (cause) {
-              // A malformed turn-2 mail cannot resume the parked agent. DROP it:
-              // log loudly and consume it (break to the post-loop markConsumed)
-              // rather than throwing -- a throw aborts the dispatch without
-              // consuming, and replay re-delivers the same poison mail forever.
-              // The run stays parked on its current correlation, ready for the
-              // next valid mail; one bad mail must not tear down a long-lived
-              // conversation.
-              const message =
-                cause instanceof Error ? cause.message : String(cause);
-              logger.error`signal.deliver for run ${runId}: dropping malformed inbound mail ${envelope.messageId}: ${message}`;
+            // Resolve the inbound mail to the run's input HERE, the single site
+            // that knows this payload's provenance is mail, applying the SAME
+            // preparation the turn-1 trigger does. The signal.deliver frame's
+            // payload is the resume decision in FINAL form -- a Mail (headers plus committed part references); deliverSignal's structured signals ship their own
+            // payload unchanged. Done BEFORE minting the terminal watcher so a
+            // failure here cannot leak an un-finalized iterator.
+            const prepared = await prepareMail(envelope, runId);
+            if (!prepared.ok) {
+              // A DETERMINISTICALLY malformed turn-2 mail cannot resume the
+              // parked agent. DROP it: log loudly and consume it (break to the
+              // post-loop markConsumed) rather than throwing -- replay would
+              // re-deliver the same poison mail forever. The run stays parked
+              // on its current correlation, ready for the next valid mail; one
+              // bad mail must not tear down a long-lived conversation. A
+              // TRANSIENT write failure is NOT caught here: `prepareMail`
+              // throws it, so it propagates as a dispatch fault and the mail
+              // stays reclaimable for retry.
+              logger.error`signal.deliver for run ${runId}: dropping malformed inbound mail ${envelope.messageId}: ${prepared.rejection.message}`;
               break;
             }
             // Mint the terminal watcher only now, after the payload resolved, so
@@ -2580,7 +2649,7 @@ export function createWorkflowSupervisor(
                   runId,
                   signalName: signalName(inputChannel.correlationId),
                   signalId: envelope.messageId,
-                  payload: inputText,
+                  payload: prepared.mail,
                 },
               });
               // Invalidate the cached input channel: its correlation is now
@@ -2625,6 +2694,22 @@ export function createWorkflowSupervisor(
             break;
           }
           if (!cohortRunIds.has(runId)) {
+            // Resolve the inbound mail to the run's input before firing. A
+            // DETERMINISTICALLY malformed first trigger cannot start the run:
+            // record the rejection on the consumed entry and drop it (break to
+            // the post-loop markConsumed), since replay would fail identically.
+            // A TRANSIENT write failure instead propagates from
+            // `prepareMail` as a dispatch fault, leaving the mail
+            // reclaimable. Unlike a turn-2 parse failure (which leaves a live
+            // run parked), a malformed first trigger produces no run at all --
+            // the rejection surfaces on the consumed entry, not as a RunFailed
+            // terminal event.
+            const prepared = await prepareMail(envelope, runId);
+            if (!prepared.ok) {
+              if (rejection === undefined) rejection = prepared.rejection;
+              logger.error`trigger.fire for run ${runId}: rejecting malformed inbound mail ${envelope.messageId}: ${prepared.rejection.message}`;
+              break;
+            }
             // Subscribe the terminal watcher BEFORE the trigger fires. The
             // broadcaster drops a notify that has no listener (its subscribe-
             // before-fire contract), so a terminal that lands while
@@ -2638,14 +2723,19 @@ export function createWorkflowSupervisor(
                 envelope.messageId,
                 envelope.receivedAt,
                 runId,
+                prepared.mail,
               );
 
-              // Wait for the child to process this trigger before allowing
+              // Wait for the child to durably take up this trigger (RunStarted
+              // committed, then the run parks or terminates) before allowing
               // `markConsumed` to move the claim-check entry out of
-              // `processing/`. The child reads the trigger payload from that
-              // entry; racing `markConsumed` would delete the entry before the
-              // child resolves it. On cohort abort the wait returns and the
-              // post-loop guard skips markConsumed.
+              // `processing/`. The payload now rides the frame, so the child no
+              // longer reads it from the entry -- but the durable-consume
+              // contract still holds markConsumed until the run's uptake is
+              // committed, so a crash before RunStarted leaves the entry in
+              // processing/ for replayProcessingToInbox to re-deliver. On cohort
+              // abort the wait returns and the post-loop guard skips
+              // markConsumed.
               waitEntered = true;
               await waitForRunTerminalOrPark(
                 iter,

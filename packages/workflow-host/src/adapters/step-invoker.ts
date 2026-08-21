@@ -61,12 +61,16 @@ import {
   type SendResult,
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
-import { createInboundMessage } from "@intx/mime";
+import { createInboundMessage, extractAddrSpec } from "@intx/mime";
 import type {
   InboundMessage,
   InferenceEvent,
   InferenceSource,
+  Mail,
+  MailPartReader,
+  MessageAttachment,
 } from "@intx/types/runtime";
+import { isMail } from "@intx/types/runtime";
 import type {
   AuthorizeContext,
   StepInvokeRequest,
@@ -186,6 +190,15 @@ export interface WorkflowStepInvokerOpts {
    * has no cross-run conversation to mirror.
    */
   onRunBoundary?: (key: string) => Promise<void>;
+  /**
+   * Reader for the run's inbound-mail parts. When the step input is a decoded
+   * `Mail`, the adapter resolves each part's `ref` to its committed bytes
+   * through this reader and delivers a real `InboundMessage` (text and/or
+   * attachments) to `agent.send`. Supplied by the run child for the top-level
+   * run's steps; absent for body steps, where a part whose bytes must be read
+   * is refused loudly rather than silently flattened to text.
+   */
+  mailPartReader?: MailPartReader;
 }
 
 /**
@@ -251,7 +264,10 @@ async function invokeColdStep(
 
   try {
     return stepResultFromSend(
-      await sendWithAbort(agent, req, { closeOnAbort: true }),
+      await sendWithAbort(agent, req, {
+        closeOnAbort: true,
+        mailPartReader: opts.mailPartReader,
+      }),
     );
   } finally {
     // `close` is idempotent: a second call after the send already
@@ -335,7 +351,10 @@ async function invokeWarmStep(
   }
   try {
     return stepResultFromSend(
-      await sendWithAbort(agent, req, { closeOnAbort: false }),
+      await sendWithAbort(agent, req, {
+        closeOnAbort: false,
+        mailPartReader: opts.mailPartReader,
+      }),
     );
   } finally {
     // Do NOT close the agent or drain its forwarder: both span
@@ -405,18 +424,25 @@ async function buildStepAgent(
 async function sendWithAbort(
   agent: Agent,
   req: StepInvokeRequest,
-  cfg: { closeOnAbort: boolean },
+  cfg: {
+    closeOnAbort: boolean;
+    mailPartReader: MailPartReader | undefined;
+  },
 ): Promise<SendResult> {
+  // Re-check the abort signal before building the message. `buildEnv` and
+  // `agentFactory` (or a warm-cache acquire) yield to the microtask queue, and
+  // the caller can fire `signal.abort()` in between. Building the message can
+  // itself yield (attachment resolution), so guard here too.
+  if (req.signal.aborted) throw abortError(req.signal);
+  // Resolve the step input into the value `agent.send` receives. A build
+  // failure (a bad resume shape, an unresolvable attachment) rejects the step.
+  const message = await buildSendMessage(req, cfg.mailPartReader);
   let abortListener: (() => void) | null = null;
   try {
     return await new Promise<SendResult>((resolve, reject) => {
-      // Re-check the abort signal inside the executor. `buildEnv` and
-      // `agentFactory` (or a warm-cache acquire) yield to the
-      // microtask queue, and the caller can fire `signal.abort()`
-      // between the entry-time check and here. Without this re-check,
-      // a mid-construction abort would attach the listener to an
-      // already-aborted signal that never fires the event again, and
-      // the send would hang to the workflow runtime's step timeout.
+      // Re-check after the (async) message build: a mid-build abort must not
+      // attach the listener to an already-aborted signal that never fires the
+      // event again, or the send would hang to the runtime's step timeout.
       if (req.signal.aborted) {
         reject(abortError(req.signal));
         return;
@@ -432,38 +458,6 @@ async function sendWithAbort(
       };
       abortListener = onAbort;
       req.signal.addEventListener("abort", onAbort, { once: true });
-      let message: string | InboundMessage;
-      try {
-        // How the resumed input is delivered depends on the park kind:
-        //
-        // - `"approval"`: the reactor is parked mid-turn on a tool/authz gate.
-        //   Build the full `InboundMessage` stamped with `resume.correlationId`
-        //   so the header reaches the reactor's `tryCorrelate` and matches the
-        //   rehydrated gate. The object form is load-bearing -- a plain string
-        //   would drop the correlation id and the resumed cycle would never
-        //   match.
-        // - `"input"`: the step re-armed between turns; the decision is simply
-        //   the next user turn, with NO gate to correlate. Deliver it as the
-        //   plain synthesized content, exactly as a first invocation does.
-        //
-        // A first invocation (no resume) sends the plain synthesized input;
-        // `agent.send` stamps its own synthetic addressing.
-        message =
-          req.resume === undefined
-            ? synthesizeInputContent(req.input)
-            : req.resume.kind === "input"
-              ? synthesizeInputContent(req.resume.decision)
-              : createInboundMessage({
-                  from: "signal@local",
-                  to: "agent@local",
-                  content: synthesizeInputContent(req.resume.decision),
-                  interchangeType: "conversation.message",
-                  correlationId: req.resume.correlationId,
-                });
-      } catch (cause) {
-        reject(cause instanceof Error ? cause : new Error(String(cause)));
-        return;
-      }
       const sendOpts = cfg.closeOnAbort ? undefined : { signal: req.signal };
       agent.send(message, sendOpts).then(resolve, (cause: unknown) => {
         reject(cause instanceof Error ? cause : new Error(String(cause)));
@@ -574,6 +568,124 @@ function stepResultFromSend(result: SendResult): StepInvokeResult {
     };
   }
   return { output: { reply: result.reply, turn: result.turn } };
+}
+
+/**
+ * Resolve the step input into the value `agent.send` receives. The delivery
+ * depends on the resume kind and the input shape:
+ *
+ * - `"approval"` resume: the reactor is parked mid-turn on a tool/authz gate.
+ *   Build the full `InboundMessage` stamped with `resume.correlationId` so the
+ *   header reaches the reactor's `tryCorrelate` and matches the rehydrated
+ *   gate. The object form is load-bearing -- a plain string would drop the
+ *   correlation id and the resumed cycle would never match. An approval
+ *   decision is never a mail-derived `Mail`, so it stays on this branch.
+ * - A mail-derived `Mail` (first invocation or `"input"` resume): project its
+ *   parts into a real `InboundMessage` (text and/or attachments), resolving
+ *   each non-text part's bytes through the reader.
+ * - Anything else (a first invocation or `"input"` resume carrying an
+ *   arbitrary step value): synthesize plain text; `agent.send` stamps its own
+ *   synthetic addressing.
+ */
+async function buildSendMessage(
+  req: StepInvokeRequest,
+  mailPartReader: MailPartReader | undefined,
+): Promise<string | InboundMessage> {
+  if (req.resume !== undefined && req.resume.kind !== "input") {
+    return createInboundMessage({
+      from: "signal@local",
+      to: "agent@local",
+      content: synthesizeInputContent(req.resume.decision),
+      interchangeType: "conversation.message",
+      correlationId: req.resume.correlationId,
+    });
+  }
+  const rawInput = req.resume === undefined ? req.input : req.resume.decision;
+  // A step whose input is a decoded `Mail` is projected into the agent's
+  // inbound message; the strict `isMail` guard keeps an arbitrary step value
+  // from matching.
+  if (isMail(rawInput)) {
+    return buildInboundMessageFromMail(rawInput, mailPartReader);
+  }
+  return synthesizeInputContent(rawInput);
+}
+
+/** Extract a bare addr-spec from a header value, or fall back to a synthetic
+ * local address when the value is absent or unparseable. */
+function safeAddr(raw: string | undefined, fallback: string): string {
+  if (raw === undefined || raw === "") return fallback;
+  try {
+    return extractAddrSpec(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Project a decoded `Mail` into the agent's `InboundMessage`. Text parts become
+ * the conversation body; every other part becomes an attachment the reactor
+ * turns into a media / document content block. Part bytes are resolved through
+ * the reader; a text part small enough to have inlined `text` skips the read.
+ * The real sender / recipient headers are carried through so the agent frames
+ * the turn with the actual `From:` rather than a synthetic address. Content is
+ * omitted when empty -- `createInboundMessage` rejects an empty string, and an
+ * attachments-only message is valid.
+ *
+ * The reader is required only when a part's bytes must actually be read (a
+ * non-text part, or a text part too large to have inlined its `text`). A
+ * text-only mail whose parts all inlined -- e.g. one routed to a body step,
+ * which is not wired with a reader -- still delivers; a part that needs bytes
+ * with no reader is refused loudly rather than silently dropped.
+ */
+async function buildInboundMessageFromMail(
+  mail: Mail,
+  mailPartReader: MailPartReader | undefined,
+): Promise<InboundMessage> {
+  const noReader = (): Error =>
+    new Error(
+      "workflow step invoker: a mail part's bytes must be read but the step has no mail-part reader wired; inbound parts are not supported for this step",
+    );
+  const textPieces: string[] = [];
+  const attachments: MessageAttachment[] = [];
+  for (const part of mail.parts) {
+    // A part is conversation body only when it is inline plain text. An
+    // attachment-disposition part (even a text/* one, e.g. an attached .txt),
+    // and any non-plain-text part (a text/html alternative, an image, an
+    // application/* payload), is delivered as an attachment so its bytes and
+    // filename survive rather than being folded into the turn.
+    const isBody =
+      part.disposition !== "attachment" && part.contentType === "text/plain";
+    if (isBody) {
+      if (part.text !== undefined) {
+        textPieces.push(part.text);
+        continue;
+      }
+      if (mailPartReader === undefined) throw noReader();
+      textPieces.push(
+        new TextDecoder("utf-8", { fatal: false }).decode(
+          await mailPartReader.read(part.ref),
+        ),
+      );
+      continue;
+    }
+    if (mailPartReader === undefined) throw noReader();
+    attachments.push({
+      name: part.filename ?? part.contentType,
+      contentType: part.contentType,
+      data: await mailPartReader.read(part.ref),
+    });
+  }
+  const content = textPieces.join("\n").trim();
+  return createInboundMessage({
+    from: safeAddr(mail.headers.from, "trigger@local"),
+    to: safeAddr(mail.headers.to[0], "agent@local"),
+    ...(mail.headers.subject !== undefined
+      ? { subject: mail.headers.subject }
+      : {}),
+    ...(content.length > 0 ? { content } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+    interchangeType: "conversation.message",
+  });
 }
 
 /**

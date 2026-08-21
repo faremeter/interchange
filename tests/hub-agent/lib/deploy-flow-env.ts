@@ -73,7 +73,11 @@ import type { WireGrantRule } from "@intx/types/grant-wire";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 import { decodeToolName } from "@intx/inference";
-import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import type {
+  HarnessConfig,
+  InferenceSource,
+  MessageAttachment,
+} from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import type { ApprovalSet } from "@intx/workflow-deploy";
 import type { WorkflowDefinition } from "@intx/workflow";
@@ -1866,6 +1870,12 @@ export type FireMailTriggerOpts = {
    * failing closed on its absence.
    */
   grants?: WireGrantRule[];
+  /**
+   * Attachments MIME-encoded into the signed conversation message, exactly as
+   * the production trigger route encodes them. Delivered to the deployed run
+   * as non-text inbound content.
+   */
+  attachments?: MessageAttachment[];
 };
 
 /**
@@ -1911,6 +1921,9 @@ export async function fireMailTrigger(
   const signedContent = assembleSignedContent({
     kind: "conversation",
     text: content,
+    ...(opts.attachments && opts.attachments.length > 0
+      ? { attachments: opts.attachments }
+      : {}),
   });
   const signature = await createDetachedSignatureFromProvider(
     signedContent,

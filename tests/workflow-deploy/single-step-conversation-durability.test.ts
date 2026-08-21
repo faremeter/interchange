@@ -56,6 +56,7 @@ import type {
   ConversationTurn,
   InboundMessage,
   InferenceSource,
+  Mail,
 } from "@intx/types/runtime";
 import type {
   RepoId,
@@ -103,6 +104,25 @@ const STUB_SOURCE: InferenceSource = {
   apiKey: "sk-stub",
   model: "stub-model",
 };
+
+// Build the minimal decoded `Mail` for a plain-text body: a single
+// `text/plain` part whose decoded text is inlined (its `ref` is never read
+// for text parts). This is the shape a `trigger.fire` control-frame payload
+// now carries.
+function textMail(body: string): Mail {
+  return {
+    headers: {
+      from: "user@integration",
+      to: ["run@integration"],
+      date: "",
+      messageId: "<m@integration>",
+    },
+    rawHeaders: {},
+    parts: [
+      { contentType: "text/plain", ref: "mail-part:///r/m/0-text", text: body },
+    ],
+  };
+}
 
 // The step-invoker forwarder reads only `.type` off each stream item.
 type StreamEvent = Agent["stream"] extends () => AsyncIterable<infer E>
@@ -383,7 +403,11 @@ function buildStorageAwareSpyAgentFactory(): {
     const turns: ConversationTurn[] = [...loaded.turns];
     const agent: Agent = {
       async send(content): Promise<SendResult> {
-        const text = typeof content === "string" ? content : "message";
+        // A mail-derived input reaches `agent.send` as an `InboundMessage`; its
+        // `content` carries the conversation text (absent for an
+        // attachments-only message). A plain string arrives verbatim.
+        const text =
+          typeof content === "string" ? content : (content.content ?? "");
         turns.push({
           role: "user",
           content: [{ type: "text", text }],
@@ -604,12 +628,16 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         onEvent,
         authorize,
         warmCache,
+        _sourcesRef,
+        _credentialWiring,
+        mailPartReader,
       ) =>
         createWorkflowStepInvoker({
           workflowAuthorize: authorize,
           buildEnv,
           agentFactory,
           onEvent: (event) => onEvent(event),
+          mailPartReader,
           ...(warmCache !== undefined ? { warmCache } : {}),
           onRunBoundary: async (key) => {
             await registry.get(key).mirrorToSubstrate();
@@ -686,7 +714,12 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
 
     await child1.supervisorSender.send({
       type: "trigger.fire",
-      data: { runId: "run-1", messageId: "msg-1", receivedAt: 1 },
+      data: {
+        runId: "run-1",
+        messageId: "msg-1",
+        receivedAt: 1,
+        payload: textMail("alpha"),
+      },
     });
     await waitFor(() =>
       child1.childToSupervisor.flushed().some((l) => l.includes("run-1")),
@@ -694,7 +727,12 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
 
     await child1.supervisorSender.send({
       type: "trigger.fire",
-      data: { runId: "run-2", messageId: "msg-2", receivedAt: 2 },
+      data: {
+        runId: "run-2",
+        messageId: "msg-2",
+        receivedAt: 2,
+        payload: textMail("bravo"),
+      },
     });
     await waitFor(() =>
       child1.childToSupervisor.flushed().some((l) => l.includes("run-2")),
@@ -766,7 +804,12 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
 
     await child2.supervisorSender.send({
       type: "trigger.fire",
-      data: { runId: "run-3", messageId: "msg-3", receivedAt: 3 },
+      data: {
+        runId: "run-3",
+        messageId: "msg-3",
+        receivedAt: 3,
+        payload: textMail("charlie"),
+      },
     });
     await waitFor(() =>
       child2.childToSupervisor.flushed().some((l) => l.includes("run-3")),

@@ -2216,6 +2216,7 @@ export function createSidecarSubstrateFactory(
       warmCache,
       sourcesRef,
       credentialWiring,
+      mailPartReader,
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
@@ -2233,6 +2234,7 @@ export function createSidecarSubstrateFactory(
         agentFactory: stepAgentFactory,
         onEvent,
         sourcesRef,
+        mailPartReader,
         ...(warmCache !== undefined ? { warmCache } : {}),
         ...(onRunBoundary !== undefined ? { onRunBoundary } : {}),
       })(req);
