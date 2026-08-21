@@ -70,6 +70,30 @@ const TENANT_ID = "tnt_single_step_message_input";
 const CALLER_PRINCIPAL_ID = "prn_single_step_message_input";
 const DEFINITION_ASSET_ID = "ast_single_step_message_input_wf";
 
+// A second single-step deployment for the non-text case. A run goes terminal
+// after its one message, so the non-text message must drive its own run rather
+// than arrive as a second mail to an already-completed run.
+const DEPLOYMENT_ID_2 = "run_single-step-message-input-2";
+const DEFINITION_ASSET_ID_2 = "ast_single_step_message_input_wf2";
+
+// The `Mail` shape a RunStarted event's trigger payload carries. Shared by both
+// tests (the text+attachment case and the non-text case).
+const RunStartedTrigger = type({
+  trigger: {
+    payload: {
+      headers: "object",
+      rawHeaders: "object",
+      parts: type({
+        contentType: "string",
+        ref: "string",
+        "filename?": "string",
+        "disposition?": "'inline' | 'attachment'",
+        "text?": "string",
+      }).array(),
+    },
+  },
+});
+
 let env: DeployFlowEnv;
 let h: TestDb;
 
@@ -92,6 +116,13 @@ beforeAll(async () => {
     tenantId: TENANT_ID,
     kind: "workflow",
     name: "single-step-message-input-wf",
+    creatorPrincipalId: CALLER_PRINCIPAL_ID,
+  });
+  await seedAsset(h.db, {
+    id: DEFINITION_ASSET_ID_2,
+    tenantId: TENANT_ID,
+    kind: "workflow",
+    name: "single-step-message-input-wf2",
     creatorPrincipalId: CALLER_PRINCIPAL_ID,
   });
 
@@ -261,6 +292,125 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(firstReply).toContain(FIRST_BODY);
       expect(firstReply).not.toBe("echo:");
       expect(firstReply).not.toBe("echo:null");
+    });
+
+    // A message with NO conversation body -- here an attachment with an empty
+    // text part -- is a legitimate inbound message. The deployed ingest
+    // delivers the non-text content as a Mail rather than flattening it to text
+    // and calling `agent.send("")` (which `rejectEmptyStringIfPresent` throws
+    // on -> StepFailed -> RunFailed), so the run reaches RunCompleted. The run
+    // completing rather than failing is the load-bearing assertion. This
+    // deploys its own single-step workflow (a run goes terminal after its one
+    // message, so the non-text case must be that run's driving message, not a
+    // second mail to an already-completed run).
+    test("a non-text inbound message (no conversation body) completes the run", async () => {
+      const deploymentMailAddress = deriveRunAddress({
+        runId: DEPLOYMENT_ID_2,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${env.inference.server.port}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: `${DEPLOYMENT_ID_2}`,
+        tenantId: "tenant-1",
+        principalId: "prin_integration-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
+
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      const entryModule = singleStepAgentEntry({
+        stepId: STEP_ID,
+        systemPrompt: "You are the single-step agent.",
+        address: deploymentMailAddress,
+        agentId: AGENT_ID,
+      });
+
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule,
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: DEFINITION_ASSET_ID_2,
+        anchorRunId: DEPLOYMENT_ID_2,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: deploymentMailAddress,
+        approvals: operatorApprovals,
+        config,
+        sources: { [STEP_ID]: [inferenceSource] },
+      });
+      expect(handle.publicKey).toBeTruthy();
+
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      // The driving message: an attachment with an EMPTY conversation body.
+      const audioBytes = new TextEncoder().encode("fake-audio-bytes-9f2c");
+      const fired = await fireMailTrigger(env, deploymentMailAddress, {
+        messageId:
+          "<single-step-message-input-nontext@integration.interchange>",
+        content: "", // no conversation body -- the empty-flatten crash case
+        attachments: [
+          { name: "clip.mp3", contentType: "audio/mpeg", data: audioBytes },
+        ],
+      });
+
+      const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
+        diagnostics: env.sidecarDiagnostics,
+        timeoutMs: 20_000,
+      });
+
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID_2,
+        runId,
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+      // The load-bearing assertion: the non-text message COMPLETED the run
+      // instead of failing it. A regression surfaces as RunFailed here.
+      expect(terminal.type).toBe("RunCompleted");
+
+      const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID_2, runId);
+      const startedBody = events.find((e) => e.type === "RunStarted")?.body;
+      if (startedBody === undefined) {
+        throw new Error("missing RunStarted for the non-text message");
+      }
+      expect(startedBody["consumedMessageId"]).toBe(fired.messageId);
+
+      const started = RunStartedTrigger(startedBody);
+      if (started instanceof type.errors) {
+        throw new Error(
+          `non-text RunStarted trigger payload shape unexpected: ${started.summary}`,
+        );
+      }
+      // The decoded Mail carries the audio attachment as a committed,
+      // resolvable part; the run completing proves the child resolved it back
+      // to bytes for `agent.send` without an empty-string flatten.
+      const audioPart = started.trigger.payload.parts.find(
+        (p) => p.contentType === "audio/mpeg",
+      );
+      expect(audioPart?.filename).toBe("clip.mp3");
+      expect(audioPart?.ref.startsWith("mail-part:///")).toBe(true);
     });
   },
 );
