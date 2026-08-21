@@ -19,8 +19,14 @@
  * - Message-IDs: <uuid@domain> — valid per RFC 2822 §3.6.4 (dot-atom local-part)
  */
 
+import { type } from "arktype";
 import { base64Decode, base64Encode } from "@intx/types";
-import type { MessageAttachment } from "@intx/types/runtime";
+import type {
+  MessageAttachment,
+  MessageHeaders as ParsedMessageHeaders,
+  MessagePart,
+} from "@intx/types/runtime";
+import { InterchangeType } from "@intx/types/runtime";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -558,6 +564,7 @@ function findByteSequence(haystack: Uint8Array, needle: Uint8Array): number {
 export function parseHeaderSection(raw: Uint8Array): {
   headers: Map<string, string>;
   bodyOffset: number;
+  headerEnd: number;
 } {
   const headers = new Map<string, string>();
 
@@ -583,7 +590,7 @@ export function parseHeaderSection(raw: Uint8Array): {
   );
   parseHeaders(headerText, headers);
 
-  return { headers, bodyOffset };
+  return { headers, bodyOffset, headerEnd };
 }
 
 function parseHeaders(headerSection: string, out: Map<string, string>): void {
@@ -1137,4 +1144,191 @@ export function extractAttachments(raw: Uint8Array): MessageAttachment[] {
     });
   }
   return attachments;
+}
+
+// ---------------------------------------------------------------------------
+// Decoded-mail model (Mail / MessagePart) — lossless inbound decoding
+// ---------------------------------------------------------------------------
+
+function isInterchangeType(s: string): s is InterchangeType {
+  return !(InterchangeType(s) instanceof type.errors);
+}
+
+/**
+ * Build the typed, ergonomic `MessageHeaders` subset from a parsed header map.
+ * Optional fields are included only when present (exactOptionalPropertyTypes-
+ * safe). The full, lossless header set is carried separately as `rawHeaders`.
+ */
+export function buildMessageHeaders(
+  headers: Map<string, string>,
+): ParsedMessageHeaders {
+  const from = headers.get("from") ?? "";
+  const toRaw = headers.get("to") ?? "";
+  const to = toRaw
+    ? toRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+
+  const date = headers.get("date") ?? "";
+  const messageId = headers.get("message-id") ?? "";
+
+  const result: ParsedMessageHeaders = { from, to, date, messageId };
+
+  const ccRaw = headers.get("cc");
+  if (ccRaw !== undefined) {
+    const cc = ccRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (cc.length > 0) result.cc = cc;
+  }
+
+  const refsRaw = headers.get("references");
+  if (refsRaw !== undefined) {
+    const refs = refsRaw.split(/\s+/).filter(Boolean);
+    if (refs.length > 0) result.references = refs;
+  }
+
+  const inReplyTo = headers.get("in-reply-to");
+  if (inReplyTo !== undefined) result.inReplyTo = inReplyTo;
+
+  const subject = headers.get("subject");
+  if (subject !== undefined) result.subject = subject;
+
+  const listId = headers.get("list-id");
+  if (listId !== undefined) result.listId = listId;
+
+  const rawType = headers.get("interchange-type");
+  if (rawType !== undefined && isInterchangeType(rawType)) {
+    result.interchangeType = rawType;
+  }
+
+  const corrId = headers.get("interchange-correlation-id");
+  if (corrId !== undefined) result.interchangeCorrelationId = corrId;
+
+  const tenantId = headers.get("interchange-tenant-id");
+  if (tenantId !== undefined) result.interchangeTenantId = tenantId;
+
+  const agentId = headers.get("interchange-agent-id");
+  if (agentId !== undefined) result.interchangeAgentId = agentId;
+
+  const sessionId = headers.get("interchange-session-id");
+  if (sessionId !== undefined) result.interchangeSessionId = sessionId;
+
+  const offeringId = headers.get("interchange-offering-id");
+  if (offeringId !== undefined) result.interchangeOfferingId = offeringId;
+
+  const schemaVersion = headers.get("interchange-schema-version");
+  if (schemaVersion !== undefined)
+    result.interchangeSchemaVersion = schemaVersion;
+
+  const traceparent = headers.get("traceparent");
+  if (traceparent !== undefined) result.traceparent = traceparent;
+
+  const tracestate = headers.get("tracestate");
+  if (tracestate !== undefined) result.tracestate = tracestate;
+
+  return result;
+}
+
+/**
+ * Parse every header line in the message's header section into a raw,
+ * lossless map of lowercased name to its ordered values. Repeated headers
+ * (e.g. `Received`) keep all occurrences; folded continuation lines are
+ * unfolded onto the preceding header. Bounded to the header section via
+ * `headerEnd` so the whole message body is never decoded here.
+ */
+function parseRawHeaders(
+  raw: Uint8Array,
+  headerEnd: number,
+): Record<string, string[]> {
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(
+    raw.subarray(0, headerEnd),
+  );
+  const out: Record<string, string[]> = {};
+  let current: { name: string; value: string } | null = null;
+  const flush = (): void => {
+    if (current === null) return;
+    const key = current.name.trim().toLowerCase();
+    (out[key] ??= []).push(current.value.trim());
+    current = null;
+  };
+  for (const line of text.split(/\r\n|\n/)) {
+    if (line === "") break;
+    if ((line.startsWith(" ") || line.startsWith("\t")) && current !== null) {
+      current.value += ` ${line.trim()}`;
+      continue;
+    }
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    flush();
+    current = { name: line.slice(0, idx), value: line.slice(idx + 1) };
+  }
+  flush();
+  return out;
+}
+
+function parseDisposition(
+  headers: Map<string, string>,
+): "inline" | "attachment" | undefined {
+  const d = (headers.get("content-disposition") ?? "").trim().toLowerCase();
+  if (d.startsWith("attachment")) return "attachment";
+  if (d.startsWith("inline")) return "inline";
+  return undefined;
+}
+
+/**
+ * Recursively collect the decoded leaf parts of a MIME part. A multipart part
+ * recurses into its children; a leaf part is decoded (transfer-encoding undone)
+ * into a `MessagePart`. The PGP/MIME signature part is transport plumbing, not
+ * content, so it is skipped -- which unwraps the `multipart/signed` envelope
+ * (its two children are the signed content and the signature) for free.
+ */
+function collectLeafParts(partBytes: Uint8Array): MessagePart[] {
+  const part = parseMimePart(partBytes);
+  const mime = extractContentTypeMime(part.contentType);
+  if (mime === "application/pgp-signature") return [];
+  if (mime.startsWith("multipart/")) {
+    const boundary = extractBoundary(part.contentType);
+    // A multipart part with no boundary is undecodable: its children cannot
+    // be located. Silently returning [] would drop that content and break the
+    // lossless contract, so surface it as a decode failure the caller drops.
+    if (boundary === undefined) {
+      throw new Error(
+        `decodeMail: ${mime} part has no boundary parameter; cannot decode its children`,
+      );
+    }
+    return parseMultipart(part.body, boundary).flatMap(collectLeafParts);
+  }
+  const result: MessagePart = {
+    contentType: mime,
+    content: decodeAttachmentBytes(part.body, part.headers),
+  };
+  const filename = extractFilename(part.headers);
+  if (filename !== null) result.filename = filename;
+  const disposition = parseDisposition(part.headers);
+  if (disposition !== undefined) result.disposition = disposition;
+  return [result];
+}
+
+/**
+ * Decode a raw inbound MIME message into its lossless parts: the typed header
+ * subset, the full raw header map, and the flat list of decoded leaf parts
+ * (the PGP/MIME signature and multipart wrappers removed). This is the
+ * in-memory form; a caller commits each part's bytes to durable storage to
+ * produce a JSON-safe `Mail`. Reused across the standalone and deployed
+ * ingest paths so both see the same decoding.
+ */
+export function decodeMail(raw: Uint8Array): {
+  headers: ParsedMessageHeaders;
+  rawHeaders: Record<string, string[]>;
+  parts: MessagePart[];
+} {
+  const { headers: singleMap, headerEnd } = parseHeaderSection(raw);
+  const rawHeaders = parseRawHeaders(raw, headerEnd);
+  const headers = buildMessageHeaders(singleMap);
+  const parts = collectLeafParts(raw);
+  return { headers, rawHeaders, parts };
 }
