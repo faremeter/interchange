@@ -223,6 +223,21 @@ export const WORKFLOW_RUN_PROCESSING_DIR = "processing";
 export const WORKFLOW_RUN_CONSUMED_DIR = "consumed";
 
 /**
+ * Per-run inbound mail-part subtree. Non-text inbound mail content
+ * (image/audio/video/document mail parts) is committed here as real
+ * files rather than inlined into the JSON event log, whose serialization
+ * boundary would corrupt binary bytes. The layout is
+ * `runs/<runId>/parts/<urlEncoded(messageId)>/<index>-<name>`: one
+ * directory per inbound message (so a long-lived run's successive turns
+ * never collide), and one file per mail part carrying its verbatim
+ * bytes. The workflow-host ingest writes the bytes and records a
+ * lightweight `{ name, contentType, ref }` reference into the run's
+ * trigger / signal payload; the step invoker reads the bytes back at
+ * `agent.send` time. Files are immutable once written, like `blobs/`.
+ */
+export const WORKFLOW_RUN_PARTS_DIR = "parts";
+
+/**
  * Filename of the per-address retention watermark blob, a direct child
  * of `addresses/<urlEncoded>/` (a file, not a directory). Carries the
  * monotonic `receivedAt`-horizon below which consumed entries may be
@@ -348,6 +363,33 @@ export function requireEventSeq(filename: string, context: string): number {
 const BLOB_FILENAME_RE = /^[0-9a-f]{64}$/;
 
 /**
+ * Per-mail-part filename shape for the
+ * `runs/<runId>/parts/<urlEncoded(messageId)>/` subtree:
+ * `<index>-<name>`, where `index` is the decimal position of the
+ * mail part within its inbound message and `name` is a non-empty
+ * (possibly sanitized) filename. The workflow-host ingest owns the exact
+ * encoding and sanitizes untrusted names to satisfy this shape; this regex
+ * pins the shape so a malformed name fails the push rather than landing
+ * silently. The bytes themselves are opaque and immutable, exactly like
+ * `blobs/`.
+ */
+const PART_FILENAME_RE = /^(0|[1-9][0-9]*)-(.+)$/;
+
+/**
+ * Maximum byte length of a single mail part path component (the
+ * URL-encoded message segment, and each `<index>-<name>` filename).
+ * messageIds and mail part names arrive from untrusted inbound mail;
+ * an over-long RFC 5322 message-id URL-encodes past the filesystem's
+ * 255-byte component limit and would otherwise fail at disk-write time,
+ * downstream of validation. Reject it at the boundary instead.
+ */
+export const MAX_MAIL_PART_PATH_COMPONENT_BYTES = 255;
+
+function mailPartComponentByteLength(component: string): number {
+  return new TextEncoder().encode(component).length;
+}
+
+/**
  * Entries the kind handler accepts under `runs/<runId>/`. The `events/`
  * subtree carries the append-only event log; the `blobs/` subtree carries
  * opaque, content-addressed step outputs the `BlobSubstrate` adapter spills
@@ -365,6 +407,10 @@ const RUN_DIR_ALLOWED_CHILDREN = new Set<string>([
   // files into one combined file by a compaction commit.
   WORKFLOW_RUN_EVENTS_FILE,
   WORKFLOW_RUN_GRANTS_FILE,
+  // Inbound-mail mail part bytes committed as real files. See
+  // WORKFLOW_RUN_PARTS_DIR; validated by enumerateRunParts and
+  // held immutable by the same prior-tree byte-equality walk as blobs.
+  WORKFLOW_RUN_PARTS_DIR,
 ]);
 
 /**
@@ -635,7 +681,7 @@ async function enumerateEventBlobs(
     if (offender !== undefined) {
       return {
         ok: false,
-        reason: `run directory ${runDirPath} contains unexpected entry ${JSON.stringify(offender)}; only "${WORKFLOW_RUN_EVENTS_DIR}", "${WORKFLOW_RUN_BLOBS_DIR}", "${WORKFLOW_RUN_EVENTS_FILE}", and "${WORKFLOW_RUN_GRANTS_FILE}" are allowed`,
+        reason: `run directory ${runDirPath} contains unexpected entry ${JSON.stringify(offender)}; only "${WORKFLOW_RUN_EVENTS_DIR}", "${WORKFLOW_RUN_BLOBS_DIR}", "${WORKFLOW_RUN_EVENTS_FILE}", "${WORKFLOW_RUN_GRANTS_FILE}", and "${WORKFLOW_RUN_PARTS_DIR}" are allowed`,
       };
     }
     const hasCombined = runChildren.includes(WORKFLOW_RUN_EVENTS_FILE);
@@ -650,16 +696,18 @@ async function enumerateEventBlobs(
     // by the combined-form path, not this per-event enumeration.
     if (hasCombined) continue;
     if (!hasPerEvent) {
-      // A run dir whose only child is `grants.json` is the legitimate
-      // pre-first-event window: the hub's `run.grants` frame writes the
-      // grants ahead of the trigger, so the grants file lands before the
-      // child emits its first event. Carry it forward untouched -- there is
-      // no event log to enumerate yet. Any other events-less shape (e.g. a
-      // bare `blobs/` with no events) remains rejected below.
-      if (
-        runChildren.length === 1 &&
-        runChildren[0] === WORKFLOW_RUN_GRANTS_FILE
-      ) {
+      // The pre-first-event window: `grants.json` (the hub's `run.grants`
+      // frame writes grants ahead of the trigger) and `parts/` (the
+      // supervisor commits inbound-mail mail part bytes before firing the
+      // trigger) may both land before the child emits its first event. Carry
+      // such a run forward untouched -- there is no event log to enumerate
+      // yet, and the mail parts subtree is validated by its own walk. Any
+      // other events-less shape (e.g. a bare `blobs/` with no events) remains
+      // rejected below.
+      const nonPreEvent = runChildren.filter(
+        (c) => c !== WORKFLOW_RUN_GRANTS_FILE && c !== WORKFLOW_RUN_PARTS_DIR,
+      );
+      if (nonPreEvent.length === 0) {
         continue;
       }
       return {
@@ -938,6 +986,199 @@ async function enumerateRunBlobs(
   return { ok: true, blobs: out };
 }
 
+type RunPartEntry = {
+  runId: string;
+  messageSegment: string;
+  filename: string;
+  blobPath: string;
+};
+
+/**
+ * Walk every `runs/<runId>/parts/<messageSegment>/` directory and
+ * validate each entry: the `<messageSegment>` is a URL-encoded messageId
+ * that must round-trip cleanly (the same canonical-encoding discipline the
+ * claim-check `addresses/` subtree enforces) and stay within the path-
+ * component byte cap, must be a directory rather than a dangling blob, and
+ * each filename matches the `<index>-<name>` shape within the same cap. The
+ * `parts/` subdirectory is optional: a run that never received a
+ * non-text inbound message never produces one. Returns the flat entry list
+ * so the caller can apply immutability checks against the prior tree,
+ * exactly as it does for blobs.
+ */
+async function enumerateRunParts(
+  listDir: (path: string) => Promise<string[]>,
+  scopeRunIds?: ReadonlySet<string>,
+): Promise<
+  { ok: true; parts: RunPartEntry[] } | { ok: false; reason: string }
+> {
+  const out: RunPartEntry[] = [];
+  // See enumerateRunBlobs: a defined `scopeRunIds` walks only the commit's
+  // touched runs; an untouched run's mail parts are carried forward
+  // byte-identical and were validated when written.
+  const runIds =
+    scopeRunIds === undefined
+      ? await listDir(WORKFLOW_RUN_RUNS_PREFIX)
+      : Array.from(scopeRunIds);
+  for (const runId of runIds) {
+    const runDirPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
+    const runChildren = await listDir(runDirPath);
+    if (!runChildren.includes(WORKFLOW_RUN_PARTS_DIR)) continue;
+    const partsDirPath = `${runDirPath}/${WORKFLOW_RUN_PARTS_DIR}`;
+    const messageSegments = await listDir(partsDirPath);
+    for (const messageSegment of messageSegments) {
+      const roundTrip = checkUrlSegmentRoundTrip(messageSegment);
+      if (!roundTrip.ok) {
+        return {
+          ok: false,
+          reason: `mail part message ${roundTrip.reason} under ${partsDirPath}`,
+        };
+      }
+      if (
+        mailPartComponentByteLength(messageSegment) >
+        MAX_MAIL_PART_PATH_COMPONENT_BYTES
+      ) {
+        return {
+          ok: false,
+          reason: `mail part message segment ${JSON.stringify(messageSegment)} under ${partsDirPath} exceeds the ${String(MAX_MAIL_PART_PATH_COMPONENT_BYTES)}-byte path-component limit`,
+        };
+      }
+      const messageDirPath = `${partsDirPath}/${messageSegment}`;
+      const filenames = await listDir(messageDirPath);
+      // A message segment must be a directory carrying at least one
+      // mail part file. An empty listing means either a dangling blob
+      // committed directly at `parts/<segment>` (the substrate lists a
+      // blob path as empty, exactly as the agent-state walk detects) or an
+      // empty directory; both are rejected so untrusted inbound content has
+      // no silent-accept path.
+      if (filenames.length === 0) {
+        return {
+          ok: false,
+          reason: `mail part message segment ${JSON.stringify(messageSegment)} under ${partsDirPath} is not a directory carrying mail part files`,
+        };
+      }
+      for (const filename of filenames) {
+        if (!PART_FILENAME_RE.test(filename)) {
+          return {
+            ok: false,
+            reason: `mail part filename ${messageDirPath}/${filename} does not match <index>-<name>`,
+          };
+        }
+        if (
+          mailPartComponentByteLength(filename) >
+          MAX_MAIL_PART_PATH_COMPONENT_BYTES
+        ) {
+          return {
+            ok: false,
+            reason: `mail part filename ${messageDirPath}/${filename} exceeds the ${String(MAX_MAIL_PART_PATH_COMPONENT_BYTES)}-byte path-component limit`,
+          };
+        }
+        // Each mail part entry must be a leaf blob, not a nested directory.
+        // The `<index>-<name>` shape is permissive (`.+`), so a directory
+        // named e.g. `0-foo` would otherwise pass and admit an arbitrarily
+        // nested subtree, breaking the one-file-per-mail-part invariant and
+        // -- on a pack-receive validation with no `listDirOids` -- driving the
+        // immutability resolver to `readBlob` a tree path and throw. A blob
+        // lists as empty; a directory lists its children.
+        const filePath = `${messageDirPath}/${filename}`;
+        if ((await listDir(filePath)).length > 0) {
+          return {
+            ok: false,
+            reason: `mail part ${filePath} is a directory; each mail part must be a single file`,
+          };
+        }
+        out.push({
+          runId,
+          messageSegment,
+          filename,
+          blobPath: filePath,
+        });
+      }
+    }
+  }
+  return { ok: true, parts: out };
+}
+
+/**
+ * Validate the per-run `parts/` subtree's immutability against the
+ * prior tree, both directions, mirroring the blobs walk. Mail part files
+ * are write-once. A path present in the prior tree must carry the same git
+ * blob OID in the prospective tree: unlike `blobs/`, a mail part filename
+ * is `<index>-<name>` (not a content hash), so the same path can carry
+ * different bytes -- the OID compare is the load-bearing immutability guard,
+ * and comparing the OID git already computed avoids re-reading tens of MB of
+ * mail part bytes on every commit that merely touches the run. A prior path
+ * must reappear (no deletion): run reclaim drops the whole `runs/<runId>/`
+ * subtree outside `validatePush`, so a partial mail part deletion is always
+ * a violation. Structural shape is enforced by `enumerateRunParts`.
+ */
+async function validateRunPartsSubtree(args: {
+  listDir: (path: string) => Promise<string[]>;
+  priorListDir: (path: string) => Promise<string[]>;
+  readBlob: (path: string) => Promise<Uint8Array>;
+  priorReadBlob: (path: string) => Promise<Uint8Array | null>;
+  listDirOids:
+    | ((path: string) => Promise<{ name: string; oid: string }[]>)
+    | undefined;
+  priorListDirOids:
+    | ((path: string) => Promise<{ name: string; oid: string }[]>)
+    | undefined;
+  scopeRunIds: ReadonlySet<string> | undefined;
+}): Promise<ValidatePushResult> {
+  const prospective = await enumerateRunParts(args.listDir, args.scopeRunIds);
+  if (!prospective.ok) return prospective;
+  const prior = await enumerateRunParts(args.priorListDir, args.scopeRunIds);
+  if (!prior.ok) {
+    return {
+      ok: false,
+      reason: `prior tree's mail parts subtree is structurally invalid: ${prior.reason}`,
+    };
+  }
+
+  const prospectiveOid = makeListingOidResolver(
+    "prospective",
+    args.listDirOids,
+    async (p) => (await git.hashBlob({ object: await args.readBlob(p) })).oid,
+  );
+  const priorOid = makeListingOidResolver(
+    "prior",
+    args.priorListDirOids,
+    async (p) => {
+      const bytes = await args.priorReadBlob(p);
+      if (bytes === null) {
+        throw new Error(
+          `mail parts: prior entry ${p} was enumerated but its bytes could not be read`,
+        );
+      }
+      return (await git.hashBlob({ object: bytes })).oid;
+    },
+  );
+
+  const prospectivePaths = new Set(prospective.parts.map((e) => e.blobPath));
+  const priorPaths = new Set(prior.parts.map((e) => e.blobPath));
+
+  for (const entry of prospective.parts) {
+    if (!priorPaths.has(entry.blobPath)) continue; // newly added
+    const [next, before] = await Promise.all([
+      prospectiveOid(entry.blobPath),
+      priorOid(entry.blobPath),
+    ]);
+    if (next !== before) {
+      return {
+        ok: false,
+        reason: `mail part ${entry.blobPath} bytes diverge from the prior tree (blob OID ${next} vs ${before}); mail part files are immutable once written`,
+      };
+    }
+  }
+  for (const entry of prior.parts) {
+    if (prospectivePaths.has(entry.blobPath)) continue;
+    return {
+      ok: false,
+      reason: `mail part ${entry.blobPath} present in the prior tree is missing from the prospective tree; mail part files are immutable once written`,
+    };
+  }
+  return { ok: true };
+}
+
 /**
  * Enforce blob immutability via prior-tree byte equality. The blob
  * value itself is opaque bytes (no JSON envelope, no arktype
@@ -1070,13 +1311,16 @@ async function checkPriorByteEquality(
 }
 
 /**
- * Round-trip an `<urlEncoded(address)>` segment through decode then
- * encode. A divergence means the segment is not the canonical
- * encoding of any address, which would leave consumers guessing
- * which encoding to use when reading the subtree. Surface as a
- * concrete rejection at push time.
+ * Round-trip a URL-encoded path segment through decode then encode. A
+ * divergence means the segment is not the canonical encoding of any
+ * value, which would leave consumers guessing which encoding to use
+ * when reading the subtree. Surface as a concrete rejection at push
+ * time. Shared by every subtree that keys a directory by an
+ * `encodeURIComponent`-encoded identity (`addresses/`, `agent-state/`,
+ * and the per-run `parts/` message segment); callers prepend
+ * their own subtree context to the returned reason.
  */
-function checkAddressSegmentRoundTrip(segment: string):
+function checkUrlSegmentRoundTrip(segment: string):
   | {
       ok: true;
       decoded: string;
@@ -1091,7 +1335,7 @@ function checkAddressSegmentRoundTrip(segment: string):
   } catch (cause) {
     return {
       ok: false,
-      reason: `address segment ${JSON.stringify(segment)} is not a valid URL-encoded string: ${
+      reason: `segment ${JSON.stringify(segment)} is not a valid URL-encoded string: ${
         cause instanceof Error ? cause.message : String(cause)
       }`,
     };
@@ -1100,7 +1344,7 @@ function checkAddressSegmentRoundTrip(segment: string):
   if (reencoded !== segment) {
     return {
       ok: false,
-      reason: `address segment ${JSON.stringify(segment)} does not round-trip URL-encoding (re-encoded as ${JSON.stringify(reencoded)})`,
+      reason: `segment ${JSON.stringify(segment)} does not round-trip URL-encoding (re-encoded as ${JSON.stringify(reencoded)})`,
     };
   }
   return { ok: true, decoded };
@@ -1183,8 +1427,10 @@ async function enumerateClaimCheckBlobs(
   const perAddress = new Map<string, ClaimCheckAddressBucket>();
   const segments = await listDir(WORKFLOW_RUN_ADDRESSES_PREFIX);
   for (const segment of segments) {
-    const roundTrip = checkAddressSegmentRoundTrip(segment);
-    if (!roundTrip.ok) return roundTrip;
+    const roundTrip = checkUrlSegmentRoundTrip(segment);
+    if (!roundTrip.ok) {
+      return { ok: false, reason: `address ${roundTrip.reason}` };
+    }
     const addrDir = `${WORKFLOW_RUN_ADDRESSES_PREFIX}/${segment}`;
     const children = await listDir(addrDir);
     for (const child of children) {
@@ -1996,11 +2242,11 @@ async function validateAgentStateSubtree(
   }
   const segments = await listDir(WORKFLOW_RUN_AGENT_STATE_PREFIX);
   for (const segment of segments) {
-    const roundTrip = checkAddressSegmentRoundTrip(segment);
+    const roundTrip = checkUrlSegmentRoundTrip(segment);
     if (!roundTrip.ok) {
       return {
         ok: false,
-        reason: `agent-state segment ${JSON.stringify(segment)} does not round-trip URL-encoding; ${roundTrip.reason}`,
+        reason: `agent-state ${roundTrip.reason}`,
       };
     }
     // Reject a blob dangling directly at `agent-state/<segment>`: every
@@ -2329,6 +2575,20 @@ export const workflowRunKindHandler: KindHandler = {
         ok: false,
         reason: `blob ${b.blobPath} present in the prior tree is missing from the prospective tree; blob entries are immutable once written`,
       };
+    }
+
+    const partsCheck = await validateRunPartsSubtree({
+      listDir,
+      priorListDir,
+      readBlob,
+      priorReadBlob,
+      listDirOids,
+      priorListDirOids,
+      scopeRunIds,
+    });
+    if (!partsCheck.ok) {
+      logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${partsCheck.reason}`;
+      return partsCheck;
     }
 
     return { ok: true, newlyTerminalRuns };
