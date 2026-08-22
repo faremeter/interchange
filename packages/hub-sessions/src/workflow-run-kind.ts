@@ -543,6 +543,19 @@ export function classifyTerminalEvent(
 }
 
 /**
+ * True when a blob is absent from the prior tree -- i.e. this commit is the
+ * one that authored it. Consumers act only on a newly-added blob; a blob
+ * already present in the prior tree was carried forward unchanged by a
+ * compaction commit and must not be re-acted upon.
+ */
+async function blobIsNewlyAdded(
+  blobPath: string,
+  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+): Promise<boolean> {
+  return (await priorReadBlob(blobPath)) === null;
+}
+
+/**
  * Recognised CancelRequested origins. Mirrors the workflow package's
  * `CANCEL_ORIGINS` vocabulary; inlined here so the substrate does
  * not depend on `@intx/workflow`.
@@ -2460,7 +2473,7 @@ export const workflowRunKindHandler: KindHandler = {
           // checkPriorByteEquality rejects it first. Mirrors the newly-terminal
           // gate below, which likewise acts only on a blob absent from the
           // prior tree.
-          if ((await priorReadBlob(entry.blobPath)) === null) {
+          if (await blobIsNewlyAdded(entry.blobPath, priorReadBlob)) {
             const principalCheck = checkCancelOriginPrincipal(
               entry.blobPath,
               origin,
@@ -2490,7 +2503,7 @@ export const workflowRunKindHandler: KindHandler = {
           // terminal blob already present in the prior tree and emits no
           // signal, so a downstream consumer keyed on the signal does
           // not double-fire.
-          if ((await priorReadBlob(entry.blobPath)) === null) {
+          if (await blobIsNewlyAdded(entry.blobPath, priorReadBlob)) {
             const terminalBytes = await readBlob(entry.blobPath);
             newlyTerminalRuns.push({
               runId,
