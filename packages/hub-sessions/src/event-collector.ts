@@ -8,7 +8,12 @@ import { eq } from "drizzle-orm";
 
 import { inferenceTurn, turnPart } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
-import type { InferenceEvent, ContentBlock } from "@intx/types/runtime";
+import type {
+  InferenceEvent,
+  ContentBlock,
+  TokenUsage,
+  LastCycleSource,
+} from "@intx/types/runtime";
 import { type DB, parseTurnPartType } from "@intx/db";
 
 import { generateId } from "@intx/hub-common";
@@ -33,6 +38,19 @@ export type TurnFinalized = {
   toolErrors: { name: string; content: string }[];
 };
 
+// Per-turn token usage, emitted once when a turn finalizes. Carries full run
+// identity so a host accounting sink never has to join against a separate
+// address-to-tenant map (which would go stale at run teardown).
+export type TurnUsage = {
+  tenantId: string;
+  sessionId: string;
+  runId: string;
+  turnId: string;
+  provider: string;
+  model: string;
+  usage: TokenUsage;
+};
+
 export type EventCollector = {
   onEvent(event: InferenceEvent): Promise<void>;
   abandon(): Promise<void>;
@@ -47,12 +65,13 @@ export type EventCollectorConfig = {
   runId: string;
   tenantId: string;
   onTurnFinalized?: (turn: TurnFinalized) => void;
+  onUsage?: (usage: TurnUsage) => void;
 };
 
 export function createEventCollector(
   config: EventCollectorConfig,
 ): EventCollector {
-  const { db, sessionId, runId, tenantId, onTurnFinalized } = config;
+  const { db, sessionId, runId, tenantId, onTurnFinalized, onUsage } = config;
 
   // Current inference turn being accumulated. A new turn is created on each
   // inference.start. Finalized on connector.reply, reactor.done,
@@ -90,6 +109,12 @@ export function createEventCollector(
   let accumulatedToolCalls: TurnToolCall[] = [];
   // Tool results that reported isError, accumulated for TurnFinalized.
   let accumulatedToolErrors: { name: string; content: string }[] = [];
+  // Final cumulative token usage for the current turn. `inference.usage` events
+  // carry a running cumulative total and fire multiple times per step, so these
+  // are OVERWRITTEN (not summed); the last value before finalize is the
+  // authoritative per-turn total. Both reset on each new turn.
+  let turnUsage: TokenUsage | null = null;
+  let turnSource: LastCycleSource | null = null;
 
   async function onEvent(event: InferenceEvent): Promise<void> {
     switch (event.type) {
@@ -103,6 +128,8 @@ export function createEventCollector(
       case "inference.done":
         await handleInferenceDone(event.data.turn.content);
         streamingText = "";
+        turnUsage = event.data.usage;
+        turnSource = event.data.source;
         break;
       case "tool.done": {
         const callId = event.data.result.callId;
@@ -187,9 +214,15 @@ export function createEventCollector(
           });
         }
         break;
+      case "inference.usage":
+        // Cumulative running total that fires several times per step; overwrite
+        // so the last value before finalize is the authoritative per-turn
+        // usage, emitted once via onUsage from finalizeTurn.
+        turnUsage = event.data.usage;
+        turnSource = event.data.source;
+        break;
       default:
-        // reactor.start, streaming deltas, usage, and other events are
-        // not persisted.
+        // reactor.start, streaming deltas, and other events are not persisted.
         break;
     }
   }
@@ -214,6 +247,8 @@ export function createEventCollector(
     callArgs.clear();
     accumulatedToolCalls = [];
     accumulatedToolErrors = [];
+    turnUsage = null;
+    turnSource = null;
 
     await db.insert(inferenceTurn).values({
       id: currentTurnId,
@@ -367,6 +402,24 @@ export function createEventCollector(
         errors: [...accumulatedErrors],
         toolCalls: [...accumulatedToolCalls],
         toolErrors: [...accumulatedToolErrors],
+      });
+    }
+
+    // Report per-turn usage once, alongside the finalize notify. Gated on
+    // turnUsage being present so a turn that ran no inference emits nothing.
+    // NOTE: abandon() finalizes with notify=false, so a turn abandoned
+    // mid-step (e.g. a sidecar disconnect) reports no usage even if the
+    // provider already billed input tokens -- an accepted gap until durable
+    // usage persistence lands on the turn row.
+    if (notify && onUsage && turnUsage !== null && turnSource !== null) {
+      onUsage({
+        tenantId,
+        sessionId,
+        runId,
+        turnId,
+        provider: turnSource.provider,
+        model: turnSource.model,
+        usage: turnUsage,
       });
     }
 

@@ -6,6 +6,7 @@ import {
   createEventCollector,
   type EventCollector,
   type TurnFinalized,
+  type TurnUsage,
 } from "./event-collector";
 import { createEventCollectorRegistry } from "./event-collector-registry";
 
@@ -1220,6 +1221,45 @@ describe("EventCollectorRegistry dispatch serialization", () => {
     // The turn is finalized failed by the abandon, not left orphaned as running.
     expect(finalizedFailed).toHaveLength(1);
   });
+
+  test("threads onUsage to the registry hook with the run address", async () => {
+    const fake = createRecordingRegistryDB();
+    const usages: { address: string; usage: TurnUsage }[] = [];
+    const registry = createEventCollectorRegistry({
+      db: fake.db,
+      onUsage: (address, usage) => usages.push({ address, usage }),
+    });
+    const address = "agent://usage";
+    registry.create(address, "tnt_test", "ses_test", "run_test");
+
+    registry.dispatch(address, event("inference.start", 1, { model: "gpt-4" }));
+    registry.dispatch(
+      address,
+      event("inference.usage", 2, {
+        usage: {
+          input: 42,
+          output: 7,
+          cacheRead: 0,
+          cacheWrite: 0,
+          thinking: 0,
+        },
+        source: { sourceId: "s1", provider: "anthropic", model: "gpt-4" },
+      }),
+    );
+    registry.dispatch(address, event("reactor.done", 3, {}));
+    await drain();
+
+    expect(usages).toHaveLength(1);
+    const u = at(usages, 0);
+    expect(u.address).toBe(address);
+    expect(u.usage.usage).toEqual({
+      input: 42,
+      output: 7,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 0,
+    });
+  });
 });
 
 describe("EventCollector.getCurrentTurnId", () => {
@@ -1540,5 +1580,178 @@ describe("EventCollector.getLastTurnId", () => {
     await collector.onEvent(event("inference.start", 3, { model: "gpt-4" }));
 
     expect(collector.getLastTurnId()).not.toBe(firstTurnId);
+  });
+});
+
+describe("EventCollector onUsage", () => {
+  function fullUsage(input: number, output: number) {
+    return { input, output, cacheRead: 0, cacheWrite: 0, thinking: 0 };
+  }
+
+  function setup() {
+    const usages: TurnUsage[] = [];
+    const { db } = createFakeDB();
+    const collector = createEventCollector({
+      db,
+      sessionId: "ses_test",
+      runId: "run_test",
+      tenantId: "tnt_test",
+      onUsage: (u) => usages.push(u),
+    });
+    return { collector, usages };
+  }
+
+  test("emits per-turn usage once with the final cumulative total, not summed", async () => {
+    const { collector, usages } = setup();
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    // inference.usage carries a cumulative running total and fires repeatedly.
+    await collector.onEvent(
+      event("inference.usage", 2, {
+        usage: fullUsage(100, 0),
+        source: { sourceId: "s1", provider: "anthropic", model: "gpt-4" },
+      }),
+    );
+    await collector.onEvent(
+      event("inference.usage", 3, {
+        usage: fullUsage(100, 50),
+        source: { sourceId: "s1", provider: "anthropic", model: "gpt-4" },
+      }),
+    );
+    expect(usages).toHaveLength(0); // nothing emitted before the turn finalizes
+
+    await collector.onEvent(event("reactor.done", 4, {}));
+
+    expect(usages).toHaveLength(1);
+    const u = at(usages, 0);
+    // The last cumulative total, NOT the sum of the two events (200/50).
+    expect(u.usage).toEqual(fullUsage(100, 50));
+    expect(u.provider).toBe("anthropic");
+    expect(u.model).toBe("gpt-4");
+  });
+
+  test("carries full run identity and a non-null turnId", async () => {
+    const { collector, usages } = setup();
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await collector.onEvent(
+      event("inference.usage", 2, {
+        usage: fullUsage(10, 5),
+        source: { sourceId: "s1", provider: "openai", model: "gpt-4" },
+      }),
+    );
+    await collector.onEvent(event("reactor.done", 3, {}));
+
+    expect(usages).toHaveLength(1);
+    const u = at(usages, 0);
+    expect(u.tenantId).toBe("tnt_test");
+    expect(u.sessionId).toBe("ses_test");
+    expect(u.runId).toBe("run_test");
+    expect(collector.getLastTurnId()).toBe(u.turnId);
+    expect(u.turnId.length).toBeGreaterThan(0);
+  });
+
+  test("reports usage even when the turn ends in an error", async () => {
+    const { collector, usages } = setup();
+    await collector.onEvent(event("inference.start", 1, { model: "gpt-4" }));
+    await collector.onEvent(
+      event("inference.usage", 2, {
+        usage: fullUsage(20, 0),
+        source: { sourceId: "s1", provider: "anthropic", model: "gpt-4" },
+      }),
+    );
+    await collector.onEvent(
+      event("inference.error", 3, {
+        error: { category: "fatal", message: "boom" },
+        partial: { role: "assistant", content: [] },
+      }),
+    );
+    await collector.onEvent(event("reactor.done", 4, {}));
+
+    expect(usages).toHaveLength(1);
+    expect(at(usages, 0).usage).toEqual(fullUsage(20, 0));
+  });
+
+  test("does not emit for a turn that ran no inference", async () => {
+    const { collector, usages } = setup();
+    // A fatal reactor.error with no preceding inference opens and finalizes a
+    // turn, but no usage was ever observed for it.
+    await collector.onEvent(
+      event("reactor.error", 1, { error: "boom", fatal: true }),
+    );
+    expect(usages).toHaveLength(0);
+  });
+
+  test("finalizing turn 1 via a bare inference.start emits its usage and does not carry it into turn 2", async () => {
+    const { collector, usages } = setup();
+    await collector.onEvent(event("inference.start", 1, { model: "m1" }));
+    await collector.onEvent(
+      event("inference.usage", 2, {
+        usage: fullUsage(100, 10),
+        source: { sourceId: "s1", provider: "anthropic", model: "m1" },
+      }),
+    );
+    const turn1Id = collector.getCurrentTurnId();
+
+    // Turn 2 starts with no intervening reactor.done: beginTurn must finalize
+    // turn 1 (emitting its usage) BEFORE it resets the accumulators.
+    await collector.onEvent(event("inference.start", 3, { model: "m2" }));
+
+    expect(usages).toHaveLength(1);
+    expect(turn1Id).toBe(at(usages, 0).turnId);
+    expect(at(usages, 0).usage).toEqual(fullUsage(100, 10));
+    expect(at(usages, 0).model).toBe("m1");
+
+    // Turn 2 carries only its own usage, never turn 1's.
+    await collector.onEvent(
+      event("inference.usage", 4, {
+        usage: fullUsage(5, 5),
+        source: { sourceId: "s2", provider: "openai", model: "m2" },
+      }),
+    );
+    await collector.onEvent(event("reactor.done", 5, {}));
+
+    expect(usages).toHaveLength(2);
+    expect(at(usages, 1).usage).toEqual(fullUsage(5, 5));
+    expect(at(usages, 1).model).toBe("m2");
+    expect(at(usages, 1).turnId).not.toBe(turn1Id ?? "");
+  });
+
+  test("a second turn with no usage does not re-emit the first turn's usage", async () => {
+    const { collector, usages } = setup();
+    await collector.onEvent(event("inference.start", 1, { model: "m1" }));
+    await collector.onEvent(
+      event("inference.usage", 2, {
+        usage: fullUsage(100, 10),
+        source: { sourceId: "s1", provider: "anthropic", model: "m1" },
+      }),
+    );
+    await collector.onEvent(event("reactor.done", 3, {}));
+    expect(usages).toHaveLength(1);
+
+    await collector.onEvent(event("inference.start", 4, { model: "m2" }));
+    await collector.onEvent(event("reactor.done", 5, {}));
+
+    expect(usages).toHaveLength(1);
+  });
+
+  test("inference.done usage overrides a prior inference.usage in the same turn", async () => {
+    const { collector, usages } = setup();
+    await collector.onEvent(event("inference.start", 1, { model: "m1" }));
+    await collector.onEvent(
+      event("inference.usage", 2, {
+        usage: fullUsage(100, 10),
+        source: { sourceId: "s1", provider: "anthropic", model: "m1" },
+      }),
+    );
+    await collector.onEvent(
+      event("inference.done", 3, {
+        turn: { role: "assistant", content: [], model: "m1" },
+        usage: fullUsage(100, 25),
+        source: { sourceId: "s1", provider: "anthropic", model: "m1" },
+      }),
+    );
+    await collector.onEvent(event("reactor.done", 4, {}));
+
+    expect(usages).toHaveLength(1);
+    expect(at(usages, 0).usage).toEqual(fullUsage(100, 25));
   });
 });
