@@ -512,10 +512,9 @@ export type WatermarkEnvelope = typeof WatermarkEnvelope.infer;
  * Drift silently reopens the restore-time double-driver collision that
  * `readOwnedMessageIds` (below) exists to prevent.
  */
-const TERMINAL_EVENT_STATUS: ReadonlyMap<
-  string,
-  "completed" | "failed" | "cancelled"
-> = new Map([
+type TerminalRunStatus = "completed" | "failed" | "cancelled";
+
+const TERMINAL_EVENT_STATUS: ReadonlyMap<string, TerminalRunStatus> = new Map([
   ["RunCompleted", "completed"],
   ["RunFailed", "failed"],
   ["RunCancelled", "cancelled"],
@@ -527,6 +526,21 @@ const TERMINAL_EVENT_STATUS: ReadonlyMap<
  * the two cannot drift apart.
  */
 const TERMINAL_EVENT_TYPES = new Set<string>(TERMINAL_EVENT_STATUS.keys());
+
+/**
+ * Classify a workflow-run event type against the terminal-status vocabulary.
+ * `TERMINAL_EVENT_STATUS` is the sole authority (see above), so a type absent
+ * from it is by definition not terminal: no separate membership set is
+ * consulted and no "unmapped terminal type" case can arise.
+ */
+export function classifyTerminalEvent(
+  eventType: string,
+): { terminal: true; status: TerminalRunStatus } | { terminal: false } {
+  const status = TERMINAL_EVENT_STATUS.get(eventType);
+  return status === undefined
+    ? { terminal: false }
+    : { terminal: true, status };
+}
 
 /**
  * Recognised CancelRequested origins. Mirrors the workflow package's
@@ -2464,7 +2478,8 @@ export const workflowRunKindHandler: KindHandler = {
             reason: `run ${runId} has event at seq ${String(entry.filenameSeq)} after terminal ${terminalType} at seq ${String(terminalSeq)}`,
           };
         }
-        if (TERMINAL_EVENT_TYPES.has(parsed.parsed.body.type)) {
+        const classified = classifyTerminalEvent(parsed.parsed.body.type);
+        if (classified.terminal) {
           terminalSeq = entry.filenameSeq;
           terminalType = parsed.parsed.body.type;
           // Surface the run as newly terminal only when this commit is
@@ -2476,16 +2491,10 @@ export const workflowRunKindHandler: KindHandler = {
           // signal, so a downstream consumer keyed on the signal does
           // not double-fire.
           if ((await priorReadBlob(entry.blobPath)) === null) {
-            const status = TERMINAL_EVENT_STATUS.get(parsed.parsed.body.type);
-            if (status === undefined) {
-              throw new Error(
-                `terminal event type ${parsed.parsed.body.type} has no workflow_run.status mapping`,
-              );
-            }
             const terminalBytes = await readBlob(entry.blobPath);
             newlyTerminalRuns.push({
               runId,
-              status,
+              status: classified.status,
               terminalEventJson: new TextDecoder().decode(terminalBytes),
             });
           }
