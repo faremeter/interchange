@@ -67,6 +67,9 @@ export function createEventCollectorRegistry(
   const { db, onTurnFinalized } = config;
   const collectors = new Map<string, EventCollector>();
   const statuses = new Map<string, SessionStatus>();
+  // Per-address tail promise: serializes onEvent/abandon work for one run
+  // address so their DB writes cannot interleave. Reaped when it drains.
+  const tails = new Map<string, Promise<void>>();
 
   function create(
     agentAddress: string,
@@ -100,6 +103,31 @@ export function createEventCollectorRegistry(
     statuses.delete(agentAddress);
   }
 
+  // Chain `work` onto the address's tail so per-address work runs in order and
+  // never interleaves, while the caller stays non-blocking. `onError` swallows
+  // a failure so one bad event cannot wedge the chain; `onSettled` runs after
+  // the work settles. The tail entry is reaped once no later work is queued.
+  function enqueue(
+    agentAddress: string,
+    work: () => Promise<void>,
+    onError: (err: unknown) => void,
+    onSettled?: () => void,
+  ): void {
+    const prev = tails.get(agentAddress) ?? Promise.resolve();
+    const next = prev
+      .then(work)
+      .catch(onError)
+      .finally(() => {
+        if (onSettled !== undefined) {
+          onSettled();
+        }
+        if (tails.get(agentAddress) === next) {
+          tails.delete(agentAddress);
+        }
+      });
+    tails.set(agentAddress, next);
+  }
+
   function dispatch(agentAddress: string, event: InferenceEvent): void {
     const collector = collectors.get(agentAddress);
     if (collector === undefined) {
@@ -115,27 +143,38 @@ export function createEventCollectorRegistry(
       event.type === "reactor.done" ||
       (event.type === "reactor.error" && event.data.fatal);
 
-    collector
-      .onEvent(event)
-      .catch((err: unknown) => {
+    enqueue(
+      agentAddress,
+      () => collector.onEvent(event),
+      (err: unknown) => {
         log.warn`Failed to persist event ${event.type} seq=${String(event.seq)} for ${agentAddress}: ${err instanceof Error ? err.message : String(err)}`;
-      })
-      .finally(() => {
-        if (isTerminal) {
+      },
+      () => {
+        if (isTerminal && collectors.get(agentAddress) === collector) {
           removeCollector(agentAddress);
         }
-      });
+      },
+    );
   }
 
   function abandon(agentAddress: string): void {
     const collector = collectors.get(agentAddress);
     if (collector === undefined) return;
 
-    collector.abandon().catch((err: unknown) => {
-      log.warn`Failed to abandon collector for ${agentAddress}: ${err instanceof Error ? err.message : String(err)}`;
-    });
-
+    // Stop NEW dispatches immediately; the queued closures keep their own
+    // reference so already-queued events still drain before the abandon runs.
     removeCollector(agentAddress);
+
+    // Chain the abandon onto the tail so it runs AFTER any queued onEvents
+    // instead of racing them. Otherwise a queued beginTurn could create a
+    // fresh `running` turn row after the collector was finalized, orphaning it.
+    enqueue(
+      agentAddress,
+      () => collector.abandon(),
+      (err: unknown) => {
+        log.warn`Failed to abandon collector for ${agentAddress}: ${err instanceof Error ? err.message : String(err)}`;
+      },
+    );
   }
 
   function has(agentAddress: string): boolean {
