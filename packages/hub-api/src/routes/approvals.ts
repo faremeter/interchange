@@ -80,7 +80,7 @@ export type ReadRunLifecycles = (
   target: WorkflowRunLifecycle;
 }>;
 
-type ResolveApprovalArgs = {
+export type ResolveApprovalRequest = {
   approvalId: string;
   tenantId: string;
   principalId: string;
@@ -89,7 +89,7 @@ type ResolveApprovalArgs = {
   decisionPayload: ApprovalDecision;
 };
 
-type ResolveApprovalResult =
+export type ResolveApprovalOutcome =
   | { kind: "resolved"; approval: ParsedApproval }
   | { kind: "not_found" }
   | { kind: "forbidden" }
@@ -99,7 +99,7 @@ type ResolveApprovalResult =
   | { kind: "dispatch_unavailable" };
 
 type PendingFailureKind = Extract<
-  ResolveApprovalResult["kind"],
+  ResolveApprovalOutcome["kind"],
   "deployment_unavailable" | "run_not_running" | "dispatch_unavailable"
 >;
 
@@ -119,10 +119,10 @@ type PendingFailureKind = Extract<
  * until workflow Git records the signal as received. Shared deployments retain
  * their direct sidecar delivery behavior.
  */
-async function resolveApproval(
+export async function resolveApproval(
   deps: CreateApprovalRoutesDeps,
-  args: ResolveApprovalArgs,
-): Promise<ResolveApprovalResult> {
+  args: ResolveApprovalRequest,
+): Promise<ResolveApprovalOutcome> {
   const {
     db,
     sidecarRouter,
@@ -610,7 +610,7 @@ export function createApprovalRoutes(
   return app;
 }
 
-function respond(c: Context<TenantEnv>, result: ResolveApprovalResult) {
+function respond(c: Context<TenantEnv>, result: ResolveApprovalOutcome) {
   switch (result.kind) {
     case "resolved":
       return c.json(formatApproval(result.approval), 200);

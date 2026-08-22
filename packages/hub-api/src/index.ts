@@ -33,3 +33,10 @@ export {
   resolveDefinitionSources,
   type DefinitionSourceResolution,
 } from "./run-source-resolution";
+export {
+  resolveApproval,
+  type ResolveApprovalRequest,
+  type ResolveApprovalOutcome,
+  type CreateApprovalRoutesDeps,
+  type ReadRunLifecycles,
+} from "./routes/approvals";
