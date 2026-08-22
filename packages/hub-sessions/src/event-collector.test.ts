@@ -1072,9 +1072,6 @@ describe("EventCollectorRegistry getAccumulatedText", () => {
     registry.create(address, "tnt_test", "ses_test", "run_test");
 
     registry.dispatch(address, event("inference.start", 1, { model: "gpt-4" }));
-    // dispatch is fire-and-forget; wait for the microtask queue to flush
-    await Promise.resolve();
-
     registry.dispatch(
       address,
       event("inference.done", 5, {
@@ -1086,9 +1083,142 @@ describe("EventCollectorRegistry getAccumulatedText", () => {
         usage: { input: 10, output: 5 },
       }),
     );
-    await Promise.resolve();
+    // dispatch is non-blocking and serialized onto a per-address tail; yield to
+    // the macrotask queue so the queued onEvent work drains before asserting.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     expect(registry.getAccumulatedText(address)).toBe("streaming text");
+  });
+});
+
+describe("EventCollectorRegistry dispatch serialization", () => {
+  // A fake DB that records every write and can gate them on a caller-held
+  // promise, so a test can hold one collector's onEvent mid-flight and observe
+  // whether a second dispatch interleaves.
+  function createRecordingRegistryDB() {
+    const ops: {
+      kind: "insert" | "update";
+      values: Record<string, unknown>;
+    }[] = [];
+    let gate: Promise<void> | null = null;
+    const db = {
+      insert(_table: unknown) {
+        return {
+          async values(vals: Record<string, unknown>) {
+            ops.push({ kind: "insert", values: vals });
+            if (gate !== null) await gate;
+          },
+        };
+      },
+      update(_table: unknown) {
+        return {
+          set(vals: Record<string, unknown>) {
+            return {
+              async where(_condition: unknown) {
+                ops.push({ kind: "update", values: vals });
+                if (gate !== null) await gate;
+              },
+            };
+          },
+        };
+      },
+    };
+    return {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- fake DB satisfies the shape required by event-collector-registry at runtime
+      db: db as never,
+      ops,
+      setGate(p: Promise<void>) {
+        gate = p;
+      },
+    };
+  }
+
+  // Yield to the macrotask queue so every pending microtask (the tail's chained
+  // continuations and the collector's awaits) settles.
+  function drain(): Promise<void> {
+    return new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
+  test("queues a second event behind an in-flight one instead of interleaving", async () => {
+    const fake = createRecordingRegistryDB();
+    const registry = createEventCollectorRegistry({ db: fake.db });
+    const address = "agent://serialize";
+    registry.create(address, "tnt_test", "ses_test", "run_test");
+
+    let release!: () => void;
+    fake.setGate(new Promise<void>((r) => (release = r)));
+
+    registry.dispatch(address, event("inference.start", 1, { model: "gpt-4" }));
+    await drain();
+    // The first event's onEvent has begun a write and is now blocked on the gate.
+    const afterFirst = fake.ops.length;
+    expect(afterFirst).toBeGreaterThanOrEqual(1);
+
+    registry.dispatch(address, event("inference.start", 2, { model: "gpt-4" }));
+    await drain();
+    // The second event must wait for the first; no new writes yet.
+    expect(fake.ops.length).toBe(afterFirst);
+
+    release();
+    await drain();
+    // With the gate open both events drain, so more writes land.
+    expect(fake.ops.length).toBeGreaterThan(afterFirst);
+  });
+
+  test("a deferred terminal removal does not delete a replacement collector", async () => {
+    const fake = createRecordingRegistryDB();
+    const registry = createEventCollectorRegistry({ db: fake.db });
+    const address = "agent://replace";
+
+    registry.create(address, "tnt_test", "ses_test", "run_a");
+    // Start a turn so the terminal event issues a finalize write we can gate.
+    registry.dispatch(address, event("inference.start", 1, { model: "gpt-4" }));
+    await drain();
+
+    let release!: () => void;
+    fake.setGate(new Promise<void>((r) => (release = r)));
+    // The terminal event's finalize blocks, deferring its collector removal.
+    registry.dispatch(address, event("reactor.done", 2, {}));
+    await drain();
+
+    // Replace collector A with B while A's terminal removal is still pending.
+    registry.create(address, "tnt_test", "ses_test", "run_b");
+    expect(registry.has(address)).toBe(true);
+
+    release();
+    await drain();
+
+    // A's deferred terminal removal must not have deleted the replacement B.
+    expect(registry.has(address)).toBe(true);
+  });
+
+  test("abandon finalizes a turn a still-queued event started, not orphaning it", async () => {
+    const fake = createRecordingRegistryDB();
+    const registry = createEventCollectorRegistry({ db: fake.db });
+    const address = "agent://orphan";
+    registry.create(address, "tnt_test", "ses_test", "run_test");
+
+    // The inference.start onEvent is queued on the tail but has not run yet;
+    // teardown arrives before it. With serialization, abandon chains AFTER the
+    // queued beginTurn, so the `running` turn it creates is finalized. Without
+    // it, abandon would run first against no open turn and the later beginTurn
+    // would leave a `running` row nobody finalizes. The abandon MUST be issued
+    // before draining, or beginTurn has already set the open turn and even the
+    // unserialized path would finalize it -- masking the orphan.
+    registry.dispatch(address, event("inference.start", 1, { model: "gpt-4" }));
+    registry.abandon(address);
+
+    await drain();
+
+    const started = fake.ops.filter(
+      (o) => o.kind === "insert" && o.values["status"] === "running",
+    );
+    const finalizedFailed = fake.ops.filter(
+      (o) => o.kind === "update" && o.values["status"] === "failed",
+    );
+    expect(started).toHaveLength(1);
+    // The turn is finalized failed by the abandon, not left orphaned as running.
+    expect(finalizedFailed).toHaveLength(1);
   });
 });
 
