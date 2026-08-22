@@ -9,6 +9,7 @@ import type { KeyPair } from "@intx/types/runtime";
 import {
   workflowRunKindHandler,
   workflowRunAuthorize,
+  classifyTerminalEvent,
   enqueueInbox,
   dequeueToProcessing,
   markConsumed,
@@ -4333,5 +4334,29 @@ describe("parseEventSeq", () => {
     ]) {
       expect(parseEventSeq(bad)).toBeNull();
     }
+  });
+});
+
+describe("classifyTerminalEvent", () => {
+  test("maps each terminal event type to its run status", () => {
+    expect(classifyTerminalEvent("RunCompleted")).toEqual({
+      terminal: true,
+      status: "completed",
+    });
+    expect(classifyTerminalEvent("RunFailed")).toEqual({
+      terminal: true,
+      status: "failed",
+    });
+    expect(classifyTerminalEvent("RunCancelled")).toEqual({
+      terminal: true,
+      status: "cancelled",
+    });
+  });
+
+  test("treats non-terminal and unknown event types as not terminal", () => {
+    expect(classifyTerminalEvent("RunStarted")).toEqual({ terminal: false });
+    expect(classifyTerminalEvent("unknown-event-type")).toEqual({
+      terminal: false,
+    });
   });
 });
