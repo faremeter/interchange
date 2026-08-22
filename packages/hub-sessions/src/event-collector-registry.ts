@@ -14,6 +14,7 @@ import {
   createEventCollector,
   type EventCollector,
   type TurnFinalized,
+  type TurnUsage,
 } from "./event-collector";
 
 const log = getLogger(["hub", "event-collector-registry"]);
@@ -37,6 +38,7 @@ export type EventCollectorRegistry = {
 export type EventCollectorRegistryConfig = {
   db: DB["db"];
   onTurnFinalized?: (agentAddress: string, turn: TurnFinalized) => void;
+  onUsage?: (agentAddress: string, usage: TurnUsage) => void;
 };
 
 export function deriveStatus(event: InferenceEvent): SessionStatus | null {
@@ -64,7 +66,7 @@ export function deriveStatus(event: InferenceEvent): SessionStatus | null {
 export function createEventCollectorRegistry(
   config: EventCollectorRegistryConfig,
 ): EventCollectorRegistry {
-  const { db, onTurnFinalized } = config;
+  const { db, onTurnFinalized, onUsage } = config;
   const collectors = new Map<string, EventCollector>();
   const statuses = new Map<string, SessionStatus>();
   // Per-address tail promise: serializes onEvent/abandon work for one run
@@ -91,6 +93,11 @@ export function createEventCollectorRegistry(
         ? {
             onTurnFinalized: (turn: TurnFinalized) =>
               onTurnFinalized(agentAddress, turn),
+          }
+        : {}),
+      ...(onUsage
+        ? {
+            onUsage: (usage: TurnUsage) => onUsage(agentAddress, usage),
           }
         : {}),
     });
