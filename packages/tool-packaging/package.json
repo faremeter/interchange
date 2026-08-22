@@ -28,7 +28,7 @@
   "devDependencies": {
     "@types/npm-package-arg": "^6.1.4",
     "@types/semver": "catalog:",
-    "@types/ssri": "^7.1.5"
+    "@types/ssri": "catalog:"
   },
   "files": [
     "dist",
