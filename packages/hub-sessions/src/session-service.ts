@@ -1,5 +1,5 @@
 import { type } from "arktype";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import { getLogger } from "@intx/log";
 import {
@@ -74,6 +74,7 @@ import type {
   SidecarAllocationRouter,
   SidecarRouter,
 } from "./ws/sidecar-handler";
+import { isDeployFrameFailure } from "./ws/sidecar-handler";
 import type { Principal, RepoId, RepoKind } from "./repo-store";
 import {
   buildSourceAssetMounts,
@@ -635,19 +636,22 @@ function isAssetDeployArgs(
  * A gate outcome that did not approve cannot deploy: an unapproved `approval`
  * fails closed here rather than shipping an unfrozen definition.
  *
- * This emits the source-ref deploy frame ONLY -- it does NOT write the anchor
- * `workflow_run` row. `deployCodeSourcedWorkflow` wraps it with the shared-path
- * INSERT; the prepared exclusive path wraps it with an UPDATE-under-lock of the
- * anchor row that already exists from prepare time. It returns the frozen
- * definition id so each wrapper writes the same content-addressed identity the
- * gate persisted.
+ * This does the READ-ONLY preparation ONLY: it runs the guards, resolves
+ * credential material, pins the body sources, and builds the asset mounts, then
+ * returns the frozen definition id and the assembled send args. It emits NO
+ * frame and writes NO row, so it has no side effect to unwind. The shared path
+ * (`deployCodeSourcedWorkflow`) sequences prepare -> INSERT anchor -> emit so
+ * the anchor is visible before the frame spawns the child; `emitSourceRefDeployFrame`
+ * composes prepare -> emit for the prepared exclusive path, whose anchor row
+ * already exists from prepare time. It returns the frozen definition id so each
+ * caller writes the same content-addressed identity the gate persisted.
  */
-async function emitSourceRefDeployFrame(
+async function prepareSourceRefDeploy(
   args: DeployCodeSourcedWorkflowArgs & {
     allocationTarget?: AllocatedSidecarTarget;
     sidecarAllocationRouter?: SidecarAllocationRouter;
   },
-): Promise<{ publicKey: string; definitionId: string }> {
+): Promise<{ definitionId: string; sendArgs: SendMultiStepDeployFrameArgs }> {
   const { approval, projection, closure } = args.approved;
   if (!approval.ok) {
     throw new Error(
@@ -796,7 +800,7 @@ async function emitSourceRefDeployFrame(
     ? await buildSourceAssetMounts(closure, args.resolveAttachment)
     : [];
 
-  const result = await sendMultiStepDeployFrame({
+  const sendArgs: SendMultiStepDeployFrameArgs = {
     lineage: "source-ref",
     sidecarRouter: args.sidecarRouter,
     ...(args.sidecarAllocationRouter !== undefined
@@ -813,44 +817,170 @@ async function emitSourceRefDeployFrame(
     ...(credentials !== undefined ? { credentials } : {}),
     ...(referencedDefinitions.length > 0 ? { referencedDefinitions } : {}),
     ...(assets.length > 0 ? { assets } : {}),
-  });
+  };
 
-  return { publicKey: result.publicKey, definitionId: approval.definitionId };
+  return { definitionId: approval.definitionId, sendArgs };
+}
+
+/**
+ * Prepare then emit the source-ref deploy frame, for the prepared exclusive
+ * path whose anchor `workflow_run` row already exists (inserted at prepare
+ * time). It emits the frame but does NOT touch the anchor row: the caller
+ * (`deployPreparedCodeSourcedWorkflow`) stamps the acked key under the
+ * allocation-ownership lock. On emit failure it throws the raw
+ * `DeployFrameFailure` verbatim, which the caller's own error handling wraps.
+ * The shared path does NOT use this wrapper -- it must interleave the anchor
+ * INSERT between prepare and emit, so it drives `prepareSourceRefDeploy` and
+ * `sendMultiStepDeployFrame` directly.
+ */
+async function emitSourceRefDeployFrame(
+  args: DeployCodeSourcedWorkflowArgs & {
+    allocationTarget?: AllocatedSidecarTarget;
+    sidecarAllocationRouter?: SidecarAllocationRouter;
+  },
+): Promise<{ publicKey: string; definitionId: string }> {
+  const { definitionId, sendArgs } = await prepareSourceRefDeploy(args);
+  const result = await sendMultiStepDeployFrame(sendArgs);
+  return { publicKey: result.publicKey, definitionId };
 }
 
 /**
  * The single public composition entrypoint for a SHARED code-sourced (npm)
- * deploy: emit the source-ref frame, then INSERT the deployment's anchor
- * `workflow_run` row -- the deployment's first-class record that owns its
- * routing address and public key. Run-grant materialization keys off this row
- * (address + live status), so WITHOUT it no per-run grants (tool, capability, OR
- * credential) ever materialize for a source-ref deployment. Born "deployed"
- * (live but pre-trigger): the first trigger's materialization flips it to
- * "running" via `anchorWithPrincipal`'s guarded update, which a row born
- * "running" would skip. Its `anchorRunId` equals its own id, so the anchor
- * references itself. The deployer read grant is deferred to the production
- * route, which carries the authenticated deployer principal; this stays a
- * single insert with no grant row to pair atomically.
+ * deploy: prepare, INSERT the deployment's anchor `workflow_run` row, THEN emit
+ * the source-ref frame. The anchor row is the deployment's first-class record
+ * that owns its routing address and public key. Run-grant materialization keys
+ * off this row (address + live status), so WITHOUT it no per-run grants (tool,
+ * capability, OR credential) ever materialize for a source-ref deployment. Born
+ * "deployed" (live but pre-trigger) with a null public key: the first trigger's
+ * materialization flips it to "running" via `anchorWithPrincipal`'s guarded
+ * update, which a row born "running" would skip. Its `anchorRunId` equals its
+ * own id, so the anchor references itself. The deployer read grant is deferred
+ * to the production route, which carries the authenticated deployer principal.
  *
- * The prepared exclusive path does NOT use this wrapper: its anchor row already
- * exists from prepare time, so it wraps `emitSourceRefDeployFrame` with an
- * UPDATE-under-allocation-lock instead of this INSERT.
+ * ORDERING IS LOAD-BEARING. The anchor row must be committed and visible to the
+ * pack-receipt connection BEFORE the frame reaches the wire: the frame spawns
+ * the child, whose first events pack races the ack back, and
+ * `receiveWorkflowRunPack` fails closed on a missing live anchor. Emitting first
+ * (the previous order) rejected that first pack and never bootstrapped the log.
+ * This works because `args.db` is the autocommit handle (`DB["db"]`, which the
+ * type forbids from being a transaction) and the INSERT is NOT wrapped in a
+ * transaction with the emit -- so the row is durably visible the instant the
+ * INSERT statement returns. Do NOT relax `db` to a transaction executor or wrap
+ * anchor+emit in one transaction to make them atomic: that reopens the race.
+ *
+ * On emit failure the anchor row is rolled back or fenced by the `frameSent`
+ * evidence from the transport. `leakedAgent: false` (safe to fully roll back) is
+ * the STRONG claim and is made only on positive proof the frame never reached
+ * the wire (`isDeployFrameFailure && frameSent === false`); every other failure
+ * -- a sent-but-unacked frame OR any untagged error -- is treated as
+ * possibly-live: the anchor is fenced `deployed` -> `failed` and the error is
+ * `leakedAgent: true`.
+ *
+ * The prepared exclusive path does NOT use this composition: its anchor row
+ * already exists from prepare time, so it drives `emitSourceRefDeployFrame` and
+ * an UPDATE-under-allocation-lock instead.
  */
 export async function deployCodeSourcedWorkflow(
   args: DeployCodeSourcedWorkflowArgs,
 ): Promise<{ publicKey: string }> {
-  const { publicKey, definitionId } = await emitSourceRefDeployFrame(args);
+  const { definitionId, sendArgs } = await prepareSourceRefDeploy(args);
 
-  await args.db.insert(workflowRunTable).values({
-    id: args.anchorRunId,
-    tenantId: args.tenantId,
-    anchorRunId: args.anchorRunId,
-    definitionId,
-    address: args.agentAddress,
-    publicKey,
-    status: "deployed",
-    createdAt: new Date(),
-  });
+  // INSERT the anchor before the frame. A collision or DB error here spawned
+  // nothing (no frame went out), so it is a clean, non-leaking failure.
+  try {
+    await args.db.insert(workflowRunTable).values({
+      id: args.anchorRunId,
+      tenantId: args.tenantId,
+      anchorRunId: args.anchorRunId,
+      definitionId,
+      address: args.agentAddress,
+      publicKey: null,
+      status: "deployed",
+      createdAt: new Date(),
+    });
+  } catch (cause) {
+    throw new SessionLaunchError("start", cause, false);
+  }
+
+  let publicKey: string;
+  try {
+    const result = await sendMultiStepDeployFrame(sendArgs);
+    publicKey = result.publicKey;
+  } catch (cause) {
+    if (isDeployFrameFailure(cause) && cause.frameSent === false) {
+      // Positive proof the frame never reached the wire: nothing spawned, so
+      // fully roll the anchor back. The guard (`deployed`, null key) is a
+      // tripwire on the `frameSent: false` contract -- a 0-row delete means the
+      // row advanced or vanished, so the contract lied and a child may be live;
+      // surface that loudly and refuse to claim it is safe to roll back.
+      const deleted = await args.db
+        .delete(workflowRunTable)
+        .where(
+          and(
+            eq(workflowRunTable.id, args.anchorRunId),
+            eq(workflowRunTable.anchorRunId, args.anchorRunId),
+            eq(workflowRunTable.tenantId, args.tenantId),
+            eq(workflowRunTable.status, "deployed"),
+            isNull(workflowRunTable.publicKey),
+          ),
+        )
+        .returning({ id: workflowRunTable.id });
+      if (deleted.length === 0) {
+        logger.error`anchor-before-frame rollback found no deployed/null-key row for ${args.anchorRunId} after a frameSent:false failure; the never-sent contract was violated and a child may be live`;
+        throw new SessionLaunchError("start", cause, true);
+      }
+      throw new SessionLaunchError("start", cause, false);
+    }
+    // A sent-but-unacked frame, OR any untagged/unexpected error: no positive
+    // proof of a clean send, so treat the agent as possibly-live. Fence the
+    // anchor `deployed` -> `failed` (guarded so a self-flip to "running" by a
+    // trigger that already landed is left alone). Do NOT delete: a live child
+    // needs the anchor to bootstrap.
+    const flipped = await args.db
+      .update(workflowRunTable)
+      .set({ status: "failed" })
+      .where(
+        and(
+          eq(workflowRunTable.id, args.anchorRunId),
+          eq(workflowRunTable.anchorRunId, args.anchorRunId),
+          eq(workflowRunTable.tenantId, args.tenantId),
+          eq(workflowRunTable.status, "deployed"),
+          isNull(workflowRunTable.publicKey),
+        ),
+      )
+      .returning({ id: workflowRunTable.id });
+    if (flipped.length === 0) {
+      // The anchor already advanced past deployed -- a trigger flipped it to
+      // "running", so the deploy actually succeeded and the run is progressing
+      // despite the ack failure. Leave it; the leaked-agent disposition still
+      // holds because the frame was (or may have been) sent.
+      logger.warn`anchor-before-frame: anchor ${args.anchorRunId} already advanced past deployed on an unacked/failed emit; the agent is live and the run is progressing despite the ack failure`;
+    } else {
+      logger.warn`anchor-before-frame: fenced anchor ${args.anchorRunId} deployed->failed on an unacked/failed emit; the agent may be leaked but the run is dead`;
+    }
+    throw new SessionLaunchError("start", cause, true);
+  }
+
+  // Emit succeeded: stamp the acked key. No status guard -- the key is a fact
+  // regardless of whether the pack-ack race already flipped the row to
+  // "running", and skipping the stamp there would strand a live run with a null
+  // key. A 0-row update is an anomaly (nothing should remove a deployed anchor
+  // on the success path), but the deploy succeeded, so log it rather than
+  // failing a live run.
+  const stamped = await args.db
+    .update(workflowRunTable)
+    .set({ publicKey })
+    .where(
+      and(
+        eq(workflowRunTable.id, args.anchorRunId),
+        eq(workflowRunTable.anchorRunId, args.anchorRunId),
+        eq(workflowRunTable.tenantId, args.tenantId),
+      ),
+    )
+    .returning({ id: workflowRunTable.id });
+  if (stamped.length === 0) {
+    logger.error`anchor-before-frame: anchor ${args.anchorRunId} vanished before its public key could be stamped on a successful deploy`;
+  }
 
   return { publicKey };
 }
