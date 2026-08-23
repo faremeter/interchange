@@ -1086,3 +1086,189 @@ describe("runOnTrigger", () => {
     await run.complete.catch(() => undefined);
   });
 });
+
+describe("runOnTrigger onBodyFailure: tolerate", () => {
+  function toleratingSection(): WorkflowDefinition {
+    const section: Primitive = {
+      kind: "onTrigger",
+      id: "",
+      on: { type: "mail", to: "run_sec@t.example" },
+      body: { ref: "body-ref" },
+      drainBehavior: "wait",
+      onBodyFailure: "tolerate",
+    };
+    return defineWorkflow({ id: "on-trigger-tolerate", steps: { section } });
+  }
+
+  test("a failed body re-arms the section instead of ending it", async () => {
+    const runId = "sec-tolerate";
+    const repoStore = createInMemoryRepoStore();
+    const channel = createInMemorySignalChannel();
+    let spawn = 0;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      const terminalStatus = spawn++ === 0 ? "failed" : "completed";
+      let done = false;
+      return {
+        next: async () => {
+          if (done) throw new Error("next after terminal");
+          done = true;
+          return { kind: "terminal", terminalStatus };
+        },
+        resume: async () => undefined,
+        deliverSignal: async () => undefined,
+      };
+    };
+    const def = toleratingSection();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, triggerPayload: { text: "event-0" } },
+    );
+
+    // The first body failed, but under `tolerate` the section re-arms on an
+    // input park for the next trigger rather than ending.
+    const ch1 = await waitForPark(repoStore, runId, "input", 1);
+    await channel.deliver(ch1, { text: "event-1" }, "sig-1");
+    await waitForPark(repoStore, runId, "input", 2);
+
+    const log = await repoStore.read(runId);
+    expect(log.filter((e) => e.kind === "ChildSpawned").length).toBe(2);
+    // The failed occurrence still commits ChildCompleted{failed} for
+    // observability -- tolerate re-arms, it does not swallow the failure.
+    expect(
+      log.some(
+        (e) => e.kind === "ChildCompleted" && e.terminalStatus === "failed",
+      ),
+    ).toBe(true);
+    // The section itself did not end.
+    expect(
+      log.some((e) => e.kind === "RunCompleted" || e.kind === "RunFailed"),
+    ).toBe(false);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("a cancelled body still ends the section even under tolerate", async () => {
+    const runId = "sec-tolerate-cancel";
+    const repoStore = createInMemoryRepoStore();
+    const channel = createInMemorySignalChannel();
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => ({
+      next: async () => ({ kind: "terminal", terminalStatus: "cancelled" }),
+      resume: async () => undefined,
+      deliverSignal: async () => undefined,
+    });
+    const def = toleratingSection();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, triggerPayload: { text: "event-0" } },
+    );
+
+    const result = await run.complete;
+    expect(result.terminalStatus).toBe("failed");
+    const log = await repoStore.read(runId);
+    // Cancellation is never tolerated: no re-arm.
+    expect(log.filter((e) => e.kind === "ChildSpawned").length).toBe(1);
+    expect(
+      log.some((e) => e.kind === "SignalAwaited" && e.parkKind === "input"),
+    ).toBe(false);
+  });
+
+  test("resume: a failed body under tolerate re-parks rather than ending", async () => {
+    const runId = "sec-tolerate-resume";
+    const ch = signalName("corr-rearm");
+    // A section that failed event 0 and re-armed on an input park before the
+    // crash: byte-identical durable shape to a completed occurrence's re-arm.
+    const seed: WorkflowEvent[] = [
+      {
+        kind: "RunStarted",
+        seq: 1,
+        at,
+        runId,
+        definitionHash: "x",
+        trigger: { type: "manual", payload: { text: "event-0" } },
+      },
+      {
+        kind: "StepStarted",
+        seq: 2,
+        at,
+        stepId: "section",
+        attempt: 1,
+        input: { ref: "inline:null" },
+      },
+      {
+        kind: "ChildSpawned",
+        seq: 3,
+        at,
+        stepId: "section",
+        childRunId: "section__0",
+        childDefinitionRef: "body-ref",
+      },
+      {
+        kind: "ChildCompleted",
+        seq: 4,
+        at,
+        childRunId: "section__0",
+        terminalStatus: "failed",
+      },
+      {
+        kind: "SignalAwaited",
+        seq: 5,
+        at,
+        stepId: "section",
+        signalName: ch,
+        parkKind: "input",
+      },
+    ];
+    const repoStore = createInMemoryRepoStore();
+    const channel = createInMemorySignalChannel();
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      let done = false;
+      return {
+        next: async () => {
+          if (done) throw new Error("next after terminal");
+          done = true;
+          return { kind: "terminal", terminalStatus: "completed" };
+        },
+        resume: async () => undefined,
+        deliverSignal: async () => undefined,
+      };
+    };
+    const def = toleratingSection();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    // On resume the section re-adopts the SAME durable input park (it does not
+    // end); delivering the next trigger there advances to the next occurrence.
+    await channel.deliver(ch, { text: "event-1" }, "sig-resume");
+    await waitForPark(repoStore, runId, "input", 2);
+
+    const log = await repoStore.read(runId);
+    expect(log.some((e) => e.kind === "RunFailed")).toBe(false);
+    expect(
+      log.flatMap((e) => (e.kind === "ChildSpawned" ? [e.childRunId] : [])),
+    ).toContain("section__1");
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+});

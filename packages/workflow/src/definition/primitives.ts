@@ -229,6 +229,16 @@ export interface LoopPrimitive extends PrimitiveBase {
 }
 
 /**
+ * Section body-failure policy. Absent (or `"end"`) is terminal-is-final: a body
+ * run that ends non-`completed` ends the whole section (today's behavior). With
+ * `"tolerate"`, a body that ends `failed` re-arms the section for the next
+ * trigger instead of terminating; a cancelled body always terminates. The field
+ * is only present when an author opts in, so a default section's wire hash is
+ * unchanged.
+ */
+export type BodyFailurePolicy = "end" | "tolerate";
+
+/**
  * Long-lived, event-driven section. The workflow subscribes to `on` and
  * runs `body` -- a full sub-DAG -- once per occurrence of that trigger,
  * each occurrence a separate child run of `body` (own run id, own event
@@ -249,13 +259,14 @@ export interface LoopPrimitive extends PrimitiveBase {
  *
  * `drainBehavior` defaults to `"wait"`: a live interactive section is not
  * abandoned mid-conversation at redeploy unless the author opts into
- * `"cancel"`.
+ * `"cancel"`. `onBodyFailure` defaults to `"end"`; see `BodyFailurePolicy`.
  */
 export interface OnTriggerPrimitive extends PrimitiveBase {
   kind: "onTrigger";
   on: Trigger;
   body: OnTriggerBody;
   drainBehavior?: DrainBehavior;
+  onBodyFailure?: BodyFailurePolicy;
 }
 
 /**
@@ -575,6 +586,7 @@ export interface OnTriggerOpts {
   on: Trigger;
   body: WorkflowDefinition;
   drainBehavior?: DrainBehavior;
+  onBodyFailure?: BodyFailurePolicy;
   after?: readonly string[];
 }
 
@@ -587,6 +599,12 @@ export function onTrigger(opts: OnTriggerOpts): OnTriggerPrimitive {
     // Authored inline; the deploy step rewrites this to `{ ref }`.
     body: { inline: opts.body },
     drainBehavior,
+    // Conditional passthrough (NOT resolved to a default like drainBehavior):
+    // an absent policy must leave the field off so a default section's inert
+    // projection -- and therefore its approval hash -- is unchanged.
+    ...(opts.onBodyFailure !== undefined
+      ? { onBodyFailure: opts.onBodyFailure }
+      : {}),
     ...(opts.after !== undefined ? { after: opts.after } : {}),
   };
 }

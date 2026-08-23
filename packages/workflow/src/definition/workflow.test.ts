@@ -70,6 +70,25 @@ describe("onTrigger primitive", () => {
     expect(prim.after).toEqual(["setup"]);
   });
 
+  test("omits onBodyFailure when the author does not opt in", () => {
+    // Unlike drainBehavior, an absent policy is NOT resolved to a default: the
+    // field must stay off the primitive so a default section's inert projection
+    // -- and therefore its approval hash -- is byte-identical to before the
+    // policy existed. `in`, not `=== undefined`: a present-but-undefined key
+    // would still change the canonical bytes.
+    const prim = onTrigger({ on: { type: "manual" }, body: simpleBody() });
+    expect("onBodyFailure" in prim).toBe(false);
+  });
+
+  test("honors an explicit onBodyFailure", () => {
+    const prim = onTrigger({
+      on: { type: "manual" },
+      body: simpleBody(),
+      onBodyFailure: "tolerate",
+    });
+    expect(prim.onBodyFailure).toBe("tolerate");
+  });
+
   test("defineWorkflow populates the section id from its record key", () => {
     const def = defineWorkflow({
       id: "wf",

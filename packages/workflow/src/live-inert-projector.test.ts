@@ -21,6 +21,7 @@ import {
   onTrigger,
   sleep,
   step,
+  type BodyFailurePolicy,
   type Primitive,
   type WorkflowDefinition,
 } from "./definition/index";
@@ -743,5 +744,43 @@ describe("closed step schema accepts every real Primitive variant", () => {
       "step",
     ];
     expect([...seenKinds].sort()).toEqual(expectedKinds.sort());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onTrigger onBodyFailure: projection carries the policy through the hash, and
+// an absent policy leaves the projection (and hash) unchanged so existing
+// deployments never face forced re-approval.
+// ---------------------------------------------------------------------------
+
+describe("onTrigger onBodyFailure projection and hash", () => {
+  function sectionWorkflow(
+    onBodyFailure?: BodyFailurePolicy,
+  ): WorkflowDefinition {
+    const section: Primitive = {
+      kind: "onTrigger",
+      id: "",
+      on: { type: "mail", to: "run_sec@t.example" },
+      body: { ref: "body-ref" },
+      drainBehavior: "wait",
+      ...(onBodyFailure !== undefined ? { onBodyFailure } : {}),
+    };
+    return defineWorkflow({ id: "on-trigger-hash", steps: { section } });
+  }
+
+  test("a default section omits onBodyFailure from the inert projection", () => {
+    const json = canonicalJsonStringify(projectLiveToInert(sectionWorkflow()));
+    expect(json).not.toContain("onBodyFailure");
+  });
+
+  test("tolerate moves both the projection bytes and the hash", async () => {
+    const dflt = sectionWorkflow();
+    const tolerate = sectionWorkflow("tolerate");
+    expect(canonicalJsonStringify(projectLiveToInert(tolerate))).not.toBe(
+      canonicalJsonStringify(projectLiveToInert(dflt)),
+    );
+    expect(await computeLiveDefinitionHash(tolerate)).not.toBe(
+      await computeLiveDefinitionHash(dflt),
+    );
   });
 });
