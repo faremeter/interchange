@@ -11,10 +11,30 @@ import type {
 } from "@intx/types/sidecar";
 import {
   createSidecarRouter,
+  isDeployFrameFailure,
   type SidecarAuthenticator,
   type SidecarRouterConfig,
   type WsHandle,
 } from "./sidecar-handler";
+
+// Assert a deploy rejection is tagged with whether the frame reached the wire.
+async function expectDeployFrameFailure(
+  promise: Promise<unknown>,
+  frameSent: boolean,
+  messagePattern: RegExp,
+): Promise<void> {
+  const err = await promise.then(
+    () => {
+      throw new Error("expected the deploy to reject");
+    },
+    (e: unknown) => e,
+  );
+  expect(isDeployFrameFailure(err)).toBe(true);
+  if (isDeployFrameFailure(err)) {
+    expect(err.frameSent).toBe(frameSent);
+    expect(err.message).toMatch(messagePattern);
+  }
+}
 
 // Test authenticator that accepts any presented token and echoes the
 // claimed id back as the verified identity. Tests that exercise routing
@@ -2170,9 +2190,61 @@ describe("SidecarRouter", () => {
         defaultSource: "anthropic:claude-sonnet-5",
       };
 
-      await expect(
+      await expectDeployFrameFailure(
         router.sendAgentDeploy("timeout@local", config),
-      ).rejects.toThrow(/timed out/);
+        true,
+        /timed out/,
+      );
+    });
+
+    test("a synchronous send failure rejects as not-sent", async () => {
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "register",
+          sidecarId: "sc-send-fail",
+          token: "tok",
+          agentAddresses: [],
+        }),
+      );
+      await tick();
+
+      // Make the underlying socket throw synchronously on the deploy frame.
+      ws.send = () => {
+        throw new Error("socket is closed");
+      };
+
+      const config = {
+        sessionId: "ses_test",
+        agentId: "a1",
+        tenantId: "t1",
+        principalId: "prin_test",
+        agentAddress: "send-fail@local",
+        systemPrompt: "test",
+        tools: [],
+        grants: [],
+        sources: [
+          {
+            id: "anthropic:claude-sonnet-5",
+            provider: "anthropic",
+            baseURL: "https://api.anthropic.com",
+            apiKey: "sk-test",
+            model: "claude-sonnet-5",
+          },
+        ],
+        defaultSource: "anthropic:claude-sonnet-5",
+      };
+
+      await expectDeployFrameFailure(
+        router.sendAgentDeploy("send-fail@local", config),
+        false,
+        /failed to send/,
+      );
+
+      // The failed send must leave no routing or pending-deploy residue.
+      expect(router.getRoutableAddresses()).not.toContain("send-fail@local");
     });
 
     test("undeploy to unknown agent rejects immediately", async () => {
@@ -2242,7 +2314,7 @@ describe("SidecarRouter", () => {
       const promise = router.sendAgentDeploy("dc-agent@local", config);
       router.handleClose(ws);
 
-      await expect(promise).rejects.toThrow(/disconnected/);
+      await expectDeployFrameFailure(promise, true, /disconnected/);
     });
 
     test("pack acknowledgement must come from the receiving connection", async () => {
@@ -4422,7 +4494,7 @@ describe("SidecarRouter", () => {
         }),
       );
 
-      await expect(
+      await expectDeployFrameFailure(
         router.sendAgentDeploy("new-agent@local", {
           agentId: "a1",
           agentAddress: "new-agent@local",
@@ -4443,7 +4515,9 @@ describe("SidecarRouter", () => {
           ],
           defaultSource: "test:m",
         }),
-      ).rejects.toThrow("Hub signing key is required");
+        false,
+        /Hub signing key is required/,
+      );
 
       expect(router.getRoutableAddresses()).not.toContain("new-agent@local");
     });
