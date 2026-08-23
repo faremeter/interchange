@@ -112,6 +112,30 @@ function firstPreference(
  * enumeration here and the top-level source pin in `orchestrator.ts` read a
  * step's preference through one validator.
  */
+const InertLoopStep = type({ kind: "'loop'", body: "unknown" });
+
+/**
+ * If an inert projection step is a `loop`, return its body projection (a nested
+ * inert workflow definition); otherwise null. A loop body runs in-process as a
+ * child run sharing the parent's env, so its agent steps resolve their pinned
+ * inference source from the same flat top-level sources map -- the source pin
+ * recurses through this into loop bodies. Throws on a `loop` step whose body is
+ * not a valid projection (a malformed frozen projection).
+ */
+export function inertLoopBody(
+  stepValue: unknown,
+): typeof WorkflowProjectionDefinition.infer | null {
+  const asLoop = InertLoopStep(stepValue);
+  if (asLoop instanceof type.errors) return null;
+  const body = WorkflowProjectionDefinition(asLoop.body);
+  if (body instanceof type.errors) {
+    throw new Error(
+      `inertLoopBody: loop step body is not a valid workflow projection: ${body.summary}`,
+    );
+  }
+  return body;
+}
+
 export function readInertStepPreference(
   stepValue: unknown,
   context: string,

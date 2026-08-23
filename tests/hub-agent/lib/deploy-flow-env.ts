@@ -71,7 +71,10 @@ import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
 import type { CredentialCipher } from "@intx/types";
 import type { WireGrantRule } from "@intx/types/grant-wire";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
-import { deriveRunAddress } from "@intx/workflow-deploy";
+import {
+  buildInertProjectionStepSources,
+  deriveRunAddress,
+} from "@intx/workflow-deploy";
 import { decodeToolName } from "@intx/inference";
 import type {
   HarnessConfig,
@@ -1529,6 +1532,13 @@ export type DeployWorkflowSourceForTestOpts = {
    */
   entry?: string;
   /**
+   * The `interchange.loops` module path, set on the package.json when the
+   * fixture ships loop `while`/`carry` functions. Point it at the same bundled
+   * entry (`./workflow.mjs`) when the entry module exports both `workflow` and
+   * the loop fns. Omit for a workflow with no loop primitive.
+   */
+  loops?: string;
+  /**
    * Extra source files seeded alongside the bundle under the source asset
    * (e.g. an inline tool module the entry imports).
    */
@@ -1561,8 +1571,13 @@ export type DeployWorkflowSourceForTestOpts = {
 
   /** The deploy harness config. */
   config: HarnessConfig;
-  /** Per-step inference sources. */
-  sources: Record<string, InferenceSource[]>;
+  /**
+   * Per-step inference sources. Omit to compute them the way production does --
+   * `buildInertProjectionStepSources` over the frozen projection and the
+   * approved grants (which recurses into loop bodies) -- so a fixture that omits
+   * this exercises the real source-pin path. Supply it to override.
+   */
+  sources?: Record<string, InferenceSource[]>;
 
   /** Credential delivery for a credential-consuming fixture. */
   credentialCipher?: CredentialCipher;
@@ -1629,7 +1644,10 @@ export async function deployWorkflowSourceForTest(
         "package.json": JSON.stringify({
           name: SOURCE_FIXTURE_PACKAGE_NAME,
           version: SOURCE_FIXTURE_PACKAGE_VERSION,
-          interchange: { workflow: entry },
+          interchange: {
+            workflow: entry,
+            ...(opts.loops !== undefined ? { loops: opts.loops } : {}),
+          },
         }),
         "workflow.mjs": workflowJs,
         ...opts.extraSourceFiles,
@@ -1711,6 +1729,17 @@ export async function deployWorkflowSourceForTest(
     );
   }
 
+  // Compute the per-step sources the way production does when the fixture does
+  // not override them, so an omitting fixture exercises the real source pin
+  // (including the loop-body recursion) rather than a hand-supplied map.
+  const sources =
+    opts.sources ??
+    buildInertProjectionStepSources({
+      projection: approved.projection,
+      config: opts.config,
+      operatorApprovals: new Set(approved.approval.approvedGrants),
+    });
+
   const deployResult = await deployCodeSourcedWorkflow({
     approved,
     source,
@@ -1718,7 +1747,7 @@ export async function deployWorkflowSourceForTest(
     sidecarRouter: env.hub.router,
     agentAddress,
     config: opts.config,
-    sources: opts.sources,
+    sources,
     db: opts.db,
     tenantId: opts.tenantId,
     anchorRunId: opts.anchorRunId,

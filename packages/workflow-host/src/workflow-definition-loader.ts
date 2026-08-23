@@ -36,6 +36,7 @@ import {
 import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
 import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
+import type { LoopFn, LoopFnRegistry } from "@intx/workflow";
 
 const logger = getLogger(["workflow-host", "definition-loader"]);
 
@@ -206,6 +207,93 @@ export async function loadWorkflowDirectorRegistryFromClosure(
   }
   logger.debug`loaded ${String(loaded.length)} custom director(s) from ${args.packageDir}`;
   return createWorkflowDirectorRegistry(loaded);
+}
+
+export interface LoadWorkflowLoopFnsFromClosureArgs {
+  /**
+   * Directory of the materialized workflow package within the closure --
+   * the same directory `loadWorkflowDefinitionFromClosure` reads.
+   */
+  readonly packageDir: string;
+  /** See `LoadWorkflowDefinitionFromClosureArgs.importCacheKey`. */
+  readonly importCacheKey?: string;
+  /** Test seam for dynamic import; see the definition loader's variant. */
+  readonly importModule?: (importUrl: string) => Promise<unknown>;
+}
+
+/**
+ * Compose the `LoopFnRegistry` for a workflow closure from the closure
+ * package's OWN `interchange.loops` module. A `loop` primitive's `while` and
+ * `carry` refs resolve by EXPORT NAME against that module's exports.
+ *
+ * Unlike directors there is NO built-in default: a package with no
+ * `interchange.loops` field composes to an EMPTY registry that throws on any
+ * ref lookup. A workflow that declares a `loop` but ships no loops module thus
+ * fails closed when its refs are resolved (eagerly, at establish); a workflow
+ * with no `loop` primitive never resolves a ref, so an absent field is valid
+ * there. Loading OUTSIDE the definition-hash re-verify is safe: the approved
+ * hash pins each ref string, and the closure's SRI pins the module bytes.
+ *
+ * @throws (from the returned registry) if a requested ref names no export, or
+ *   names an export that is not a function.
+ * @throws if the loops entry path escapes the package or cannot be imported.
+ */
+export async function loadWorkflowLoopFnsFromClosure(
+  args: LoadWorkflowLoopFnsFromClosureArgs,
+): Promise<LoopFnRegistry> {
+  const importModule =
+    args.importModule ?? ((url: string) => import(url) as Promise<unknown>);
+
+  const pkgJson = await readPackageJSON(args.packageDir);
+  const entryRel = pkgJson.interchange?.loops;
+  if (entryRel === undefined) {
+    // No loops module. A workflow with no loop primitive never calls this; one
+    // that declares a loop fails closed here when its ref is resolved.
+    return (ref: string): LoopFn => {
+      throw new Error(
+        `loop fn ${JSON.stringify(ref)} was requested, but the workflow package at ${args.packageDir} declares no interchange.loops module`,
+      );
+    };
+  }
+
+  const entryAbs = await resolveContainedEntry(
+    args.packageDir,
+    entryRel,
+    "interchange.loops",
+  );
+
+  const importUrl =
+    args.importCacheKey === undefined
+      ? pathToFileURL(entryAbs).href
+      : `${pathToFileURL(entryAbs).href}?importCacheKey=${encodeURIComponent(args.importCacheKey)}`;
+
+  let mod: unknown;
+  try {
+    mod = await importModule(importUrl);
+  } catch (cause) {
+    throw new Error(
+      `failed to import interchange.loops entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir}`,
+      { cause },
+    );
+  }
+  if (mod === null || typeof mod !== "object") {
+    throw new Error(
+      `interchange.loops entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir} did not evaluate to a module object`,
+    );
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- module namespace object: loop fns resolve by export name
+  const loopModule = mod as Record<string, unknown>;
+  logger.debug`loaded interchange.loops module from ${args.packageDir}`;
+  return (ref: string): LoopFn => {
+    const fn = loopModule[ref];
+    if (typeof fn !== "function") {
+      throw new Error(
+        `interchange.loops entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir} exports no loop fn named ${JSON.stringify(ref)}`,
+      );
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolved by export name; the loop runtime applies it as a pure (childOutput, carryState) fn
+    return fn as LoopFn;
+  };
 }
 
 export interface LoadWorkflowPluginsFromClosureArgs {
