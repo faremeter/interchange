@@ -1411,13 +1411,16 @@ describe("deployCodeSourcedWorkflow", () => {
   const SOURCE = { kind: "registry", registry: "npm" } as const;
   const TENANT = "tnt_test";
   // These unit tests assert FRAME logic plus the SHAPE of the anchor
-  // workflow_run row the composed entrypoint writes (status, self-ref) -- not
-  // its persistence (the real anchor-in-a-live-DB proof is the walking-skeleton
-  // e2e). A capturing db records the single anchor insert and answers the
-  // persisted-definition guard's existence query with a matching row; the
-  // fail-path tests throw before reaching the insert.
+  // workflow_run row the composed entrypoint writes (status, self-ref, born
+  // null-key) and its post-ack public-key stamp -- not its persistence (the
+  // real anchor-in-a-live-DB proof, including the anchor-before-frame ordering,
+  // is the tests/db regression test). A capturing db records the anchor insert
+  // and the success-path public-key update, and answers the persisted-definition
+  // guard's existence query with a matching row; the fail-path tests throw
+  // before reaching the insert.
   let capturedAnchorRow: Record<string, unknown> | undefined;
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only the definition existence query and .insert(...).values(...) are exercised
+  let capturedAnchorUpdate: Record<string, unknown> | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only the definition existence query, the anchor insert, and the success-path public-key update are exercised
   const CAPTURING_DB = {
     query: {
       workflowDefinition: {
@@ -1428,6 +1431,16 @@ describe("deployCodeSourcedWorkflow", () => {
       values: (row: Record<string, unknown>) => {
         capturedAnchorRow = row;
         return Promise.resolve();
+      },
+    }),
+    update: () => ({
+      set: (vals: Record<string, unknown>) => {
+        capturedAnchorUpdate = vals;
+        return {
+          where: () => ({
+            returning: () => Promise.resolve([{ id: ANCHOR_RUN_ID }]),
+          }),
+        };
       },
     }),
   } as unknown as DB["db"];
@@ -1483,12 +1496,18 @@ describe("deployCodeSourcedWorkflow", () => {
 
     // The anchor workflow_run row is born "deployed" (live but pre-trigger) and
     // self-referential (anchorRunId === id); its address is the run address
-    // derived from the anchor run id.
+    // derived from the anchor run id. It is inserted with a NULL public key --
+    // the row must exist before the frame, but the key is only known from the
+    // ack -- and the key is stamped by a follow-up update once the ack returns.
     expect(capturedAnchorRow).toBeDefined();
     expect(capturedAnchorRow?.status).toBe("deployed");
     expect(capturedAnchorRow?.id).toBe(ANCHOR_RUN_ID);
     expect(capturedAnchorRow?.anchorRunId).toBe(ANCHOR_RUN_ID);
     expect(capturedAnchorRow?.address).toBe(DEPLOY_ADDRESS);
+    expect(capturedAnchorRow?.publicKey).toBeNull();
+    expect(capturedAnchorUpdate).toEqual({
+      publicKey: "ed25519-supervisor-pubkey",
+    });
   });
 
   test("refuses to deploy when the gate did not approve", async () => {
