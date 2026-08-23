@@ -1,7 +1,16 @@
-// Loop resume: a mid-loop crash resumes to exactly-once. The resumed
-// run re-derives its cursor from the log, re-enters the in-flight
-// iteration without re-emitting its durable events, and the shared
-// effect ledger deduplicates the re-driven iterations' effects.
+// Loop resume under an INCONSISTENT-durability store: the shared effect
+// ledger deduplicates a re-driven iteration's effects.
+//
+// IMPORTANT -- this models a crash the PRODUCTION (isogit) store does not
+// produce. It resumes against a FRESH repoStore seeded only with the trimmed
+// PARENT log, so the child iteration's durable log is GONE while the parent's
+// ChildSpawned survives. On a consistent store both live on one durable ref, so
+// a mid-action-in-loop crash leaves a non-empty, non-terminal child log and the
+// iteration fails loud (the handler is NOT re-invoked) -- see the at-most-once
+// note in `runlocal/loop-iteration.ts` and the faithful test in
+// `loop-action-crash-resume.test.ts`. This test therefore exercises the
+// ledger-dedup re-run path that production never takes; it pins the ledger's
+// behavior ONLY for a store that loses child writes while keeping parent writes.
 
 import { describe, test, expect } from "bun:test";
 

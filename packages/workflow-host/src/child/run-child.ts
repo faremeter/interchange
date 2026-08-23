@@ -66,6 +66,7 @@ import {
 import type { AuthzCallResult } from "@intx/inference";
 
 import type {
+  ActionHandler,
   RunResult,
   Scheduler,
   ReadParkedApprovalOps,
@@ -83,6 +84,8 @@ import type {
 } from "@intx/workflow";
 import {
   baseStepId,
+  createDefaultActionInvoker,
+  createInMemoryEffectLedger,
   createLoopIteration,
   emptyState,
   runtimeRun,
@@ -126,6 +129,7 @@ import { hashGrants } from "../supervisor/credentials";
 import type { SpawnTimeEnv } from "./env-bootstrap";
 import { loadVerifiedWorkflowDefinitionFromClosure } from "./verified-definition-loader";
 import {
+  loadWorkflowActionHandlersFromClosure,
   loadWorkflowDirectorRegistryFromClosure,
   loadWorkflowLoopFnsFromClosure,
 } from "../workflow-definition-loader";
@@ -680,6 +684,20 @@ export async function runWorkflowChild(
     loopFns,
   );
 
+  // Action handlers resolve from the pinned closure's `interchange.actions`
+  // module, on the same terms as loop fns. Resolve every action handler ref
+  // reachable from the definition eagerly here (recursing into loop bodies,
+  // where an action body is the common case), so a deployment that declares an
+  // action whose handler the closure does not export fails at establish rather
+  // than mid-run.
+  const actionResolver = await loadWorkflowActionHandlersFromClosure({
+    packageDir: opts.env.closurePackageDir,
+  });
+  eagerlyResolveActionHandlers(
+    [definition, ...bodiesMap.values(), ...childBodiesMap.values()],
+    actionResolver,
+  );
+
   // Suspendable-child (onTrigger body) resolver, selected ONCE per deployment:
   // the bodies map is immutable and the per-run `onEvent` is injected later in
   // `buildRuntimeEnv`. Resolve each body from the parent's in-memory closure
@@ -803,6 +821,7 @@ export async function runWorkflowChild(
       suspendableChildHost,
       spawnChild,
       loopFns,
+      actionResolver,
       clock,
       newId,
       drainController,
@@ -898,6 +917,7 @@ export async function runWorkflowChild(
           suspendableChildHost,
           spawnChild,
           loopFns,
+          actionResolver,
           clock,
           newId,
           eventSender,
@@ -977,6 +997,7 @@ async function handleControlPayload(
     suspendableChildHost: HostSpawnSuspendableChild | undefined;
     spawnChild: SpawnChildWorkflow;
     loopFns: LoopFnRegistry;
+    actionResolver: (ref: string) => ActionHandler;
     clock: () => Date;
     newId: (prefix: string) => string;
     eventSender: ReturnType<typeof createEventChannelSender>;
@@ -1031,6 +1052,7 @@ async function handleControlPayload(
         suspendableChildHost: ctx.suspendableChildHost,
         spawnChild: ctx.spawnChild,
         loopFns: ctx.loopFns,
+        actionResolver: ctx.actionResolver,
         clock: ctx.clock,
         newId: ctx.newId,
         drainController: ctx.drainController,
@@ -1409,6 +1431,30 @@ function eagerlyResolveLoopFns(
   for (const def of definitions) visit(def);
 }
 
+/**
+ * Force-resolve every `action` handler ref reachable from these definitions
+ * against the resolver, so a missing action handler surfaces at establish
+ * rather than when the action is first invoked mid-run. Recurses into loop
+ * bodies (an action body is the common loop shape). The caller passes the
+ * lifted onTrigger/childWorkflow bodies separately, as with loop fns.
+ */
+function eagerlyResolveActionHandlers(
+  definitions: readonly WorkflowDefinition[],
+  actionResolver: (ref: string) => ActionHandler,
+): void {
+  const visit = (def: WorkflowDefinition): void => {
+    for (const step of Object.values(def.steps)) {
+      if (step.kind === "action") {
+        // Throws (fail closed) if the handler names no export, or a non-function.
+        actionResolver(step.handler);
+      } else if (step.kind === "loop") {
+        visit(step.body);
+      }
+    }
+  };
+  for (const def of definitions) visit(def);
+}
+
 function buildRuntimeEnv(args: {
   runId: string;
   bindings: RunWorkflowChildBindings;
@@ -1418,6 +1464,7 @@ function buildRuntimeEnv(args: {
   suspendableChildHost: HostSpawnSuspendableChild | undefined;
   spawnChild: SpawnChildWorkflow;
   loopFns: LoopFnRegistry;
+  actionResolver: (ref: string) => ActionHandler;
   clock: () => Date;
   newId: (prefix: string) => string;
   drainController: DrainController;
@@ -1523,6 +1570,25 @@ function buildRuntimeEnv(args: {
   // AFTER env construction because it closes over `env`, so each iteration's
   // child run shares this run's repoStore + blobs (mirrors runLocal).
   env.runLoopIteration = createLoopIteration(env);
+
+  // Action handlers run against a per-run effect ledger. The ledger is
+  // IN-MEMORY, and that is correct -- not a shortcut -- on the deployed store:
+  // appends are immediate-durable single-ref commits, `runAction` flushes
+  // StepStarted durably before the effect, and the runtime never re-invokes a
+  // crashed action (a mid-action crash settles the step failed; a loop-body
+  // action leaves a non-empty child log that fails the iteration loud rather
+  // than re-running). So the ledger is never consulted across a crash; its
+  // cross-crash exactly-once rests on that store-consistency invariant, which
+  // the store layer owns. A durable ledger here would re-enforce a constraint
+  // a lower layer already guarantees. Within a single invocation the ledger
+  // still dedups a handler that performs the same effect twice.
+  const effects = createInMemoryEffectLedger();
+  env.effects = effects;
+  env.invokeAction = createDefaultActionInvoker(
+    args.authorize,
+    effects,
+    args.actionResolver,
+  );
   return env;
 }
 

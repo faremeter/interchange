@@ -6,8 +6,12 @@
 //
 // The action step declares an effect requirement; the deploy-time capability
 // walk lifts each `requires` entry into a runtime `effect:<name>` grant, which
-// the trigger route materializes onto the run principal. The handler ref is
-// inert here -- the run never executes the action on the workflow host.
+// the trigger route materializes onto the run principal. The entry ALSO exports
+// the handler (named by the handler ref) so the deployment can point
+// `interchange.actions` at it: the child host resolves every action handler at
+// establish, so a declared-but-unresolvable handler fails closed. The handler
+// itself is a no-op that returns a value -- it declares the effect but does not
+// perform it, which is enough to exercise deploy-time grant derivation.
 //
 // Parameterised by the mail trigger address, the step id, the handler ref, and
 // the effect requirements so a caller pins the run's address and the effect
@@ -45,5 +49,12 @@ export const workflow = defineWorkflow({
     }),
   },
 });
+
+// The action handler, resolved by export name via interchange.actions. It
+// declares the effect requirement above but does not perform it, so it needs no
+// effect grant of its own; it exercises the resolve + invoke path.
+export async function ${handler}(input, _ctx, _signal) {
+  return { handled: ${JSON.stringify(handler)}, input };
+}
 `;
 }

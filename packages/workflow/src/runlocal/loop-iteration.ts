@@ -1,14 +1,28 @@
-// Loop-iteration host seam for runLocal.
+// Loop-iteration host seam (shared by runLocal and the deployed child host).
 //
 // Runs one loop iteration's body as a child run against the SHARED store
-// (the parent's repoStore + blobs + effects), with idempotency: a
-// childRunId whose durable log is already terminal returns its recorded
-// outputs without re-running. Because the body-ban forbids a loop body
-// from suspending (awaitSignal/sleep/childWorkflow), a persisted child
-// log is always terminal -- a mid-iteration crash drops the whole
-// buffered segment, leaving an empty log this re-runs fresh. Sharing the
-// blob substrate is load-bearing: a blob-spilled child output is only
-// resolvable from the substrate that recorded it.
+// (the parent's repoStore + blobs + effects). It resolves the child log to
+// one of three states:
+//   - empty        -> run the body fresh;
+//   - terminal     -> idempotent replay: return the recorded outputs without
+//                     re-running;
+//   - non-terminal -> throw (the caller fails the iteration).
+//
+// The body-ban forbids a loop body from SUSPENDING (awaitSignal / sleep /
+// childWorkflow), so a body of purely-buffered steps flushes nothing until its
+// terminal boundary: a mid-iteration crash drops the whole buffered segment,
+// leaving an empty log this re-runs fresh. An ACTION body is the exception that
+// makes the non-terminal case reachable: `runAction` flushes its `StepStarted`
+// durably BEFORE invoking the handler, so a crash between the effect and the
+// action's `StepCompleted` leaves a non-empty, non-terminal child log. On resume
+// this hits the non-terminal throw -- the iteration fails loud and the handler
+// is NOT re-invoked -- which is what gives an action-in-loop at-most-once
+// semantics without a durable effect ledger (it rests on the store keeping the
+// child's flushed `StepStarted` durable, i.e. child appends being as durable as
+// the parent's -- an invariant the isogit store provides).
+//
+// Sharing the blob substrate is load-bearing: a blob-spilled child output is
+// only resolvable from the substrate that recorded it.
 
 import { createNoopDrainController } from "../runtime/drain";
 import type {

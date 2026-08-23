@@ -1539,6 +1539,12 @@ export type DeployWorkflowSourceForTestOpts = {
    */
   loops?: string;
   /**
+   * The `interchange.actions` module path, set when the fixture ships `action`
+   * handlers. Point it at the same bundled entry when the entry module exports
+   * both `workflow` and the handlers. Omit for a workflow with no action.
+   */
+  actions?: string;
+  /**
    * Extra source files seeded alongside the bundle under the source asset
    * (e.g. an inline tool module the entry imports).
    */
@@ -1647,6 +1653,7 @@ export async function deployWorkflowSourceForTest(
           interchange: {
             workflow: entry,
             ...(opts.loops !== undefined ? { loops: opts.loops } : {}),
+            ...(opts.actions !== undefined ? { actions: opts.actions } : {}),
           },
         }),
         "workflow.mjs": workflowJs,

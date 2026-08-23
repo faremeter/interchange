@@ -1,13 +1,13 @@
-// A deployed workflow that uses a `loop` primitive runs it end to end: the
-// child host loads the loop `while`/`carry` functions from the closure's
-// `interchange.loops` module, drives the loop against the shared store, and the
-// hub accepts the loop's per-iteration child-run packs.
+// A deployed workflow whose loop body is an `action` runs it end to end: the
+// child host resolves the action handler from the closure's interchange.actions
+// module, invokes it against the per-run effect ledger each iteration, and the
+// loop converges. This exercises the action runtime (invokeAction + effects) on
+// the already-proven loop container.
 //
-// The fixture converges after exactly three iterations (see loop-workflow.ts),
-// so the top-level run log carries three `ChildSpawned` records under the loop
-// step. That count double-checks the app-provided `keepGoing`/`nextCount` were
-// resolved and applied; `RunCompleted` double-checks the hub tolerated the loop
-// child-run terminal events rather than failing their packs closed.
+// The loop converges after three iterations (see loop-action-workflow.ts), so
+// the top-level run log carries three ChildSpawned records under the loop step;
+// RunCompleted double-checks the action body ran each iteration and the hub
+// accepted the per-iteration child-run terminal events.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, and a real workflow-process child evaluating the deployed source.
@@ -37,13 +37,13 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { loopWorkflowEntry } from "./fixtures/loop-workflow";
+import { loopActionWorkflowEntry } from "./fixtures/loop-action-workflow";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
-const DEPLOYMENT_ID = "run_100ada100ada100ada100ada100ada1";
-const TENANT_ID = "tnt_loop_roundtrip";
-const CALLER_PRINCIPAL_ID = "prn_loop_roundtrip";
-const DEFINITION_ASSET_ID = "ast_loop_roundtrip_wf";
+const DEPLOYMENT_ID = "run_ac710ac710ac710ac710ac710ac710a";
+const TENANT_ID = "tnt_loop_action_roundtrip";
+const CALLER_PRINCIPAL_ID = "prn_loop_action_roundtrip";
+const DEFINITION_ASSET_ID = "ast_loop_action_roundtrip_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
@@ -72,7 +72,7 @@ beforeAll(async () => {
     id: DEFINITION_ASSET_ID,
     tenantId: TENANT_ID,
     kind: "workflow",
-    name: "loop-roundtrip-wf",
+    name: "loop-action-roundtrip-wf",
     creatorPrincipalId: CALLER_PRINCIPAL_ID,
   });
 
@@ -85,24 +85,22 @@ afterAll(async () => {
 });
 
 describe.skipIf(!harnessDbEnvAvailable())(
-  "a deployed loop workflow runs to completion",
+  "a deployed loop-with-action-body workflow runs to completion",
   () => {
     test("sidecar registers with hub", () => {
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    test("the loop converges after three iterations and the run completes", async () => {
+    test("the loop runs its action body each iteration and completes", async () => {
       expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
-      // A source with no agent step needs no inference; the config still carries
-      // the shape, so supply one placeholder source it never resolves.
       const config: HarnessConfig = {
         sessionId: SESSION_ID,
         agentId: DEPLOYMENT_ID,
         tenantId: "tenant-1",
-        principalId: "prin_loop-roundtrip-1",
+        principalId: "prin_loop-action-roundtrip-1",
         agentAddress: deploymentMailAddress,
-        systemPrompt: "unused (no agent step)",
+        systemPrompt: "unused (loop body is an action)",
         tools: [],
         grants: [],
         sources: [
@@ -118,10 +116,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
 
       const handle = await deployWorkflowSourceForTest(env, {
-        entryModule: loopWorkflowEntry({ address: deploymentMailAddress }),
-        // The entry module exports both `workflow` and the loop fns, so point
-        // interchange.loops at the same bundled entry.
+        entryModule: loopActionWorkflowEntry({
+          address: deploymentMailAddress,
+        }),
+        // The entry exports the workflow, the loop fns, and the action handler.
         loops: "./workflow.mjs",
+        actions: "./workflow.mjs",
         db: h.db,
         tenantId: TENANT_ID,
         definitionAssetId: DEFINITION_ASSET_ID,
@@ -130,8 +130,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         agentAddress: deploymentMailAddress,
         approvals: "approve-probed",
         config,
-        // Omit sources so the harness computes them via the real source pin
-        // (which recurses into the loop body), exercising the fix end to end.
+        // Omit sources so the harness computes them via the real pin (the
+        // non-agent loop/action steps take the approved default placeholder).
       });
       expect(handle.publicKey).toBeTruthy();
 
@@ -142,7 +142,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       await fireMailTrigger(env, deploymentMailAddress, {
-        messageId: "<loop-roundtrip-1@integration.interchange>",
+        messageId: "<loop-action-roundtrip-1@integration.interchange>",
         content: "go",
       });
 
@@ -159,13 +159,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(terminal.type).toBe("RunCompleted");
 
-      // Exactly three loop iterations spawned (the app-provided while/carry
-      // converged at three). All child spawns in this run are loop iterations:
-      // the workflow has no onTrigger or childWorkflow primitive. Poll: the child
-      // packs the ChildSpawned records incrementally, so read until the count
-      // settles rather than racing replication.
-      // The child packs the ChildSpawned records incrementally and replication
-      // can lag several seconds under load, so poll with a generous deadline.
+      // Three loop iterations, each running the action body. All child spawns in
+      // this run are loop iterations (no onTrigger/childWorkflow primitive). The
+      // child packs the ChildSpawned records incrementally and replication can
+      // lag several seconds under load, so poll with a generous deadline.
       let loopSpawns = 0;
       const deadline = Date.now() + 30_000;
       for (;;) {
