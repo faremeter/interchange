@@ -28,7 +28,10 @@ import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { formatRunAddress } from "@intx/types";
 
 import { type ApprovalSet } from "./capability-approval";
-import { readInertStepPreference } from "./inert-ontrigger-bodies";
+import {
+  inertLoopBody,
+  readInertStepPreference,
+} from "./inert-ontrigger-bodies";
 
 /**
  * Minimal structural `DeployContent` shape. Carried as a structural type so
@@ -137,18 +140,27 @@ export function pickStepInferenceSource(args: {
 }
 
 /**
- * Pin every TOP-LEVEL step of a frozen inert projection to a single approved
- * inference source, producing the `sources` map the source-ref deploy frame
- * carries. The hub holds no live definition, so each step's declared
- * `(provider, model)` preference is read off the inert projection's
- * `modelSources` and resolved through the `pickStepInferenceSource` resolver +
- * operator-approval gate. A step whose preferred source the operator never
- * approved (or that resolves to no approved source at all) throws, failing the
- * whole deploy closed before any frame is sent.
+ * Pin every step of a frozen inert projection to a single approved inference
+ * source, producing the `sources` map the source-ref deploy frame carries. The
+ * hub holds no live definition, so each step's declared `(provider, model)`
+ * preference is read off the inert projection's `modelSources` and resolved
+ * through the `pickStepInferenceSource` resolver + operator-approval gate. A
+ * step whose preferred source the operator never approved (or that resolves to
+ * no approved source at all) throws, failing the whole deploy closed before any
+ * frame is sent.
  *
- * Every step in `stepOrder` gets one entry (a non-agent step falls back to the
- * approved default), so the sidecar child finds a pinned source for each
- * staged step.
+ * The walk RECURSES into `loop` bodies: a loop body runs in-process as a child
+ * run sharing the parent's env, so its agent steps resolve their pinned source
+ * from this same flat map, keyed by the body step's plain id. Loop-body step
+ * ids share a namespace with the top-level steps here; a body step id that
+ * collides with another step must resolve to the same source, else the deploy
+ * fails closed rather than silently mis-pin. (onTrigger bodies are NOT walked
+ * here -- they are lifted to `referencedDefinitions` with their own per-body pin
+ * in the deploy composition. childWorkflow bodies are resolved at the child
+ * host, not pinned here.)
+ *
+ * Every step gets one entry (a non-agent step falls back to the approved
+ * default), so the sidecar child finds a pinned source for each staged step.
  */
 export function buildInertProjectionStepSources(args: {
   projection: WorkflowProjectionDefinition;
@@ -156,23 +168,42 @@ export function buildInertProjectionStepSources(args: {
   operatorApprovals: ApprovalSet;
 }): Record<string, InferenceSource[]> {
   const sources: Record<string, InferenceSource[]> = {};
-  for (const stepId of args.projection.stepOrder) {
-    const preferred = readInertStepPreference(
-      args.projection.steps[stepId],
-      "buildInertProjectionStepSources: ",
-      stepId,
-    );
-    sources[stepId] = [
-      pickStepInferenceSource({
+  const pin = (def: WorkflowProjectionDefinition): void => {
+    for (const stepId of def.stepOrder) {
+      const stepValue = def.steps[stepId];
+      const preferred = readInertStepPreference(
+        stepValue,
+        "buildInertProjectionStepSources: ",
+        stepId,
+      );
+      const resolved = pickStepInferenceSource({
         preferred,
         stepId,
         workflowId: args.projection.id,
         config: args.config,
         operatorApprovals: args.operatorApprovals,
-      }),
-    ];
-  }
+      });
+      const existing = sources[stepId]?.[0];
+      if (existing !== undefined) {
+        if (!sameInferenceSource(existing, resolved)) {
+          throw new WorkflowDefinitionInvalidError(
+            args.projection.id,
+            `step id ${stepId} resolves to two different inference sources across nested loop bodies; a loop-body step id that collides with another step must resolve to the same source`,
+          );
+        }
+      } else {
+        sources[stepId] = [resolved];
+      }
+      const loopBody = inertLoopBody(stepValue);
+      if (loopBody !== null) pin(loopBody);
+    }
+  };
+  pin(args.projection);
   return sources;
+}
+
+function sameInferenceSource(a: InferenceSource, b: InferenceSource): boolean {
+  return a.id === b.id && a.provider === b.provider && a.model === b.model;
 }
 
 /**

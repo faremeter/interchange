@@ -74,13 +74,19 @@ import type {
   StepInvoker,
   SpawnChildWorkflow,
   SpawnSuspendableChild,
+  LoopFnRegistry,
   WorkflowAuthorizeFn,
   WorkflowDefinition,
   WorkflowPark,
   WorkflowRun,
   WorkflowRuntimeEnv,
 } from "@intx/workflow";
-import { baseStepId, emptyState, runtimeRun } from "@intx/workflow";
+import {
+  baseStepId,
+  createLoopIteration,
+  emptyState,
+  runtimeRun,
+} from "@intx/workflow";
 
 import {
   createWorkflowHostDrainController,
@@ -119,7 +125,10 @@ import { hashGrants } from "../supervisor/credentials";
 
 import type { SpawnTimeEnv } from "./env-bootstrap";
 import { loadVerifiedWorkflowDefinitionFromClosure } from "./verified-definition-loader";
-import { loadWorkflowDirectorRegistryFromClosure } from "../workflow-definition-loader";
+import {
+  loadWorkflowDirectorRegistryFromClosure,
+  loadWorkflowLoopFnsFromClosure,
+} from "../workflow-definition-loader";
 import { discoverInFlightRuns } from "./self-discovery";
 import {
   collectParkedApprovalCorrelations,
@@ -655,6 +664,22 @@ export async function runWorkflowChild(
     packageDir: opts.env.closurePackageDir,
   });
 
+  // Loop `while`/`carry` functions resolve from the pinned closure's
+  // `interchange.loops` module, loaded alongside the directors and OUTSIDE the
+  // definition-hash re-verify for the same reason: the approved hash pins each
+  // ref string and the closure's SRI pins the module bytes. Resolve every loop
+  // ref reachable from the definition (its own loop bodies, and the lifted
+  // onTrigger/childWorkflow bodies, which share this same registry at runtime)
+  // eagerly here, so a deployment that declares a loop whose fn the closure
+  // does not export fails at establish rather than mid-run.
+  const loopFns = await loadWorkflowLoopFnsFromClosure({
+    packageDir: opts.env.closurePackageDir,
+  });
+  eagerlyResolveLoopFns(
+    [definition, ...bodiesMap.values(), ...childBodiesMap.values()],
+    loopFns,
+  );
+
   // Suspendable-child (onTrigger body) resolver, selected ONCE per deployment:
   // the bodies map is immutable and the per-run `onEvent` is injected later in
   // `buildRuntimeEnv`. Resolve each body from the parent's in-memory closure
@@ -777,6 +802,7 @@ export async function runWorkflowChild(
       directors,
       suspendableChildHost,
       spawnChild,
+      loopFns,
       clock,
       newId,
       drainController,
@@ -871,6 +897,7 @@ export async function runWorkflowChild(
           directors,
           suspendableChildHost,
           spawnChild,
+          loopFns,
           clock,
           newId,
           eventSender,
@@ -949,6 +976,7 @@ async function handleControlPayload(
     directors: DirectorRegistry;
     suspendableChildHost: HostSpawnSuspendableChild | undefined;
     spawnChild: SpawnChildWorkflow;
+    loopFns: LoopFnRegistry;
     clock: () => Date;
     newId: (prefix: string) => string;
     eventSender: ReturnType<typeof createEventChannelSender>;
@@ -1002,6 +1030,7 @@ async function handleControlPayload(
         directors: ctx.directors,
         suspendableChildHost: ctx.suspendableChildHost,
         spawnChild: ctx.spawnChild,
+        loopFns: ctx.loopFns,
         clock: ctx.clock,
         newId: ctx.newId,
         drainController: ctx.drainController,
@@ -1354,6 +1383,32 @@ async function handleControlPayload(
  * shape; the substrate handle and per-deployment `RepoStore` adapter
  * are shared across runs.
  */
+/**
+ * Force-resolve every loop `while`/`carry` ref reachable from these definitions
+ * against the registry, so a missing loop fn surfaces at establish rather than
+ * when the loop is first driven mid-run. Recurses into a loop's inline body (a
+ * nested loop resolves against the same shared registry). The caller passes the
+ * lifted onTrigger/childWorkflow bodies separately, since those are `{ ref }` in
+ * the top-level definition and this walk does not descend into them.
+ */
+function eagerlyResolveLoopFns(
+  definitions: readonly WorkflowDefinition[],
+  loopFns: LoopFnRegistry,
+): void {
+  const visit = (def: WorkflowDefinition): void => {
+    for (const step of Object.values(def.steps)) {
+      if (step.kind === "loop") {
+        // Each call throws (fail closed) if the ref names no export, or an
+        // export that is not a function.
+        loopFns(step.while);
+        loopFns(step.carry);
+        visit(step.body);
+      }
+    }
+  };
+  for (const def of definitions) visit(def);
+}
+
 function buildRuntimeEnv(args: {
   runId: string;
   bindings: RunWorkflowChildBindings;
@@ -1362,6 +1417,7 @@ function buildRuntimeEnv(args: {
   directors: DirectorRegistry;
   suspendableChildHost: HostSpawnSuspendableChild | undefined;
   spawnChild: SpawnChildWorkflow;
+  loopFns: LoopFnRegistry;
   clock: () => Date;
   newId: (prefix: string) => string;
   drainController: DrainController;
@@ -1428,7 +1484,7 @@ function buildRuntimeEnv(args: {
     hostSuspendable === undefined
       ? undefined
       : (spawnInput) => hostSuspendable(spawnInput, args.onEvent);
-  return {
+  const env: WorkflowRuntimeEnv = {
     repoStore: args.runtimeRepoStore,
     scheduler: args.bindings.scheduler,
     signalChannel,
@@ -1437,6 +1493,10 @@ function buildRuntimeEnv(args: {
     authorize: args.authorize,
     invokeStep,
     spawnChild: args.spawnChild,
+    // Resolve a loop's `while`/`carry` refs against the closure's loop module.
+    // Every ref was force-resolved at establish, so a lookup here cannot fail
+    // for a definition that passed startup.
+    loopFns: args.loopFns,
     // Wire the suspendable-child seam only when the host supplied it; a child
     // that never runs an onTrigger section omits the binding, and the runtime
     // body fails loud if a workflow reaches a section the env did not wire.
@@ -1459,6 +1519,11 @@ function buildRuntimeEnv(args: {
       ? { readParkedApprovalOps: args.bindings.readParkedApprovalOps }
       : {}),
   };
+  // Run one loop iteration as a child run against the shared store. Assigned
+  // AFTER env construction because it closes over `env`, so each iteration's
+  // child run shares this run's repoStore + blobs (mirrors runLocal).
+  env.runLoopIteration = createLoopIteration(env);
+  return env;
 }
 
 /**

@@ -1,7 +1,10 @@
 import { describe, test, expect } from "bun:test";
 
 import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
-import { enumerateInertOnTriggerBodies } from "./inert-ontrigger-bodies";
+import {
+  enumerateInertOnTriggerBodies,
+  inertLoopBody,
+} from "./inert-ontrigger-bodies";
 
 type Projection = typeof WorkflowProjectionDefinition.infer;
 
@@ -155,6 +158,40 @@ describe("enumerateInertOnTriggerBodies", () => {
 
     expect(() => enumerateInertOnTriggerBodies(proj)).toThrow(
       /step s1 is a step primitive but carries no valid agent\.modelSources/,
+    );
+  });
+});
+
+function loopStep(body: unknown): unknown {
+  return {
+    kind: "loop",
+    id: "",
+    body,
+    while: "keepGoing",
+    carry: "nextCount",
+    maxIterations: 3,
+    onExhausted: "esc",
+  };
+}
+
+describe("inertLoopBody", () => {
+  test("returns a loop step's body projection", () => {
+    const body = projection({ turn: agentStep("anthropic", "m") }, ["turn"]);
+    const result = inertLoopBody(loopStep(body));
+    expect(result?.stepOrder).toEqual(["turn"]);
+    expect(result?.steps["turn"]).toEqual(agentStep("anthropic", "m"));
+  });
+
+  test("returns null for a non-loop step", () => {
+    expect(inertLoopBody(agentStep("anthropic", "m"))).toBeNull();
+    expect(
+      inertLoopBody(inlineOnTrigger("body", { s: agentStep("p", "m") }, ["s"])),
+    ).toBeNull();
+  });
+
+  test("throws when a loop step's body is not a valid projection", () => {
+    expect(() => inertLoopBody(loopStep({ not: "a projection" }))).toThrow(
+      /not a valid workflow projection/,
     );
   });
 });

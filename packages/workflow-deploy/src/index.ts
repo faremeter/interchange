@@ -30,6 +30,7 @@ export {
 export { extractFoldedBody, type FoldedBody } from "./fold-synthesis";
 export {
   enumerateInertOnTriggerBodies,
+  inertLoopBody,
   type EnumeratedInertOnTriggerBody,
   type InertBodyStepPreference,
 } from "./inert-ontrigger-bodies";

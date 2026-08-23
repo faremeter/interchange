@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   loadWorkflowDefinitionFromClosure,
   loadWorkflowDirectorRegistryFromClosure,
+  loadWorkflowLoopFnsFromClosure,
 } from "./workflow-definition-loader";
 
 // The workflow package the fixture entry modules import
@@ -38,6 +39,10 @@ interface ClosureFixtureSpec {
   readonly directorsEntry?: string;
   /** Source of the directors module, written to `directorsEntry`'s path. */
   readonly directorsSource?: string;
+  /** Value written to `interchange.loops`; omitted when absent. */
+  readonly loopsEntry?: string;
+  /** Source of the loops module, written to `loopsEntry`'s path. */
+  readonly loopsSource?: string;
 }
 
 async function createClosureFixture(spec: ClosureFixtureSpec): Promise<string> {
@@ -63,6 +68,9 @@ async function createClosureFixture(spec: ClosureFixtureSpec): Promise<string> {
   if (spec.directorsEntry !== undefined) {
     interchange.directors = spec.directorsEntry;
   }
+  if (spec.loopsEntry !== undefined) {
+    interchange.loops = spec.loopsEntry;
+  }
   const pkgJson: Record<string, unknown> = {
     name: "@fixture/workflow-package",
     version: "1.0.0",
@@ -87,8 +95,26 @@ async function createClosureFixture(spec: ClosureFixtureSpec): Promise<string> {
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, spec.directorsSource);
   }
+  if (spec.loopsSource !== undefined) {
+    const rel = spec.loopsEntry ?? "./loops.js";
+    const abs = path.join(packageDir, rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, spec.loopsSource);
+  }
   return packageDir;
 }
+
+// A loops module exporting two pure fns plus a non-function export, for the
+// resolve/fail-closed tests.
+const LOOPS_SOURCE = `
+export function keepGoing(_childOutput, currentInput) {
+  return (typeof currentInput === "number" ? currentInput : 0) < 2;
+}
+export function nextCount(_childOutput, currentInput) {
+  return (typeof currentInput === "number" ? currentInput : 0) + 1;
+}
+export const notAFunction = 42;
+`;
 
 const DEFAULT_EXPORT_ENTRY = `
 import { defineWorkflow } from "@intx/workflow/definition";
@@ -303,6 +329,69 @@ describe("loadWorkflowDirectorRegistryFromClosure", () => {
 
     await expect(
       loadWorkflowDirectorRegistryFromClosure({ packageDir }),
+    ).rejects.toThrow(/escapes the workflow package directory/);
+  });
+});
+
+describe("loadWorkflowLoopFnsFromClosure", () => {
+  test("resolves a loop fn by export name", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: null,
+      loopsEntry: "./loops.js",
+      loopsSource: LOOPS_SOURCE,
+    });
+
+    const registry = await loadWorkflowLoopFnsFromClosure({ packageDir });
+    expect(registry("keepGoing")(null, 1)).toBe(true);
+    expect(registry("keepGoing")(null, 2)).toBe(false);
+    expect(registry("nextCount")(null, 4)).toBe(5);
+  });
+
+  test("returns an empty registry that throws when the package ships no loops module", async () => {
+    const packageDir = await createClosureFixture({ workflowEntry: null });
+
+    const registry = await loadWorkflowLoopFnsFromClosure({ packageDir });
+    // No loop primitive would ever call this; a workflow that declares a loop
+    // fails closed here when its ref is resolved.
+    expect(() => registry("keepGoing")).toThrow(
+      /declares no interchange\.loops module/,
+    );
+  });
+
+  test("throws when the loops module exports no fn by that name", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: null,
+      loopsEntry: "./loops.js",
+      loopsSource: LOOPS_SOURCE,
+    });
+
+    const registry = await loadWorkflowLoopFnsFromClosure({ packageDir });
+    expect(() => registry("missing")).toThrow(
+      /exports no loop fn named "missing"/,
+    );
+  });
+
+  test("throws when the named export is not a function", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: null,
+      loopsEntry: "./loops.js",
+      loopsSource: LOOPS_SOURCE,
+    });
+
+    const registry = await loadWorkflowLoopFnsFromClosure({ packageDir });
+    expect(() => registry("notAFunction")).toThrow(
+      /exports no loop fn named "notAFunction"/,
+    );
+  });
+
+  test("rejects a loops entry path that escapes the package", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: null,
+      loopsEntry: "../escape-loops.js",
+    });
+
+    await expect(
+      loadWorkflowLoopFnsFromClosure({ packageDir }),
     ).rejects.toThrow(/escapes the workflow package directory/);
   });
 });

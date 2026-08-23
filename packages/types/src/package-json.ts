@@ -54,8 +54,10 @@ export type ToolCredentialDeclarationArray =
  * interchange packages: `tools` names the sidecar-bundle entry, `credentials`
  * statically declares the provider-backed credentials the package's tools may
  * need, `workflow` names the module whose evaluation produces a workflow
- * package's `WorkflowDefinition`, and `directors` names the module whose
- * exports are the package's custom `defineDirector` factories.
+ * package's `WorkflowDefinition`, `directors` names the module whose exports
+ * are the package's custom `defineDirector` factories, and `loops` names the
+ * module whose exports are the package's `loop` `while`/`carry` functions,
+ * resolved by ref at establish.
  * `onUndeclaredKey("ignore")` lets the arbitrary upstream npm fields pass
  * through without listing them.
  */
@@ -67,6 +69,7 @@ export const PackageJSON = type({
     "credentials?": ToolCredentialDeclarationArray,
     "workflow?": "string",
     "directors?": "string",
+    "loops?": "string",
   }).onUndeclaredKey("ignore"),
 }).onUndeclaredKey("ignore");
 export type PackageJSON = typeof PackageJSON.infer;
