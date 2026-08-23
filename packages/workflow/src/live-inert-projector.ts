@@ -41,6 +41,7 @@ import type { CredentialBinding } from "@intx/types";
 import type {
   ActionPrimitive,
   AwaitSignalPrimitive,
+  BodyFailurePolicy,
   ChildWorkflowPrimitive,
   DrainBehavior,
   EscalationPrimitive,
@@ -154,6 +155,7 @@ export interface InertOnTrigger {
   readonly on: Trigger;
   readonly body: InertOnTriggerBody;
   readonly drainBehavior?: DrainBehavior;
+  readonly onBodyFailure?: BodyFailurePolicy;
   readonly after?: readonly string[];
 }
 
@@ -379,6 +381,9 @@ function projectOnTrigger(primitive: OnTriggerPrimitive): InertOnTrigger {
     body,
     ...(primitive.drainBehavior !== undefined
       ? { drainBehavior: primitive.drainBehavior }
+      : {}),
+    ...(primitive.onBodyFailure !== undefined
+      ? { onBodyFailure: primitive.onBodyFailure }
       : {}),
     ...(primitive.after !== undefined ? { after: [...primitive.after] } : {}),
   };
