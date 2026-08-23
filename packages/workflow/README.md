@@ -65,3 +65,29 @@ selector DSL is intentionally a pure, statically-inspectable path
 vocabulary (so the deploy-time capability walk can compute grants
 without executing user code), and parsing an opaque agent reply is host
 work that belongs at an `action`/LoopFn seam.
+
+## Crash and suspension behavior of a `loop` body
+
+Two facts govern what a `loop` body can and cannot survive.
+
+First, crashes. An `action` runs at most once. A mid-invocation crash fails the
+run and the effect is never re-run -- and this is true everywhere, not just in a
+loop: a top-level action or agent step that crashes mid-invocation also settles
+`RunFailed` (it is not re-invoked on resume). So a crash inside a loop iteration
+fails the run exactly as a crash in any other step does; loops are not special
+here.
+
+Second, suspension -- and this IS the loop-specific limitation. The body-ban
+forbids a loop body from containing an `awaitSignal`, `sleep`, `childWorkflow`,
+or a nested `loop`; the first three are the suspending primitives that matter
+here. A top-level step and an onTrigger section body CAN park on such a
+primitive and resume across a restart; a loop body cannot. Loops run each
+iteration in-process with no durable per-iteration park/resume, so an iteration
+is a short, self-contained unit that runs start-to-finish or fails.
+
+Practical guidance: use a loop to repeat a cheap, self-contained unit until a
+pure `while`/`carry` says stop. Do not model a long-lived, human-in-the-loop, or
+otherwise suspending interaction as a loop body -- put that in an onTrigger
+section (which may `awaitSignal`) or a top-level step. Keep a loop body's action
+idempotent where practical, since a crash fails the run and recovery is a fresh
+trigger, not a mid-loop resume.

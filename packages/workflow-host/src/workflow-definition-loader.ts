@@ -36,7 +36,7 @@ import {
 import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
 import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
-import type { LoopFn, LoopFnRegistry } from "@intx/workflow";
+import type { ActionHandler, LoopFn, LoopFnRegistry } from "@intx/workflow";
 
 const logger = getLogger(["workflow-host", "definition-loader"]);
 
@@ -293,6 +293,88 @@ export async function loadWorkflowLoopFnsFromClosure(
     }
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolved by export name; the loop runtime applies it as a pure (childOutput, carryState) fn
     return fn as LoopFn;
+  };
+}
+
+export interface LoadWorkflowActionHandlersFromClosureArgs {
+  /** Directory of the materialized workflow package within the closure. */
+  readonly packageDir: string;
+  /** See `LoadWorkflowDefinitionFromClosureArgs.importCacheKey`. */
+  readonly importCacheKey?: string;
+  /** Test seam for dynamic import; see the definition loader's variant. */
+  readonly importModule?: (importUrl: string) => Promise<unknown>;
+}
+
+/**
+ * Compose the action-handler resolver for a workflow closure from the closure
+ * package's OWN `interchange.actions` module. An `action` primitive's `handler`
+ * ref resolves by EXPORT NAME against that module's exports.
+ *
+ * Mirrors {@link loadWorkflowLoopFnsFromClosure}: there is NO built-in default,
+ * so a package with no `interchange.actions` field composes to a resolver that
+ * throws on any lookup. A workflow that declares an `action` but ships no
+ * actions module fails closed when its handler is resolved (eagerly, at
+ * establish); a workflow with no `action` primitive never resolves a handler.
+ * Loading OUTSIDE the definition-hash re-verify is safe: the approved hash pins
+ * each handler ref string, and the closure's SRI pins the module bytes.
+ *
+ * @throws (from the returned resolver) if a requested ref names no export, or an
+ *   export that is not a function.
+ * @throws if the actions entry path escapes the package or cannot be imported.
+ */
+export async function loadWorkflowActionHandlersFromClosure(
+  args: LoadWorkflowActionHandlersFromClosureArgs,
+): Promise<(ref: string) => ActionHandler> {
+  const importModule =
+    args.importModule ?? ((url: string) => import(url) as Promise<unknown>);
+
+  const pkgJson = await readPackageJSON(args.packageDir);
+  const entryRel = pkgJson.interchange?.actions;
+  if (entryRel === undefined) {
+    return (ref: string): ActionHandler => {
+      throw new Error(
+        `action handler ${JSON.stringify(ref)} was requested, but the workflow package at ${args.packageDir} declares no interchange.actions module`,
+      );
+    };
+  }
+
+  const entryAbs = await resolveContainedEntry(
+    args.packageDir,
+    entryRel,
+    "interchange.actions",
+  );
+
+  const importUrl =
+    args.importCacheKey === undefined
+      ? pathToFileURL(entryAbs).href
+      : `${pathToFileURL(entryAbs).href}?importCacheKey=${encodeURIComponent(args.importCacheKey)}`;
+
+  let mod: unknown;
+  try {
+    mod = await importModule(importUrl);
+  } catch (cause) {
+    throw new Error(
+      `failed to import interchange.actions entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir}`,
+      { cause },
+    );
+  }
+  if (mod === null || typeof mod !== "object") {
+    throw new Error(
+      `interchange.actions entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir} did not evaluate to a module object`,
+    );
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- module namespace object: action handlers resolve by export name
+  const actionModule = mod as Record<string, unknown>;
+  logger.debug`loaded interchange.actions module from ${args.packageDir}`;
+  return (ref: string): ActionHandler => {
+    const fn = actionModule[ref];
+    if (typeof fn !== "function") {
+      throw new Error(
+        `interchange.actions entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir} exports no action handler named ${JSON.stringify(ref)}`,
+      );
+    }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolved by export name; invoked as an ActionHandler (input, ctx, signal) by createDefaultActionInvoker
+    return fn as ActionHandler;
   };
 }
 

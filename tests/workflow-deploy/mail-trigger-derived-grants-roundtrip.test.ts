@@ -321,6 +321,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           handler: "writer",
           requires: ["fs:write"],
         }),
+        // The entry exports the `writer` handler; point interchange.actions at
+        // it so the child host resolves the action at establish.
+        actions: "./workflow.mjs",
         db: h.db,
         tenantId: TENANT_ID,
         definitionAssetId: DEFINITION_ASSET_ID,

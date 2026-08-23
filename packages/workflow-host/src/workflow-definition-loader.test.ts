@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  loadWorkflowActionHandlersFromClosure,
   loadWorkflowDefinitionFromClosure,
   loadWorkflowDirectorRegistryFromClosure,
   loadWorkflowLoopFnsFromClosure,
@@ -43,6 +44,10 @@ interface ClosureFixtureSpec {
   readonly loopsEntry?: string;
   /** Source of the loops module, written to `loopsEntry`'s path. */
   readonly loopsSource?: string;
+  /** Value written to `interchange.actions`; omitted when absent. */
+  readonly actionsEntry?: string;
+  /** Source of the actions module, written to `actionsEntry`'s path. */
+  readonly actionsSource?: string;
 }
 
 async function createClosureFixture(spec: ClosureFixtureSpec): Promise<string> {
@@ -70,6 +75,9 @@ async function createClosureFixture(spec: ClosureFixtureSpec): Promise<string> {
   }
   if (spec.loopsEntry !== undefined) {
     interchange.loops = spec.loopsEntry;
+  }
+  if (spec.actionsEntry !== undefined) {
+    interchange.actions = spec.actionsEntry;
   }
   const pkgJson: Record<string, unknown> = {
     name: "@fixture/workflow-package",
@@ -101,8 +109,23 @@ async function createClosureFixture(spec: ClosureFixtureSpec): Promise<string> {
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, spec.loopsSource);
   }
+  if (spec.actionsSource !== undefined) {
+    const rel = spec.actionsEntry ?? "./actions.js";
+    const abs = path.join(packageDir, rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, spec.actionsSource);
+  }
   return packageDir;
 }
+
+// An actions module exporting a handler plus a non-function export, for the
+// resolve/fail-closed tests.
+const ACTIONS_SOURCE = `
+export async function echo(input, _ctx, _signal) {
+  return input;
+}
+export const notAFunction = 7;
+`;
 
 // A loops module exporting two pure fns plus a non-function export, for the
 // resolve/fail-closed tests.
@@ -392,6 +415,71 @@ describe("loadWorkflowLoopFnsFromClosure", () => {
 
     await expect(
       loadWorkflowLoopFnsFromClosure({ packageDir }),
+    ).rejects.toThrow(/escapes the workflow package directory/);
+  });
+});
+
+describe("loadWorkflowActionHandlersFromClosure", () => {
+  const dummyCtx = { perform: async () => undefined };
+
+  test("resolves an action handler by export name", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: null,
+      actionsEntry: "./actions.js",
+      actionsSource: ACTIONS_SOURCE,
+    });
+
+    const resolve = await loadWorkflowActionHandlersFromClosure({ packageDir });
+    const handler = resolve("echo");
+    expect(typeof handler).toBe("function");
+    expect(await handler("hi", dummyCtx, new AbortController().signal)).toBe(
+      "hi",
+    );
+  });
+
+  test("returns a resolver that throws when the package ships no actions module", async () => {
+    const packageDir = await createClosureFixture({ workflowEntry: null });
+
+    const resolve = await loadWorkflowActionHandlersFromClosure({ packageDir });
+    expect(() => resolve("echo")).toThrow(
+      /declares no interchange\.actions module/,
+    );
+  });
+
+  test("throws when the actions module exports no handler by that name", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: null,
+      actionsEntry: "./actions.js",
+      actionsSource: ACTIONS_SOURCE,
+    });
+
+    const resolve = await loadWorkflowActionHandlersFromClosure({ packageDir });
+    expect(() => resolve("missing")).toThrow(
+      /exports no action handler named "missing"/,
+    );
+  });
+
+  test("throws when the named export is not a function", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: null,
+      actionsEntry: "./actions.js",
+      actionsSource: ACTIONS_SOURCE,
+    });
+
+    const resolve = await loadWorkflowActionHandlersFromClosure({ packageDir });
+    expect(() => resolve("notAFunction")).toThrow(
+      /exports no action handler named "notAFunction"/,
+    );
+  });
+
+  test("rejects an actions entry path that escapes the package", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: null,
+      actionsEntry: "../escape-actions.js",
+    });
+
+    await expect(
+      loadWorkflowActionHandlersFromClosure({ packageDir }),
     ).rejects.toThrow(/escapes the workflow package directory/);
   });
 });

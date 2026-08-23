@@ -72,6 +72,8 @@ export {
 export {
   runLocal,
   createLoopIteration,
+  createDefaultActionInvoker,
+  createInMemoryEffectLedger,
   createInMemoryRepoStore,
   createInMemoryScheduler,
   createInMemorySignalChannel,

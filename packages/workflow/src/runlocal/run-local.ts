@@ -189,7 +189,7 @@ export type ActionHandler = (
  * `createNoopSpawnChild`: a silent stub would let action workflows pass
  * tests against effects that never ran.
  */
-function createDefaultActionInvoker(
+export function createDefaultActionInvoker(
   authorize: WorkflowAuthorizeFn,
   effects: EffectLedger,
   resolver: ((ref: string) => ActionHandler) | undefined,
@@ -213,7 +213,7 @@ function createDefaultActionInvoker(
   };
 }
 
-function createInMemoryEffectLedger(): EffectLedger {
+export function createInMemoryEffectLedger(): EffectLedger {
   const store = new Map<string, { output: unknown }>();
   return {
     async lookup(effectKey) {
