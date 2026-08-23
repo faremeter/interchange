@@ -51,6 +51,33 @@ import {
 
 const logger = getLogger(["hub", "ws", "sidecar"]);
 
+/**
+ * A deploy-frame send failure, tagged with whether the `agent.deploy` frame
+ * reached the wire. `frameSent: false` means the send was refused before
+ * `conn.send` (a guard failed, or the send threw synchronously) -- the deploy
+ * provably never started, so a caller may safely roll back anything it staged.
+ * `frameSent: true` means the frame was sent and the failure came afterward (ack
+ * timeout, sidecar disconnect), so the sidecar may hold a live agent.
+ */
+export interface DeployFrameFailure extends Error {
+  readonly frameSent: boolean;
+}
+
+function deployFrameFailure(
+  message: string,
+  frameSent: boolean,
+): DeployFrameFailure {
+  return Object.assign(new Error(message), { frameSent });
+}
+
+export function isDeployFrameFailure(err: unknown): err is DeployFrameFailure {
+  return (
+    err instanceof Error &&
+    "frameSent" in err &&
+    typeof err.frameSent === "boolean"
+  );
+}
+
 export type SidecarConnection = {
   sidecarId: string;
   identity: SidecarAuthIdentity;
@@ -3088,20 +3115,30 @@ export function createSidecarRouter(
     workflow?: AgentDeployFrame["workflow"],
   ): Promise<{ publicKey: string }> {
     if (hubPublicKeyHex === undefined) {
-      throw new Error("Hub signing key is required for agent deployment");
+      throw deployFrameFailure(
+        "Hub signing key is required for agent deployment",
+        false,
+      );
     }
     const ws =
       addressIndex.get(agentAddress) ?? findSidecarForNewAgent(agentAddress);
     if (ws === undefined) {
-      throw new Error(`No sidecar available for agent "${agentAddress}"`);
+      throw deployFrameFailure(
+        `No sidecar available for agent "${agentAddress}"`,
+        false,
+      );
     }
     const conn = connections.get(ws);
     if (conn === undefined) {
-      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
+      throw deployFrameFailure(
+        `No sidecar connected for agent "${agentAddress}"`,
+        false,
+      );
     }
     if (conn.identity.kind !== "shared") {
-      throw new Error(
+      throw deployFrameFailure(
         `Allocated sidecar ${conn.sidecarId} requires allocation-bound deploy routing`,
+        false,
       );
     }
     return sendAgentDeployOnConnection(
@@ -3121,11 +3158,17 @@ export function createSidecarRouter(
     workflow?: AgentDeployFrame["workflow"],
   ): Promise<{ publicKey: string }> {
     if (hubPublicKeyHex === undefined) {
-      throw new Error("Hub signing key is required for agent deployment");
+      throw deployFrameFailure(
+        "Hub signing key is required for agent deployment",
+        false,
+      );
     }
 
     if (pendingDeploys.has(agentAddress)) {
-      throw new Error(`Deploy already in progress for agent "${agentAddress}"`);
+      throw deployFrameFailure(
+        `Deploy already in progress for agent "${agentAddress}"`,
+        false,
+      );
     }
 
     const addressSet =
@@ -3143,8 +3186,9 @@ export function createSidecarRouter(
           addressIndex.delete(agentAddress);
         }
         reject(
-          new Error(
+          deployFrameFailure(
             `Deploy of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
+            true,
           ),
         );
       }, requestTimeoutMs);
@@ -3160,19 +3204,37 @@ export function createSidecarRouter(
             addressSet.delete(agentAddress);
             addressIndex.delete(agentAddress);
           }
-          reject(new Error(error));
+          reject(deployFrameFailure(error, true));
         },
         timer,
       });
 
-      conn.send({
-        type: "agent.deploy",
-        agentAddress,
-        agentId: harnessConfig.agentId,
-        config: harnessConfig,
-        hubPublicKey: hubPublicKeyHex,
-        ...(workflow !== undefined ? { workflow } : {}),
-      });
+      try {
+        conn.send({
+          type: "agent.deploy",
+          agentAddress,
+          agentId: harnessConfig.agentId,
+          config: harnessConfig,
+          hubPublicKey: hubPublicKeyHex,
+          ...(workflow !== undefined ? { workflow } : {}),
+        });
+      } catch (err) {
+        // A synchronous send failure means the frame never reached the wire.
+        // Tear down the pending entry and timer we just registered, and reject
+        // as not-sent so a caller may safely roll back what it staged.
+        clearTimeout(timer);
+        pendingDeploys.delete(agentAddress);
+        if (addressIndex.get(agentAddress) === ws) {
+          addressSet.delete(agentAddress);
+          addressIndex.delete(agentAddress);
+        }
+        reject(
+          deployFrameFailure(
+            `Deploy of "${agentAddress}" failed to send: ${err instanceof Error ? err.message : String(err)}`,
+            false,
+          ),
+        );
+      }
     });
   }
 
