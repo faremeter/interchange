@@ -10,7 +10,7 @@ import type { SessionStatus } from "@intx/types";
 import type { ConnectorThreadState } from "@intx/types/runtime";
 
 import { createApp } from "../app";
-import { agentSession, workflowRun } from "@intx/db/schema";
+import { agentSession, grant, principal, workflowRun } from "@intx/db/schema";
 import {
   createSidecarEmitter,
   type AssetService,
@@ -119,6 +119,13 @@ type MockDBOpts = {
   sessionMail?: { id: string }[];
   /** Captured rows passed to db.insert(sessionMail).values(...). */
   inserts?: Record<string, unknown>[];
+  /** The run's committed grants the authorization view reads: the run principal
+   * (a `principal` select) then its grant rows (a `grant` select). Omitted, the
+   * principal select returns empty and loadCommittedRunGrants yields null. */
+  committedRunGrants?: { runPrincipalId: string; grantRows: unknown[] };
+  /** Rows the approvals-list route's `approvalStore.listByRunId` returns
+   * (query.approval.findMany). Defaults to `[]`. */
+  approvals?: Record<string, unknown>[];
 };
 
 function notImplemented(path: string) {
@@ -143,6 +150,23 @@ function createMockDB(opts: MockDBOpts) {
         if (t === workflowRun) {
           return {
             where: () => ({ limit: () => Promise.resolve(runRows) }),
+          };
+        }
+        if (t === principal) {
+          // loadCommittedRunGrants: the run principal, `.where().limit(1)`.
+          const principalRows = opts.committedRunGrants
+            ? [{ id: opts.committedRunGrants.runPrincipalId }]
+            : [];
+          return {
+            where: () => ({ limit: () => Promise.resolve(principalRows) }),
+          };
+        }
+        if (t === grant) {
+          // loadCommittedRunGrants: the principal's grant rows,
+          // `.where().orderBy(asc(id))`.
+          const grantRows = opts.committedRunGrants?.grantRows ?? [];
+          return {
+            where: () => ({ orderBy: () => Promise.resolve(grantRows) }),
           };
         }
         if (t === agentSession) {
@@ -191,6 +215,10 @@ function createMockDB(opts: MockDBOpts) {
       offering: {
         findFirst: notImplemented("db.query.offering.findFirst"),
         findMany: async () => opts.offerings ?? [],
+      },
+      approval: {
+        findFirst: notImplemented("db.query.approval.findFirst"),
+        findMany: async () => opts.approvals ?? [],
       },
     },
     select: selectChain,
@@ -473,6 +501,165 @@ describe("run route test infrastructure", () => {
     const app = createTestApp({ grants: [] });
     const res = await app.request(`${runURL()}/health`);
     expect(res.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Authorization endpoint tests
+// ---------------------------------------------------------------------------
+
+describe("GET /workflows/runs/:runId/authorization", () => {
+  test("404 when the run is not found", async () => {
+    const app = createTestApp({
+      db: { tenant: testTenant, principal: testPrincipal }, // no run seeded
+    });
+    const res = await app.request(`${runURL()}/authorization`);
+    expect(res.status).toBe(404);
+  });
+
+  test("empty floor when the run has no committed grants", async () => {
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        run: makeTestRun(),
+      },
+    });
+    const res = await app.request(`${runURL()}/authorization`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ runId: RUN_ID, grants: [] });
+  });
+
+  test("reflects the run's committed grants verbatim", async () => {
+    // The view is a direct read of the run's committed floor. A standing
+    // approval never overlays here: an approve-always mutates the committed
+    // grant in place at resolve time, so a standing-approved tool is already
+    // stored as `allow` (mail_send below); a tool still gated reads `ask`
+    // (charge_card); a plain grant reads its effect (read_file).
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        run: makeTestRun(),
+        committedRunGrants: {
+          runPrincipalId: "prn_run_authz",
+          grantRows: [
+            {
+              id: "grant_allow_send",
+              resource: "tool:mail_send",
+              action: "invoke",
+              effect: "allow",
+              origin: "creator",
+              conditions: null,
+              expiresAt: null,
+              roleId: null,
+              principalId: "prn_run_authz",
+            },
+            {
+              id: "grant_ask_charge",
+              resource: "tool:charge_card",
+              action: "invoke",
+              effect: "ask",
+              origin: "creator",
+              conditions: null,
+              expiresAt: null,
+              roleId: null,
+              principalId: "prn_run_authz",
+            },
+            {
+              id: "grant_allow_read",
+              resource: "tool:read_file",
+              action: "invoke",
+              effect: "allow",
+              origin: "creator",
+              conditions: null,
+              expiresAt: null,
+              roleId: null,
+              principalId: "prn_run_authz",
+            },
+          ],
+        },
+      },
+    });
+    const res = await app.request(`${runURL()}/authorization`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({
+      runId: RUN_ID,
+      grants: [
+        { resource: "tool:mail_send", action: "invoke", effect: "allow" },
+        { resource: "tool:charge_card", action: "invoke", effect: "ask" },
+        { resource: "tool:read_file", action: "invoke", effect: "allow" },
+      ],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Approvals endpoint tests
+// ---------------------------------------------------------------------------
+
+// A full approval row as `approvalStore.listByRunId` (via query.approval
+// .findMany -> parseApprovalRow) returns it; the route formats each with
+// formatApproval, so every field it reads must be present.
+function makeApprovalRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "apr_run_test_1",
+    tenantId: TENANT_ID,
+    anchorRunId: RUN_ID,
+    runId: RUN_ID,
+    agentAddress: ADDRESS,
+    correlationId: "corr_run_test_1",
+    toolDefinition: { name: "mail_send", description: "send", inputSchema: {} },
+    toolArguments: { to: "x", body: "y" },
+    scope: "always",
+    status: "approved",
+    timeoutAt: null,
+    resolvedAt: new Date("2025-01-02"),
+    createdAt: new Date("2025-01-02"),
+    updatedAt: new Date("2025-01-02"),
+    ...overrides,
+  };
+}
+
+describe("GET /workflows/runs/:runId/approvals", () => {
+  test("404 when the run is not found", async () => {
+    const app = createTestApp({
+      db: { tenant: testTenant, principal: testPrincipal }, // no run seeded
+    });
+    const res = await app.request(`${runURL()}/approvals`);
+    expect(res.status).toBe(404);
+  });
+
+  test("lists the run's approvals across statuses", async () => {
+    const app = createTestApp({
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        run: makeTestRun(),
+        approvals: [
+          makeApprovalRow(),
+          makeApprovalRow({
+            id: "apr_run_test_2",
+            correlationId: "corr_run_test_2",
+            scope: null,
+            status: "pending",
+            resolvedAt: null,
+          }),
+        ],
+      },
+    });
+    const res = await app.request(`${runURL()}/approvals`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      runId: RUN_ID,
+      approvals: [
+        { id: "apr_run_test_1", scope: "always", status: "approved" },
+        { id: "apr_run_test_2", scope: null, status: "pending" },
+      ],
+    });
   });
 });
 

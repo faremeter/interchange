@@ -9,7 +9,7 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import type { DB } from "@intx/db";
+import type { DB, ApprovalStore } from "@intx/db";
 import { authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { extractPartByPath } from "@intx/mime";
@@ -17,6 +17,8 @@ import { extractPartByPath } from "@intx/mime";
 import {
   WorkflowRunResponse,
   WorkflowRunHealth,
+  RunAuthorizationResponse,
+  RunApprovalsResponse,
   OfferingDetail,
   SendMessage,
   MailResponse,
@@ -36,6 +38,7 @@ import {
   type WorkflowDispatchService,
 } from "@intx/hub-sessions";
 import { formatOffering } from "./offerings";
+import { formatApproval } from "./approvals";
 import {
   formatRunView,
   viewStatusOf,
@@ -46,6 +49,7 @@ import { WorkflowRunEventsResponse, formatRunEvent } from "./run-events-view";
 import type { TenantEnv } from "../context";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
+import { loadCommittedRunGrants } from "../run-grant-materialization";
 import { workflowRunRepoId, WORKFLOW_RUN_REF } from "../workflow-run-lifecycle";
 import {
   createWorkflowRunTrigger,
@@ -162,6 +166,8 @@ export type CreateRunRoutesDeps = {
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
+  // The run approvals-list route reads the run's approval decisions here.
+  approvalStore: ApprovalStore;
 };
 
 export function createRunRoutes({
@@ -173,6 +179,7 @@ export function createRunRoutes({
   grantStore,
   conditionRegistry,
   requireGrant,
+  approvalStore,
 }: CreateRunRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
 
@@ -531,6 +538,104 @@ export function createRunRoutes({
       return c.json(
         formatRunView(record, definitionRow.name, runtimeStatus?.status),
       );
+    },
+  );
+
+  app.get(
+    "/:runId/authorization",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
+    describeRoute({
+      tags: ["Runs"],
+      summary: "Get run authorization",
+      description:
+        "Returns the run's effective authorization floor: its committed grants and their resolved effects. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets allow, reject-always sets deny), so a standing-resolved tool reads that effect directly here. This is the floor the runtime enforces, so the view mirrors what the run can do. Complete for the source-ref deploy lineage (the shipping pipeline); a pinned-tool deploy's sidecar-injected ask floor is not reflected here.",
+      responses: {
+        200: {
+          description: "Run authorization",
+          content: {
+            "application/json": {
+              schema: resolver(RunAuthorizationResponse),
+            },
+          },
+        },
+        404: {
+          description: "Run not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const runId = c.req.param("runId");
+
+      const record = await findRoutableById(db, runId, tenantCtx.id);
+      if (record === undefined) {
+        return c.json(
+          { error: { code: "not_found", message: "Run not found" } },
+          404,
+        );
+      }
+
+      // The run's committed per-run grants ARE its effective floor: a standing
+      // ("always") resolution mutates them in place (ask -> allow on
+      // approve-always, ask -> deny on reject-always), so what the child
+      // enforces and what this returns are the same rows -- the view cannot
+      // drift from enforcement. A run with no committed grants (deployed but
+      // never triggered) has an empty floor.
+      const committed = await loadCommittedRunGrants(db, tenantCtx.id, runId);
+      if (committed === null) {
+        return c.json({ runId, grants: [] });
+      }
+      return c.json({
+        runId,
+        grants: committed.stepGrants.map((g) => ({
+          resource: g.resource,
+          action: g.action,
+          effect: g.effect,
+        })),
+      });
+    },
+  );
+
+  app.get(
+    "/:runId/approvals",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
+    describeRoute({
+      tags: ["Runs"],
+      summary: "List run approvals",
+      description:
+        "Returns the run's approval decisions, newest first, across every status. The tools an operator turned into standing approvals are the entries with scope 'always' and status 'approved'.",
+      responses: {
+        200: {
+          description: "Run approvals",
+          content: {
+            "application/json": { schema: resolver(RunApprovalsResponse) },
+          },
+        },
+        404: {
+          description: "Run not found",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const runId = c.req.param("runId");
+
+      const record = await findRoutableById(db, runId, tenantCtx.id);
+      if (record === undefined) {
+        return c.json(
+          { error: { code: "not_found", message: "Run not found" } },
+          404,
+        );
+      }
+
+      const approvals = await approvalStore.listByRunId(tenantCtx.id, runId);
+      return c.json({ runId, approvals: approvals.map(formatApproval) });
     },
   );
 
