@@ -27,6 +27,7 @@ export {
 } from "./routes/workflow-principal-name";
 export {
   createMailTriggeredRunGrantsMaterializer,
+  setRunToolGrantEffect,
   type MailTriggeredRunGrantsDeps,
 } from "./run-grant-materialization";
 export {

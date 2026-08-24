@@ -36,6 +36,7 @@ import {
   type GrantWalkSnapshot,
 } from "@intx/types";
 import { RunGrantsFrame } from "@intx/types/sidecar";
+import { ToolDefinition } from "@intx/types/runtime";
 import { type MailTriggeredRunGrantsResult } from "@intx/hub-sessions";
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 
@@ -398,6 +399,67 @@ export async function loadCommittedRunGrants(
   runId: string,
 ): Promise<CommittedRunGrants | null> {
   return loadCommittedRunGrantsFromExecutor(db, tenantId, runId);
+}
+
+/**
+ * The tool name an approval names, read from its `toolDefinition` snapshot. The
+ * name lives in untyped jsonb; validate it through the `ToolDefinition` arktype
+ * rather than reaching in, so a malformed snapshot fails loudly instead of
+ * yielding an unusable name.
+ */
+export function approvalToolName(
+  toolDefinition: Record<string, unknown>,
+): string {
+  return ToolDefinition.assert(toolDefinition).name;
+}
+
+/**
+ * Resolve a run's `ask` checkpoint on one tool into a standing effect -- the
+ * durable mutation a `scope: "always"` resolution makes. An operator who
+ * approves-always sets `allow` (stop asking, let it through); one who
+ * rejects-always sets `deny` (stop asking, block it). The grant stays with the
+ * run: every later read (the child's enforcement floor, the authorization view,
+ * and the per-dispatch re-establish) sees the standing effect, so the tool is
+ * not asked again for the life of the run.
+ *
+ * Guarded to only change a grant currently gated `ask`: the `effect = "ask"`
+ * predicate means it only ever resolves the checkpoint, never overrides an
+ * existing `allow`/`deny` and never touches a tool the run does not already
+ * hold. So a standing resolution can only remove the checkpoint on a capability
+ * the deploy already granted-with-a-checkpoint -- in the direction the operator
+ * chose. Runs against the passed executor, so the caller mutates inside the
+ * resolve transaction and a rolled-back resolve rolls back the grant change with
+ * it. A run with no principal (nothing to mutate) is a no-op.
+ */
+export async function setRunToolGrantEffect(
+  executor: DBExecutor,
+  tenantId: string,
+  runId: string,
+  toolName: string,
+  effect: "allow" | "deny",
+): Promise<void> {
+  const [runPrincipal] = await executor
+    .select({ id: principalTable.id })
+    .from(principalTable)
+    .where(
+      and(
+        eq(principalTable.tenantId, tenantId),
+        eq(principalTable.kind, "workflow"),
+        eq(principalTable.refId, runId),
+      ),
+    )
+    .limit(1);
+  if (runPrincipal === undefined) return;
+  await executor
+    .update(grantTable)
+    .set({ effect, updatedAt: new Date() })
+    .where(
+      and(
+        eq(grantTable.principalId, runPrincipal.id),
+        eq(grantTable.resource, `${TOOL_GRANT_PREFIX}${toolName}`),
+        eq(grantTable.effect, "ask"),
+      ),
+    );
 }
 
 /**
