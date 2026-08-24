@@ -293,6 +293,7 @@ export function mountHubRoutes(
       grantStore,
       conditionRegistry,
       requireGrant,
+      approvalStore,
     }),
   );
 

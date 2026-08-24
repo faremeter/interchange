@@ -39,6 +39,8 @@
 | GET | /api/tenants/:tenantId/workflows/runs/blobs/:blobId | Fetch a blob by ID |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId | Get run detail |
 | DELETE | /api/tenants/:tenantId/workflows/runs/:runId | Stop a run |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/authorization | Get run authorization |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/approvals | List run approvals |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/health | Get run health |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/offerings | List run offerings |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/events | Read a run's event log |
@@ -476,6 +478,22 @@ Stops a live workflow run and releases its sidecar allocation.
 404: ErrorResponse -- Run not found
 409: ErrorResponse -- Run already stopped
 502: ErrorResponse -- Sidecar unavailable
+
+### GET /api/tenants/:tenantId/workflows/runs/:runId/authorization
+Get run authorization
+
+Returns the run's effective authorization floor: its committed grants and their resolved effects. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets allow, reject-always sets deny), so a standing-resolved tool reads that effect directly here. This is the floor the runtime enforces, so the view mirrors what the run can do. Complete for the source-ref deploy lineage (the shipping pipeline); a pinned-tool deploy's sidecar-injected ask floor is not reflected here.
+
+200: RunAuthorizationResponse -- Run authorization
+404: ErrorResponse -- Run not found
+
+### GET /api/tenants/:tenantId/workflows/runs/:runId/approvals
+List run approvals
+
+Returns the run's approval decisions, newest first, across every status. The tools an operator turned into standing approvals are the entries with scope 'always' and status 'approved'.
+
+200: RunApprovalsResponse -- Run approvals
+404: ErrorResponse -- Run not found
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/health
 Get run health
@@ -1493,6 +1511,18 @@ Source: packages/types/src/approvals.ts
 ### RoleResponse
 `{ createdAt: string, id: string, isSystem: boolean, name: string, tenantId: string, updatedAt: string, description?: string | null }`
 Source: packages/types/src/roles.ts
+
+### RunApprovalsResponse
+`{ approvals: { agentAddress: string, anchorRunId: string, correlationId: string, createdAt: string, id: string, resolvedAt: string | null, runId: string, scope: "always" | "once" | null, status: "approved" | "expired" | "pending" | "rejected" | "timeout", tenantId: string, timeoutAt: string | null, toolArguments: { [string]: unknown }, toolDefinition: { [string]: unknown }, updatedAt: string }[], runId: string }`
+Source: packages/types/src/instances.ts
+
+**approvals**: The run's approval decisions, newest first, across every status. A tool an operator turned into a standing allow appears here with scope 'always' and status 'approved'.
+
+### RunAuthorizationResponse
+`{ grants: { action: string, effect: "allow" | "ask" | "deny", resource: string }[], runId: string }`
+Source: packages/types/src/instances.ts
+
+**grants**: The run's effective authorization floor: each capability the run's principal holds with its resolved effect. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets 'allow', reject-always sets 'deny'), so a standing-resolved tool reads that effect directly. Read straight from the run's committed grants; complete for the source-ref deploy lineage (the shipping pipeline), whose committed grants carry every tool's effect. A pinned-tool deploy's ask floor is injected sidecar-side and is not reflected here.
 
 ### SendMessage
 `{ content: string, attachments?: { data: string, mimeType: string, name?: string, + (undeclared): reject }[] }`
