@@ -1,0 +1,1 @@
+CREATE INDEX "approval_run_idx" ON "approval" USING btree ("run_id");

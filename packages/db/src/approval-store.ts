@@ -94,6 +94,24 @@ export function createApprovalStore(db: DBHandle) {
     },
 
     /**
+     * List a run's approvals, newest first, scoped by `tenantId` so one
+     * tenant's approvals never leak into another's view. Serves the run
+     * approvals list route; callers apply whatever status/scope predicate they
+     * need over the result.
+     */
+    async listByRunId(
+      tenantId: string,
+      runId: string,
+      tx?: DBExecutor,
+    ): Promise<ParsedApproval[]> {
+      const rows = await (tx ?? db).query.approval.findMany({
+        where: and(eq(approval.tenantId, tenantId), eq(approval.runId, runId)),
+        orderBy: (a, { desc }) => desc(a.createdAt),
+      });
+      return rows.map(parseApprovalRow);
+    },
+
+    /**
      * Conditionally resolve a pending approval. The `WHERE status = 'pending'`
      * guard makes resolution terminal at the database: the first caller to
      * resolve a given correlation gets the updated row back; any later caller
