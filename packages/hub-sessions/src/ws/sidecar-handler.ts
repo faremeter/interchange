@@ -1942,6 +1942,15 @@ export function createSidecarRouter(
       isRunAddress(recipient)
     ) {
       const runId = deriveWorkflowRunId(recipient);
+      // This does NOT let mail mutate a run's authorization. First delivery
+      // reserves and commits the run's grants (the mail IS the trigger);
+      // every later delivery only RE-READS the current committed grants
+      // (`loadCommittedRunGrants`) and re-asserts them ahead of the dispatch.
+      // The committed rows already carry any standing-approval change (an
+      // approve/reject-with-`always` resolution mutates them through its own
+      // path), so this re-send is idempotent -- it re-establishes the run's
+      // current floor on the sidecar, self-healing a `grants.json` a sidecar
+      // may have lost, and never overwrites it with anything staler.
       const result = await lookups.materializeMailTriggeredRunGrants({
         agentAddress: recipient,
         runId,
