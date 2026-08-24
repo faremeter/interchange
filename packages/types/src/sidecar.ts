@@ -740,7 +740,15 @@ export const PackRejectFrame = type({
   agentAddress: "string",
   repoId: RepoId,
   transferId: "string",
-  reason: PackRejectReason,
+  // Validated as a plain string, NOT the closed `PackRejectReason` enum, on
+  // purpose. A reject carrying a reason value a newer peer added must still pass
+  // `HubFrame` validation and reach the reject handler (which latches the
+  // transfer) rather than failing validation and being dropped -- a dropped
+  // reject leaves the transfer neither acked nor rejected, stalling it until the
+  // next disconnect. Producers still classify and construct through
+  // `PackRejectReason`, so a known reason is what actually gets sent today; the
+  // reader treats any reason as a terminal reject (surfaces it, latches).
+  reason: "string",
   // Optional human-readable cause carried alongside the machine reason, so the
   // sender's operator sees WHY (e.g. "symlink at X is not supported") instead of
   // only the coarse reason. Absent on rejects that have no extra detail.

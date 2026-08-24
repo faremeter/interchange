@@ -5,6 +5,8 @@ import {
   AgentDeployFrame,
   CredentialsUpdateFrame,
   DeployApplyErrorCategory,
+  PackRejectFrame,
+  PackRejectReason,
   SidecarFrame,
   SignalCorrelationRegisterFrame,
   SourcesUpdateFrame,
@@ -37,6 +39,50 @@ describe("DeployApplyErrorCategory", () => {
   test("rejects an unknown category", () => {
     const result = DeployApplyErrorCategory("network.timeout");
     expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("PackRejectFrame reason forward-compat", () => {
+  const base = {
+    type: "repo.pack.reject" as const,
+    agentAddress: "agt_1@example.test",
+    repoId: { kind: "workflow-run", id: "dep-1" },
+    transferId: "xfer_1",
+  };
+
+  test("accepts a known reason", () => {
+    const result = PackRejectFrame({ ...base, reason: "path_violation" });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts an unknown reason a newer peer may add", () => {
+    // The whole point of the widening: a reject carrying a reason this build
+    // does not know still validates, so it reaches the reject handler (which
+    // latches the transfer) instead of failing HubFrame validation and being
+    // dropped -- a dropped reject stalls the transfer until the next disconnect.
+    const result = PackRejectFrame({ ...base, reason: "some_future_reason" });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("still requires the structural fields (transferId)", () => {
+    const result = PackRejectFrame({
+      type: "repo.pack.reject",
+      agentAddress: "agt_1@example.test",
+      repoId: { kind: "workflow-run", id: "dep-1" },
+      reason: "timeout",
+    });
+    expect(result instanceof type.errors).toBe(true);
+  });
+
+  test("PackRejectReason stays strict for producers", () => {
+    // Producers classify and construct through the enum, which is unchanged, so
+    // a typo'd reason is still caught at the producer, not on the wire.
+    expect(PackRejectReason("path_violation") instanceof type.errors).toBe(
+      false,
+    );
+    expect(PackRejectReason("some_future_reason") instanceof type.errors).toBe(
+      true,
+    );
   });
 });
 
