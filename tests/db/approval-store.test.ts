@@ -134,6 +134,41 @@ describe.skipIf(!harnessDbEnvAvailable())("approval-store (real DB)", () => {
     expect(missing).toBeNull();
   });
 
+  test("lists a run's approvals newest first, scoped to the run and tenant", async () => {
+    await seedDeploymentDeps(h);
+    const RUN = "run_list";
+    const OTHER_RUN = "run_list_other";
+    await seedRun(h, RUN);
+    await seedRun(h, OTHER_RUN);
+    const store = createApprovalStore(h.db);
+
+    // Fix the runId (approvalRow ties it to the correlation id) and stamp
+    // distinct createdAt out of insertion order, so a passing order proves the
+    // `desc(createdAt)` sort rather than insertion order.
+    const on = (corr: string, runId: string, createdAt: Date) => ({
+      ...approvalRow(corr),
+      runId,
+      createdAt,
+    });
+    await store.create(on("c-mid", RUN, new Date("2025-01-02T00:00:00Z")));
+    await store.create(on("c-old", RUN, new Date("2025-01-01T00:00:00Z")));
+    await store.create(on("c-new", RUN, new Date("2025-01-03T00:00:00Z")));
+    // Newest overall, but on a different run -- must be excluded.
+    await store.create(
+      on("c-other", OTHER_RUN, new Date("2025-01-04T00:00:00Z")),
+    );
+
+    const rows = await store.listByRunId(TENANT, RUN);
+    expect(rows.map((r) => r.correlationId)).toEqual([
+      "c-new",
+      "c-mid",
+      "c-old",
+    ]);
+
+    // Scoped by tenant: another tenant sees none of this run's approvals.
+    expect(await store.listByRunId("tnt_other", RUN)).toEqual([]);
+  });
+
   test("round-trips an approval's tool snapshot", async () => {
     await seedDeploymentDeps(h);
     await seedRun(h, "run_corr-snap");

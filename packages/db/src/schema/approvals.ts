@@ -54,5 +54,10 @@ export const approval = pgTable(
   (t) => [
     index("approval_tenant_status_idx").on(t.tenantId, t.status, t.createdAt),
     index("approval_anchor_run_idx").on(t.anchorRunId),
+    // Reads that list a single run's approvals (the run-scoped approval and
+    // authorization views) filter on runId; the anchor_run index above does
+    // not serve them because a child run's approvals carry a runId distinct
+    // from the deployment's anchor.
+    index("approval_run_idx").on(t.runId),
   ],
 );
