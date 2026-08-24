@@ -279,6 +279,19 @@ export interface WorkflowSupervisor {
    */
   deliverCredentials(opts: DeliverCredentialsOpts): Promise<void>;
   /**
+   * Refresh a live run's grant floor mid-run by re-reading its durable
+   * `runs/<runId>/grants.json` and pushing it as a `grants-updated` frame. The
+   * enforcement path for a standing (`scope: "always"`) approval that lowers a
+   * tool's `ask` to `allow` in that file. Unlike `deliverSignal`/
+   * `deliverSources`, a refresh for a non-live child is normal, so this
+   * NO-OPS (`skipped`) instead of throwing, and a send failure to a live child
+   * is logged loudly but stays non-fatal -- the durable file governs the next
+   * barrier/respawn. It pushes only that file's contents, never caller-supplied
+   * grants, so it can only tighten or refresh a floor. Returns whether a live
+   * push happened.
+   */
+  deliverGrants(runId: string): Promise<"pushed" | "skipped">;
+  /**
    * Re-register every correlation the child is currently parked on by
    * querying it for its parked correlations and re-emitting each through
    * `onSuspensionRegister`. Recovers a `park.notify` register the hub may have
@@ -3664,6 +3677,29 @@ export function createWorkflowSupervisor(
         `supervisor: deliverSignal called in phase ${state.phase}; expected starting/running`,
       );
     }
+    // Refresh the run's grant floor on the SAME control channel immediately
+    // before the signal, so a standing ("always") approval resolved for a
+    // parked run lowers the floor for the resumed run's later calls. Ordering
+    // is structural: both frames ride this single seq-ordered FIFO, so the
+    // `grants-updated` is observed by the child ahead of the `signal.deliver`
+    // -- no dependence on hub-side dispatch timing. Best-effort by design; a
+    // failed refresh is non-fatal (the durable file still governs the next
+    // barrier), and it only re-reads that file, so a signal with no standing
+    // approval just re-pushes the unchanged floor.
+    await deliverGrants(opts.runId);
+    // `deliverGrants` awaits a substrate read, yielding the event loop. A
+    // crash/recycle can land in that window and swap `state` (its
+    // `controlSender` then points at the dying child). Re-assert the phase the
+    // pre-await guard checked, so the signal is never written into a recycling
+    // child's closing pipe; the caller retries once the recycle completes. The
+    // phase is read through the full union type because the pre-await guard
+    // control-flow-narrowed `state`, which the yield may have invalidated.
+    const phaseAfterRefresh: SupervisorState["phase"] = state.phase;
+    if (phaseAfterRefresh !== "running" && phaseAfterRefresh !== "starting") {
+      throw new Error(
+        `supervisor: deliverSignal raced a recycle in phase ${phaseAfterRefresh}; expected starting/running`,
+      );
+    }
     await state.controlSender.send({
       type: "signal.deliver",
       data: {
@@ -3715,6 +3751,56 @@ export function createWorkflowSupervisor(
     });
   }
 
+  /**
+   * Refresh a live run's grant floor mid-run: re-read this run's durable
+   * `runs/<runId>/grants.json` (via `onRunStart`, the same read the pre-trigger
+   * barrier uses) and push it to the child as a `grants-updated` frame. The
+   * enforcement path for a standing (`scope: "always"`) approval, which lowers
+   * a tool's `ask` to `allow` in that file: the barrier only runs before a
+   * trigger/signal dispatch, so a run already executing (or being resumed
+   * without a fresh barrier) needs this to observe the change now.
+   *
+   * Distinct from `pushRunGrants` on two axes, both deliberate:
+   * - It NEVER synthesizes a `RunFailed`. A refresh for a run whose child is
+   *   not live is normal (the durable file already carries the change and the
+   *   next barrier or respawn re-reads it), so it no-ops (`skipped`) rather
+   *   than failing the run, and a send failure to a live child is logged
+   *   loudly but stays non-fatal (the file still wins at the next barrier).
+   * - It only ever pushes the durable file's contents through `onRunStart`; it
+   *   accepts no caller-supplied grants, so it can only tighten or refresh a
+   *   floor, never inject one a deploy did not approve.
+   */
+  async function deliverGrants(runId: string): Promise<"pushed" | "skipped"> {
+    if (bindings.onRunStart === undefined) return "skipped";
+    if (state.phase !== "running" && state.phase !== "starting") {
+      return "skipped";
+    }
+    try {
+      const snapshot = await bindings.onRunStart({
+        runId,
+        anchorRunId: bindings.anchorRunId,
+      });
+      await state.controlSender.send({
+        type: "grants-updated",
+        data: {
+          snapshot: {
+            steps: snapshot.steps.map((s) => ({
+              stepId: s.stepId,
+              address: s.address,
+              grants: [...s.grants],
+              contentHash: s.contentHash,
+            })),
+          },
+        },
+      });
+      return "pushed";
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`deliverGrants refresh failed for run ${runId}; the durable grants file still governs the next barrier/respawn: ${message}`;
+      return "skipped";
+    }
+  }
+
   function getCredentialsSnapshot(): CredentialsSnapshot | null {
     if (state.phase === "starting" || state.phase === "running") {
       return state.credentialsSnapshot;
@@ -3731,6 +3817,7 @@ export function createWorkflowSupervisor(
     deliverSignal,
     deliverSources,
     deliverCredentials,
+    deliverGrants,
     reEmitParkedCorrelations,
     getCredentialsSnapshot,
   };
