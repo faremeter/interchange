@@ -1144,6 +1144,71 @@ describe("createWorkflowSupervisor", () => {
     await wired.supervisor.shutdown();
   });
 
+  test("deliverSignal refreshes grants immediately before the signal frame", async () => {
+    const baseDir = await makeTempDir("supervisor-signal-grants-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () =>
+      assembleCredentialsSnapshot({
+        repoStore: createStubRepoStore({ baseDir }),
+        principal: { kind: "supervisor" },
+        stepOrder: ["step-1"],
+        anchorRunId: "run_deployment-x",
+        deriveStepAddress: ({ runId, stepId }) =>
+          `${runId}-${stepId}@example.com`,
+      });
+    const wired = await spawnWithRunStart({ baseDir, onRunStart });
+
+    // A standing ("always") approval resolved for a parked run resumes it via
+    // deliverSignal. The run's lowered grant floor must reach the child on the
+    // same control FIFO STRICTLY before the resume signal, so the resumed run's
+    // later calls to that tool observe the lowered floor rather than re-parking.
+    await wired.supervisor.deliverSignal({
+      runId: "run_deployment-x",
+      signalName: "__signal__:corr-1",
+      signalId: "sig_1",
+      payload: { outcome: "approved" },
+    });
+
+    const frameTypes = parseControlFrameTypes(
+      wired.supervisorToChild.flushed(),
+    );
+    const signalIdx = frameTypes.lastIndexOf("signal.deliver");
+    expect(signalIdx).toBeGreaterThanOrEqual(0);
+    expect(frameTypes[signalIdx - 1]).toBe("grants-updated");
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("deliverGrants skips without throwing when the child is not live", async () => {
+    const baseDir = await makeTempDir("supervisor-deliver-grants-skip-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () =>
+      assembleCredentialsSnapshot({
+        repoStore: createStubRepoStore({ baseDir }),
+        principal: { kind: "supervisor" },
+        stepOrder: ["step-1"],
+        anchorRunId: "run_deployment-x",
+        deriveStepAddress: ({ runId, stepId }) =>
+          `${runId}-${stepId}@example.com`,
+      });
+    const wired = await spawnWithRunStart({ baseDir, onRunStart });
+    await wired.supervisor.shutdown();
+
+    // After shutdown the child is gone. A mid-run grants refresh for a non-live
+    // run is normal (the durable file governs the next barrier), so
+    // deliverGrants no-ops rather than throwing.
+    const result = await wired.supervisor.deliverGrants("run_deployment-x");
+    expect(result).toBe("skipped");
+  });
+
   test("the barrier pushes credentials-updated before trigger.fire when the deployment has credentials", async () => {
     const baseDir = await makeTempDir("supervisor-barrier-creds-");
     await seedStepGrants(

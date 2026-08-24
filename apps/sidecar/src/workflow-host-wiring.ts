@@ -1834,6 +1834,14 @@ export function createSidecarDeployRouter(deps: {
           poisonedRunIds.add(args.runId);
           throw cause;
         }
+        // The per-run file now carries the (possibly overlaid) floor. Refresh a
+        // live child so a standing ("always") approval resolved while the run
+        // is running but not parked -- with no signal to piggyback the
+        // `deliverSignal` refresh on -- lowers its floor immediately.
+        // Best-effort and non-fatal: the same durable file governs the next
+        // barrier/respawn, so a skipped push never leaves the run under a stale
+        // floor for good.
+        await wired.supervisor.deliverGrants(args.runId);
       });
       // Register the sources-rotation handler ONLY for a single-step warm
       // deployment: it has one long-lived agent whose sources can be
