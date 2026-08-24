@@ -822,11 +822,11 @@ export function createWorkflowSupervisor(
   // (spawn handshake, recycle reap, shutdown) owns teardown.
   function onChildCrash(reason: string): void {
     if (state.phase === "running") {
-      logger.error`workflow-process channel crash on live cohort; forcing child down to respawn: {reason}`;
+      logger.error`workflow-process channel crash on live cohort; forcing child down to respawn: ${reason}`;
       state.handle.kill();
       return;
     }
-    logger.error`workflow-process channel crash: {reason}`;
+    logger.error`workflow-process channel crash: ${reason}`;
     void shutdownInternal({ reason });
   }
 

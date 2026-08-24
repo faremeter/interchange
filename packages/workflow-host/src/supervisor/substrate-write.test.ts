@@ -1,6 +1,6 @@
 // Supervisor-level coverage for the substrate.write IPC layer.
 //
-// Three review concerns are pinned here:
+// Four review concerns are pinned here:
 //
 //   1. The terminal-write watchdog timeout. The supervisor holds the
 //      `substrate.write.response` back to the child until the
@@ -26,8 +26,22 @@
 //   3. A repoId.kind other than `workflow-run` -- the only kind the
 //      child's proxy is supposed to forward through this IPC -- must
 //      be rejected at the handler boundary. Pin that here.
+//
+//   4. The supervisor's crash handler must interpolate the crash reason
+//      into its log record. A malformed substrate.write.request reaches
+//      the crash handler on the live cohort; a non-JSON line during the
+//      pre-ready handshake reaches it in a non-running phase. Both log
+//      the reason, and both are pinned here because this file already
+//      owns the harness that drives a child through the IPC.
 
-import { describe, test, expect } from "bun:test";
+import {
+  describe,
+  test,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+} from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -35,6 +49,7 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
+import { configureSync, getConfig, resetSync } from "@intx/log";
 import { hexEncode } from "@intx/types";
 import type { NewlyTerminalRun, RepoId, RepoStore } from "@intx/hub-sessions";
 
@@ -451,7 +466,7 @@ type SupervisorHarness = {
   spawnResult: { pid: number; channelId: string };
 };
 
-async function bootSupervisor(opts: {
+type BootSupervisorOpts = {
   prefix: string;
   inboxOpts?: Parameters<typeof createMemoryInboxPrimitives>[0];
   onWriteAttempt?: (cap: WriteCapture) => void;
@@ -462,7 +477,21 @@ async function bootSupervisor(opts: {
    * map. Tests that exercise the merge round-trip set this to true.
    */
   invokeMerge?: boolean;
-}): Promise<SupervisorHarness> {
+};
+
+// The supervisor after spawn but before the child's `ready` frame: the
+// receiver is already draining the child's control stream, yet the phase
+// is still `starting`. Tests that need to observe a pre-ready crash inject
+// into `childToSupervisor` and await `spawnPromise`; `sendReady` completes
+// the handshake for the running-phase harness below.
+type SupervisorSeam = Omit<SupervisorHarness, "spawnResult"> & {
+  spawnPromise: Promise<{ pid: number; channelId: string }>;
+  sendReady: () => Promise<void>;
+};
+
+async function bootSupervisorToReady(
+  opts: BootSupervisorOpts,
+): Promise<SupervisorSeam> {
   const baseDir = await makeTempDir(opts.prefix);
   await seedStepGrants(
     baseDir,
@@ -560,14 +589,14 @@ async function bootSupervisor(opts: {
   while (!mailBus.registered().includes("deployment-x@example.com")) {
     await new Promise((r) => setTimeout(r, 1));
   }
-  await childSender.send({
-    type: "ready",
-    data: {
-      childPid: 7777,
-      childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-    },
-  });
-  const spawnResult = await spawnPromise;
+  const sendReady = (): Promise<void> =>
+    childSender.send({
+      type: "ready",
+      data: {
+        childPid: 7777,
+        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
+      },
+    });
   return {
     supervisor,
     channelId,
@@ -577,6 +606,26 @@ async function bootSupervisor(opts: {
     mailBus,
     inboxPrimitives,
     bindings,
+    spawnPromise,
+    sendReady,
+  };
+}
+
+async function bootSupervisor(
+  opts: BootSupervisorOpts,
+): Promise<SupervisorHarness> {
+  const seam = await bootSupervisorToReady(opts);
+  await seam.sendReady();
+  const spawnResult = await seam.spawnPromise;
+  return {
+    supervisor: seam.supervisor,
+    channelId: seam.channelId,
+    childToSupervisor: seam.childToSupervisor,
+    supervisorToChild: seam.supervisorToChild,
+    childSender: seam.childSender,
+    mailBus: seam.mailBus,
+    inboxPrimitives: seam.inboxPrimitives,
+    bindings: seam.bindings,
     spawnResult,
   };
 }
@@ -971,5 +1020,120 @@ describe("substrate-write malformed merge response", () => {
     expect(goodResponse.result.ok).toBe(true);
 
     await harness.supervisor.shutdown();
+  });
+});
+
+// Capture LogTape records file-wide so the crash-handler tests can assert
+// on the interpolated reason. configureSync is process-global, so the
+// prior config is saved and restored around this file.
+const captured: {
+  category: readonly string[];
+  level: string;
+  message: string;
+}[] = [];
+
+const savedConfig = getConfig();
+
+beforeAll(() => {
+  configureSync({
+    reset: true,
+    sinks: {
+      capture: (record) => {
+        const message = Array.isArray(record.message)
+          ? record.message
+              .map((part) =>
+                typeof part === "string" ? part : JSON.stringify(part),
+              )
+              .join("")
+          : String(record.message);
+        captured.push({
+          category: record.category,
+          level: record.level,
+          message,
+        });
+      },
+    },
+    loggers: [
+      { category: [], lowestLevel: "debug", sinks: ["capture"] },
+      {
+        category: ["logtape", "meta"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+  });
+});
+
+afterAll(() => {
+  if (savedConfig) {
+    configureSync({ reset: true, ...savedConfig });
+  } else {
+    resetSync();
+  }
+});
+
+beforeEach(() => {
+  captured.length = 0;
+});
+
+function capturedErrors(): string[] {
+  return captured.filter((r) => r.level === "error").map((r) => r.message);
+}
+
+async function waitForCapturedError(
+  needle: string,
+): Promise<string | undefined> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const match = capturedErrors().find((m) => m.includes(needle));
+    if (match !== undefined) return match;
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  return undefined;
+}
+
+describe("onChildCrash logs the interpolated crash reason", () => {
+  test("running-phase crash logs the reason, not a literal placeholder", async () => {
+    const harness = await bootSupervisor({ prefix: "crash-running-" });
+
+    // A repoId whose kind is outside RepoKind passes the permissive wire
+    // schema (kind: string) but fails the handler's RepoId() domain check,
+    // driving the direct onChildCrash call on the live cohort.
+    await harness.childSender.send({
+      type: "substrate.write.request",
+      data: {
+        requestId: "crash-req-1",
+        repoId: { kind: "bogus-kind", id: "deployment-x" },
+        ref: "refs/heads/main",
+        preservePrefix: "state/x/",
+        message: "malformed repoId",
+      },
+    });
+
+    const record = await waitForCapturedError(
+      "forcing child down to respawn: substrate.write.request repoId failed validation",
+    );
+    expect(record).toBeDefined();
+    expect(capturedErrors().some((m) => m.includes("{reason}"))).toBe(false);
+
+    // Cancel the respawn backoff the kill() scheduled.
+    await harness.supervisor.shutdown();
+  });
+
+  test("pre-ready crash logs the reason, not a literal placeholder", async () => {
+    const seam = await bootSupervisorToReady({ prefix: "crash-starting-" });
+
+    // A non-JSON line reaches the receiver before the ready handshake,
+    // while the phase is still `starting`, driving onChildCrash's
+    // non-running branch (shutdownInternal).
+    seam.childToSupervisor.inject("not-json{{{");
+
+    await expect(seam.spawnPromise).rejects.toThrow();
+
+    const record = await waitForCapturedError(
+      "channel crash: control channel received non-JSON line",
+    );
+    expect(record).toBeDefined();
+    expect(capturedErrors().some((m) => m.includes("{reason}"))).toBe(false);
   });
 });
