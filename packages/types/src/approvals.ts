@@ -30,5 +30,9 @@ export const ApproveAction = type({
 });
 
 export const RejectAction = type({
+  // Optional so a plain one-time rejection (the default) stays a bare body.
+  // Scope 'always' records a standing rejection: the tool's ask gate is set to
+  // a standing deny for the run, so it is blocked without asking again.
+  "scope?": "'once' | 'always'",
   "message?": "string",
 });
