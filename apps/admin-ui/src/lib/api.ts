@@ -46,6 +46,18 @@ export async function api<T>(
 
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- T is a generic parameter; runtime validation is the caller's responsibility
   if (res.status === 204) return undefined as T;
+  // A 202 (Accepted) response may carry an empty body or a JSON
+  // acknowledgement body. Reading the raw text first distinguishes the two:
+  // an empty body resolves to undefined, a present body is JSON-parsed.
+  // Calling res.json() unconditionally on an empty body would throw
+  // "Unexpected end of JSON input".
+  if (res.status === 202) {
+    const text = await res.text();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- T is a generic parameter; runtime validation is the caller's responsibility
+    if (text.length === 0) return undefined as T;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- T is a generic parameter; runtime validation is the caller's responsibility
+    return JSON.parse(text) as T;
+  }
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- T is a generic parameter; runtime validation is the caller's responsibility
   return (await res.json()) as T;
 }
