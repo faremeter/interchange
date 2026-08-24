@@ -25,9 +25,16 @@ import {
   signalName,
 } from "@intx/types";
 
+import { getLogger } from "@intx/log";
+
 import type { TenantEnv } from "../context";
 import { ts } from "../format";
-import { lockWorkflowRunState } from "../run-grant-materialization";
+import {
+  approvalToolName,
+  loadCommittedRunGrants,
+  lockWorkflowRunState,
+  setRunToolGrantEffect,
+} from "../run-grant-materialization";
 import {
   cursorCondition,
   pageOrder,
@@ -38,7 +45,50 @@ import {
 
 type ParsedApproval = ReturnType<typeof parseApprovalRow>;
 
-function formatApproval(row: ParsedApproval) {
+const log = getLogger(["hub", "approvals"]);
+
+/**
+ * Push a run's grants to the sidecar after a standing (`scope: "always"`)
+ * resolution has mutated them in the resolve transaction. Re-reads the now
+ * durably-mutated committed grants and rewrites the run's `grants.json` (the
+ * `run.grants` handler also refreshes a live child), so the running child sees
+ * the change in-flight and any respawn re-reads it.
+ *
+ * Best-effort relative to the resume: this runs after the resolve committed and
+ * the parked run must still be resumed, so a failure is logged loudly but never
+ * propagated -- a throw would skip the caller's signal delivery and hang the
+ * run. It self-heals regardless: the mutation is already durable in the
+ * committed grants, and the next dispatch's per-run re-establish reads the same
+ * committed grants, so a missed push only delays the effect, never loses it.
+ */
+async function propagateRunGrantsToSidecar(
+  deps: CreateApprovalRoutesDeps,
+  approval: ParsedApproval,
+  tenantId: string,
+): Promise<void> {
+  try {
+    const committed = await loadCommittedRunGrants(
+      deps.db,
+      tenantId,
+      approval.runId,
+    );
+    // A run with no committed per-run grants has nothing to push.
+    if (committed === null) return;
+    const delivered = deps.sidecarRouter.sendRunGrants(
+      approval.agentAddress,
+      approval.runId,
+      committed.stepGrants,
+    );
+    if (!delivered) {
+      log.warn`standing grant for run ${approval.runId} not pushed: deployment ${approval.agentAddress} is not routable; the next dispatch re-establishes it`;
+    }
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    log.error`failed to push standing grant for run ${approval.runId}; the parked run still resumes and the next dispatch re-establishes it: ${message}`;
+  }
+}
+
+export function formatApproval(row: ParsedApproval) {
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -85,7 +135,7 @@ export type ResolveApprovalRequest = {
   tenantId: string;
   principalId: string;
   status: "approved" | "rejected";
-  scope?: "once";
+  scope?: "once" | "always";
   decisionPayload: ApprovalDecision;
 };
 
@@ -150,6 +200,14 @@ export async function resolveApproval(
   if (authz.effect !== "allow") {
     return { kind: "forbidden" };
   }
+
+  // A standing resolution mutates the run's committed grant for the approved
+  // tool. Resolve the tool name up front (before the claim) so a malformed
+  // snapshot fails the resolve cleanly rather than mid-transaction. `allow` for
+  // approve-always, `deny` for reject-always.
+  const standingToolName =
+    args.scope === "always" ? approvalToolName(approval.toolDefinition) : null;
+  const standingEffect = args.status === "approved" ? "allow" : "deny";
 
   const resolvedAt = new Date();
   const signalId = generateId("signal");
@@ -258,6 +316,21 @@ export async function resolveApproval(
       );
     }
 
+    // A standing resolution durably mutates the run's committed grant for this
+    // tool IN this transaction -- `allow` on approve-always, `deny` on
+    // reject-always -- so a rolled-back resolve reverts the grant change too.
+    // The run keeps it: enforcement, the authorization view, and the
+    // per-dispatch re-establish all read the committed grant.
+    if (standingToolName !== null) {
+      await setRunToolGrantEffect(
+        tx,
+        args.tenantId,
+        approval.runId,
+        standingToolName,
+        standingEffect,
+      );
+    }
+
     if (exclusiveDispatchService !== undefined) {
       await exclusiveDispatchService.enqueueSignal(
         {
@@ -285,6 +358,17 @@ export async function resolveApproval(
 
   if (claimed.kind !== "resolved") {
     return claimed;
+  }
+
+  // Standing resolution: the committed grant was mutated in the transaction
+  // above. Push the now-durable grants to the sidecar so the running child sees
+  // the change in-flight. Post-commit, so a rolled-back resolve pushes nothing.
+  // It runs before the wake/signal delivery so the floor lands promptly, but
+  // correctness does not depend on that ordering: `deliverSignal` refreshes
+  // grants on the child's control FIFO immediately ahead of the resume signal,
+  // and the next dispatch re-establishes them regardless.
+  if (args.scope === "always") {
+    await propagateRunGrantsToSidecar(deps, approval, args.tenantId);
   }
 
   if (claimed.exclusiveDispatchService !== undefined) {
@@ -470,18 +554,12 @@ export function createApprovalRoutes(
       tags: ["Approvals"],
       summary: "Approve an action",
       description:
-        "Approves the pending action. With scope 'once', the approval is one-time. Scope 'always' is not yet supported: a standing grant requires the tool identity, which the suspend path does not yet capture.",
+        "Approves the pending action. Scope 'once' authorizes only this suspended call. Scope 'always' additionally records a standing approval, so the same tool is not asked again for the rest of this run.",
       responses: {
         200: {
           description: "Action approved",
           content: {
             "application/json": { schema: resolver(ApprovalResponse) },
-          },
-        },
-        400: {
-          description: "Unsupported scope",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
           },
         },
         404: {
@@ -518,25 +596,12 @@ export function createApprovalRoutes(
       const approvalId = c.req.param("approvalId");
       const body = c.req.valid("json");
 
-      if (body.scope === "always") {
-        return c.json(
-          {
-            error: {
-              code: "unsupported_scope",
-              message:
-                "scope 'always' is not yet supported: a standing grant requires the tool identity, which the suspend path does not yet capture",
-            },
-          },
-          400,
-        );
-      }
-
       const result = await resolveApproval(deps, {
         approvalId,
         tenantId: tenant.id,
         principalId: principal.id,
         status: "approved",
-        scope: "once",
+        scope: body.scope,
         decisionPayload: { outcome: "approved" },
       });
 
@@ -550,7 +615,7 @@ export function createApprovalRoutes(
       tags: ["Approvals"],
       summary: "Reject an action",
       description:
-        "Rejects the pending action. An optional message provides feedback to the agent.",
+        "Rejects the pending action. An optional message provides feedback to the agent. Scope 'once' (the default) rejects only this call; scope 'always' additionally records a standing rejection, setting the tool to a standing deny so it is blocked without asking again for the rest of this run.",
       responses: {
         200: {
           description: "Action rejected",
@@ -597,6 +662,7 @@ export function createApprovalRoutes(
         tenantId: tenant.id,
         principalId: principal.id,
         status: "rejected",
+        ...(body.scope !== undefined ? { scope: body.scope } : {}),
         decisionPayload: {
           outcome: "rejected",
           ...(body.message !== undefined ? { message: body.message } : {}),

@@ -9,7 +9,7 @@ import {
 } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import type { ApprovalStore, SignalCorrelationStore, DB } from "@intx/db";
-import { sidecarAllocation, workflowRun } from "@intx/db/schema";
+import { principal, sidecarAllocation, workflowRun } from "@intx/db/schema";
 import type { WorkflowRunLifecycle } from "@intx/hub-sessions";
 
 import { createApp } from "../app";
@@ -119,35 +119,57 @@ function createMockDB(
       principal: { findFirst: async () => testPrincipal },
       approval: { findMany: async () => approvalList },
     },
+    // A standing resolution's post-commit push calls loadCommittedRunGrants off
+    // the top-level db (outside the resolve tx): the run principal (limit(1))
+    // then its grant rows (orderBy). This mock seeds no run principal, so the
+    // read returns null and the push no-ops -- its correctness is covered by the
+    // setRunToolGrantEffect real-DB test.
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve([]),
+          orderBy: () => Promise.resolve([]),
+        }),
+      }),
+    }),
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
       let workflowRunLockIndex = 0;
       return fn({
         select: () => ({
-          from: (table: unknown) => ({
-            where: () => ({
-              limit: () => ({
-                for: async (lock: string) => {
-                  if (table === sidecarAllocation) {
-                    allocationLocks.push(lock);
-                    operationOrder.push("allocation-lock");
-                    return sidecarAllocationStatus === undefined
-                      ? []
-                      : [{ id: "sal_test", status: sidecarAllocationStatus }];
-                  }
-                  if (table === workflowRun) {
-                    const index = workflowRunLockIndex;
-                    workflowRunLockIndex += 1;
-                    operationOrder.push(
-                      index === 0 ? "anchor-lock" : "target-lock",
-                    );
-                    const status = workflowRunStatuses[index];
-                    return status === undefined ? [] : [{ status }];
-                  }
-                  throw new Error("mock: unexpected table lock");
-                },
+          from: (table: unknown) => {
+            if (table === principal) {
+              // A standing resolution's setRunToolGrantEffect resolves the run
+              // principal here; this mock seeds none, so the mutation no-ops.
+              // Its correctness is covered by the setRunToolGrantEffect real-DB
+              // test.
+              return { where: () => ({ limit: () => Promise.resolve([]) }) };
+            }
+            return {
+              where: () => ({
+                limit: () => ({
+                  for: async (lock: string) => {
+                    if (table === sidecarAllocation) {
+                      allocationLocks.push(lock);
+                      operationOrder.push("allocation-lock");
+                      return sidecarAllocationStatus === undefined
+                        ? []
+                        : [{ id: "sal_test", status: sidecarAllocationStatus }];
+                    }
+                    if (table === workflowRun) {
+                      const index = workflowRunLockIndex;
+                      workflowRunLockIndex += 1;
+                      operationOrder.push(
+                        index === 0 ? "anchor-lock" : "target-lock",
+                      );
+                      const status = workflowRunStatuses[index];
+                      return status === undefined ? [] : [{ status }];
+                    }
+                    throw new Error("mock: unexpected table lock");
+                  },
+                }),
               }),
-            }),
-          }),
+            };
+          },
         }),
       });
     },
@@ -175,6 +197,7 @@ function createMockApprovalStore(opts: MockApprovalStoreOpts): ApprovalStore {
     create: () => notImpl("create"),
     createIfAbsent: () => notImpl("createIfAbsent"),
     findByCorrelationId: () => notImpl("findByCorrelationId"),
+    listByRunId: async () => [],
     findById: async (id, tx) => {
       if (id !== APPROVAL_ID) return null;
       return tx !== undefined && opts.transactionalApproval !== undefined
@@ -270,6 +293,9 @@ function createMockSidecarRouter(
     handleMessage: () => notImpl("handleMessage"),
     handleClose: () => notImpl("handleClose"),
     routeMail: () => notImpl("routeMail"),
+    // A standing resolution's post-commit push no-ops in these tests (no run
+    // principal is seeded, so loadCommittedRunGrants returns null before this is
+    // reached); sendRunGrants is never called.
     sendRunGrants: () => notImpl("sendRunGrants"),
     sendAgentDeploy: () => notImpl("sendAgentDeploy"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
@@ -786,21 +812,36 @@ describe("POST /approvals/:approvalId/approve", () => {
     expect(enqueues).toEqual([]);
   });
 
-  test("rejects scope 'always' at the boundary without resolving", async () => {
-    const signalCalls: SignalCall[] = [];
+  test("approve with scope 'always' records the standing approval", async () => {
     const resolveCalls: ResolveCall[] = [];
-    const claimCalls: ClaimCall[] = [];
-    const app = createTestApp({ signalCalls, resolveCalls, claimCalls });
+    // The standing-grant mutation (setRunToolGrantEffect) and its post-commit
+    // push no-op here: the mock seeds no run principal, so both resolve to
+    // nothing. Their correctness is covered by the setRunToolGrantEffect
+    // real-DB test. This asserts the boundary accepts 'always' (no more 400)
+    // and threads the scope through to the resolution.
+    const app = createTestApp({ resolveCalls });
 
     const res = await app.fetch(
       authedPost(`${base()}/${APPROVAL_ID}/approve`, { scope: "always" }),
     );
 
-    expect(res.status).toBe(400);
-    expect(await errorCode(res)).toBe("unsupported_scope");
-    expect(claimCalls).toHaveLength(0);
-    expect(resolveCalls).toHaveLength(0);
-    expect(signalCalls).toHaveLength(0);
+    expect(res.status).toBe(200);
+    expect(resolveCalls).toEqual([{ status: "approved", scope: "always" }]);
+  });
+
+  test("reject with scope 'always' records the standing rejection", async () => {
+    const resolveCalls: ResolveCall[] = [];
+    // Symmetric to approve-always: reject-always threads the scope through so
+    // the tool's `ask` becomes a standing `deny`. The mutation no-ops in this
+    // mock for the same reason as the approve case.
+    const app = createTestApp({ resolveCalls });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${APPROVAL_ID}/reject`, { scope: "always" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(resolveCalls).toEqual([{ status: "rejected", scope: "always" }]);
   });
 
   test("returns 404 for an approval belonging to another tenant", async () => {

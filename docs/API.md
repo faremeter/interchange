@@ -658,12 +658,11 @@ Returns the approver-facing tool snapshot, status, and originating deployment fo
 ### POST /api/tenants/:tenantId/approvals/:approvalId/approve
 Approve an action
 
-Approves the pending action. With scope 'once', the approval is one-time. Scope 'always' is not yet supported: a standing grant requires the tool identity, which the suspend path does not yet capture.
+Approves the pending action. Scope 'once' authorizes only this suspended call. Scope 'always' additionally records a standing approval, so the same tool is not asked again for the rest of this run.
 
 Body: ApproveAction
 
 200: ApprovalResponse -- Action approved
-400: ErrorResponse -- Unsupported scope
 403: ErrorResponse -- Approver lacks the approval resolve grant
 404: ErrorResponse -- Approval not found
 409: ErrorResponse -- Approval already resolved (takes precedence on retries), workflow run no longer running, or workflow deployment unavailable
@@ -672,7 +671,7 @@ Body: ApproveAction
 ### POST /api/tenants/:tenantId/approvals/:approvalId/reject
 Reject an action
 
-Rejects the pending action. An optional message provides feedback to the agent.
+Rejects the pending action. An optional message provides feedback to the agent. Scope 'once' (the default) rejects only this call; scope 'always' additionally records a standing rejection, setting the tool to a standing deny so it is blocked without asking again for the rest of this run.
 
 Body: RejectAction
 
@@ -1488,7 +1487,7 @@ Source: packages/types/src/providers.ts
 **scopes**: OAuth scopes associated with this provider integration.
 
 ### RejectAction
-`{ message?: string }`
+`{ message?: string, scope?: "always" | "once" }`
 Source: packages/types/src/approvals.ts
 
 ### RoleResponse
