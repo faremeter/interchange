@@ -83,6 +83,7 @@ import type {
   WarmAgentCache,
   WarmEventSinkRef,
 } from "../child/warm-agent-cache";
+import { runBodyThenCleanup } from "../run-body-then-cleanup";
 
 const logger = getLogger(["workflow-host", "step-invoker"]);
 
@@ -262,27 +263,34 @@ async function invokeColdStep(
   // flow through by default.
   const eventForward = subscribeAgentEvents(agent, opts.onEvent);
 
-  try {
-    return stepResultFromSend(
-      await sendWithAbort(agent, req, {
-        closeOnAbort: true,
-        mailPartReader: opts.mailPartReader,
-      }),
-    );
-  } finally {
-    // `close` is idempotent: a second call after the send already
-    // resolved still releases the workdir lock and tears down stream
-    // consumers. We await so the lock is gone before the adapter
-    // returns -- a subsequent step on the same workdir must not race
-    // a still-closing agent.
-    await agent.close();
-    // `agent.close()` terminates every active `stream()` iterator, so
-    // the forwarder's for-await loop has ended (or is about to). Await
-    // it after close so the subscription is fully drained before the
-    // adapter returns and no listener outlives the step. Awaited last
-    // because the loop only ends once close has fired.
-    await eventForward;
-  }
+  // `agent.close()` is the wrapAgentClose-wrapped close: it runs the
+  // agent's own close (idempotent -- releases the workdir lock and tears
+  // down stream consumers) and then the plugin/tool-bundle disposers,
+  // which now reject the close if a disposer (e.g. the LSP subprocess
+  // kill) fails. Route the close through runBodyThenCleanup so a disposer
+  // failure surfaces on a clean step but never masks a step error already
+  // unwinding from `sendWithAbort`. `eventForward` is drained on every
+  // path -- `agent.close()` ends the forwarder's for-await loop, and it
+  // never rejects (subscribeAgentEvents swallows), so awaiting it in the
+  // cleanup cannot mask either error.
+  return runBodyThenCleanup(
+    async () =>
+      stepResultFromSend(
+        await sendWithAbort(agent, req, {
+          closeOnAbort: true,
+          mailPartReader: opts.mailPartReader,
+        }),
+      ),
+    async () => {
+      try {
+        await agent.close();
+      } finally {
+        await eventForward;
+      }
+    },
+    (cause) =>
+      logger.error`step invoker: agent.close failed while unwinding a step error; surfacing the step error, close failure: ${cause instanceof Error ? cause.message : String(cause)}`,
+  );
 }
 
 /**

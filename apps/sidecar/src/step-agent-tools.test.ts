@@ -274,6 +274,150 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
     }
     expect(alive).toBe(false);
   });
+
+  test("agent.close() rejects with an AggregateError when a disposer fails, and still runs the rest", async () => {
+    // The underlying agent close succeeds; a plugin disposer (standing in
+    // for the LSP subprocess kill) then throws. That failure must surface
+    // through close() rather than be swallowed -- a leaked LSP subprocess
+    // is otherwise invisible -- and one failing disposer must not strand
+    // the others.
+    const disposeError = new Error("lsp dispose boom");
+    let survivorDisposed = 0;
+    const throwingPlugin = definePlugin({
+      id: "@intx/throwing-disposer/sidecar-bundle",
+      factory: () => ({
+        tools: [],
+        dispose: () => {
+          throw disposeError;
+        },
+      }),
+    });
+    const survivorPlugin = definePlugin({
+      id: "@intx/survivor-disposer/sidecar-bundle",
+      factory: () => ({
+        tools: [],
+        dispose: () => {
+          survivorDisposed += 1;
+        },
+      }),
+    });
+
+    const materialization: StepToolMaterialization = {
+      factories: [],
+      pluginFactories: [throwingPlugin, survivorPlugin],
+    };
+
+    const env = await buildStepEnv();
+    attachStepTools(env, materialization);
+
+    const agentFactory = createToolBearingAgentFactory();
+    const def = {
+      id: "agent-disposer-aggregate",
+      systemPrompt: "disposer aggregate test",
+      toolFactories: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    } as const;
+
+    const agent = await agentFactory(def, { ...env });
+
+    let thrown: unknown;
+    try {
+      await agent.close();
+    } catch (cause) {
+      thrown = cause;
+    }
+    expect(thrown).toBeInstanceOf(AggregateError);
+    if (!(thrown instanceof AggregateError)) {
+      throw new Error("expected an AggregateError from a failing teardown");
+    }
+    expect(thrown.errors).toContain(disposeError);
+    // The loop kept going after the first disposer threw: the other ran.
+    expect(survivorDisposed).toBe(1);
+  });
+
+  test("a disposer that throws during construction rollback does not mask the construction error", async () => {
+    // On a construction-failure rollback the pending construction error is
+    // the one worth surfacing; a disposer failure during that rollback is
+    // logged but must never replace it.
+    const firstPlugin = definePlugin({
+      id: "@intx/rollback-throwing-disposer/sidecar-bundle",
+      factory: () => ({
+        tools: [],
+        dispose: () => {
+          throw new Error("rollback dispose boom");
+        },
+      }),
+    });
+    const throwingPlugin = definePlugin({
+      id: "@intx/rollback-construction-throw/sidecar-bundle",
+      factory: () => {
+        throw new Error("plugin construction failure");
+      },
+    });
+
+    const materialization: StepToolMaterialization = {
+      factories: [],
+      pluginFactories: [firstPlugin, throwingPlugin],
+    };
+
+    const env = await buildStepEnv();
+    attachStepTools(env, materialization);
+
+    const agentFactory = createToolBearingAgentFactory();
+    const def = {
+      id: "agent-rollback-dispose-mask",
+      systemPrompt: "rollback dispose mask test",
+      toolFactories: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    } as const;
+
+    await expect(agentFactory(def, { ...env })).rejects.toThrow(
+      /plugin construction failure/,
+    );
+  });
+
+  test("a second close() after a failed teardown neither re-runs disposers nor rethrows", async () => {
+    let disposeCalls = 0;
+    const throwingPlugin = definePlugin({
+      id: "@intx/double-close-disposer/sidecar-bundle",
+      factory: () => ({
+        tools: [],
+        dispose: () => {
+          disposeCalls += 1;
+          throw new Error("dispose boom");
+        },
+      }),
+    });
+
+    const materialization: StepToolMaterialization = {
+      factories: [],
+      pluginFactories: [throwingPlugin],
+    };
+
+    const env = await buildStepEnv();
+    attachStepTools(env, materialization);
+
+    const agentFactory = createToolBearingAgentFactory();
+    const def = {
+      id: "agent-double-close",
+      systemPrompt: "double close test",
+      toolFactories: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    } as const;
+
+    const agent = await agentFactory(def, { ...env });
+
+    await expect(agent.close()).rejects.toBeInstanceOf(AggregateError);
+    expect(disposeCalls).toBe(1);
+    // wrapAgentClose guards teardown behind `tornDown`, so a second close
+    // is a no-op: it neither re-runs the disposer nor re-surfaces the
+    // failure.
+    await agent.close();
+    expect(disposeCalls).toBe(1);
+  });
 });
 
 describe("stepDeployTreeDir base-step resolution", () => {
