@@ -16,6 +16,7 @@ import {
   parseEventSeq,
   readCommittedWorkflowRunLifecycle,
   readOwnedMessageIds,
+  scanRunsForBoot,
   readWorkflowRunLifecycle,
   replayProcessingToInbox,
   WORKFLOW_RUN_GITIGNORE_PATH,
@@ -2548,6 +2549,49 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     const owned = await readOwnedMessageIds(store, repoId);
     expect(owned.has("live")).toBe(true);
     expect(owned.has("done")).toBe(false);
+  });
+
+  test("scanRunsForBoot proposes a terminal per-event run for sealing and drops it from owned", async () => {
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-scan-");
+    // `live` is parked (RunStarted only). `done` reached RunCompleted but is
+    // still in per-event form -- the crash window an interrupted fold leaves
+    // behind. A single terminal run must appear in `pendingSealRunIds` and be
+    // absent from `ownedMessageIds`: the same event that ends a run stops it
+    // owning its message and makes it a seal candidate.
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/0.json`]:
+          runStartedBody("done"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/1.json`]: runCompletedBody(1),
+      },
+      message: "seed one live and one terminal per-event run",
+    });
+    const { ownedMessageIds, pendingSealRunIds } = await scanRunsForBoot(
+      store,
+      repoId,
+    );
+    expect(pendingSealRunIds).toEqual(["done"]);
+    expect(ownedMessageIds.has("done")).toBe(false);
+    expect(ownedMessageIds.has("live")).toBe(true);
+  });
+
+  test("scanRunsForBoot excludes an already-sealed run from pendingSealRunIds", async () => {
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-scan-sealed-");
+    // A sealed run (combined events.jsonl, no per-event directory) is already
+    // folded, so it is not a seal candidate.
+    const sealed =
+      [runStartedBody("sealed"), runCompletedBody(1)].join("\n") + "\n";
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/sealed/events.jsonl`]: sealed,
+      },
+      message: "seed a sealed (terminated, compacted) run",
+    });
+    const { pendingSealRunIds } = await scanRunsForBoot(store, repoId);
+    expect(pendingSealRunIds).toEqual([]);
   });
 
   test("readWorkflowRunLifecycle distinguishes grants-only, live, and terminal logs", async () => {

@@ -3504,30 +3504,40 @@ export type ReplayProcessingToInboxResult = {
   replayedKeys: string[];
 };
 
+export type ScanRunsForBootResult = {
+  ownedMessageIds: Set<string>;
+  pendingSealRunIds: string[];
+};
+
 /**
- * Read the run event logs under `runs/` and return the set of
- * `consumedMessageId`s belonging to NON-terminal runs -- the messages a
- * live run still owns. The caller (the supervisor's spawn-time replay)
- * feeds this into `replayProcessingToInbox`'s `ownedMessageIds` so a
- * parked run's message is not re-admitted to inbox and dispatched a
- * second time while the run is recovered by re-driving its durable log.
- * Without this, the re-drive AND the re-triggered fresh run both re-park
- * the same awaitSignal gate on the same runId, and the two concurrent
- * runtime bodies race to a corrupt terminal.
+ * Walk `runs/` once and return the two boot-recovery inputs the supervisor's
+ * spawn needs, from a single traversal of the working tree via `getRepoDir`:
  *
- * Reads the substrate's working tree via `getRepoDir`, mirroring the
- * child's `discoverInFlightRuns`. The working tree tracks the run-event
- * ref (`refs/heads/main`); the claim-check ref (`refs/heads/events`)
- * cannot see it, which is why this lives at the caller rather than inside
- * `replayProcessingToInbox`'s single-ref delta. A run whose log is sealed
- * (combined `events.json`, only permitted for a terminated run) or
- * carries a terminal event is excluded; an absent `runs/` directory
- * yields an empty set.
+ * - `ownedMessageIds`: the `consumedMessageId`s of NON-terminal runs -- the
+ *   messages a live run still owns. Spawn feeds this into
+ *   `replayProcessingToInbox`'s `ownedMessageIds` so a parked run's message is
+ *   not re-admitted to inbox and dispatched a second time while the run is
+ *   recovered by re-driving its durable log. Without this, the re-drive AND the
+ *   re-triggered fresh run both re-park the same awaitSignal gate on the same
+ *   runId, and the two concurrent runtime bodies race to a corrupt terminal.
+ * - `pendingSealRunIds`: runs that are terminal but still in per-event form --
+ *   an interrupted fold left them unsealed. Spawn hands these to the recovery
+ *   sweep, which re-runs the idempotent fold. A terminal event is a *proposal*:
+ *   the authoritative decision is `compactRunEvents`, which independently
+ *   re-checks the run's max-seq event and no-ops a run that is not actually
+ *   terminal, so this scan may be loose.
+ *
+ * The working tree tracks the run-event ref (`refs/heads/main`); the
+ * claim-check ref (`refs/heads/events`) cannot see it, which is why this lives
+ * at the caller rather than inside `replayProcessingToInbox`'s single-ref
+ * delta. A run whose log is sealed (combined `events.jsonl`, only permitted for
+ * a terminated run) contributes to neither set; an absent `runs/` directory
+ * yields empty results.
  */
-export async function readOwnedMessageIds(
+export async function scanRunsForBoot(
   store: RepoStore,
   repoId: RepoId,
-): Promise<Set<string>> {
+): Promise<ScanRunsForBootResult> {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   const repoDir = store.getRepoDir(repoId);
@@ -3537,21 +3547,33 @@ export async function readOwnedMessageIds(
     runIds = await fs.readdir(runsDir);
   } catch (cause) {
     if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") {
-      return new Set();
+      return { ownedMessageIds: new Set(), pendingSealRunIds: [] };
     }
     throw cause;
   }
   const owned = new Set<string>();
+  const pendingSealRunIds: string[] = [];
   for (const runId of runIds) {
     const runDir = path.join(runsDir, runId);
     // A sealed run (combined events file) is terminal by the handler's
     // own invariant -- only a terminated run is sealed -- so it owns
-    // nothing. Its presence also means the per-event directory is absent.
+    // nothing and is already folded. Its presence also means the per-event
+    // directory is absent.
     let sealed = false;
     try {
       await fs.access(path.join(runDir, WORKFLOW_RUN_EVENTS_FILE));
       sealed = true;
-    } catch {
+    } catch (cause) {
+      // ENOENT is the normal "not sealed" case. Any other stat error leaves
+      // the run to fall through to the events-dir read below, which resolves
+      // it, so this catch is benign; warn so the anomaly is still visible.
+      if (
+        !(cause instanceof Error) ||
+        !("code" in cause) ||
+        cause.code !== "ENOENT"
+      ) {
+        logger.warn`scanRunsForBoot: stat of the sealed-log file for run ${runId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
       sealed = false;
     }
     if (sealed) continue;
@@ -3559,7 +3581,21 @@ export async function readOwnedMessageIds(
     let files: string[];
     try {
       files = await fs.readdir(eventsDir);
-    } catch {
+    } catch (cause) {
+      // ENOENT means the run has neither a sealed log nor a per-event
+      // directory (grants may be staged before the first event); skip it.
+      // A non-ENOENT error drops the run from BOTH result sets, and a live
+      // run dropped from ownedMessageIds gets its message re-admitted and
+      // dispatched a second time on the same runId -- the double-driver
+      // corruption this scan exists to prevent. Surface it, but still skip:
+      // aborting the whole boot scan over one run is worse.
+      if (
+        !(cause instanceof Error) ||
+        !("code" in cause) ||
+        cause.code !== "ENOENT"
+      ) {
+        logger.error`scanRunsForBoot: reading events for run ${runId} failed; skipping it may re-admit its message and start a second run on the same runId: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
       continue;
     }
     let terminal = false;
@@ -3571,7 +3607,19 @@ export async function readOwnedMessageIds(
         parsed = JSON.parse(
           await fs.readFile(path.join(eventsDir, file), "utf8"),
         );
-      } catch {
+      } catch (cause) {
+        // A corrupt or unreadable event file drops this run's
+        // classification: a missed RunStarted re-admits its message (a
+        // second run on the same runId), a missed terminal event skips a
+        // needed seal. Surface it, but skip the file rather than abort the
+        // scan. ENOENT here is a benign race (the file vanished mid-scan).
+        if (
+          !(cause instanceof Error) ||
+          !("code" in cause) ||
+          cause.code !== "ENOENT"
+        ) {
+          logger.error`scanRunsForBoot: reading event ${file} for run ${runId} failed; skipping it may re-admit its message and start a second run on the same runId: ${cause instanceof Error ? cause.message : String(cause)}`;
+        }
         continue;
       }
       if (
@@ -3592,10 +3640,24 @@ export async function readOwnedMessageIds(
         if (typeof mid === "string") consumedMessageId = mid;
       }
     }
-    if (terminal) continue;
+    if (terminal) {
+      pendingSealRunIds.push(runId);
+      continue;
+    }
     if (consumedMessageId !== undefined) owned.add(consumedMessageId);
   }
-  return owned;
+  return { ownedMessageIds: owned, pendingSealRunIds };
+}
+
+/**
+ * The owned-message-id half of {@link scanRunsForBoot}. Retained for callers
+ * that need only the owned set; see `scanRunsForBoot` for the semantics.
+ */
+export async function readOwnedMessageIds(
+  store: RepoStore,
+  repoId: RepoId,
+): Promise<Set<string>> {
+  return (await scanRunsForBoot(store, repoId)).ownedMessageIds;
 }
 
 export type WorkflowRunLifecycle = "absent" | "live" | "terminal";

@@ -21,6 +21,7 @@ export {
   enqueueInbox,
   markConsumed,
   parseEventSeq,
+  scanRunsForBoot,
   readOwnedMessageIds,
   readCommittedWorkflowRunLifecycle,
   readWorkflowRunLifecycle,
