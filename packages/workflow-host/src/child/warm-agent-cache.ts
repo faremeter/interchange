@@ -177,8 +177,26 @@ export function createWarmAgentCache(): WarmAgentCache {
     sources: InferenceSource[],
     defaultSource: string,
   ): void {
+    // Rotate every retained agent before surfacing any failure: one agent
+    // rejecting the rotation (an invalid source, or a closed agent racing
+    // eviction) must not skip the rest. Collect failures and throw them
+    // together. (Warm-keep is single-step today, so the cache holds 0 or 1
+    // entry; this keeps the contract honest if warm-keep ever spans steps.)
+    const failures: unknown[] = [];
     for (const entry of entries.values()) {
-      entry.agent.setSources(sources, defaultSource);
+      try {
+        entry.agent.setSources(sources, defaultSource);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`warm-agent rotation: setSources failed: ${message}`;
+        failures.push(cause);
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        `warm-agent rotation: ${String(failures.length)} agent(s) rejected the source rotation`,
+      );
     }
   }
 
@@ -186,29 +204,39 @@ export function createWarmAgentCache(): WarmAgentCache {
     if (entries.size === 0) return;
     const toEvict = [...entries.values()];
     entries.clear();
+    // Close every entry before surfacing any failure. The wrapped close
+    // (see `createToolBearingAgentFactory`) runs the agent's own close and
+    // then the plugin + tool-bundle disposers, killing the LSP subprocess,
+    // and it rejects when a disposer fails. One entry's close rejecting
+    // must not strand the remaining entries' teardown -- that would leak
+    // exactly the LSP subprocesses warm-keep risks. Collect failures and
+    // throw them together once every agent has been closed and drained.
+    // (Warm-keep is single-step today, so the cache holds 0 or 1 entry;
+    // this keeps the contract honest if warm-keep ever spans steps.)
+    const failures: unknown[] = [];
     for (const entry of toEvict) {
       // Clear the sink first so any event emitted during the agent's
       // shutdown window is dropped rather than delivered to a per-run
       // channel the run-loop is tearing down.
       entry.eventSinkRef.current = null;
       try {
-        // The wrapped close (see `createToolBearingAgentFactory`) runs
-        // the agent's own close and then the plugin + tool-bundle
-        // disposers, killing the LSP subprocess. A close failure must
-        // surface, not be swallowed -- a leaked LSP subprocess is
-        // exactly the failure warm-keep risks -- so it propagates after
-        // we have drained what we can.
         await entry.agent.close();
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         logger.error`warm-agent eviction (${reason}): agent.close failed: ${message}`;
-        throw cause instanceof Error ? cause : new Error(message);
+        failures.push(cause);
       } finally {
         // `agent.close()` terminates the stream iterator, so the
         // forwarder loop has ended (or is about to). Await it so no
         // forwarder outlives the eviction.
         await entry.eventForward;
       }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        `warm-agent eviction (${reason}): ${String(failures.length)} agent(s) failed to close; an LSP subprocess may be leaked`,
+      );
     }
   }
 
