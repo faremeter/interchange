@@ -1738,8 +1738,11 @@ export type InferenceEvent =
        *
        * `error.kind` is documented as one of
        * `"inference_error" | "tool_error" | "reactor_fatal" |
-       * "harness_aborted"` initially, extensible as new failure
-       * categories surface.
+       * "harness_aborted" | "doom_loop"` initially, extensible as new
+       * failure categories surface. `"doom_loop"` marks a protective
+       * break the reactor took on the agent's behalf when the agent
+       * repeated an identical tool batch past the configured threshold;
+       * unlike `"reactor_fatal"` it is not an internal fault.
        */
       type: "message.run.ended";
       seq: number;
