@@ -55,7 +55,7 @@ import {
   enqueueInbox as defaultEnqueueInbox,
   dequeueToProcessing as defaultDequeueToProcessing,
   markConsumed as defaultMarkConsumed,
-  readOwnedMessageIds,
+  scanRunsForBoot,
   readWorkflowRunLifecycle,
   replayProcessingToInbox as defaultReplayProcessingToInbox,
   StaleInboxEnqueueError,
@@ -100,6 +100,7 @@ import { commitCancelRequested } from "./cancel-signing";
 import { commitRunFailed } from "./terminal-commit";
 import { buildChildSpawnEnv } from "./spawn-env";
 import { compactRunEvents } from "./run-event-compaction";
+import { recoverInterruptedCompactions } from "./run-event-recovery";
 import { decodeMail } from "@intx/mime";
 import { commitMail, InvalidMailError } from "../adapters/mail-part-store";
 import {
@@ -1951,6 +1952,7 @@ export function createWorkflowSupervisor(
       terminalBroadcaster: createTerminalBroadcaster(),
       dispatchLoop: null,
       replayDone: null,
+      sweepDone: null,
     };
 
     // Everything from here to the successful `return` runs with the state
@@ -1985,11 +1987,16 @@ export function createWorkflowSupervisor(
       // first `dequeueToProcessing` so a fresh inbound mail that lands
       // during the replay window cannot ship ahead of the orphan once
       // the replay completes.
-      const replayDone = readOwnedMessageIds(
+      // One scan of `runs/` feeds both spawn-time recovery consumers: the
+      // orphan replay (which gates dispatch) and the compaction sweep (which
+      // does not). Sharing the walk keeps recovery off a second O(total-runs)
+      // scan.
+      const scanDone = scanRunsForBoot(
         bindings.repoStore,
         bindings.workflowRunRepoId,
-      )
-        .then((ownedMessageIds) =>
+      );
+      const replayDone = scanDone
+        .then(({ ownedMessageIds }) =>
           inboxPrimitives.replayProcessingToInbox(
             bindings.repoStore,
             inboxWritePrincipal,
@@ -2016,7 +2023,7 @@ export function createWorkflowSupervisor(
           // best-effort until that lands.
           const message =
             cause instanceof Error ? cause.message : String(cause);
-          logger.warn`replayProcessingToInbox on spawn failed: ${message}`;
+          logger.warn`boot recovery scan or processing replay failed on spawn: ${message}`;
         });
       // Hold the replay promise on the active-state record so
       // `shutdownInternal` awaits its settlement before tearing the
@@ -2024,6 +2031,40 @@ export function createWorkflowSupervisor(
       // flight would otherwise leave the substrate write pending past
       // the supervisor's exit.
       state.replayDone = replayDone;
+
+      // Re-seal runs a crash left terminal-but-per-event when their
+      // fire-and-forget fold never ran. Unlike the replay above, this must
+      // NOT gate dispatch: reclaiming leaked per-event files is housekeeping
+      // and cannot be allowed to delay the first dequeue. Best-effort, held
+      // on the active-state record so shutdown awaits its settlement (see the
+      // `sweepDone` field docstring for the teardown-latency tradeoff).
+      const sweepDone = scanDone
+        .then(({ pendingSealRunIds }) =>
+          recoverInterruptedCompactions({
+            substrate: bindings.repoStore,
+            repoId: bindings.workflowRunRepoId,
+            ref: bindings.workflowRunRef,
+            anchorRunId: bindings.anchorRunId,
+            pendingSealRunIds,
+          }),
+        )
+        .then(({ sealed, failed }) => {
+          if (sealed > 0) {
+            logger.info`recovery sweep sealed ${String(sealed)} interrupted run(s)`;
+          }
+          if (failed.length > 0) {
+            const detail = failed
+              .map((f) => `${f.runId} (${f.message})`)
+              .join("; ");
+            logger.warn`recovery sweep left ${String(failed.length)} run(s) unsealed: ${detail}`;
+          }
+        })
+        .catch((cause) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.warn`boot recovery scan or compaction sweep failed on spawn: ${message}`;
+        });
+      state.sweepDone = sweepDone;
 
       bindings.mailBus.registerAddress(bindings.deploymentMailAddress);
       const mailUnsubscribe = bindings.mailBus.subscribeMailForAddress(
@@ -2145,6 +2186,7 @@ export function createWorkflowSupervisor(
         terminalBroadcaster: startingPhaseBroadcaster,
         dispatchLoop,
         replayDone,
+        sweepDone,
       };
       // Bump the generation and arm the exit-watcher atomically with the
       // running transition (no await between the swap above and this call)
@@ -3155,6 +3197,23 @@ export function createWorkflowSupervisor(
              path only waits for the substrate write to settle. */
         });
       }
+      if (
+        (prior.phase === "starting" ||
+          prior.phase === "running" ||
+          prior.phase === "recycling") &&
+        prior.sweepDone !== null
+      ) {
+        // Await the spawn-time compaction sweep before teardown so an
+        // in-flight fold's substrate commit does not outlive the supervisor
+        // and interleave with the next incarnation's boot. Teardown latency
+        // is bounded by the recovery backlog (see the `sweepDone` field
+        // docstring); a normal boot has zero or one pending fold.
+        await prior.sweepDone.catch(() => {
+          /* swallowed: the sweep's own catch already surfaces failures to
+             the supervisor's warn channel; the shutdown path only waits for
+             the in-flight fold's substrate commit to settle. */
+        });
+      }
       if (recyclePolicy !== null) {
         try {
           recyclePolicy.stop();
@@ -3411,6 +3470,7 @@ export function createWorkflowSupervisor(
       terminalBroadcaster: prior.terminalBroadcaster,
       dispatchLoop: null,
       replayDone: null,
+      sweepDone: prior.sweepDone,
     };
     let attempt: RecycleAttempt;
     try {
@@ -3544,6 +3604,7 @@ export function createWorkflowSupervisor(
               terminalBroadcaster: newBroadcaster,
               dispatchLoop: newDispatchLoop,
               replayDone: null,
+              sweepDone: prior.sweepDone,
             };
             // Bump the generation and arm the exit-watcher for the
             // respawned child atomically with this running transition, so
@@ -3889,6 +3950,23 @@ type ActiveState = {
    * `installNewChild` transitions back to `running`.
    */
   replayDone: Promise<void> | null;
+  /**
+   * Settles when the spawn-time compaction recovery sweep resolves (or
+   * rejects, swallowed via the supervisor's warn log). Tracked on the
+   * active-state record so `shutdownInternal` awaits its settlement before
+   * tearing the bindings down. Unlike `replayDone`, the dispatch loop does
+   * NOT borrow this promise: re-sealing interrupted folds is housekeeping and
+   * must not gate the first dequeue. The recycle-path ActiveState carries
+   * `prior.sweepDone` forward -- the sweep runs only at spawn, never on
+   * recycle -- so the last incarnation still awaits the original sweep.
+   *
+   * Awaiting full settlement couples teardown latency to the recovery
+   * backlog: the sweep is O(pending) serial substrate commits. This is
+   * acceptable because each fold is an idempotent atomic commit, so a fold
+   * abandoned at shutdown is simply re-proposed on the next boot; a normal
+   * boot has zero or one pending run.
+   */
+  sweepDone: Promise<void> | null;
 };
 
 type SpawnContext = {
