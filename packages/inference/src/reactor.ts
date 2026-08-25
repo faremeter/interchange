@@ -135,9 +135,10 @@ export type ReactorConfig = {
    * runaway model repeating the same call burns inference cost with no
    * progress. On the Nth consecutive identical turn the reactor emits a fatal
    * `reactor.error` and shuts the run down. Must be a positive integer.
-   * Defaults to `DEFAULT_DOOM_LOOP_THRESHOLD`.
+   * Pass `false` to disable doom-loop detection entirely. Defaults to
+   * `DEFAULT_DOOM_LOOP_THRESHOLD`.
    */
-  doomLoopThreshold?: number;
+  doomLoopThreshold?: number | false;
 };
 
 export type Reactor = {
@@ -152,6 +153,29 @@ export type Reactor = {
 const DEFAULT_GATE_TIMEOUT_MS = 3_600_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 const DEFAULT_DOOM_LOOP_THRESHOLD = 3;
+
+/**
+ * Resolve the caller-facing `doomLoopThreshold` into the reactor's internal
+ * form: a positive integer when detection is active, or `null` when it is
+ * disabled. `undefined` (omitted) takes the default; `false` disables; a
+ * number is validated here — the construction edge is the one place that owns
+ * the default and rejects a malformed value loudly, so a stray `0`, negative,
+ * or non-integer throws rather than silently disarming the guard. Downstream
+ * code compares against the returned `number | null` and never sees the raw
+ * `false`, whose numeric coercion would otherwise trip the loop immediately.
+ */
+function resolveDoomLoopThreshold(
+  raw: number | false | undefined,
+): number | null {
+  if (raw === false) return null;
+  if (raw === undefined) return DEFAULT_DOOM_LOOP_THRESHOLD;
+  if (!Number.isInteger(raw) || raw < 1) {
+    throw new Error(
+      `doomLoopThreshold must be a positive integer or false, got ${String(raw)}`,
+    );
+  }
+  return raw;
+}
 
 /**
  * Order-independent identity of a batch of executed tool calls. Each call
@@ -191,7 +215,6 @@ export function createReactor(config: ReactorConfig): Reactor {
     onShutdown,
     gateTimeout = DEFAULT_GATE_TIMEOUT_MS,
     shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
-    doomLoopThreshold = DEFAULT_DOOM_LOOP_THRESHOLD,
     // Resolve the optional failover hooks once here, at the reactor's
     // construction edge. A reactor with no source list fails over to
     // nothing and resets to a no-op, so the inference loop below runs the
@@ -202,11 +225,10 @@ export function createReactor(config: ReactorConfig): Reactor {
     },
   } = config;
 
-  if (!Number.isInteger(doomLoopThreshold) || doomLoopThreshold < 1) {
-    throw new Error(
-      `doomLoopThreshold must be a positive integer, got ${String(doomLoopThreshold)}`,
-    );
-  }
+  // Resolved once at the construction edge: a positive integer while detection
+  // is active, or `null` when the caller disabled it with `false`. Every
+  // downstream comparison reads this binding, never the raw config value.
+  const doomLoopThreshold = resolveDoomLoopThreshold(config.doomLoopThreshold);
 
   // Monotonic sequence counter, scoped to this session.
   let seq = 0;
@@ -912,9 +934,10 @@ export function createReactor(config: ReactorConfig): Reactor {
     // `outcomes` in `calls` order). A parked call contributes nothing, so a
     // suspend-then-redispatch cycle counts its one real execution once. The
     // loop reads `toolBatchRepeatCount` after this returns and breaks the run
-    // when it reaches the threshold.
+    // when it reaches the threshold. A `null` threshold means detection is
+    // disabled, so the accounting is skipped entirely.
     const ranCalls = calls.filter((_call, i) => outcomes[i] !== SUSPENDED);
-    if (ranCalls.length > 0) {
+    if (doomLoopThreshold !== null && ranCalls.length > 0) {
       const signature = toolBatchSignature(ranCalls);
       if (signature === lastToolBatchSignature) {
         toolBatchRepeatCount += 1;
@@ -1473,7 +1496,10 @@ export function createReactor(config: ReactorConfig): Reactor {
         const parallel = toolsAction.parallel !== false;
         const addToHistory = toolsAction.addToHistory !== false;
         await executeTools(toolsAction.calls, parallel, addToHistory);
-        if (toolBatchRepeatCount >= doomLoopThreshold) {
+        if (
+          doomLoopThreshold !== null &&
+          toolBatchRepeatCount >= doomLoopThreshold
+        ) {
           const tools = lastToolBatchNames.join(", ");
           const message =
             `Doom loop detected: an identical tool batch (${tools}) executed ` +
