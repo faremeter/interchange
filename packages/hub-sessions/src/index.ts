@@ -156,6 +156,7 @@ export {
   dequeueToProcessing,
   readProcessingEntry,
   markConsumed,
+  classifyTerminalEvent,
   scanRunsForBoot,
   readOwnedMessageIds,
   readCommittedWorkflowRunLifecycle,

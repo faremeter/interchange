@@ -16,6 +16,7 @@
 // module. The barrel still re-exports all of these for hub-side consumers.
 
 export {
+  classifyTerminalEvent,
   DEFAULT_CONSUMED_RETENTION_MS,
   dequeueToProcessing,
   enqueueInbox,

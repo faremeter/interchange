@@ -14,6 +14,7 @@ import type {
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions/substrate";
 import {
+  classifyTerminalEvent,
   WORKFLOW_RUN_EVENTS_FILE,
   encodeCombinedEventLog,
 } from "@intx/hub-sessions/substrate";
@@ -23,11 +24,6 @@ import { SUPERVISOR_PRINCIPAL_KIND } from "./cancel-signing";
 const RUNS_PREFIX = "runs";
 const EVENTS_DIR = "events";
 const EVENT_FILENAME_RE = /^(0|[1-9][0-9]*)\.json$/;
-const TERMINAL_EVENT_TYPES = new Set<string>([
-  "RunCompleted",
-  "RunFailed",
-  "RunCancelled",
-]);
 
 export type CompactRunEventsOpts = {
   /** Substrate handle the supervisor writes through. */
@@ -100,7 +96,10 @@ export async function compactRunEvents(
     return { compacted: false };
   }
   const lastType = (parsed as { type?: unknown }).type;
-  if (typeof lastType !== "string" || !TERMINAL_EVENT_TYPES.has(lastType)) {
+  if (
+    typeof lastType !== "string" ||
+    !classifyTerminalEvent(lastType).terminal
+  ) {
     return { compacted: false };
   }
 
