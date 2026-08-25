@@ -122,6 +122,7 @@ import {
   type NdjsonReader,
   type NdjsonWriter,
 } from "../ipc/index";
+import { runBodyThenCleanup } from "../run-body-then-cleanup";
 import { createWorkflowHostSignalChannel } from "../seams/signal-channel";
 import type { CredentialsSnapshot } from "../supervisor/credentials";
 import { hashGrants } from "../supervisor/credentials";
@@ -903,7 +904,7 @@ export async function runWorkflowChild(
     },
   });
 
-  try {
+  const runControlLoop = async (): Promise<void> => {
     for await (const payload of iter) {
       if (
         await handleControlPayload(payload, {
@@ -942,7 +943,9 @@ export async function runWorkflowChild(
         break;
       }
     }
-  } finally {
+  };
+
+  const cleanupControlLoop = async (): Promise<void> => {
     // Any exit path -- clean (iterator end), dirty (thrown error),
     // shutdown (already cancelled, repeat is a no-op on an empty map)
     // -- cancels every still-pending substrate write so the runtime
@@ -970,7 +973,18 @@ export async function runWorkflowChild(
     if (warmCache !== undefined) {
       await warmCache.evictAll("workflow-child control loop exited");
     }
-  }
+  };
+
+  // Run the control loop, then always run the cleanup above. A failing
+  // eviction (the wrapped agent close rejects when a plugin/LSP disposer
+  // fails) surfaces on a clean exit, but must not mask a control-loop
+  // error already unwinding -- so it is logged, not rethrown, in that case.
+  await runBodyThenCleanup(
+    runControlLoop,
+    cleanupControlLoop,
+    (cause) =>
+      logger.error`workflow-child: warm-agent eviction failed while unwinding a control-loop error; surfacing the control-loop error, eviction failure: ${cause instanceof Error ? cause.message : String(cause)}`,
+  );
 
   return {
     resumedRunIds,

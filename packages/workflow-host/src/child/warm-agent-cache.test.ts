@@ -55,3 +55,27 @@ describe("warm-agent cache applySources", () => {
     ).not.toThrow();
   });
 });
+
+describe("warm-agent cache eviction", () => {
+  test("surfaces the AggregateError from a failing wrapped agent close", async () => {
+    // The wrapped step-agent close rejects with an AggregateError when a
+    // disposer (e.g. the LSP subprocess kill) fails. evictAll must
+    // propagate that so a leaked LSP subprocess is visible to the run-loop
+    // rather than swallowed at the cache boundary.
+    const cache = createWarmAgentCache();
+    const aggregate = new AggregateError(
+      [new Error("lsp dispose boom")],
+      "step agent close: 1 disposer(s) failed during teardown",
+    );
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: evictAll only calls close on the entry's agent
+    const agent = {
+      close() {
+        return Promise.reject(aggregate);
+      },
+    } as unknown as Agent;
+    const sinkRef: WarmEventSinkRef = { current: null };
+    cache.store("step-1", agent, sinkRef, Promise.resolve());
+
+    await expect(cache.evictAll("test eviction")).rejects.toBe(aggregate);
+  });
+});

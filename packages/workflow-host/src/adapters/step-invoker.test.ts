@@ -446,6 +446,59 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     await expect(sendPromise).rejects.toThrow(/no approval snapshot/);
   });
 
+  test("surfaces the send error, not the teardown close error, when both fail", async () => {
+    // The wrapped agent close now rejects when a plugin/LSP disposer fails.
+    // In the cold path that close runs in the adapter's teardown; a close
+    // failure must not mask a step error already unwinding from the send.
+    let closeCalls = 0;
+    const agent: Agent = {
+      send() {
+        return Promise.reject(new Error("send boom"));
+      },
+      stream() {
+        throw new Error("stub stream() not used");
+      },
+      deliver() {
+        throw new Error("stub deliver() not used");
+      },
+      close() {
+        closeCalls += 1;
+        return Promise.reject(new Error("close boom"));
+      },
+      setSource() {
+        throw new Error("stub setSource() not used");
+      },
+      setSources() {
+        throw new Error("stub setSources() not used");
+      },
+      history() {
+        return Promise.resolve([]);
+      },
+      checkpoints() {
+        return Promise.resolve([]);
+      },
+      readAt() {
+        return Promise.resolve([]);
+      },
+      blobReader: stubBlobReader(),
+    };
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+
+    await expect(
+      invoker(buildRequest({ input: { goal: "ping" } })),
+    ).rejects.toThrow(/send boom/);
+    // The teardown close still ran; its failure was logged, not surfaced.
+    expect(closeCalls).toBe(1);
+  });
+
   test("passes a string input through verbatim instead of double-JSON-encoding", async () => {
     const stub = buildStubAgent();
     const invoker = createWorkflowStepInvoker({
