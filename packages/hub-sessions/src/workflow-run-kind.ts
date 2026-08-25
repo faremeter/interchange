@@ -510,7 +510,7 @@ export type WatermarkEnvelope = typeof WatermarkEnvelope.infer;
  * stay in sync with the canonical runtime definition:
  * if the runtime adds or removes a terminal run phase, update this map too.
  * Drift silently reopens the restore-time double-driver collision that
- * `readOwnedMessageIds` (below) exists to prevent.
+ * `scanRunsForBoot` (below) exists to prevent.
  */
 type TerminalRunStatus = "completed" | "failed" | "cancelled";
 
@@ -3647,17 +3647,6 @@ export async function scanRunsForBoot(
     if (consumedMessageId !== undefined) owned.add(consumedMessageId);
   }
   return { ownedMessageIds: owned, pendingSealRunIds };
-}
-
-/**
- * The owned-message-id half of {@link scanRunsForBoot}. Retained for callers
- * that need only the owned set; see `scanRunsForBoot` for the semantics.
- */
-export async function readOwnedMessageIds(
-  store: RepoStore,
-  repoId: RepoId,
-): Promise<Set<string>> {
-  return (await scanRunsForBoot(store, repoId)).ownedMessageIds;
 }
 
 export type WorkflowRunLifecycle = "absent" | "live" | "terminal";

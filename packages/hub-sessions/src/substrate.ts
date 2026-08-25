@@ -23,7 +23,6 @@ export {
   markConsumed,
   parseEventSeq,
   scanRunsForBoot,
-  readOwnedMessageIds,
   readCommittedWorkflowRunLifecycle,
   readWorkflowRunLifecycle,
   readProcessingEntry,

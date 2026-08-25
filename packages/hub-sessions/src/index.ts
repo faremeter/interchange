@@ -158,7 +158,6 @@ export {
   markConsumed,
   classifyTerminalEvent,
   scanRunsForBoot,
-  readOwnedMessageIds,
   readCommittedWorkflowRunLifecycle,
   readWorkflowRunLifecycle,
   replayProcessingToInbox,

@@ -15,7 +15,6 @@ import {
   markConsumed,
   parseEventSeq,
   readCommittedWorkflowRunLifecycle,
-  readOwnedMessageIds,
   scanRunsForBoot,
   readWorkflowRunLifecycle,
   replayProcessingToInbox,
@@ -2505,7 +2504,7 @@ describe("claim-check substrate FIFO invariant", () => {
 
 // A `processing/` entry whose run is still live (non-terminal durable
 // log) is owned by the recovery re-drive of that run after a crash.
-// `readOwnedMessageIds` finds those runs' messageIds so the spawn-time
+// `scanRunsForBoot` finds those runs' messageIds so the spawn-time
 // replay leaves them in `processing/` rather than re-admitting them to
 // `inbox/` and dispatching a colliding second run on the same runId. The
 // run logs live on the run-event ref (`refs/heads/main`); the claim-check
@@ -2532,7 +2531,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     });
   }
 
-  test("readOwnedMessageIds returns non-terminal run messageIds and excludes terminal ones", async () => {
+  test("scanRunsForBoot returns non-terminal run messageIds and excludes terminal ones", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore("cc-owned-");
     // A mail-triggered run's runId is its messageId. `live` is parked
     // (RunStarted only); `done` reached RunCompleted.
@@ -2546,7 +2545,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       },
       message: "seed one live and one terminal run",
     });
-    const owned = await readOwnedMessageIds(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
     expect(owned.has("live")).toBe(true);
     expect(owned.has("done")).toBe(false);
   });
@@ -2685,7 +2684,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       },
       message: "seed a run with a pending cancel but no finalizer",
     });
-    const owned = await readOwnedMessageIds(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
     expect(owned.has("cancelling")).toBe(true);
   });
 
@@ -2694,7 +2693,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       await makeClaimCheckStore("cc-owned-no-msgid-");
     // A child run (e.g. a spawned sub-run) starts without a
     // consumedMessageId: it was not triggered by an inbound claim-check
-    // message. readOwnedMessageIds only adds when consumedMessageId is a
+    // message. scanRunsForBoot only adds when consumedMessageId is a
     // string, so this live run contributes no messageId to suppress.
     await store.writeTree(principal, repoId, "refs/heads/main", {
       files: {
@@ -2709,7 +2708,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       },
       message: "seed a live child run with no consumedMessageId",
     });
-    const owned = await readOwnedMessageIds(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
     expect(owned.size).toBe(0);
   });
 
@@ -2719,7 +2718,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     // A terminated run is sealed: its per-event `events/<seq>.json` blobs
     // are folded into one combined `events.jsonl` file. Only a terminated
     // run may be sealed, so a sealed run owns nothing even though its
-    // RunStarted still carries a consumedMessageId. readOwnedMessageIds
+    // RunStarted still carries a consumedMessageId. scanRunsForBoot
     // detects the sealed run by the combined file's presence and skips it
     // without reading the (absent) per-event directory.
     const sealed =
@@ -2730,7 +2729,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       },
       message: "seed a sealed (terminated, compacted) run",
     });
-    const owned = await readOwnedMessageIds(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
     expect(owned.has("sealed")).toBe(false);
     expect(owned.size).toBe(0);
   });
@@ -2739,9 +2738,9 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     const { store, repoId } = await makeClaimCheckStore("cc-owned-no-runs-");
     // A freshly-initialised repo has only a `.gitignore` genesis tree and
     // no `runs/` directory. readdir on the missing directory surfaces
-    // ENOENT, which readOwnedMessageIds treats as an empty owned set
+    // ENOENT, which scanRunsForBoot treats as an empty owned set
     // rather than throwing.
-    const owned = await readOwnedMessageIds(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
     expect(owned.size).toBe(0);
   });
 
@@ -2774,7 +2773,7 @@ describe("claim-check API — resume-owned processing entries survive replay", (
       message: "seed the live run for the owned entry",
     });
 
-    const owned = await readOwnedMessageIds(store, repoId);
+    const { ownedMessageIds: owned } = await scanRunsForBoot(store, repoId);
     expect(owned).toEqual(new Set(["live"]));
 
     const replay = await replayProcessingToInbox(
