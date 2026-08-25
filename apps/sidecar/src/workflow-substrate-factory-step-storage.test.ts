@@ -28,9 +28,12 @@ import type {
   AuditStore,
   ContextStore,
   InferenceSource,
+  PendingOperation,
+  ToolCall,
 } from "@intx/types/runtime";
 import type { RepoId } from "@intx/hub-sessions";
 import { createBuiltinRegistry } from "@intx/inference/providers";
+import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
   ChildOutboundMailBridge,
   SourcesSnapshotRef,
@@ -40,6 +43,7 @@ import { scopedStepId, type StepInvokeRequest } from "@intx/workflow";
 
 import {
   createSidecarStepBuildEnv,
+  stepStorageRoot,
   type SidecarStepBuildEnvDeps,
 } from "./workflow-substrate-factory";
 import type { DurableConversationRegistry } from "./conversation-state";
@@ -282,5 +286,121 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     expect(env.defaultSource).toBe(SOURCE.id);
     // Per-iteration scratch stays keyed by the scoped id, not the base.
     expect(env.workdir).toContain(path.join("steps", scopedId));
+  });
+});
+
+// A re-dispatchable ask-rail approval gate always carries a `suspendedCall`
+// (the call to re-run on approval). An async-tool pending marker uses the
+// same `kind: "approval"` but never sets `suspendedCall`, and on resume the
+// reactor clears its gate WITHOUT re-dispatching. The cold-path resume
+// keying assertion must therefore find a `suspendedCall`-bearing op for the
+// resumed correlationId, mirroring the reactor's own discriminator.
+const SUSPENDED_CALL: ToolCall = {
+  id: "call-1",
+  name: "charge_card",
+  arguments: { amount: 100 },
+};
+
+function approvalOp(
+  correlationId: string,
+  opts: { suspendedCall?: ToolCall } = {},
+): PendingOperation {
+  return {
+    correlationId,
+    kind: "approval",
+    registeredAt: 0,
+    gateId: `gate-${correlationId}`,
+    ...(opts.suspendedCall !== undefined
+      ? { suspendedCall: opts.suspendedCall }
+      : {}),
+  };
+}
+
+async function seedColdStore(
+  dataDir: string,
+  runId: string,
+  pendingOperations: PendingOperation[],
+): Promise<void> {
+  const store = await createIsogitStore(
+    stepStorageRoot({
+      dataDir,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId,
+      stepId: STEP_ID,
+      attempt: 1,
+    }),
+    (payload: string) => Promise.resolve(`sig:${payload.length}`),
+  );
+  await store.writeMetadata({
+    pendingOperations,
+    tokenUsage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      thinking: 0,
+    },
+  });
+}
+
+function approvalResumeRequest(
+  runId: string,
+  correlationId: string,
+): StepInvokeRequest {
+  return {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv reads only authzContext and resume; the agent definition is never consulted here
+    agent: {} as StepInvokeRequest["agent"],
+    input: null,
+    authzContext: { stepId: STEP_ID, runId, attempt: 1 },
+    resume: {
+      correlationId,
+      decision: { outcome: "approved" },
+      kind: "approval",
+    },
+    signal: new AbortController().signal,
+  };
+}
+
+describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
+  test("rejects a resume whose matching pending op carries no suspendedCall", async () => {
+    const dataDir = await makeTempDir();
+    // A pending op that matches the correlationId but is not a
+    // re-dispatchable gate (no suspendedCall) -- an async-tool marker, not
+    // the ask-rail approval the resume must find.
+    await seedColdStore(dataDir, "run-1", [approvalOp("corr-1")]);
+    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+
+    await expect(
+      buildEnv(approvalResumeRequest("run-1", "corr-1"), sourcesRefFor()),
+    ).rejects.toThrow(/keying violation/);
+  });
+
+  test("accepts a resume that finds a suspendedCall-bearing approval gate", async () => {
+    const dataDir = await makeTempDir();
+    await seedColdStore(dataDir, "run-1", [
+      approvalOp("corr-1", { suspendedCall: SUSPENDED_CALL }),
+    ]);
+    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+
+    const env: StepEnvBase = await buildEnv(
+      approvalResumeRequest("run-1", "corr-1"),
+      sourcesRefFor(),
+    );
+
+    expect(env.workdir).toContain(path.join("runs", "run-1"));
+  });
+
+  test("rejects a resume whose correlationId has no pending op at all", async () => {
+    const dataDir = await makeTempDir();
+    // A real gate exists, but for a different correlationId: the resumed
+    // correlationId finds nothing -- the wrong-attempt forever-hang guard.
+    await seedColdStore(dataDir, "run-1", [
+      approvalOp("other", { suspendedCall: SUSPENDED_CALL }),
+    ]);
+    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+
+    await expect(
+      buildEnv(approvalResumeRequest("run-1", "corr-1"), sourcesRefFor()),
+    ).rejects.toThrow(/keying violation/);
   });
 });

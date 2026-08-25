@@ -921,15 +921,21 @@ export function createSidecarStepBuildEnv(
     // the resume-attempt invariant documented on `stepStorageRoot`). An
     // APPROVAL resume re-invocation delivers the correlated decision to the
     // reactor, which rehydrates its gate from THIS store's pending
-    // operations. The store the runtime reopened is keyed by `attempt`
-    // (`stepStorageRoot` above); if that attempt does not match the attempt
-    // the step suspended on, the store carries no pending-op for the resumed
-    // correlationId, the reactor comes up gateless, and the delivered
-    // decision correlates against nothing -- a silent forever-hang. Make that
-    // keying violation loud here, at the single seam that both opened the
-    // store AND knows an approval resume must find its gate, rather than
-    // letting it surface as a hang. The warm path keys its durable store per
-    // agent (not per attempt) and rehydrates from a different lifecycle, so
+    // operations. A re-dispatchable ask-rail approval gate carries a
+    // `suspendedCall` (the call the approval re-runs); an async-tool pending
+    // marker shares `kind: "approval"` but has no `suspendedCall`, and on
+    // resume the reactor clears its gate WITHOUT re-running the approved
+    // call. So the resume must find a `suspendedCall`-bearing op for its
+    // correlationId, mirroring the reactor's own discriminator. Two failure
+    // modes make that false: the runtime reopened the wrong `attempt`'s
+    // store (`stepStorageRoot` above), so no pending op matches at all and
+    // the reactor comes up gateless -- a silent forever-hang; or the only
+    // match is an async marker, so the gate clears and the approved call is
+    // silently skipped. Make either loud here, at the single seam that both
+    // opened the store AND knows an approval resume must find its gate,
+    // rather than letting it surface as a hang or a skipped call. The
+    // warm path keys its durable store per agent (not per attempt) and
+    // rehydrates from a different lifecycle, so
     // this assertion is cold-path only. An `"input"` resume is exempt by
     // construction: its correlationId names the runtime-minted re-arm channel
     // awaiting the step's next trigger, not a reactor gate, so no pending
@@ -942,12 +948,14 @@ export function createSidecarStepBuildEnv(
     ) {
       const resumeCorrelationId = req.resume.correlationId;
       const loaded = await storage.load();
-      const hasPendingOp = loaded.pendingOperations.some(
-        (op) => op.correlationId === resumeCorrelationId,
+      const hasPendingGate = loaded.pendingOperations.some(
+        (op) =>
+          op.correlationId === resumeCorrelationId &&
+          op.suspendedCall !== undefined,
       );
-      if (!hasPendingOp) {
+      if (!hasPendingGate) {
         throw new Error(
-          `sidecar workflow-child step invoker buildEnv: resume of step ${JSON.stringify(stepId)} (run ${JSON.stringify(runId)}, attempt ${String(attempt)}) reopened a ContextStore with no pending operation for correlationId ${JSON.stringify(resumeCorrelationId)}. The cold-path store is keyed by attempt (${storeDir}); a resume that finds no gate here means it reopened the wrong attempt's store -- the reactor would rehydrate no gate and the delivered decision would correlate against nothing. This is a keying violation, not a recoverable state.`,
+          `sidecar workflow-child step invoker buildEnv: resume of step ${JSON.stringify(stepId)} (run ${JSON.stringify(runId)}, attempt ${String(attempt)}) reopened a ContextStore with no re-dispatchable approval gate for correlationId ${JSON.stringify(resumeCorrelationId)}. The cold-path store is keyed by attempt (${storeDir}); a resume that finds no suspendedCall-bearing pending operation here means it reopened the wrong attempt's store (the reactor would come up gateless and the decision would correlate against nothing) or matched only an async pending marker (the reactor would clear the gate without re-running the approved call). This is a keying violation, not a recoverable state.`,
         );
       }
     }
