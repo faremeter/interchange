@@ -12,4 +12,4 @@
 // orchestrator graph, so this entry exposes them without it.
 
 export { readDeployTree, type DeployTree } from "./deploy-tree";
-export { sanitizeAddress } from "./agent-paths";
+export { agentDir } from "./agent-paths";
