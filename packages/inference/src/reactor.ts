@@ -42,6 +42,7 @@ import type {
 
 import { getLogger } from "@intx/log";
 import { ApprovalDecision, signalKindToGateType } from "@intx/types";
+import { canonicalJsonStringify } from "@intx/types/wire-definition-hash";
 import { type } from "arktype";
 import { runInference } from "./harness";
 import type { Dependencies, InferenceHarnessOptions } from "./harness";
@@ -128,6 +129,15 @@ export type ReactorConfig = {
   onShutdown?: () => Promise<void>;
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
+  /**
+   * Number of consecutive identical tool-call turns that trips doom-loop
+   * detection. A turn's identity is its batch of executed tool calls; a
+   * runaway model repeating the same call burns inference cost with no
+   * progress. On the Nth consecutive identical turn the reactor emits a fatal
+   * `reactor.error` and shuts the run down. Must be a positive integer.
+   * Defaults to `DEFAULT_DOOM_LOOP_THRESHOLD`.
+   */
+  doomLoopThreshold?: number;
 };
 
 export type Reactor = {
@@ -141,6 +151,23 @@ export type Reactor = {
 
 const DEFAULT_GATE_TIMEOUT_MS = 3_600_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
+const DEFAULT_DOOM_LOOP_THRESHOLD = 3;
+
+/**
+ * Order-independent identity of a batch of executed tool calls. Each call
+ * canonicalizes to its name and arguments (the call `id` is excluded, since it
+ * differs on every request); sorting makes a parallel batch match regardless
+ * of the order the model emitted its calls. Two turns share a signature when
+ * they run the same multiset of `(name, arguments)` pairs.
+ */
+function toolBatchSignature(calls: ToolCall[]): string {
+  return calls
+    .map((call) =>
+      canonicalJsonStringify({ name: call.name, arguments: call.arguments }),
+    )
+    .sort()
+    .join("\n");
+}
 
 /**
  * Creates a reactor instance bound to the given configuration.
@@ -164,6 +191,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     onShutdown,
     gateTimeout = DEFAULT_GATE_TIMEOUT_MS,
     shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
+    doomLoopThreshold = DEFAULT_DOOM_LOOP_THRESHOLD,
     // Resolve the optional failover hooks once here, at the reactor's
     // construction edge. A reactor with no source list fails over to
     // nothing and resets to a no-op, so the inference loop below runs the
@@ -173,6 +201,12 @@ export function createReactor(config: ReactorConfig): Reactor {
       /* single-source: nothing to reset */
     },
   } = config;
+
+  if (!Number.isInteger(doomLoopThreshold) || doomLoopThreshold < 1) {
+    throw new Error(
+      `doomLoopThreshold must be a positive integer, got ${String(doomLoopThreshold)}`,
+    );
+  }
 
   // Monotonic sequence counter, scoped to this session.
   let seq = 0;
@@ -281,9 +315,23 @@ export function createReactor(config: ReactorConfig): Reactor {
   let currentMessageRunId: string | null = null;
   let currentMessageId: string | null = null;
 
+  // Doom-loop detection state, scoped to the current message run. Each executed
+  // tool-call turn is reduced to a batch signature; consecutive identical
+  // signatures accumulate here, and the run is broken when the count reaches
+  // `doomLoopThreshold`. This is run-scoped, not cycle-scoped: it resets only in
+  // `openMessageRun`, never in `resetCycleAccumulators`. It is also deliberately
+  // ephemeral (closure state, not persisted) -- a mid-run restart resets it to
+  // zero and the loop simply re-accumulates and trips a few turns later.
+  let lastToolBatchSignature: string | null = null;
+  let toolBatchRepeatCount = 0;
+  let lastToolBatchNames: string[] = [];
+
   function openMessageRun(messageId: string): void {
     currentMessageRunId = crypto.randomUUID();
     currentMessageId = messageId;
+    lastToolBatchSignature = null;
+    toolBatchRepeatCount = 0;
+    lastToolBatchNames = [];
     emit({
       type: "message.run.started",
       seq: nextSeq(),
@@ -859,6 +907,24 @@ export function createReactor(config: ReactorConfig): Reactor {
     // result to history and no tool.done continuation event.
     const results = outcomes.filter((o): o is ToolResult => o !== SUSPENDED);
 
+    // Doom-loop accounting keys off the calls that actually ran, aligned to
+    // their outcome by index (both the parallel and serial paths above keep
+    // `outcomes` in `calls` order). A parked call contributes nothing, so a
+    // suspend-then-redispatch cycle counts its one real execution once. The
+    // loop reads `toolBatchRepeatCount` after this returns and breaks the run
+    // when it reaches the threshold.
+    const ranCalls = calls.filter((_call, i) => outcomes[i] !== SUSPENDED);
+    if (ranCalls.length > 0) {
+      const signature = toolBatchSignature(ranCalls);
+      if (signature === lastToolBatchSignature) {
+        toolBatchRepeatCount += 1;
+      } else {
+        lastToolBatchSignature = signature;
+        toolBatchRepeatCount = 1;
+      }
+      lastToolBatchNames = ranCalls.map((call) => call.name);
+    }
+
     cycleToolCallsExecuted += results.length;
 
     if (addToHistory && stateManager !== null && results.length > 0) {
@@ -1407,6 +1473,17 @@ export function createReactor(config: ReactorConfig): Reactor {
         const parallel = toolsAction.parallel !== false;
         const addToHistory = toolsAction.addToHistory !== false;
         await executeTools(toolsAction.calls, parallel, addToHistory);
+        if (toolBatchRepeatCount >= doomLoopThreshold) {
+          const tools = lastToolBatchNames.join(", ");
+          const message =
+            `Doom loop detected: an identical tool batch (${tools}) executed ` +
+            `${String(doomLoopThreshold)} times consecutively`;
+          emitError(message, true);
+          closeMessageRun("failed", { message, kind: "doom_loop" });
+          done = true;
+          await initiateShutdown();
+          break;
+        }
         continue;
       }
 

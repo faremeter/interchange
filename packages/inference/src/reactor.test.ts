@@ -17,6 +17,7 @@ import type {
   ReactorState,
   ReactorCapabilities,
   ContextStore,
+  ToolCall,
   ToolRunner,
   InferenceEvent,
   InboundMessage,
@@ -250,6 +251,7 @@ type TestReactorOverrides = {
   sessionId?: string;
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
+  doomLoopThreshold?: number;
   // Wire-level tests (see tests/inference/reactor-streaming.test.ts) supply
   // their own `Dependencies` (fetch stubbed by the harness) and may target a
   // non-Anthropic provider. Both override hooks are optional; omit them for
@@ -314,6 +316,9 @@ function createTestReactor(
       : {}),
     ...(overrides.gateTimeout !== undefined
       ? { gateTimeout: overrides.gateTimeout }
+      : {}),
+    ...(overrides.doomLoopThreshold !== undefined
+      ? { doomLoopThreshold: overrides.doomLoopThreshold }
       : {}),
     ...(overrides.compactors !== undefined
       ? { compactors: overrides.compactors }
@@ -1252,6 +1257,514 @@ describe("createReactor — tool execution", () => {
     const toolDones = events.filter((e) => e.type === "tool.done");
     expect(toolStarts.length).toBe(2);
     expect(toolDones.length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7b. Doom-loop detection
+// ---------------------------------------------------------------------------
+
+// Drives one tool batch per turn. `nextBatch(turn)` supplies the batch to run
+// on each turn; returning null (or an empty batch) ends the run with `done`.
+// The director re-issues the next batch only once the current batch's results
+// are all in, mirroring the real director's pending-result accounting so a
+// parallel batch does not fan out into one re-issue per result.
+function createBatchLoopDirector(
+  nextBatch: (turn: number) => ToolCall[] | null,
+): ReactorDirector {
+  let turn = 0;
+  let pending = 0;
+
+  function issue(caps: ReactorCapabilities): ReactorAction | ReactorAction[] {
+    const batch = nextBatch(turn);
+    turn += 1;
+    if (batch === null || batch.length === 0) return caps.done();
+    pending = batch.length;
+    return caps.executeTools(batch, true);
+  }
+
+  return {
+    async decide(event, _state, caps) {
+      if (event.type === "message.received") return issue(caps);
+      if (event.type === "tool.done") {
+        pending -= 1;
+        if (pending > 0) return [];
+        return issue(caps);
+      }
+      return [];
+    },
+  };
+}
+
+// Drives the production-shaped agentic loop: each inference emits an assistant
+// turn carrying one tool_call, the director executes exactly that call, and the
+// tool result feeds the next inference. `argsFor(turn)` controls the arguments;
+// the loop ends after `maxTurns` inferences by issuing `done`. Unlike
+// `createBatchLoopDirector`, this interleaves an inference turn between tool
+// turns, matching the real reactor shape.
+function interleavedRunner(
+  argsFor: (turn: number) => Record<string, unknown>,
+  maxTurns: number,
+): {
+  inferenceRunner: (
+    opts: InferenceHarnessOptions,
+  ) => AsyncGenerator<InferenceEvent>;
+  director: ReactorDirector;
+} {
+  let turn = 0;
+  const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+    const t = turn;
+    yield {
+      type: "inference.done" as const,
+      seq: opts.nextSeq(),
+      data: {
+        turn: {
+          role: "assistant" as const,
+          content: [
+            {
+              type: "tool_call" as const,
+              id: `c${t}`,
+              name: "spin",
+              arguments: argsFor(t),
+            },
+          ],
+          model: "test-model",
+          timestamp: 1000,
+        },
+        usage: emptyUsage(),
+        source: TEST_SOURCE,
+      },
+    };
+  };
+  const director = directorFromTable(
+    {
+      "message.received": (_e, _s, caps) => caps.infer(),
+      "inference.done": (_e, _s, caps) => {
+        const t = turn;
+        turn += 1;
+        if (t >= maxTurns) return caps.done();
+        return caps.executeTools([
+          { id: `c${t}`, name: "spin", arguments: argsFor(t) },
+        ]);
+      },
+      "tool.done": (_e, _s, caps) => caps.infer(),
+    },
+    "wait",
+  );
+  return { inferenceRunner, director };
+}
+
+describe("createReactor — doom-loop detection", () => {
+  test("trips at the threshold on identical consecutive tool turns", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      // Default threshold is 3; loop the same call well past it.
+      director: createBatchLoopDirector((turn) =>
+        turn < 8
+          ? [{ id: `c${turn}`, name: "spin", arguments: { q: 1 } }]
+          : null,
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const error = getEvent(events, "reactor.error");
+    expect(error.data.fatal).toBe(true);
+    expect(error.data.error).toContain("spin");
+
+    const ended = getEvent(events, "message.run.ended");
+    expect(ended.data.status).toBe("failed");
+    expect(ended.data.error?.kind).toBe("doom_loop");
+
+    // The run broke before running the whole 8-turn loop.
+    const toolStarts = events.filter((e) => e.type === "tool.start");
+    expect(toolStarts.length).toBe(3);
+  });
+
+  test("does not trip on retries with different arguments", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: createBatchLoopDirector((turn) =>
+        turn < 5
+          ? [{ id: `c${turn}`, name: "retry", arguments: { attempt: turn } }]
+          : null,
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(events.some((e) => e.type === "reactor.error")).toBe(false);
+    expect(getEvent(events, "message.run.ended").data.status).toBe("completed");
+  });
+
+  test("treats key-reordered arguments as identical", async () => {
+    // Same logical arguments, keys emitted in different orders. Canonical
+    // serialization must collapse them to one signature, so three such turns
+    // trip the default threshold of 3.
+    const variants = [
+      { a: 1, b: 2 },
+      { b: 2, a: 1 },
+      { a: 1, b: 2 },
+    ];
+    const { reactor, events, waitFor } = createTestReactor({
+      director: createBatchLoopDirector((turn) => {
+        const args = variants[turn];
+        return args === undefined
+          ? null
+          : [{ id: `c${turn}`, name: "charge", arguments: args }];
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(getEvent(events, "reactor.error").data.fatal).toBe(true);
+    expect(getEvent(events, "message.run.ended").data.error?.kind).toBe(
+      "doom_loop",
+    );
+  });
+
+  test("trips when an identical call errors every turn", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: createBatchLoopDirector((turn) =>
+        turn < 8 ? [{ id: `c${turn}`, name: "flaky", arguments: {} }] : null,
+      ),
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "boom",
+        isError: true,
+      })),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(getEvent(events, "reactor.error").data.fatal).toBe(true);
+    expect(getEvent(events, "message.run.ended").data.error?.kind).toBe(
+      "doom_loop",
+    );
+  });
+
+  test("trips when an identical call succeeds every turn", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      director: createBatchLoopDirector((turn) =>
+        turn < 8 ? [{ id: `c${turn}`, name: "reread", arguments: {} }] : null,
+      ),
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "same file contents",
+      })),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(getEvent(events, "reactor.error").data.fatal).toBe(true);
+    expect(getEvent(events, "message.run.ended").data.error?.kind).toBe(
+      "doom_loop",
+    );
+  });
+
+  test("a suspend and redispatch of one call does not double-count", async () => {
+    // A parked call is approved and re-dispatched: one real execution. With a
+    // threshold of 2, an implementation that counted the suspended request plus
+    // its redispatch would trip here; counting only executed turns must not.
+    const askExtension = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs: 60_000,
+    });
+    const toolsRun: string[] = [];
+
+    const { reactor, events, waitFor } = createTestReactor({
+      doomLoopThreshold: 2,
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (_e, _s, caps) =>
+            caps.executeTools([
+              { id: "call-ask", name: "charge_card", arguments: {} },
+            ]),
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools(e.calls, false, true),
+          "tool.done": (_e, _s, caps) => caps.done(),
+        },
+        "wait",
+      ),
+      inferenceRunner: makeInferenceRunner({
+        type: "done",
+        turn: suspendToolCallTurn,
+        usage: emptyUsage(),
+      }),
+      toolRunner: makeToolRunner(async (call) => {
+        toolsRun.push(call.name);
+        return { callId: call.id, content: "charged" };
+      }),
+      beforeToolExtensions: [askExtension],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    reactor.deliver(makeApprovalMessage(correlationId));
+    await waitFor("reactor.done");
+
+    expect(toolsRun).toEqual(["charge_card"]);
+    expect(events.some((e) => e.type === "reactor.error")).toBe(false);
+  });
+
+  test("trips on a repeated parallel fan-out batch", async () => {
+    const batch: ToolCall[] = [
+      { id: "a", name: "read", arguments: { path: "a" } },
+      { id: "b", name: "read", arguments: { path: "b" } },
+      { id: "c", name: "read", arguments: { path: "c" } },
+    ];
+    const { reactor, events, waitFor } = createTestReactor({
+      director: createBatchLoopDirector((turn) =>
+        turn < 8
+          ? batch.map((call, i) => ({ ...call, id: `${call.id}-${turn}-${i}` }))
+          : null,
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const error = getEvent(events, "reactor.error");
+    expect(error.data.fatal).toBe(true);
+    // The message reports every call in the batch, not a deduplicated name, so
+    // a three-call fan-out is not collapsed to one.
+    expect(error.data.error).toContain("read, read, read");
+    expect(getEvent(events, "message.run.ended").data.error?.kind).toBe(
+      "doom_loop",
+    );
+  });
+
+  test("does not trip on identical calls within a single batch", async () => {
+    // Three identical calls in one turn are one batch occurrence, not three
+    // consecutive turns.
+    const { reactor, events, waitFor } = createTestReactor({
+      director: createBatchLoopDirector((turn) =>
+        turn === 0
+          ? [
+              { id: "x1", name: "dup", arguments: {} },
+              { id: "x2", name: "dup", arguments: {} },
+              { id: "x3", name: "dup", arguments: {} },
+            ]
+          : null,
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(events.some((e) => e.type === "reactor.error")).toBe(false);
+    expect(getEvent(events, "message.run.ended").data.status).toBe("completed");
+  });
+
+  test("a different batch between identical ones resets the counter", async () => {
+    const batches: ToolCall[][] = [
+      [{ id: "1", name: "spin", arguments: {} }],
+      [{ id: "2", name: "spin", arguments: {} }],
+      [{ id: "3", name: "other", arguments: {} }],
+      [{ id: "4", name: "spin", arguments: {} }],
+      [{ id: "5", name: "spin", arguments: {} }],
+    ];
+    const { reactor, events, waitFor } = createTestReactor({
+      director: createBatchLoopDirector((turn) => batches[turn] ?? null),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(events.some((e) => e.type === "reactor.error")).toBe(false);
+    expect(getEvent(events, "message.run.ended").data.status).toBe("completed");
+  });
+
+  test("rejects a non-positive or non-integer threshold at construction", () => {
+    expect(() => createTestReactor({ doomLoopThreshold: 0 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => createTestReactor({ doomLoopThreshold: -1 })).toThrow(
+      /positive integer/,
+    );
+    expect(() => createTestReactor({ doomLoopThreshold: 2.5 })).toThrow(
+      /positive integer/,
+    );
+  });
+
+  test("a threshold of 1 trips on the first executed tool turn", async () => {
+    const { reactor, events, waitFor } = createTestReactor({
+      doomLoopThreshold: 1,
+      director: createBatchLoopDirector((turn) =>
+        turn < 4 ? [{ id: `c${turn}`, name: "once", arguments: {} }] : null,
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(getEvent(events, "reactor.error").data.fatal).toBe(true);
+    expect(getEvent(events, "message.run.ended").data.error?.kind).toBe(
+      "doom_loop",
+    );
+    // Tripped on the very first turn: exactly one tool ran.
+    expect(events.filter((e) => e.type === "tool.start").length).toBe(1);
+  });
+
+  test("trips across inference-interleaved identical tool turns", async () => {
+    // The real reactor runs an inference between every tool turn. Detection
+    // must accumulate across those inference turns, not only across the
+    // back-to-back batches the other tests drive.
+    const { inferenceRunner, director } = interleavedRunner(
+      () => ({ q: 1 }),
+      8,
+    );
+    const { reactor, events, waitFor } = createTestReactor({
+      inferenceRunner,
+      director,
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(getEvent(events, "reactor.error").data.fatal).toBe(true);
+    expect(getEvent(events, "message.run.ended").data.error?.kind).toBe(
+      "doom_loop",
+    );
+    expect(events.filter((e) => e.type === "tool.start").length).toBe(3);
+  });
+
+  test("does not trip on inference-interleaved differing arguments", async () => {
+    const { inferenceRunner, director } = interleavedRunner(
+      (t) => ({ q: t }),
+      5,
+    );
+    const { reactor, events, waitFor } = createTestReactor({
+      inferenceRunner,
+      director,
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(events.some((e) => e.type === "reactor.error")).toBe(false);
+    expect(getEvent(events, "message.run.ended").data.status).toBe("completed");
+  });
+
+  test("accumulates across suspend, approval, and redispatch cycles", async () => {
+    // Each identical batch suspends for approval; approval re-dispatches the
+    // one parked call, and the reactor commits the cycle at every suspend. The
+    // run-scoped counter must survive that commit -- if it were reset there
+    // (e.g. added to resetCycleAccumulators), an approval-gated doom loop would
+    // never trip. Threshold 2, so the second redispatch trips.
+    let inferCount = 0;
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      const id = `spin-${inferCount}`;
+      inferCount += 1;
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn: {
+            role: "assistant" as const,
+            content: [
+              { type: "tool_call" as const, id, name: "spin", arguments: {} },
+            ],
+            model: "test-model",
+            timestamp: 1000,
+          },
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+
+    const askExtension = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs: 60_000,
+    });
+
+    const { reactor, events, waitFor } = createTestReactor({
+      doomLoopThreshold: 2,
+      inferenceRunner,
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (e, _s, caps) => {
+            const block = e.turn.content.find((b) => b.type === "tool_call");
+            if (block === undefined || block.type !== "tool_call") {
+              return caps.done();
+            }
+            return caps.executeTools([
+              { id: block.id, name: block.name, arguments: block.arguments },
+            ]);
+          },
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools(e.calls, false, true),
+          "tool.done": (_e, _s, caps) => caps.infer(),
+        },
+        "wait",
+      ),
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "spun",
+      })),
+      beforeToolExtensions: [askExtension],
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+
+    // Approve each suspension as it arrives until the loop trips (or give up
+    // after a bounded number so a regression that never trips fails fast).
+    const approved = new Set<string>();
+    for (let i = 0; i < 6; i++) {
+      const ev = await waitForEvent(
+        events,
+        (e) =>
+          e.type === "reactor.done" ||
+          (e.type === "reactor.gate.blocked" &&
+            e.data.correlationId !== undefined &&
+            !approved.has(e.data.correlationId)),
+      );
+      if (ev.type === "reactor.done") break;
+      if (ev.type !== "reactor.gate.blocked") throw new Error("unreachable");
+      const cid = ev.data.correlationId;
+      if (cid === undefined) throw new Error("expected correlationId");
+      approved.add(cid);
+      reactor.deliver(makeApprovalMessage(cid));
+    }
+
+    await waitFor("reactor.done");
+
+    expect(getEvent(events, "reactor.error").data.fatal).toBe(true);
+    expect(getEvent(events, "message.run.ended").data.error?.kind).toBe(
+      "doom_loop",
+    );
   });
 });
 
