@@ -39,7 +39,7 @@ import {
   type BaseEnv,
   type ToolBundle,
 } from "@intx/agent";
-import { readDeployTree, sanitizeAddress } from "@intx/hub-agent/paths";
+import { readDeployTree, agentDir } from "@intx/hub-agent/paths";
 import { getLogger } from "@intx/log";
 import type { HostCredentialCapability } from "@intx/harness";
 import type { LoadedToolFactory } from "@intx/tool-packaging";
@@ -265,9 +265,9 @@ function requireCapabilitiesBag(env: BaseEnv): RuntimeCapabilities {
  * `deploy/asset-mounts.json`) is shipped to the sidecar per step by the
  * hub's `launchSession` deploy-pack push, which lands it in the LEGACY
  * per-agent directory keyed by the step's sanitized mail address (see
- * `@intx/hub-agent` `agentDir` / `sanitizeAddress`). It is NOT in the
- * substrate's `agent-state/<id>` layout -- the multi-step deploy path
- * never pushes step `agent-state` packs to the child's substrate.
+ * `@intx/hub-agent` `agentDir`). It is NOT in the substrate's
+ * `agent-state/<id>` layout -- the multi-step deploy path never pushes
+ * step `agent-state` packs to the child's substrate.
  *
  * The step's mail address is `resolveStepAddress(...)`, the single owner
  * of the head/step collapse: for a single-step deployment the lone step
@@ -302,7 +302,7 @@ export function stepDeployTreeDir(args: {
     domain: parsed.domain,
     stepCount: args.stepCount,
   });
-  return path.join(args.dataDir, sanitizeAddress(stepAddress));
+  return agentDir(args.dataDir, stepAddress);
 }
 
 /**
