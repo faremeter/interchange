@@ -93,6 +93,7 @@ export type ReactorAssemblyConfig = {
   inferenceRunner?: ReactorConfig["inferenceRunner"];
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
+  doomLoopThreshold?: number;
 };
 
 /**
@@ -143,6 +144,7 @@ export function createReactorAssembly(
     inferenceRunner,
     gateTimeout,
     shutdownTimeoutMs,
+    doomLoopThreshold,
   } = config;
 
   // Audit collector is created up-front so the authz extension can route its
@@ -259,6 +261,7 @@ export function createReactorAssembly(
     ...(inferenceRunner !== undefined ? { inferenceRunner } : {}),
     ...(gateTimeout !== undefined ? { gateTimeout } : {}),
     ...(shutdownTimeoutMs !== undefined ? { shutdownTimeoutMs } : {}),
+    ...(doomLoopThreshold !== undefined ? { doomLoopThreshold } : {}),
   };
 
   const reactor = createReactor(reactorConfig);

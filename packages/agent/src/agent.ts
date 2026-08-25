@@ -706,6 +706,9 @@ export async function createAgent<EnvReq extends BaseEnv>(
       ...(env.sizeCapMaxChars !== undefined
         ? { sizeCapMaxChars: env.sizeCapMaxChars }
         : {}),
+      ...(env.doomLoopThreshold !== undefined
+        ? { doomLoopThreshold: env.doomLoopThreshold }
+        : {}),
       deps,
       ...(env.compactors !== undefined ? { compactors: env.compactors } : {}),
     });

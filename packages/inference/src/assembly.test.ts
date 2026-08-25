@@ -745,4 +745,64 @@ describe("createReactorAssembly", () => {
     expect(toolDone.data.result.isError).toBe(true);
     expect(toolDone.data.result.content).toBe("blocked-by-caller");
   });
+
+  test("forwards doomLoopThreshold to the reactor", async () => {
+    // The forward is a conditional spread: a broken forward silently drops the
+    // value and the reactor falls back to its default of 3. This test runs
+    // exactly two identical tool turns, so it trips only if the supplied
+    // threshold of 2 actually reached the reactor -- the default of 3 would
+    // not trip in two turns. Reactor-level tests inject ReactorConfig directly
+    // and cannot cover this seam.
+    const events = collectEvents();
+
+    // Loops the same tool call, capped at two executions so a dropped
+    // threshold (default 3) completes without tripping.
+    let executions = 0;
+    const director: ReactorDirector = {
+      async decide(
+        event: { type: string },
+        _state: ReactorState,
+        caps: ReactorCapabilities,
+      ) {
+        if (event.type === "message.received" || event.type === "tool.done") {
+          if (executions >= 2) return caps.done();
+          executions += 1;
+          return caps.executeTools([
+            { id: `c${executions}`, name: "spin", arguments: {} },
+          ]);
+        }
+        return caps.done();
+      },
+    };
+
+    const { reactor } = createReactorAssembly({
+      deps: defaultDeps,
+      sessionId: "s-doom",
+      director,
+      source: source(),
+      toolRunner: makeToolRunner("ok"),
+      contextStore: makeContextStore(),
+      onEvent: events.onEvent,
+      doomLoopThreshold: 2,
+      shutdownTimeoutMs: 100,
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitForDone(events.events);
+
+    const error = events.events.find(
+      (e): e is Extract<ReactorEmittedEvent, { type: "reactor.error" }> =>
+        e.type === "reactor.error",
+    );
+    if (error === undefined) throw new Error("expected reactor.error");
+    expect(error.data.fatal).toBe(true);
+
+    const ended = events.events.find(
+      (e): e is Extract<ReactorEmittedEvent, { type: "message.run.ended" }> =>
+        e.type === "message.run.ended",
+    );
+    if (ended === undefined) throw new Error("expected message.run.ended");
+    expect(ended.data.error?.kind).toBe("doom_loop");
+  });
 });

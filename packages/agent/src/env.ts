@@ -142,6 +142,13 @@ export interface BaseEnv {
   sizeCapMaxChars?: number;
 
   /**
+   * Override for the default doom-loop detection threshold: the number of
+   * identical consecutive tool-call turns that ends the run (default 3).
+   * Forwarded to the reactor. Must be a positive integer.
+   */
+  doomLoopThreshold?: number;
+
+  /**
    * Maximum number of pending sends (active + queued). Beyond this,
    * `send()` rejects with `SendQueueFullError`. Defaults to 16.
    */
