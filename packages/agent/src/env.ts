@@ -144,9 +144,10 @@ export interface BaseEnv {
   /**
    * Override for the default doom-loop detection threshold: the number of
    * identical consecutive tool-call turns that ends the run (default 3).
-   * Forwarded to the reactor. Must be a positive integer.
+   * Forwarded to the reactor. Must be a positive integer, or `false` to
+   * disable doom-loop detection entirely.
    */
-  doomLoopThreshold?: number;
+  doomLoopThreshold?: number | false;
 
   /**
    * Maximum number of pending sends (active + queued). Beyond this,

@@ -251,7 +251,7 @@ type TestReactorOverrides = {
   sessionId?: string;
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
-  doomLoopThreshold?: number;
+  doomLoopThreshold?: number | false;
   // Wire-level tests (see tests/inference/reactor-streaming.test.ts) supply
   // their own `Dependencies` (fetch stubbed by the harness) and may target a
   // non-Anthropic provider. Both override hooks are optional; omit them for
@@ -1607,6 +1607,29 @@ describe("createReactor — doom-loop detection", () => {
     expect(() => createTestReactor({ doomLoopThreshold: 2.5 })).toThrow(
       /positive integer/,
     );
+  });
+
+  test("does not trip when detection is disabled with false", async () => {
+    // With detection off, an identical batch repeated far past the default
+    // threshold must run to completion. This also guards the coercion trap: a
+    // stray `>= false` would read as `>= 0` and trip on the very first turn.
+    const { reactor, events, waitFor } = createTestReactor({
+      doomLoopThreshold: false,
+      director: createBatchLoopDirector((turn) =>
+        turn < 8
+          ? [{ id: `c${turn}`, name: "spin", arguments: { q: 1 } }]
+          : null,
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    expect(events.some((e) => e.type === "reactor.error")).toBe(false);
+    expect(getEvent(events, "message.run.ended").data.status).toBe("completed");
+    // All eight turns ran; nothing broke the loop early.
+    expect(events.filter((e) => e.type === "tool.start").length).toBe(8);
   });
 
   test("a threshold of 1 trips on the first executed tool turn", async () => {

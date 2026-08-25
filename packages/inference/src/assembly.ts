@@ -93,7 +93,7 @@ export type ReactorAssemblyConfig = {
   inferenceRunner?: ReactorConfig["inferenceRunner"];
   gateTimeout?: number;
   shutdownTimeoutMs?: number;
-  doomLoopThreshold?: number;
+  doomLoopThreshold?: number | false;
 };
 
 /**

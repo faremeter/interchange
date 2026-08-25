@@ -407,7 +407,7 @@ It returns one or more actions. Multiple actions execute concurrently where poss
 
 **If the director throws an exception**, the reactor catches it, emits `reactor.error` with the exception details, and initiates graceful shutdown. The director is user-provided code and must not be able to crash the reactor without a clean terminal event.
 
-**If the model drives a doom loop** — the same tool-call turn (identical tool names and, by exact match, arguments) executed `doomLoopThreshold` times in a row, default 3 — the reactor emits a fatal `reactor.error` and initiates graceful shutdown, ending the run with `message.run.ended` carrying `kind: "doom_loop"`. This guards against a runaway model that repeats an identical call: it makes no progress but keeps paying for an inference every turn.
+**If the model drives a doom loop** — the same tool-call turn (identical tool names and, by exact match, arguments) executed `doomLoopThreshold` times in a row, default 3 — the reactor emits a fatal `reactor.error` and initiates graceful shutdown, ending the run with `message.run.ended` carrying `kind: "doom_loop"`. This guards against a runaway model that repeats an identical call: it makes no progress but keeps paying for an inference every turn. Passing `doomLoopThreshold: false` disables the guard entirely.
 
 ### Action Validation
 
