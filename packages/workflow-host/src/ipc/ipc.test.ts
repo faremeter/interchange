@@ -361,6 +361,104 @@ describe("Control channel", () => {
     ]);
   });
 
+  test("validates and round-trips a mailbox.notify frame", async () => {
+    const kp = await generateKeyPair();
+    const channelId = generateChannelId();
+    const stream = createMemoryNdjsonStream();
+    const sender = createControlChannelSender({
+      privateKeySeed: kp.privateKey,
+      channelId,
+      writer: stream.writer,
+    });
+    const crashes: string[] = [];
+    const received: ControlPayload[] = [];
+
+    const consumer = (async () => {
+      for await (const payload of receiveControlChannel({
+        publicKey: kp.publicKey,
+        channelId,
+        reader: stream.reader,
+        onCrash: (reason) => crashes.push(reason),
+      })) {
+        received.push(payload);
+        if (received.length === 1) return;
+      }
+    })();
+
+    const notify = {
+      type: "mailbox.notify" as const,
+      data: {
+        runId: "run-1",
+        mailbox: "INBOX",
+        uid: 7,
+        headers: {
+          from: "user@integration",
+          to: ["run@integration"],
+          date: "Tue, 26 Aug 2026 00:00:00 +0000",
+          messageId: "<m7@integration>",
+          subject: "hello",
+          references: ["<prev@integration>"],
+          interchangeType: "conversation.message" as const,
+        },
+        commit: "abc123",
+      },
+    };
+    await sender.send(notify);
+
+    await consumer;
+    stream.close();
+
+    expect(crashes).toEqual([]);
+    expect(received).toEqual([notify]);
+  });
+
+  test("crashes on a mailbox.notify whose headers omit a required field", async () => {
+    const kp = await generateKeyPair();
+    const channelId = generateChannelId();
+    const stream = createMemoryNdjsonStream();
+    const crashes: string[] = [];
+
+    const consumer = (async () => {
+      for await (const _ of receiveControlChannel({
+        publicKey: kp.publicKey,
+        channelId,
+        reader: stream.reader,
+        onCrash: (reason) => crashes.push(reason),
+      })) {
+        // no-op; the malformed frame must crash before it yields.
+      }
+    })();
+
+    // Sign a structurally valid envelope whose payload is a mailbox.notify with
+    // a headers block missing the required `from` field, so the receiver's
+    // payload validation rejects it.
+    const envelope: FrameEnvelope = {
+      seq: 1,
+      channelId,
+      payload: {
+        type: "mailbox.notify",
+        data: {
+          runId: "run-1",
+          mailbox: "INBOX",
+          uid: 7,
+          headers: {
+            to: ["run@integration"],
+            date: "",
+            messageId: "<m@integration>",
+          },
+          commit: "abc123",
+        },
+      },
+    };
+    const sig = await signEd25519(encodeEnvelope(envelope), kp.privateKey);
+    stream.inject(JSON.stringify({ envelope, sig: hexEncode(sig) }) + "\n");
+    stream.close();
+
+    await consumer;
+    expect(crashes.length).toBe(1);
+    expect(crashes[0]).toContain("payload failed validation");
+  });
+
   test("serializes concurrent sends so frames keep seq order", async () => {
     // Signing is async; without the sender's internal lock two concurrent
     // sends could assign seq, suspend on the signer, and write in

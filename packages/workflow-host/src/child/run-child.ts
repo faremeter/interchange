@@ -140,6 +140,7 @@ import {
   type LoadParkedApproval,
 } from "./parked-correlations";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
+import type { MailboxWatchRegistry } from "./mailbox-watch-registry";
 import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
 
 const logger = getLogger(["workflow-host", "child"]);
@@ -518,6 +519,18 @@ export interface RunWorkflowChildOpts {
    * but no agent on the child side asked for an outbound send.
    */
   outboundMailBridge?: ChildOutboundMailBridge;
+  /**
+   * Optional mailbox watch registry (INBOUND half of mailbox ownership,
+   * design §3b). The supervisor -- the sole mail owner -- commits an arrived
+   * message to the workflow-run substrate mailbox and fires a `mailbox.notify`
+   * control frame; the control loop routes that frame to this registry's
+   * `fire`, which delivers a typed `exists` `MailboxEvent` to the callbacks the
+   * step agent's supervisor-backed transport registered through `watch`
+   * (backing `mail_wait`). When omitted, an inbound `mailbox.notify` frame is
+   * logged at warn-level and dropped -- the wire shape is well-formed but no
+   * watcher on the child side asked for inbound events.
+   */
+  mailboxWatchRegistry?: MailboxWatchRegistry;
 }
 
 /**
@@ -936,6 +949,9 @@ export async function runWorkflowChild(
           ...(opts.outboundMailBridge !== undefined
             ? { outboundMailBridge: opts.outboundMailBridge }
             : {}),
+          ...(opts.mailboxWatchRegistry !== undefined
+            ? { mailboxWatchRegistry: opts.mailboxWatchRegistry }
+            : {}),
         })
       ) {
         // shutdown received; the shutdown case already cancelled any
@@ -1025,6 +1041,7 @@ async function handleControlPayload(
     credentialWiring: CredentialWiring;
     substrateWriteBridge?: SubstrateWriteResponseSink;
     outboundMailBridge?: ChildOutboundMailBridge;
+    mailboxWatchRegistry?: MailboxWatchRegistry;
   },
 ): Promise<boolean> {
   switch (payload.type) {
@@ -1344,6 +1361,23 @@ async function handleControlPayload(
         return false;
       }
       ctx.outboundMailBridge.handleResult(payload.data);
+      return false;
+    }
+    case "mailbox.notify": {
+      // Route the supervisor's new-mail notification to the child's watch
+      // registry so a step agent's `watch`/`mail_wait` observes the arrival.
+      // A notify that lands without a registry means no watcher on the child
+      // side asked for inbound events; log and drop rather than throwing so
+      // the runtime keeps progressing (mirrors the `outbound.result` arm).
+      if (ctx.mailboxWatchRegistry === undefined) {
+        logger.warn`workflow-child mailbox.notify received without a watch registry wired; mailbox=${payload.data.mailbox} uid=${String(payload.data.uid)} dropped`;
+        return false;
+      }
+      ctx.mailboxWatchRegistry.fire(payload.data.mailbox, {
+        type: "exists",
+        uid: payload.data.uid,
+        headers: payload.data.headers,
+      });
       return false;
     }
     case "substrate.merge.request": {

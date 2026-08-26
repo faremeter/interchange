@@ -41,11 +41,13 @@ import type {
 } from "@intx/types/runtime";
 
 import {
+  createMailboxWatchRegistry,
   parseSpawnTimeEnv,
   runWorkflowChild,
   type ChildStepInvoker,
   type RunWorkflowChildBindings,
 } from "./index";
+import type { MailboxEvent } from "@intx/types/runtime";
 import { emitParkNotify, emitTerminalEvent } from "./run-child";
 import type { RunResult, WorkflowPark } from "@intx/workflow";
 import {
@@ -701,6 +703,95 @@ describe("runWorkflowChild", () => {
     expect(result.triggeredRunIds).toEqual(["run-1"]);
     expect(result.finalCredentialsSnapshot).not.toBeNull();
     expect(result.finalCredentialsSnapshot?.steps).toHaveLength(1);
+  });
+
+  test("routes a mailbox.notify to the watch registry as an exists event", async () => {
+    const baseDir = await makeTempDir("child-mailbox-notify-");
+    const supervisorKeyPair = await generateKeyPair();
+    const childKeyPair = await generateKeyPair();
+    const channelId = generateChannelId();
+    const hmacKey = generateHmacKey();
+    const { packageDir: closurePackageDir, approvedHash: definitionHash } =
+      await materializeClosure("child-def-", emptyWorkflowDefinition());
+
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventStream = createMemoryFrameStream();
+
+    const env = parseSpawnTimeEnv(
+      makeSpawnEnv({
+        channelId,
+        hmacKeyHex: hexEncode(hmacKey),
+        hostPubKeyHex: hexEncode(supervisorKeyPair.publicKey),
+        definitionHash,
+        closurePackageDir,
+      }),
+    );
+    const bindings = buildBindings({ baseDir, childKeyPair });
+    const supervisorSender = createControlChannelSender({
+      privateKeySeed: supervisorKeyPair.privateKey,
+      channelId,
+      writer: supervisorToChild.writer,
+    });
+
+    const registry = createMailboxWatchRegistry();
+    const received: MailboxEvent[] = [];
+    registry.watch("INBOX", (event) => received.push(event));
+
+    const runPromise = runWorkflowChild({
+      env,
+      controlReader: supervisorToChild.reader,
+      controlWriter: childToSupervisor.writer,
+      eventWriter: eventStream.writer,
+      bindings,
+      mailboxWatchRegistry: registry,
+    });
+
+    let readyLine: string | undefined;
+    for (let i = 0; i < 200 && readyLine === undefined; i += 1) {
+      const flushed = childToSupervisor.flushed();
+      if (flushed.length > 0) readyLine = flushed[0];
+      else await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(readyLine).toBeDefined();
+
+    await supervisorSender.send({
+      type: "mailbox.notify",
+      data: {
+        runId: "run-1",
+        mailbox: "INBOX",
+        uid: 7,
+        headers: {
+          from: "user@integration",
+          to: ["run@integration"],
+          date: "",
+          messageId: "<m7@integration>",
+        },
+        commit: "commit-1",
+      },
+    });
+    // Give the child time to route the frame and the registry's microtask time
+    // to deliver.
+    await new Promise((r) => setTimeout(r, 50));
+    await supervisorSender.send({
+      type: "shutdown",
+      data: { reason: "test done" },
+    });
+    supervisorToChild.close();
+
+    await runPromise;
+    expect(received).toEqual([
+      {
+        type: "exists",
+        uid: 7,
+        headers: {
+          from: "user@integration",
+          to: ["run@integration"],
+          date: "",
+          messageId: "<m7@integration>",
+        },
+      },
+    ]);
   });
 
   test("drops a signal.deliver for a run this child is not driving", async () => {
