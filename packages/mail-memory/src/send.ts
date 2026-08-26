@@ -3,8 +3,7 @@ import type {
   SendReceipt,
   MailboxEvent,
 } from "@intx/types/runtime";
-import type { AddressEntry, StoredEnvelope } from "./mailbox";
-import { appendToMailbox } from "./mailbox";
+import { buildMessageHeaders, type StoredEnvelope } from "@intx/mailbox";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -15,7 +14,7 @@ import {
   type ConversationContent,
   type StructuredContent,
 } from "@intx/mime";
-import { buildMessageHeaders } from "./headers";
+import type { AddressEntry } from "./mailbox";
 
 const CONVERSATION_TYPES = new Set([
   "conversation.message",
@@ -208,7 +207,7 @@ export async function executeSend(
         `Mailbox "INBOX" does not exist for recipient "${recipient}"`,
       );
     }
-    const uid = appendToMailbox(inbox, rawBytes, envelope, []);
+    const uid = inbox.append(rawBytes, envelope, []);
     deliveredUids.push({ address: recipient, uid });
   }
 
@@ -219,7 +218,7 @@ export async function executeSend(
       `Mailbox "Sent" does not exist for sender "${senderAddress}"`,
     );
   }
-  appendToMailbox(sentStore, rawBytes, envelope, ["\\Seen"]);
+  sentStore.append(rawBytes, envelope, ["\\Seen"]);
 
   // Fire local recipient watch callbacks ASYNCHRONOUSLY (per MESSAGE.md
   // requirement). queueMicrotask ensures callbacks never run synchronously

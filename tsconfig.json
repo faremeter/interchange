@@ -18,6 +18,7 @@
     { "path": "packages/tools-mail" },
     { "path": "packages/tool-packaging" },
     { "path": "packages/mime" },
+    { "path": "packages/mailbox" },
     { "path": "packages/mail-memory" },
     { "path": "packages/pack-transport" },
     { "path": "packages/hub-client" },

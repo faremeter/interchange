@@ -1,5 +1,6 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "interchange",
@@ -485,6 +486,17 @@
       "dependencies": {
         "@intx/crypto": "workspace:*",
         "@intx/log": "workspace:*",
+        "@intx/mailbox": "workspace:*",
+        "@intx/mime": "workspace:*",
+        "@intx/types": "workspace:*",
+        "arktype": "catalog:",
+      },
+    },
+    "packages/mailbox": {
+      "name": "@intx/mailbox",
+      "version": "0.3.0",
+      "dependencies": {
+        "@intx/crypto": "workspace:*",
         "@intx/mime": "workspace:*",
         "@intx/types": "workspace:*",
         "arktype": "catalog:",
@@ -938,6 +950,8 @@
     "@intx/log": ["@intx/log@workspace:packages/log"],
 
     "@intx/mail-memory": ["@intx/mail-memory@workspace:packages/mail-memory"],
+
+    "@intx/mailbox": ["@intx/mailbox@workspace:packages/mailbox"],
 
     "@intx/mime": ["@intx/mime@workspace:packages/mime"],
 

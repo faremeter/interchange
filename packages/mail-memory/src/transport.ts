@@ -18,28 +18,25 @@ import type {
   Unsubscribe,
   CryptoProvider,
 } from "@intx/types/runtime";
-import {
-  createAddressEntry,
-  createMailboxStore,
-  requireMessage,
-  appendToMailbox,
-  type AddressEntry,
-} from "./mailbox";
 import { parseHeaderSection } from "@intx/mime";
-import { buildMessageHeaders } from "./headers";
+import {
+  buildMessageHeaders,
+  createInMemoryMailboxStore,
+  executeSearch,
+  executeThread,
+  fetchHeaders as doFetchHeaders,
+  fetchStructure as doFetchStructure,
+  fetchPart as doFetchPart,
+  fetchFull as doFetchFull,
+  requireMessage,
+  type StoredEnvelope,
+} from "@intx/mailbox";
+import { createAddressEntry, type AddressEntry } from "./mailbox";
 import {
   executeSend,
   type RemoteSendHandler,
   type MessageSentHandler,
 } from "./send";
-import { executeSearch } from "./search";
-import { executeThread } from "./thread";
-import {
-  fetchHeaders as doFetchHeaders,
-  fetchStructure as doFetchStructure,
-  fetchPart as doFetchPart,
-  fetchFull as doFetchFull,
-} from "./fetch";
 
 /**
  * The hub-side surface a transport must expose to coordinate per-agent
@@ -345,7 +342,7 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     const refsRaw = headers.get("references");
     const references = refsRaw ? refsRaw.split(/\s+/).filter(Boolean) : [];
 
-    const envelope: import("./mailbox").StoredEnvelope = {
+    const envelope: StoredEnvelope = {
       messageId,
       from,
       to,
@@ -357,7 +354,7 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
       interchangeCorrelationId: headers.get("interchange-correlation-id"),
     };
 
-    const uid = appendToMailbox(inbox, message, envelope, []);
+    const uid = inbox.append(message, envelope, []);
 
     const callbacks = entry.watchCallbacks.get("INBOX");
     if (callbacks !== undefined && callbacks.size > 0) {
@@ -485,7 +482,7 @@ class ScopedMessageTransport implements MessageTransport {
       interchangeType: message.headers.interchangeType,
       interchangeCorrelationId: message.headers.interchangeCorrelationId,
     };
-    const uid = appendToMailbox(store, raw, envelope, flags ?? []);
+    const uid = store.append(raw, envelope, flags ?? []);
     return { uid, mailbox };
   }
 
@@ -501,7 +498,7 @@ class ScopedMessageTransport implements MessageTransport {
         `Mailbox "${name}" already exists for address "${this.#address}"`,
       );
     }
-    this.#entry.mailboxes.set(name, createMailboxStore());
+    this.#entry.mailboxes.set(name, createInMemoryMailboxStore());
     return { name };
   }
 
@@ -524,9 +521,9 @@ class ScopedMessageTransport implements MessageTransport {
       total: store.messages.length,
       unseen,
       recent: 0,
-      uidNext: store.uidCounter,
+      uidNext: store.uidNext,
       uidValidity: store.uidValidity,
-      highestModSeq: store.modseqCounter - 1,
+      highestModSeq: store.highestModSeq,
     };
   }
 
@@ -588,11 +585,7 @@ class ScopedMessageTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<void> {
     const store = this.#requireMailbox(ref.mailbox);
-    const msg = requireMessage(store, ref.uid, ref.mailbox);
-    for (const flag of flags) {
-      msg.flags.add(flag);
-    }
-    msg.modseq = store.modseqCounter++;
+    const msg = store.addFlags(ref.uid, flags);
     this.#fireWatchCallbacks(ref.mailbox, {
       type: "flagsChanged",
       uid: ref.uid,
@@ -606,11 +599,7 @@ class ScopedMessageTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<void> {
     const store = this.#requireMailbox(ref.mailbox);
-    const msg = requireMessage(store, ref.uid, ref.mailbox);
-    for (const flag of flags) {
-      msg.flags.delete(flag);
-    }
-    msg.modseq = store.modseqCounter++;
+    const msg = store.removeFlags(ref.uid, flags);
     this.#fireWatchCallbacks(ref.mailbox, {
       type: "flagsChanged",
       uid: ref.uid,
@@ -625,22 +614,10 @@ class ScopedMessageTransport implements MessageTransport {
   ): Promise<void> {
     const fromStore = this.#requireMailbox(ref.mailbox);
     const toStore = this.#requireMailbox(toMailbox);
-    const msgIdx = fromStore.messages.findIndex((m) => m.uid === ref.uid);
-    if (msgIdx === -1) {
-      throw new Error(
-        `Message UID ${ref.uid} not found in mailbox "${ref.mailbox}"`,
-      );
-    }
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by findIndex !== -1 above
-    const msg = fromStore.messages[msgIdx]!;
-    fromStore.messages.splice(msgIdx, 1);
+    const msg = requireMessage(fromStore, ref.uid, ref.mailbox);
+    fromStore.remove(ref.uid);
 
-    const newUid = appendToMailbox(
-      toStore,
-      msg.raw,
-      msg.envelope,
-      Array.from(msg.flags),
-    );
+    const newUid = toStore.append(msg.raw, msg.envelope, Array.from(msg.flags));
 
     this.#fireWatchCallbacks(ref.mailbox, {
       type: "expunged",
@@ -666,12 +643,7 @@ class ScopedMessageTransport implements MessageTransport {
     const toStore = this.#requireMailbox(toMailbox);
     const msg = requireMessage(fromStore, ref.uid, ref.mailbox);
 
-    const newUid = appendToMailbox(
-      toStore,
-      msg.raw,
-      msg.envelope,
-      Array.from(msg.flags),
-    );
+    const newUid = toStore.append(msg.raw, msg.envelope, Array.from(msg.flags));
 
     const { headers: parsedHeaders } = parseHeaderSection(msg.raw);
     const msgHeaders = this.#buildMessageHeaders(parsedHeaders);
@@ -686,7 +658,9 @@ class ScopedMessageTransport implements MessageTransport {
     const store = this.#requireMailbox(mailbox);
     const toExpunge = store.messages.filter((m) => m.flags.has("\\Deleted"));
 
-    store.messages = store.messages.filter((m) => !m.flags.has("\\Deleted"));
+    for (const msg of toExpunge) {
+      store.remove(msg.uid);
+    }
 
     for (const msg of toExpunge) {
       this.#fireWatchCallbacks(mailbox, {

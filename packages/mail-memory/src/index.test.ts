@@ -737,7 +737,7 @@ describe("deliver", () => {
 
   test("does NOT dedup by Message-ID: redelivery appends a second copy", async () => {
     // The federation inbound path performs NO Message-ID dedup:
-    // appendToMailbox appends unconditionally, so delivering the same
+    // the mailbox store appends unconditionally, so delivering the same
     // Message-ID twice yields two INBOX messages. This pins the baseline
     // the supervisor FIFO + markConsumed dedup improves on.
     const { transport } = await createTestTransport();
