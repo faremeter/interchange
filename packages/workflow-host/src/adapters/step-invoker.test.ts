@@ -1356,6 +1356,46 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     );
   });
 
+  test("preserves the Mail's threading headers on the InboundMessage", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+    const threaded: Mail = {
+      headers: {
+        from: "sender@example.com",
+        to: ["run@deployment.example.com"],
+        date: "2026-01-02T03:04:05Z",
+        messageId: "<incoming-42@example.com>",
+        inReplyTo: "<prior-turn@agent.local>",
+        references: ["<root@example.com>", "<prior-turn@agent.local>"],
+      },
+      rawHeaders: {},
+      parts: [
+        {
+          contentType: "text/plain",
+          ref: "mail-part:///r/m/0-text",
+          text: "keep this thread",
+        },
+      ],
+    };
+    await invoker(buildRequest({ input: threaded }));
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    // The real thread headers ride through verbatim so the reply's In-Reply-To
+    // points at the incoming Message-ID rather than a synthesized phantom.
+    expect(msg.headers.messageId).toBe("<incoming-42@example.com>");
+    expect(msg.headers.inReplyTo).toBe("<prior-turn@agent.local>");
+    expect(msg.headers.references).toEqual([
+      "<root@example.com>",
+      "<prior-turn@agent.local>",
+    ]);
+  });
+
   test("routes an attachment-disposition text part and an html part to attachments", async () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
