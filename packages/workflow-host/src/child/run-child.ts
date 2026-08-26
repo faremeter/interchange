@@ -415,6 +415,19 @@ export interface RunWorkflowChildBindings {
    * invocation step settles as a terminal failure, the pre-recovery behavior.
    */
   readParkedApprovalOps?: ReadParkedApprovalOps;
+  /**
+   * Mailbox watch registry backing the warm agent's `mail_wait` (INBOUND half
+   * of mailbox ownership, §3b). The host's substrate factory builds ONE
+   * instance at child boot, shares it with the step agent's supervisor-backed
+   * transport (whose `watch` registers callbacks into it), and exposes it here
+   * so the control loop routes each `mailbox.notify` frame to the same
+   * registry's `fire`. Optional: a deploy that wires no mail surface (and the
+   * recursive child-workflow adapter) omits it, and an inbound `mailbox.notify`
+   * frame is then logged and dropped. A test may instead inject a registry
+   * directly through `RunWorkflowChildOpts.mailboxWatchRegistry`, which takes
+   * precedence.
+   */
+  mailboxWatchRegistry?: MailboxWatchRegistry;
   /** Optional clock override; production wires `() => new Date()`. */
   clock?: () => Date;
   /** Optional id generator override; production wires a monotonic one. */
@@ -917,6 +930,15 @@ export async function runWorkflowChild(
     },
   });
 
+  // Resolve the mailbox watch registry the control loop routes `mailbox.notify`
+  // frames to. Production wires it on the bindings (the substrate factory builds
+  // one instance and shares it with the warm agent's supervisor-backed
+  // transport); a test may inject one directly through the opts, which wins.
+  // Both absent leaves inbound `mailbox.notify` frames logged and dropped -- a
+  // deploy with no wired mail surface.
+  const mailboxWatchRegistry =
+    opts.mailboxWatchRegistry ?? opts.bindings.mailboxWatchRegistry;
+
   const runControlLoop = async (): Promise<void> => {
     for await (const payload of iter) {
       if (
@@ -949,8 +971,8 @@ export async function runWorkflowChild(
           ...(opts.outboundMailBridge !== undefined
             ? { outboundMailBridge: opts.outboundMailBridge }
             : {}),
-          ...(opts.mailboxWatchRegistry !== undefined
-            ? { mailboxWatchRegistry: opts.mailboxWatchRegistry }
+          ...(mailboxWatchRegistry !== undefined
+            ? { mailboxWatchRegistry }
             : {}),
         })
       ) {

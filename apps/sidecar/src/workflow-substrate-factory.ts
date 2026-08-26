@@ -70,7 +70,9 @@ import {
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import {
   adaptHostScheduler,
+  createChildMailboxReader,
   createCredentialsBackedAuthorize,
+  createMailboxWatchRegistry,
   createProxyWorkflowRunRepoStore,
   createSupervisorBackedTransport,
   createWorkflowHostScheduler,
@@ -93,6 +95,7 @@ import {
   type StepEnvBase,
   type SubstrateFactory,
   type SubstrateFactoryEnv,
+  type SupervisorBackedTransportInbound,
 } from "@intx/workflow-host";
 import {
   baseStepId,
@@ -675,6 +678,19 @@ export interface SidecarStepBuildEnvDeps {
    * key.
    */
   outboundMailBridge: ChildOutboundMailBridge;
+  /**
+   * Inbound local IMAP surface for the step agent's supervisor-backed
+   * transport (INBOUND half of mailbox ownership, §3b). Bundles the child
+   * mailbox reader (a fresh committed snapshot of the deployment's substrate
+   * `INBOX` per read), the shared mailbox watch registry (the same instance the
+   * child's control loop fires `mailbox.notify` into), and the sender-key
+   * resolver `fetchFull` verifies signatures against. When present, the warm
+   * agent's `mail_read` / `mail_search` / `mail_wait` resolve against the
+   * committed mailbox rather than throwing "not wired". Absent for a build that
+   * owns no inbound mailbox (the toolless onTrigger body), whose transport
+   * inbound stays inert.
+   */
+  inbound?: SupervisorBackedTransportInbound;
   /** Per-step tool-loader caps (cache + registry tarball size). */
   cache: StepToolCacheConfig;
   /**
@@ -1049,20 +1065,23 @@ export function createSidecarStepBuildEnv(
       );
     }
 
-    // Supervisor-backed transport for the step agent's mail tools
-    // (OUTBOUND half of mailbox ownership, §3a). Inbound is inert -- the
-    // supervisor delivers the agent's input as the step input, not
-    // through the agent's own mailbox -- and outbound (`send`) routes
-    // over the control IPC to the supervisor, which performs the actual
-    // signed send through the host transport as `address`. `address` is
-    // the deployment mailbox address: the same identity the host
-    // registered the agent's `CryptoProvider` against, so the outbound
-    // mail carries the agent's signature with parity to the in-process
-    // path. Both `transport` and `address` are the env keys
-    // `@intx/tools-mail`'s sidecar bundle declares in its `requires`.
+    // Supervisor-backed transport for the step agent's mail tools (both
+    // halves of mailbox ownership, §3a OUTBOUND and §3b INBOUND). Outbound
+    // (`send`) routes over the control IPC to the supervisor, which performs
+    // the actual signed send through the host transport as `address`.
+    // `address` is the deployment mailbox address: the same identity the host
+    // registered the agent's `CryptoProvider` against, so the outbound mail
+    // carries the agent's signature with parity to the in-process path.
+    // Inbound (`deps.inbound`, present for the warm single-step agent) makes
+    // `mail_read` / `mail_search` / `mail_wait` resolve locally against a fresh
+    // committed snapshot of the deployment's substrate `INBOX`; a build that
+    // owns no inbound mailbox (the toolless body) leaves it undefined and the
+    // inbound methods stay inert. Both `transport` and `address` are the env
+    // keys `@intx/tools-mail`'s sidecar bundle declares in its `requires`.
     const transport = createSupervisorBackedTransport(
       deps.outboundMailBridge,
       deps.mailboxAddress,
+      deps.inbound,
     );
 
     // The host owns capability assembly: it builds the RuntimeCapabilities
@@ -1987,6 +2006,31 @@ export function createSidecarSubstrateFactory(
       workflowRunRepoId,
     });
 
+    // INBOUND half of mailbox ownership (§3b). One watch registry per child,
+    // created at boot and shared by BOTH the step agent's supervisor-backed
+    // transport (its `watch` registers callbacks here, backing `mail_wait`) and
+    // the child's control loop (which fires each `mailbox.notify` into it). The
+    // registry rides out on the returned bindings so `runWorkflowChild` routes
+    // notifications to this same instance. The child mailbox reader opens a
+    // fresh committed snapshot of the deployment's substrate `INBOX` per read,
+    // over the same substrate handle / repo id / principal / ref the mail-part
+    // reader uses, so a read taken after a `mailbox.notify` observes the message
+    // the supervisor just committed.
+    const mailboxWatchRegistry = createMailboxWatchRegistry();
+    const transportInbound: SupervisorBackedTransportInbound = {
+      reader: createChildMailboxReader({
+        substrate,
+        repoId: workflowRunRepoId,
+        principal,
+        ref: validated.WORKFLOW_RUN_REF,
+      }),
+      watchRegistry: mailboxWatchRegistry,
+      // The child holds no sender-key registry, so signature verification is not
+      // yet possible here; `fetchFull` reports every message's signature status
+      // as "unknown". A future sender-key surface would replace this resolver.
+      getCrypto: () => undefined,
+    };
+
     const hostScheduler = createWorkflowHostScheduler({
       repoStore: substrate,
       principal,
@@ -2079,6 +2123,11 @@ export function createSidecarSubstrateFactory(
       // The materialized closure dir the source arm materializes each step
       // agent's declared plugin packages from. Always present (source-ref only).
       closurePackageDir: env.spawn.closurePackageDir,
+      // Activate the warm agent's inbound mail surface: `mail_read` /
+      // `mail_search` / `mail_wait` resolve against the deployment's committed
+      // substrate `INBOX` through this bundle. The body build below omits it
+      // (a toolless body owns no inbound mailbox).
+      inbound: transportInbound,
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
 
@@ -2472,6 +2521,9 @@ export function createSidecarSubstrateFactory(
       evaluateGrants: evaluateGrantsAdapter,
       loadParkedApproval,
       readParkedApprovalOps,
+      // The same registry the warm agent's transport registers `watch`
+      // callbacks into; `runWorkflowChild` routes each `mailbox.notify` to it.
+      mailboxWatchRegistry,
       ...(cleanupRunStorage !== undefined ? { cleanupRunStorage } : {}),
     };
     return bindings;
