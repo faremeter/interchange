@@ -72,6 +72,35 @@ function makeStore(dataDir: string): RepoStore {
   });
 }
 
+/** The put and delete path sets one `writeTreeDelta` call committed. */
+type DeltaRecord = { puts: string[]; deletes: string[] };
+
+// Wrap a `RepoStore` so each `writeTreeDelta` records the exact paths its
+// `computeDelta` produced, then delegates unchanged. The wrapper decorates the
+// caller's `computeDelta` rather than re-deriving the delta, so it observes the
+// same puts/deletes the store commits, computed against the real pinned parent.
+function createRecordingSubstrate(
+  inner: RepoStore,
+  recorded: DeltaRecord[],
+): RepoStore {
+  return {
+    ...inner,
+    writeTreeDelta(principal, repoId, ref, args) {
+      return inner.writeTreeDelta(principal, repoId, ref, {
+        ...args,
+        computeDelta: async (parentCommitSha, prior) => {
+          const delta = await args.computeDelta(parentCommitSha, prior);
+          recorded.push({
+            puts: Object.keys(delta.puts),
+            deletes: [...delta.deletes],
+          });
+          return delta;
+        },
+      });
+    },
+  };
+}
+
 type Handles = {
   dataDir: string;
   repoId: RepoId;
@@ -433,5 +462,81 @@ describe("substrate mailbox store", () => {
     // Flushing a clean store issues no commit and stays clean.
     await store.flush();
     expect(store.pendingWrites).toBe(false);
+  });
+
+  test("flush writes a delta and does not re-put unchanged prior blobs", async () => {
+    const handles = await makeHandles("dep-delta");
+    const recorded: DeltaRecord[] = [];
+    const substrate = createRecordingSubstrate(
+      makeStore(handles.dataDir),
+      recorded,
+    );
+    const open = () =>
+      createSubstrateMailboxStore({
+        substrate,
+        repoId: handles.repoId,
+        principal: handles.principal,
+        ref: REF,
+      });
+    const inbox = (name: string) => `mailbox/INBOX/${name}`;
+
+    const store = await open();
+    const crypto = await senderCrypto();
+    const first = await makeSignedMessage(crypto, {
+      from: "a@example.com",
+      to: ["run@dep.example.com"],
+      subject: "first",
+      messageId: generateMessageId("a@example.com"),
+      text: "first body",
+    });
+    const uid1 = store.append(first.raw, first.envelope, []);
+    await store.flush();
+
+    // First flush puts index.json and the single new blob, deletes nothing.
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.puts.sort()).toEqual(
+      [inbox("index.json"), inbox("1.eml")].sort(),
+    );
+    expect(recorded[0]?.deletes).toEqual([]);
+
+    // A second append puts ONLY the new blob; uid1's blob carries forward by
+    // object id and is never re-hashed -- the O(N^2) anti-pattern this fix
+    // removes.
+    const second = await makeSignedMessage(crypto, {
+      from: "b@example.com",
+      to: ["run@dep.example.com"],
+      subject: "second",
+      messageId: generateMessageId("b@example.com"),
+      text: "second body",
+    });
+    const uid2 = store.append(second.raw, second.envelope, []);
+    await store.flush();
+    expect(recorded).toHaveLength(2);
+    expect(recorded[1]?.puts.sort()).toEqual(
+      [inbox("index.json"), inbox("2.eml")].sort(),
+    );
+    expect(recorded[1]?.deletes).toEqual([]);
+
+    // A flag change touches only index.json; no `.eml` is put or deleted.
+    store.addFlags(uid1, ["\\Seen"]);
+    await store.flush();
+    expect(recorded).toHaveLength(3);
+    expect(recorded[2]?.puts).toEqual([inbox("index.json")]);
+    expect(recorded[2]?.deletes).toEqual([]);
+
+    // Removing uid2 deletes its blob and puts index.json; uid1's blob is
+    // neither re-put nor deleted.
+    store.remove(uid2);
+    await store.flush();
+    expect(recorded).toHaveLength(4);
+    expect(recorded[3]?.puts).toEqual([inbox("index.json")]);
+    expect(recorded[3]?.deletes).toEqual([inbox("2.eml")]);
+
+    // The committed tree still reconstructs identically: uid1 survives with its
+    // flag, uid2 is gone.
+    const reopened = await open();
+    expect(reopened.messages.map((m) => m.uid)).toEqual([uid1]);
+    expect(Array.from(reopened.find(uid1)?.flags ?? [])).toEqual(["\\Seen"]);
+    expect(reopened.find(uid2)).toBeUndefined();
   });
 });
