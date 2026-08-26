@@ -1332,12 +1332,12 @@ export function createSidecarDeployRouter(deps: {
   // operator undeploy. Drops the address's runtime/routing state so a redeploy
   // of the same address succeeds without a manual undeploy: the `has`-guarded
   // `activeSupervisors` entry is the redeploy gate, and `transport.register`
-  // throws on a double-register, so both must be released here. The routers,
-  // deployment mapping, and slug are released too so a frame racing the reclaim
-  // is rejected at the boundary rather than dispatched into the dead supervisor,
-  // and no stale mapping resolves to the dead deployment.
+  // throws on a double-register, so both must be released here. The routers and
+  // the slug are released too so a frame racing the reclaim is rejected at the
+  // boundary rather than dispatched into the dead supervisor, and the slug is
+  // free to re-claim.
   //
-  // Two deliberate invariants:
+  // Three deliberate invariants:
   //   - This NEVER calls back into `wired.supervisor.*`. It runs as the
   //     supervisor's own `onSelfTerminate` sink, i.e. re-entrantly during the
   //     supervisor's terminal teardown; a call back in (e.g. `shutdown()`)
@@ -1352,6 +1352,18 @@ export function createSidecarDeployRouter(deps: {
   //     boot-restore behavior exactly -- a self-terminated deployment already
   //     left its record on disk before this reclaim existed; the reclaim only
   //     drops in-memory routing state, never durable state.
+  //   - It does NOT call `unregisterDeployment`, so the deployment address
+  //     mapping (`deploymentAddressRegistry`) is RETAINED. That mapping is
+  //     consulted only by the OUTBOUND workflow-run pack push
+  //     (`registry.resolve`), which the supervisor itself drives; no inbound
+  //     frame consults it (a frame racing the reclaim is rejected by the
+  //     routers above, not routed through this mapping). The supervisor's own
+  //     terminal `RunFailed` commit -- the crash-loop latch writes it AFTER its
+  //     teardown fires this sink -- resolves this mapping, so dropping it here
+  //     would strand that commit ("no run address registered for deployment")
+  //     and leave the crash-loop with no durable failure tombstone. Retaining a
+  //     stale entry never blocks a redeploy: `record` overwrites idempotently,
+  //     and an operator `undeploy` or a process restart clears it.
   //
   // Fully synchronous with no `await` between the guard and the mutations, so it
   // is idempotent and cannot interleave with a concurrent operator `undeploy` of
@@ -1372,10 +1384,6 @@ export function createSidecarDeployRouter(deps: {
     activeSupervisors.delete(args.agentAddress);
     deps.transport.unregister(args.agentAddress);
     releaseSlug(args.runId, args.agentAddress);
-    deps.unregisterDeployment({
-      runId: args.runId,
-      agentAddress: args.agentAddress,
-    });
   }
 
   /**

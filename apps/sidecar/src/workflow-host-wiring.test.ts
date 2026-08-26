@@ -31,6 +31,7 @@ import {
   validateWorkflowProjection,
 } from "./workflow-host-wiring";
 import {
+  createDeploymentAddressRegistry,
   createMultistepGrantsRouter,
   createMultistepMailRouter,
   createMultistepSourcesRouter,
@@ -708,6 +709,17 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       runId: string;
       agentAddress: string;
     }) => void;
+    /**
+     * Injectable deployment-address unregister hook. Defaults to a no-op.
+     * The self-termination retention test wires this to a real
+     * `deploymentAddressRegistry` so it can assert the reclaim does NOT
+     * remove the mapping (the buggy reclaim called this hook, which would
+     * strand the supervisor's terminal `RunFailed` commit).
+     */
+    unregisterDeployment?: (args: {
+      runId: string;
+      agentAddress: string;
+    }) => void;
     assertSourceBuildable?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["assertSourceBuildable"];
@@ -831,9 +843,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: opts.assertSourceBuildable ?? (() => undefined),
       registerDeployment: opts.registerDeployment ?? (() => undefined),
-      unregisterDeployment: () => {
-        /* no-op */
-      },
+      unregisterDeployment:
+        opts.unregisterDeployment ??
+        (() => {
+          /* no-op */
+        }),
       multistepSubprocessSpawner: opts.spawner,
       ...(opts.multistepBinaryPath !== undefined
         ? { multistepBinaryPath: opts.multistepBinaryPath }
@@ -2616,6 +2630,57 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     ).resolves.toBeUndefined();
     expect(router.activeAddresses()).toEqual([]);
     expect(isRegistered(transport, head)).toBe(false);
+  });
+
+  test("the reclaim retains the deployment-address mapping so the terminal RunFailed commit can still resolve its run address", async () => {
+    // Regression guard for the reclaim/terminal-commit ordering hazard. The
+    // crash-loop latch commits its `RunFailed` tombstone AFTER teardown fires
+    // `onSelfTerminate`, and that commit resolves the deployment-address
+    // mapping to route the outbound pack push. A reclaim that dropped the
+    // mapping (via `unregisterDeployment`) stranded the commit with "no run
+    // address registered". This wires a REAL `deploymentAddressRegistry`
+    // through the register/unregister hooks -- the same registry the sidecar
+    // wires in `index.ts` -- and asserts the mapping survives the reclaim, so
+    // a subsequent `resolve` still returns the address the commit needs.
+    const dataDir = await createTempBaseDir("sidecar-self-term-mapping-data-");
+    const head = "run_selfterm_mapping@example.com";
+    const runId = deriveDeploymentId(head);
+
+    const registry = createDeploymentAddressRegistry();
+
+    const spawner = makeReadyDrivingSpawner(9770);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      registerDeployment: ({ runId: id, agentAddress }) => {
+        registry.record(id, agentAddress);
+      },
+      unregisterDeployment: ({ runId: id }) => {
+        registry.unregister(id);
+      },
+    });
+
+    const deployPromise = router.deploy(singleStepFrame(head, "wf-st-mapping"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+    // The deploy recorded the mapping before spawn (the replay's pack push
+    // resolves it), so it is resolvable while the supervisor is live.
+    expect(registry.resolve(runId)).toBe(head);
+
+    // Drive the supervisor to a self-termination via the recycle-failure path.
+    spawner.failNextSpawn();
+    await spawner.recycleRequestFor(0);
+    const deadline = Date.now() + 5_000;
+    while (router.activeAddresses().includes(head) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(router.activeAddresses()).toEqual([]);
+
+    // The reclaim dropped the redeploy gate but RETAINED the address mapping:
+    // the supervisor's own terminal `RunFailed` commit is the sole remaining
+    // consumer and must still resolve the address. A reclaim that unregistered
+    // the mapping would fail this assertion (and strand that commit).
+    expect(registry.resolve(runId)).toBe(head);
   });
 
   test("restore skips a record whose address does not derive its directory name", async () => {
