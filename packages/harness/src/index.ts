@@ -40,3 +40,10 @@ export type {
   ConnectorRouterOptions,
   RouteDecision,
 } from "./connector-router";
+
+export { driveConnectorReplies } from "./reply-drain";
+export type {
+  AgentEventStream,
+  ConnectorReplyDrain,
+  ConnectorReplyDrainOpts,
+} from "./reply-drain";

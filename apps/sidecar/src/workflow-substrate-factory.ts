@@ -53,6 +53,8 @@ import {
   builtinCredentialProviders,
   createCredentialProviderRegistry,
   createHarnessRuntimeCapabilities,
+  driveConnectorReplies,
+  type AgentEventStream,
   type CredentialProviderRegistry,
 } from "@intx/harness";
 import { createSSHSignature } from "@intx/crypto";
@@ -2232,6 +2234,35 @@ export function createSidecarSubstrateFactory(
           }
         : undefined;
 
+    // Connector reply drain (design §3c). When the deployment is
+    // warm-kept, drive the warm agent's outbound replies through the shared
+    // connector reply drain: on each `connector.reply` the agent emits,
+    // compose a threaded reply from the durable store's connector thread,
+    // send it through the outbound bridge (`bridge.submit`, the same signed-
+    // send path the agent's own supervisor-backed transport uses), then
+    // advance the thread from the receipt. Established once per warm agent
+    // over its lifetime stream; the returned `done` promise is what the
+    // step-invoker folds into the warm entry so eviction drains it. The key
+    // is the step identity, the same key the durable store is filed under.
+    // Absent for a multi-step deploy (no durable registry).
+    const driveReplies:
+      | ((key: string, stream: AgentEventStream) => Promise<void>)
+      | undefined =
+      durableConversation !== undefined
+        ? (key: string, stream: AgentEventStream) =>
+            driveConnectorReplies({
+              stream,
+              composeReply: () => durableConversation.get(key).composeReply(),
+              send: (message) =>
+                env.outboundMailBridge.submit(
+                  env.spawn.mailboxAddress,
+                  message,
+                ),
+              onReplySent: (receipt) =>
+                durableConversation.get(key).onReplySent(receipt),
+            }).done
+        : undefined;
+
     const invokeStep: RunWorkflowChildBindings["invokeStep"] = async (
       req,
       onEvent,
@@ -2261,6 +2292,7 @@ export function createSidecarSubstrateFactory(
         ...(warmCache !== undefined ? { warmCache } : {}),
         ...(onRunBoundary !== undefined ? { onRunBoundary } : {}),
         ...(seedInbound !== undefined ? { seedInbound } : {}),
+        ...(driveReplies !== undefined ? { driveReplies } : {}),
       })(req);
 
     const evaluateGrantsAdapter: GrantEvaluator = async ({
