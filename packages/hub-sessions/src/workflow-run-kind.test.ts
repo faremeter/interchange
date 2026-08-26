@@ -29,6 +29,9 @@ import {
   WORKFLOW_RUN_GRANTS_FILE,
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_WATERMARK_FILE,
+  WORKFLOW_RUN_MAILBOX_PREFIX,
+  WORKFLOW_RUN_MAILBOX_INBOX_DIR,
+  WORKFLOW_RUN_MAILBOX_INDEX_FILE,
 } from "./workflow-run-kind";
 import { createRepoStore } from "./repo-store";
 import type { KindHandler, Principal, RepoId } from "./repo-store";
@@ -1516,6 +1519,185 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
     expect(deleted.ok).toBe(false);
     if (deleted.ok) throw new Error("unreachable");
     expect(deleted.reason).toMatch(/present in the prior tree is missing/);
+  });
+});
+
+describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
+  // The substrate mailbox backing commits the warm agent's durable inbox
+  // under `mailbox/INBOX/`: a MUTABLE `index.json` rewritten on each flush
+  // plus IMMUTABLE `<uid>.eml` message blobs carrying raw signed bytes.
+  // `<uid>` is a decimal integer >= 1. Message blobs are held append-only
+  // via prior-tree byte equality, mirroring the `runs/<runId>/blobs/`
+  // discipline; the index is exempt.
+
+  const INBOX = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}`;
+
+  function mailboxTree(
+    entries: Record<string, string>,
+  ): Record<string, string> {
+    const tree: Record<string, string> = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+    };
+    for (const [rel, body] of Object.entries(entries)) {
+      tree[`${INBOX}/${rel}`] = body;
+    }
+    return tree;
+  }
+
+  test("accepts a well-formed mailbox with an index and a message", async () => {
+    const r = await validate(
+      mailboxTree({
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+        "1.eml": "raw-signed-message-bytes",
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts a mailbox alongside runs and agent-state siblings", async () => {
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
+          0,
+          "RunStarted",
+        ),
+        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]: "{}",
+        [`${INBOX}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]: JSON.stringify({
+          messages: [1, 2],
+        }),
+        [`${INBOX}/1.eml`]: "first",
+        [`${INBOX}/2.eml`]: "second",
+      },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  test("accepts a mutated index alongside an immutable message", async () => {
+    const prior = mailboxTree({
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+      "1.eml": "raw-bytes",
+    });
+    const prospective = mailboxTree({
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1, 2] }),
+      "1.eml": "raw-bytes",
+      "2.eml": "more-bytes",
+    });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects an unexpected entry directly under mailbox/", async () => {
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [`${WORKFLOW_RUN_MAILBOX_PREFIX}/OUTBOX/1.eml`]: "bytes",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/mailbox subtree contains unexpected entry/);
+  });
+
+  test("rejects an unexpected entry under mailbox/INBOX/", async () => {
+    const r = await validate(
+      mailboxTree({
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: "{}",
+        "notes.txt": "stray",
+      }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/does not match .* or <uid>\.eml/);
+  });
+
+  test("rejects a message uid of zero", async () => {
+    const r = await validate(mailboxTree({ "0.eml": "bytes" }));
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/does not match .* or <uid>\.eml/);
+  });
+
+  test("rejects a message uid with a leading zero", async () => {
+    const r = await validate(mailboxTree({ "01.eml": "bytes" }));
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/does not match .* or <uid>\.eml/);
+  });
+
+  test("rejects a nested directory in place of a message file", async () => {
+    const r = await validate(mailboxTree({ "1.eml/deep.bin": "bytes" }));
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mailbox message .* is a directory; each message must be a single \.eml file/,
+    );
+  });
+
+  test("rejects a directory in place of the index file", async () => {
+    const r = await validate(
+      mailboxTree({ [`${WORKFLOW_RUN_MAILBOX_INDEX_FILE}/nested.json`]: "{}" }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/the mailbox index must be a single file/);
+  });
+
+  test("rejects a blob dangling directly at mailbox/INBOX", async () => {
+    // A blob committed at `mailbox/INBOX` (no entries beneath it) lists as
+    // an empty directory and must be rejected, mirroring the agent-state
+    // and mail-parts dangling-blob guards.
+    const r = await validate({
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      [INBOX]: "not-a-directory",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/is a blob, not a directory/);
+  });
+
+  test("rejects a mutated message whose prior-tree bytes differ", async () => {
+    const prior = mailboxTree({ "1.eml": "original-bytes" });
+    const prospective = mailboxTree({ "1.eml": "mutated-bytes!" });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mailbox message mailbox\/INBOX\/1\.eml bytes diverge from the prior tree/,
+    );
+  });
+
+  test("accepts an idempotent re-write of a message with identical bytes", async () => {
+    const bytes = "stable-bytes";
+    const prior = mailboxTree({ "1.eml": bytes });
+    const prospective = mailboxTree({ "1.eml": bytes });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects deleting a prior message (append-only)", async () => {
+    const prior = mailboxTree({
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+      "1.eml": "raw-bytes",
+    });
+    // Prospective keeps the index but drops the message blob.
+    const prospective = mailboxTree({
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [] }),
+    });
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(
+      /mailbox message mailbox\/INBOX\/1\.eml present in the prior tree is missing/,
+    );
+  });
+
+  test("rejects dropping the whole mailbox subtree that held messages", async () => {
+    const prior = mailboxTree({ "1.eml": "raw-bytes" });
+    const prospective = { [WORKFLOW_RUN_GITIGNORE_PATH]: "" };
+    const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/present in the prior tree is missing/);
   });
 });
 
