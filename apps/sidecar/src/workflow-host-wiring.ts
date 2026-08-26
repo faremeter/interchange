@@ -757,6 +757,17 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
   /**
+   * Self-termination sink forwarded to the supervisor's `onSelfTerminate`
+   * binding. The supervisor invokes it when it drives itself to a terminal
+   * phase (crash-loop latch, channel crash, recycle failure); production wiring
+   * routes it to the deploy router's address reclaim. Absent means a
+   * self-termination is not surfaced to the host.
+   */
+  onSelfTerminate?: (info: {
+    phase: "stopped" | "crash-looping";
+    reason: string;
+  }) => void;
+  /**
    * Predicate consulted at the `onRunStart` grants barrier: returns `true`
    * for a runId whose `run.grants` write was attempted and FAILED, so the
    * per-run grants file the run needs never landed. The barrier fails such a
@@ -1316,6 +1327,57 @@ export function createSidecarDeployRouter(deps: {
     if (existing === agentAddress) slugClaims.delete(runId);
   }
 
+  // Reclaim a deployment address whose supervisor drove ITSELF to a terminal
+  // phase (crash-loop latch, channel crash, recycle failure) without an
+  // operator undeploy. Drops the address's runtime/routing state so a redeploy
+  // of the same address succeeds without a manual undeploy: the `has`-guarded
+  // `activeSupervisors` entry is the redeploy gate, and `transport.register`
+  // throws on a double-register, so both must be released here. The routers,
+  // deployment mapping, and slug are released too so a frame racing the reclaim
+  // is rejected at the boundary rather than dispatched into the dead supervisor,
+  // and no stale mapping resolves to the dead deployment.
+  //
+  // Two deliberate invariants:
+  //   - This NEVER calls back into `wired.supervisor.*`. It runs as the
+  //     supervisor's own `onSelfTerminate` sink, i.e. re-entrantly during the
+  //     supervisor's terminal teardown; a call back in (e.g. `shutdown()`)
+  //     would re-enter that teardown. The supervisor has already terminated, so
+  //     there is nothing to shut down.
+  //   - It does NOT delete the durable run record or on-disk state (unlike the
+  //     `undeploy` hook). The run record mirrors the hub's deployment intent,
+  //     and a self-termination is not a hub-initiated undeploy: the hub still
+  //     believes the address is deployed. Leaving the record lets a boot restore
+  //     re-spawn a fresh supervisor for the address, and a same-process redeploy
+  //     overwrites the record destructively. This preserves the pre-existing
+  //     boot-restore behavior exactly -- a self-terminated deployment already
+  //     left its record on disk before this reclaim existed; the reclaim only
+  //     drops in-memory routing state, never durable state.
+  //
+  // Fully synchronous with no `await` between the guard and the mutations, so it
+  // is idempotent and cannot interleave with a concurrent operator `undeploy` of
+  // the same address (both are "if present, drop").
+  function reclaimSelfTerminatedSupervisor(args: {
+    runId: string;
+    agentAddress: string;
+  }): void {
+    if (!activeSupervisors.has(args.agentAddress)) return;
+    // Drop racing frames at the router boundary first, then unwind the
+    // underlying registrations -- the same ordering the undeploy hook uses.
+    deps.multistepMailRouter?.unregister(args.agentAddress);
+    deps.multistepSignalRouter?.unregister(args.agentAddress);
+    deps.multistepDrainRouter?.unregister(args.agentAddress);
+    deps.multistepGrantsRouter?.unregister(args.agentAddress);
+    deps.multistepSourcesRouter?.unregister(args.agentAddress);
+    deps.multistepCredentialsRouter?.unregister(args.agentAddress);
+    activeSupervisors.delete(args.agentAddress);
+    deps.transport.unregister(args.agentAddress);
+    releaseSlug(args.runId, args.agentAddress);
+    deps.unregisterDeployment({
+      runId: args.runId,
+      agentAddress: args.agentAddress,
+    });
+  }
+
   /**
    * Materialize an extracted onTrigger body's per-step inference-source pins to
    * `${dataDir}/assets/workflow/<bodyRef>/sources.json`. A body child runs
@@ -1657,6 +1719,15 @@ export function createSidecarDeployRouter(deps: {
         // hub-link-backed publisher so a `signal.correlation.register` frame
         // reaches the hub for the parked run.
         onSuspensionRegister: publishSuspension,
+        // Reclaim the deployment address when the supervisor drives itself to a
+        // terminal phase (crash-loop latch, channel crash, recycle failure) so
+        // the dead supervisor is dropped from `activeSupervisors` and the
+        // address is redeployable without a manual undeploy first.
+        onSelfTerminate: () =>
+          reclaimSelfTerminatedSupervisor({
+            runId,
+            agentAddress: spec.agentAddress,
+          }),
         substrateEnv,
         // Recomputed on every spawn AND recycle respawn. The rotation
         // handler below revises `currentSources` in place, so a respawn
@@ -2609,6 +2680,9 @@ export function createSidecarWorkflowSupervisor(
       : {}),
     ...(opts.onSuspensionRegister !== undefined
       ? { onSuspensionRegister: opts.onSuspensionRegister }
+      : {}),
+    ...(opts.onSelfTerminate !== undefined
+      ? { onSelfTerminate: opts.onSelfTerminate }
       : {}),
     ...(opts.deriveStepRepoId !== undefined
       ? { deriveStepRepoId: opts.deriveStepRepoId }

@@ -1997,7 +1997,16 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       childSender?: ReturnType<typeof createControlChannelSender>;
     };
     const spawns: Spawn[] = [];
+    // One-shot spawn failure. When armed, the NEXT spawner invocation throws
+    // instead of returning a handle, then disarms. Used to fail a recycle
+    // respawn so the supervisor tears down to `stopped` (a self-termination)
+    // without waiting on a ready-handshake timeout.
+    let failNext = false;
     const spawner: SubprocessSpawner = ({ env }) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("makeReadyDrivingSpawner: armed spawn failure");
+      }
       const supervisorToChild = createMemoryNdjsonStream();
       const childToSupervisor = createMemoryNdjsonStream();
       const eventChildToSupervisor = createMemoryFrameStream();
@@ -2084,6 +2093,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           type: "recycle.request",
           data: { reason: "sources-rotation-recycle" },
         });
+      },
+      // Arm a one-shot spawn failure for the next spawner invocation.
+      failNextSpawn(): void {
+        failNext = true;
       },
     };
   }
@@ -2511,6 +2524,98 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(spawner.spawnCount()).toBe(1);
     expect(await recordExists(dataDir, anchorRunId)).toBe(true);
     expect(isRegistered(transport, head)).toBe(true);
+  });
+
+  test("a self-terminated deployment is reclaimed so its address redeploys without a manual undeploy", async () => {
+    const dataDir = await createTempBaseDir("sidecar-self-term-redeploy-data-");
+    const head = "run_selfterm@example.com";
+    const anchorRunId = deriveDeploymentId(head);
+
+    const spawner = makeReadyDrivingSpawner(9750);
+    const { router, transport } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    // Deploy and bring the supervisor to `running`.
+    const deployPromise = router.deploy(singleStepFrame(head, "wf-selfterm"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+    expect(router.activeAddresses()).toEqual([head]);
+    expect(isRegistered(transport, head)).toBe(true);
+
+    // Drive a self-termination: a child-initiated recycle whose respawn spawn
+    // fails tears the supervisor down to `stopped` through the recycle-failure
+    // path, which fires `onSelfTerminate`. That drives the reclaim.
+    spawner.failNextSpawn();
+    await spawner.recycleRequestFor(0);
+
+    // The reclaim drops the address from the active map and releases its
+    // transport registration. The self-termination runs asynchronously off the
+    // supervisor's control pump, so poll for the reclaim to settle.
+    const deadline = Date.now() + 5_000;
+    while (router.activeAddresses().includes(head) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(router.activeAddresses()).toEqual([]);
+    expect(isRegistered(transport, head)).toBe(false);
+
+    // The redeploy succeeds with no prior undeploy: the map slot is free and
+    // the transport is no longer registered (a stale registration would make
+    // the spawn core's `transport.register` throw "already registered"). The
+    // self-terminated deployment left its durable record and its step-state
+    // scratch behind; the redeploy overwrites the record destructively.
+    expect(await recordExists(dataDir, anchorRunId)).toBe(true);
+    const redeployPromise = router.deploy(singleStepFrame(head, "wf-selfterm"));
+    await spawner.driveReadyFor(1);
+    await redeployPromise;
+    expect(router.activeAddresses()).toEqual([head]);
+    expect(isRegistered(transport, head)).toBe(true);
+    expect(spawner.spawnCount()).toBe(2);
+  });
+
+  test("a reclaimed self-terminated address survives a following operator undeploy", async () => {
+    const dataDir = await createTempBaseDir("sidecar-self-term-undeploy-data-");
+    const head = "run_selfterm_undeploy@example.com";
+
+    const spawner = makeReadyDrivingSpawner(9760);
+    const { router, transport } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    const deployPromise = router.deploy(
+      singleStepFrame(head, "wf-st-undeploy"),
+    );
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+
+    spawner.failNextSpawn();
+    await spawner.recycleRequestFor(0);
+    const deadline = Date.now() + 5_000;
+    while (router.activeAddresses().includes(head) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    expect(router.activeAddresses()).toEqual([]);
+
+    // An operator undeploy following the reclaim is a clean no-op: the reclaim
+    // already dropped the supervisor and the transport registration, so
+    // undeploy's idempotent unregisters neither throw nor double-remove. This
+    // is the observable form of the reclaim/undeploy race resolution -- both
+    // are "if present, drop", so the loser no-ops.
+    const undeploy = router.undeploy;
+    if (undeploy === undefined) {
+      throw new Error("router.undeploy is undefined");
+    }
+    await expect(
+      undeploy({
+        type: "agent.undeploy",
+        agentAddress: head,
+        reason: "operator undeploy after self-termination",
+      }),
+    ).resolves.toBeUndefined();
+    expect(router.activeAddresses()).toEqual([]);
+    expect(isRegistered(transport, head)).toBe(false);
   });
 
   test("restore skips a record whose address does not derive its directory name", async () => {
