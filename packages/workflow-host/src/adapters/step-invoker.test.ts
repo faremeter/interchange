@@ -995,6 +995,120 @@ describe("workflow-host StepInvoker adapter - warm-keep mode", () => {
   });
 });
 
+describe("workflow-host StepInvoker adapter - warm reply drain", () => {
+  test("drives replies once over the agent lifetime stream and drains at eviction", async () => {
+    const warmCache = createWarmAgentCache();
+
+    // A warm stub whose stream carries a `connector.reply` and ends only at
+    // close(), modeling the agent's lifetime event stream the reply drain
+    // consumes.
+    let endStream: () => void = () => undefined;
+    const streamEnded = new Promise<void>((resolve) => {
+      endStream = resolve;
+    });
+    let closeCount = 0;
+    const agent: Agent = {
+      async send(content): Promise<SendResult> {
+        const text = typeof content === "string" ? content : "message";
+        const reply = `echo:${text}`;
+        return {
+          type: "reply",
+          reply,
+          turn: {
+            role: "assistant",
+            content: [{ type: "text", text: reply }],
+            model: STUB_SOURCE.model,
+            timestamp: 0,
+          },
+        };
+      },
+      async *stream() {
+        yield {
+          type: "connector.reply",
+          seq: 1,
+          data: { content: "outbound" },
+        };
+        await streamEnded;
+      },
+      deliver(_message: InboundMessage) {
+        throw new Error("stub deliver() not used");
+      },
+      async close() {
+        closeCount += 1;
+        endStream();
+      },
+      setSource(_source: InferenceSource) {
+        throw new Error("stub setSource() not used");
+      },
+      setSources(_sources: InferenceSource[], _defaultSource: string) {
+        throw new Error("stub setSources() not used");
+      },
+      async history() {
+        return [];
+      },
+      async checkpoints() {
+        return [];
+      },
+      async readAt() {
+        return [];
+      },
+      blobReader: stubBlobReader(),
+    };
+
+    let driveCalls = 0;
+    const capturedKeys: string[] = [];
+    const observed: string[] = [];
+    let drainSettled = false;
+    const driveReplies = async (
+      key: string,
+      stream: ReturnType<Agent["stream"]>,
+    ): Promise<void> => {
+      driveCalls += 1;
+      capturedKeys.push(key);
+      for await (const event of stream) {
+        observed.push(event.type);
+      }
+      // Extra async gap after the stream ends: if the invoker did NOT fold
+      // this promise into the warm entry, `evictAll` would return before it
+      // settles, so `drainSettled` would still be false below.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      drainSettled = true;
+    };
+
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+      warmCache,
+      driveReplies,
+    });
+
+    await invoker(buildRequest({ input: "first message" }));
+    await invoker(buildRequest({ input: "second message" }));
+
+    // The drain is established exactly once -- at the first-message build --
+    // keyed by the step id, and reused across later messages rather than
+    // re-subscribed per send.
+    expect(driveCalls).toBe(1);
+    expect(capturedKeys).toEqual(["step-1"]);
+
+    // Eviction drains the reply loop alongside the observability forwarder:
+    // the stub drain settles only after the stream ends (at close) plus a
+    // tick, and it is settled once `evictAll` returns -- proving the invoker
+    // folded the drain's promise into the warm entry the cache awaits.
+    await warmCache.evictAll("test teardown");
+    expect(closeCount).toBe(1);
+    expect(drainSettled).toBe(true);
+    // The stream handed to the drain is the agent's live stream -- it carried
+    // the `connector.reply` the drain sends.
+    expect(observed).toContain("connector.reply");
+  });
+});
+
 describe("workflow-host StepInvoker adapter - resume send path", () => {
   test("a resume request sends the correlated decision and returns the resumed reply", async () => {
     // The resumed reactor's reply turn -- what the step output should carry.

@@ -211,6 +211,29 @@ export interface WorkflowStepInvokerOpts {
    */
   seedInbound?: (key: string, message: InboundMessage) => Promise<void>;
   /**
+   * Connector reply-drain hook for the warm path (design §3c). When supplied,
+   * the adapter invokes it ONCE -- at the warm agent's first-message build --
+   * with the step identity (`authzContext.stepId`, the same key the warm
+   * cache, seed, and run-boundary hooks use) and the agent's lifetime event
+   * stream. The sidecar wires this to the shared connector reply drain: on
+   * every `connector.reply` the agent emits, the drain composes a threaded
+   * reply from the durable store's connector thread and sends it through the
+   * supervisor-backed outbound bridge, then advances the thread from the send
+   * receipt.
+   *
+   * The returned promise settles when the drain loop exits -- which happens
+   * when the agent's stream ends at eviction. The adapter folds it into the
+   * warm entry's event-forward promise so the warm cache drains the reply
+   * loop alongside the observability forwarder when it closes the agent.
+   *
+   * Omitted on the cold path (a torn-down per-step agent has no cross-message
+   * connector thread) and whenever the deployment is not warm-kept.
+   */
+  driveReplies?: (
+    key: string,
+    stream: ReturnType<Agent["stream"]>,
+  ) => Promise<void>;
+  /**
    * Reader for the run's inbound-mail parts. When the step input is a decoded
    * `Mail`, the adapter resolves each part's `ref` to its committed bytes
    * through this reader and delivers a real `InboundMessage` (text and/or
@@ -362,7 +385,24 @@ async function invokeWarmStep(
       const sink = eventSinkRef.current;
       if (sink !== null) sink(event);
     });
-    warmCache.store(key, agent, eventSinkRef, eventForward);
+    // Establish the connector reply drain over the agent's lifetime stream
+    // (design §3c). A second independent consumer of the agent's stream
+    // alongside the observability forwarder: on each `connector.reply` it
+    // composes a threaded reply from the durable connector thread and sends
+    // it through the outbound bridge. Fold its settle promise into the stored
+    // forwarder promise so the warm cache drains BOTH when it closes the agent
+    // at eviction -- the cache awaits one promise per entry, so a caller that
+    // wants the reply loop torn down with the agent combines the two here.
+    // Present only on the warm mail path; a warm deployment with no durable
+    // connector state omits it.
+    const lifetimeForward =
+      opts.driveReplies !== undefined
+        ? Promise.all([
+            eventForward,
+            opts.driveReplies(key, agent.stream()),
+          ]).then(() => undefined)
+        : eventForward;
+    warmCache.store(key, agent, eventSinkRef, lifetimeForward);
     // Re-apply the live source table to the just-built agent. A rotation
     // that arrived during the (async) build hit the still-empty cache as a
     // no-op `applySources` while the build had already captured the prior

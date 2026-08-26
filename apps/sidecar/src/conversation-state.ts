@@ -146,6 +146,7 @@ import {
   type ConversationTurn,
   type InboundMessage,
   type PendingOperation,
+  type SendReceipt,
 } from "@intx/types/runtime";
 
 const logger = getLogger(["sidecar", "workflow-child", "conversation-state"]);
@@ -328,6 +329,18 @@ export interface DurableConversationStore {
    * mail loop's reply drain reads this to address its outbound reply.
    */
   composeReply(): ConnectorReplyParts;
+  /**
+   * Advance the connector thread after a reply was sent. Forwards to the
+   * router's `onReplySent` (which moves `lastMessageId` to the sent reply's
+   * Message-ID so the next inbound continuation matches) and flushes the
+   * advanced connector state into the local store's metadata the same way
+   * `seedInbound` does, so `lastMessageId` persists across turns and across a
+   * child respawn. Called by the warm mail loop's reply drain after its
+   * outbound send settles. Throws `NoActiveConnectorThreadError` when no
+   * thread is active -- advancing outbound state has no meaning without a
+   * seeded thread. A metadata write failure surfaces.
+   */
+  onReplySent(receipt: SendReceipt): Promise<void>;
 }
 
 export async function createDurableConversationStore(
@@ -410,6 +423,10 @@ export async function createDurableConversationStore(
 
   function composeReply(): ConnectorReplyParts {
     return connectorRouter.composeReply();
+  }
+
+  function onReplySent(receipt: SendReceipt): Promise<void> {
+    return serializeStateOp(() => runReplySent(receipt));
   }
 
   function substrateAgentStateFsDir(): string {
@@ -679,12 +696,38 @@ export async function createDurableConversationStore(
     });
   }
 
+  // Advance the connector thread after a reply was sent and flush the
+  // resulting connector state into the local store's metadata. `onReplySent`
+  // moves `lastMessageId` to the reply's Message-ID and fires the router's
+  // `onStateChanged`, which enqueues a change-driven mirror behind this op on
+  // the shared serialization tail; because that mirror reads the connector
+  // state from the local store's metadata (not from the router), the metadata
+  // write below is what makes the advanced state reach the substrate. The
+  // write preserves the reactor's staged pendingOperations / tokenUsage -- an
+  // outbound advance touches only connectorState. `onReplySent` throws when no
+  // thread is active, which surfaces to the reply drain's failure callback
+  // rather than persisting a phantom advance.
+  async function runReplySent(receipt: SendReceipt): Promise<void> {
+    connectorRouter.onReplySent(receipt);
+
+    const metadata = await baseStorage.loadMetadata();
+    baseStorage.setConnectorState(connectorRouter.snapshot());
+    await baseStorage.writeMetadata({
+      pendingOperations: metadata.pendingOperations,
+      tokenUsage: metadata.tokenUsage,
+    });
+    await baseStorage.commit({
+      message: `advance connector thread after reply for ${opts.agentKey}`,
+    });
+  }
+
   return {
     storage: baseStorage,
     restoreFromSubstrate,
     mirrorToSubstrate,
     seedInbound,
     composeReply,
+    onReplySent,
   };
 }
 
