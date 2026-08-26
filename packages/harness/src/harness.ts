@@ -34,6 +34,7 @@ import type {
 } from "@intx/types/runtime";
 
 import { createConnectorRouter, type RouteDecision } from "./connector-router";
+import { driveConnectorReplies } from "./reply-drain";
 
 const logger = getLogger(["interchange", "harness"]);
 
@@ -352,8 +353,8 @@ export async function createHarness<EnvReq extends MailEnv>(
   const agent = await createAgent(def, agentEnv);
 
   // From here through the final `return`, the agent is constructed
-  // and the workdir lock is held. Anything that throws -- the reply
-  // drain's IIFE-construction expression, `transport.watch()`,
+  // and the workdir lock is held. Anything that throws -- the
+  // `driveConnectorReplies` setup, `transport.watch()`,
   // anything in the watch callback's synchronous registration -- has
   // to release the lock by closing the agent before re-raising; the
   // caller never sees the agent and cannot do it themselves.
@@ -367,60 +368,24 @@ export async function createHarness<EnvReq extends MailEnv>(
     // else flows past unobserved. Other consumers can subscribe to the
     // exposed `stream()` method to see the same events.
     //
-    // Reply sends are serialized through `replyChain` so two replies
-    // fired in quick succession do not interleave their
-    // composeReply / transport.send / onReplySent sequence -- the
-    // second reply waits for the first's receipt to land in the router
-    // before composing its own.
-    let stopReplyDrain = false;
-    let replyChain: Promise<void> = Promise.resolve();
-    const replyDrainDone = (async () => {
-      try {
-        for await (const event of agent.stream()) {
-          if (stopReplyDrain) break;
-          if (event.type === "connector.reply") {
-            const replyContent = event.data.content;
-            replyChain = replyChain.then(async () => {
-              try {
-                const parts = connectorRouter.composeReply();
-                const receipt = await transport.send({
-                  ...parts,
-                  content: replyContent,
-                  type: "conversation.message",
-                });
-                connectorRouter.onReplySent(receipt);
-              } catch (cause) {
-                // The reply is dropped and the router state stays at
-                // its pre-send value. Surface the loss to the caller's
-                // optional onReplySendFailed callback in addition to
-                // the operator-facing log so programmatic consumers
-                // (retries, alerting) can observe what logger.error
-                // alone hides.
-                logger.error`Failed to send connector reply: ${cause}`;
-                if (env.onReplySendFailed !== undefined) {
-                  await invokeReplySendFailed(env.onReplySendFailed, cause);
-                }
-              }
-            });
-          }
-        }
-        // Drain any pending reply before the loop exits so close() sees
-        // a settled state.
-        await replyChain;
-      } catch (cause) {
-        // The agent's stream throws on backpressure violations; log and
-        // exit the drain. The reply path stops working but the rest of
-        // the harness keeps running until close() tears it down.
-        // Surface the loss to the caller's optional
-        // `onReplyDrainTerminated` callback so programmatic consumers
-        // (alerting, watchdogs) can observe what `logger.warn` alone
-        // hides.
-        logger.warn`Reply-drain stream terminated: ${cause}`;
-        if (env.onReplyDrainTerminated !== undefined) {
-          await invokeReplyDrainTerminated(env.onReplyDrainTerminated, cause);
-        }
-      }
-    })();
+    // The shared `driveConnectorReplies` helper owns the loop: reply
+    // serialization (a second reply waits for the first's receipt to
+    // advance the router before composing its own), per-reply failure
+    // surfacing to `onReplySendFailed`, and abnormal-termination
+    // surfacing to `onReplyDrainTerminated`. The warm workflow-host
+    // path drives replies through the same helper.
+    const replyDrain = driveConnectorReplies({
+      stream: agent.stream(),
+      composeReply: () => connectorRouter.composeReply(),
+      send: (message) => transport.send(message),
+      onReplySent: (receipt) => connectorRouter.onReplySent(receipt),
+      ...(env.onReplySendFailed !== undefined
+        ? { onSendFailed: env.onReplySendFailed }
+        : {}),
+      ...(env.onReplyDrainTerminated !== undefined
+        ? { onTerminated: env.onReplyDrainTerminated }
+        : {}),
+    });
 
     // Delete a message from the INBOX after it has been delivered to the
     // reactor.
@@ -522,12 +487,12 @@ export async function createHarness<EnvReq extends MailEnv>(
       if (stopped) return;
       stopped = true;
       unsubscribe();
-      stopReplyDrain = true;
+      replyDrain.stop();
       await agent.close();
       // The reply-drain loop exits once the underlying stream closes
       // (close() above terminates streamConsumers). Awaiting here makes
       // close idempotent and lets callers rely on a settled state.
-      await replyDrainDone;
+      await replyDrain.done;
     }
 
     const harness: Harness = {
