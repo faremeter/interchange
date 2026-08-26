@@ -828,7 +828,16 @@ export function createWorkflowSupervisor(
       return;
     }
     logger.error`workflow-process channel crash: ${reason}`;
-    void shutdownInternal({ reason });
+    // Only a live, registered supervisor driven down by a channel crash is a
+    // self-termination the host must reclaim, and that is `recycling`:
+    // `running` took the kill branch above (its exit reaches the crash-loop
+    // latch, which carries its own flag), `starting` is the pre-registration
+    // initial spawn handshake whose failure the deploy unwind owns, and
+    // `stopping` is a teardown already in flight (a host `shutdown()`, or a
+    // self-termination already firing). An allowlist, not a denylist, so a
+    // future phase defaults to no self-terminate rather than a spurious one.
+    const selfTerminated = state.phase === "recycling";
+    void shutdownInternal({ reason, selfTerminated });
   }
 
   // Prune crash timestamps older than the sliding window relative to `nowMs`.
@@ -984,6 +993,7 @@ export function createWorkflowSupervisor(
       await shutdownInternal({
         reason: `crash-loop: ${reason}`,
         terminalPhase: "crash-looping",
+        selfTerminated: true,
       });
       // Commit the RunFailed tombstone AFTER teardown: shutdownInternal has
       // quiesced the drain accumulators (stop + await disposed), so the
@@ -3090,6 +3100,12 @@ export function createWorkflowSupervisor(
     // shutdown); the crash-loop latch passes `crash-looping` so the terminal
     // state records why the deployment is down.
     terminalPhase?: "stopped" | "crash-looping";
+    // True when the supervisor is driving ITSELF to a terminal phase (the
+    // crash-loop latch, a channel crash off `running`, a recycle failure) as
+    // opposed to the host requesting `shutdown()`. Gates the `onSelfTerminate`
+    // fire below. The terminal phase alone cannot carry this: a self-terminated
+    // and a host-requested teardown both land in `stopped`.
+    selfTerminated?: boolean;
   }): Promise<void> {
     if (
       state.phase === "idle" ||
@@ -3293,6 +3309,25 @@ export function createWorkflowSupervisor(
         });
       }
       state = { phase: opts.terminalPhase ?? "stopped" };
+    }
+    // Surface a self-termination to the host after the terminal transition is
+    // committed. The already-terminal early-return at the top dedups the common
+    // case, but it does NOT cover the `stopping` window, so two self-terminating
+    // callers interleaving through teardown can each fire (e.g. an onChildCrash
+    // during `recycling` plus the recycle-failure catch). The sink is therefore
+    // idempotent-required, not exactly-once; the reclaim it drives absorbs a
+    // repeat by design. Wrapped so a throwing sink cannot re-escape here and
+    // break the documented shutdown totality.
+    if (opts.selfTerminated === true) {
+      try {
+        bindings.onSelfTerminate?.({
+          phase: opts.terminalPhase ?? "stopped",
+          reason: opts.reason,
+        });
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.warn`onSelfTerminate sink threw: ${message}`;
+      }
     }
     logger.info`supervisor shutdown complete (${opts.reason})`;
   }
@@ -3700,6 +3735,7 @@ export function createWorkflowSupervisor(
       logger.error`recycle failed; tearing supervisor down: ${message}`;
       await shutdownInternal({
         reason: `recycle failed: ${message}`,
+        selfTerminated: true,
       }).catch((shutdownCause) => {
         const inner =
           shutdownCause instanceof Error

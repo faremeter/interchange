@@ -477,6 +477,10 @@ type BootSupervisorOpts = {
    * map. Tests that exercise the merge round-trip set this to true.
    */
   invokeMerge?: boolean;
+  onSelfTerminate?: (info: {
+    phase: "stopped" | "crash-looping";
+    reason: string;
+  }) => void;
 };
 
 // The supervisor after spawn but before the child's `ready` frame: the
@@ -558,6 +562,9 @@ async function bootSupervisorToReady(
     deriveStepAddress: ({ runId, stepId }) => `${runId}-${stepId}@example.com`,
     ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     inboxPrimitives,
+    ...(opts.onSelfTerminate !== undefined
+      ? { onSelfTerminate: opts.onSelfTerminate }
+      : {}),
   };
 
   const supervisor = createWorkflowSupervisor(bindings);
@@ -1135,5 +1142,28 @@ describe("onChildCrash logs the interpolated crash reason", () => {
     );
     expect(record).toBeDefined();
     expect(capturedErrors().some((m) => m.includes("{reason}"))).toBe(false);
+  });
+
+  test("a pre-ready channel crash does not fire onSelfTerminate", async () => {
+    const selfTerminations: {
+      phase: "stopped" | "crash-looping";
+      reason: string;
+    }[] = [];
+    const seam = await bootSupervisorToReady({
+      prefix: "crash-starting-noselfterm-",
+      onSelfTerminate: (info) => selfTerminations.push(info),
+    });
+
+    // A non-JSON line before the ready handshake drives onChildCrash while the
+    // phase is still `starting`. That is the INITIAL spawn failing -- which the
+    // deploy unwind owns -- not a self-termination of a registered deployment
+    // the host must reclaim, so the sink must stay silent even though the
+    // teardown lands in `stopped`.
+    seam.childToSupervisor.inject("not-json{{{");
+    await expect(seam.spawnPromise).rejects.toThrow();
+
+    // Give any errant fire a chance to land before asserting silence.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(selfTerminations).toEqual([]);
   });
 });

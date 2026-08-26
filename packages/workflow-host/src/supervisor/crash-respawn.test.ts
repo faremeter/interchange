@@ -459,6 +459,10 @@ async function buildBindings(opts: {
   setTimer?: (cb: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   writtenPrefixes?: string[];
+  onSelfTerminate?: (info: {
+    phase: "stopped" | "crash-looping";
+    reason: string;
+  }) => void;
 }): Promise<WorkflowSupervisorBindings> {
   const repoStore = createStubRepoStore(opts.baseDir, opts.writtenPrefixes);
   return {
@@ -498,6 +502,9 @@ async function buildBindings(opts: {
       : {}),
     ...(opts.setTimer !== undefined ? { setTimer: opts.setTimer } : {}),
     ...(opts.clearTimer !== undefined ? { clearTimer: opts.clearTimer } : {}),
+    ...(opts.onSelfTerminate !== undefined
+      ? { onSelfTerminate: opts.onSelfTerminate }
+      : {}),
   };
 }
 
@@ -514,6 +521,10 @@ async function spawnSupervisor(opts: {
   setTimer?: (cb: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   writtenPrefixes?: string[];
+  onSelfTerminate?: (info: {
+    phase: "stopped" | "crash-looping";
+    reason: string;
+  }) => void;
 }) {
   await seedStepGrants(
     opts.baseDir,
@@ -542,6 +553,9 @@ async function spawnSupervisor(opts: {
     ...(opts.clearTimer !== undefined ? { clearTimer: opts.clearTimer } : {}),
     ...(opts.writtenPrefixes !== undefined
       ? { writtenPrefixes: opts.writtenPrefixes }
+      : {}),
+    ...(opts.onSelfTerminate !== undefined
+      ? { onSelfTerminate: opts.onSelfTerminate }
       : {}),
   });
   const supervisor = createWorkflowSupervisor(bindings);
@@ -677,12 +691,17 @@ describe("supervisor crash-respawn: unexpected exit", () => {
     const mailBus = createMockMailBus();
     const tracker = createSpawnTracker();
     const inbox = createMemoryInboxPrimitives();
+    const selfTerminations: {
+      phase: "stopped" | "crash-looping";
+      reason: string;
+    }[] = [];
     const { supervisor } = await spawnSupervisor({
       baseDir,
       tracker,
       mailBus,
       ipcKeypair,
       inboxPrimitives: inbox,
+      onSelfTerminate: (info) => selfTerminations.push(info),
     });
 
     // Shutdown kills the child; its `exited` resolves, but the exit
@@ -691,6 +710,12 @@ describe("supervisor crash-respawn: unexpected exit", () => {
     // Give any errant respawn a chance to spawn a second child.
     await new Promise((r) => setTimeout(r, 20));
     expect(tracker.totalSpawns).toBe(1);
+
+    // A host-requested `shutdown()` is not a self-termination: the host
+    // already knows the deployment is down, so the sink must stay silent.
+    // Firing here would make the sidecar reclaim an address the host is
+    // deliberately tearing down.
+    expect(selfTerminations).toHaveLength(0);
   });
 
   test("a recycle does not trigger a spurious crash-respawn", async () => {
@@ -734,6 +759,10 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     const tracker = createSpawnTracker();
     const inbox = createMemoryInboxPrimitives();
     const writtenPrefixes: string[] = [];
+    const selfTerminations: {
+      phase: "stopped" | "crash-looping";
+      reason: string;
+    }[] = [];
     // Latch on the 2nd unexpected exit. The default stable-reset window
     // (60s) never fires within this test, so the counter does not reset.
     const { supervisor } = await spawnSupervisor({
@@ -746,6 +775,7 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
       // Near-zero backoff: real timers, asserting the latch not its timing.
       respawnBackoffInitialMs: 1,
       writtenPrefixes,
+      onSelfTerminate: (info) => selfTerminations.push(info),
     });
 
     // Crash 1: under the threshold -> respawn (child 2).
@@ -785,6 +815,13 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     expect(caught instanceof Error && caught.message).toMatch(
       /in phase crash-looping/,
     );
+
+    // The latch is a self-termination, so the host-facing sink fired exactly
+    // once with the terminal `crash-looping` phase. This is the signal the
+    // sidecar subscribes to so it reclaims the deployment address.
+    expect(selfTerminations).toHaveLength(1);
+    expect(selfTerminations[0]?.phase).toBe("crash-looping");
+    expect(selfTerminations[0]?.reason).toMatch(/crash-loop/);
   });
 
   test("a stable run resets the crash counter so a later crash does not latch", async () => {

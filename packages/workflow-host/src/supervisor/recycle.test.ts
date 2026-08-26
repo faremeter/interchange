@@ -933,6 +933,10 @@ describe("supervisor recycle: respawn handshake bound", () => {
       mailBus,
       ipcKeypair,
     });
+    const selfTerminations: {
+      phase: "stopped" | "crash-looping";
+      reason: string;
+    }[] = [];
     const supervisor = createWorkflowSupervisor({
       ...bindings,
       // Collapse the recycle path's ready deadline and kill-escalation
@@ -942,6 +946,7 @@ describe("supervisor recycle: respawn handshake bound", () => {
       // real timer, so the first child readies normally.
       recyclePolicySetTimer: (cb) => setTimeout(cb, 0),
       recyclePolicyClearTimer: () => undefined,
+      onSelfTerminate: (info) => selfTerminations.push(info),
     });
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
@@ -980,6 +985,14 @@ describe("supervisor recycle: respawn handshake bound", () => {
     // The recycle failure routed through shutdownInternal to `stopped`, so
     // a follow-up shutdown is a no-op.
     await supervisor.shutdown();
+
+    // The recycle failure is a self-termination: the supervisor drove itself
+    // down without a host `shutdown()` request, so the sink fired once with
+    // the terminal `stopped` phase. The no-op follow-up shutdown above must
+    // not add a second fire.
+    expect(selfTerminations).toHaveLength(1);
+    expect(selfTerminations[0]?.phase).toBe("stopped");
+    expect(selfTerminations[0]?.reason).toMatch(/recycle failed/);
   });
 
   test("a respawn whose control channel ends before ready rejects and reaps the new child", async () => {

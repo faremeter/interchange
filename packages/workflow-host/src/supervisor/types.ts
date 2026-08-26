@@ -316,6 +316,36 @@ export interface WorkflowSupervisorBindings {
    */
   onSuspensionRegister?: (registration: SuspensionRegistration) => void;
   /**
+   * Self-termination sink. The supervisor invokes it when it reaches a terminal
+   * phase on its own -- the crash-loop latch (`crash-looping`), a channel crash
+   * while recycling, or a recycle failure (both `stopped`) -- but NOT when the
+   * host drives it down through the public `shutdown()`, and NOT for a failure
+   * of the initial spawn handshake (that is the deploy's to unwind). Production
+   * wires this to the sidecar so it reclaims the deployment address (drops the
+   * supervisor from its active map and releases the address's routing state)
+   * and the address becomes redeployable without a manual undeploy.
+   *
+   * The handler MUST be idempotent. Firing is not exactly-once: two
+   * self-terminating callers interleaving through teardown (e.g. a channel
+   * crash while recycling plus the recycle-failure catch) can each fire. The
+   * sidecar's reclaim absorbs a repeat because its `activeSupervisors.has`
+   * guard makes the second run a no-op.
+   *
+   * Unlike `onSuspensionRegister`, this sink does NOT share the same
+   * log-and-continue contract on the host side. A missed suspension has an
+   * independent recovery path (`reEmitParkedCorrelations`); a missed reclaim
+   * does not -- the address stays stranded until an operator undeploys. So
+   * the host's handler is engineered to be total, and a failure there is
+   * logged loudly rather than swallowed. The supervisor still invokes this
+   * best-effort (a throwing sink cannot break the terminal transition), but a
+   * host that copies `onSuspensionRegister`'s quiet-swallow semantics onto its
+   * reclaim handler reintroduces the stranding bug.
+   */
+  onSelfTerminate?: (info: {
+    phase: "stopped" | "crash-looping";
+    reason: string;
+  }) => void;
+  /**
    * Per-run grants source the dispatch loop consults before it forwards a
    * `trigger.fire`. Unlike `onSuspensionRegister` (best-effort, fire-and-
    * forget), this is a request/response contract: the supervisor awaits the
