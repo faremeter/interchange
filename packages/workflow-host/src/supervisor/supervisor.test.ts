@@ -109,6 +109,144 @@ function parseSignalDelivers(
   return out;
 }
 
+/**
+ * Parse every `mailbox.notify` frame the supervisor wrote to the child control
+ * stream, in write order. Used to assert the eager per-run mailbox commit fires
+ * a notify carrying the assigned uid and the arrived message's envelope.
+ */
+function parseMailboxNotifies(lines: readonly string[]): {
+  runId: string;
+  mailbox: string;
+  uid: number;
+  headers: { from: string; to: string[]; messageId: string; subject?: string };
+  commit: string;
+}[] {
+  const out: {
+    runId: string;
+    mailbox: string;
+    uid: number;
+    headers: {
+      from: string;
+      to: string[];
+      messageId: string;
+      subject?: string;
+    };
+    commit: string;
+  }[] = [];
+  for (const line of lines) {
+    if (!line.includes("mailbox.notify")) continue;
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) continue;
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) continue;
+    if (payload.type !== "mailbox.notify") continue;
+    out.push({
+      runId: payload.data.runId,
+      mailbox: payload.data.mailbox,
+      uid: payload.data.uid,
+      headers: {
+        from: payload.data.headers.from,
+        to: payload.data.headers.to,
+        messageId: payload.data.headers.messageId,
+        ...(payload.data.headers.subject !== undefined
+          ? { subject: payload.data.headers.subject }
+          : {}),
+      },
+      commit: payload.data.commit,
+    });
+  }
+  return out;
+}
+
+/**
+ * Parse the `Mail` payload of each `trigger.fire` frame, to assert the eager
+ * mailbox commit left the step-input trigger payload unchanged.
+ */
+function parseTriggerFirePayloads(lines: readonly string[]): unknown[] {
+  const out: unknown[] = [];
+  for (const line of lines) {
+    if (!line.includes("trigger.fire")) continue;
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) continue;
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) continue;
+    if (payload.type !== "trigger.fire") continue;
+    out.push(payload.data.payload);
+  }
+  return out;
+}
+
+/** Build a minimal well-formed RFC 2822 message the supervisor can decode. */
+function buildInboundMail(opts: {
+  from: string;
+  to: string;
+  subject: string;
+  messageId: string;
+  body: string;
+}): Uint8Array {
+  const lines = [
+    `From: ${opts.from}`,
+    `To: ${opts.to}`,
+    `Subject: ${opts.subject}`,
+    `Message-ID: ${opts.messageId}`,
+    "Date: Tue, 01 Jan 2030 00:00:00 +0000",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    opts.body,
+  ];
+  return new TextEncoder().encode(lines.join("\r\n"));
+}
+
+/**
+ * Shape of a captured `writeTreePreservingPrefix` invocation the mailbox tests
+ * inspect through the stub's `onWrite` hook.
+ */
+type CapturedWrite = {
+  preservePrefix: string;
+  files: Record<string, string | Uint8Array>;
+};
+
+const MailboxIndex = type({
+  version: "number",
+  uidValidity: "number",
+  uidNext: "number",
+  highestModSeq: "number",
+  messages: type({
+    uid: "number",
+    modseq: "number",
+    flags: "string[]",
+    "+": "ignore",
+  }).array(),
+  "+": "ignore",
+});
+
+/**
+ * Parse every committed `mailbox/INBOX/index.json` from the captured writes, in
+ * write order. The first is the arrival commit (the eager append); a later one
+ * carries the on-dispatch flag mark.
+ */
+function mailboxIndexes(
+  writes: readonly CapturedWrite[],
+): (typeof MailboxIndex.infer)[] {
+  const out: (typeof MailboxIndex.infer)[] = [];
+  for (const write of writes) {
+    if (write.preservePrefix !== "mailbox/INBOX/") continue;
+    const blob = write.files["mailbox/INBOX/index.json"];
+    if (blob === undefined) continue;
+    const text =
+      typeof blob === "string" ? blob : new TextDecoder().decode(blob);
+    const parsed: unknown = JSON.parse(text);
+    const index = MailboxIndex(parsed);
+    if (index instanceof type.errors) {
+      throw new Error(`unexpected mailbox index shape: ${index.summary}`);
+    }
+    out.push(index);
+  }
+  return out;
+}
+
 function createNoopDrainAccumulator(): DrainTimeoutAccumulator {
   return {
     start() {
@@ -453,8 +591,29 @@ function createStubRepoStore(opts: {
   statefulWrites?: boolean;
 }): RepoStore {
   const committed = new Map<string, Map<string, Uint8Array>>();
+  // Tracks the latest commit sha per (repoId, ref) so `resolveRef` answers the
+  // tip a `writeTreePreservingPrefix` (e.g. the eager mailbox flush) advanced it
+  // to. Distinct from the fixed `commitSha` the write returns, which existing
+  // tests assert on. Only maintained under `statefulWrites`.
+  const refTip = new Map<string, string>();
+  let refTipSeq = 0;
+  function repoRefKey(repoId: RepoId, ref: string): string {
+    return `${repoId.kind}/${repoId.id}\x00${ref}`;
+  }
   function keyFor(repoId: RepoId, ref: string, preservePrefix: string): string {
     return `${repoId.kind}/${repoId.id}\x00${ref}\x00${preservePrefix}`;
+  }
+  // Merge every committed submap for a (repoId, ref) across preserve-prefixes
+  // into one repo-root-relative path -> bytes map, the coherent tree snapshot
+  // `openCommittedReads` serves.
+  function mergedTree(repoId: RepoId, ref: string): Map<string, Uint8Array> {
+    const prefix = `${repoRefKey(repoId, ref)}\x00`;
+    const merged = new Map<string, Uint8Array>();
+    for (const [key, files] of committed) {
+      if (!key.startsWith(prefix)) continue;
+      for (const [path, bytes] of files) merged.set(path, bytes);
+    }
+    return merged;
   }
   const stub: Partial<RepoStore> = {
     getRepoDir(repoId: RepoId): string {
@@ -490,7 +649,49 @@ function createStubRepoStore(opts: {
         }
         committed.set(key, next);
       }
+      // Track the tip for every write (even non-stateful) so the eager-mailbox
+      // path's post-flush `resolveRef` resolves and does not log a spurious
+      // fault in tests that do not opt into stateful reads.
+      refTipSeq += 1;
+      refTip.set(
+        repoRefKey(repoId, ref),
+        refTipSeq.toString(16).padStart(40, "0"),
+      );
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
+    },
+    // The eager-mailbox path opens committed reads and resolves the ref tip.
+    // Without `statefulWrites` the committed tree is empty, so an open observes
+    // an empty INBOX (uid starts at 1) and each flush starts fresh -- enough for
+    // the eager commit to run cleanly without persisting across calls.
+    async openCommittedReads(_principal, repoId, ref) {
+      const tree = mergedTree(repoId, ref);
+      if (tree.size === 0) return null;
+      return {
+        async listDir(relPath: string) {
+          const base = relPath === "" ? "" : `${relPath}/`;
+          const entries: { name: string; oid: string; type: "blob" }[] = [];
+          for (const filePath of tree.keys()) {
+            if (base !== "" && !filePath.startsWith(base)) continue;
+            const rest = filePath.slice(base.length);
+            if (rest.includes("/")) continue;
+            entries.push({ name: rest, oid: filePath, type: "blob" });
+          }
+          return entries;
+        },
+        async readBlobByOid(oid: string) {
+          const bytes = tree.get(oid);
+          if (bytes === undefined) {
+            throw new Error(`stub committed reads: no blob for oid ${oid}`);
+          }
+          return bytes;
+        },
+        async treeOid() {
+          return null;
+        },
+      };
+    },
+    async resolveRef(_principal, repoId, ref) {
+      return refTip.get(repoRefKey(repoId, ref)) ?? null;
     },
   };
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only the subset the supervisor invokes is implemented and a missing method throws via the proxy below
@@ -969,6 +1170,7 @@ describe("createWorkflowSupervisor", () => {
     }) => void | Promise<void>;
     inboxPrimitives?: MemoryInboxPrimitives;
     mailBus?: ReturnType<typeof createMockMailBus>;
+    statefulWrites?: boolean;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -1010,6 +1212,7 @@ describe("createWorkflowSupervisor", () => {
       ...(opts.beforeWrite !== undefined
         ? { beforeWrite: opts.beforeWrite }
         : {}),
+      ...(opts.statefulWrites === true ? { statefulWrites: true } : {}),
     });
     const bindings: WorkflowSupervisorBindings = {
       ...baseBindings,
@@ -1066,6 +1269,206 @@ describe("createWorkflowSupervisor", () => {
       inboxPrimitives,
     };
   }
+
+  const MAILBOX_ADDRESS = "run_deployment-x@example.com";
+
+  test("delivering inbound mail eager-commits an INBOX entry and emits mailbox.notify", async () => {
+    const baseDir = await makeTempDir("supervisor-mailbox-commit-");
+    const writes: CapturedWrite[] = [];
+    const wired = await spawnWithRunStart({
+      baseDir,
+      statefulWrites: true,
+      onWrite: (args) =>
+        writes.push({ preservePrefix: args.preservePrefix, files: args.files }),
+    });
+
+    const raw = buildInboundMail({
+      from: "sender@example.com",
+      to: MAILBOX_ADDRESS,
+      subject: "hello",
+      messageId: "<msg-1@example.com>",
+      body: "first turn",
+    });
+    wired.mailBus.deliver(MAILBOX_ADDRESS, raw);
+
+    const notifyDeadline = Date.now() + 1000;
+    let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
+    while (notifies.length < 1 && Date.now() < notifyDeadline) {
+      await new Promise((r) => setTimeout(r, 2));
+      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
+    }
+    expect(notifies).toHaveLength(1);
+    const notify = notifies[0];
+    if (notify === undefined) throw new Error("mailbox.notify missing");
+    expect(notify.mailbox).toBe("INBOX");
+    expect(notify.uid).toBe(1);
+    expect(notify.headers.from).toBe("sender@example.com");
+    expect(notify.headers.to).toEqual([MAILBOX_ADDRESS]);
+    expect(notify.headers.messageId).toBe("<msg-1@example.com>");
+    expect(notify.commit.length).toBeGreaterThan(0);
+
+    // The arrival commit holds exactly one entry with the assigned uid, and it
+    // is unflagged on arrival; the raw bytes are stored verbatim in <uid>.eml.
+    const arrival = mailboxIndexes(writes)[0];
+    if (arrival === undefined) throw new Error("no mailbox index committed");
+    expect(arrival.messages).toHaveLength(1);
+    expect(arrival.messages[0]?.uid).toBe(1);
+    expect(arrival.messages[0]?.flags).toEqual([]);
+    const lastMailboxWrite = [...writes]
+      .reverse()
+      .find((w) => w.preservePrefix === "mailbox/INBOX/");
+    const eml = lastMailboxWrite?.files["mailbox/INBOX/1.eml"];
+    if (eml === undefined) throw new Error("no <uid>.eml committed");
+    const emlBytes =
+      typeof eml === "string" ? new TextEncoder().encode(eml) : eml;
+    expect(emlBytes).toEqual(raw);
+
+    // Regression: the step-input trigger.fire is unchanged -- it still carries a
+    // Mail payload, and the notify's runId matches the run the trigger fired.
+    const fireDeadline = Date.now() + 1000;
+    let fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+    while (fireIds.length < 1 && Date.now() < fireDeadline) {
+      await new Promise((r) => setTimeout(r, 2));
+      fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+    }
+    expect(fireIds).toHaveLength(1);
+    const firstFireId = fireIds[0];
+    if (firstFireId === undefined)
+      throw new Error("first trigger runId missing");
+    expect(notify.runId).toBe(firstFireId);
+    const payloads = parseTriggerFirePayloads(
+      wired.supervisorToChild.flushed(),
+    );
+    expect(payloads).toHaveLength(1);
+    expect(isMail(payloads[0])).toBe(true);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("eager mailbox commit is decoupled from FIFO trigger dispatch", async () => {
+    const baseDir = await makeTempDir("supervisor-mailbox-fifo-");
+    const wired = await spawnWithRunStart({ baseDir, statefulWrites: true });
+
+    const m1 = buildInboundMail({
+      from: "a@example.com",
+      to: MAILBOX_ADDRESS,
+      subject: "one",
+      messageId: "<m1@example.com>",
+      body: "one",
+    });
+    const m2 = buildInboundMail({
+      from: "b@example.com",
+      to: MAILBOX_ADDRESS,
+      subject: "two",
+      messageId: "<m2@example.com>",
+      body: "two",
+    });
+
+    // Deliver sequentially so the arrival order (and thus the assigned uids) is
+    // deterministic, then confirm each arrival eager-committed on its own.
+    wired.mailBus.deliver(MAILBOX_ADDRESS, m1);
+    const firstDeadline = Date.now() + 1000;
+    let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
+    while (notifies.length < 1 && Date.now() < firstDeadline) {
+      await new Promise((r) => setTimeout(r, 2));
+      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
+    }
+    wired.mailBus.deliver(MAILBOX_ADDRESS, m2);
+    const secondDeadline = Date.now() + 1000;
+    while (notifies.length < 2 && Date.now() < secondDeadline) {
+      await new Promise((r) => setTimeout(r, 2));
+      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
+    }
+    // Both messages committed with fresh, monotonic uids even though FIFO
+    // dispatch holds the second until the first run terminates.
+    expect(notifies.map((n) => n.uid)).toEqual([1, 2]);
+    expect(notifies.map((n) => n.headers.messageId)).toEqual([
+      "<m1@example.com>",
+      "<m2@example.com>",
+    ]);
+
+    // FIFO dispatch is unchanged: exactly one trigger.fire. The second message
+    // waits for the run to terminate and is then rejected, never fired.
+    const fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+    expect(fireIds).toHaveLength(1);
+    const runId = fireIds[0];
+    if (runId === undefined) throw new Error("runId missing");
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: { runId, seq: 0, kind: "RunCompleted", at: "test" },
+    });
+    const consumedDeadline = Date.now() + 1000;
+    while (Date.now() < consumedDeadline) {
+      if (wired.inboxPrimitives.snapshot(MAILBOX_ADDRESS).consumed.size >= 2) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(wired.inboxPrimitives.snapshot(MAILBOX_ADDRESS).consumed.size).toBe(
+      2,
+    );
+    expect(parseTriggerFireRunIds(wired.supervisorToChild.flushed())).toEqual([
+      runId,
+    ]);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("a dispatched message's mailbox entry is flagged Seen and Processed", async () => {
+    const baseDir = await makeTempDir("supervisor-mailbox-flags-");
+    const writes: CapturedWrite[] = [];
+    const wired = await spawnWithRunStart({
+      baseDir,
+      statefulWrites: true,
+      onWrite: (args) =>
+        writes.push({ preservePrefix: args.preservePrefix, files: args.files }),
+    });
+
+    const raw = buildInboundMail({
+      from: "sender@example.com",
+      to: MAILBOX_ADDRESS,
+      subject: "flag me",
+      messageId: "<flag-1@example.com>",
+      body: "turn body",
+    });
+    wired.mailBus.deliver(MAILBOX_ADDRESS, raw);
+
+    const fireDeadline = Date.now() + 1000;
+    let fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+    while (fireIds.length < 1 && Date.now() < fireDeadline) {
+      await new Promise((r) => setTimeout(r, 2));
+      fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
+    }
+    const runId = fireIds[0];
+    if (runId === undefined) throw new Error("runId missing");
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: { runId, seq: 0, kind: "RunCompleted", at: "test" },
+    });
+
+    // The on-dispatch flag mark (fire-and-forget) flushes the \Seen/$Processed
+    // flags onto the entry; poll the committed index until they land.
+    const flagDeadline = Date.now() + 1000;
+    const latest = () => {
+      const all = mailboxIndexes(writes);
+      return all[all.length - 1];
+    };
+    let index = latest();
+    while (
+      Date.now() < flagDeadline &&
+      !(index?.messages[0]?.flags ?? []).includes("$Processed")
+    ) {
+      await new Promise((r) => setTimeout(r, 2));
+      index = latest();
+    }
+    if (index === undefined) throw new Error("no mailbox index committed");
+    expect(index.messages).toHaveLength(1);
+    const flags = index.messages[0]?.flags ?? [];
+    expect(flags).toContain("\\Seen");
+    expect(flags).toContain("$Processed");
+
+    await wired.supervisor.shutdown();
+  });
 
   test("dispatch pushes a per-run grants-updated before the run's trigger.fire", async () => {
     const baseDir = await makeTempDir("supervisor-barrier-ok-");

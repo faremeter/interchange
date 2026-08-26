@@ -76,8 +76,10 @@ import type {
   ApprovalSnapshot,
   InferenceSource,
   Mail,
+  MessageHeaders,
   OutboundMessage,
 } from "@intx/types/runtime";
+import type { StoredEnvelope } from "@intx/mailbox";
 import type { CancelOrigin } from "@intx/workflow";
 
 import {
@@ -103,6 +105,11 @@ import { compactRunEvents } from "./run-event-compaction";
 import { recoverInterruptedCompactions } from "./run-event-recovery";
 import { decodeMail } from "@intx/mime";
 import { commitMail, InvalidMailError } from "../adapters/mail-part-store";
+import {
+  createSubstrateMailboxStore,
+  MAILBOX_INBOX_DIR,
+  type SubstrateMailboxStore,
+} from "../adapters/substrate-mailbox-store";
 import {
   createDrainTimeoutAccumulator,
   DEFAULT_DRAIN_TIMEOUT_MS,
@@ -141,6 +148,14 @@ import {
 } from "./child-termination";
 
 const logger = getLogger(["workflow-host", "supervisor"]);
+
+/** IMAP system flag marking a dispatched mailbox entry as read. */
+const MAILBOX_FLAG_SEEN = "\\Seen";
+/**
+ * Interchange keyword flag marking a mailbox entry the supervisor has dispatched
+ * as a workflow turn (a `trigger.fire` or `signal.deliver`).
+ */
+const MAILBOX_FLAG_PROCESSED = "$Processed";
 
 /**
  * Default crash-loop bound: the supervisor stops respawning and latches
@@ -1068,6 +1083,158 @@ export function createWorkflowSupervisor(
     armStableRunResetTimer(childGeneration);
   }
 
+  // Eager per-run mailbox (§3b inbound). On arrival the supervisor commits each
+  // fresh inbound message into the deployment's substrate-backed INBOX and fires
+  // a one-way `mailbox.notify` to the child, so the warm agent's `watch` /
+  // `mail_wait` observes the arrival mid-turn -- decoupled from the FIFO claim-
+  // check dispatch that resolves a run's step input. The supervisor is the sole
+  // mailbox writer; the store is its long-lived in-memory mirror over the
+  // committed `mailbox/INBOX/` subtree, constructed lazily on the first arrival.
+  const mailboxWritePrincipal: WorkflowRunSupervisorPrincipal = {
+    kind: "supervisor",
+    anchorRunId: bindings.anchorRunId,
+  };
+  let mailboxStore: SubstrateMailboxStore | null = null;
+  // Claim-check messageId -> assigned mailbox uid, so a message dispatched as a
+  // turn can be flagged \Seen/$Processed by uid. In-memory only: a missing entry
+  // (a restart, or an arrival whose eager commit failed) skips the flag mark,
+  // which is a cosmetic IMAP flag, never a delivery guarantee.
+  const mailboxUidByMessageId = new Map<string, number>();
+  // Serializes every mailbox mutation (lazy construction, the arrival
+  // append+flush, the dispatch flag mark) so concurrent arrivals and a fire-and-
+  // forget flag mark never interleave against the shared in-memory mirror.
+  let mailboxTail: Promise<void> = Promise.resolve();
+  function runMailboxExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = mailboxTail.then(fn, fn);
+    mailboxTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+  async function getMailboxStore(): Promise<SubstrateMailboxStore> {
+    if (mailboxStore === null) {
+      mailboxStore = await createSubstrateMailboxStore({
+        substrate: bindings.repoStore,
+        repoId: bindings.workflowRunRepoId,
+        principal: mailboxWritePrincipal,
+        ref: bindings.workflowRunRef,
+      });
+    }
+    return mailboxStore;
+  }
+
+  function storedEnvelopeFromHeaders(
+    headers: MessageHeaders,
+    receivedAt: number,
+  ): StoredEnvelope {
+    // The Date header is unvalidated external input; fall back to the arrival
+    // time when it is absent or unparseable so the store's `toISOString`
+    // serialization cannot throw on an Invalid Date.
+    const parsed = new Date(headers.date);
+    const date = Number.isNaN(parsed.getTime()) ? new Date(receivedAt) : parsed;
+    return {
+      messageId: headers.messageId,
+      from: headers.from,
+      to: headers.to,
+      subject: headers.subject ?? "",
+      date,
+      inReplyTo: headers.inReplyTo,
+      references: headers.references ?? [],
+      interchangeType: headers.interchangeType,
+      interchangeCorrelationId: headers.interchangeCorrelationId,
+    };
+  }
+
+  /**
+   * Eager-commit one freshly-arrived inbound message into the deployment's
+   * substrate mailbox, then notify the child. Runs on the mail-arrival path,
+   * before and independent of FIFO dispatch, so the warm agent's `mail_wait`
+   * observes the message mid-turn. Best-effort: the claim-check inbox is the
+   * durable delivery contract, so a decode or substrate fault here is logged
+   * loudly and never withholds the mail's ack -- the message still reaches the
+   * agent as its turn's step input via `trigger.fire`. The `mailbox.notify` is
+   * sent only AFTER the append is flushed, so the child reads committed state.
+   */
+  async function commitInboundToMailbox(
+    messageId: string,
+    rawMessage: Uint8Array,
+    receivedAt: number,
+  ): Promise<void> {
+    try {
+      await runMailboxExclusive(async () => {
+        // The caller gates on a fresh `enqueued` outcome, so a redelivery never
+        // reaches here; this guard is belt-and-suspenders against a double
+        // append of the same messageId.
+        if (mailboxUidByMessageId.has(messageId)) return;
+        let decoded: ReturnType<typeof decodeMail>;
+        try {
+          decoded = decodeMail(rawMessage);
+        } catch (cause) {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.error`eager mailbox commit: dropping undecodable inbound mail ${messageId}: ${message}`;
+          return;
+        }
+        const store = await getMailboxStore();
+        const uid = store.append(
+          rawMessage,
+          storedEnvelopeFromHeaders(decoded.headers, receivedAt),
+          [],
+        );
+        mailboxUidByMessageId.set(messageId, uid);
+        await store.flush();
+        const commit = await bindings.repoStore.resolveRef(
+          mailboxWritePrincipal,
+          bindings.workflowRunRepoId,
+          bindings.workflowRunRef,
+        );
+        if (commit === null) {
+          logger.error`eager mailbox commit: ${bindings.workflowRunRef} did not resolve after flush; skipping mailbox.notify for ${messageId}`;
+          return;
+        }
+        const sender = activeControlSender();
+        if (sender === null) {
+          logger.info`eager mailbox commit: no active control sender; committed ${messageId} as uid ${String(uid)} without mailbox.notify`;
+          return;
+        }
+        await sender.send({
+          type: "mailbox.notify",
+          data: {
+            runId: deriveWorkflowRunId(bindings.deploymentMailAddress),
+            mailbox: MAILBOX_INBOX_DIR,
+            uid,
+            headers: decoded.headers,
+            commit,
+          },
+        });
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.error`eager mailbox commit failed for ${messageId}; mail still delivered via claim-check dispatch: ${message}`;
+    }
+  }
+
+  /**
+   * Flag a dispatched message's mailbox entry \Seen/$Processed. Fire-and-forget
+   * off the dispatch critical path: the flag is a cosmetic IMAP marker, so a
+   * missing uid (no eager mailbox entry) or a substrate fault is logged and
+   * dropped, never failing the turn.
+   */
+  function markMailboxProcessed(messageId: string): void {
+    const uid = mailboxUidByMessageId.get(messageId);
+    if (uid === undefined) return;
+    void runMailboxExclusive(async () => {
+      const store = await getMailboxStore();
+      if (store.find(uid) === undefined) return;
+      store.addFlags(uid, [MAILBOX_FLAG_SEEN, MAILBOX_FLAG_PROCESSED]);
+      await store.flush();
+    }).catch((cause) => {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      logger.warn`mailbox flag mark failed for ${messageId} (uid ${String(uid)}): ${message}`;
+    });
+  }
+
   // Resolves once the inbound mail is durably accepted (its inbox write landed
   // or the message was already durably present); rejects when it was not (a
   // phase where the deployment is not accepting mail, a transient enqueue
@@ -1156,6 +1323,11 @@ export function createWorkflowSupervisor(
     // the same messageId already drives dispatch. This resolves for both
     // outcomes: both mean the bytes are durably accounted for, so both ack.
     if (outcome.outcome === "enqueued") {
+      // Eager-commit the fresh message into the per-run mailbox and notify the
+      // child BEFORE waking dispatch, so the warm agent's mail_wait can observe
+      // it committed. Non-fatal by contract: the enqueue above already secured
+      // the durable delivery, so this never withholds the ack.
+      await commitInboundToMailbox(messageId, rawMessage, receivedAt);
       wakeDispatch();
     } else {
       // A redelivery of a message already durably present: the ack still
@@ -2725,6 +2897,9 @@ export function createWorkflowSupervisor(
               // delivering onto the stale channel. Routing hygiene only -- the
               // wait keys on the park-generation edge, not this level state.
               runInputChannels.delete(runId);
+              // The message was dispatched as a turn: mark its eager mailbox
+              // entry \Seen/$Processed. Fire-and-forget off the dispatch path.
+              markMailboxProcessed(envelope.messageId);
               // Durable-consume contract, mirroring the trigger.fire path: hold
               // markConsumed until the child has durably taken up the signal --
               // the resumed run re-parks or reaches a terminal event. That gate
@@ -2790,6 +2965,9 @@ export function createWorkflowSupervisor(
                 runId,
                 prepared.mail,
               );
+              // The message was dispatched as a turn: mark its eager mailbox
+              // entry \Seen/$Processed. Fire-and-forget off the dispatch path.
+              markMailboxProcessed(envelope.messageId);
 
               // Wait for the child to durably take up this trigger (RunStarted
               // committed, then the run parks or terminates) before allowing
