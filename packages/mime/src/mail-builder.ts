@@ -453,6 +453,18 @@ function validateMessageId(value: string, field: string, fn: string): void {
   }
 }
 
+/**
+ * Non-throwing predicate for the RFC 2822 message-identifier form `<id@host>`.
+ * A caller forwarding a `messageId`/`inReplyTo`/`references` value into
+ * `createInboundMessage` (which rejects a malformed identifier) uses this to
+ * decide whether the value is safe to forward: inbound mail can carry a
+ * headerless-derived (sha256) or otherwise malformed Message-Id that is a
+ * valid claim-check key but not a valid RFC identifier.
+ */
+export function isMessageId(value: string): boolean {
+  return MESSAGE_ID_RE.test(value);
+}
+
 function normalizeDate(
   input: Date | string | undefined,
   field: string,

@@ -61,7 +61,7 @@ import {
   type SendResult,
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
-import { createInboundMessage, extractAddrSpec } from "@intx/mime";
+import { createInboundMessage, extractAddrSpec, isMessageId } from "@intx/mime";
 import type {
   InboundMessage,
   InferenceEvent,
@@ -777,19 +777,27 @@ async function buildInboundMessageFromMail(
     });
   }
   const content = textPieces.join("\n").trim();
+  // Forward the mail's Message-ID / In-Reply-To / References for threading, but
+  // only the well-formed RFC 2822 identifiers. Inbound mail can carry a
+  // headerless-derived (sha256) or malformed Message-Id -- a valid claim-check
+  // key but not a valid identifier -- and passing it to createInboundMessage
+  // would throw and fail the step. When the messageId is omitted here,
+  // createInboundMessage synthesizes a valid one; such mail cannot thread.
+  const validReferences = mail.headers.references?.filter(isMessageId) ?? [];
   return createInboundMessage({
     from: safeAddr(mail.headers.from, "trigger@local"),
     to: safeAddr(mail.headers.to[0], "agent@local"),
     ...(mail.headers.subject !== undefined
       ? { subject: mail.headers.subject }
       : {}),
-    messageId: mail.headers.messageId,
-    ...(mail.headers.inReplyTo !== undefined
+    ...(isMessageId(mail.headers.messageId)
+      ? { messageId: mail.headers.messageId }
+      : {}),
+    ...(mail.headers.inReplyTo !== undefined &&
+    isMessageId(mail.headers.inReplyTo)
       ? { inReplyTo: mail.headers.inReplyTo }
       : {}),
-    ...(mail.headers.references !== undefined
-      ? { references: mail.headers.references }
-      : {}),
+    ...(validReferences.length > 0 ? { references: validReferences } : {}),
     ...(content.length > 0 ? { content } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     interchangeType: "conversation.message",

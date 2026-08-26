@@ -31,7 +31,11 @@ export type {
 
 export { createDetachedSignatureFromProvider } from "./pgp-sign";
 
-export { createInboundMessage, createOutboundMessage } from "./mail-builder";
+export {
+  createInboundMessage,
+  createOutboundMessage,
+  isMessageId,
+} from "./mail-builder";
 
 export type {
   CreateInboundMessageOpts,
