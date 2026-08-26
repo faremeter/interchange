@@ -23,11 +23,17 @@
 //
 // Reads resolve from the committed substrate (`openCommittedReads`), never the
 // lagging working tree, matching the sibling `mail-part-store` reader. Writes
-// go through `writeTreePreservingPrefix`, which clears and replaces the
-// `mailbox/INBOX/` subtree wholesale with the current live set; an expunged
-// message's `.eml` simply drops out of that set. The kind handler's push-time
-// validation of this subtree is owned separately by the hub replication layer;
-// this module owns the on-disk shape it validates.
+// go through `writeTreeDelta`: `index.json` changes on every mutation and is
+// always put; each `<uid>.eml` is immutable, so a flush puts only the blobs
+// appended since the last successful flush and deletes only those whose
+// message was removed since then, and the substrate carries every untouched
+// `.eml` forward by object id. This keeps a flush O(delta) rather than
+// O(mailbox), so a long-lived warm conversational mailbox does not re-hash its
+// whole history on each append or flag change. The committed subtree the delta
+// leaves behind is byte-identical in shape to a full rewrite of the same live
+// set. The kind handler's push-time validation of this subtree is owned
+// separately by the hub replication layer; this module owns the on-disk shape
+// it validates.
 
 import { type } from "arktype";
 import type {
@@ -157,8 +163,10 @@ export interface SubstrateMailboxStore extends MailboxStore {
   /** True when a mutation has occurred that `flush` has not yet persisted. */
   readonly pendingWrites: boolean;
   /**
-   * Persist the current mirror to the substrate: `index.json` plus one
-   * `<uid>.eml` per live message, replacing the `mailbox/INBOX/` subtree. A
+   * Persist the current mirror to the substrate through a delta write:
+   * `index.json` (always), the `<uid>.eml` blobs appended since the last
+   * successful flush, and deletions for the blobs whose message was removed
+   * since then. Every untouched `<uid>.eml` is carried forward by object id. A
    * no-op when no mutation is pending.
    */
   flush(): Promise<void>;
@@ -322,6 +330,15 @@ export async function createSubstrateMailboxStore(
   let modseqCounter = state.highestModSeq + 1;
   let dirty = false;
 
+  // Delta tracking for `flush`. `index.json` changes on every mutation, so it
+  // is put unconditionally; each `<uid>.eml` is immutable and written once, so
+  // a flush need only put the blobs appended since the last successful flush
+  // and delete the blobs whose message was removed since then. Both sets clear
+  // on a successful flush; a flush that throws leaves them intact so the next
+  // flush re-attempts the same delta.
+  const appendedSinceFlush = new Set<number>();
+  const removedSinceFlush = new Set<number>();
+
   function find(uid: number): StoredMessage | undefined {
     return messages.find((m) => m.uid === uid);
   }
@@ -351,25 +368,39 @@ export async function createSubstrateMailboxStore(
       expunged: expunged.map((e) => ({ uid: e.uid, modseq: e.modseq })),
     };
 
-    const files: Record<string, string | Uint8Array> = {
+    // `index.json` is put on every flush. Each `<uid>.eml` is immutable, so
+    // only the blobs appended since the last successful flush are put and only
+    // those whose message was removed are deleted; every other `.eml` is
+    // carried forward by object id, so the flush never re-hashes the mailbox's
+    // whole history.
+    const puts: Record<string, string | Uint8Array> = {
       [`${MAILBOX_INBOX_PREFIX}${MAILBOX_INDEX_FILE}`]: encoder.encode(
         JSON.stringify(index),
       ),
     };
-    for (const m of messages) {
-      files[`${MAILBOX_INBOX_PREFIX}${emlName(m.uid)}`] = m.raw;
+    for (const uid of appendedSinceFlush) {
+      const msg = find(uid);
+      if (msg === undefined) {
+        throw new Error(
+          `substrate mailbox store: flush cannot persist uid ${String(
+            uid,
+          )}: no live message holds its raw bytes`,
+        );
+      }
+      puts[`${MAILBOX_INBOX_PREFIX}${emlName(uid)}`] = msg.raw;
     }
-
-    await opts.substrate.writeTreePreservingPrefix(
-      opts.principal,
-      opts.repoId,
-      opts.ref,
-      {
-        preservePrefix: MAILBOX_INBOX_PREFIX,
-        merge: async () => files,
-        message: `persist mailbox INBOX (${String(messages.length)} message(s))`,
-      },
+    const deletes = Array.from(
+      removedSinceFlush,
+      (uid) => `${MAILBOX_INBOX_PREFIX}${emlName(uid)}`,
     );
+
+    await opts.substrate.writeTreeDelta(opts.principal, opts.repoId, opts.ref, {
+      computeDelta: async () => ({ puts, deletes }),
+      changedPathPrefixes: new Set([MAILBOX_INBOX_PREFIX]),
+      message: `persist mailbox INBOX (${String(messages.length)} message(s))`,
+    });
+    appendedSinceFlush.clear();
+    removedSinceFlush.clear();
     dirty = false;
   }
 
@@ -419,6 +450,7 @@ export async function createSubstrateMailboxStore(
       const uid = uidCounter++;
       const modseq = modseqCounter++;
       messages.push({ uid, modseq, flags: new Set(flags), raw, envelope });
+      appendedSinceFlush.add(uid);
       dirty = true;
       return uid;
     },
@@ -452,6 +484,15 @@ export async function createSubstrateMailboxStore(
       // in-memory reference backing does not advance modseq on remove; this
       // backing does, because it must answer QRESYNC across reopens.
       expunged.push({ uid, modseq: modseqCounter++ });
+      // A message appended and removed within the same flush window was never
+      // committed, so its `.eml` must be neither put nor deleted: drop it from
+      // the append set. Otherwise the blob is already committed and the next
+      // flush deletes it.
+      if (appendedSinceFlush.has(uid)) {
+        appendedSinceFlush.delete(uid);
+      } else {
+        removedSinceFlush.add(uid);
+      }
       dirty = true;
     },
     flush,

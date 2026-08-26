@@ -659,6 +659,76 @@ function createStubRepoStore(opts: {
       );
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
     },
+    // The eager-mailbox flush commits through `writeTreeDelta`: it puts only
+    // the blobs it changed (always `index.json`, plus a `<uid>.eml` for each
+    // newly-appended message) and deletes the paths for removed messages;
+    // every untouched `.eml` is carried forward by the real substrate. This
+    // stub models the same delta against the committed tree, and captures the
+    // put set through `onWrite` keyed on the sole changed prefix so the mailbox
+    // assertions read `index.json` and the arrival `<uid>.eml` unchanged.
+    async writeTreeDelta(principal, repoId, ref, args) {
+      const prefixes = [...(args.changedPathPrefixes ?? [])];
+      const preservePrefix = prefixes.length === 1 ? (prefixes[0] ?? "") : "";
+      await opts.beforeWrite?.({ preservePrefix, message: args.message });
+      const parentSha = refTip.get(repoRefKey(repoId, ref)) ?? null;
+      const tree = mergedTree(repoId, ref);
+      const delta = await args.computeDelta(parentSha, {
+        async readBlobByOid(oid: string) {
+          const bytes = tree.get(oid);
+          if (bytes === undefined) {
+            throw new Error(`stub delta prior: no blob for oid ${oid}`);
+          }
+          return bytes;
+        },
+        async listDirOids(relPath: string) {
+          const base = relPath === "" ? "" : `${relPath}/`;
+          const out: { name: string; oid: string }[] = [];
+          for (const filePath of tree.keys()) {
+            if (base !== "" && !filePath.startsWith(base)) continue;
+            const rest = filePath.slice(base.length);
+            if (rest.includes("/")) continue;
+            out.push({ name: rest, oid: filePath });
+          }
+          return out;
+        },
+      });
+      opts.onWrite?.({
+        principal,
+        repoId,
+        ref,
+        preservePrefix,
+        message: args.message,
+        files: delta.puts,
+      });
+      if (opts.statefulWrites === true) {
+        const key = keyFor(repoId, ref, preservePrefix);
+        const next = new Map(
+          committed.get(key) ?? new Map<string, Uint8Array>(),
+        );
+        for (const d of delta.deletes) {
+          if (d.endsWith("/")) {
+            for (const p of [...next.keys()]) {
+              if (p.startsWith(d)) next.delete(p);
+            }
+          } else {
+            next.delete(d);
+          }
+        }
+        for (const [p, bytes] of Object.entries(delta.puts)) {
+          next.set(
+            p,
+            typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes,
+          );
+        }
+        committed.set(key, next);
+      }
+      refTipSeq += 1;
+      refTip.set(
+        repoRefKey(repoId, ref),
+        refTipSeq.toString(16).padStart(40, "0"),
+      );
+      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
+    },
     // The eager-mailbox path opens committed reads and resolves the ref tip.
     // Without `statefulWrites` the committed tree is empty, so an open observes
     // an empty INBOX (uid starts at 1) and each flush starts fresh -- enough for
@@ -1314,10 +1384,15 @@ describe("createWorkflowSupervisor", () => {
     expect(arrival.messages).toHaveLength(1);
     expect(arrival.messages[0]?.uid).toBe(1);
     expect(arrival.messages[0]?.flags).toEqual([]);
-    const lastMailboxWrite = [...writes]
-      .reverse()
-      .find((w) => w.preservePrefix === "mailbox/INBOX/");
-    const eml = lastMailboxWrite?.files["mailbox/INBOX/1.eml"];
+    // The `<uid>.eml` is put once, by the arrival flush that appended it; the
+    // later flag-mark flush is a delta that touches only `index.json`, so the
+    // blob is committed in the arrival write, not necessarily the last.
+    const emlWrite = writes.find(
+      (w) =>
+        w.preservePrefix === "mailbox/INBOX/" &&
+        w.files["mailbox/INBOX/1.eml"] !== undefined,
+    );
+    const eml = emlWrite?.files["mailbox/INBOX/1.eml"];
     if (eml === undefined) throw new Error("no <uid>.eml committed");
     const emlBytes =
       typeof eml === "string" ? new TextEncoder().encode(eml) : eml;
