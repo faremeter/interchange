@@ -27,7 +27,10 @@ export {
   type CreateChildOutboundMailBridgeOpts,
 } from "./outbound-mail-bridge";
 
-export { createSupervisorBackedTransport } from "./supervisor-backed-transport";
+export {
+  createSupervisorBackedTransport,
+  type SupervisorBackedTransportInbound,
+} from "./supervisor-backed-transport";
 
 export {
   createMailboxWatchRegistry,
