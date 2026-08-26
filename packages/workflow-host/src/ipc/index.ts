@@ -140,6 +140,7 @@
 
 export {
   ControlPayload,
+  MailboxNotifyHeaders,
   OutboundAttachmentPayload,
   OutboundMessagePayload,
   SourcesUpdatedData,

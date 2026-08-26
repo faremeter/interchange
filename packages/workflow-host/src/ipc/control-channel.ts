@@ -157,6 +157,41 @@ export const OutboundMessagePayload = type({
 export type OutboundMessagePayload = typeof OutboundMessagePayload.infer;
 
 /**
+ * Wire shape of the parsed `MessageHeaders` the supervisor rides inline on a
+ * `mailbox.notify` frame. Mirrors `@intx/types/runtime`'s `MessageHeaders`
+ * field-for-field so a child watcher gets the arrived message's envelope for
+ * its `exists` `MailboxEvent` without a substrate round-trip. The four
+ * unconditionally-dereferenced fields (`from`, `to`, `date`, `messageId`) are
+ * required; the rest are optional, matching the runtime type.
+ *
+ * Duplicated here as an arktype validator (rather than importing the TypeScript
+ * `MessageHeaders` type) so the IPC module validates the header block at the
+ * wire boundary, exactly as `OutboundMessagePayload` does for outbound mail.
+ */
+export const MailboxNotifyHeaders = type({
+  from: "string",
+  to: "string[]",
+  "cc?": "string[]",
+  date: "string",
+  messageId: "string",
+  "inReplyTo?": "string",
+  "references?": "string[]",
+  "subject?": "string",
+  "listId?": "string",
+  "interchangeType?": InterchangeType,
+  "interchangeCorrelationId?": "string",
+  "interchangeTenantId?": "string",
+  "interchangeAgentId?": "string",
+  "interchangeSessionId?": "string",
+  "interchangeOfferingId?": "string",
+  "interchangeSchemaVersion?": "string",
+  "traceparent?": "string",
+  "tracestate?": "string",
+});
+
+export type MailboxNotifyHeaders = typeof MailboxNotifyHeaders.infer;
+
+/**
  * Discriminated union of every control-channel payload kind. The
  * `type` discriminator namespaces the control-plane vocabulary so a
  * future addition (e.g. `connector-bind`) lands by extending this
@@ -519,6 +554,26 @@ export const ControlPayload = type(
     type: "'resumed.runs'",
     data: {
       runIds: type("string > 0").array(),
+    },
+  })
+  .or({
+    // Supervisor-to-child one-way notification that new mail landed in a
+    // deployment mailbox (INBOUND half of mailbox ownership, §3b). One-way
+    // like `grants-updated`/`sources-updated`: no correlation id, no response.
+    // The supervisor -- the sole mail owner -- commits the arrived message to
+    // the workflow-run substrate mailbox, then fires this frame so the child's
+    // warm-agent `watch`/`mail_wait` observes the arrival decoupled from the
+    // FIFO trigger dispatch that resolves a run's first input. `headers` rides
+    // inline so a watcher gets the `exists` `MailboxEvent`'s envelope without a
+    // substrate round-trip; `commit` pins the substrate commit that carries the
+    // message so a child reader opens the right committed state.
+    type: "'mailbox.notify'",
+    data: {
+      runId: "string > 0",
+      mailbox: "string > 0",
+      uid: "number >= 1",
+      headers: MailboxNotifyHeaders,
+      commit: "string > 0",
     },
   });
 
