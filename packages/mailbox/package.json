@@ -1,6 +1,6 @@
 {
-  "name": "@intx/mail-memory",
-  "description": "In-memory MessageTransport for single-process and test environments",
+  "name": "@intx/mailbox",
+  "description": "Storage-agnostic IMAP mailbox model with search, threading, and fetch projections",
   "version": "0.3.0",
   "license": "LGPL-2.1-only",
   "type": "module",
@@ -13,8 +13,6 @@
   },
   "dependencies": {
     "@intx/crypto": "workspace:*",
-    "@intx/log": "workspace:*",
-    "@intx/mailbox": "workspace:*",
     "@intx/mime": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:"
