@@ -1,0 +1,437 @@
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
+import type { Ed25519Crypto } from "@intx/crypto";
+import {
+  assembleMessage,
+  assembleSignedContent,
+  createDetachedSignatureFromProvider,
+  generateMessageId,
+} from "@intx/mime";
+import type { MessageHeaders } from "@intx/mime";
+import type { CryptoProvider } from "@intx/types/runtime";
+import { createRepoStore, workflowRunAuthorize } from "@intx/hub-sessions";
+import type {
+  KindHandler,
+  Principal,
+  RepoId,
+  RepoStore,
+} from "@intx/hub-sessions";
+import { executeSearch, fetchFull } from "@intx/mailbox";
+import type { StoredEnvelope } from "@intx/mailbox";
+
+import { createSubstrateMailboxStore } from "./substrate-mailbox-store";
+
+const REF = "refs/heads/main";
+const tempDirs: string[] = [];
+
+// The backing writes a top-level `mailbox/` subtree. The production
+// workflow-run kind handler's push-time validation of that subtree is owned by
+// the hub-replication layer, not this package; a permissive handler isolates
+// this backing's persistence contract from that validation.
+const permissiveHandler: KindHandler = {
+  kind: "workflow-run",
+  directoryPrefix: "workflow-runs",
+  validatePush: () => ({ ok: true }),
+  onRefUpdated: () => {
+    /* no-op */
+  },
+};
+
+let signingKey: Awaited<ReturnType<typeof generateKeyPair>>;
+
+beforeAll(async () => {
+  signingKey = await generateKeyPair();
+});
+
+afterAll(async () => {
+  for (const d of tempDirs.splice(0)) {
+    await fs.promises.rm(d, { recursive: true, force: true }).catch(() => {
+      /* best effort */
+    });
+  }
+});
+
+async function makeTempDir(): Promise<string> {
+  const d = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "substrate-mailbox-"),
+  );
+  tempDirs.push(d);
+  return d;
+}
+
+function makeStore(dataDir: string): RepoStore {
+  return createRepoStore({
+    dataDir,
+    signingKey,
+    handlers: { "workflow-run": permissiveHandler },
+    authorize: workflowRunAuthorize,
+  });
+}
+
+type Handles = {
+  dataDir: string;
+  repoId: RepoId;
+  principal: Principal;
+};
+
+async function makeHandles(deploymentId: string): Promise<Handles> {
+  const dataDir = await makeTempDir();
+  const repoId: RepoId = { kind: "workflow-run", id: deploymentId };
+  // `Principal` exposes only `kind`; concrete fields are narrowed by kind
+  // handlers. Assign through an intermediate so the excess `anchorRunId`
+  // property is not rejected by the structural check.
+  const principalShape = {
+    kind: "workflow-process" as const,
+    anchorRunId: deploymentId,
+  };
+  const principal: Principal = principalShape;
+  return { dataDir, repoId, principal };
+}
+
+function openStore(handles: Handles, dataDir?: string) {
+  return createSubstrateMailboxStore({
+    substrate: makeStore(dataDir ?? handles.dataDir),
+    repoId: handles.repoId,
+    principal: handles.principal,
+    ref: REF,
+  });
+}
+
+function headersFor(fields: {
+  from: string;
+  to: string[];
+  subject: string;
+  messageId: string;
+  date: Date;
+}): MessageHeaders {
+  return {
+    from: fields.from,
+    to: fields.to,
+    cc: undefined,
+    date: fields.date,
+    messageId: fields.messageId,
+    subject: fields.subject,
+    inReplyTo: undefined,
+    references: undefined,
+    mimeVersion: "1.0",
+    interchangeType: "conversation.message",
+    interchangeCorrelationId: undefined,
+    interchangeTenantId: undefined,
+    interchangeAgentId: undefined,
+    interchangeSessionId: undefined,
+    interchangeOfferingId: undefined,
+    interchangeSchemaVersion: undefined,
+    traceparent: undefined,
+    tracestate: undefined,
+  };
+}
+
+async function makeSignedMessage(
+  crypto: CryptoProvider,
+  fields: {
+    from: string;
+    to: string[];
+    subject: string;
+    messageId: string;
+    text: string;
+    date?: Date;
+  },
+): Promise<{ raw: Uint8Array; envelope: StoredEnvelope }> {
+  const date = fields.date ?? new Date("2026-02-01T00:00:00Z");
+  const headers = headersFor({
+    from: fields.from,
+    to: fields.to,
+    subject: fields.subject,
+    messageId: fields.messageId,
+    date,
+  });
+  const signedContent = assembleSignedContent({
+    kind: "conversation",
+    text: fields.text,
+  });
+  const signature = await createDetachedSignatureFromProvider(
+    signedContent,
+    crypto,
+  );
+  const raw = assembleMessage(headers, signedContent, signature);
+  const envelope: StoredEnvelope = {
+    messageId: fields.messageId,
+    from: fields.from,
+    to: fields.to,
+    subject: fields.subject,
+    date,
+    inReplyTo: undefined,
+    references: [],
+    interchangeType: "conversation.message",
+    interchangeCorrelationId: undefined,
+  };
+  return { raw, envelope };
+}
+
+async function senderCrypto(): Promise<Ed25519Crypto> {
+  return createEd25519Crypto(await generateKeyPair());
+}
+
+describe("substrate mailbox store", () => {
+  test("append assigns monotonic UID and bumps uidNext / highestModSeq", async () => {
+    const handles = await makeHandles("dep-append");
+    const store = await openStore(handles);
+
+    expect(store.uidNext).toBe(1);
+    expect(store.highestModSeq).toBe(0);
+
+    const crypto = await senderCrypto();
+    const a = await makeSignedMessage(crypto, {
+      from: "a@example.com",
+      to: ["run@dep.example.com"],
+      subject: "first",
+      messageId: generateMessageId("a@example.com"),
+      text: "first body",
+    });
+    const b = await makeSignedMessage(crypto, {
+      from: "a@example.com",
+      to: ["run@dep.example.com"],
+      subject: "second",
+      messageId: generateMessageId("a@example.com"),
+      text: "second body",
+    });
+
+    const uidA = store.append(a.raw, a.envelope, []);
+    const uidB = store.append(b.raw, b.envelope, ["\\Seen"]);
+
+    expect(uidA).toBe(1);
+    expect(uidB).toBe(2);
+    expect(store.uidNext).toBe(3);
+    expect(store.highestModSeq).toBe(2);
+    expect(store.messages.map((m) => m.uid)).toEqual([1, 2]);
+    expect(store.pendingWrites).toBe(true);
+  });
+
+  test("search filters by from, header, and flags", async () => {
+    const handles = await makeHandles("dep-search");
+    const store = await openStore(handles);
+    const crypto = await senderCrypto();
+
+    const alice = await makeSignedMessage(crypto, {
+      from: "alice@example.com",
+      to: ["run@dep.example.com"],
+      subject: "hello",
+      messageId: generateMessageId("alice@example.com"),
+      text: "from alice",
+    });
+    const bob = await makeSignedMessage(crypto, {
+      from: "bob@example.com",
+      to: ["run@dep.example.com"],
+      subject: "hi",
+      messageId: generateMessageId("bob@example.com"),
+      text: "from bob",
+    });
+    const aliceUid = store.append(alice.raw, alice.envelope, ["\\Seen"]);
+    store.append(bob.raw, bob.envelope, []);
+
+    const byFrom = executeSearch("INBOX", store, { from: "alice" });
+    expect(byFrom.map((r) => r.uid)).toEqual([aliceUid]);
+
+    const bySubjectHeader = executeSearch("INBOX", store, {
+      header: { field: "Subject", contains: "hello" },
+    });
+    expect(bySubjectHeader.map((r) => r.uid)).toEqual([aliceUid]);
+
+    const seen = executeSearch("INBOX", store, { hasFlags: ["\\Seen"] });
+    expect(seen.map((r) => r.uid)).toEqual([aliceUid]);
+
+    const unseen = executeSearch("INBOX", store, { missingFlags: ["\\Seen"] });
+    expect(unseen).toHaveLength(1);
+    expect(unseen[0]?.uid).not.toBe(aliceUid);
+  });
+
+  test("fetchFull returns the raw message and verifies its signature", async () => {
+    const handles = await makeHandles("dep-fetch");
+    const store = await openStore(handles);
+    const crypto = await senderCrypto();
+    const msg = await makeSignedMessage(crypto, {
+      from: "signer@example.com",
+      to: ["run@dep.example.com"],
+      subject: "signed",
+      messageId: generateMessageId("signer@example.com"),
+      text: "verified body",
+    });
+    const uid = store.append(msg.raw, msg.envelope, []);
+
+    // The stored raw bytes are byte-identical to the input.
+    expect(store.find(uid)?.raw).toEqual(msg.raw);
+
+    const getCrypto = (from: string): CryptoProvider | undefined =>
+      from === "signer@example.com" ? crypto : undefined;
+    const full = await fetchFull({ uid, mailbox: "INBOX" }, store, getCrypto);
+    expect(full.headers.from).toBe("signer@example.com");
+    expect(full.signatureStatus).toBe("valid");
+    expect(full.content).toBe("verified body");
+  });
+
+  test("addFlags / removeFlags / remove mutate and advance modseq", async () => {
+    const handles = await makeHandles("dep-flags");
+    const store = await openStore(handles);
+    const crypto = await senderCrypto();
+    const one = await makeSignedMessage(crypto, {
+      from: "a@example.com",
+      to: ["run@dep.example.com"],
+      subject: "one",
+      messageId: generateMessageId("a@example.com"),
+      text: "one",
+    });
+    const two = await makeSignedMessage(crypto, {
+      from: "a@example.com",
+      to: ["run@dep.example.com"],
+      subject: "two",
+      messageId: generateMessageId("a@example.com"),
+      text: "two",
+    });
+    const uid1 = store.append(one.raw, one.envelope, []);
+    const uid2 = store.append(two.raw, two.envelope, []);
+    expect(store.highestModSeq).toBe(2);
+
+    const flagged = store.addFlags(uid1, ["\\Seen", "\\Flagged"]);
+    expect(Array.from(flagged.flags).sort()).toEqual(["\\Flagged", "\\Seen"]);
+    expect(store.highestModSeq).toBe(3);
+
+    const unflagged = store.removeFlags(uid1, ["\\Flagged"]);
+    expect(Array.from(unflagged.flags)).toEqual(["\\Seen"]);
+    expect(store.highestModSeq).toBe(4);
+
+    store.remove(uid2);
+    expect(store.messages.map((m) => m.uid)).toEqual([uid1]);
+    expect(store.find(uid2)).toBeUndefined();
+    // remove advances modseq so a QRESYNC client learns of the vanish.
+    expect(store.highestModSeq).toBe(5);
+    // uidNext never regresses even though the message was removed.
+    expect(store.uidNext).toBe(3);
+  });
+
+  test("sync reports changed / vanished deltas and full-resync on uidValidity change", async () => {
+    const handles = await makeHandles("dep-sync");
+    const store = await openStore(handles);
+    const crypto = await senderCrypto();
+    const m1 = await makeSignedMessage(crypto, {
+      from: "a@example.com",
+      to: ["run@dep.example.com"],
+      subject: "m1",
+      messageId: generateMessageId("a@example.com"),
+      text: "m1",
+    });
+    const m2 = await makeSignedMessage(crypto, {
+      from: "a@example.com",
+      to: ["run@dep.example.com"],
+      subject: "m2",
+      messageId: generateMessageId("a@example.com"),
+      text: "m2",
+    });
+    const uid1 = store.append(m1.raw, m1.envelope, []);
+    const uid2 = store.append(m2.raw, m2.envelope, []);
+
+    // Client is caught up through the two appends (modseq 2).
+    const caughtUp = store.sync({
+      uidValidity: store.uidValidity,
+      highestModSeq: 2,
+    });
+    if (caughtUp.resync) throw new Error("unexpected resync");
+    expect(caughtUp.changed).toHaveLength(0);
+    expect(caughtUp.vanished).toHaveLength(0);
+
+    // A flag change on uid1 and an expunge of uid2 both advance modseq.
+    store.addFlags(uid1, ["\\Seen"]);
+    store.remove(uid2);
+
+    const delta = store.sync({
+      uidValidity: store.uidValidity,
+      highestModSeq: 2,
+    });
+    if (delta.resync) throw new Error("unexpected resync");
+    expect(delta.changed.map((m) => m.uid)).toEqual([uid1]);
+    expect(delta.vanished).toEqual([uid2]);
+
+    // A mismatched uidValidity forces a full resync carrying the live set.
+    const resync = store.sync({
+      uidValidity: store.uidValidity + 1,
+      highestModSeq: 0,
+    });
+    if (!resync.resync) throw new Error("expected resync");
+    expect(resync.messages.map((m) => m.uid)).toEqual([uid1]);
+  });
+
+  test("reopening rebuilds state from the committed index.json", async () => {
+    const handles = await makeHandles("dep-reopen");
+    const store = await openStore(handles);
+    const crypto = await senderCrypto();
+    const first = await makeSignedMessage(crypto, {
+      from: "a@example.com",
+      to: ["run@dep.example.com"],
+      subject: "keep",
+      messageId: generateMessageId("a@example.com"),
+      text: "keep me",
+    });
+    const second = await makeSignedMessage(crypto, {
+      from: "b@example.com",
+      to: ["run@dep.example.com"],
+      subject: "drop",
+      messageId: generateMessageId("b@example.com"),
+      text: "drop me",
+    });
+    const uid1 = store.append(first.raw, first.envelope, ["\\Seen"]);
+    const uid2 = store.append(second.raw, second.envelope, []);
+    store.remove(uid2);
+    await store.flush();
+    expect(store.pendingWrites).toBe(false);
+
+    // A second store over the same repo/ref reconstructs the mirror.
+    const reopened = await openStore(handles);
+    expect(reopened.uidValidity).toBe(store.uidValidity);
+    expect(reopened.uidNext).toBe(store.uidNext);
+    expect(reopened.highestModSeq).toBe(store.highestModSeq);
+    expect(reopened.messages.map((m) => m.uid)).toEqual([uid1]);
+
+    const kept = reopened.find(uid1);
+    expect(kept).toBeDefined();
+    expect(Array.from(kept?.flags ?? [])).toEqual(["\\Seen"]);
+    expect(kept?.raw).toEqual(first.raw);
+    expect(kept?.envelope.from).toBe("a@example.com");
+    expect(kept?.envelope.subject).toBe("keep");
+    // The expunged message's blob did not survive the flush.
+    expect(reopened.find(uid2)).toBeUndefined();
+
+    // fetchFull still verifies the signature over the reloaded raw bytes.
+    const getCrypto = (from: string): CryptoProvider | undefined =>
+      from === "a@example.com" ? crypto : undefined;
+    const full = await fetchFull(
+      { uid: uid1, mailbox: "INBOX" },
+      reopened,
+      getCrypto,
+    );
+    expect(full.signatureStatus).toBe("valid");
+    expect(full.content).toBe("keep me");
+
+    // The reopened store answers QRESYNC vanished from the persisted tombstone.
+    const delta = reopened.sync({
+      uidValidity: reopened.uidValidity,
+      highestModSeq: 1,
+    });
+    if (delta.resync) throw new Error("unexpected resync");
+    expect(delta.vanished).toEqual([uid2]);
+  });
+
+  test("a fresh store over an empty repo starts at uid 1 with no messages", async () => {
+    const handles = await makeHandles("dep-empty");
+    const store = await openStore(handles);
+    expect(store.messages).toHaveLength(0);
+    expect(store.uidNext).toBe(1);
+    expect(store.highestModSeq).toBe(0);
+    expect(store.pendingWrites).toBe(false);
+    // Flushing a clean store issues no commit and stays clean.
+    await store.flush();
+    expect(store.pendingWrites).toBe(false);
+  });
+});

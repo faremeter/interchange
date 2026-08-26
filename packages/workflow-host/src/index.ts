@@ -16,6 +16,18 @@ export {
   type WorkflowRunBlobSubstrateOpts,
 } from "./adapters/blob-substrate";
 export {
+  createSubstrateMailboxStore,
+  MAILBOX_PREFIX,
+  MAILBOX_INBOX_DIR,
+  MAILBOX_INDEX_FILE,
+  MAILBOX_EML_SUFFIX,
+  MAILBOX_INBOX_PREFIX,
+  type SubstrateMailboxStore,
+  type SubstrateMailboxStoreOpts,
+  type MailboxSyncKnownState,
+  type MailboxSyncResult,
+} from "./adapters/substrate-mailbox-store";
+export {
   createWorkflowStepInvoker,
   type StepEnvBase,
   type WorkflowStepInvokerOpts,
