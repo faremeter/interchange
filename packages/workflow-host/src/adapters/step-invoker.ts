@@ -635,9 +635,12 @@ function safeAddr(raw: string | undefined, fallback: string): string {
  * turns into a media / document content block. Part bytes are resolved through
  * the reader; a text part small enough to have inlined `text` skips the read.
  * The real sender / recipient headers are carried through so the agent frames
- * the turn with the actual `From:` rather than a synthetic address. Content is
- * omitted when empty -- `createInboundMessage` rejects an empty string, and an
- * attachments-only message is valid.
+ * the turn with the actual `From:` rather than a synthetic address. The decoded
+ * `Message-ID` and, when present, `In-Reply-To` / `References` ride through too,
+ * so the delivered message keeps its place in the conversation thread rather
+ * than being stamped with a fresh synthesized id. Content is omitted when empty
+ * -- `createInboundMessage` rejects an empty string, and an attachments-only
+ * message is valid.
  *
  * The reader is required only when a part's bytes must actually be read (a
  * non-text part, or a text part too large to have inlined its `text`). A
@@ -689,6 +692,13 @@ async function buildInboundMessageFromMail(
     to: safeAddr(mail.headers.to[0], "agent@local"),
     ...(mail.headers.subject !== undefined
       ? { subject: mail.headers.subject }
+      : {}),
+    messageId: mail.headers.messageId,
+    ...(mail.headers.inReplyTo !== undefined
+      ? { inReplyTo: mail.headers.inReplyTo }
+      : {}),
+    ...(mail.headers.references !== undefined
+      ? { references: mail.headers.references }
       : {}),
     ...(content.length > 0 ? { content } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
