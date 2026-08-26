@@ -297,6 +297,31 @@ export const DEFAULT_CONSUMED_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const WORKFLOW_RUN_AGENT_STATE_PREFIX = "agent-state";
 
 /**
+ * Conversational-mailbox subtree for the warm single-step agent. The
+ * substrate mailbox backing commits the agent's durable inbox under
+ * `mailbox/INBOX/` so the full message history replicates to the hub
+ * alongside the run state. The layout is:
+ *
+ *   - `mailbox/INBOX/index.json` — the mailbox index. MUTABLE: the
+ *     backing rewrites it on every flush, so it is exempt from the
+ *     append-only / deletion-direction walks the `<uid>.eml` blobs are
+ *     subject to.
+ *   - `mailbox/INBOX/<uid>.eml` — one message per file, carrying the
+ *     raw signed message bytes. `<uid>` is a decimal integer >= 1. The
+ *     bytes are opaque and IMMUTABLE once written: a `<uid>.eml` present
+ *     in the prior tree must reappear byte-identically in the
+ *     prospective tree, exactly like `runs/<runId>/blobs/`.
+ *
+ * The only entries permitted under `mailbox/` are the `INBOX/`
+ * directory; the only entries permitted under `mailbox/INBOX/` are
+ * `index.json` and `<uid>.eml` message files. Anything else fails the
+ * push.
+ */
+export const WORKFLOW_RUN_MAILBOX_PREFIX = "mailbox";
+export const WORKFLOW_RUN_MAILBOX_INBOX_DIR = "INBOX";
+export const WORKFLOW_RUN_MAILBOX_INDEX_FILE = "index.json";
+
+/**
  * Allowed top-level entries in the prospective tree. Anything else
  * fails the push. `control/` has no v1 use and stays absent.
  */
@@ -304,8 +329,17 @@ const ALLOWED_TOP_LEVEL = new Set<string>([
   WORKFLOW_RUN_RUNS_PREFIX,
   WORKFLOW_RUN_ADDRESSES_PREFIX,
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
+  WORKFLOW_RUN_MAILBOX_PREFIX,
   WORKFLOW_RUN_GITIGNORE_PATH,
 ]);
+
+/**
+ * Per-message filename shape for the `mailbox/INBOX/` subtree:
+ * `<uid>.eml`, where `<uid>` is a decimal integer >= 1 (no leading zero,
+ * never `0`). Pins the shape so a malformed message name fails the push
+ * at the boundary rather than landing silently.
+ */
+const MAILBOX_EML_FILENAME_RE = /^[1-9][0-9]*\.eml$/;
 
 const CLAIM_CHECK_SUBDIRS = new Set<string>([
   WORKFLOW_RUN_INBOX_DIR,
@@ -2293,6 +2327,148 @@ async function validateAgentStateSubtree(
   return { ok: true };
 }
 
+/**
+ * Enforce mailbox `<uid>.eml` immutability via prior-tree byte equality.
+ * A message blob present in the prior tree must carry byte-identical
+ * contents in the prospective tree. Mirrors the blob-immutability
+ * discipline (`checkBlobPriorByteEquality`) with mailbox-specific wording.
+ */
+async function checkMailboxEmlPriorByteEquality(
+  emlPath: string,
+  readBlob: (path: string) => Promise<Uint8Array>,
+  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+): Promise<ValidatePushResult> {
+  const prior = await priorReadBlob(emlPath);
+  if (prior === null) return { ok: true };
+  const prospective = await readBlob(emlPath);
+  if (prior.byteLength !== prospective.byteLength) {
+    return {
+      ok: false,
+      reason: `mailbox message ${emlPath} bytes diverge from the prior tree (lengths ${String(prior.byteLength)} vs ${String(prospective.byteLength)}); mailbox messages are append-only`,
+    };
+  }
+  for (let i = 0; i < prior.byteLength; i++) {
+    if (prior[i] !== prospective[i]) {
+      return {
+        ok: false,
+        reason: `mailbox message ${emlPath} bytes diverge from the prior tree at offset ${String(i)}; mailbox messages are append-only`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Walk the `mailbox/INBOX/` subtree and validate its shape. The only
+ * entry permitted directly under `mailbox/` is the `INBOX/` directory;
+ * the only entries permitted under `mailbox/INBOX/` are the mutable
+ * `index.json` file and `<uid>.eml` message files. Each entry must be a
+ * leaf blob rather than a nested directory (a blob lists as empty, a
+ * directory lists its children -- the same discrimination the agent-state
+ * and mail-parts walks use). Returns the flat set of `<uid>.eml` blob
+ * paths so the caller can apply immutability and deletion-direction
+ * checks against the prior tree. An absent `mailbox/` subtree lists as
+ * empty and contributes no message paths.
+ */
+async function enumerateMailboxInbox(
+  listDir: (path: string) => Promise<string[]>,
+): Promise<
+  { ok: true; emlPaths: Set<string> } | { ok: false; reason: string }
+> {
+  const emlPaths = new Set<string>();
+  const mailboxChildren = await listDir(WORKFLOW_RUN_MAILBOX_PREFIX);
+  if (mailboxChildren.length === 0) return { ok: true, emlPaths };
+  for (const child of mailboxChildren) {
+    if (child !== WORKFLOW_RUN_MAILBOX_INBOX_DIR) {
+      return {
+        ok: false,
+        reason: `mailbox subtree contains unexpected entry ${JSON.stringify(child)} under ${WORKFLOW_RUN_MAILBOX_PREFIX}/; only "${WORKFLOW_RUN_MAILBOX_INBOX_DIR}" is allowed`,
+      };
+    }
+  }
+  const inboxPath = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}`;
+  const inboxEntries = await listDir(inboxPath);
+  // A `mailbox/` top-level whose `INBOX` child carries no entries is a
+  // dangling blob committed directly at `mailbox/INBOX` (a blob lists as
+  // empty), not the required directory. Git never records an empty
+  // directory, so a present-but-empty listing is always the blob case.
+  if (inboxEntries.length === 0) {
+    return {
+      ok: false,
+      reason: `mailbox ${inboxPath} is a blob, not a directory carrying "${WORKFLOW_RUN_MAILBOX_INDEX_FILE}" and <uid>.eml message files`,
+    };
+  }
+  for (const entry of inboxEntries) {
+    const entryPath = `${inboxPath}/${entry}`;
+    if (entry === WORKFLOW_RUN_MAILBOX_INDEX_FILE) {
+      if ((await listDir(entryPath)).length > 0) {
+        return {
+          ok: false,
+          reason: `mailbox ${entryPath} is a directory; the mailbox index must be a single file`,
+        };
+      }
+      continue;
+    }
+    if (!MAILBOX_EML_FILENAME_RE.test(entry)) {
+      return {
+        ok: false,
+        reason: `mailbox entry ${entryPath} does not match "${WORKFLOW_RUN_MAILBOX_INDEX_FILE}" or <uid>.eml (uid a decimal integer >= 1)`,
+      };
+    }
+    if ((await listDir(entryPath)).length > 0) {
+      return {
+        ok: false,
+        reason: `mailbox message ${entryPath} is a directory; each message must be a single .eml file`,
+      };
+    }
+    emlPaths.add(entryPath);
+  }
+  return { ok: true, emlPaths };
+}
+
+/**
+ * Validate the `mailbox/INBOX/` subtree (design conversational-mailbox).
+ * Enforces the subtree shape via `enumerateMailboxInbox`, then holds the
+ * `<uid>.eml` message blobs immutable against the prior tree in both
+ * directions: a retained message must be byte-identical, and a message
+ * present in the prior tree must reappear (append-only, no deletion). The
+ * `index.json` entry is mutable and carries neither constraint. Mirrors
+ * the blob-immutability discipline the `runs/<runId>/blobs/` subtree uses.
+ */
+async function validateMailboxSubtree(
+  listDir: (path: string) => Promise<string[]>,
+  readBlob: (path: string) => Promise<Uint8Array>,
+  priorListDir: (path: string) => Promise<string[]>,
+  priorReadBlob: (path: string) => Promise<Uint8Array | null>,
+): Promise<ValidatePushResult> {
+  const prospective = await enumerateMailboxInbox(listDir);
+  if (!prospective.ok) return prospective;
+  const prior = await enumerateMailboxInbox(priorListDir);
+  if (!prior.ok) {
+    return {
+      ok: false,
+      reason: `prior tree's mailbox subtree is structurally invalid: ${prior.reason}`,
+    };
+  }
+  for (const emlPath of prospective.emlPaths) {
+    if (!prior.emlPaths.has(emlPath)) continue; // newly added
+    const immutable = await checkMailboxEmlPriorByteEquality(
+      emlPath,
+      readBlob,
+      priorReadBlob,
+    );
+    if (!immutable.ok) return immutable;
+  }
+  for (const emlPath of prior.emlPaths) {
+    if (prospective.emlPaths.has(emlPath)) continue;
+    return {
+      ok: false,
+      reason: `mailbox message ${emlPath} present in the prior tree is missing from the prospective tree; mailbox messages are append-only`,
+    };
+  }
+  return { ok: true };
+}
+
 export const workflowRunKindHandler: KindHandler = {
   kind: "workflow-run",
   directoryPrefix: "workflow-runs",
@@ -2336,7 +2512,7 @@ export const workflowRunKindHandler: KindHandler = {
       if (!ALLOWED_TOP_LEVEL.has(entry)) {
         return {
           ok: false,
-          reason: `unexpected top-level entry ${JSON.stringify(entry)}; allowed: "${WORKFLOW_RUN_RUNS_PREFIX}", "${WORKFLOW_RUN_ADDRESSES_PREFIX}", "${WORKFLOW_RUN_AGENT_STATE_PREFIX}", "${WORKFLOW_RUN_GITIGNORE_PATH}"`,
+          reason: `unexpected top-level entry ${JSON.stringify(entry)}; allowed: "${WORKFLOW_RUN_RUNS_PREFIX}", "${WORKFLOW_RUN_ADDRESSES_PREFIX}", "${WORKFLOW_RUN_AGENT_STATE_PREFIX}", "${WORKFLOW_RUN_MAILBOX_PREFIX}", "${WORKFLOW_RUN_GITIGNORE_PATH}"`,
         };
       }
     }
@@ -2381,6 +2557,27 @@ export const workflowRunKindHandler: KindHandler = {
       if (!claimCheck.ok) {
         logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${claimCheck.reason}`;
         return claimCheck;
+      }
+    }
+
+    const mailboxPresent =
+      topLevelTreePaths.includes(WORKFLOW_RUN_MAILBOX_PREFIX) ||
+      priorTopLevels.includes(WORKFLOW_RUN_MAILBOX_PREFIX);
+    if (mailboxPresent) {
+      // Enter mailbox validation when the prospective OR prior tree
+      // carries a `mailbox/` subtree. A prospective tree that drops the
+      // subtree while the prior tree held `<uid>.eml` messages must still
+      // go through the walk so the append-only deletion-direction guard
+      // fires on the vanished messages.
+      const mailboxCheck = await validateMailboxSubtree(
+        listDir,
+        readBlob,
+        priorListDir,
+        priorReadBlob,
+      );
+      if (!mailboxCheck.ok) {
+        logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${mailboxCheck.reason}`;
+        return mailboxCheck;
       }
     }
 
