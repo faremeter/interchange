@@ -186,6 +186,7 @@ export {
   type SubstrateFactoryEnv,
   type SubstrateWriteRequest,
   type SubstrateWriteResponseSink,
+  type SupervisorBackedTransportInbound,
   type WarmAgentCache,
   type WarmEventSinkRef,
 } from "./child/index";

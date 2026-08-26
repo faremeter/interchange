@@ -3,13 +3,168 @@ import { describe, test, expect } from "bun:test";
 import { type } from "arktype";
 
 import { base64Decode } from "@intx/types";
+import { createInMemoryMailboxStore } from "@intx/mailbox";
+import type { StoredEnvelope } from "@intx/mailbox";
+import type { MailboxEvent, MessageHeaders } from "@intx/types/runtime";
 
 import { createChildOutboundMailBridge } from "./outbound-mail-bridge";
-import { createSupervisorBackedTransport } from "./supervisor-backed-transport";
+import {
+  createSupervisorBackedTransport,
+  type SupervisorBackedTransportInbound,
+} from "./supervisor-backed-transport";
+import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
+import type { ChildMailboxReader } from "./child-mailbox-reader";
+import type {
+  MailboxSyncKnownState,
+  MailboxSyncResult,
+  SubstrateMailboxStore,
+} from "../adapters/substrate-mailbox-store";
 import {
   ControlPayload,
   type ControlChannelSender,
 } from "../ipc/control-channel";
+
+/**
+ * A `SubstrateMailboxStore` over an in-memory `MailboxStore`, so a transport
+ * test seeds real messages without standing up a substrate. `flush` counts its
+ * calls (the flag-write tests assert it ran) and `sync` mirrors the substrate
+ * backing's QRESYNC delta. `open` returns this same evolving store on every
+ * call, modeling committed state a later read observes.
+ */
+function createSeededReader(): {
+  reader: ChildMailboxReader;
+  store: SubstrateMailboxStore;
+  flushCount: () => number;
+} {
+  const inner = createInMemoryMailboxStore();
+  let flushes = 0;
+  let dirty = false;
+
+  const store: SubstrateMailboxStore = {
+    get uidValidity() {
+      return inner.uidValidity;
+    },
+    get uidNext() {
+      return inner.uidNext;
+    },
+    get highestModSeq() {
+      return inner.highestModSeq;
+    },
+    get messages() {
+      return inner.messages;
+    },
+    get pendingWrites() {
+      return dirty;
+    },
+    append(raw, envelope, flags) {
+      dirty = true;
+      return inner.append(raw, envelope, flags);
+    },
+    find(uid) {
+      return inner.find(uid);
+    },
+    addFlags(uid, flags) {
+      dirty = true;
+      return inner.addFlags(uid, flags);
+    },
+    removeFlags(uid, flags) {
+      dirty = true;
+      return inner.removeFlags(uid, flags);
+    },
+    remove(uid) {
+      dirty = true;
+      inner.remove(uid);
+    },
+    async flush() {
+      flushes++;
+      dirty = false;
+    },
+    sync(known: MailboxSyncKnownState): MailboxSyncResult {
+      const highestModSeq = inner.highestModSeq;
+      if (known.uidValidity !== inner.uidValidity) {
+        return {
+          resync: true,
+          uidValidity: inner.uidValidity,
+          uidNext: inner.uidNext,
+          highestModSeq,
+          messages: inner.messages.slice(),
+        };
+      }
+      const changed = inner.messages
+        .filter((m) => m.modseq > known.highestModSeq)
+        .sort((a, b) => a.uid - b.uid);
+      return {
+        resync: false,
+        uidValidity: inner.uidValidity,
+        uidNext: inner.uidNext,
+        highestModSeq,
+        changed,
+        vanished: [],
+      };
+    },
+  };
+
+  return {
+    reader: { open: async () => store },
+    store,
+    flushCount: () => flushes,
+  };
+}
+
+/** Append a minimal RFC 2822 message to a seeded store; returns its UID. */
+function seedMessage(
+  store: SubstrateMailboxStore,
+  fields: { from: string; to: string; subject: string; messageId: string },
+  flags: string[] = [],
+): number {
+  const date = "Mon, 01 Jan 2024 00:00:00 +0000";
+  const CRLF = "\r\n";
+  const raw = new TextEncoder().encode(
+    `From: ${fields.from}${CRLF}` +
+      `To: ${fields.to}${CRLF}` +
+      `Subject: ${fields.subject}${CRLF}` +
+      `Date: ${date}${CRLF}` +
+      `Message-ID: ${fields.messageId}${CRLF}` +
+      `Content-Type: text/plain${CRLF}${CRLF}` +
+      `body of ${fields.subject}`,
+  );
+  const envelope: StoredEnvelope = {
+    messageId: fields.messageId,
+    from: fields.from,
+    to: [fields.to],
+    subject: fields.subject,
+    date: new Date(date),
+    inReplyTo: undefined,
+    references: [],
+    interchangeType: undefined,
+    interchangeCorrelationId: undefined,
+  };
+  return store.append(raw, envelope, flags);
+}
+
+/** A fresh outbound-mail bridge whose upstream frames are discarded. */
+function makeBridge() {
+  return createChildOutboundMailBridge({
+    upstreamSender: createCapturingSender(),
+  });
+}
+
+/** Build the inbound wiring with test defaults, overridable per test. */
+function makeInbound(
+  overrides: Partial<SupervisorBackedTransportInbound> = {},
+): SupervisorBackedTransportInbound {
+  return {
+    reader: createSeededReader().reader,
+    watchRegistry: createMailboxWatchRegistry(),
+    getCrypto: () => undefined,
+    ...overrides,
+  };
+}
+
+/** Let queued microtasks (the watch registry's async delivery) run. */
+async function flushMicrotasks(): Promise<void> {
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+}
 
 /**
  * Capture the `outbound.message` frames a bridge emits without standing
@@ -136,6 +291,7 @@ describe("createSupervisorBackedTransport", () => {
     const transport = createSupervisorBackedTransport(
       bridge,
       "agent@example.com",
+      makeInbound(),
     );
     const sendPromise = transport.send({
       to: "recipient@example.com",
@@ -152,34 +308,270 @@ describe("createSupervisorBackedTransport", () => {
     expect(receipt.messageId).toBe("<m-5@example.com>");
   });
 
-  test("inbound read surface throws (the agent owns no mailbox in the unified host)", async () => {
-    const sender = createCapturingSender();
-    const bridge = createChildOutboundMailBridge({ upstreamSender: sender });
+  test("inbound methods throw when constructed without the inbound wiring", async () => {
     const transport = createSupervisorBackedTransport(
-      bridge,
+      makeBridge(),
       "agent@example.com",
     );
     await expect(transport.search("INBOX", {})).rejects.toThrow(
-      /not supported for unified-host step agent/,
+      /is not wired for unified-host step agent/,
     );
     await expect(
       transport.fetchFull({ uid: 1, mailbox: "INBOX" }),
-    ).rejects.toThrow(/not supported for unified-host step agent/);
+    ).rejects.toThrow(/is not wired for unified-host step agent/);
+    expect(() =>
+      transport.watch("INBOX", () => {
+        /* never reached */
+      }),
+    ).toThrow(/is not wired for unified-host step agent/);
   });
 
-  test("watch returns a no-op unsubscribe and never fires", () => {
-    const sender = createCapturingSender();
-    const bridge = createChildOutboundMailBridge({ upstreamSender: sender });
-    const transport = createSupervisorBackedTransport(
-      bridge,
-      "agent@example.com",
-    );
-    let fired = false;
-    const unsubscribe = transport.watch("INBOX", () => {
-      fired = true;
+  test("search resolves against the seeded INBOX", async () => {
+    const seeded = createSeededReader();
+    seedMessage(seeded.store, {
+      from: "alice@example.com",
+      to: "agent@example.com",
+      subject: "hello",
+      messageId: "<a-1@example.com>",
     });
-    expect(typeof unsubscribe).toBe("function");
-    expect(() => unsubscribe()).not.toThrow();
-    expect(fired).toBe(false);
+    seedMessage(seeded.store, {
+      from: "bob@example.com",
+      to: "agent@example.com",
+      subject: "unrelated",
+      messageId: "<b-1@example.com>",
+    });
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound({ reader: seeded.reader }),
+    );
+
+    const all = await transport.search("INBOX", {});
+    expect(all).toHaveLength(2);
+
+    const fromAlice = await transport.search("INBOX", { from: "alice" });
+    expect(fromAlice).toHaveLength(1);
+    expect(fromAlice[0]?.uid).toBe(1);
+    expect(fromAlice[0]?.mailbox).toBe("INBOX");
+  });
+
+  test("fetchHeaders and fetchFull resolve against the seeded INBOX", async () => {
+    const seeded = createSeededReader();
+    const uid = seedMessage(seeded.store, {
+      from: "alice@example.com",
+      to: "agent@example.com",
+      subject: "hello",
+      messageId: "<a-1@example.com>",
+    });
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound({ reader: seeded.reader }),
+    );
+
+    const headers = await transport.fetchHeaders({ uid, mailbox: "INBOX" });
+    expect(headers.from).toBe("alice@example.com");
+    expect(headers.subject).toBe("hello");
+
+    const full = await transport.fetchFull({ uid, mailbox: "INBOX" });
+    expect(full.ref.uid).toBe(uid);
+    expect(full.headers.messageId).toBe("<a-1@example.com>");
+    // No sender key is wired, so the signature is reported unverifiable rather
+    // than silently trusted.
+    expect(full.signatureStatus).toBe("unknown");
+  });
+
+  test("getMailboxStatus counts the seeded INBOX", async () => {
+    const seeded = createSeededReader();
+    seedMessage(
+      seeded.store,
+      {
+        from: "alice@example.com",
+        to: "agent@example.com",
+        subject: "seen",
+        messageId: "<a-1@example.com>",
+      },
+      ["\\Seen"],
+    );
+    seedMessage(seeded.store, {
+      from: "bob@example.com",
+      to: "agent@example.com",
+      subject: "unseen",
+      messageId: "<b-1@example.com>",
+    });
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound({ reader: seeded.reader }),
+    );
+
+    const status = await transport.getMailboxStatus("INBOX");
+    expect(status.total).toBe(2);
+    expect(status.unseen).toBe(1);
+  });
+
+  test("watch fires when the registry delivers a mailbox event", async () => {
+    const watchRegistry = createMailboxWatchRegistry();
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound({ watchRegistry }),
+    );
+
+    const events: MailboxEvent[] = [];
+    const unsubscribe = transport.watch("INBOX", (event) => {
+      events.push(event);
+    });
+
+    const headers: MessageHeaders = {
+      from: "alice@example.com",
+      to: ["agent@example.com"],
+      date: "Mon, 01 Jan 2024 00:00:00 +0000",
+      messageId: "<a-1@example.com>",
+    };
+    watchRegistry.fire("INBOX", { type: "exists", uid: 1, headers });
+    await flushMicrotasks();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({ type: "exists", uid: 1, headers });
+
+    // After unsubscribe a later fire is not observed.
+    unsubscribe();
+    watchRegistry.fire("INBOX", { type: "exists", uid: 2, headers });
+    await flushMicrotasks();
+    expect(events).toHaveLength(1);
+  });
+
+  test("setFlags mutates the snapshot and flushes it", async () => {
+    const seeded = createSeededReader();
+    const uid = seedMessage(seeded.store, {
+      from: "alice@example.com",
+      to: "agent@example.com",
+      subject: "hello",
+      messageId: "<a-1@example.com>",
+    });
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound({ reader: seeded.reader }),
+    );
+
+    await transport.setFlags({ uid, mailbox: "INBOX" }, ["\\Seen"]);
+    expect(seeded.flushCount()).toBe(1);
+    expect(seeded.store.find(uid)?.flags.has("\\Seen")).toBe(true);
+
+    await transport.clearFlags({ uid, mailbox: "INBOX" }, ["\\Seen"]);
+    expect(seeded.flushCount()).toBe(2);
+    expect(seeded.store.find(uid)?.flags.has("\\Seen")).toBe(false);
+  });
+
+  test("sync splits new arrivals from flag changes against the known uidNext", async () => {
+    const seeded = createSeededReader();
+    const uid = seedMessage(seeded.store, {
+      from: "alice@example.com",
+      to: "agent@example.com",
+      subject: "hello",
+      messageId: "<a-1@example.com>",
+    });
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound({ reader: seeded.reader }),
+    );
+    const uidValidity = seeded.store.uidValidity;
+
+    // A client that has seen nothing (uidNext 1, modseq 0) observes the seeded
+    // message as a new arrival, not a flag change.
+    const fresh = await transport.sync("INBOX", {
+      uidValidity,
+      uidNext: 1,
+      highestModSeq: 0,
+    });
+    expect(fresh.fullResyncRequired).toBe(false);
+    expect(fresh.newMessages).toEqual([{ uid, mailbox: "INBOX" }]);
+    expect(fresh.changed).toHaveLength(0);
+
+    // A flag change on a message the client already holds (uid < known uidNext)
+    // reports as `changed`, not a new arrival.
+    seeded.store.addFlags(uid, ["\\Seen"]);
+    const afterFlag = await transport.sync("INBOX", {
+      uidValidity,
+      uidNext: seeded.store.uidNext,
+      highestModSeq: 1,
+    });
+    expect(afterFlag.newMessages).toHaveLength(0);
+    expect(afterFlag.changed).toEqual([{ uid, flags: ["\\Seen"] }]);
+  });
+
+  test("a mismatched uidValidity forces a full resync", async () => {
+    const seeded = createSeededReader();
+    const uid = seedMessage(seeded.store, {
+      from: "alice@example.com",
+      to: "agent@example.com",
+      subject: "hello",
+      messageId: "<a-1@example.com>",
+    });
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound({ reader: seeded.reader }),
+    );
+
+    const result = await transport.sync("INBOX", {
+      uidValidity: seeded.store.uidValidity + 1,
+      uidNext: 1,
+      highestModSeq: 0,
+    });
+    expect(result.fullResyncRequired).toBe(true);
+    expect(result.newMessages).toEqual([{ uid, mailbox: "INBOX" }]);
+  });
+
+  test("rejects a mailbox other than the agent's own INBOX", async () => {
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound(),
+    );
+    await expect(transport.search("Archive", {})).rejects.toThrow(
+      /owns only the "INBOX" mailbox/,
+    );
+    await expect(
+      transport.fetchFull({ uid: 1, mailbox: "Sent" }),
+    ).rejects.toThrow(/owns only the "INBOX" mailbox/);
+  });
+
+  test("expunge is rejected so an append-only blob is never removed", async () => {
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound(),
+    );
+    await expect(transport.expunge("INBOX")).rejects.toThrow(
+      /append-only.*break hub replication/,
+    );
+  });
+
+  test("methods for mailboxes the agent does not own stay unsupported", async () => {
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound(),
+    );
+    await expect(
+      transport.append("INBOX", {
+        ref: { uid: 1, mailbox: "INBOX" },
+        headers: {
+          from: "a@example.com",
+          to: ["agent@example.com"],
+          date: "Mon, 01 Jan 2024 00:00:00 +0000",
+          messageId: "<x@example.com>",
+        },
+        flags: [],
+        signatureStatus: "unknown",
+      }),
+    ).rejects.toThrow(/not supported for unified-host step agent/);
+    await expect(
+      transport.move({ uid: 1, mailbox: "INBOX" }, "Archive"),
+    ).rejects.toThrow(/not supported for unified-host step agent/);
   });
 });
