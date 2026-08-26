@@ -33,6 +33,7 @@ import type {
   ApprovalSnapshot,
   AuditStore,
   ContextStore,
+  InboundMessage,
   InferenceEvent,
   MessageTransport,
   PendingOperation,
@@ -2217,6 +2218,20 @@ export function createSidecarSubstrateFactory(
           }
         : undefined;
 
+    // Connector-thread seed (design §3c). When the deployment is warm-kept,
+    // route each mail-derived inbound message onto the warm agent's
+    // connector thread before its send, so the reply path has thread state.
+    // The key is the step identity, the same key the durable store is filed
+    // under. Absent for a multi-step deploy (no durable registry).
+    const seedInbound:
+      | ((key: string, message: InboundMessage) => Promise<void>)
+      | undefined =
+      durableConversation !== undefined
+        ? async (key: string, message: InboundMessage) => {
+            await durableConversation.get(key).seedInbound(message);
+          }
+        : undefined;
+
     const invokeStep: RunWorkflowChildBindings["invokeStep"] = async (
       req,
       onEvent,
@@ -2245,6 +2260,7 @@ export function createSidecarSubstrateFactory(
         mailPartReader,
         ...(warmCache !== undefined ? { warmCache } : {}),
         ...(onRunBoundary !== undefined ? { onRunBoundary } : {}),
+        ...(seedInbound !== undefined ? { seedInbound } : {}),
       })(req);
 
     const evaluateGrantsAdapter: GrantEvaluator = async ({

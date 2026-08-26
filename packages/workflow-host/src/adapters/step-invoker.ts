@@ -192,6 +192,25 @@ export interface WorkflowStepInvokerOpts {
    */
   onRunBoundary?: (key: string) => Promise<void>;
   /**
+   * Seed hook for the warm path (design §3c threading). When supplied, the
+   * adapter calls it before `agent.send` on every message whose delivered
+   * input is a mail-derived `InboundMessage`, passing the step identity
+   * (`authzContext.stepId`, the same key `onRunBoundary` and the warm cache
+   * use) and that message. The sidecar wires this to the warm agent's
+   * durable conversation store, which routes the message onto the connector
+   * thread (seeding threadRoot / lastMessageId / replyTo) so the reply path
+   * can compose a threaded reply. Awaited before the send so the thread
+   * state is committed and durably flushed before the reply is produced; a
+   * seed failure surfaces by rejecting the step.
+   *
+   * Only mail-derived inbound messages seed: an approval-resume inbound
+   * carries a synthetic sender and a correlation id, and a synthesized
+   * string input is not a message, so neither advances the connector
+   * thread. Omitted on the cold path, which has no durable connector state
+   * to seed.
+   */
+  seedInbound?: (key: string, message: InboundMessage) => Promise<void>;
+  /**
    * Reader for the run's inbound-mail parts. When the step input is a decoded
    * `Mail`, the adapter resolves each part's `ref` to its committed bytes
    * through this reader and delivers a real `InboundMessage` (text and/or
@@ -279,6 +298,9 @@ async function invokeColdStep(
         await sendWithAbort(agent, req, {
           closeOnAbort: true,
           mailPartReader: opts.mailPartReader,
+          // Cold-path per-step agents have no durable connector state; the
+          // warm path is the only connector-seeding path.
+          seedInbound: undefined,
         }),
       ),
     async () => {
@@ -357,11 +379,18 @@ async function invokeWarmStep(
   if (opts.onEvent !== undefined) {
     warmCache.setEventSink(key, opts.onEvent);
   }
+  // Bind the seed hook to this step's identity so it resolves the same
+  // per-agent durable store the warm cache and run-boundary flush use.
+  const seedInbound = opts.seedInbound;
   try {
     return stepResultFromSend(
       await sendWithAbort(agent, req, {
         closeOnAbort: false,
         mailPartReader: opts.mailPartReader,
+        seedInbound:
+          seedInbound !== undefined
+            ? (message) => seedInbound(key, message)
+            : undefined,
       }),
     );
   } finally {
@@ -435,6 +464,7 @@ async function sendWithAbort(
   cfg: {
     closeOnAbort: boolean;
     mailPartReader: MailPartReader | undefined;
+    seedInbound: ((message: InboundMessage) => Promise<void>) | undefined;
   },
 ): Promise<SendResult> {
   // Re-check the abort signal before building the message. `buildEnv` and
@@ -444,7 +474,19 @@ async function sendWithAbort(
   if (req.signal.aborted) throw abortError(req.signal);
   // Resolve the step input into the value `agent.send` receives. A build
   // failure (a bad resume shape, an unresolvable attachment) rejects the step.
-  const message = await buildSendMessage(req, cfg.mailPartReader);
+  const { message, mailInbound } = await buildSendMessage(
+    req,
+    cfg.mailPartReader,
+  );
+  // Seed the warm agent's connector thread from a mail-derived inbound before
+  // the send, so the reply path has thread state (design §3c). Only the
+  // mail branch surfaces `mailInbound`; an approval-resume inbound and a
+  // synthesized string do not advance the thread. The seed is awaited so its
+  // durable flush completes (or surfaces) before the reply is produced; a
+  // seed failure rejects the step rather than composing an unthreaded reply.
+  if (mailInbound !== null && cfg.seedInbound !== undefined) {
+    await cfg.seedInbound(mailInbound);
+  }
   let abortListener: (() => void) | null = null;
   try {
     return await new Promise<SendResult>((resolve, reject) => {
@@ -598,24 +640,32 @@ function stepResultFromSend(result: SendResult): StepInvokeResult {
 async function buildSendMessage(
   req: StepInvokeRequest,
   mailPartReader: MailPartReader | undefined,
-): Promise<string | InboundMessage> {
+): Promise<{
+  message: string | InboundMessage;
+  mailInbound: InboundMessage | null;
+}> {
   if (req.resume !== undefined && req.resume.kind !== "input") {
-    return createInboundMessage({
-      from: "signal@local",
-      to: "agent@local",
-      content: synthesizeInputContent(req.resume.decision),
-      interchangeType: "conversation.message",
-      correlationId: req.resume.correlationId,
-    });
+    return {
+      message: createInboundMessage({
+        from: "signal@local",
+        to: "agent@local",
+        content: synthesizeInputContent(req.resume.decision),
+        interchangeType: "conversation.message",
+        correlationId: req.resume.correlationId,
+      }),
+      mailInbound: null,
+    };
   }
   const rawInput = req.resume === undefined ? req.input : req.resume.decision;
   // A step whose input is a decoded `Mail` is projected into the agent's
   // inbound message; the strict `isMail` guard keeps an arbitrary step value
-  // from matching.
+  // from matching. This is the one branch that carries real threading headers,
+  // so `mailInbound` surfaces the message for the warm path's connector seed.
   if (isMail(rawInput)) {
-    return buildInboundMessageFromMail(rawInput, mailPartReader);
+    const message = await buildInboundMessageFromMail(rawInput, mailPartReader);
+    return { message, mailInbound: message };
   }
-  return synthesizeInputContent(rawInput);
+  return { message: synthesizeInputContent(rawInput), mailInbound: null };
 }
 
 /** Extract a bare addr-spec from a header value, or fall back to a synthetic
