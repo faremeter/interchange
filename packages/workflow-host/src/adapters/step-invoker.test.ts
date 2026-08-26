@@ -1510,6 +1510,48 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     ]);
   });
 
+  test("drops non-RFC threading identifiers instead of failing the step", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+    // Inbound mail can carry a headerless-derived (sha256) or malformed
+    // Message-Id and a malformed In-Reply-To -- valid claim-check keys but not
+    // valid RFC identifiers. Forwarding them verbatim would throw in
+    // createInboundMessage and fail the step; they must be dropped instead.
+    const malformed: Mail = {
+      headers: {
+        from: "sender@example.com",
+        to: ["run@deployment.example.com"],
+        date: "2026-01-02T03:04:05Z",
+        messageId: "e3b0c44298fc1c149afbf4c8996fb924",
+        inReplyTo: "<invalid",
+        references: ["<invalid", "<valid@example.com>"],
+      },
+      rawHeaders: {},
+      parts: [
+        {
+          contentType: "text/plain",
+          ref: "mail-part:///r/m/0-text",
+          text: "malformed headers must not fail the step",
+        },
+      ],
+    };
+    await invoker(buildRequest({ input: malformed }));
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    // A valid Message-ID is synthesized in place of the non-RFC one, the
+    // malformed In-Reply-To is dropped, and only the valid reference survives.
+    expect(msg.headers.messageId).not.toBe("e3b0c44298fc1c149afbf4c8996fb924");
+    expect(msg.headers.messageId).toMatch(/^<[^<>\s@]+@[^<>\s@]+>$/);
+    expect(msg.headers.inReplyTo).toBeUndefined();
+    expect(msg.headers.references).toEqual(["<valid@example.com>"]);
+  });
+
   test("routes an attachment-disposition text part and an html part to attachments", async () => {
     const { agent, captured } = buildCapturingAgent();
     const invoker = createWorkflowStepInvoker({
