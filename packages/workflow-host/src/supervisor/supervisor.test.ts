@@ -119,7 +119,6 @@ function parseMailboxNotifies(lines: readonly string[]): {
   mailbox: string;
   uid: number;
   headers: { from: string; to: string[]; messageId: string; subject?: string };
-  commit: string;
 }[] {
   const out: {
     runId: string;
@@ -131,7 +130,6 @@ function parseMailboxNotifies(lines: readonly string[]): {
       messageId: string;
       subject?: string;
     };
-    commit: string;
   }[] = [];
   for (const line of lines) {
     if (!line.includes("mailbox.notify")) continue;
@@ -153,7 +151,6 @@ function parseMailboxNotifies(lines: readonly string[]): {
           ? { subject: payload.data.headers.subject }
           : {}),
       },
-      commit: payload.data.commit,
     });
   }
   return out;
@@ -1375,7 +1372,6 @@ describe("createWorkflowSupervisor", () => {
     expect(notify.headers.from).toBe("sender@example.com");
     expect(notify.headers.to).toEqual([MAILBOX_ADDRESS]);
     expect(notify.headers.messageId).toBe("<msg-1@example.com>");
-    expect(notify.commit.length).toBeGreaterThan(0);
 
     // The arrival commit holds exactly one entry with the assigned uid, and it
     // is unflagged on arrival; the raw bytes are stored verbatim in <uid>.eml.

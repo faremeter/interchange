@@ -400,7 +400,6 @@ describe("Control channel", () => {
           references: ["<prev@integration>"],
           interchangeType: "conversation.message" as const,
         },
-        commit: "abc123",
       },
     };
     await sender.send(notify);
@@ -446,7 +445,6 @@ describe("Control channel", () => {
             date: "",
             messageId: "<m@integration>",
           },
-          commit: "abc123",
         },
       },
     };

@@ -565,15 +565,14 @@ export const ControlPayload = type(
     // warm-agent `watch`/`mail_wait` observes the arrival decoupled from the
     // FIFO trigger dispatch that resolves a run's first input. `headers` rides
     // inline so a watcher gets the `exists` `MailboxEvent`'s envelope without a
-    // substrate round-trip; `commit` pins the substrate commit that carries the
-    // message so a child reader opens the right committed state.
+    // substrate round-trip. The child reads the latest committed mailbox state
+    // regardless, so the frame carries no commit pin.
     type: "'mailbox.notify'",
     data: {
       runId: "string > 0",
       mailbox: "string > 0",
       uid: "number >= 1",
       headers: MailboxNotifyHeaders,
-      commit: "string > 0",
     },
   });
 
