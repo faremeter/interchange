@@ -953,3 +953,101 @@ describe("onFailure projection and hash", () => {
     );
   });
 });
+
+describe("sidecar capability projection", () => {
+  test("folds every inline body into the deployment projection", () => {
+    const agent = mkAgent([], [], [OPENAI]);
+    const capabilityBody = (
+      id: string,
+      capability: string,
+    ): WorkflowDefinition =>
+      defineWorkflow({
+        id,
+        steps: { run: step({ agent }) },
+        sidecarPlacement: {
+          capabilities: [{ capability, effect: "require" }],
+        },
+      });
+    const child = capabilityBody("child", "device:simulator");
+    const loopBody = capabilityBody("loop-body", "storage:host-local");
+    const sectionBody = capabilityBody("section-body", "runtime:browser");
+    const parent = defineWorkflow({
+      id: "parent",
+      steps: {
+        repeat: loop({
+          body: loopBody,
+          while: "continue",
+          carry: "carry",
+          maxIterations: 1,
+          onExhausted: "done",
+        }),
+        done: step({ agent, after: ["repeat"] }),
+        section: onTrigger({ on: { type: "manual" }, body: sectionBody }),
+        child: childWorkflow({ definition: child, after: ["done"] }),
+      },
+      sidecarPlacement: {
+        capabilities: [{ capability: "platform:ios", effect: "require" }],
+      },
+    });
+
+    const projection = projectLiveToInert(parent);
+    expect(projection.sidecarPlacement).toEqual({
+      capabilities: [
+        { capability: "platform:ios", effect: "require" },
+        { capability: "storage:host-local", effect: "require" },
+        { capability: "runtime:browser", effect: "require" },
+        { capability: "device:simulator", effect: "require" },
+      ],
+    });
+    expect(
+      WorkflowProjectionDefinition(projection) instanceof type.errors,
+    ).toBe(false);
+  });
+
+  test("deduplicates identical folded rules while preserving conflicts", () => {
+    const agent = mkAgent([], [], [OPENAI]);
+    const child = defineWorkflow({
+      id: "dedup-child",
+      steps: { run: step({ agent }) },
+      sidecarPlacement: {
+        capabilities: [
+          { capability: "runtime:browser", effect: "require" },
+          { capability: "runtime:browser", effect: "block" },
+        ],
+      },
+    });
+    const parent = defineWorkflow({
+      id: "dedup-parent",
+      steps: { child: childWorkflow({ definition: child }) },
+      sidecarPlacement: {
+        capabilities: [{ capability: "runtime:browser", effect: "require" }],
+      },
+    });
+
+    expect(projectLiveToInert(parent).sidecarPlacement).toEqual({
+      capabilities: [
+        { capability: "runtime:browser", effect: "require" },
+        { capability: "runtime:browser", effect: "block" },
+      ],
+    });
+  });
+
+  test("capability requirements move the wire hash", async () => {
+    const agent = mkAgent([], [], [OPENAI]);
+    const base = defineWorkflow({
+      id: "placement-hash",
+      steps: { run: step({ agent }) },
+    });
+    const required = defineWorkflow({
+      id: "placement-hash",
+      steps: { run: step({ agent }) },
+      sidecarPlacement: {
+        capabilities: [{ capability: "runtime:browser", effect: "require" }],
+      },
+    });
+
+    expect(await computeLiveDefinitionHash(required)).not.toBe(
+      await computeLiveDefinitionHash(base),
+    );
+  });
+});

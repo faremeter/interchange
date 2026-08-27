@@ -24,7 +24,11 @@
 
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
-import { CredentialBinding, GrantRequirement } from "@intx/types";
+import {
+  CredentialBinding,
+  GrantRequirement,
+  SidecarCapabilityPolicy,
+} from "@intx/types";
 import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
 import { glob, repoActionToGrantVerb } from "@intx/hub-common";
 import {
@@ -100,6 +104,7 @@ export const workflowDefinitionEnvelopeSchema = type({
   // authority, or handle) is rejected at the deploy boundary rather than
   // passed through to launch-time resolution unchecked.
   "credentialBindings?": CredentialBinding.array(),
+  "sidecarPlacement?": SidecarCapabilityPolicy,
 }).onUndeclaredKey("ignore");
 
 const SidecarPrincipal = type({

@@ -6,6 +6,7 @@ export type {
 export * from "./state-machine/index";
 export * from "./definition/index";
 export { collectDeclaredPluginNames } from "./declared-plugins";
+export { collectSidecarCapabilityRules } from "./sidecar-capabilities";
 export {
   inlineBodyRef,
   rewriteInlineOnTriggerBodies,

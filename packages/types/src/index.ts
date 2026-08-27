@@ -34,3 +34,4 @@ export * from "./concat";
 export * from "./has-code";
 export * from "./audit";
 export * from "./sidecar-allocation";
+export * from "./sidecar-capabilities";
