@@ -315,6 +315,15 @@ export type SpawnChildWorkflow = (input: {
   parentRunId: string;
   parentStepId: string;
   signal: AbortSignal;
+  /**
+   * The child run's depth in the spawn chain (one deeper than the parent).
+   * The runtime checks it against `maxChildSpawnDepth` before this callback
+   * is invoked; the spawner threads it into the child run so the child's own
+   * spawns keep counting. See `child-depth.ts`.
+   */
+  depth: number;
+  /** The tree-wide spawn-depth ceiling, threaded to the child run. */
+  maxChildSpawnDepth: number;
 }) => Promise<{
   terminalStatus: "completed" | "failed" | "cancelled";
 }>;
