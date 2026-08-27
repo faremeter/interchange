@@ -29,9 +29,9 @@ export {
 } from "./capability-approval";
 export { extractFoldedBody, type FoldedBody } from "./fold-synthesis";
 export {
-  enumerateInertOnTriggerBodies,
+  enumerateInertBodies,
   inertLoopBody,
-  type EnumeratedInertOnTriggerBody,
+  type EnumeratedInertBody,
   type InertBodyStepPreference,
 } from "./inert-ontrigger-bodies";
 export {

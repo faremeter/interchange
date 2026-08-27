@@ -31,7 +31,7 @@ Public surface:
 - `pickStepInferenceSource(...)` / `buildInertProjectionStepSources(...)`
   — resolve each step's inference source against the operator-approved
   grant set, so an unapproved source fails the deploy closed.
-- `enumerateInertOnTriggerBodies(...)` — lift each inline onTrigger body
+- `enumerateInertBodies(...)` — lift each inline trigger body (onTrigger section or childWorkflow child), transitively,
   out of a frozen inert projection and surface its declared
   `(provider, model)` preference for per-body source pinning.
 - `deriveRunAddress` / `deriveStepAddress` / `resolveStepAddress` /

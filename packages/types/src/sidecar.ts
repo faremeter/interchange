@@ -479,12 +479,14 @@ export const AgentDeployWorkflow = type({
   // instead -- the production hub builder always stamps it and the sidecar fails
   // closed if it is absent.
   "approvedWireHash?": "string > 0",
-  // Extracted onTrigger section bodies. Each entry carries the body's inert
-  // definition, its own per-step inference-source pins, and its approved wire
-  // hash. The sidecar stages each body's `sources.json` so a body child --
-  // in-process, its env lost across a restart -- resolves inference durably; the
-  // body definition itself is resolved in-memory from the parent's re-verified
-  // closure. Optional: only an onTrigger deploy carries it.
+  // Extracted trigger bodies -- onTrigger sections and childWorkflow children,
+  // lifted transitively. Each entry carries the body's inert definition, its own
+  // per-step inference-source pins, and its approved wire hash. The sidecar
+  // stages each body's `sources.json` so a body child -- in-process, its env
+  // lost across a restart -- resolves inference durably; the body definition
+  // itself is resolved in-memory from the parent's re-verified closure.
+  // Optional: only a deploy that carries an inline onTrigger section or
+  // childWorkflow child populates it.
   "referencedDefinitions?": WorkflowProjectionWithSources.array(),
   // Initial credential material for the deployment's tools, decrypted hub-side
   // and delivered on the deploy frame so it is resident before any step runs

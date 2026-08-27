@@ -2270,12 +2270,13 @@ export function createSidecarDeployRouter(deps: {
       // it below, so only a crash-interrupted deploy leaves one.
       await persistWorkflowRunRecord(dataDir, runId, record);
 
-      // Materialize each extracted onTrigger section body's per-step inference
-      // sources to `assets/workflow/<bodyRef>/sources.json`. The body
-      // DEFINITION is not staged: the run child resolves each body in-memory
-      // from the parent's re-verified closure and hard-fails rather than reading
-      // a body definition off disk. The sources ride on disk (not through env)
-      // because the body child is in-process and loses its env across a restart.
+      // Materialize each extracted trigger body's per-step inference sources
+      // (onTrigger sections and childWorkflow children alike) to
+      // `assets/workflow/<bodyRef>/sources.json`. The body DEFINITION is not
+      // staged: the run child resolves each body in-memory from the parent's
+      // re-verified closure and hard-fails rather than reading a body definition
+      // off disk. The sources ride on disk (not through env) because the body
+      // child is in-process and loses its env across a restart.
       for (const referenced of projection.referencedDefinitions ?? []) {
         await materializeWorkflowSources(
           dataDir,

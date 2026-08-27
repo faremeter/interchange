@@ -1,12 +1,24 @@
-// Enumerate the inline onTrigger section bodies of a FROZEN inert projection.
+// Enumerate the inline trigger bodies of a FROZEN inert projection -- both
+// onTrigger section bodies and childWorkflow child definitions, transitively.
 //
 // On the source-ref (code-sourced) deploy the hub never holds a live
 // `WorkflowDefinition` -- it has only the inert `WorkflowProjectionDefinition`
 // the gate froze and hashed. This module walks that frozen projection, lifts
-// each inline onTrigger body, and surfaces each body step's declared
-// `(provider, model)` preference from the projection's `modelSources` so the
-// hub can pin per-body inference sources through the resolver + approval gate
+// each inline body, and surfaces each body step's declared `(provider, model)`
+// preference from the projection's `modelSources` so the hub can pin per-body
+// inference sources through the resolver + approval gate
 // (`pickStepInferenceSource`).
+//
+// The walk mirrors the runtime's per-rung rewrite exactly, so the ref each body
+// is staged under equals the ref the runtime reads it back by:
+//   - childWorkflow bodies are lifted at EVERY rung (the runtime re-runs
+//     `rewriteInlineChildWorkflowBodies` per child run), so the enumeration
+//     recurses into every lifted body;
+//   - onTrigger bodies are lifted only at the TOP level (the runtime lifts them
+//     once at child boot, never inside a spawned body), so an onTrigger section
+//     nested inside a spawned body would reach the runtime inline and hard-fail
+//     -- this module rejects it at deploy rather than staging an asset the
+//     runtime will never read.
 //
 // It reads NOTHING off an unvalidated `unknown`: the wire projection types its
 // `steps` as pass-through `unknown`, so every field this module reaches is first
@@ -28,11 +40,11 @@ export interface InertBodyStepPreference {
 }
 
 /**
- * An inline onTrigger body lifted out of a frozen inert projection, ready for
- * the source-ref hub to pin per-step sources and carry as a
- * `referencedDefinitions` entry.
+ * An inline trigger body (an onTrigger section or a childWorkflow child) lifted
+ * out of a frozen inert projection, ready for the source-ref hub to pin per-step
+ * sources and carry as a `referencedDefinitions` entry.
  */
-export interface EnumeratedInertOnTriggerBody {
+export interface EnumeratedInertBody {
   /**
    * The body's ref -- `onTriggerBodyRef(projection.id, stepId)`. This is also
    * `definition.id`, the id the sidecar stages the body's `sources.json` under,
@@ -68,6 +80,14 @@ const InertModelSource = type({ provider: "string > 0", model: "string > 0" });
 const InlineOnTriggerStep = type({
   kind: "'onTrigger'",
   body: { inline: "unknown" },
+});
+
+// A childWorkflow step carrying an inline child definition. Mirrors
+// `InlineOnTriggerStep`: an already-ref child (`definition: { ref }`) is skipped,
+// but a frozen source-ref projection keeps its children inline.
+const InlineChildWorkflowStep = type({
+  kind: "'childWorkflow'",
+  definition: { inline: "unknown" },
 });
 
 // The agent surface the resolver reads. Undeclared keys pass through, so this
@@ -162,41 +182,90 @@ export function readInertStepPreference(
 }
 
 /**
- * Enumerate a frozen inert projection's inline onTrigger bodies. Pure: it only
- * reads `projection`, validating every field it reaches. Each returned body
- * carries its ref, the inline body projection (id set to the ref), and each body
- * step's declared preference. A projection with no inline onTrigger body yields
- * an empty array.
+ * Lift one inline body out of an enclosing projection: validate it, override its
+ * id to `onTriggerBodyRef(enclosingId, stepId)` (the ref the sidecar stages
+ * under and the run child re-derives), and read each body step's declared
+ * preference. Every field other than the id rides verbatim so the body's wire
+ * hash matches the re-evaluated closure's projection.
  */
-export function enumerateInertOnTriggerBodies(
+function liftInertBody(
+  enclosingId: string,
+  stepId: string,
+  inlineBody: unknown,
+  kind: "onTrigger" | "childWorkflow",
+): EnumeratedInertBody {
+  const ref = onTriggerBodyRef(enclosingId, stepId);
+  const validatedBody = WorkflowProjectionDefinition(inlineBody);
+  if (validatedBody instanceof type.errors) {
+    throw new Error(
+      `enumerateInertBodies: inline ${kind} body at step ${stepId} is not a valid workflow projection: ${validatedBody.summary}`,
+    );
+  }
+  const definition = { ...validatedBody, id: ref };
+  const preferredByStep: Record<string, InertBodyStepPreference | null> = {};
+  for (const bodyStepId of definition.stepOrder) {
+    preferredByStep[bodyStepId] = readInertStepPreference(
+      definition.steps[bodyStepId],
+      `enumerateInertBodies: body ${ref} `,
+      bodyStepId,
+    );
+  }
+  return { ref, definition, preferredByStep };
+}
+
+/**
+ * Enumerate a frozen inert projection's inline trigger bodies -- onTrigger
+ * sections and childWorkflow children -- transitively. Pure: it only reads
+ * `projection`, validating every field it reaches. Each returned body carries
+ * its ref, the inline body projection (id set to the ref), and each body step's
+ * declared preference. A projection with no inline body yields an empty array.
+ *
+ * The descent mirrors the runtime's per-rung rewrite (see the module comment):
+ * childWorkflow children are lifted at every depth; onTrigger sections are
+ * lifted only at the top level, and a nested onTrigger section throws.
+ */
+export function enumerateInertBodies(
   projection: typeof WorkflowProjectionDefinition.infer,
-): readonly EnumeratedInertOnTriggerBody[] {
-  const bodies: EnumeratedInertOnTriggerBody[] = [];
+): readonly EnumeratedInertBody[] {
+  return enumerateInertBodiesAtDepth(projection, true);
+}
+
+function enumerateInertBodiesAtDepth(
+  projection: typeof WorkflowProjectionDefinition.infer,
+  isTopLevel: boolean,
+): EnumeratedInertBody[] {
+  const bodies: EnumeratedInertBody[] = [];
   for (const [stepId, stepValue] of Object.entries(projection.steps)) {
-    const asInline = InlineOnTriggerStep(stepValue);
-    if (asInline instanceof type.errors) continue;
-
-    const ref = onTriggerBodyRef(projection.id, stepId);
-    const validatedBody = WorkflowProjectionDefinition(asInline.body.inline);
-    if (validatedBody instanceof type.errors) {
-      throw new Error(
-        `enumerateInertOnTriggerBodies: inline onTrigger body at step ${stepId} is not a valid workflow projection: ${validatedBody.summary}`,
+    const asOnTrigger = InlineOnTriggerStep(stepValue);
+    if (!(asOnTrigger instanceof type.errors)) {
+      if (!isTopLevel) {
+        throw new Error(
+          `enumerateInertBodies: onTrigger section at step ${stepId} is nested inside a spawned body; the runtime lifts onTrigger sections only at the top level, so a nested section reaches the runtime inline and fails. Move it to the top-level workflow.`,
+        );
+      }
+      const lifted = liftInertBody(
+        projection.id,
+        stepId,
+        asOnTrigger.body.inline,
+        "onTrigger",
       );
+      bodies.push(lifted);
+      // The runtime rewrites childWorkflows inside a running onTrigger body,
+      // so recurse -- but that body is no longer top level.
+      bodies.push(...enumerateInertBodiesAtDepth(lifted.definition, false));
+      continue;
     }
-    // Override only the id, to the ref the sidecar stages under and the run
-    // child re-derives; every other field rides verbatim so the body's wire
-    // hash matches the re-evaluated closure's projection.
-    const definition = { ...validatedBody, id: ref };
-
-    const preferredByStep: Record<string, InertBodyStepPreference | null> = {};
-    for (const bodyStepId of definition.stepOrder) {
-      preferredByStep[bodyStepId] = readInertStepPreference(
-        definition.steps[bodyStepId],
-        `enumerateInertOnTriggerBodies: body ${ref} `,
-        bodyStepId,
+    const asChild = InlineChildWorkflowStep(stepValue);
+    if (!(asChild instanceof type.errors)) {
+      const lifted = liftInertBody(
+        projection.id,
+        stepId,
+        asChild.definition.inline,
+        "childWorkflow",
       );
+      bodies.push(lifted);
+      bodies.push(...enumerateInertBodiesAtDepth(lifted.definition, false));
     }
-    bodies.push({ ref, definition, preferredByStep });
   }
   return bodies;
 }
