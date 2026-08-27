@@ -533,7 +533,7 @@ class ScopedMessageTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<MessageRef[]> {
     const store = this.#requireMailbox(mailbox);
-    return executeSearch(mailbox, store, query);
+    return await executeSearch(mailbox, store, query);
   }
 
   async thread(
@@ -543,7 +543,7 @@ class ScopedMessageTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<Thread[]> {
     const store = this.#requireMailbox(mailbox);
-    return executeThread(mailbox, store, algorithm, query);
+    return await executeThread(mailbox, store, algorithm, query);
   }
 
   async fetchHeaders(
@@ -551,7 +551,7 @@ class ScopedMessageTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<MessageHeaders> {
     const store = this.#requireMailbox(ref.mailbox);
-    return doFetchHeaders(ref, store);
+    return await doFetchHeaders(ref, store);
   }
 
   async fetchStructure(
@@ -559,7 +559,7 @@ class ScopedMessageTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<BodyStructure> {
     const store = this.#requireMailbox(ref.mailbox);
-    return doFetchStructure(ref, store);
+    return await doFetchStructure(ref, store);
   }
 
   async fetchPart(
@@ -568,7 +568,7 @@ class ScopedMessageTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<MessagePart> {
     const store = this.#requireMailbox(ref.mailbox);
-    return doFetchPart(ref, partPath, store);
+    return await doFetchPart(ref, partPath, store);
   }
 
   async fetchFull(
@@ -576,7 +576,11 @@ class ScopedMessageTransport implements MessageTransport {
     _signal?: AbortSignal,
   ): Promise<InboundMessage> {
     const store = this.#requireMailbox(ref.mailbox);
-    return doFetchFull(ref, store, (addr) => this.#entries.get(addr)?.crypto);
+    return await doFetchFull(
+      ref,
+      store,
+      (addr) => this.#entries.get(addr)?.crypto,
+    );
   }
 
   async setFlags(
@@ -615,9 +619,10 @@ class ScopedMessageTransport implements MessageTransport {
     const fromStore = this.#requireMailbox(ref.mailbox);
     const toStore = this.#requireMailbox(toMailbox);
     const msg = requireMessage(fromStore, ref.uid, ref.mailbox);
+    const raw = await fromStore.readRaw(ref.uid);
     fromStore.remove(ref.uid);
 
-    const newUid = toStore.append(msg.raw, msg.envelope, Array.from(msg.flags));
+    const newUid = toStore.append(raw, msg.envelope, Array.from(msg.flags));
 
     this.#fireWatchCallbacks(ref.mailbox, {
       type: "expunged",
@@ -625,7 +630,7 @@ class ScopedMessageTransport implements MessageTransport {
     });
 
     // Notify watchers of the new message in the destination mailbox.
-    const { headers: parsedHeaders } = parseHeaderSection(msg.raw);
+    const { headers: parsedHeaders } = parseHeaderSection(raw);
     const msgHeaders = this.#buildMessageHeaders(parsedHeaders);
     this.#fireWatchCallbacks(toMailbox, {
       type: "exists",
@@ -642,10 +647,11 @@ class ScopedMessageTransport implements MessageTransport {
     const fromStore = this.#requireMailbox(ref.mailbox);
     const toStore = this.#requireMailbox(toMailbox);
     const msg = requireMessage(fromStore, ref.uid, ref.mailbox);
+    const raw = await fromStore.readRaw(ref.uid);
 
-    const newUid = toStore.append(msg.raw, msg.envelope, Array.from(msg.flags));
+    const newUid = toStore.append(raw, msg.envelope, Array.from(msg.flags));
 
-    const { headers: parsedHeaders } = parseHeaderSection(msg.raw);
+    const { headers: parsedHeaders } = parseHeaderSection(raw);
     const msgHeaders = this.#buildMessageHeaders(parsedHeaders);
     this.#fireWatchCallbacks(toMailbox, {
       type: "exists",

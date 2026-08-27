@@ -1097,8 +1097,11 @@ export function createWorkflowSupervisor(
   let mailboxStore: SubstrateMailboxStore | null = null;
   // Claim-check messageId -> assigned mailbox uid, so a message dispatched as a
   // turn can be flagged \Seen/$Processed by uid. In-memory only: a missing entry
-  // (a restart, or an arrival whose eager commit failed) skips the flag mark,
-  // which is a cosmetic IMAP flag, never a delivery guarantee.
+  // (a restart, an arrival whose eager commit failed, or an already-processed
+  // message whose entry was pruned) skips the flag mark, which is a cosmetic
+  // IMAP flag, never a delivery guarantee. `markMailboxProcessed` prunes an
+  // entry once its mark completes, so the map holds only messages awaiting the
+  // flag mark rather than growing for the deployment's life.
   const mailboxUidByMessageId = new Map<string, number>();
   // Serializes every mailbox mutation (lazy construction, the arrival
   // append+flush, the dispatch flag mark) so concurrent arrivals and a fire-and-
@@ -1224,10 +1227,20 @@ export function createWorkflowSupervisor(
     const uid = mailboxUidByMessageId.get(messageId);
     if (uid === undefined) return;
     void runMailboxExclusive(async () => {
-      const store = await getMailboxStore();
-      if (store.find(uid) === undefined) return;
-      store.addFlags(uid, [MAILBOX_FLAG_SEEN, MAILBOX_FLAG_PROCESSED]);
-      await store.flush();
+      try {
+        const store = await getMailboxStore();
+        if (store.find(uid) === undefined) return;
+        store.addFlags(uid, [MAILBOX_FLAG_SEEN, MAILBOX_FLAG_PROCESSED]);
+        await store.flush();
+      } finally {
+        // The id->uid mapping exists only to flag this message once. After the
+        // mark runs (or the message is already gone), the entry is dead weight,
+        // so drop it to bound the map over a long-lived conversational mailbox.
+        // Redelivery dedup is owned by the durable inbox index, not this map.
+        // The delete runs inside the exclusive section so it never interleaves
+        // with the arrival path's `has(messageId)` check.
+        mailboxUidByMessageId.delete(messageId);
+      }
     }).catch((cause) => {
       const message = cause instanceof Error ? cause.message : String(cause);
       logger.warn`mailbox flag mark failed for ${messageId} (uid ${String(uid)}): ${message}`;

@@ -262,18 +262,23 @@ describe("substrate mailbox store", () => {
     const aliceUid = store.append(alice.raw, alice.envelope, ["\\Seen"]);
     store.append(bob.raw, bob.envelope, []);
 
-    const byFrom = executeSearch("INBOX", store, { from: "alice" });
+    const byFrom = await executeSearch("INBOX", store, { from: "alice" });
     expect(byFrom.map((r) => r.uid)).toEqual([aliceUid]);
 
-    const bySubjectHeader = executeSearch("INBOX", store, {
+    // The `header` predicate scans headers the envelope does not carry, so it
+    // reads each candidate's raw bytes on demand. Before the flush those bytes
+    // are the still-pending append raw; this exercises that path.
+    const bySubjectHeader = await executeSearch("INBOX", store, {
       header: { field: "Subject", contains: "hello" },
     });
     expect(bySubjectHeader.map((r) => r.uid)).toEqual([aliceUid]);
 
-    const seen = executeSearch("INBOX", store, { hasFlags: ["\\Seen"] });
+    const seen = await executeSearch("INBOX", store, { hasFlags: ["\\Seen"] });
     expect(seen.map((r) => r.uid)).toEqual([aliceUid]);
 
-    const unseen = executeSearch("INBOX", store, { missingFlags: ["\\Seen"] });
+    const unseen = await executeSearch("INBOX", store, {
+      missingFlags: ["\\Seen"],
+    });
     expect(unseen).toHaveLength(1);
     expect(unseen[0]?.uid).not.toBe(aliceUid);
   });
@@ -291,8 +296,10 @@ describe("substrate mailbox store", () => {
     });
     const uid = store.append(msg.raw, msg.envelope, []);
 
-    // The stored raw bytes are byte-identical to the input.
-    expect(store.find(uid)?.raw).toEqual(msg.raw);
+    // The resident message model carries no raw bytes; the bytes are read on
+    // demand and are byte-identical to the input.
+    expect("raw" in (store.find(uid) ?? {})).toBe(false);
+    expect(await store.readRaw(uid)).toEqual(msg.raw);
 
     const getCrypto = (from: string): CryptoProvider | undefined =>
       from === "signer@example.com" ? crypto : undefined;
@@ -426,7 +433,9 @@ describe("substrate mailbox store", () => {
     const kept = reopened.find(uid1);
     expect(kept).toBeDefined();
     expect(Array.from(kept?.flags ?? [])).toEqual(["\\Seen"]);
-    expect(kept?.raw).toEqual(first.raw);
+    // The reopened mirror holds metadata only; the raw is read from the
+    // committed `<uid>.eml` blob on demand.
+    expect(await reopened.readRaw(uid1)).toEqual(first.raw);
     expect(kept?.envelope.from).toBe("a@example.com");
     expect(kept?.envelope.subject).toBe("keep");
     // The expunged message's blob did not survive the flush.
@@ -450,6 +459,41 @@ describe("substrate mailbox store", () => {
     });
     if (delta.resync) throw new Error("unexpected resync");
     expect(delta.vanished).toEqual([uid2]);
+  });
+
+  test("does not hold raw resident after flush and reads it from disk on demand", async () => {
+    const handles = await makeHandles("dep-no-resident-raw");
+    const store = await openStore(handles);
+    const crypto = await senderCrypto();
+    const msg = await makeSignedMessage(crypto, {
+      from: "a@example.com",
+      to: ["run@dep.example.com"],
+      subject: "resident",
+      messageId: generateMessageId("a@example.com"),
+      text: "resident body",
+    });
+    const uid = store.append(msg.raw, msg.envelope, []);
+
+    // The resident message model never carries the raw bytes.
+    expect("raw" in (store.find(uid) ?? {})).toBe(false);
+    // Before flush the append raw is held pending and is readable.
+    expect(await store.readRaw(uid)).toEqual(msg.raw);
+
+    await store.flush();
+
+    // After a successful flush the bytes are dropped from memory. The pinned
+    // committed-read snapshot predates the commit, so the writer store can no
+    // longer resolve them -- direct proof the raw was released, not retained.
+    await expect(store.readRaw(uid)).rejects.toThrow(/not resolvable/);
+
+    // A fresh reader opens a new snapshot that sees the committed blob and
+    // reads it from disk on demand, byte-identical to the original.
+    const reader = await openStore(handles);
+    expect("raw" in (reader.find(uid) ?? {})).toBe(false);
+    expect(await reader.readRaw(uid)).toEqual(msg.raw);
+
+    // readRaw throws for an absent uid.
+    await expect(reader.readRaw(9999)).rejects.toThrow(/not found/);
   });
 
   test("a fresh store over an empty repo starts at uid 1 with no messages", async () => {

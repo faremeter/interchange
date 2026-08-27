@@ -3,29 +3,57 @@ import type { MailboxStore, StoredMessage } from "./mailbox";
 import { parseHeaderSection } from "@intx/mime";
 
 /**
- * Execute an IMAP SEARCH-equivalent query over an in-memory mailbox.
+ * Execute an IMAP SEARCH-equivalent query over a mailbox.
  *
  * Supports: from, to, cc, bcc, header (field match), before/after/on,
  * sentBefore/sentAfter/sentOn, hasFlags, missingFlags, body, text,
  * largerThan, smallerThan, and boolean and/or/not composition.
  *
+ * The envelope- and flag-based predicates (from, to, dates, flags, boolean
+ * composition) resolve from metadata alone. The predicates that inspect
+ * headers the envelope does not carry (cc, bcc, arbitrary `header`), the body,
+ * or the raw size (body, text, largerThan, smallerThan) read a message's raw
+ * bytes on demand through `store.readRaw`, memoized per message so a query that
+ * touches raw reads each candidate's blob at most once. A query with no
+ * raw-scanning predicate never reads a blob.
+ *
  * Returns MessageRef[] for all matching messages, ordered by UID.
  */
-export function executeSearch(
+export async function executeSearch(
   mailboxName: string,
   store: MailboxStore,
   query: SearchQuery,
-): MessageRef[] {
+): Promise<MessageRef[]> {
   const results: MessageRef[] = [];
   for (const msg of store.messages) {
-    if (matchMessage(msg, query)) {
+    if (await matchMessage(msg, query, makeRawReader(store, msg.uid))) {
       results.push({ uid: msg.uid, mailbox: mailboxName });
     }
   }
   return results;
 }
 
-function matchMessage(msg: StoredMessage, query: SearchQuery): boolean {
+/**
+ * A per-message memoized reader for the raw bytes. The first raw-scanning
+ * predicate reads the blob through `store.readRaw`; every later predicate on
+ * the same message reuses the resolved bytes.
+ */
+function makeRawReader(
+  store: MailboxStore,
+  uid: number,
+): () => Promise<Uint8Array> {
+  let pending: Promise<Uint8Array> | undefined;
+  return () => {
+    if (pending === undefined) pending = store.readRaw(uid);
+    return pending;
+  };
+}
+
+async function matchMessage(
+  msg: StoredMessage,
+  query: SearchQuery,
+  readRaw: () => Promise<Uint8Array>,
+): Promise<boolean> {
   if (query.from !== undefined) {
     if (!msg.envelope.from.toLowerCase().includes(query.from.toLowerCase())) {
       return false;
@@ -41,7 +69,7 @@ function matchMessage(msg: StoredMessage, query: SearchQuery): boolean {
   }
 
   if (query.cc !== undefined) {
-    const headers = lazyHeaders(msg);
+    const headers = await lazyHeaders(msg, readRaw);
     const ccHeader = headers.get("cc") ?? "";
     if (!ccHeader.toLowerCase().includes(query.cc.toLowerCase())) {
       return false;
@@ -49,7 +77,7 @@ function matchMessage(msg: StoredMessage, query: SearchQuery): boolean {
   }
 
   if (query.bcc !== undefined) {
-    const headers = lazyHeaders(msg);
+    const headers = await lazyHeaders(msg, readRaw);
     const bccHeader = headers.get("bcc") ?? "";
     if (!bccHeader.toLowerCase().includes(query.bcc.toLowerCase())) {
       return false;
@@ -58,7 +86,7 @@ function matchMessage(msg: StoredMessage, query: SearchQuery): boolean {
 
   if (query.header !== undefined) {
     const { field, contains } = query.header;
-    const headers = lazyHeaders(msg);
+    const headers = await lazyHeaders(msg, readRaw);
     const value = headers.get(field.toLowerCase()) ?? "";
     if (!value.toLowerCase().includes(contains.toLowerCase())) {
       return false;
@@ -115,18 +143,19 @@ function matchMessage(msg: StoredMessage, query: SearchQuery): boolean {
   }
 
   if (query.largerThan !== undefined) {
-    if (msg.raw.length <= query.largerThan) return false;
+    if ((await readRaw()).length <= query.largerThan) return false;
   }
   if (query.smallerThan !== undefined) {
-    if (msg.raw.length >= query.smallerThan) return false;
+    if ((await readRaw()).length >= query.smallerThan) return false;
   }
 
   if (query.body !== undefined || query.text !== undefined) {
-    const rawText = new TextDecoder("utf-8", { fatal: false }).decode(msg.raw);
+    const raw = await readRaw();
+    const rawText = new TextDecoder("utf-8", { fatal: false }).decode(raw);
     if (query.body !== undefined) {
-      const { bodyOffset } = parseHeaderSection(msg.raw);
+      const { bodyOffset } = parseHeaderSection(raw);
       const bodyText = new TextDecoder("utf-8", { fatal: false }).decode(
-        msg.raw.slice(bodyOffset),
+        raw.slice(bodyOffset),
       );
       if (!bodyText.toLowerCase().includes(query.body.toLowerCase())) {
         return false;
@@ -141,19 +170,25 @@ function matchMessage(msg: StoredMessage, query: SearchQuery): boolean {
 
   if (query.and !== undefined) {
     for (const sub of query.and) {
-      if (!matchMessage(msg, sub)) return false;
+      if (!(await matchMessage(msg, sub, readRaw))) return false;
     }
   }
 
   if (query.or !== undefined) {
     if (query.or.length > 0) {
-      const anyMatch = query.or.some((sub) => matchMessage(msg, sub));
+      let anyMatch = false;
+      for (const sub of query.or) {
+        if (await matchMessage(msg, sub, readRaw)) {
+          anyMatch = true;
+          break;
+        }
+      }
       if (!anyMatch) return false;
     }
   }
 
   if (query.not !== undefined) {
-    if (matchMessage(msg, query.not)) return false;
+    if (await matchMessage(msg, query.not, readRaw)) return false;
   }
 
   return true;
@@ -161,10 +196,13 @@ function matchMessage(msg: StoredMessage, query: SearchQuery): boolean {
 
 const headerCache = new WeakMap<StoredMessage, Map<string, string>>();
 
-function lazyHeaders(msg: StoredMessage): Map<string, string> {
+async function lazyHeaders(
+  msg: StoredMessage,
+  readRaw: () => Promise<Uint8Array>,
+): Promise<Map<string, string>> {
   const cached = headerCache.get(msg);
   if (cached !== undefined) return cached;
-  const { headers } = parseHeaderSection(msg.raw);
+  const { headers } = parseHeaderSection(await readRaw());
   headerCache.set(msg, headers);
   return headers;
 }
