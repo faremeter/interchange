@@ -34,7 +34,10 @@
 //       consuming mail 1; mail 2 opened no run of its own and the run reached
 //       no terminal event between the turns (the unbounded re-arm kept it live).
 //   (b) R1's wire In-Reply-To == m1 (To == userA); R2's wire In-Reply-To == m2
-//       (To == userB) -- each turn's reply threaded onto that turn's mail.
+//       (To == userB) -- each turn's reply threaded onto that turn's mail. R2
+//       also carries the FULL References ancestry [m1, r1, m2] (mail 2's own
+//       References plus mail 2's Message-Id), not a truncated [m2]; R1's is the
+//       single-element [m1] the opener seeds.
 //   (c) mail 2 was consumed as turn 2 on the same run: a `SignalReceived` whose
 //       signalId is mail 2's Message-Id, plus two input re-arms serviced.
 //   (d) connector cc-accumulation: R2 cc-includes userA, the prior turn's
@@ -315,6 +318,30 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // thread advanced across the two dispatched turns (mail 2 seeded as a
       // continuation), proving the thread continued rather than restarting.
       expect(r2Headers.get("cc")).toContain(MAIL1_FROM);
+
+      // R2 carries the FULL RFC 5322 References ancestry, not just the parent
+      // it answers (INTR-480). Mail 2 arrived with References [m1, r1], so a
+      // reply threaded onto it ships References [m1, r1, m2] -- mail 2's own
+      // References chain plus mail 2's Message-Id. The reply path builds this
+      // complete chain by looking the parent up in the run mailbox rather than
+      // truncating to the single In-Reply-To element.
+      const r2References = (r2Headers.get("references") ?? "")
+        .split(/\s+/)
+        .filter((id) => id.length > 0);
+      expect(r2References).toEqual([
+        MAIL1_MESSAGE_ID,
+        r1MessageId,
+        MAIL2_MESSAGE_ID,
+      ]);
+
+      // R1 answered the thread opener, which carried no References of its own,
+      // so its ancestry is the single opener Message-Id. Confirms the
+      // full-chain path degrades to one element for a first reply rather than
+      // emitting an empty or malformed References header.
+      const r1References = (r1Headers.get("references") ?? "")
+        .split(/\s+/)
+        .filter((id) => id.length > 0);
+      expect(r1References).toEqual([MAIL1_MESSAGE_ID]);
 
       // Wait for turn 2 to complete its own re-arm so the event log reflects
       // both serviced turns before the structural assertions read it.

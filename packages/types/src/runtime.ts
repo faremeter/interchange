@@ -171,6 +171,16 @@ export type OutboundMessage = {
   /** Message-ID of the message being replied to. */
   inReplyTo?: string;
 
+  /**
+   * The RFC 5322 References chain for a threaded reply: the parent's own
+   * References plus the parent's Message-ID, in order. When present the
+   * transport ships it verbatim (after appending `inReplyTo` if it is not
+   * already the tail) rather than deriving a single-element `[inReplyTo]`
+   * chain, so a reply carries the full conversational ancestry. Absent for a
+   * non-reply or a reply whose parent could not be located.
+   */
+  references?: string[];
+
   /** Correlation ID linking this message to a pending async request. */
   correlationId?: string;
 

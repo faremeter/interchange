@@ -53,6 +53,20 @@ export interface ConnectorReplyDrainOpts {
    */
   send: (message: OutboundMessage) => Promise<SendReceipt>;
   /**
+   * Resolve the full RFC 5322 References chain for a reply whose parent is
+   * `inReplyTo` (the Message-Id of the message being answered). Returns the
+   * parent's own References plus the parent's Message-Id, in order, so the
+   * outbound reply carries the complete conversational ancestry rather than
+   * a truncated single element. Returns `undefined` when the parent cannot be
+   * located (the very first reply on a fresh thread, or a malformed id); the
+   * drain then omits `references` and the transport derives `[inReplyTo]`.
+   *
+   * Optional: a caller with no mailbox to consult (`createHarness`) omits it,
+   * leaving the pre-existing single-element threading unchanged. The warm
+   * workflow-host wiring supplies it from the deployment's committed mailbox.
+   */
+  resolveReferences?: (inReplyTo: string) => Promise<string[] | undefined>;
+  /**
    * Advance connector state after a successful send. May be synchronous
    * (the in-process router's `onReplySent`) or asynchronous (a durable
    * store that persists the advanced `lastMessageId`); the drain awaits it
@@ -128,10 +142,21 @@ export function driveConnectorReplies(
         replyChain = replyChain.then(async () => {
           try {
             const parts = opts.composeReply();
+            // Resolve the full References ancestry for the parent this reply
+            // answers, when the caller supplies a resolver. A resolver miss
+            // (parent absent, malformed id) yields `undefined`, and the
+            // transport derives `[inReplyTo]` as before.
+            const references =
+              opts.resolveReferences !== undefined
+                ? await opts.resolveReferences(parts.inReplyTo)
+                : undefined;
             const receipt = await opts.send({
               ...parts,
               content,
               type: "conversation.message",
+              ...(references !== undefined && references.length > 0
+                ? { references }
+                : {}),
             });
             await opts.onReplySent(receipt);
           } catch (cause) {

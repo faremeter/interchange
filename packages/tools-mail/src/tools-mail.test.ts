@@ -451,6 +451,80 @@ describe("mail_reply handler", () => {
     expect(sent.content).toBe("This is the reply");
   });
 
+  test("builds the full References chain from the parent's ancestry", async () => {
+    const transport = makeMockTransport();
+
+    const parentRef: MessageRef = { uid: 11, mailbox: "INBOX" };
+    transport.enqueueMessage(parentRef, {
+      ref: parentRef,
+      headers: {
+        from: "user@test",
+        to: ["agent@local"],
+        date: new Date().toISOString(),
+        messageId: "<parent@test>",
+        references: ["<root@test>", "<mid@test>"],
+        subject: "Re: Original subject",
+      },
+      flags: [],
+      content: "original message",
+      signatureStatus: "missing",
+    });
+
+    const handler = makeMailReplyHandler(transport);
+    const result = await handler(
+      {
+        id: "r3",
+        name: "mail_reply",
+        arguments: { ref: parentRef, content: "threaded reply" },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    const sent = transport.getSentMessages()[0];
+    if (sent === undefined) throw new Error("no sent message");
+    expect(sent.inReplyTo).toBe("<parent@test>");
+    // The full ancestry: the parent's own References plus the parent's own
+    // Message-Id, in order.
+    expect(sent.references).toEqual([
+      "<root@test>",
+      "<mid@test>",
+      "<parent@test>",
+    ]);
+  });
+
+  test("references falls back to just the parent when it has no ancestry", async () => {
+    const transport = makeMockTransport();
+
+    const parentRef: MessageRef = { uid: 12, mailbox: "INBOX" };
+    transport.enqueueMessage(parentRef, {
+      ref: parentRef,
+      headers: {
+        from: "user@test",
+        to: ["agent@local"],
+        date: new Date().toISOString(),
+        messageId: "<lonely@test>",
+      },
+      flags: [],
+      content: "thread opener",
+      signatureStatus: "missing",
+    });
+
+    const handler = makeMailReplyHandler(transport);
+    await handler(
+      {
+        id: "r4",
+        name: "mail_reply",
+        arguments: { ref: parentRef, content: "first reply" },
+      },
+      signal,
+    );
+
+    const sent = transport.getSentMessages()[0];
+    if (sent === undefined) throw new Error("no sent message");
+    expect(sent.references).toEqual(["<lonely@test>"]);
+  });
+
   test("returns error when ref is missing", async () => {
     const handler = makeMailReplyHandler(makeMockTransport());
 

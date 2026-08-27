@@ -80,6 +80,97 @@ describe("driveConnectorReplies", () => {
     expect(receipts[0]?.messageId).toBe("<child@interchange>");
   });
 
+  test("sets the full References chain a supplied resolver returns", async () => {
+    const sent: OutboundMessage[] = [];
+    const resolvedFor: string[] = [];
+
+    const drain = driveConnectorReplies({
+      stream: streamOf([replyEvent(1, "threaded reply")]),
+      composeReply: () => ({
+        to: "alice@example.com",
+        cc: [],
+        inReplyTo: "<parent@interchange>",
+      }),
+      resolveReferences: async (inReplyTo) => {
+        resolvedFor.push(inReplyTo);
+        return [
+          "<root@interchange>",
+          "<mid@interchange>",
+          "<parent@interchange>",
+        ];
+      },
+      send: async (message) => {
+        sent.push(message);
+        return { messageId: "<child@interchange>", status: "delivered" };
+      },
+      onReplySent: () => undefined,
+    });
+
+    await drain.done;
+
+    // The resolver is consulted with the parent id from composeReply, and the
+    // full ancestry it returns rides onto the outbound message verbatim.
+    expect(resolvedFor).toEqual(["<parent@interchange>"]);
+    expect(sent[0]?.references).toEqual([
+      "<root@interchange>",
+      "<mid@interchange>",
+      "<parent@interchange>",
+    ]);
+  });
+
+  test("omits references when the resolver reports no parent", async () => {
+    // A resolver miss (first reply on a fresh thread, malformed id) returns
+    // undefined; the drain then leaves `references` unset so the transport
+    // derives a single-element chain from inReplyTo.
+    const sent: OutboundMessage[] = [];
+
+    const drain = driveConnectorReplies({
+      stream: streamOf([replyEvent(1, "first on the thread")]),
+      composeReply: () => ({
+        to: "alice@example.com",
+        cc: [],
+        inReplyTo: "<parent@interchange>",
+      }),
+      resolveReferences: async () => undefined,
+      send: async (message) => {
+        sent.push(message);
+        return { messageId: "<child@interchange>", status: "delivered" };
+      },
+      onReplySent: () => undefined,
+    });
+
+    await drain.done;
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.references).toBeUndefined();
+  });
+
+  test("omits references with no resolver supplied", async () => {
+    // The createHarness path supplies no resolver; the drain must leave
+    // `references` unset, preserving the pre-existing single-element
+    // threading the transport derives from inReplyTo.
+    const sent: OutboundMessage[] = [];
+
+    const drain = driveConnectorReplies({
+      stream: streamOf([replyEvent(1, "no resolver")]),
+      composeReply: () => ({
+        to: "alice@example.com",
+        cc: [],
+        inReplyTo: "<parent@interchange>",
+      }),
+      send: async (message) => {
+        sent.push(message);
+        return { messageId: "<child@interchange>", status: "delivered" };
+      },
+      onReplySent: () => undefined,
+    });
+
+    await drain.done;
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.references).toBeUndefined();
+  });
+
   test("serializes replies so each composes against the advanced thread", async () => {
     // A minimal connector-thread model: `onReplySent` advances the parent id
     // that the next `composeReply` threads against. If the drain did not
