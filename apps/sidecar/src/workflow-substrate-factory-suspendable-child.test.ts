@@ -70,9 +70,30 @@ const SNAPSHOT: ApprovalSnapshot = {
 
 const tempDirs: string[] = [];
 let signingKey: KeyPair;
+// `buildChildRunEnv` reads the body run's `assets/workflow/<ref>/sources.json`
+// eagerly; the suspend/resume mock invoker ignores inference, but the read still
+// happens, so stage a minimal sources file for the body definition id.
+let bodySourcesDataDir: string;
 
 beforeAll(async () => {
   signingKey = await generateKeyPair();
+  bodySourcesDataDir = await makeTempDir("suspendable-assets-");
+  const dir = path.join(bodySourcesDataDir, "assets", "workflow", "body-wf");
+  await fs.promises.mkdir(dir, { recursive: true });
+  await fs.promises.writeFile(
+    path.join(dir, "sources.json"),
+    JSON.stringify({
+      s: [
+        {
+          id: "anthropic:m",
+          provider: "anthropic",
+          baseURL: "http://localhost:1",
+          apiKey: "sk-x",
+          model: "m",
+        },
+      ],
+    }),
+  );
 });
 
 afterAll(async () => {
@@ -198,6 +219,7 @@ function makeSpawner(
     }),
     invokeStep,
     evaluateGrants: evaluateGrantsAdapter,
+    dataDir: bodySourcesDataDir,
   });
 }
 

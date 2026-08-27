@@ -27,6 +27,12 @@ import {
 
 const tempDirs: string[] = [];
 
+// These tests exercise the adapter's resolution/abort/forwarding, not event
+// emission, so the terminal `HostSpawnChild` sink is a no-op.
+const noopOnEvent = (): void => {
+  /* the event sink is not asserted in these tests */
+};
+
 async function makeTempDir(prefix: string): Promise<string> {
   const d = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
   tempDirs.push(d);
@@ -90,16 +96,19 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
     });
 
     const ctrl = new AbortController();
-    const result = await spawn({
-      definitionRef: "wf-resolve",
-      childRunId: "child-1",
-      input: { goal: "resolve" },
-      parentRunId: "parent-1",
-      parentStepId: "step-a",
-      signal: ctrl.signal,
-      depth: 1,
-      maxChildSpawnDepth: 32,
-    });
+    const result = await spawn(
+      {
+        definitionRef: "wf-resolve",
+        childRunId: "child-1",
+        input: { goal: "resolve" },
+        parentRunId: "parent-1",
+        parentStepId: "step-a",
+        signal: ctrl.signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+    );
 
     expect(result.terminalStatus).toBe("completed");
     expect(calls).toHaveLength(1);
@@ -121,16 +130,19 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
 
     const ctrl = new AbortController();
     await expect(
-      spawn({
-        definitionRef: "wf-missing",
-        childRunId: "child-2",
-        input: null,
-        parentRunId: "parent-2",
-        parentStepId: "step-a",
-        signal: ctrl.signal,
-        depth: 1,
-        maxChildSpawnDepth: 32,
-      }),
+      spawn(
+        {
+          definitionRef: "wf-missing",
+          childRunId: "child-2",
+          input: null,
+          parentRunId: "parent-2",
+          parentStepId: "step-a",
+          signal: ctrl.signal,
+          depth: 1,
+          maxChildSpawnDepth: 32,
+        },
+        noopOnEvent,
+      ),
     ).rejects.toThrow(/no in-memory childWorkflow definition/);
   });
 });
@@ -146,16 +158,19 @@ describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
     });
 
     const ctrl = new AbortController();
-    const result = await spawn({
-      definitionRef: "wf-terminal",
-      childRunId: "child-4",
-      input: null,
-      parentRunId: "parent-4",
-      parentStepId: "step-a",
-      signal: ctrl.signal,
-      depth: 1,
-      maxChildSpawnDepth: 32,
-    });
+    const result = await spawn(
+      {
+        definitionRef: "wf-terminal",
+        childRunId: "child-4",
+        input: null,
+        parentRunId: "parent-4",
+        parentStepId: "step-a",
+        signal: ctrl.signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+    );
     expect(result.terminalStatus).toBe("failed");
   });
 
@@ -171,16 +186,19 @@ describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
 
     const ctrl = new AbortController();
     await expect(
-      spawn({
-        definitionRef: "wf-throws",
-        childRunId: "child-5",
-        input: null,
-        parentRunId: "parent-5",
-        parentStepId: "step-a",
-        signal: ctrl.signal,
-        depth: 1,
-        maxChildSpawnDepth: 32,
-      }),
+      spawn(
+        {
+          definitionRef: "wf-throws",
+          childRunId: "child-5",
+          input: null,
+          parentRunId: "parent-5",
+          parentStepId: "step-a",
+          signal: ctrl.signal,
+          depth: 1,
+          maxChildSpawnDepth: 32,
+        },
+        noopOnEvent,
+      ),
     ).rejects.toBe(cause);
   });
 });
@@ -200,16 +218,19 @@ describe("workflow-host SpawnChildWorkflow adapter - abort handling", () => {
     const ctrl = new AbortController();
     ctrl.abort();
     await expect(
-      spawn({
-        definitionRef: "wf-pre-abort",
-        childRunId: "child-6",
-        input: null,
-        parentRunId: "parent-6",
-        parentStepId: "step-a",
-        signal: ctrl.signal,
-        depth: 1,
-        maxChildSpawnDepth: 32,
-      }),
+      spawn(
+        {
+          definitionRef: "wf-pre-abort",
+          childRunId: "child-6",
+          input: null,
+          parentRunId: "parent-6",
+          parentStepId: "step-a",
+          signal: ctrl.signal,
+          depth: 1,
+          maxChildSpawnDepth: 32,
+        },
+        noopOnEvent,
+      ),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(runCalls).toBe(0);
   });
@@ -238,16 +259,19 @@ describe("workflow-host SpawnChildWorkflow adapter - abort handling", () => {
     });
 
     const ctrl = new AbortController();
-    const settled = spawn({
-      definitionRef: "wf-propagate",
-      childRunId: "child-7",
-      input: null,
-      parentRunId: "parent-7",
-      parentStepId: "step-a",
-      signal: ctrl.signal,
-      depth: 1,
-      maxChildSpawnDepth: 32,
-    });
+    const settled = spawn(
+      {
+        definitionRef: "wf-propagate",
+        childRunId: "child-7",
+        input: null,
+        parentRunId: "parent-7",
+        parentStepId: "step-a",
+        signal: ctrl.signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+    );
     while (observedSignals.length === 0) {
       await new Promise<void>((r) => setTimeout(r, 1));
     }
@@ -324,16 +348,19 @@ describe("workflow-host SpawnChildWorkflow adapter - sub-namespace scoping", () 
     });
 
     const ctrl = new AbortController();
-    const result = await spawn({
-      definitionRef: "wf-scope",
-      childRunId: "child-scope",
-      input: { goal: "scope" },
-      parentRunId: "parent-scope",
-      parentStepId: "step-a",
-      signal: ctrl.signal,
-      depth: 1,
-      maxChildSpawnDepth: 32,
-    });
+    const result = await spawn(
+      {
+        definitionRef: "wf-scope",
+        childRunId: "child-scope",
+        input: { goal: "scope" },
+        parentRunId: "parent-scope",
+        parentStepId: "step-a",
+        signal: ctrl.signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+    );
     expect(result.terminalStatus).toBe("completed");
 
     // Inspect the workflow-run repo on disk: both runs should have

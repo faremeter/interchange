@@ -60,9 +60,41 @@ const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
 
 const tempDirs: string[] = [];
 let signingKey: KeyPair;
+// The real child runtime resolves each step's inference source from a staged
+// `assets/workflow/<ref>/sources.json`. These tests use a recording invoker
+// that ignores the sources, but `buildChildRunEnv` reads the file eagerly, so
+// stage a minimal one per child definition id these tests spawn.
+let childSourcesDataDir: string;
+
+// These tests assert grant inheritance, not event emission, so the sink is noop.
+const noopOnEvent = (): void => {
+  /* the event sink is not asserted in these tests */
+};
+
+async function stageChildSources(defId: string): Promise<void> {
+  const dir = path.join(childSourcesDataDir, "assets", "workflow", defId);
+  await fs.promises.mkdir(dir, { recursive: true });
+  await fs.promises.writeFile(
+    path.join(dir, "sources.json"),
+    JSON.stringify({
+      s: [
+        {
+          id: "anthropic:m",
+          provider: "anthropic",
+          baseURL: "http://localhost:1",
+          apiKey: "sk-x",
+          model: "m",
+        },
+      ],
+    }),
+  );
+}
 
 beforeAll(async () => {
   signingKey = await generateKeyPair();
+  childSourcesDataDir = await makeTempDir("child-grants-assets-");
+  await stageChildSources("child-wf");
+  await stageChildSources("grandchild-wf");
 });
 
 afterAll(async () => {
@@ -172,7 +204,12 @@ async function seedRunGrants(
 function recordingInvoker(record: {
   decisions: { resource: string; effect: string | null }[];
 }): SidecarChildStepInvoker {
-  return async (req, authorize): Promise<StepInvokeResult> => {
+  return async (
+    req,
+    authorize,
+    _sourcesRef,
+    _onEvent,
+  ): Promise<StepInvokeResult> => {
     const resource = `tool:${req.agent.id}`;
     const decision = await authorize(resource, "invoke", req.authzContext);
     record.decisions.push({ resource, effect: decision.effect });
@@ -191,7 +228,12 @@ function recordingInvokerWithProbe(
   },
   probeResource: string,
 ): SidecarChildStepInvoker {
-  return async (req, authorize): Promise<StepInvokeResult> => {
+  return async (
+    req,
+    authorize,
+    _sourcesRef,
+    _onEvent,
+  ): Promise<StepInvokeResult> => {
     const resource = `tool:${req.agent.id}`;
     const decision = await authorize(resource, "invoke", req.authzContext);
     record.decisions.push({ resource, effect: decision.effect });
@@ -223,18 +265,24 @@ describe("createSidecarRunChild grant inheritance", () => {
       }),
       invokeStep: recordingInvoker(record),
       evaluateGrants: evaluateGrantsAdapter,
+      dataDir: childSourcesDataDir,
     });
 
     const childRunId = "run-child";
-    const result = await runChild({
-      definition: childDefinition("child-wf"),
-      definitionRef: "refs/heads/main",
-      childRunId,
-      input: null,
-      parentRunId,
-      parentStepId: "s",
-      signal: new AbortController().signal,
-    });
+    const result = await runChild(
+      {
+        definition: childDefinition("child-wf"),
+        definitionRef: "refs/heads/main",
+        childRunId,
+        input: null,
+        parentRunId,
+        parentStepId: "s",
+        signal: new AbortController().signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+    );
 
     expect(result.terminalStatus).toBe("completed");
     // The child authorized the granted tool and saw `allow`.
@@ -275,17 +323,23 @@ describe("createSidecarRunChild grant inheritance", () => {
       }),
       invokeStep: recordingInvokerWithProbe(record, "tool:other"),
       evaluateGrants: evaluateGrantsAdapter,
+      dataDir: childSourcesDataDir,
     });
 
-    await runChild({
-      definition: childDefinition("child-wf"),
-      definitionRef: "refs/heads/main",
-      childRunId: "run-child",
-      input: null,
-      parentRunId,
-      parentStepId: "s",
-      signal: new AbortController().signal,
-    });
+    await runChild(
+      {
+        definition: childDefinition("child-wf"),
+        definitionRef: "refs/heads/main",
+        childRunId: "run-child",
+        input: null,
+        parentRunId,
+        parentStepId: "s",
+        signal: new AbortController().signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+    );
 
     // The uncovered tool resolves a null (non-allow) effect -- the child
     // stays fail-closed on a tool its inherited grants do not cover -- while
@@ -319,32 +373,43 @@ describe("createSidecarRunChild grant inheritance", () => {
       }),
       invokeStep: recordingInvoker(record),
       evaluateGrants: evaluateGrantsAdapter,
+      dataDir: childSourcesDataDir,
     });
 
     // Hop 1: parent -> child. Writes runs/run-child/grants.json.
     const childRunId = "run-child";
-    await runChild({
-      definition: childDefinition("child-wf"),
-      definitionRef: "refs/heads/main",
-      childRunId,
-      input: null,
-      parentRunId,
-      parentStepId: "s",
-      signal: new AbortController().signal,
-    });
+    await runChild(
+      {
+        definition: childDefinition("child-wf"),
+        definitionRef: "refs/heads/main",
+        childRunId,
+        input: null,
+        parentRunId,
+        parentStepId: "s",
+        signal: new AbortController().signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+    );
 
     // Hop 2: child -> grandchild. The grandchild's parent is the child,
     // so it reads the child's persisted grants file.
     const grandchildRunId = "run-grandchild";
-    const grandResult = await runChild({
-      definition: childDefinition("grandchild-wf"),
-      definitionRef: "refs/heads/main",
-      childRunId: grandchildRunId,
-      input: null,
-      parentRunId: childRunId,
-      parentStepId: "s",
-      signal: new AbortController().signal,
-    });
+    const grandResult = await runChild(
+      {
+        definition: childDefinition("grandchild-wf"),
+        definitionRef: "refs/heads/main",
+        childRunId: grandchildRunId,
+        input: null,
+        parentRunId: childRunId,
+        parentStepId: "s",
+        signal: new AbortController().signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+    );
 
     expect(grandResult.terminalStatus).toBe("completed");
     // Both hops authorized `allow` against the inherited grant.
@@ -381,18 +446,24 @@ describe("createSidecarRunChild grant inheritance", () => {
       }),
       invokeStep: recordingInvoker(record),
       evaluateGrants: evaluateGrantsAdapter,
+      dataDir: childSourcesDataDir,
     });
 
     await expect(
-      runChild({
-        definition: childDefinition("child-wf"),
-        definitionRef: "refs/heads/main",
-        childRunId: "run-child",
-        input: null,
-        parentRunId,
-        parentStepId: "s",
-        signal: new AbortController().signal,
-      }),
+      runChild(
+        {
+          definition: childDefinition("child-wf"),
+          definitionRef: "refs/heads/main",
+          childRunId: "run-child",
+          input: null,
+          parentRunId,
+          parentStepId: "s",
+          signal: new AbortController().signal,
+          depth: 1,
+          maxChildSpawnDepth: 32,
+        },
+        noopOnEvent,
+      ),
     ).rejects.toThrow(/has no grants file/);
     // The child never ran a step, so no authorize decision was recorded.
     expect(record.decisions).toEqual([]);

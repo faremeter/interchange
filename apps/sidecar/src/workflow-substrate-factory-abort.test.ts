@@ -71,9 +71,34 @@ const SNAPSHOT: ApprovalSnapshot = {
 
 const tempDirs: string[] = [];
 let signingKey: KeyPair;
+// `buildChildRunEnv` reads each spawned run's `assets/workflow/<ref>/sources.json`
+// eagerly; the park-forever invoker never resolves inference, but the read still
+// happens, so stage a minimal sources file for the body definition id.
+let bodySourcesDataDir: string;
+
+const noopOnEvent = (): void => {
+  /* the event sink is not asserted in these tests */
+};
 
 beforeAll(async () => {
   signingKey = await generateKeyPair();
+  bodySourcesDataDir = await makeTempDir("abort-assets-");
+  const dir = path.join(bodySourcesDataDir, "assets", "workflow", "body");
+  await fs.promises.mkdir(dir, { recursive: true });
+  await fs.promises.writeFile(
+    path.join(dir, "sources.json"),
+    JSON.stringify({
+      s: [
+        {
+          id: "anthropic:m",
+          provider: "anthropic",
+          baseURL: "http://localhost:1",
+          apiKey: "sk-x",
+          model: "m",
+        },
+      ],
+    }),
+  );
 });
 
 afterAll(async () => {
@@ -183,6 +208,7 @@ function sharedDeps(substrate: ReturnType<typeof createRepoStore>) {
     }),
     invokeStep: parkForever,
     evaluateGrants: evaluateGrantsAdapter,
+    dataDir: bodySourcesDataDir,
   };
 }
 
@@ -233,15 +259,20 @@ describe("in-process child parent-abort", () => {
     const runChild = createSidecarRunChild(sharedDeps(substrate));
     const abort = new AbortController();
     const childRunId = "run-body-terminal";
-    const settled = runChild({
-      definition: bodyDefinition("body"),
-      definitionRef: REF,
-      childRunId,
-      input: null,
-      parentRunId,
-      parentStepId: "s",
-      signal: abort.signal,
-    });
+    const settled = runChild(
+      {
+        definition: bodyDefinition("body"),
+        definitionRef: REF,
+        childRunId,
+        input: null,
+        parentRunId,
+        parentStepId: "s",
+        signal: abort.signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+    );
 
     await waitForChildPark(substrate, childRunId);
     abort.abort();

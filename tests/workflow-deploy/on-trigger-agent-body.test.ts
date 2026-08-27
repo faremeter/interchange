@@ -1,9 +1,8 @@
 // onTrigger body real-agent reachability gate (INTR-310).
 //
-// The proof that a deployed onTrigger section's body runs a REAL agent step,
-// not the ChildStepNotImplementedError stub. An onTrigger body is a child run
-// spawned per section event; body agent-step execution was stubbed until the
-// cold, tool-less, body-only invoker landed. This drives that path end-to-end
+// The proof that a deployed onTrigger section's body runs a REAL agent step.
+// An onTrigger body is a child run spawned per section event, run through the
+// cold, tool-less, body-only invoker. This drives that path end-to-end
 // on the real deploy stack: the workflow is deployed BY SOURCE-REF (bundle a
 // source entry module into a hub asset, probe it, approve+freeze it against a
 // real DB, deploy the source-ref frame) with a section subscribed to the
@@ -18,7 +17,7 @@
 // against (real inference in CI is impractical). The reachability assertion is
 // three-fold: the body child completes, its agent step's committed output is
 // the real reply (NOT the agent id -- the old stub value -- and NOT a
-// ChildStepNotImplementedError failure), and the mock provider actually
+// fabricated stub failure), and the mock provider actually
 // received an inference request, so the reply is real model output.
 //
 // Harness justification: SPAWN-REAL. Real hub, real sidecar subprocess, real

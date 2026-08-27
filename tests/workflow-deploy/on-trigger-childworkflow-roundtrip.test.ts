@@ -1,11 +1,11 @@
-// onTrigger-body -> childWorkflow runtime reachability gate (INTR-310).
+// onTrigger-body -> childWorkflow real-execution gate (INTR-310).
 //
 // The runtime counterpart to the capability-walk grant coverage for the same
 // nesting (walk test "collects a childWorkflow's grants nested inside an
 // onTrigger body"): the walk proves the operator APPROVES the nested child's
-// grants; this proves the nested child EXECUTES and fails loud. It closes the
-// runtime coverage gap for the exact shape a fail-open bug once let through --
-// a childWorkflow spawn buried inside an onTrigger section body.
+// grants; this proves the nested child EXECUTES for real. It covers the exact
+// cross-type shape -- a childWorkflow spawn buried inside an onTrigger section
+// body -- whose per-step assets the deploy layer must stage transitively.
 //
 // A workflow whose single top-level step is an `onTrigger` section is deployed
 // BY SOURCE-REF (bundle a source entry module into a hub asset, probe it,
@@ -14,17 +14,14 @@
 // body is a `defineWorkflow` whose only step is a `childWorkflow` spawn of a
 // trivial one-agent child. Firing the section's mail trigger spawns the body as
 // a suspendable child; the body's `childWorkflow` step spawns a nested child
-// whose per-step agent runs through the sidecar's `childInvokeStep` -- the
-// deliberately-unbuilt seam (INTR-310). The terminal assertion is that the
-// nested child reaches the runtime and fails LOUD with the structured
-// not-implemented error, NOT a fabricated `{ reply, turn }` success.
+// whose per-step agent runs a REAL agent through the sidecar's `childInvokeStep`.
+// The terminal assertion is that the nested child reaches the runtime and
+// produces a real `{ reply, turn }` output, distinct from the agent id.
 //
 // This proves the full chain deploys and runs: the onTrigger-body -> childWorkflow
 // shape freezes, the walk approves it, the section spawns the body, the body
-// spawns the nested child, and the nested child's step is reached and rejects
-// loudly. A regression that fabricated a completed nested run (the old
-// fail-open) would surface here as a StepCompleted instead of the INTR-310
-// StepFailed.
+// spawns the nested child, and the nested child's step runs a real agent whose
+// inference source was staged under the transitive `<bodyRef>__<spawnStep>` ref.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -53,34 +50,48 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 import { onTriggerChildWorkflowEntry } from "./fixtures/on-trigger-childworkflow-body";
 
+// A toolless child agent's reply from the mock inference provider.
+const EXPECTED_CHILD_REPLY = "I see these tools:";
+
 /**
- * Assert a nested child run's `StepFailed` event is the loud, structured
- * "childWorkflow per-step execution not implemented" failure (INTR-310) rather
- * than a fabricated `{ reply, turn }` success. The sidecar's child step invoker
- * (`childInvokeStep`) rejects with `ChildStepNotImplementedError`, whose message
- * crosses into `StepFailed.error.message`. Mirrors the same-named helper in
- * `child-workflow-roundtrip.test.ts`.
+ * Extract a nested child step's real agent reply from its `StepCompleted`
+ * event body (a small `{ reply, turn }` output inlines as `inline:<json>`).
+ * Mirrors the same-named helper in `child-workflow-roundtrip.test.ts`; a real
+ * reply here proves the childWorkflow inside an onTrigger body ran a real agent.
  */
-function expectChildStepNotImplemented(
-  event: WorkflowRunEvent | undefined,
-): void {
+function readStepReply(event: WorkflowRunEvent | undefined): string {
   if (event === undefined) {
-    throw new Error("unreachable: missing StepFailed event");
+    throw new Error("unreachable: missing StepCompleted event");
   }
-  expect(event.type).toBe("StepFailed");
-  const error = event.body["error"];
-  if (
-    typeof error !== "object" ||
-    error === null ||
-    !("message" in error) ||
-    typeof error.message !== "string"
-  ) {
+  const output = event.body["output"];
+  if (typeof output !== "object" || output === null || !("ref" in output)) {
     throw new Error(
-      `child StepFailed.error is not a { message: string }: ${JSON.stringify(error)}`,
+      `StepCompleted output is not a { ref } record: ${JSON.stringify(output)}`,
     );
   }
-  expect(error.message).toContain("INTR-310");
-  expect(error.message).toContain("not implemented");
+  const ref: unknown = output.ref;
+  if (typeof ref !== "string") {
+    throw new Error(`StepCompleted output ref is not a string: ${String(ref)}`);
+  }
+  const INLINE_PREFIX = "inline:";
+  if (!ref.startsWith(INLINE_PREFIX)) {
+    throw new Error(
+      `expected an inline output ref for the small step output, got ${ref}`,
+    );
+  }
+  const parsed: unknown = JSON.parse(ref.slice(INLINE_PREFIX.length));
+  if (typeof parsed !== "object" || parsed === null || !("reply" in parsed)) {
+    throw new Error(
+      `step output does not carry a reply field: ${JSON.stringify(parsed)}`,
+    );
+  }
+  const reply: unknown = parsed.reply;
+  if (typeof reply !== "string") {
+    throw new Error(
+      `step output reply is not a string: ${JSON.stringify(parsed)}`,
+    );
+  }
+  return reply;
 }
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -277,8 +288,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         NESTED_CHILD_BODY_REF,
       );
 
-      // Wait for the nested child run to terminate. It fails loud at its leaf
-      // step (INTR-310), so it settles failed rather than completed.
+      // Wait for the nested child run to terminate. Its leaf step runs a REAL
+      // agent (INTR-310), so it settles completed with real output.
       await waitFor(
         async () => {
           const events = await readWorkflowRunEvents(
@@ -286,7 +297,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             DEPLOYMENT_ID,
             nestedChildRunId,
           );
-          return events.some((e) => e.type === "RunFailed");
+          return events.some((e) => e.type === "RunCompleted");
         },
         { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
       );
@@ -301,23 +312,27 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const nestedTypes = nestedEvents.map((e) => e.type);
       const nestedRunStartedIdx = nestedTypes.indexOf("RunStarted");
       const nestedStepStartedIdx = nestedTypes.indexOf("StepStarted");
-      const nestedStepFailedIdx = nestedTypes.indexOf("StepFailed");
-      const nestedRunFailedIdx = nestedTypes.indexOf("RunFailed");
+      const nestedStepCompletedIdx = nestedTypes.indexOf("StepCompleted");
+      const nestedRunCompletedIdx = nestedTypes.indexOf("RunCompleted");
 
       expect(nestedRunStartedIdx).toBeGreaterThanOrEqual(0);
       expect(nestedStepStartedIdx).toBeGreaterThan(nestedRunStartedIdx);
-      expect(nestedStepFailedIdx).toBeGreaterThan(nestedStepStartedIdx);
-      expect(nestedRunFailedIdx).toBeGreaterThan(nestedStepFailedIdx);
+      expect(nestedStepCompletedIdx).toBeGreaterThan(nestedStepStartedIdx);
+      expect(nestedRunCompletedIdx).toBeGreaterThan(nestedStepCompletedIdx);
 
-      // The loud, structured not-implemented failure -- not a fabricated success.
-      expectChildStepNotImplemented(nestedEvents[nestedStepFailedIdx]);
+      // A real agent reply -- not a fabricated success, and the childWorkflow
+      // inside the onTrigger body reached the real invoker.
+      expect(readStepReply(nestedEvents[nestedStepCompletedIdx])).toBe(
+        EXPECTED_CHILD_REPLY,
+      );
 
       const nestedRunStartedBody = nestedEvents[nestedRunStartedIdx]?.body;
       if (nestedRunStartedBody === undefined) throw new Error("unreachable");
       expect(nestedRunStartedBody["runId"]).toBe(nestedChildRunId);
 
-      // The nested child's failure propagates up the spawn chain: the body
-      // child's ChildCompleted settles failed, and the body's spawn step fails.
+      // The nested child's completion propagates up the spawn chain: the body
+      // child's ChildCompleted settles completed, and the body's spawn step
+      // completes.
       await waitFor(
         async () => {
           const events = await readWorkflowRunEvents(
@@ -327,7 +342,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some(
             (e) =>
-              e.type === "StepFailed" && e.body["stepId"] === SPAWN_STEP_ID,
+              e.type === "StepCompleted" && e.body["stepId"] === SPAWN_STEP_ID,
           );
         },
         { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
@@ -345,13 +360,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error("body child run has no ChildCompleted event");
       }
       expect(bodyChildCompleted.body["childRunId"]).toBe(nestedChildRunId);
-      expect(bodyChildCompleted.body["terminalStatus"]).toBe("failed");
+      expect(bodyChildCompleted.body["terminalStatus"]).toBe("completed");
 
-      const bodySpawnFailed = finalBodyEvents.find(
-        (e) => e.type === "StepFailed" && e.body["stepId"] === SPAWN_STEP_ID,
+      const bodySpawnCompleted = finalBodyEvents.find(
+        (e) => e.type === "StepCompleted" && e.body["stepId"] === SPAWN_STEP_ID,
       );
-      if (bodySpawnFailed === undefined) {
-        throw new Error("body child run has no StepFailed for the spawn step");
+      if (bodySpawnCompleted === undefined) {
+        throw new Error(
+          "body child run has no StepCompleted for the spawn step",
+        );
       }
 
       void containerRunId;

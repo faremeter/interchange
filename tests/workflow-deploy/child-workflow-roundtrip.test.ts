@@ -50,33 +50,50 @@ import {
   type ChildWorkflowFixtureParams,
 } from "./fixtures/child-workflow";
 
+// A toolless child agent's reply from the mock inference provider: the mock
+// renders "I see these tools:" plus the (empty) tool-name list.
+const EXPECTED_CHILD_REPLY = "I see these tools:";
+
 /**
- * Assert a child (or grandchild) run's `StepFailed` event is the loud,
- * structured "childWorkflow per-step execution not implemented" failure
- * (INTR-310) rather than a fabricated `{ reply, turn }` success. The child
- * step invoker (`childInvokeStep`) rejects with `ChildStepNotImplementedError`,
- * whose message crosses into `StepFailed.error.message`.
+ * Extract a child (or grandchild) step's real agent reply from its
+ * `StepCompleted` event body. A small `{ reply, turn }` output inlines as
+ * `inline:<json>`, so the reply is recovered by parsing the JSON after the
+ * `inline:` prefix -- the same shape a top-level or onTrigger-body step
+ * produces, proving the child ran a real agent rather than a fabricated stub.
  */
-function expectChildStepNotImplemented(
-  event: WorkflowRunEvent | undefined,
-): void {
+function readStepReply(event: WorkflowRunEvent | undefined): string {
   if (event === undefined) {
-    throw new Error("unreachable: missing StepFailed event");
+    throw new Error("unreachable: missing StepCompleted event");
   }
-  expect(event.type).toBe("StepFailed");
-  const error = event.body["error"];
-  if (
-    typeof error !== "object" ||
-    error === null ||
-    !("message" in error) ||
-    typeof error.message !== "string"
-  ) {
+  const output = event.body["output"];
+  if (typeof output !== "object" || output === null || !("ref" in output)) {
     throw new Error(
-      `child StepFailed.error is not a { message: string }: ${JSON.stringify(error)}`,
+      `StepCompleted output is not a { ref } record: ${JSON.stringify(output)}`,
     );
   }
-  expect(error.message).toContain("INTR-310");
-  expect(error.message).toContain("not implemented");
+  const ref: unknown = output.ref;
+  if (typeof ref !== "string") {
+    throw new Error(`StepCompleted output ref is not a string: ${String(ref)}`);
+  }
+  const INLINE_PREFIX = "inline:";
+  if (!ref.startsWith(INLINE_PREFIX)) {
+    throw new Error(
+      `expected an inline output ref for the small step output, got ${ref}`,
+    );
+  }
+  const parsed: unknown = JSON.parse(ref.slice(INLINE_PREFIX.length));
+  if (typeof parsed !== "object" || parsed === null || !("reply" in parsed)) {
+    throw new Error(
+      `step output does not carry a reply field: ${JSON.stringify(parsed)}`,
+    );
+  }
+  const reply: unknown = parsed.reply;
+  if (typeof reply !== "string") {
+    throw new Error(
+      `step output reply is not a string: ${JSON.stringify(parsed)}`,
+    );
+  }
+  return reply;
 }
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -348,7 +365,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             PARENT_DEPLOYMENT_ID,
             parentRunId,
           );
-          return events.some((e) => e.type === "RunFailed");
+          return events.some((e) => e.type === "RunCompleted");
         },
         { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
       );
@@ -359,17 +376,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         parentRunId,
       );
       const parentTypes = finalParentEvents.map((e) => e.type);
+      const stepCompletedIdx = (stepId: string): number =>
+        parentTypes.findIndex(
+          (t, i) =>
+            t === "StepCompleted" &&
+            finalParentEvents[i]?.body["stepId"] === stepId,
+        );
       const runStartedIdx = parentTypes.indexOf("RunStarted");
-      const step1StartedIdx = parentTypes.findIndex(
-        (t, i) =>
-          t === "StepStarted" &&
-          finalParentEvents[i]?.body["stepId"] === "step1",
-      );
-      const step1CompletedIdx = parentTypes.findIndex(
-        (t, i) =>
-          t === "StepCompleted" &&
-          finalParentEvents[i]?.body["stepId"] === "step1",
-      );
+      const step1CompletedIdx = stepCompletedIdx("step1");
       const spawnStartedIdx = parentTypes.findIndex(
         (t, i) =>
           t === "StepStarted" &&
@@ -377,34 +391,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       const childSpawnedIdx = parentTypes.indexOf("ChildSpawned");
       const childCompletedIdx = parentTypes.indexOf("ChildCompleted");
-      const spawnFailedIdx = parentTypes.findIndex(
-        (t, i) =>
-          t === "StepFailed" &&
-          finalParentEvents[i]?.body["stepId"] === "spawn",
-      );
-      const runFailedIdx = parentTypes.indexOf("RunFailed");
+      const spawnCompletedIdx = stepCompletedIdx("spawn");
+      const step2CompletedIdx = stepCompletedIdx("step2");
+      const runCompletedIdx = parentTypes.indexOf("RunCompleted");
 
-      // The parent's first step runs a real agent and completes; the
-      // childWorkflow spawn then fails loud because per-step child
-      // execution is not built (INTR-310). The spawn machinery still
-      // fires ChildSpawned and settles ChildCompleted before the failure.
+      // The parent's first step completes, the childWorkflow spawn runs a real
+      // child agent and settles ChildCompleted(completed), the spawn step
+      // completes, the post-spawn step2 runs, and the run completes.
       expect(runStartedIdx).toBeGreaterThanOrEqual(0);
-      expect(step1StartedIdx).toBeGreaterThan(runStartedIdx);
-      expect(step1CompletedIdx).toBeGreaterThan(step1StartedIdx);
+      expect(step1CompletedIdx).toBeGreaterThan(runStartedIdx);
       expect(spawnStartedIdx).toBeGreaterThan(step1CompletedIdx);
       expect(childSpawnedIdx).toBeGreaterThan(spawnStartedIdx);
       expect(childCompletedIdx).toBeGreaterThan(childSpawnedIdx);
-      expect(spawnFailedIdx).toBeGreaterThan(childCompletedIdx);
-      // The failed spawn step fails the run. (The parent's post-spawn step2
-      // is scheduled once the failed spawn resolves, but whether its own
-      // completion lands before the run settles failed is a scheduling race
-      // this test does not pin.)
-      expect(runFailedIdx).toBeGreaterThan(spawnFailedIdx);
+      expect(spawnCompletedIdx).toBeGreaterThan(childCompletedIdx);
+      expect(step2CompletedIdx).toBeGreaterThan(spawnCompletedIdx);
+      expect(runCompletedIdx).toBeGreaterThan(step2CompletedIdx);
 
       const childCompletedBody = finalParentEvents[childCompletedIdx]?.body;
       if (childCompletedBody === undefined) throw new Error("unreachable");
       expect(childCompletedBody["childRunId"]).toBe(childRunId);
-      expect(childCompletedBody["terminalStatus"]).toBe("failed");
+      expect(childCompletedBody["terminalStatus"]).toBe("completed");
 
       // Parent's namespace must contain only the parent's per-step entries.
       // A regression that leaked the child's step events into the parent's
@@ -423,8 +429,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
 
       // Child run lives under runs/<childRunId>/events/ in the same
-      // workflow-run repo. It fails loud: its step fails with the
-      // structured INTR-310 error instead of fabricating output.
+      // workflow-run repo. Its step runs a REAL agent: a StepCompleted with a
+      // reply distinct from the agent id, not a fabricated stub failure.
       const childEvents = await readWorkflowRunEvents(
         env,
         PARENT_DEPLOYMENT_ID,
@@ -433,21 +439,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(childEvents.length).toBeGreaterThan(0);
       const childTypes = childEvents.map((e) => e.type);
       const childRunStartedIdx = childTypes.indexOf("RunStarted");
-      const childStepStartedIdx = childTypes.indexOf("StepStarted");
-      const childStepFailedIdx = childTypes.indexOf("StepFailed");
-      const childRunFailedIdx = childTypes.indexOf("RunFailed");
+      const childStepCompletedIdx = childTypes.findIndex(
+        (t, i) =>
+          t === "StepCompleted" &&
+          childEvents[i]?.body["stepId"] === "childStep",
+      );
+      const childRunCompletedIdx = childTypes.indexOf("RunCompleted");
 
       expect(childRunStartedIdx).toBeGreaterThanOrEqual(0);
-      expect(childStepStartedIdx).toBeGreaterThan(childRunStartedIdx);
-      expect(childStepFailedIdx).toBeGreaterThan(childStepStartedIdx);
-      expect(childRunFailedIdx).toBeGreaterThan(childStepFailedIdx);
+      expect(childStepCompletedIdx).toBeGreaterThan(childRunStartedIdx);
+      expect(childRunCompletedIdx).toBeGreaterThan(childStepCompletedIdx);
 
-      expectChildStepNotImplemented(childEvents[childStepFailedIdx]);
+      const childReply = readStepReply(childEvents[childStepCompletedIdx]);
+      expect(childReply).toBe(EXPECTED_CHILD_REPLY);
+      expect(childReply).not.toBe("agent-child-step");
 
       const childRunStartedBody = childEvents[childRunStartedIdx]?.body;
       if (childRunStartedBody === undefined) throw new Error("unreachable");
       expect(childRunStartedBody["runId"]).toBe(childRunId);
-      void parentRunId;
     }, 180_000);
 
     // Grandchild-depth recursion. The sidecar's `createSidecarRunChild`
@@ -570,7 +579,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             NESTED_PARENT_DEPLOYMENT_ID,
             parentRunId,
           );
-          return events.some((e) => e.type === "RunFailed");
+          return events.some((e) => e.type === "RunCompleted");
         },
         { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
       );
@@ -599,7 +608,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error("nested test: parent has no ChildCompleted event");
       }
       expect(parentChildCompleted.body["childRunId"]).toBe(childRunId);
-      expect(parentChildCompleted.body["terminalStatus"]).toBe("failed");
+      expect(parentChildCompleted.body["terminalStatus"]).toBe("completed");
 
       // Child run lives under `runs/<childRunId>/events/` in the same
       // workflow-run repo (sub-namespace scoping). The child must have
@@ -632,13 +641,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error("nested test: child has no ChildCompleted event");
       }
       expect(childChildCompleted.body["childRunId"]).toBe(grandchildRunId);
-      expect(childChildCompleted.body["terminalStatus"]).toBe("failed");
+      expect(childChildCompleted.body["terminalStatus"]).toBe("completed");
 
       // Grandchild run lives under `runs/<grandchildRunId>/events/` in
       // the same parent workflow-run repo. The sub-namespace scoping
       // collapses cross-rung run logs into one repo without overwrite. The
-      // grandchild is the recursion leaf: its step fails loud (INTR-310),
-      // so the run terminates failed.
+      // grandchild is the recursion leaf: its step runs a REAL agent, so the
+      // run completes with real output at depth 2.
       const grandchildEvents = await readWorkflowRunEvents(
         env,
         NESTED_PARENT_DEPLOYMENT_ID,
@@ -647,12 +656,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(grandchildEvents.length).toBeGreaterThan(0);
       const grandchildTypes = grandchildEvents.map((e) => e.type);
       const grandchildRunStartedIdx = grandchildTypes.indexOf("RunStarted");
-      const grandchildStepFailedIdx = grandchildTypes.indexOf("StepFailed");
-      const grandchildRunFailedIdx = grandchildTypes.indexOf("RunFailed");
+      const grandchildStepCompletedIdx =
+        grandchildTypes.indexOf("StepCompleted");
+      const grandchildRunCompletedIdx = grandchildTypes.indexOf("RunCompleted");
       expect(grandchildRunStartedIdx).toBeGreaterThanOrEqual(0);
-      expect(grandchildStepFailedIdx).toBeGreaterThan(grandchildRunStartedIdx);
-      expect(grandchildRunFailedIdx).toBeGreaterThan(grandchildStepFailedIdx);
-      expectChildStepNotImplemented(grandchildEvents[grandchildStepFailedIdx]);
+      expect(grandchildStepCompletedIdx).toBeGreaterThan(
+        grandchildRunStartedIdx,
+      );
+      expect(grandchildRunCompletedIdx).toBeGreaterThan(
+        grandchildStepCompletedIdx,
+      );
+      expect(readStepReply(grandchildEvents[grandchildStepCompletedIdx])).toBe(
+        EXPECTED_CHILD_REPLY,
+      );
 
       const grandchildRunStartedBody =
         grandchildEvents[grandchildRunStartedIdx]?.body;
@@ -760,7 +776,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             SIBLINGS_PARENT_DEPLOYMENT_ID,
             parentRunId,
           );
-          return events.some((e) => e.type === "RunFailed");
+          return events.some((e) => e.type === "RunCompleted");
         },
         { diagnostics: env.sidecarDiagnostics, timeoutMs: 90_000 },
       );
@@ -813,14 +829,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
             `siblings test: ChildCompleted missing string childRunId`,
           );
         }
-        expect(status).toBe("failed");
+        expect(status).toBe("completed");
         completedRunIds.add(runId);
       }
       expect(completedRunIds).toEqual(spawnedRunIds);
 
       // Each sibling run materialised under a distinct
-      // `runs/<childRunId>/` sub-namespace and failed loud at its step
-      // (INTR-310) rather than fabricating a completed run.
+      // `runs/<childRunId>/` sub-namespace and ran a REAL agent at its step,
+      // completing with real output.
       for (const childRunId of spawnedRunIds) {
         const childEvents = await readWorkflowRunEvents(
           env,
@@ -830,12 +846,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(childEvents.length).toBeGreaterThan(0);
         const types = childEvents.map((e) => e.type);
         const runStartedIdx = types.indexOf("RunStarted");
-        const stepFailedIdx = types.indexOf("StepFailed");
-        const runFailedIdx = types.indexOf("RunFailed");
+        const stepCompletedIdx = types.indexOf("StepCompleted");
+        const runCompletedIdx = types.indexOf("RunCompleted");
         expect(runStartedIdx).toBeGreaterThanOrEqual(0);
-        expect(stepFailedIdx).toBeGreaterThan(runStartedIdx);
-        expect(runFailedIdx).toBeGreaterThan(stepFailedIdx);
-        expectChildStepNotImplemented(childEvents[stepFailedIdx]);
+        expect(stepCompletedIdx).toBeGreaterThan(runStartedIdx);
+        expect(runCompletedIdx).toBeGreaterThan(stepCompletedIdx);
+        expect(readStepReply(childEvents[stepCompletedIdx])).toBe(
+          EXPECTED_CHILD_REPLY,
+        );
       }
     }, 180_000);
   },

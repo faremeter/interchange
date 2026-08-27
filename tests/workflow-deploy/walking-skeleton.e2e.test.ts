@@ -848,7 +848,7 @@ describe("walking skeleton e2e", () => {
 
     // (c) Fails-closed on missing sources: remove the staged sources.json and
     // fire a second event. The new body child (section__1) cannot resolve its
-    // inference sources off disk, so readBodyStepInferenceSources throws during
+    // inference sources off disk, so readChildStepInferenceSources throws during
     // env build -- BEFORE any inference. The failure surfaces on the CONTAINER
     // run as the section step failing (the body child records no run of its
     // own), so the section settles StepFailed -> RunFailed rather than the body
@@ -887,7 +887,7 @@ describe("walking skeleton e2e", () => {
       );
     }
     expect(JSON.stringify(stepFailed.body)).toContain(
-      "failed to read body inference sources",
+      "failed to read child inference sources",
     );
     // The second body child never completed successfully.
     expect(
