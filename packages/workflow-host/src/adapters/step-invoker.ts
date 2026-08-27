@@ -82,6 +82,7 @@ import type {
 import type {
   WarmAgentCache,
   WarmEventSinkRef,
+  WarmReplyDrive,
 } from "../child/warm-agent-cache";
 import { runBodyThenCleanup } from "../run-body-then-cleanup";
 
@@ -221,10 +222,12 @@ export interface WorkflowStepInvokerOpts {
    * supervisor-backed outbound bridge, then advances the thread from the send
    * receipt.
    *
-   * The returned promise settles when the drain loop exits -- which happens
-   * when the agent's stream ends at eviction. The adapter folds it into the
-   * warm entry's event-forward promise so the warm cache drains the reply
-   * loop alongside the observability forwarder when it closes the agent.
+   * The returned drive handle exposes the drain's lifetime `done` promise --
+   * which settles when the agent's stream ends at eviction, folded into the
+   * warm entry's event-forward promise so the cache drains the reply loop
+   * alongside the observability forwarder -- plus the per-turn settle barrier
+   * (`replySeq` / `waitForReplyAfter`) the warm step gates each reply turn on,
+   * so the run parks only after the reply is durably sent.
    *
    * Omitted on the cold path (a torn-down per-step agent has no cross-message
    * connector thread) and whenever the deployment is not warm-kept.
@@ -232,7 +235,7 @@ export interface WorkflowStepInvokerOpts {
   driveReplies?: (
     key: string,
     stream: ReturnType<Agent["stream"]>,
-  ) => Promise<void>;
+  ) => WarmReplyDrive;
   /**
    * Reader for the run's inbound-mail parts. When the step input is a decoded
    * `Mail`, the adapter resolves each part's `ref` to its committed bytes
@@ -389,20 +392,23 @@ async function invokeWarmStep(
     // (design §3c). A second independent consumer of the agent's stream
     // alongside the observability forwarder: on each `connector.reply` it
     // composes a threaded reply from the durable connector thread and sends
-    // it through the outbound bridge. Fold its settle promise into the stored
-    // forwarder promise so the warm cache drains BOTH when it closes the agent
-    // at eviction -- the cache awaits one promise per entry, so a caller that
-    // wants the reply loop torn down with the agent combines the two here.
-    // Present only on the warm mail path; a warm deployment with no durable
-    // connector state omits it.
-    const lifetimeForward =
+    // it through the outbound bridge. Fold its lifetime `done` promise into
+    // the stored forwarder promise so the warm cache drains BOTH when it
+    // closes the agent at eviction -- the cache awaits one promise per entry,
+    // so a caller that wants the reply loop torn down with the agent combines
+    // the two here. The drive handle's per-turn barrier is stored on the entry
+    // so every message (not just this first build) can gate its reply turn on
+    // a durable send. Present only on the warm mail path; a warm deployment
+    // with no durable connector state omits it.
+    const replyDrive =
       opts.driveReplies !== undefined
-        ? Promise.all([
-            eventForward,
-            opts.driveReplies(key, agent.stream()),
-          ]).then(() => undefined)
+        ? opts.driveReplies(key, agent.stream())
+        : null;
+    const lifetimeForward =
+      replyDrive !== null
+        ? Promise.all([eventForward, replyDrive.done]).then(() => undefined)
         : eventForward;
-    warmCache.store(key, agent, eventSinkRef, lifetimeForward);
+    warmCache.store(key, agent, eventSinkRef, lifetimeForward, replyDrive);
     // Re-apply the live source table to the just-built agent. A rotation
     // that arrived during the (async) build hit the still-empty cache as a
     // no-op `applySources` while the build had already captured the prior
@@ -422,17 +428,43 @@ async function invokeWarmStep(
   // Bind the seed hook to this step's identity so it resolves the same
   // per-agent durable store the warm cache and run-boundary flush use.
   const seedInbound = opts.seedInbound;
+  // Snapshot the reply barrier BEFORE the send. The agent resolves
+  // `agent.send` in the same synchronous step it pushes `connector.reply`
+  // onto the drain's stream, so the reply is not yet enqueued when the send
+  // resolves -- a snapshot taken after the send would miss this turn's reply.
+  const replyDrive = warmCache.getReplyDrive(key);
+  const replySeqBeforeSend = replyDrive !== null ? replyDrive.replySeq() : 0;
   try {
-    return stepResultFromSend(
-      await sendWithAbort(agent, req, {
-        closeOnAbort: false,
-        mailPartReader: opts.mailPartReader,
-        seedInbound:
-          seedInbound !== undefined
-            ? (message) => seedInbound(key, message)
-            : undefined,
-      }),
-    );
+    const sendResult = await sendWithAbort(agent, req, {
+      closeOnAbort: false,
+      mailPartReader: opts.mailPartReader,
+      seedInbound:
+        seedInbound !== undefined
+          ? (message) => seedInbound(key, message)
+          : undefined,
+    });
+    const stepResult = stepResultFromSend(sendResult);
+    // Gate the step's return on THIS turn's reply being durably sent, so the
+    // run parks -- and the supervisor consumes the inbound mail -- only after
+    // the auto-reply reaches the transport. Only a reply turn produces a
+    // `connector.reply`; a suspended/gate turn produces none, so it must NOT
+    // await the barrier (that reply never arrives and the wait would hang).
+    // A failed send resolves the barrier with `ok: false`: fail the turn so
+    // the inbound mail is not consumed as replied and the run's claim-check
+    // replays it (at-least-once via reprocessing) rather than dropping the
+    // reply.
+    if (replyDrive !== null && sendResult.type === "reply") {
+      const settlement = await replyDrive.waitForReplyAfter(replySeqBeforeSend);
+      if (!settlement.ok) {
+        throw new Error(
+          "workflow step invoker: the warm agent's auto-reply send failed; " +
+            "failing the turn so the inbound mail replays rather than being " +
+            "consumed with the reply dropped",
+          { cause: settlement.cause },
+        );
+      }
+    }
+    return stepResult;
   } finally {
     // Do NOT close the agent or drain its forwarder: both span
     // messages and are owned by the warm cache, torn down at eviction.

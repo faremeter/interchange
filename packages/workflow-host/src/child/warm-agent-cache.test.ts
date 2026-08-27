@@ -5,6 +5,7 @@ import type { InferenceSource } from "@intx/types/runtime";
 import {
   createWarmAgentCache,
   type WarmEventSinkRef,
+  type WarmReplyDrive,
 } from "./warm-agent-cache";
 
 function makeSource(id: string): InferenceSource {
@@ -36,7 +37,7 @@ describe("warm-agent cache applySources", () => {
     const cache = createWarmAgentCache();
     const { agent, calls } = stubAgent();
     const sinkRef: WarmEventSinkRef = { current: null };
-    cache.store("step-1", agent, sinkRef, Promise.resolve());
+    cache.store("step-1", agent, sinkRef, Promise.resolve(), null);
 
     const sources = [makeSource("primary"), makeSource("failover")];
     cache.applySources(sources, "primary");
@@ -73,8 +74,20 @@ describe("warm-agent cache applySources", () => {
         secondApplied = true;
       },
     } as unknown as Agent;
-    cache.store("step-1", firstAgent, { current: null }, Promise.resolve());
-    cache.store("step-2", secondAgent, { current: null }, Promise.resolve());
+    cache.store(
+      "step-1",
+      firstAgent,
+      { current: null },
+      Promise.resolve(),
+      null,
+    );
+    cache.store(
+      "step-2",
+      secondAgent,
+      { current: null },
+      Promise.resolve(),
+      null,
+    );
 
     let thrown: unknown;
     try {
@@ -89,6 +102,38 @@ describe("warm-agent cache applySources", () => {
       throw new Error("expected an AggregateError from a failing rotation");
     }
     expect(thrown.errors).toContain(rotateError);
+  });
+});
+
+function stubReplyDrive(): WarmReplyDrive {
+  return {
+    done: Promise.resolve(),
+    replySeq: () => 0,
+    waitForReplyAfter: () => Promise.resolve({ ok: true }),
+  };
+}
+
+describe("warm-agent cache getReplyDrive", () => {
+  test("returns the reply drive stored for the key", () => {
+    const cache = createWarmAgentCache();
+    const { agent } = stubAgent();
+    const drive = stubReplyDrive();
+    cache.store("step-1", agent, { current: null }, Promise.resolve(), drive);
+    expect(cache.getReplyDrive("step-1")).toBe(drive);
+  });
+
+  test("returns null when the entry drives no threaded replies", () => {
+    const cache = createWarmAgentCache();
+    const { agent } = stubAgent();
+    cache.store("step-1", agent, { current: null }, Promise.resolve(), null);
+    expect(cache.getReplyDrive("step-1")).toBeNull();
+  });
+
+  test("throws when no entry exists for the key", () => {
+    const cache = createWarmAgentCache();
+    // A barrier fetch before the warm agent is stored is a sequencing bug;
+    // the cache surfaces it loudly rather than handing back a silent null.
+    expect(() => cache.getReplyDrive("step-1")).toThrow(/no cached entry/);
   });
 });
 
@@ -113,6 +158,7 @@ describe("warm-agent cache eviction", () => {
       closingAgent(() => Promise.reject(closeError)),
       sinkRef,
       Promise.resolve(),
+      null,
     );
 
     let thrown: unknown;
@@ -140,6 +186,7 @@ describe("warm-agent cache eviction", () => {
       closingAgent(() => Promise.reject(firstError)),
       { current: null },
       Promise.resolve(),
+      null,
     );
     cache.store(
       "step-2",
@@ -149,6 +196,7 @@ describe("warm-agent cache eviction", () => {
       }),
       { current: null },
       Promise.resolve(),
+      null,
     );
 
     let thrown: unknown;

@@ -55,6 +55,7 @@ import {
   createHarnessRuntimeCapabilities,
   driveConnectorReplies,
   type AgentEventStream,
+  type ConnectorReplyDrain,
   type CredentialProviderRegistry,
 } from "@intx/harness";
 import { createSSHSignature } from "@intx/crypto";
@@ -2314,12 +2315,14 @@ export function createSidecarSubstrateFactory(
     // send it through the outbound bridge (`bridge.submit`, the same signed-
     // send path the agent's own supervisor-backed transport uses), then
     // advance the thread from the receipt. Established once per warm agent
-    // over its lifetime stream; the returned `done` promise is what the
-    // step-invoker folds into the warm entry so eviction drains it. The key
-    // is the step identity, the same key the durable store is filed under.
-    // Absent for a multi-step deploy (no durable registry).
+    // over its lifetime stream; the returned drain handle carries the lifetime
+    // `done` promise the step-invoker folds into the warm entry so eviction
+    // drains it, plus the per-turn settle barrier the warm step gates each
+    // reply turn on. The key is the step identity, the same key the durable
+    // store is filed under. Absent for a multi-step deploy (no durable
+    // registry).
     const driveReplies:
-      | ((key: string, stream: AgentEventStream) => Promise<void>)
+      | ((key: string, stream: AgentEventStream) => ConnectorReplyDrain)
       | undefined =
       durableConversation !== undefined
         ? (key: string, stream: AgentEventStream) =>
@@ -2343,7 +2346,7 @@ export function createSidecarSubstrateFactory(
                 resolveMailboxReferences(transportInbound.reader, inReplyTo),
               onReplySent: (receipt) =>
                 durableConversation.get(key).onReplySent(receipt),
-            }).done
+            })
         : undefined;
 
     const invokeStep: RunWorkflowChildBindings["invokeStep"] = async (

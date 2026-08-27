@@ -52,14 +52,45 @@ export interface WarmEventSinkRef {
 }
 
 /**
+ * Per-turn settle barrier the connector reply drain exposes to the warm
+ * step (design §3c durability). The step snapshots `replySeq()` before its
+ * `agent.send` and, for a turn that produced a reply, awaits
+ * `waitForReplyAfter(snapshot)` so the run parks -- and the supervisor
+ * consumes the inbound mail -- only after the reply is durably sent. This is
+ * the structural subset of the harness `ConnectorReplyDrain` the warm path
+ * needs; declaring it here keeps the workflow-host package independent of
+ * `@intx/harness`, while the drain the sidecar builds satisfies it.
+ */
+export type WarmReplySettlement =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly cause: unknown };
+
+export interface WarmReplyDrive {
+  /** Settles when the drain loop exits at eviction. Folded into `eventForward`. */
+  readonly done: Promise<void>;
+  /** Monotonic count of replies that have settled (sent-and-acked or failed). */
+  replySeq(): number;
+  /**
+   * Resolve once the reply at index `n` has settled, with its outcome. A
+   * failure outcome (or a drain that tears down before reply `n` arrives)
+   * carries `ok: false` so the caller fails the turn rather than treating the
+   * reply as sent.
+   */
+  waitForReplyAfter(n: number): Promise<WarmReplySettlement>;
+}
+
+/**
  * One warm agent the step-invoker reuses across messages. The
  * `eventSinkRef` is rewritten per message; the `eventForward` promise
- * settles when the agent's stream ends at `close()`.
+ * settles when the agent's stream ends at `close()`. `replyDrive` is the
+ * connector reply drain's per-turn barrier when the deployment drives
+ * threaded replies, or `null` for a warm deployment with no connector state.
  */
 interface WarmEntry {
   readonly agent: Agent;
   readonly eventSinkRef: WarmEventSinkRef;
   readonly eventForward: Promise<void>;
+  readonly replyDrive: WarmReplyDrive | null;
 }
 
 /**
@@ -79,16 +110,28 @@ export interface WarmAgentCache {
   /**
    * Cache a freshly-built warm agent under `key`. The `eventSinkRef` is
    * the mutable sink the agent's stream forwarder reads; `eventForward`
-   * is the forwarder loop's settle promise. Throws if an entry already
-   * exists for `key` -- a double-build is a step-invoker bug, not a
-   * silent overwrite that would leak the prior agent's LSP subprocess.
+   * is the forwarder loop's settle promise. `replyDrive` is the connector
+   * reply drain's per-turn barrier, or `null` when the deployment drives no
+   * threaded replies. Throws if an entry already exists for `key` -- a
+   * double-build is a step-invoker bug, not a silent overwrite that would
+   * leak the prior agent's LSP subprocess.
    */
   store(
     key: string,
     agent: Agent,
     eventSinkRef: WarmEventSinkRef,
     eventForward: Promise<void>,
+    replyDrive: WarmReplyDrive | null,
   ): void;
+  /**
+   * Return the connector reply drain's per-turn barrier cached for `key`, or
+   * `null` when the deployment drives no threaded replies. The step-invoker
+   * fetches it on every message -- the drain is established once at the
+   * first-message build but each message's send must snapshot and await it.
+   * Throws when no entry exists for `key`: a barrier fetch before the warm
+   * agent is stored is a step-invoker sequencing bug.
+   */
+  getReplyDrive(key: string): WarmReplyDrive | null;
   /**
    * Point the warm agent's stream forwarder at the active step's event
    * sink before its `agent.send`. Throws when no entry exists for
@@ -145,13 +188,24 @@ export function createWarmAgentCache(): WarmAgentCache {
     agent: Agent,
     eventSinkRef: WarmEventSinkRef,
     eventForward: Promise<void>,
+    replyDrive: WarmReplyDrive | null,
   ): void {
     if (entries.has(key)) {
       throw new Error(
         `warm-agent cache: an entry already exists for ${key}; the step-invoker must reuse the cached agent rather than rebuild it`,
       );
     }
-    entries.set(key, { agent, eventSinkRef, eventForward });
+    entries.set(key, { agent, eventSinkRef, eventForward, replyDrive });
+  }
+
+  function getReplyDrive(key: string): WarmReplyDrive | null {
+    const entry = entries.get(key);
+    if (entry === undefined) {
+      throw new Error(
+        `warm-agent cache: getReplyDrive for ${key} with no cached entry; the step-invoker must store the warm agent before fetching its reply barrier`,
+      );
+    }
+    return entry.replyDrive;
   }
 
   function setEventSink(
@@ -243,6 +297,7 @@ export function createWarmAgentCache(): WarmAgentCache {
   return {
     acquire,
     store,
+    getReplyDrive,
     setEventSink,
     clearEventSink,
     applySources,
