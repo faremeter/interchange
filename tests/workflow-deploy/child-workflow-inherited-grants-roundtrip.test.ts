@@ -1,36 +1,40 @@
-// Parent -> child grants-file inheritance through the real subprocess.
+// Parent -> child grants-file capping through the real subprocess.
 //
-// When a mail-triggered parent run spawns a child, the child runs under
-// the parent's authority: the spawn adapter reads the parent's
-// `runs/<parentRunId>/grants.json` and writes the same flat grant set to
-// the child's own `runs/<childRunId>/grants.json`. This test drives that
+// When a mail-triggered parent run spawns a child, the child runs under the
+// parent's authority CAPPED at what the child body declares: the spawn adapter
+// reads the parent's `runs/<parentRunId>/grants.json` as the ceiling, re-walks
+// the child body, and writes only the parent grants the child declares to the
+// child's own `runs/<childRunId>/grants.json`. This test drives that
 // composition end to end -- a real parent workflow deployed BY SOURCE-REF
-// (bundle a source entry module into a hub asset, probe it, approve+freeze
-// it against a real DB, deploy the source-ref frame) whose spawn step fires a
+// (bundle a source entry module into a hub asset, probe it, approve+freeze it
+// against a real DB, deploy the source-ref frame) whose spawn step fires a
 // child through the real sidecar subprocess -- and asserts BOTH files land on
-// the sidecar's on-disk workflow-run repo, carrying the grants the trigger
-// delivered.
+// the sidecar's on-disk workflow-run repo: the parent's carrying the grants the
+// trigger delivered verbatim, the child's carrying only the capped subset.
 //
-// What this ADDS over the unit coverage. The spawn adapter's behavior in
-// isolation -- inheritance, grandchild multi-hop, and fail-closed-at-spawn
-// when the parent grants file is absent -- is proven directly against a
-// real on-disk substrate in
+// The trigger delivers two grants: one for a resource the child body declares
+// (its inference source) and one for a resource it does not (`effect:fs:write`).
+// The declared grant survives into the child's file (the positive control,
+// proving the wiring delivered grants at all); the undeclared one is dropped
+// (the cap, the escalation this closes).
+//
+// What this ADDS over the unit coverage. The cap's behavior in isolation --
+// which grants survive, grandchild multi-hop ceiling, and fail-closed-at-spawn
+// when the parent grants file is absent -- is proven directly against a real
+// on-disk substrate in
 // `apps/sidecar/src/workflow-substrate-factory-child-grants.test.ts`, which
-// calls `createSidecarRunChild` with hand-seeded grants. This test proves
-// the WIRING composes: that a real mail trigger's delivered grants reach
-// `runs/<parentRunId>/grants.json` through the supervisor, and that the
-// real child-spawn adapter is actually invoked with those grants during an
-// honest parent->child spawn, writing the child's inherited file. The
-// fail-closed negative is not reproducible here -- every mail-triggered run
-// materializes a grants file, so an absent parent file cannot arise through
-// the trigger path -- and stays covered at the unit level.
+// calls `createSidecarRunChild` with hand-seeded grants, and the filter itself
+// in `apps/sidecar/src/child-grant-filter.test.ts`. This test proves the WIRING
+// composes: that a real mail trigger's delivered grants reach
+// `runs/<parentRunId>/grants.json` through the supervisor, and that the real
+// child-spawn adapter caps them against the child body during an honest
+// parent->child spawn. The fail-closed negative is not reproducible here --
+// every mail-triggered run materializes a grants file, so an absent parent file
+// cannot arise through the trigger path -- and stays covered at the unit level.
 //
-// SCOPE. The child's step body does not execute: `childWorkflow` per-step
-// execution is not implemented (INTR-310), so the child fails its step
-// after the spawn. That is expected and irrelevant here -- the grants-file
-// inheritance write happens at spawn time, BEFORE the child step runs, so
-// grant CONSUMPTION by the child is out of reach and not asserted. Only the
-// spawn-time inheritance write is under test.
+// SCOPE. The grants-file write happens at spawn time, BEFORE the child step
+// runs, so this test asserts only the spawn-time capped write. Whether the
+// child's step then completes is covered by the roundtrip tests, not here.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -72,10 +76,24 @@ const TENANT_ID = "tnt_child_inherited_grants";
 const CALLER_PRINCIPAL_ID = "prn_child_inherited_grants";
 const DEFINITION_ASSET_ID = "ast_child_inherited_grants_wf";
 
-// The parent run's grant, delivered per run via the `run.grants` frame.
-// The child must inherit exactly this set into its own grants file.
-const PARENT_GRANT: WireGrantRule = {
-  id: "grant-parent-inherited",
+// A grant for a resource the CHILD body declares -- its inference source, the
+// one every fixture agent pins. It survives the cap into the child's file, and
+// is the positive control proving the wiring delivered grants at all.
+const DECLARED_GRANT: WireGrantRule = {
+  id: "grant-child-declared",
+  resource: "inference.source:anthropic:mock-model",
+  action: "invoke",
+  effect: "allow",
+  origin: "creator",
+  conditions: null,
+  expiresAt: null,
+  roleId: null,
+  principalId: null,
+};
+// A grant for a resource the child body does NOT declare. The cap drops it from
+// the child's inherited file -- the escalation this closes.
+const UNDECLARED_GRANT: WireGrantRule = {
+  id: "grant-parent-only",
   resource: "effect:fs:write",
   action: "invoke",
   effect: "allow",
@@ -144,7 +162,7 @@ function readRunGrantsFile(repoId: string, runId: string): unknown[] | null {
 describe.skipIf(!harnessDbEnvAvailable())(
   "parent -> child inherited grants round-trip",
   () => {
-    test("the child inherits the parent's delivered grants file at spawn", async () => {
+    test("the child inherits the parent's grants capped at what the child body declares", async () => {
       const parentMailAddress = deriveRunAddress({
         runId: PARENT_DEPLOYMENT_ID,
         domain: DEPLOYMENT_DOMAIN,
@@ -237,10 +255,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
       );
 
-      // Fire the parent trigger carrying the parent grant per run.
+      // Fire the parent trigger carrying both grants per run: one the child
+      // declares and one it does not.
       await fireMailTrigger(env, parentMailAddress, {
         messageId: "<child-inherited-grants-1@integration.interchange>",
-        grants: [PARENT_GRANT],
+        grants: [DECLARED_GRANT, UNDECLARED_GRANT],
       });
 
       const parentRunId = await waitForFirstRunId(
@@ -280,18 +299,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       }
 
-      // The parent's delivered grants landed in its own grants file.
+      // The parent's own grants file carries the delivered set verbatim -- the
+      // parent's file is not capped, only a child's inherited file is.
       const parentGrantsOnDisk = readRunGrantsFile(parentRepoId, parentRunId);
       if (parentGrantsOnDisk === null) {
         throw new Error(
           `parent grants.json absent for run ${parentRunId}\n${env.sidecarDiagnostics()}`,
         );
       }
-      expect(parentGrantsOnDisk).toEqual([PARENT_GRANT]);
+      expect(parentGrantsOnDisk).toEqual([DECLARED_GRANT, UNDECLARED_GRANT]);
 
-      // The child's inherited grants file was written at spawn, carrying the
-      // parent's grant set verbatim. The spawn writes it before the child's
-      // (INTR-310-failing) step runs; poll to let the write land.
+      // The child's inherited grants file was written at spawn, capped to what
+      // the child body declares: the declared grant survives, the undeclared
+      // one is dropped. The spawn writes it before the child step runs; poll to
+      // let the write land.
       await waitFor(
         () => readRunGrantsFile(parentRepoId, childRunId) !== null,
         {
@@ -300,7 +321,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       );
       const childGrantsOnDisk = readRunGrantsFile(parentRepoId, childRunId);
-      expect(childGrantsOnDisk).toEqual([PARENT_GRANT]);
+      expect(childGrantsOnDisk).toEqual([DECLARED_GRANT]);
     });
   },
 );

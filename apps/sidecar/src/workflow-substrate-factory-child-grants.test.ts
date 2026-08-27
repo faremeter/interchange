@@ -1,15 +1,19 @@
-// A spawned child inherits the grants of the run that spawned it.
+// A spawned child inherits the grants of the run that spawned it, CAPPED at
+// what the child body itself declares.
 //
 // `createSidecarRunChild` reads the parent run's
-// `runs/<parentRunId>/grants.json`, binds the child's `env.authorize` to
-// that flat grant set, and persists the same grants under the child's own
-// `runs/<childRunId>/grants.json` so a grandchild can inherit them in
-// turn. A child whose parent has no grants file fails closed at spawn.
+// `runs/<parentRunId>/grants.json` as the ceiling, re-walks the child body to
+// learn what it declares, and binds the child's `env.authorize` to the
+// intersection: a parent grant the child body declares survives, a parent-only
+// grant the child never declares is dropped. It persists that same capped set
+// under the child's own `runs/<childRunId>/grants.json`, so a grandchild's
+// ceiling is the capped set -- not the raw parent set. A child whose parent has
+// no grants file fails closed at spawn.
 //
-// The substrate here is a real on-disk workflow-run repo. The child's
-// injected `invokeStep` calls the credentials-backed `authorize` the
-// runtime env carries, so a granted resource resolves `allow` and an
-// ungranted one does not -- exercising the binding end to end.
+// The substrate here is a real on-disk workflow-run repo. The child's injected
+// `invokeStep` calls the credentials-backed `authorize` the runtime env
+// carries, so a declared resource resolves `allow` and an undeclared one
+// resolves fail-closed -- exercising the cap end to end.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
@@ -58,6 +62,14 @@ const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
   anchorRunId: DEPLOYMENT_ID,
 };
 
+// The child body's single agent declares this inference source, so the
+// capability walk emits it as a grant the child body declares -- a parent
+// grant for it survives the cap.
+const DECLARED_RESOURCE = "inference.source:anthropic:m";
+// The child body declares nothing that covers this, so a parent grant for it
+// is dropped from the child's inherited set.
+const UNDECLARED_RESOURCE = "tool:parent-only";
+
 const tempDirs: string[] = [];
 let signingKey: KeyPair;
 // The real child runtime resolves each step's inference source from a staged
@@ -66,7 +78,7 @@ let signingKey: KeyPair;
 // stage a minimal one per child definition id these tests spawn.
 let childSourcesDataDir: string;
 
-// These tests assert grant inheritance, not event emission, so the sink is noop.
+// These tests assert grant capping, not event emission, so the sink is noop.
 const noopOnEvent = (): void => {
   /* the event sink is not asserted in these tests */
 };
@@ -125,9 +137,9 @@ function grant(resource: string, action: string): GrantRule {
   };
 }
 
-// The one-step child definition every spawn in these tests runs. Its
-// single step's agent id doubles as the `tool:<id>` resource the injected
-// invoker authorizes, so a granted resource maps to this step.
+// The one-step child definition every spawn in these tests runs. Its single
+// agent is toolless and declares the anthropic:m inference source, so
+// `DECLARED_RESOURCE` is the one grant the child body declares.
 const CHILD_STEP_AGENT_ID = "wallet-spend";
 function childDefinition(id: string): WorkflowDefinition {
   const agent = defineAgent({
@@ -144,10 +156,10 @@ function childDefinition(id: string): WorkflowDefinition {
   });
 }
 
-// Grant evaluator that delegates the decision to `@intx/authz` against
-// the credentials snapshot's grants alone. Unlike the production adapter
-// it does NOT merge any per-step tool-mark floor grants, so a decision
-// here reflects only the inherited grant set the test seeded.
+// Grant evaluator that delegates the decision to `@intx/authz` against the
+// credentials snapshot's grants alone. Unlike the production adapter it does
+// NOT merge any per-step tool-mark floor grants, so a decision here reflects
+// only the capped grant set the child inherited.
 const evaluateGrantsAdapter: SidecarRunChildDepsEvaluator = async ({
   resource,
   action,
@@ -183,8 +195,8 @@ async function makeSubstrate(
   return substrate;
 }
 
-// Seed a run's grants file the way the hub's `run.grants` delivery does:
-// a single `runs/<runId>/grants.json` under the workflow-run repo.
+// Seed a run's grants file the way the hub's `run.grants` delivery does: a
+// single `runs/<runId>/grants.json` under the workflow-run repo.
 async function seedRunGrants(
   substrate: ReturnType<typeof createRepoStore>,
   runId: string,
@@ -198,35 +210,12 @@ async function seedRunGrants(
   });
 }
 
-// An invoker that authorizes `tool:<agentId>` against the child's env
-// authorize and records the decision, so a test can assert the child saw
-// the inherited grant.
-function recordingInvoker(record: {
-  decisions: { resource: string; effect: string | null }[];
-}): SidecarChildStepInvoker {
-  return async (
-    req,
-    authorize,
-    _sourcesRef,
-    _onEvent,
-  ): Promise<StepInvokeResult> => {
-    const resource = `tool:${req.agent.id}`;
-    const decision = await authorize(resource, "invoke", req.authzContext);
-    record.decisions.push({ resource, effect: decision.effect });
-    return { output: null };
-  };
-}
-
-// An invoker that authorizes the step's own tool AND a second probe
-// resource against the child's env authorize, recording both decisions.
-// The probe lets a test prove the inherited grant set was actually
-// delivered (the covered resource resolves `allow`) alongside the
-// uncovered resource resolving a non-allow effect.
-function recordingInvokerWithProbe(
-  record: {
-    decisions: { resource: string; effect: string | null }[];
-  },
-  probeResource: string,
+// An invoker that authorizes a fixed list of resources against the child's env
+// authorize and records each decision, so a test can assert exactly which
+// inherited (capped) grants the child holds.
+function recordingInvoker(
+  record: { decisions: { resource: string; effect: string | null }[] },
+  probeResources: readonly string[],
 ): SidecarChildStepInvoker {
   return async (
     req,
@@ -234,45 +223,56 @@ function recordingInvokerWithProbe(
     _sourcesRef,
     _onEvent,
   ): Promise<StepInvokeResult> => {
-    const resource = `tool:${req.agent.id}`;
-    const decision = await authorize(resource, "invoke", req.authzContext);
-    record.decisions.push({ resource, effect: decision.effect });
-    const probe = await authorize(probeResource, "invoke", req.authzContext);
-    record.decisions.push({ resource: probeResource, effect: probe.effect });
+    for (const resource of probeResources) {
+      const decision = await authorize(resource, "invoke", req.authzContext);
+      record.decisions.push({ resource, effect: decision.effect });
+    }
     return { output: null };
   };
 }
 
-describe("createSidecarRunChild grant inheritance", () => {
-  test("a child inherits the parent run's grants and authorizes against them", async () => {
-    const substrate = await makeSubstrate("child-grants-inherit-");
+function makeRunChild(
+  substrate: ReturnType<typeof createRepoStore>,
+  invokeStep: SidecarChildStepInvoker,
+): ReturnType<typeof createSidecarRunChild> {
+  return createSidecarRunChild({
+    substrate,
+    workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+    workflowRunRef: REF,
+    principal: PRINCIPAL,
+    scheduler: createInMemoryScheduler({
+      repoStore: createInMemoryRepoStore(),
+      clock: () => new Date(),
+    }),
+    invokeStep,
+    evaluateGrants: evaluateGrantsAdapter,
+    dataDir: childSourcesDataDir,
+  });
+}
+
+describe("createSidecarRunChild grant capping", () => {
+  test("a child's inherited grants are capped at what its body declares", async () => {
+    const substrate = await makeSubstrate("child-grants-cap-");
     const parentRunId = "run-parent";
+    // Parent holds a grant the child body declares and one it does not.
     await seedRunGrants(substrate, parentRunId, [
-      grant(`tool:${CHILD_STEP_AGENT_ID}`, "invoke"),
+      grant(DECLARED_RESOURCE, "invoke"),
+      grant(UNDECLARED_RESOURCE, "invoke"),
     ]);
 
     const record = {
       decisions: [] as { resource: string; effect: string | null }[],
     };
-    const runChild = createSidecarRunChild({
+    const runChild = makeRunChild(
       substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      workflowRunRef: REF,
-      principal: PRINCIPAL,
-      scheduler: createInMemoryScheduler({
-        repoStore: createInMemoryRepoStore(),
-        clock: () => new Date(),
-      }),
-      invokeStep: recordingInvoker(record),
-      evaluateGrants: evaluateGrantsAdapter,
-      dataDir: childSourcesDataDir,
-    });
+      recordingInvoker(record, [DECLARED_RESOURCE, UNDECLARED_RESOURCE]),
+    );
 
     const childRunId = "run-child";
     const result = await runChild(
       {
         definition: childDefinition("child-wf"),
-        definitionRef: "refs/heads/main",
+        definitionRef: REF,
         childRunId,
         input: null,
         parentRunId,
@@ -285,103 +285,46 @@ describe("createSidecarRunChild grant inheritance", () => {
     );
 
     expect(result.terminalStatus).toBe("completed");
-    // The child authorized the granted tool and saw `allow`.
+    // The declared resource resolves `allow`; the undeclared one was dropped
+    // from the child's inherited set and resolves fail-closed `null`. The
+    // positive control (declared -> allow) proves the null is a genuine cap,
+    // not an empty grant view that would deny everything.
     expect(record.decisions).toEqual([
-      { resource: `tool:${CHILD_STEP_AGENT_ID}`, effect: "allow" },
+      { resource: DECLARED_RESOURCE, effect: "allow" },
+      { resource: UNDECLARED_RESOURCE, effect: null },
     ]);
-    // The child persisted its own inherited grants file for a grandchild.
+    // The child persisted ONLY the declared grant as its own file, so a
+    // grandchild inherits the capped set rather than the raw parent set.
     const childGrants = await readRunGrants({
       repoStore: substrate,
       anchorRunId: DEPLOYMENT_ID,
       runId: childRunId,
     });
-    expect(childGrants).toBeDefined();
-    expect(childGrants).toEqual([
-      grant(`tool:${CHILD_STEP_AGENT_ID}`, "invoke"),
-    ]);
+    expect(childGrants).toEqual([grant(DECLARED_RESOURCE, "invoke")]);
   });
 
-  test("an ungranted tool resolves to a non-allow decision", async () => {
-    const substrate = await makeSubstrate("child-grants-ungranted-");
-    const parentRunId = "run-parent";
-    // Parent holds a DIFFERENT grant, so `tool:wallet-spend` is not covered.
-    await seedRunGrants(substrate, parentRunId, [
-      grant("tool:other", "invoke"),
-    ]);
-
-    const record = {
-      decisions: [] as { resource: string; effect: string | null }[],
-    };
-    const runChild = createSidecarRunChild({
-      substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      workflowRunRef: REF,
-      principal: PRINCIPAL,
-      scheduler: createInMemoryScheduler({
-        repoStore: createInMemoryRepoStore(),
-        clock: () => new Date(),
-      }),
-      invokeStep: recordingInvokerWithProbe(record, "tool:other"),
-      evaluateGrants: evaluateGrantsAdapter,
-      dataDir: childSourcesDataDir,
-    });
-
-    await runChild(
-      {
-        definition: childDefinition("child-wf"),
-        definitionRef: "refs/heads/main",
-        childRunId: "run-child",
-        input: null,
-        parentRunId,
-        parentStepId: "s",
-        signal: new AbortController().signal,
-        depth: 1,
-        maxChildSpawnDepth: 32,
-      },
-      noopOnEvent,
-    );
-
-    // The uncovered tool resolves a null (non-allow) effect -- the child
-    // stays fail-closed on a tool its inherited grants do not cover -- while
-    // the covered `tool:other` resolves `allow`. The positive control proves
-    // the null is genuine fail-closed on the inherited set, not an empty
-    // grant view that would deny everything regardless.
-    expect(record.decisions).toEqual([
-      { resource: `tool:${CHILD_STEP_AGENT_ID}`, effect: null },
-      { resource: "tool:other", effect: "allow" },
-    ]);
-  });
-
-  test("a grandchild inherits the child's persisted grants (multi-hop)", async () => {
+  test("the grandchild ceiling is the capped set, not the raw parent set", async () => {
     const substrate = await makeSubstrate("child-grants-multihop-");
     const parentRunId = "run-parent";
     await seedRunGrants(substrate, parentRunId, [
-      grant(`tool:${CHILD_STEP_AGENT_ID}`, "invoke"),
+      grant(DECLARED_RESOURCE, "invoke"),
+      grant(UNDECLARED_RESOURCE, "invoke"),
     ]);
 
     const record = {
       decisions: [] as { resource: string; effect: string | null }[],
     };
-    const runChild = createSidecarRunChild({
+    const runChild = makeRunChild(
       substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      workflowRunRef: REF,
-      principal: PRINCIPAL,
-      scheduler: createInMemoryScheduler({
-        repoStore: createInMemoryRepoStore(),
-        clock: () => new Date(),
-      }),
-      invokeStep: recordingInvoker(record),
-      evaluateGrants: evaluateGrantsAdapter,
-      dataDir: childSourcesDataDir,
-    });
+      recordingInvoker(record, [DECLARED_RESOURCE, UNDECLARED_RESOURCE]),
+    );
 
-    // Hop 1: parent -> child. Writes runs/run-child/grants.json.
+    // Hop 1: parent -> child. Writes runs/run-child/grants.json (capped).
     const childRunId = "run-child";
     await runChild(
       {
         definition: childDefinition("child-wf"),
-        definitionRef: "refs/heads/main",
+        definitionRef: REF,
         childRunId,
         input: null,
         parentRunId,
@@ -393,13 +336,13 @@ describe("createSidecarRunChild grant inheritance", () => {
       noopOnEvent,
     );
 
-    // Hop 2: child -> grandchild. The grandchild's parent is the child,
-    // so it reads the child's persisted grants file.
+    // Hop 2: child -> grandchild. The grandchild's parent is the child, so it
+    // reads the child's capped grants file as its ceiling.
     const grandchildRunId = "run-grandchild";
     const grandResult = await runChild(
       {
         definition: childDefinition("grandchild-wf"),
-        definitionRef: "refs/heads/main",
+        definitionRef: REF,
         childRunId: grandchildRunId,
         input: null,
         parentRunId: childRunId,
@@ -412,19 +355,21 @@ describe("createSidecarRunChild grant inheritance", () => {
     );
 
     expect(grandResult.terminalStatus).toBe("completed");
-    // Both hops authorized `allow` against the inherited grant.
+    // Both hops authorize the declared resource `allow`; the undeclared one is
+    // absent at BOTH hops -- dropped at hop 1 and never reachable at hop 2,
+    // because the grandchild's ceiling is the child's capped file.
     expect(record.decisions).toEqual([
-      { resource: `tool:${CHILD_STEP_AGENT_ID}`, effect: "allow" },
-      { resource: `tool:${CHILD_STEP_AGENT_ID}`, effect: "allow" },
+      { resource: DECLARED_RESOURCE, effect: "allow" },
+      { resource: UNDECLARED_RESOURCE, effect: null },
+      { resource: DECLARED_RESOURCE, effect: "allow" },
+      { resource: UNDECLARED_RESOURCE, effect: null },
     ]);
     const grandchildGrants = await readRunGrants({
       repoStore: substrate,
       anchorRunId: DEPLOYMENT_ID,
       runId: grandchildRunId,
     });
-    expect(grandchildGrants).toEqual([
-      grant(`tool:${CHILD_STEP_AGENT_ID}`, "invoke"),
-    ]);
+    expect(grandchildGrants).toEqual([grant(DECLARED_RESOURCE, "invoke")]);
   });
 
   test("a child whose parent has no grants file fails closed at spawn", async () => {
@@ -435,25 +380,16 @@ describe("createSidecarRunChild grant inheritance", () => {
     const record = {
       decisions: [] as { resource: string; effect: string | null }[],
     };
-    const runChild = createSidecarRunChild({
+    const runChild = makeRunChild(
       substrate,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      workflowRunRef: REF,
-      principal: PRINCIPAL,
-      scheduler: createInMemoryScheduler({
-        repoStore: createInMemoryRepoStore(),
-        clock: () => new Date(),
-      }),
-      invokeStep: recordingInvoker(record),
-      evaluateGrants: evaluateGrantsAdapter,
-      dataDir: childSourcesDataDir,
-    });
+      recordingInvoker(record, [DECLARED_RESOURCE]),
+    );
 
     await expect(
       runChild(
         {
           definition: childDefinition("child-wf"),
-          definitionRef: "refs/heads/main",
+          definitionRef: REF,
           childRunId: "run-child",
           input: null,
           parentRunId,

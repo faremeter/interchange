@@ -84,6 +84,7 @@ import {
   createWorkflowStepInvoker,
   hashGrants,
   loadWorkflowPluginFactoriesFromClosure,
+  loadWorkflowPluginToolDefinitionsFromClosure,
   type ChildMailboxReader,
   type ChildOutboundMailBridge,
   type CredentialsSnapshot,
@@ -101,6 +102,7 @@ import {
 } from "@intx/workflow-host";
 import {
   baseStepId,
+  collectDeclaredPluginNames,
   createNoopDrainController,
   emptyState,
   rewriteInlineChildWorkflowBodies,
@@ -115,6 +117,7 @@ import {
   type WorkflowDefinition,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { type PluginToolDefinitions } from "@intx/workflow-deploy";
 
 import {
   attachStepCredentialWiring,
@@ -127,6 +130,10 @@ import {
 } from "./step-agent-tools";
 import type { CredentialMaterialCell } from "./step-credential-capabilities";
 import { readRunGrants, runGrantsPath } from "./run-grants";
+import {
+  collectDeclaredResources,
+  filterGrantsToDeclaredResources,
+} from "./child-grant-filter";
 import {
   createDurableConversationRegistry,
   isErrnoNotFound,
@@ -1272,6 +1279,16 @@ interface SidecarRunChildDeps {
   evaluateGrants: GrantEvaluator;
   /** Director registry the child runtime uses; defaults to the canonical built-ins. */
   directors?: DirectorRegistry;
+  /**
+   * Sidecar-local directory of the materialized workflow-definition closure
+   * (`env.spawn.closurePackageDir`), the source-ref lineage's only closure.
+   * `buildChildRunEnv` loads the child body's declared plugin tool definitions
+   * from it so a plugin-contributed `tool:<name>` the child loads is declared
+   * when capping the child's inherited grants. A child body that declares no
+   * plugin package needs no closure read; absent on a lineage that stages no
+   * closure.
+   */
+  closurePackageDir?: string;
   /** Clock for timestamp generation; defaults to `() => new Date()`. */
   clock?: () => Date;
   /**
@@ -1739,14 +1756,14 @@ async function buildChildRunEnv(args: {
   const grandchildMap = new Map(
     grandchildBodies.map((b) => [b.ref, b.definition]),
   );
-  // Inherit the parent run's grants. A spawned child runs under the
-  // authority of the run that spawned it, so its authorize resolves
-  // against the parent's per-run grant set -- the same flat set read
-  // back at `runs/<parentRunId>/grants.json` in the deployment's
-  // workflow-run repo. Fail closed if the parent's file is absent: a
-  // run that reached the spawn point carries a grants file (every birth
-  // path materializes one), so its absence is a defect, not a run that
-  // legitimately holds no grants.
+  // Inherit the parent run's grants as the CEILING. A spawned child runs
+  // under the authority of the run that spawned it, so the parent's per-run
+  // grant set -- read back at `runs/<parentRunId>/grants.json` in the
+  // deployment's workflow-run repo -- bounds what the child can hold; the
+  // cap below narrows it to what the child body declares. Fail closed if the
+  // parent's file is absent: a run that reached the spawn point carries a
+  // grants file (every birth path materializes one), so its absence is a
+  // defect, not a run that legitimately holds no grants.
   const parentGrants = await readRunGrants({
     repoStore: deps.substrate,
     anchorRunId: deps.workflowRunRepoId.id,
@@ -1757,11 +1774,43 @@ async function buildChildRunEnv(args: {
       `sidecar runChild: parent run ${parentRunId} has no grants file at ${runGrantsPath(parentRunId)}; refusing to spawn child ${childRunId} under-authorized`,
     );
   }
-  // Persist the inherited grants as the child's OWN per-run file so a
+  // Cap the inherited grants at what the child body itself declares
+  // (INTR-310). The child runs under the parent's authority, but it must
+  // never hold MORE than its own definition declares: a parent-only
+  // `effect:`/`credential:` grant (neither is tool-gated) or a bare-name
+  // `tool:` the child body never declared would otherwise authorize a
+  // capability the child was never written to use. Re-walk the child's own
+  // definition -- its inline grandchildren still intact, so the declared
+  // union stays broad enough to remain the ceiling a grandchild filters
+  // against in turn -- and filter the parent's rules to that set. The
+  // parent stays the ceiling (the filter only removes rules), matching the
+  // top level's "authority bounded by declared capabilities" model. Plugin
+  // tool definitions come from the shared closure so a plugin-contributed
+  // `tool:<name>` the child legitimately loads is declared and survives; a
+  // child body that declares no plugin package needs no closure read.
+  const pluginDefs: PluginToolDefinitions =
+    deps.closurePackageDir === undefined
+      ? new Map()
+      : await loadWorkflowPluginToolDefinitionsFromClosure({
+          packageDir: deps.closurePackageDir,
+          plugins: collectDeclaredPluginNames(definition),
+        });
+  const declaredResources = collectDeclaredResources(
+    definition,
+    directors,
+    pluginDefs,
+  );
+  const childGrants = filterGrantsToDeclaredResources(
+    parentGrants,
+    declaredResources,
+  );
+  // Persist the capped grants as the child's OWN per-run file so a
   // grandchild spawned by this child reads them from
   // `runs/<childRunId>/grants.json`, exactly as this child read the
   // parent's. The multi-hop chain never prunes these files, so each
-  // rung's grants stay resolvable for the rung below it.
+  // rung's grants stay resolvable for the rung below it -- and each rung's
+  // cap holds, because the grandchild filters against THIS child's capped
+  // set, not the raw parent set.
   //
   // Ordering is LOAD-BEARING: this write happens BEFORE `runtimeRun`
   // dispatches the child, so `runs/<childRunId>/` holds no event blobs
@@ -1776,20 +1825,20 @@ async function buildChildRunEnv(args: {
     principal: deps.principal,
     ref: deps.workflowRunRef,
     childRunId,
-    grants: parentGrants,
+    grants: childGrants,
   });
-  // The child's credentials snapshot applies the inherited flat grant
-  // set uniformly across every step the child definition declares,
-  // keyed on each step's id (the same shape the deploy-time and per-run
-  // snapshot assemblies produce). The in-process child has no per-step
-  // mail address, so the snapshot's `address` mirrors the step id --
+  // The child's credentials snapshot applies the capped grant set
+  // uniformly across every step the child definition declares, keyed on
+  // each step's id (the same shape the deploy-time and per-run snapshot
+  // assemblies produce). The in-process child has no per-step mail
+  // address, so the snapshot's `address` mirrors the step id --
   // `createCredentialsBackedAuthorize` reads only `grants`.
-  const contentHash = await hashGrants(parentGrants);
+  const contentHash = await hashGrants(childGrants);
   const credentialsSnapshot: CredentialsSnapshot = {
     steps: rewrittenDefinition.stepOrder.map((stepId) => ({
       stepId,
       address: stepId,
-      grants: parentGrants,
+      grants: childGrants,
       contentHash,
     })),
   };
@@ -2470,6 +2519,9 @@ export function createSidecarSubstrateFactory(
       bodyInvokeStep,
       dataDir: validated.SIDECAR_DATA_DIR,
       evaluateGrants: evaluateGrantsAdapter,
+      // The shared closure the child re-walks to cap its inherited grants at
+      // its declared capabilities. Source-ref only, so always present here.
+      closurePackageDir: env.spawn.closurePackageDir,
     };
     // Terminal childWorkflow executor. `run-child` builds the in-memory
     // resolver from this plus the lifted-body map it extracts after loading
