@@ -35,7 +35,10 @@ import {
   createChildOutboundMailBridge,
   type ChildOutboundMailBridge,
 } from "./outbound-mail-bridge";
-import { createChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
+import {
+  createChildMailboxMutationBridge,
+  type ChildMailboxMutationBridge,
+} from "./mailbox-mutation-bridge";
 import {
   createControlChannelSender,
   type FrameWriter,
@@ -104,6 +107,17 @@ export interface SubstrateFactoryEnv {
    * agent's signature without the child ever holding the agent's key.
    */
   readonly outboundMailBridge: ChildOutboundMailBridge;
+  /**
+   * Child-side IPC bridge over the upstream control channel for the
+   * INBOUND half of mailbox ownership (§3b). The substrate factory uses
+   * this to construct the supervisor-backed `MessageTransport`'s write
+   * surface: `setFlags` / `clearFlags` / `expunge` call `bridge.submit`,
+   * which emits a `mailbox.mutate.request` upstream frame and resolves
+   * once the supervisor's matching `mailbox.mutate.response` lands. The
+   * supervisor -- the sole mailbox writer -- applies the mutation to its
+   * owned store, so the child never flushes the run ref itself.
+   */
+  readonly mailboxMutationBridge: ChildMailboxMutationBridge;
 }
 
 /**
@@ -208,6 +222,7 @@ export async function runWorkflowChildFromProcessEnv(
     substrateConfig,
     substrateWriteBridge,
     outboundMailBridge,
+    mailboxMutationBridge,
   });
   return runWorkflowChild({
     env: spawn,

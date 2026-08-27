@@ -18,12 +18,15 @@
 //     that mailbox through the child mailbox reader and running the
 //     `@intx/mailbox` pure query functions over it -- local, no hub or
 //     IPC round-trip. `watch` registers into the child watch registry, so
-//     `mail_wait` unblocks when the routed `mailbox.notify` fires. Flag
-//     writes (`setFlags` / `clearFlags`) mutate the opened snapshot and
-//     `flush` it back through the child's substrate binding, which proxies
-//     the write to the supervisor. The agent owns only the `INBOX`, so
-//     every inbound method rejects a request for any other mailbox rather
-//     than silently serving `INBOX` under the wrong name. When the sidecar
+//     `mail_wait` unblocks when the routed `mailbox.notify` fires. The
+//     WRITE methods (`setFlags` / `clearFlags` / `expunge`) do NOT touch
+//     the local read surface: they route up to the supervisor through the
+//     mailbox-mutation bridge (a `mailbox.mutate.request` frame), which
+//     applies the mutation to the supervisor's owned store and replies.
+//     The child never flushes the run ref, so it never races the
+//     supervisor's mirror. The agent owns only the `INBOX`, so every
+//     inbound method rejects a request for any other mailbox rather than
+//     silently serving `INBOX` under the wrong name. When the sidecar
 //     constructs the transport without the `inbound` argument, the inbound
 //     methods throw a clear "not wired" error rather than answer against a
 //     missing surface.
@@ -37,9 +40,8 @@
 // the unified-host agent does not own. `append` and the mailbox-management
 // methods (`listMailboxes` / `createMailbox` / `deleteMailbox`) target a
 // mailbox the agent does not own; `move` / `copy` need a second mailbox it
-// does not own; `expunge` cannot run without breaking replication (see its
-// body); and the distribution-list methods are unimplemented across every
-// transport.
+// does not own; and the distribution-list methods are unimplemented across
+// every transport.
 
 import type {
   BodyStructure,
@@ -71,21 +73,30 @@ import {
   fetchStructure as doFetchStructure,
 } from "@intx/mailbox";
 
+import { deriveWorkflowRunId } from "@intx/types";
+
 import { MAILBOX_INBOX_DIR } from "../adapters/substrate-mailbox-store";
 import type { ChildMailboxReader } from "./child-mailbox-reader";
+import type { ChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
 import type { MailboxWatchRegistry } from "./mailbox-watch-registry";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
 
 /**
- * The dependencies backing the transport's inbound local IMAP surface. The
- * sidecar wires these at construction so the read/flag/watch surface resolves
- * locally against the deployment's substrate mailbox.
+ * The dependencies backing the transport's whole inbox capability: the local
+ * IMAP READ surface (`reader` / `watchRegistry` / `getCrypto`) that resolves
+ * against the deployment's substrate mailbox, plus the routed-WRITE channel
+ * (`mutationBridge`) that carries flag writes and expunge up to the supervisor.
+ * The sidecar wires the bundle only for a build that owns an inbound mailbox
+ * (the warm agent); a build without it has no inbox and every inbound method
+ * throws a clear "not wired" error. Reads are local; writes route upstream --
+ * the child never flushes the run ref, so it never races the supervisor.
  */
 export interface SupervisorBackedTransportInbound {
   /**
    * Opens a fresh committed snapshot of the deployment's substrate `INBOX`.
    * Every inbound read opens a new snapshot, so a read taken after a
-   * `mailbox.notify` observes the message the supervisor just committed.
+   * `mailbox.notify` -- or after a routed write the supervisor flushed before
+   * replying -- observes the committed state.
    */
   reader: ChildMailboxReader;
   /**
@@ -100,6 +111,15 @@ export interface SupervisorBackedTransportInbound {
    * sender, in which case the signature status is reported as `unknown`.
    */
   getCrypto: (fromAddress: string) => CryptoProvider | undefined;
+  /**
+   * The upstream channel the write methods route through. `setFlags` /
+   * `clearFlags` / `expunge` call `mutationBridge.submit`, which emits a
+   * `mailbox.mutate.request` and resolves once the supervisor applies the
+   * mutation to its owned store and replies. Bundled with the read surface
+   * because the write methods and the reads share one presence condition:
+   * this agent owns an inbox, or it owns none.
+   */
+  mutationBridge: ChildMailboxMutationBridge;
 }
 
 /**
@@ -262,22 +282,34 @@ export function createSupervisorBackedTransport(
       flags: string[],
       _signal?: AbortSignal,
     ): Promise<void> {
-      const { reader } = requireInbound("setFlags");
+      const { mutationBridge } = requireInbound("setFlags");
       requireInbox(ref.mailbox);
-      const store = await reader.open();
-      store.addFlags(ref.uid, flags);
-      await store.flush();
+      // Route the flag write to the supervisor -- the sole mailbox writer --
+      // rather than flushing a second store against the run ref. `submit`
+      // resolves only after the supervisor flushes, so a subsequent read
+      // observes the flag.
+      await mutationBridge.submit({
+        runId: deriveWorkflowRunId(address),
+        mailbox: ref.mailbox,
+        op: "addFlags",
+        uid: ref.uid,
+        flags,
+      });
     },
     async clearFlags(
       ref: MessageRef,
       flags: string[],
       _signal?: AbortSignal,
     ): Promise<void> {
-      const { reader } = requireInbound("clearFlags");
+      const { mutationBridge } = requireInbound("clearFlags");
       requireInbox(ref.mailbox);
-      const store = await reader.open();
-      store.removeFlags(ref.uid, flags);
-      await store.flush();
+      await mutationBridge.submit({
+        runId: deriveWorkflowRunId(address),
+        mailbox: ref.mailbox,
+        op: "removeFlags",
+        uid: ref.uid,
+        flags,
+      });
     },
 
     async move(
@@ -294,18 +326,22 @@ export function createSupervisorBackedTransport(
     ): Promise<void> {
       return unsupported("copy");
     },
-    async expunge(_mailbox: string, _signal?: AbortSignal): Promise<void> {
-      // A `mailbox/INBOX/<uid>.eml` blob is append-only: the hub replication
-      // check rejects a pack that deletes or mutates one. The substrate
-      // backing expunges by dropping the message from the live set, so its
-      // `.eml` falls out of the next `flush`, which the replication check
-      // would reject. A tombstone-only expunge that keeps the blob is not
-      // expressible through the backing's `MailboxStore` surface, so a
-      // replication-safe expunge is not achievable here. Reject it rather
-      // than break replication. No current mail tool reaches this method.
-      throw new Error(
-        `supervisor-backed transport: expunge is not supported for unified-host step agent ${address}; a ${MAILBOX_INBOX_DIR} message blob is append-only and physically removing it would break hub replication`,
-      );
+    async expunge(mailbox: string, _signal?: AbortSignal): Promise<void> {
+      const { mutationBridge } = requireInbound("expunge");
+      requireInbox(mailbox);
+      // Route to the supervisor, which sweeps every `\Deleted` message out of
+      // its owned INBOX. The expunged bytes survive in git history (a
+      // workflow-run repo's objects are never GC'd), so the replication check
+      // permits the deletion. The supervisor reports the swept uids; this
+      // void-returning method discards them. A caller expunging after a
+      // `setFlags(\Deleted)` MUST await the two in sequence -- the supervisor
+      // applies mutations in arrival order, so an unawaited (concurrent) pair
+      // could let the sweep run before the flag is set and miss the message.
+      await mutationBridge.submit({
+        runId: deriveWorkflowRunId(address),
+        mailbox,
+        op: "expunge",
+      });
     },
 
     watch(

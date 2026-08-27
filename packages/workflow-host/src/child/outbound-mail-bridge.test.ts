@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 
 import { type } from "arktype";
 
-import { base64Decode } from "@intx/types";
+import { base64Decode, deriveWorkflowRunId } from "@intx/types";
 import { createInMemoryMailboxStore } from "@intx/mailbox";
 import type { StoredEnvelope } from "@intx/mailbox";
 import type { MailboxEvent, MessageHeaders } from "@intx/types/runtime";
@@ -13,6 +13,10 @@ import {
   type SupervisorBackedTransportInbound,
 } from "./supervisor-backed-transport";
 import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
+import type {
+  ChildMailboxMutationBridge,
+  MailboxMutation,
+} from "./mailbox-mutation-bridge";
 import type { ChildMailboxReader } from "./child-mailbox-reader";
 import type {
   MailboxSyncKnownState,
@@ -34,10 +38,8 @@ import {
 function createSeededReader(): {
   reader: ChildMailboxReader;
   store: SubstrateMailboxStore;
-  flushCount: () => number;
 } {
   const inner = createInMemoryMailboxStore();
-  let flushes = 0;
   let dirty = false;
 
   const store: SubstrateMailboxStore = {
@@ -79,7 +81,6 @@ function createSeededReader(): {
       inner.remove(uid);
     },
     async flush() {
-      flushes++;
       dirty = false;
     },
     sync(known: MailboxSyncKnownState): MailboxSyncResult {
@@ -110,7 +111,6 @@ function createSeededReader(): {
   return {
     reader: { open: async () => store },
     store,
-    flushCount: () => flushes,
   };
 }
 
@@ -152,6 +152,33 @@ function makeBridge() {
   });
 }
 
+/**
+ * A `ChildMailboxMutationBridge` that records every submitted mutation and
+ * resolves immediately, so a transport test asserts the routed write without a
+ * live supervisor.
+ */
+function createRecordingMutationBridge(): ChildMailboxMutationBridge & {
+  submitted: MailboxMutation[];
+} {
+  const submitted: MailboxMutation[] = [];
+  return {
+    submitted,
+    submit(mutation: MailboxMutation) {
+      submitted.push(mutation);
+      return Promise.resolve({});
+    },
+    handleResult() {
+      /* no downstream frames in this fake */
+    },
+    cancelAll() {
+      /* nothing pending */
+    },
+    get pendingCount() {
+      return 0;
+    },
+  };
+}
+
 /** Build the inbound wiring with test defaults, overridable per test. */
 function makeInbound(
   overrides: Partial<SupervisorBackedTransportInbound> = {},
@@ -160,6 +187,7 @@ function makeInbound(
     reader: createSeededReader().reader,
     watchRegistry: createMailboxWatchRegistry(),
     getCrypto: () => undefined,
+    mutationBridge: createRecordingMutationBridge(),
     ...overrides,
   };
 }
@@ -475,27 +503,24 @@ describe("createSupervisorBackedTransport", () => {
     expect(events).toHaveLength(1);
   });
 
-  test("setFlags mutates the snapshot and flushes it", async () => {
-    const seeded = createSeededReader();
-    const uid = seedMessage(seeded.store, {
-      from: "alice@example.com",
-      to: "agent@example.com",
-      subject: "hello",
-      messageId: "<a-1@example.com>",
-    });
+  test("setFlags and clearFlags route flag mutations to the supervisor", async () => {
+    const bridge = createRecordingMutationBridge();
+    const address = "run_flag-agent@example.com";
     const transport = createSupervisorBackedTransport(
       makeBridge(),
-      "agent@example.com",
-      makeInbound({ reader: seeded.reader }),
+      address,
+      makeInbound({ mutationBridge: bridge }),
     );
+    const runId = deriveWorkflowRunId(address);
 
-    await transport.setFlags({ uid, mailbox: "INBOX" }, ["\\Seen"]);
-    expect(seeded.flushCount()).toBe(1);
-    expect(seeded.store.find(uid)?.flags.has("\\Seen")).toBe(true);
-
-    await transport.clearFlags({ uid, mailbox: "INBOX" }, ["\\Seen"]);
-    expect(seeded.flushCount()).toBe(2);
-    expect(seeded.store.find(uid)?.flags.has("\\Seen")).toBe(false);
+    // The write methods route to the supervisor -- the sole mailbox writer --
+    // rather than flushing a second store against the run ref.
+    await transport.setFlags({ uid: 4, mailbox: "INBOX" }, ["\\Seen"]);
+    await transport.clearFlags({ uid: 4, mailbox: "INBOX" }, ["\\Seen"]);
+    expect(bridge.submitted).toEqual([
+      { runId, mailbox: "INBOX", op: "addFlags", uid: 4, flags: ["\\Seen"] },
+      { runId, mailbox: "INBOX", op: "removeFlags", uid: 4, flags: ["\\Seen"] },
+    ]);
   });
 
   test("sync splits new arrivals from flag changes against the known uidNext", async () => {
@@ -573,15 +598,18 @@ describe("createSupervisorBackedTransport", () => {
     ).rejects.toThrow(/owns only the "INBOX" mailbox/);
   });
 
-  test("expunge is rejected so an append-only blob is never removed", async () => {
+  test("expunge routes to the supervisor sweep", async () => {
+    const bridge = createRecordingMutationBridge();
+    const address = "run_expunge-agent@example.com";
     const transport = createSupervisorBackedTransport(
       makeBridge(),
-      "agent@example.com",
-      makeInbound(),
+      address,
+      makeInbound({ mutationBridge: bridge }),
     );
-    await expect(transport.expunge("INBOX")).rejects.toThrow(
-      /append-only.*break hub replication/,
-    );
+    await transport.expunge("INBOX");
+    expect(bridge.submitted).toEqual([
+      { runId: deriveWorkflowRunId(address), mailbox: "INBOX", op: "expunge" },
+    ]);
   });
 
   test("methods for mailboxes the agent does not own stay unsupported", async () => {

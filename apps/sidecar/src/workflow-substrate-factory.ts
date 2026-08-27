@@ -2054,6 +2054,10 @@ export function createSidecarSubstrateFactory(
       // yet possible here; `fetchFull` reports every message's signature status
       // as "unknown". A future sender-key surface would replace this resolver.
       getCrypto: () => undefined,
+      // The write methods (setFlags / clearFlags / expunge) route through this
+      // bridge to the supervisor, the sole mailbox writer, instead of flushing
+      // the run ref from the child.
+      mutationBridge: env.mailboxMutationBridge,
     };
 
     const hostScheduler = createWorkflowHostScheduler({
