@@ -12,7 +12,16 @@
 // agent prompts, and the spawn/step topology so a caller reproduces the single,
 // nested, and sibling-fanout shapes off one builder.
 
-/** A tool-less agent step in a parent or child workflow. */
+import path from "node:path";
+
+import type { MailToolVariant } from "./mail-tool";
+
+// Absolute path to the sibling tool module, so a bundled entry resolves it
+// through `Bun.build` (which inlines the module) rather than a bare specifier
+// the sidecar closure could not resolve.
+const MAIL_TOOL_MODULE = path.join(import.meta.dir, "mail-tool.ts");
+
+/** An agent step in a parent or child workflow. */
 export type AgentStepSpec = {
   /** The step's key in the workflow's `steps` map. */
   stepId: string;
@@ -22,6 +31,13 @@ export type AgentStepSpec = {
   systemPrompt: string;
   /** Steps this one runs after. Omitted leaves the step unordered. */
   after?: readonly string[];
+  /**
+   * When set, the step agent carries the inline `mail_send` tool of this
+   * variant, so the mock inference reply lists the tool name -- the proof that
+   * a childWorkflow step resolves its source-tools arm and runs a real
+   * tool-bearing agent, not a toolless one.
+   */
+  tool?: MailToolVariant;
 };
 
 /** An inline child (or grandchild) workflow a spawn step embeds. */
@@ -60,13 +76,30 @@ export type ChildWorkflowFixtureParams = {
 function renderAgentStep(spec: AgentStepSpec): string {
   const afterClause =
     spec.after !== undefined ? `, after: ${JSON.stringify(spec.after)}` : "";
+  const tools =
+    spec.tool !== undefined
+      ? `[mailSendTool(${JSON.stringify(spec.tool)})]`
+      : "[]";
   return `    [${JSON.stringify(spec.stepId)}]: step({ agent: defineAgent({
       id: ${JSON.stringify(spec.agentId)},
       systemPrompt: ${JSON.stringify(spec.systemPrompt)},
-      tools: [],
+      tools: ${tools},
       capabilities: [],
       inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
     })${afterClause} }),\n`;
+}
+
+// Whether any step -- at the top level or nested in any child body -- carries an
+// inline tool, so the entry module imports the tool factory exactly when a
+// rendered `mailSendTool(...)` reference needs it.
+function anyStepHasTool(
+  steps: readonly AgentStepSpec[],
+  spawns: readonly InlineChildSpawnSpec[],
+): boolean {
+  if (steps.some((s) => s.tool !== undefined)) return true;
+  return spawns.some((sp) =>
+    anyStepHasTool(sp.child.steps, sp.child.spawns ?? []),
+  );
 }
 
 function renderChildWorkflowExpr(child: InlineChildSpec): string {
@@ -90,10 +123,13 @@ function renderSpawnStep(spec: InlineChildSpawnSpec): string {
 export function childWorkflowEntry(params: ChildWorkflowFixtureParams): string {
   const stepEntries = params.steps.map(renderAgentStep).join("");
   const spawnEntries = params.spawns.map(renderSpawnStep).join("");
+  const toolImport = anyStepHasTool(params.steps, params.spawns)
+    ? `import { mailSendTool } from ${JSON.stringify(MAIL_TOOL_MODULE)};\n`
+    : "";
   return `
 import { childWorkflow, defineWorkflow, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
-
+${toolImport}
 export const workflow = defineWorkflow({
   id: ${JSON.stringify(params.workflowId)},
   trigger: { type: "mail", to: ${JSON.stringify(params.address)} },

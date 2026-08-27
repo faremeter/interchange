@@ -49,6 +49,7 @@ import {
   childWorkflowEntry,
   type ChildWorkflowFixtureParams,
 } from "./fixtures/child-workflow";
+import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 
 // A toolless child agent's reply from the mock inference provider: the mock
 // renders "I see these tools:" plus the (empty) tool-name list.
@@ -128,11 +129,19 @@ const SIBLINGS_PARENT_WORKFLOW_ID = `wf_${SIBLINGS_PARENT_DEPLOYMENT_ID}`;
 const SIBLINGS_CHILD_WORKFLOW_IDS: readonly string[] =
   SIBLINGS_CHILD_DEPLOYMENT_IDS.map((id) => `wf_${id}`);
 
+// Tool-bearing-child deployment ids. The parent's child step carries the
+// inline `mail_send` tool, so the child runs a real TOOL-BEARING agent.
+const TOOL_PARENT_DEPLOYMENT_ID = "run_child-workflow-tool-parent-1";
+const TOOL_CHILD_DEPLOYMENT_ID = "run_child-workflow-tool-child-1";
+const TOOL_PARENT_WORKFLOW_ID = `wf_${TOOL_PARENT_DEPLOYMENT_ID}`;
+const TOOL_CHILD_WORKFLOW_ID = `wf_${TOOL_CHILD_DEPLOYMENT_ID}`;
+
 const TENANT_ID = "tnt_child_workflow";
 const CALLER_PRINCIPAL_ID = "prn_child_workflow";
 const SINGLE_DEFINITION_ASSET_ID = "ast_child_workflow_single_wf";
 const NESTED_DEFINITION_ASSET_ID = "ast_child_workflow_nested_wf";
 const SIBLINGS_DEFINITION_ASSET_ID = "ast_child_workflow_siblings_wf";
+const TOOL_DEFINITION_ASSET_ID = "ast_child_workflow_tool_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
@@ -155,6 +164,7 @@ beforeAll(async () => {
     SINGLE_DEFINITION_ASSET_ID,
     NESTED_DEFINITION_ASSET_ID,
     SIBLINGS_DEFINITION_ASSET_ID,
+    TOOL_DEFINITION_ASSET_ID,
   ]) {
     await seedAsset(h.db, {
       id,
@@ -459,6 +469,141 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(childRunStartedBody["runId"]).toBe(childRunId);
     }, 180_000);
 
+    // A tool-bearing child. The child step's agent carries the inline
+    // `mail_send` tool, so the child runs a REAL tool-bearing agent through the
+    // source-tools arm -- not a toolless one. The mock inference echoes the
+    // exposed tool names into the reply, so the child's `StepCompleted` reply
+    // listing the tool name is the proof the child materialized its tool from
+    // the shared closure. A regression that ran the child toolless (or failed
+    // to materialize the source tool) would omit the name from the reply.
+    test("a childWorkflow child runs a real tool-bearing agent", async () => {
+      const parentMailAddress = deriveRunAddress({
+        runId: TOOL_PARENT_DEPLOYMENT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+      const childMailAddress = deriveRunAddress({
+        runId: TOOL_CHILD_DEPLOYMENT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${parentMailAddress}`,
+        `mail.address:${childMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+        // The child step declares the inline tool, so the deploy walk folds its
+        // `tool:` grant into the parent step; the operator must approve it.
+        `tool:${MAIL_TOOL_NAME}`,
+      ]);
+
+      const { workflowRunRepoId: parentWorkflowRunRepoId } = await deployParent(
+        {
+          anchorRunId: TOOL_PARENT_DEPLOYMENT_ID,
+          definitionAssetId: TOOL_DEFINITION_ASSET_ID,
+          topLevelStepIds: ["step1", "spawn"],
+          approvals: operatorApprovals,
+          fixture: {
+            workflowId: TOOL_PARENT_WORKFLOW_ID,
+            address: parentMailAddress,
+            steps: [
+              {
+                stepId: "step1",
+                agentId: "agent-tool-parent-step1",
+                systemPrompt: "You are the tool parent's first step agent.",
+              },
+            ],
+            spawns: [
+              {
+                stepId: "spawn",
+                after: ["step1"],
+                child: {
+                  workflowId: TOOL_CHILD_WORKFLOW_ID,
+                  address: childMailAddress,
+                  steps: [
+                    {
+                      stepId: "childStep",
+                      agentId: "agent-tool-child-step",
+                      systemPrompt: "You are the tool child's step agent.",
+                      tool: "fs",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      );
+
+      await fireMailTrigger(env, parentMailAddress, {
+        messageId: "<child-workflow-tool-1@integration.interchange>",
+      });
+
+      const parentRunId = await waitForFirstRunId(
+        env,
+        parentWorkflowRunRepoId,
+        {
+          diagnostics: env.sidecarDiagnostics,
+          timeoutMs: 20_000,
+        },
+      );
+
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            TOOL_PARENT_DEPLOYMENT_ID,
+            parentRunId,
+          );
+          return events.some((e) => e.type === "ChildSpawned");
+        },
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+      );
+
+      const parentEvents = await readWorkflowRunEvents(
+        env,
+        TOOL_PARENT_DEPLOYMENT_ID,
+        parentRunId,
+      );
+      const spawnedEvent = parentEvents.find((e) => e.type === "ChildSpawned");
+      if (spawnedEvent === undefined) throw new Error("unreachable");
+      const childRunId = spawnedEvent.body["childRunId"];
+      if (typeof childRunId !== "string") {
+        throw new Error(
+          `ChildSpawned is missing a string childRunId; got ${typeof childRunId}`,
+        );
+      }
+
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            TOOL_PARENT_DEPLOYMENT_ID,
+            childRunId,
+          );
+          return events.some(
+            (e) =>
+              e.type === "StepCompleted" && e.body["stepId"] === "childStep",
+          );
+        },
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+      );
+
+      const childEvents = await readWorkflowRunEvents(
+        env,
+        TOOL_PARENT_DEPLOYMENT_ID,
+        childRunId,
+      );
+      const childStepCompleted = childEvents.find(
+        (e) => e.type === "StepCompleted" && e.body["stepId"] === "childStep",
+      );
+      // The reply lists the materialized tool name: the child ran a real
+      // tool-bearing agent. A toolless run would carry the bare
+      // "I see these tools:" prefix with no tool name.
+      const childReply = readStepReply(childStepCompleted);
+      expect(childReply).toContain(MAIL_TOOL_NAME);
+    }, 180_000);
+
     // Grandchild-depth recursion. The sidecar's `createSidecarRunChild`
     // wires the child env's `spawnChild` via `createInMemorySpawnChild`
     // against the same recursive `runChild`, so an in-process grandchild
@@ -570,8 +715,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // grandchild runs must have terminated too (the parent's
       // ChildCompleted only commits after the child returns terminal,
       // and the child's ChildCompleted likewise gates on the
-      // grandchild). Every rung fails loud at its leaf step (INTR-310),
-      // so the parent settles failed rather than completed.
+      // grandchild). Every rung runs a real agent at its leaf step, so
+      // each rung completes and the parent settles completed.
       await waitFor(
         async () => {
           const events = await readWorkflowRunEvents(
@@ -767,8 +912,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Wait for the parent run to terminate. Every sibling must terminate
       // before the parent's terminal lands because the runtime's spawn step
       // does not settle until the child's terminal status is committed.
-      // Each sibling fails loud at its leaf step (INTR-310), so the parent
-      // settles failed rather than completed.
+      // Each sibling runs a real agent at its leaf step, so it completes and
+      // the parent settles completed.
       await waitFor(
         async () => {
           const events = await readWorkflowRunEvents(
@@ -797,7 +942,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Each ChildSpawned must reference a distinct definitionRef and a
       // distinct childRunId; every ChildCompleted must reference one of
-      // those runIds with terminalStatus failed (the loud leaf failure).
+      // those runIds with terminalStatus completed (a real agent leaf).
       const spawnedRefs = new Set<string>();
       const spawnedRunIds = new Set<string>();
       for (const ev of spawnedEvents) {
