@@ -28,16 +28,16 @@ type Container = {
   children: Container[];
 };
 
-export function executeThread(
+export async function executeThread(
   mailboxName: string,
   store: MailboxStore,
   algorithm: "references" | "orderedsubject",
   query?: SearchQuery,
-): Thread[] {
+): Promise<Thread[]> {
   let messages: StoredMessage[];
 
   if (query !== undefined) {
-    const refs = executeSearch(mailboxName, store, query);
+    const refs = await executeSearch(mailboxName, store, query);
     const uidSet = new Set(refs.map((r) => r.uid));
     messages = store.messages.filter((m) => uidSet.has(m.uid));
   } else {

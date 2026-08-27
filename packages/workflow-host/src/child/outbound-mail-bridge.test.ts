@@ -60,6 +60,9 @@ function createSeededReader(): {
       dirty = true;
       return inner.append(raw, envelope, flags);
     },
+    readRaw(uid) {
+      return inner.readRaw(uid);
+    },
     find(uid) {
       return inner.find(uid);
     },

@@ -15,15 +15,20 @@ export type StoredEnvelope = {
 };
 
 /**
- * A single stored message. The `raw` field contains the complete RFC 2822
- * message bytes (headers + MIME body). All fetch operations parse from these
- * bytes, guaranteeing byte-exact signature verification.
+ * A single stored message's resident model: its uid, the IMAP counters, its
+ * flags, and the pre-parsed envelope. The complete RFC 2822 bytes are NOT
+ * resident here; they are read on demand through `MailboxStore.readRaw`, so a
+ * backing can bound its in-memory footprint to metadata and keep the raw bytes
+ * on disk (the substrate backing) or retain them itself (the in-memory
+ * backing). The projections that need the bytes -- `fetchFull`, `fetchPart`,
+ * `fetchStructure`, `fetchHeaders`, and the raw-scanning search predicates --
+ * route through `readRaw`, which returns the verbatim bytes so signature
+ * verification stays byte-exact.
  */
 export type StoredMessage = {
   uid: number;
   modseq: number;
   flags: Set<string>;
-  raw: Uint8Array;
   envelope: StoredEnvelope;
 };
 
@@ -31,7 +36,8 @@ export type StoredMessage = {
  * Storage-agnostic per-mailbox model. A backing owns how the message list and
  * the uid/modseq/uidValidity counters are stored; the pure query and
  * projection functions (search, thread, fetch, bodystructure, headers) read
- * the message snapshot the backing exposes through `messages`.
+ * the message snapshot the backing exposes through `messages`, and read a
+ * message's raw bytes on demand through `readRaw`.
  *
  * The counters follow IMAP semantics: `uidNext` is the UID that the next
  * `append` will assign (UIDNEXT), `highestModSeq` is the largest MODSEQ
@@ -46,9 +52,17 @@ export interface MailboxStore {
 
   /**
    * Store a message, assigning it the next UID and MODSEQ. Returns the
-   * assigned UID.
+   * assigned UID. The backing decides whether to retain `raw` in memory or
+   * persist it and serve it from disk through `readRaw`.
    */
   append(raw: Uint8Array, envelope: StoredEnvelope, flags: string[]): number;
+
+  /**
+   * Read a stored message's verbatim RFC 2822 bytes. Resolves the bytes from
+   * wherever the backing keeps them (memory or disk). Throws if no message has
+   * the given UID.
+   */
+  readRaw(uid: number): Promise<Uint8Array>;
 
   /** Locate a stored message by UID, or `undefined` if none matches. */
   find(uid: number): StoredMessage | undefined;
@@ -86,6 +100,11 @@ export const DEFAULT_MAILBOXES = [
  */
 export function createInMemoryMailboxStore(): MailboxStore {
   const messages: StoredMessage[] = [];
+  // The in-memory backing is its own durable store, so it legitimately retains
+  // every message's raw bytes. `readRaw` returns them; the metadata mirror in
+  // `messages` stays free of the bytes so the read model matches the
+  // disk-backed backing.
+  const rawByUid = new Map<number, Uint8Array>();
   let uidCounter = 1;
   let modseqCounter = 1;
   const uidValidity = Date.now();
@@ -116,8 +135,16 @@ export function createInMemoryMailboxStore(): MailboxStore {
     append(raw, envelope, flags) {
       const uid = uidCounter++;
       const modseq = modseqCounter++;
-      messages.push({ uid, modseq, flags: new Set(flags), raw, envelope });
+      messages.push({ uid, modseq, flags: new Set(flags), envelope });
+      rawByUid.set(uid, raw);
       return uid;
+    },
+    readRaw(uid) {
+      const raw = rawByUid.get(uid);
+      if (raw === undefined) {
+        return Promise.reject(new Error(`Message UID ${uid} not found`));
+      }
+      return Promise.resolve(raw);
     },
     find,
     addFlags(uid, flags) {
@@ -142,6 +169,7 @@ export function createInMemoryMailboxStore(): MailboxStore {
         throw new Error(`Message UID ${uid} not found`);
       }
       messages.splice(idx, 1);
+      rawByUid.delete(uid);
     },
   };
 }

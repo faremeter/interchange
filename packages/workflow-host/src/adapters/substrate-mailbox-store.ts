@@ -1,13 +1,20 @@
 // Workflow-run-substrate backing for the `@intx/mailbox` `MailboxStore`.
 //
-// The `MailboxStore` surface is SYNCHRONOUS, but the workflow-run substrate is
-// an async git store. This backing follows the shape of an IMAP client with a
-// local cache: the async `createSubstrateMailboxStore` factory loads the
-// committed `mailbox/INBOX/` subtree into an in-memory mirror on open, exposes
-// the synchronous `MailboxStore` surface over that mirror, and persists the
-// current state back to the substrate through `flush`. Callers mutate
-// synchronously (append / addFlags / removeFlags / remove) and `await flush()`
-// at a boundary.
+// The `MailboxStore` mutation surface is SYNCHRONOUS, but the workflow-run
+// substrate is an async git store. This backing follows the shape of an IMAP
+// client with a local cache: the async `createSubstrateMailboxStore` factory
+// loads the committed `mailbox/INBOX/` METADATA (`index.json`) into an
+// in-memory mirror on open, exposes the synchronous mutation surface over that
+// mirror, and persists the current state back to the substrate through
+// `flush`. Callers mutate synchronously (append / addFlags / removeFlags /
+// remove) and `await flush()` at a boundary.
+//
+// The per-message raw RFC 2822 bytes are NOT loaded on open and are NOT held
+// resident: `readRaw(uid)` reads a message's `<uid>.eml` blob on demand from
+// the committed-read snapshot the open pinned. The only raw this backing keeps
+// in memory is that of a message appended-but-not-yet-flushed; a successful
+// `flush` drops it. So the resident footprint of a long-lived warm mailbox is
+// bounded to metadata regardless of how much mail it has accumulated.
 //
 // On-disk layout, a top-level subtree of the workflow-run repo (one mailbox per
 // deployment repo):
@@ -220,29 +227,52 @@ function emlName(uid: number): string {
   return `${String(uid)}${MAILBOX_EML_SUFFIX}`;
 }
 
+/**
+ * A pinned committed-read snapshot of the repo the store opened against, the
+ * source `readRaw` resolves a live message's `<uid>.eml` from. `null` when the
+ * repo, ref, or subtree did not exist at open.
+ */
+type CommittedReads = Awaited<
+  ReturnType<SubstrateRepoStore["openCommittedReads"]>
+>;
+
 type LoadedState = {
   uidValidity: number;
   uidNext: number;
   highestModSeq: number;
   messages: StoredMessage[];
   expunged: ExpungedRecord[];
+  /**
+   * The pinned committed-read snapshot opened at load, retained so `readRaw`
+   * can resolve a message's `<uid>.eml` blob on demand without re-opening.
+   */
+  reads: CommittedReads;
+  /** The `<uid>.eml` object id per committed uid, for `readRaw`. */
+  oidByUid: Map<number, string>;
 };
 
 /**
- * Load the committed `mailbox/INBOX/` subtree into an in-memory state, or the
+ * Load the committed `mailbox/INBOX/` METADATA into an in-memory state, or the
  * empty state (a fresh `uidValidity`) when the repo, the ref, or the subtree
- * does not yet exist. Every read resolves against the committed object store,
- * so an open observes committed state even when the working tree lags.
+ * does not yet exist. Only `index.json` is read; the per-message `<uid>.eml`
+ * blobs stay on disk and are read lazily by `readRaw`, so an open's resident
+ * footprint is bounded to metadata regardless of mailbox size. The committed
+ * read snapshot and the uid->oid map are retained so `readRaw` resolves a
+ * blob against the same pinned commit the open observed. Every read resolves
+ * against the committed object store, so an open observes committed state even
+ * when the working tree lags.
  */
 async function loadCommittedState(
   opts: SubstrateMailboxStoreOpts,
 ): Promise<LoadedState> {
-  const empty = (): LoadedState => ({
+  const empty = (reads: CommittedReads): LoadedState => ({
     uidValidity: Date.now(),
     uidNext: 1,
     highestModSeq: 0,
     messages: [],
     expunged: [],
+    reads,
+    oidByUid: new Map(),
   });
 
   const reads = await opts.substrate.openCommittedReads(
@@ -250,13 +280,13 @@ async function loadCommittedState(
     opts.repoId,
     opts.ref,
   );
-  if (reads === null) return empty();
+  if (reads === null) return empty(reads);
 
   const entries = await reads.listDir(MAILBOX_INBOX_DIR_PATH);
   const indexEntry = entries.find(
     (e) => e.name === MAILBOX_INDEX_FILE && e.type === "blob",
   );
-  if (indexEntry === undefined) return empty();
+  if (indexEntry === undefined) return empty(reads);
 
   const indexBytes = await reads.readBlobByOid(indexEntry.oid);
   let parsedJson: unknown;
@@ -282,6 +312,7 @@ async function loadCommittedState(
   );
 
   const messages: StoredMessage[] = [];
+  const oidByUid = new Map<number, string>();
   for (const entry of index.messages) {
     const oid = emlByName.get(emlName(entry.uid));
     if (oid === undefined) {
@@ -291,12 +322,13 @@ async function loadCommittedState(
         )} but ${MAILBOX_INBOX_PREFIX}${emlName(entry.uid)} is absent`,
       );
     }
-    const raw = await reads.readBlobByOid(oid);
+    // The blob's presence is asserted by its object id; its bytes are not read
+    // here -- `readRaw` reads them on demand.
+    oidByUid.set(entry.uid, oid);
     messages.push({
       uid: entry.uid,
       modseq: entry.modseq,
       flags: new Set(entry.flags),
-      raw,
       envelope: deserializeEnvelope(entry.envelope),
     });
   }
@@ -307,6 +339,8 @@ async function loadCommittedState(
     highestModSeq: index.highestModSeq,
     messages,
     expunged: index.expunged.map((e) => ({ uid: e.uid, modseq: e.modseq })),
+    reads,
+    oidByUid,
   };
 }
 
@@ -324,6 +358,8 @@ export async function createSubstrateMailboxStore(
   const messages = state.messages;
   const expunged = state.expunged;
   const uidValidity = state.uidValidity;
+  const reads = state.reads;
+  const oidByUid = state.oidByUid;
   let uidCounter = state.uidNext;
   // The next modseq to assign. `highestModSeq` is the largest assigned, so the
   // next is one past it; a fresh mailbox (highestModSeq 0) starts at 1.
@@ -333,10 +369,15 @@ export async function createSubstrateMailboxStore(
   // Delta tracking for `flush`. `index.json` changes on every mutation, so it
   // is put unconditionally; each `<uid>.eml` is immutable and written once, so
   // a flush need only put the blobs appended since the last successful flush
-  // and delete the blobs whose message was removed since then. Both sets clear
-  // on a successful flush; a flush that throws leaves them intact so the next
-  // flush re-attempts the same delta.
-  const appendedSinceFlush = new Set<number>();
+  // and delete the blobs whose message was removed since then. The removed set
+  // clears on a successful flush; a flush that throws leaves it intact so the
+  // next flush re-attempts the same delta.
+  //
+  // `pendingRawByUid` holds the raw bytes of appended-but-not-yet-flushed
+  // messages -- the only raw this backing keeps resident. It doubles as the
+  // "appended since flush" set: `flush` puts each entry's blob, then drops it
+  // so a flushed message's bytes leave memory and are read from disk on demand.
+  const pendingRawByUid = new Map<number, Uint8Array>();
   const removedSinceFlush = new Set<number>();
 
   function find(uid: number): StoredMessage | undefined {
@@ -378,16 +419,10 @@ export async function createSubstrateMailboxStore(
         JSON.stringify(index),
       ),
     };
-    for (const uid of appendedSinceFlush) {
-      const msg = find(uid);
-      if (msg === undefined) {
-        throw new Error(
-          `substrate mailbox store: flush cannot persist uid ${String(
-            uid,
-          )}: no live message holds its raw bytes`,
-        );
-      }
-      puts[`${MAILBOX_INBOX_PREFIX}${emlName(uid)}`] = msg.raw;
+    const flushedUids: number[] = [];
+    for (const [uid, raw] of pendingRawByUid) {
+      puts[`${MAILBOX_INBOX_PREFIX}${emlName(uid)}`] = raw;
+      flushedUids.push(uid);
     }
     const deletes = Array.from(
       removedSinceFlush,
@@ -399,7 +434,15 @@ export async function createSubstrateMailboxStore(
       changedPathPrefixes: new Set([MAILBOX_INBOX_PREFIX]),
       message: `persist mailbox INBOX (${String(messages.length)} message(s))`,
     });
-    appendedSinceFlush.clear();
+    // The appended blobs are now committed, so their raw leaves memory: a later
+    // `readRaw` reads them from disk. Their object ids are not recorded here
+    // (the pinned committed-read snapshot predates this commit), so `readRaw`
+    // resolves a post-open append only while its raw is still pending; the
+    // long-lived writer never reads its own appends back, and every reader
+    // opens a fresh snapshot that sees the committed blob.
+    for (const uid of flushedUids) {
+      pendingRawByUid.delete(uid);
+    }
     removedSinceFlush.clear();
     dirty = false;
   }
@@ -449,10 +492,29 @@ export async function createSubstrateMailboxStore(
     append(raw, envelope, flags) {
       const uid = uidCounter++;
       const modseq = modseqCounter++;
-      messages.push({ uid, modseq, flags: new Set(flags), raw, envelope });
-      appendedSinceFlush.add(uid);
+      messages.push({ uid, modseq, flags: new Set(flags), envelope });
+      pendingRawByUid.set(uid, raw);
       dirty = true;
       return uid;
+    },
+    async readRaw(uid) {
+      if (find(uid) === undefined) {
+        throw new Error(`Message UID ${String(uid)} not found`);
+      }
+      // An appended-but-not-yet-flushed message keeps its raw in memory; a
+      // flushed or previously-committed message reads its blob from the pinned
+      // committed-read snapshot on demand.
+      const pending = pendingRawByUid.get(uid);
+      if (pending !== undefined) return pending;
+      const oid = oidByUid.get(uid);
+      if (oid === undefined || reads === null) {
+        throw new Error(
+          `substrate mailbox store: no committed blob for message uid ${String(
+            uid,
+          )}; its raw bytes are not resolvable from this snapshot`,
+        );
+      }
+      return reads.readBlobByOid(oid);
     },
     find,
     addFlags(uid, flags) {
@@ -485,11 +547,11 @@ export async function createSubstrateMailboxStore(
       // backing does, because it must answer QRESYNC across reopens.
       expunged.push({ uid, modseq: modseqCounter++ });
       // A message appended and removed within the same flush window was never
-      // committed, so its `.eml` must be neither put nor deleted: drop it from
-      // the append set. Otherwise the blob is already committed and the next
-      // flush deletes it.
-      if (appendedSinceFlush.has(uid)) {
-        appendedSinceFlush.delete(uid);
+      // committed, so its `.eml` must be neither put nor deleted: drop its
+      // pending raw. Otherwise the blob is already committed and the next flush
+      // deletes it.
+      if (pendingRawByUid.has(uid)) {
+        pendingRawByUid.delete(uid);
       } else {
         removedSinceFlush.add(uid);
       }

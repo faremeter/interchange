@@ -206,7 +206,7 @@ export function createSupervisorBackedTransport(
       const { reader } = requireInbound("search");
       requireInbox(mailbox);
       const store = await reader.open();
-      return executeSearch(mailbox, store, query);
+      return await executeSearch(mailbox, store, query);
     },
     async thread(
       mailbox: string,
@@ -217,7 +217,7 @@ export function createSupervisorBackedTransport(
       const { reader } = requireInbound("thread");
       requireInbox(mailbox);
       const store = await reader.open();
-      return executeThread(mailbox, store, algorithm, query);
+      return await executeThread(mailbox, store, algorithm, query);
     },
     async fetchHeaders(
       ref: MessageRef,
@@ -226,7 +226,7 @@ export function createSupervisorBackedTransport(
       const { reader } = requireInbound("fetchHeaders");
       requireInbox(ref.mailbox);
       const store = await reader.open();
-      return doFetchHeaders(ref, store);
+      return await doFetchHeaders(ref, store);
     },
     async fetchStructure(
       ref: MessageRef,
@@ -235,7 +235,7 @@ export function createSupervisorBackedTransport(
       const { reader } = requireInbound("fetchStructure");
       requireInbox(ref.mailbox);
       const store = await reader.open();
-      return doFetchStructure(ref, store);
+      return await doFetchStructure(ref, store);
     },
     async fetchPart(
       ref: MessageRef,
@@ -245,7 +245,7 @@ export function createSupervisorBackedTransport(
       const { reader } = requireInbound("fetchPart");
       requireInbox(ref.mailbox);
       const store = await reader.open();
-      return doFetchPart(ref, partPath, store);
+      return await doFetchPart(ref, partPath, store);
     },
     async fetchFull(
       ref: MessageRef,
@@ -254,7 +254,7 @@ export function createSupervisorBackedTransport(
       const { reader, getCrypto } = requireInbound("fetchFull");
       requireInbox(ref.mailbox);
       const store = await reader.open();
-      return doFetchFull(ref, store, getCrypto);
+      return await doFetchFull(ref, store, getCrypto);
     },
 
     async setFlags(

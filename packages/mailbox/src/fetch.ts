@@ -31,27 +31,32 @@ const MessagePayload = type({
 });
 
 /**
- * Parse raw RFC 2822 headers from a stored message.
+ * Parse the full RFC 2822 headers of a stored message. Reads the message's raw
+ * bytes on demand: the parsed set is a superset of the pre-parsed envelope (it
+ * carries `cc`, `mimeVersion`, trace headers, ...), so it cannot be served from
+ * the envelope metadata alone.
  */
-export function fetchHeaders(
+export async function fetchHeaders(
   ref: MessageRef,
   store: MailboxStore,
-): MessageHeaders {
-  const msg = requireMessage(store, ref.uid, ref.mailbox);
-  const { headers } = parseHeaderSection(msg.raw);
+): Promise<MessageHeaders> {
+  requireMessage(store, ref.uid, ref.mailbox);
+  const raw = await store.readRaw(ref.uid);
+  const { headers } = parseHeaderSection(raw);
   return buildMessageHeaders(headers);
 }
 
 /**
  * Compute the MIME tree structure (BODYSTRUCTURE) without transferring content.
  */
-export function fetchStructure(
+export async function fetchStructure(
   ref: MessageRef,
   store: MailboxStore,
-): BodyStructure {
-  const msg = requireMessage(store, ref.uid, ref.mailbox);
-  const { headers, bodyOffset } = parseHeaderSection(msg.raw);
-  const body = msg.raw.slice(bodyOffset);
+): Promise<BodyStructure> {
+  requireMessage(store, ref.uid, ref.mailbox);
+  const raw = await store.readRaw(ref.uid);
+  const { headers, bodyOffset } = parseHeaderSection(raw);
+  const body = raw.slice(bodyOffset);
   const contentType = headers.get("content-type") ?? "application/octet-stream";
   return buildStructure(body, contentType);
 }
@@ -59,13 +64,14 @@ export function fetchStructure(
 /**
  * Fetch a single MIME part by dot-separated path.
  */
-export function fetchPart(
+export async function fetchPart(
   ref: MessageRef,
   partPath: string,
   store: MailboxStore,
-): MessagePart {
-  const msg = requireMessage(store, ref.uid, ref.mailbox);
-  const partBytes = extractPartByPath(msg.raw, partPath);
+): Promise<MessagePart> {
+  requireMessage(store, ref.uid, ref.mailbox);
+  const raw = await store.readRaw(ref.uid);
+  const partBytes = extractPartByPath(raw, partPath);
   const part = parseMimePart(partBytes);
 
   const enc = part.headers.get("content-transfer-encoding") ?? "7bit";
@@ -96,7 +102,8 @@ export async function fetchFull(
   getCrypto: (fromAddress: string) => CryptoProvider | undefined,
 ): Promise<InboundMessage> {
   const msg = requireMessage(store, ref.uid, ref.mailbox);
-  const { headers } = parseHeaderSection(msg.raw);
+  const raw = await store.readRaw(ref.uid);
+  const { headers } = parseHeaderSection(raw);
   const parsedHeaders = buildMessageHeaders(headers);
 
   const rawType = parsedHeaders.interchangeType;
@@ -107,7 +114,7 @@ export async function fetchFull(
     rawType === undefined;
 
   const signatureStatus = await verifyMessageSignature(
-    msg.raw,
+    raw,
     parsedHeaders.from,
     getCrypto,
   );
@@ -121,11 +128,11 @@ export async function fetchFull(
 
   try {
     if (isConversation) {
-      const part1 = parseMimePart(extractPartByPath(msg.raw, "1"));
+      const part1 = parseMimePart(extractPartByPath(raw, "1"));
       const part1Mime = part1.contentType.split(";")[0]!.trim().toLowerCase();
       if (part1Mime.startsWith("multipart/")) {
         // Conversation shape: multipart/mixed with the text body at 1.1.
-        const textPart = parseMimePart(extractPartByPath(msg.raw, "1.1"));
+        const textPart = parseMimePart(extractPartByPath(raw, "1.1"));
         result.content = new TextDecoder("utf-8", { fatal: false }).decode(
           textPart.body,
         );
@@ -144,7 +151,7 @@ export async function fetchFull(
       // Structured messages carry their JSON payload at 1.1. Attachments on
       // structured messages are intentionally not parsed: they have no
       // producer today, so parsing them would handle a shape nobody sends.
-      const part11Bytes = extractPartByPath(msg.raw, "1.1");
+      const part11Bytes = extractPartByPath(raw, "1.1");
       const part11 = parseMimePart(part11Bytes);
       const jsonText = new TextDecoder("utf-8", { fatal: false }).decode(
         part11.body,
@@ -162,7 +169,7 @@ export async function fetchFull(
   // Attachment parsing is deliberately outside the catch above: a malformed
   // attachment must surface as a thrown error, not be silently dropped.
   if (isConversation) {
-    const attachments = extractAttachments(msg.raw);
+    const attachments = extractAttachments(raw);
     if (attachments.length > 0) {
       result.attachments = attachments;
     }
