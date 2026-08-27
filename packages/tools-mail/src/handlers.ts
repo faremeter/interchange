@@ -148,6 +148,15 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
       to: parentHeaders.from,
       type: args.type ?? "conversation.message",
       inReplyTo: parentHeaders.messageId,
+      // The full RFC 5322 References chain for a reply is the parent's own
+      // References plus the parent's Message-Id. The parent is in hand here
+      // (fetched above for its threading headers), so build the complete
+      // ancestry rather than leaving the transport to derive a single-element
+      // chain from inReplyTo alone.
+      references: [
+        ...(parentHeaders.references ?? []),
+        parentHeaders.messageId,
+      ],
     };
 
     // Carry forward the subject if available.
@@ -161,10 +170,6 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
     if (payload !== undefined) {
       outbound.payload = payload;
     }
-
-    // OutboundMessage does not carry a References field; the transport
-    // builds the threading chain from inReplyTo when delivering the
-    // reply.
 
     let receipt;
     try {

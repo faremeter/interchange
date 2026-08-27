@@ -813,3 +813,96 @@ describe("deliver", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// References chain on send (INTR-480)
+// ---------------------------------------------------------------------------
+
+describe("References chain on send", () => {
+  test("ships the full References chain a reply carries", async () => {
+    // A threaded reply supplies the parent's own References plus the parent's
+    // Message-Id as `references`; the send path ships that full chain rather
+    // than deriving a single-element `[inReplyTo]`.
+    const { alphaTransport, betaTransport } = await createTestTransport();
+
+    const root = generateMessageId("root@test.interchange");
+    const parent = generateMessageId("parent@test.interchange");
+
+    await alphaTransport.send({
+      to: "beta@test.interchange",
+      type: "conversation.message",
+      content: "full chain reply",
+      inReplyTo: parent,
+      references: [root, parent],
+    });
+
+    const refs = await betaTransport.search("INBOX", {});
+    const headers = await betaTransport.fetchHeaders(refs[0]!);
+    // The chain already ends with the parent (== inReplyTo), so it is not
+    // duplicated.
+    expect(headers.references).toEqual([root, parent]);
+    expect(headers.inReplyTo).toBe(parent);
+  });
+
+  test("appends inReplyTo when it is not already the tail of references", async () => {
+    const { alphaTransport, betaTransport } = await createTestTransport();
+
+    const a = generateMessageId("a@test.interchange");
+    const b = generateMessageId("b@test.interchange");
+    const parent = generateMessageId("parent@test.interchange");
+
+    await alphaTransport.send({
+      to: "beta@test.interchange",
+      type: "conversation.message",
+      content: "append tail",
+      inReplyTo: parent,
+      references: [a, b],
+    });
+
+    const refs = await betaTransport.search("INBOX", {});
+    const headers = await betaTransport.fetchHeaders(refs[0]!);
+    expect(headers.references).toEqual([a, b, parent]);
+  });
+
+  test("filters non-RFC identifiers out of the References header", async () => {
+    // Inbound mail can carry a headerless-derived Message-Id that is a valid
+    // claim-check key but not an RFC `<id@host>` identifier. Such a value must
+    // not leak into the emitted References header.
+    const { alphaTransport, betaTransport } = await createTestTransport();
+
+    const root = generateMessageId("root@test.interchange");
+    const parent = generateMessageId("parent@test.interchange");
+    const nonRfc = "sha256:deadbeefcafef00d";
+
+    await alphaTransport.send({
+      to: "beta@test.interchange",
+      type: "conversation.message",
+      content: "filtered chain",
+      inReplyTo: parent,
+      references: [root, nonRfc, parent],
+    });
+
+    const refs = await betaTransport.search("INBOX", {});
+    const headers = await betaTransport.fetchHeaders(refs[0]!);
+    expect(headers.references).toEqual([root, parent]);
+  });
+
+  test("derives a single-element chain when no references are supplied", async () => {
+    // A bare reply (inReplyTo only, no references) keeps the pre-existing
+    // single-element behavior.
+    const { alphaTransport, betaTransport } = await createTestTransport();
+
+    const parent = generateMessageId("parent@test.interchange");
+
+    await alphaTransport.send({
+      to: "beta@test.interchange",
+      type: "conversation.message",
+      content: "bare reply",
+      inReplyTo: parent,
+    });
+
+    const refs = await betaTransport.search("INBOX", {});
+    const headers = await betaTransport.fetchHeaders(refs[0]!);
+    expect(headers.references).toEqual([parent]);
+  });
+});

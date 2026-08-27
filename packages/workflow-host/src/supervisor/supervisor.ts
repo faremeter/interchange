@@ -4318,6 +4318,7 @@ function outboundMessageFromPayload(
   if (payload.payload !== undefined) message.payload = payload.payload;
   if (payload.summary !== undefined) message.summary = payload.summary;
   if (payload.inReplyTo !== undefined) message.inReplyTo = payload.inReplyTo;
+  if (payload.references !== undefined) message.references = payload.references;
   if (payload.correlationId !== undefined) {
     message.correlationId = payload.correlationId;
   }

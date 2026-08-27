@@ -8,6 +8,7 @@ import {
   assembleSignedContent,
   assembleMessage,
   generateMessageId,
+  isMessageId,
   parseHeaderSection,
   createDetachedSignatureFromProvider,
   type MessageHeaders as MimeMessageHeaders,
@@ -156,7 +157,7 @@ export async function executeSend(
 
   const ccAddresses = ccAddressList.length > 0 ? ccAddressList : undefined;
 
-  const refs = buildReferences(message.inReplyTo, undefined);
+  const refs = buildReferences(message.inReplyTo, message.references);
 
   const mimeHeaders: MimeMessageHeaders = {
     from: senderAddress,
@@ -279,12 +280,28 @@ export async function executeSend(
   };
 }
 
+/**
+ * Assemble the wire `References` chain for an outbound message.
+ *
+ * When the caller supplies a full ancestry (`existingReferences` -- the
+ * parent's References plus the parent's Message-Id, built by the threaded
+ * reply path), that chain is used and `inReplyTo` is appended only when it is
+ * not already the tail. Otherwise the chain is derived from `inReplyTo` alone,
+ * preserving the pre-existing single-element behavior.
+ *
+ * The caller-supplied chain is filtered to RFC 2822 message identifiers:
+ * inbound mail can carry a headerless-derived (sha256) or otherwise malformed
+ * Message-Id that is a valid claim-check key but not a valid `<id@host>`
+ * identifier, and such a value must not leak into a `References` header. The
+ * `inReplyTo` value is appended without filtering, matching the pre-existing
+ * `In-Reply-To`/`References` behavior for a bare reply.
+ */
 function buildReferences(
   inReplyTo: string | undefined,
   existingReferences: string[] | undefined,
 ): string[] | undefined {
-  if (inReplyTo === undefined) return existingReferences;
-  const refs = existingReferences ?? [];
+  const refs = (existingReferences ?? []).filter(isMessageId);
+  if (inReplyTo === undefined) return refs.length > 0 ? refs : undefined;
   if (!refs.includes(inReplyTo)) {
     return [...refs, inReplyTo];
   }

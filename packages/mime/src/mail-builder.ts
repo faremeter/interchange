@@ -294,6 +294,7 @@ export type CreateOutboundMessageOpts = {
   summary?: string;
 
   inReplyTo?: string;
+  references?: string[];
   correlationId?: string;
   sessionId?: string;
   tenantId?: string;
@@ -346,6 +347,16 @@ export function createOutboundMessage(
   if (opts.inReplyTo !== undefined) {
     validateMessageId(opts.inReplyTo, "inReplyTo", fn);
   }
+  if (opts.references !== undefined) {
+    if (opts.references.length === 0) {
+      throw new Error(
+        `${fn}: \`references\`, when provided, must contain at least one entry`,
+      );
+    }
+    opts.references.forEach((ref, i) => {
+      validateMessageId(ref, `references[${i}]`, fn);
+    });
+  }
   rejectEmptyStringIfPresent(opts.content, "content", fn);
   rejectEmptyStringIfPresent(opts.subject, "subject", fn);
   rejectEmptyStringIfPresent(opts.summary, "summary", fn);
@@ -363,6 +374,7 @@ export function createOutboundMessage(
     result.attachments = opts.attachments;
   }
   if (opts.inReplyTo !== undefined) result.inReplyTo = opts.inReplyTo;
+  if (opts.references !== undefined) result.references = opts.references;
   if (opts.correlationId !== undefined) {
     result.correlationId = opts.correlationId;
   }

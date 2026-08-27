@@ -149,6 +149,7 @@ export const OutboundMessagePayload = type({
   "summary?": "string",
   "attachments?": OutboundAttachmentPayload.array(),
   "inReplyTo?": "string",
+  "references?": "string[]",
   "correlationId?": "string",
   "sessionId?": "string",
   "tenantId?": "string",

@@ -257,6 +257,36 @@ describe("createChildOutboundMailBridge", () => {
     expect(bridge.pendingCount).toBe(0);
   });
 
+  test("projects the References chain through the wire", async () => {
+    const sender = createCapturingSender();
+    const bridge = createChildOutboundMailBridge({
+      upstreamSender: sender,
+      allocateRequestId: () => "rid-refs",
+    });
+    void bridge.submit("agent@example.com", {
+      to: "recipient@example.com",
+      type: "conversation.message",
+      content: "threaded reply",
+      inReplyTo: "<parent@example.com>",
+      references: [
+        "<root@example.com>",
+        "<mid@example.com>",
+        "<parent@example.com>",
+      ],
+    });
+    const frame = sender.sent[0];
+    if (frame === undefined) throw new Error("no frame emitted");
+    expect(frame.message.inReplyTo).toBe("<parent@example.com>");
+    expect(frame.message.references).toEqual([
+      "<root@example.com>",
+      "<mid@example.com>",
+      "<parent@example.com>",
+    ]);
+    // The projected frame validates against the canonical control payload.
+    const validated = ControlPayload({ type: "outbound.message", data: frame });
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
   test("base64-roundtrips attachment bytes through the wire projection", async () => {
     const sender = createCapturingSender();
     const bridge = createChildOutboundMailBridge({

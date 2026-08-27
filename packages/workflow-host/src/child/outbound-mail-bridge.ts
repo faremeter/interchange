@@ -173,6 +173,7 @@ function projectOutboundMessage(
   if (message.payload !== undefined) payload.payload = message.payload;
   if (message.summary !== undefined) payload.summary = message.summary;
   if (message.inReplyTo !== undefined) payload.inReplyTo = message.inReplyTo;
+  if (message.references !== undefined) payload.references = message.references;
   if (message.correlationId !== undefined) {
     payload.correlationId = message.correlationId;
   }
