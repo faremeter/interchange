@@ -67,6 +67,7 @@ function testProvisioner(
     id: "test",
     apiVersion: 1,
     bindingFingerprint: "test:v1",
+    capabilities: [],
     async ensure() {
       return { kind: "accepted" };
     },
@@ -91,6 +92,7 @@ function deps(args: {
     plugins: {
       getDefaultProvisioner: () => provisioner,
       getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
+      selectProvisioner: () => ({ ok: true, provisioner }),
     },
     router: {
       fenceAllocation(id, generation) {

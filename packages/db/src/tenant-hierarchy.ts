@@ -1,4 +1,7 @@
+import { type } from "arktype";
 import { eq, inArray } from "drizzle-orm";
+
+import { TenantConfig, type TenantSidecarCapabilityPolicy } from "@intx/types";
 
 import type { DB } from "./client";
 import { tenant } from "./schema/tenants";
@@ -37,6 +40,35 @@ export async function getAncestorChain(
   }
 
   return chain;
+}
+
+export async function resolveTenantSidecarCapabilityPolicies(
+  db: DB["db"],
+  tenantId: string,
+): Promise<readonly TenantSidecarCapabilityPolicy[]> {
+  const chain = await getAncestorChain(db, tenantId);
+  const rows = await db.query.tenant.findMany({
+    where: inArray(tenant.id, chain),
+    columns: { id: true, config: true },
+  });
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+  const policies: TenantSidecarCapabilityPolicy[] = [];
+  for (const ancestorId of chain) {
+    const row = rowsById.get(ancestorId);
+    if (row === undefined) continue;
+    if (row.config === null) continue;
+    const config = TenantConfig(row.config);
+    if (config instanceof type.errors) {
+      throw new Error(
+        `Tenant ${row.id} has invalid configuration: ${config.summary}`,
+      );
+    }
+    const rules = config.sidecarPlacement?.capabilities;
+    if (rules !== undefined && rules.length > 0) {
+      policies.push({ tenantId: row.id, rules });
+    }
+  }
+  return policies;
 }
 
 /**

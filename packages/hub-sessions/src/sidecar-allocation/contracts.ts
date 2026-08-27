@@ -1,5 +1,7 @@
 import { type } from "arktype";
 
+import type { SidecarCapabilityDeclaration } from "@intx/types";
+
 export type EnsureSidecarRequest = {
   readonly allocationId: string;
   readonly generation: number;
@@ -48,6 +50,7 @@ export interface SidecarProvisioner {
   readonly apiVersion: 1;
   /** Stable, non-secret identity for the backend configuration. */
   readonly bindingFingerprint: string;
+  readonly capabilities: readonly SidecarCapabilityDeclaration[];
   /**
    * Converges infrastructure for this generation. Implementations must be
    * idempotent and reject generations older than one they have observed.

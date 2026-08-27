@@ -1,9 +1,36 @@
+import { type } from "arktype";
+
+import { SidecarCapabilityDeclaration } from "@intx/types";
+
 import type { SidecarProvisioner } from "./contracts";
+import {
+  matchSidecarCapabilityPolicy,
+  type EffectiveSidecarCapabilityPolicy,
+  type SidecarCapabilityMismatch,
+} from "./capability-policy";
+
+export type SidecarProvisionerSelection =
+  | { readonly ok: true; readonly provisioner: SidecarProvisioner }
+  | {
+      readonly ok: false;
+      readonly reason: "no_match";
+      readonly mismatches: Readonly<
+        Record<string, readonly SidecarCapabilityMismatch[]>
+      >;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "ambiguous";
+      readonly provisionerIds: readonly string[];
+    };
 
 export type SidecarPluginRegistry = {
   getDefaultProvisioner(): SidecarProvisioner | null;
   /** Missing plugins return null so reconciliation can stop fail-closed. */
   getProvisioner(id: string): SidecarProvisioner | null;
+  selectProvisioner(
+    policy: EffectiveSidecarCapabilityPolicy,
+  ): SidecarProvisionerSelection;
 };
 
 export type CreateSidecarPluginRegistryOpts = {
@@ -26,6 +53,14 @@ export function createSidecarPluginRegistry({
     if (provisioner.bindingFingerprint.trim() === "") {
       throw new Error(
         `Sidecar provisioner ${provisioner.id} requires a binding fingerprint`,
+      );
+    }
+    const capabilities = SidecarCapabilityDeclaration.array()(
+      provisioner.capabilities,
+    );
+    if (capabilities instanceof type.errors) {
+      throw new Error(
+        `Invalid capability declarations on sidecar provisioner ${provisioner.id}: ${capabilities.summary}`,
       );
     }
     if (provisionersById.has(provisioner.id)) {
@@ -51,6 +86,45 @@ export function createSidecarPluginRegistry({
     },
     getProvisioner(id) {
       return provisionersById.get(id) ?? null;
+    },
+    selectProvisioner(policy) {
+      const eligible: SidecarProvisioner[] = [];
+      const mismatches: Record<string, readonly SidecarCapabilityMismatch[]> =
+        {};
+      for (const provisioner of provisionersById.values()) {
+        const match = matchSidecarCapabilityPolicy(
+          policy,
+          provisioner.capabilities,
+        );
+        if (match.ok) {
+          eligible.push(provisioner);
+        } else {
+          mismatches[provisioner.id] = match.mismatches;
+        }
+      }
+
+      const preferred =
+        defaultProvisionerId === undefined
+          ? null
+          : (provisionersById.get(defaultProvisionerId) ?? null);
+      if (preferred !== null && eligible.includes(preferred)) {
+        return { ok: true, provisioner: preferred };
+      }
+      if (eligible.length === 1) {
+        const provisioner = eligible[0];
+        if (provisioner === undefined) {
+          throw new Error("Eligible provisioner disappeared during selection");
+        }
+        return { ok: true, provisioner };
+      }
+      if (eligible.length === 0) {
+        return { ok: false, reason: "no_match", mismatches };
+      }
+      return {
+        ok: false,
+        reason: "ambiguous",
+        provisionerIds: eligible.map(({ id }) => id).sort(),
+      };
     },
   };
 }
