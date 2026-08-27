@@ -657,7 +657,9 @@ describe("mailbox management", () => {
     expect(refs.length).toBe(1);
 
     await betaTransport.setFlags(refs[0]!, ["\\Deleted"]);
-    await betaTransport.expunge("INBOX");
+    const { expungedUids } = await betaTransport.expunge("INBOX");
+    // The sweep reports which uids it removed.
+    expect(expungedUids).toEqual([refs[0]!.uid]);
 
     const remaining = await betaTransport.search("INBOX", {});
     expect(remaining.length).toBe(0);

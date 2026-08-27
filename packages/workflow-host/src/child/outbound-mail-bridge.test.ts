@@ -16,6 +16,7 @@ import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
 import type {
   ChildMailboxMutationBridge,
   MailboxMutation,
+  MailboxMutationResult,
 } from "./mailbox-mutation-bridge";
 import type { ChildMailboxReader } from "./child-mailbox-reader";
 import type {
@@ -157,7 +158,9 @@ function makeBridge() {
  * resolves immediately, so a transport test asserts the routed write without a
  * live supervisor.
  */
-function createRecordingMutationBridge(): ChildMailboxMutationBridge & {
+function createRecordingMutationBridge(
+  result: MailboxMutationResult = {},
+): ChildMailboxMutationBridge & {
   submitted: MailboxMutation[];
 } {
   const submitted: MailboxMutation[] = [];
@@ -165,7 +168,7 @@ function createRecordingMutationBridge(): ChildMailboxMutationBridge & {
     submitted,
     submit(mutation: MailboxMutation) {
       submitted.push(mutation);
-      return Promise.resolve({});
+      return Promise.resolve(result);
     },
     handleResult() {
       /* no downstream frames in this fake */
@@ -598,18 +601,20 @@ describe("createSupervisorBackedTransport", () => {
     ).rejects.toThrow(/owns only the "INBOX" mailbox/);
   });
 
-  test("expunge routes to the supervisor sweep", async () => {
-    const bridge = createRecordingMutationBridge();
+  test("expunge routes to the supervisor sweep and surfaces the swept uids", async () => {
+    const bridge = createRecordingMutationBridge({ expungedUids: [9, 12] });
     const address = "run_expunge-agent@example.com";
     const transport = createSupervisorBackedTransport(
       makeBridge(),
       address,
       makeInbound({ mutationBridge: bridge }),
     );
-    await transport.expunge("INBOX");
+    const outcome = await transport.expunge("INBOX");
     expect(bridge.submitted).toEqual([
       { runId: deriveWorkflowRunId(address), mailbox: "INBOX", op: "expunge" },
     ]);
+    // The supervisor's swept uids pass through to the caller.
+    expect(outcome).toEqual({ expungedUids: [9, 12] });
   });
 
   test("methods for mailboxes the agent does not own stay unsupported", async () => {

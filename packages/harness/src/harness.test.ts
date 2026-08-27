@@ -126,8 +126,9 @@ function makeMockTransport(): {
     async setFlags(ref: MessageRef): Promise<void> {
       deletedRefs.push(ref);
     },
-    async expunge(): Promise<void> {
+    async expunge(): Promise<{ expungedUids: number[] }> {
       // No-op for the mock; the test asserts via deletedRefs.
+      return { expungedUids: [] };
     },
     async send(message: unknown): Promise<{ messageId: string }> {
       sent.push(message);

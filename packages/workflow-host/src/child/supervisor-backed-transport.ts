@@ -326,22 +326,25 @@ export function createSupervisorBackedTransport(
     ): Promise<void> {
       return unsupported("copy");
     },
-    async expunge(mailbox: string, _signal?: AbortSignal): Promise<void> {
+    async expunge(
+      mailbox: string,
+      _signal?: AbortSignal,
+    ): Promise<{ expungedUids: number[] }> {
       const { mutationBridge } = requireInbound("expunge");
       requireInbox(mailbox);
       // Route to the supervisor, which sweeps every `\Deleted` message out of
-      // its owned INBOX. The expunged bytes survive in git history (a
-      // workflow-run repo's objects are never GC'd), so the replication check
-      // permits the deletion. The supervisor reports the swept uids; this
-      // void-returning method discards them. A caller expunging after a
+      // its owned INBOX and returns the swept uids. The expunged bytes survive
+      // in git history (a workflow-run repo's objects are never GC'd), so the
+      // replication check permits the deletion. A caller expunging after a
       // `setFlags(\Deleted)` MUST await the two in sequence -- the supervisor
       // applies mutations in arrival order, so an unawaited (concurrent) pair
       // could let the sweep run before the flag is set and miss the message.
-      await mutationBridge.submit({
+      const result = await mutationBridge.submit({
         runId: deriveWorkflowRunId(address),
         mailbox,
         op: "expunge",
       });
+      return { expungedUids: result.expungedUids ?? [] };
     },
 
     watch(
