@@ -271,9 +271,7 @@ const sessionService = createSessionService({
 });
 
 // Provisioner plugins are injected at the application composition boundary.
-// The in-tree Hub ships without an infrastructure backend; deployments that
-// require exclusive placement therefore fail closed until an operator build
-// registers a provisioner here.
+// The in-tree Hub ships without an infrastructure backend.
 const sidecarPlugins = createSidecarPluginRegistry({ provisioners: [] });
 const workflowAllocationService = createWorkflowAllocationService({
   db,
@@ -366,7 +364,6 @@ const app = createApp({
   db,
   sidecarRouter,
   sessionService,
-  workflowAllocationService,
   workflowDispatchService,
   eventCollectors,
   credentialCipher,
