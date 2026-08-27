@@ -1,6 +1,7 @@
 import {
   createSidecarAllocationStore,
   createWorkflowRunLaunchSpecStore,
+  resolveTenantSidecarCapabilityPolicies,
   resolveSourcesByOfferingIds,
   type DB,
   type SidecarAllocation,
@@ -16,7 +17,10 @@ import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import { deriveRunAddress, deriveRunAgentId } from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
-import type { SidecarPluginRegistry } from "./sidecar-allocation";
+import type {
+  SidecarCapabilityMismatch,
+  SidecarPluginRegistry,
+} from "./sidecar-allocation";
 import {
   SessionLaunchError,
   type DeployWorkflowDefinitionResult,
@@ -105,14 +109,6 @@ export function createWorkflowAllocationService({
   async function prepareProvisionedDeployment(
     args: PrepareProvisionedWorkflowDeploymentArgs,
   ): Promise<PreparedProvisionedWorkflowDeployment> {
-    // Fail closed before any probe when no provisioner can satisfy the request.
-    const provisioner = plugins.getDefaultProvisioner();
-    if (provisioner === null) {
-      throw new WorkflowProvisioningError(
-        "provisioner_unavailable",
-        "No default sidecar provisioner is configured",
-      );
-    }
     if (args.sourceOfferingIds.length === 0) {
       throw new WorkflowProvisioningError(
         "invalid_source_offerings",
@@ -145,12 +141,15 @@ export function createWorkflowAllocationService({
     // deploys later to the dedicated allocation with no re-probe. A non-approval
     // surfaces as a `WorkflowDefinitionInvalidError` from the deployer, which the
     // route maps to a 409.
-    const approved = await preparedDeployer.installAndApproveWorkflowSource({
-      source: args.source,
-      entry: args.entry,
-      ...(args.pin !== undefined ? { pin: args.pin } : {}),
-      definitionAssetId: args.definitionAssetId,
-    });
+    const [approved, tenantPolicies] = await Promise.all([
+      preparedDeployer.installAndApproveWorkflowSource({
+        source: args.source,
+        entry: args.entry,
+        ...(args.pin !== undefined ? { pin: args.pin } : {}),
+        definitionAssetId: args.definitionAssetId,
+      }),
+      resolveTenantSidecarCapabilityPolicies(db, args.tenantId),
+    ]);
     if (!approved.approval.ok) {
       // `installAndApproveWorkflowSource` already fails closed on a non-approval;
       // restate the narrowing so the frozen bundle below reads the ok arm.
@@ -161,6 +160,23 @@ export function createWorkflowAllocationService({
     // Capture the narrowed values before the transaction: TS drops the
     // `approval.ok` narrowing inside the async callback below.
     const definitionId = approved.approval.definitionId;
+    const selection = plugins.selectProvisioner({
+      tenantPolicies,
+      workflowRules: approved.projection.sidecarPlacement?.capabilities ?? [],
+    });
+    if (!selection.ok) {
+      if (selection.reason === "ambiguous") {
+        throw new WorkflowProvisioningError(
+          "provisioner_ambiguous",
+          `Multiple sidecar provisioners satisfy the deployment: ${selection.provisionerIds.join(", ")}`,
+        );
+      }
+      throw new WorkflowProvisioningError(
+        "provisioner_no_match",
+        formatProvisionerMismatches(selection.mismatches),
+      );
+    }
+    const provisioner = selection.provisioner;
     const frozenApprovalBundle: FrozenApprovalBundle = {
       source: args.source,
       entry: args.entry,
@@ -352,4 +368,20 @@ export function createWorkflowAllocationService({
   }
 
   return { prepareProvisionedDeployment, deployReadyAllocation };
+}
+
+function formatProvisionerMismatches(
+  mismatches: Readonly<Record<string, readonly SidecarCapabilityMismatch[]>>,
+): string {
+  const details = Object.entries(mismatches)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([provisionerId, failures]) =>
+      failures.map(
+        ({ capability, expected, actual }) =>
+          `${provisionerId}: ${capability} must be ${expected}, was ${actual}`,
+      ),
+    );
+  return details.length === 0
+    ? "No sidecar provisioners are registered"
+    : `No sidecar provisioner satisfies the deployment (${details.join("; ")})`;
 }

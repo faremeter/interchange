@@ -8,7 +8,11 @@ import {
 } from "bun:test";
 import { eq } from "drizzle-orm";
 
-import { getAncestorChain, getDescendantTenants } from "@intx/db";
+import {
+  getAncestorChain,
+  getDescendantTenants,
+  resolveTenantSidecarCapabilityPolicies,
+} from "@intx/db";
 import { tenant } from "@intx/db/schema";
 import {
   createTestDb,
@@ -154,6 +158,70 @@ describe.skipIf(!harnessDbEnvAvailable())("tenant-hierarchy (real DB)", () => {
       await expect(getAncestorChain(h.db, "cycle")).rejects.toThrow(
         /contains a cycle/,
       );
+    });
+  });
+
+  describe("resolveTenantSidecarCapabilityPolicies", () => {
+    test("returns every inherited policy as an independent constraint", async () => {
+      await seedTenants(h.db, [
+        { id: "root" },
+        { id: "leaf", parentId: "root" },
+      ]);
+      await h.db
+        .update(tenant)
+        .set({
+          config: {
+            sidecarPlacement: {
+              capabilities: [{ capability: "network:*", effect: "block" }],
+            },
+          },
+        })
+        .where(eq(tenant.id, "root"));
+      await h.db
+        .update(tenant)
+        .set({
+          config: {
+            sidecarPlacement: {
+              capabilities: [
+                { capability: "runtime:browser", effect: "require" },
+              ],
+            },
+          },
+        })
+        .where(eq(tenant.id, "leaf"));
+
+      expect(
+        await resolveTenantSidecarCapabilityPolicies(h.db, "leaf"),
+      ).toEqual([
+        {
+          tenantId: "leaf",
+          rules: [{ capability: "runtime:browser", effect: "require" }],
+        },
+        {
+          tenantId: "root",
+          rules: [{ capability: "network:*", effect: "block" }],
+        },
+      ]);
+    });
+
+    test("rejects malformed persisted capability policy", async () => {
+      await seedTenants(h.db, [{ id: "root" }]);
+      await h.db
+        .update(tenant)
+        .set({
+          config: {
+            sidecarPlacement: {
+              capabilities: [
+                { capability: "runtime:browser", effect: "unknown" },
+              ],
+            },
+          },
+        })
+        .where(eq(tenant.id, "root"));
+
+      await expect(
+        resolveTenantSidecarCapabilityPolicies(h.db, "root"),
+      ).rejects.toThrow(/invalid configuration/);
     });
   });
 });

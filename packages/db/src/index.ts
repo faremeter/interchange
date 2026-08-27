@@ -64,7 +64,11 @@ export {
   type WorkflowDefinitionRollbackResult,
   type WorkflowDefinitionSelector,
 } from "./workflow-definition-store";
-export { getAncestorChain, getDescendantTenants } from "./tenant-hierarchy";
+export {
+  getAncestorChain,
+  getDescendantTenants,
+  resolveTenantSidecarCapabilityPolicies,
+} from "./tenant-hierarchy";
 export { resolveActivePrice, type ModelPricingRow } from "./pricing";
 export {
   resolveProviderByName,

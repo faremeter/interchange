@@ -21,6 +21,7 @@ import { eq } from "drizzle-orm";
 import {
   createAgentRepoStore,
   createSessionService,
+  createSidecarPluginRegistry,
   createSidecarRouter,
   createWorkflowAllocationService,
   SessionLaunchError,
@@ -30,7 +31,7 @@ import {
   type SidecarProvisioner,
   type WsHandle,
 } from "@intx/hub-sessions";
-import { credentialAad } from "@intx/types";
+import { credentialAad, type SidecarCapabilityRule } from "@intx/types";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 import {
@@ -65,6 +66,7 @@ const provisioner: SidecarProvisioner = {
   id: "test-provisioner",
   apiVersion: 1,
   bindingFingerprint: "test-provisioner:v1",
+  capabilities: [],
   async ensure() {
     return { kind: "accepted" };
   },
@@ -87,16 +89,27 @@ const ENTRY = "./workflow.mjs";
 // smallest shapes their arktype schemas accept, and the grant set + wire hash
 // are inert strings. No credential secret ever enters the bundle -- sources are
 // re-resolved from the launch spec's offering ids at deploy time.
-function frozenApproval(): InstallAndApproveResult {
+function frozenApproval(
+  capabilities: readonly SidecarCapabilityRule[] = [],
+): InstallAndApproveResult {
+  const projection = {
+    id: "wf-x",
+    triggers: [],
+    stepOrder: [],
+    steps: {},
+    ...(capabilities.length > 0
+      ? { sidecarPlacement: { capabilities: [...capabilities] } }
+      : {}),
+  };
   return {
     approval: {
       ok: true,
       definitionId: DEFINITION_ID,
       approvedWireHash: "a".repeat(64),
       approvedGrants: new Set<string>(),
-      projection: { id: "wf-x", triggers: [], stepOrder: [], steps: {} },
+      projection,
     },
-    projection: { id: "wf-x", triggers: [], stepOrder: [], steps: {} },
+    projection,
     closure: { schemaVersion: "1", topLevel: [], entries: [] },
   };
 }
@@ -227,6 +240,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         plugins: {
           getDefaultProvisioner: () => provisioner,
           getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
+          selectProvisioner: () => ({ ok: true, provisioner }),
         },
         preparedDeployer: {
           // Preparation freezes the definition before provisioning: the
@@ -354,6 +368,70 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(deployCalls).toHaveLength(1);
     });
 
+    test("persists the provisioner selected from workflow capabilities", async () => {
+      const containers: SidecarProvisioner = {
+        ...provisioner,
+        id: "containers",
+        bindingFingerprint: "containers:v1",
+        capabilities: [{ capability: "platform:ios", state: "blocked" }],
+      };
+      const ios: SidecarProvisioner = {
+        ...provisioner,
+        id: "ios",
+        bindingFingerprint: "ios:v1",
+        capabilities: [{ capability: "platform:ios", state: "available" }],
+      };
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        plugins: createSidecarPluginRegistry({
+          provisioners: [containers, ios],
+          defaultProvisionerId: containers.id,
+        }),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: async () => {
+            await h.db.insert(workflowDefinition).values({
+              id: DEFINITION_ID,
+              tenantId: TENANT_ID,
+              name: "workflow-allocation-def",
+            });
+            return frozenApproval([
+              { capability: "platform:ios", effect: "require" },
+            ]);
+          },
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("allocation is not ready during preparation");
+          },
+        },
+        credentialCipher: CREDENTIAL_CIPHER,
+        allocationRouter: {
+          isAllocatedWorkflowActive: async () => false,
+        },
+        createAllocationId: () => "sal-capability-selection",
+      });
+
+      await service.prepareProvisionedDeployment({
+        tenantId: TENANT_ID,
+        anchorRunId: "dep-capability-selection",
+        deploymentDomain: `${TENANT_ID}.example.test`,
+        source: SOURCE,
+        entry: ENTRY,
+        definitionAssetId: ASSET_ID,
+        sessionId: "ses-capability-selection",
+        sourceAuthorityPrincipalId: PRINCIPAL_ID,
+        sourceOfferingIds: [OFFERING_ID],
+        defaultSourceOfferingId: OFFERING_ID,
+        deployContent: { systemPrompt: "" },
+      });
+
+      const allocation = await createSidecarAllocationStore(
+        h.db,
+      ).findByAnchorRunId("dep-capability-selection");
+      expect(allocation?.provisionerId).toBe(ios.id);
+      expect(allocation?.provisionerBindingFingerprint).toBe(
+        ios.bindingFingerprint,
+      );
+    });
+
     // === Real allocated-deploy routing =====================================
     //
     // The case above drives a FAKE `deployPreparedCodeSourcedWorkflow` and
@@ -461,6 +539,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         plugins: {
           getDefaultProvisioner: () => provisioner,
           getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
+          selectProvisioner: () => ({ ok: true, provisioner }),
         },
         preparedDeployer: {
           installAndApproveWorkflowSource:

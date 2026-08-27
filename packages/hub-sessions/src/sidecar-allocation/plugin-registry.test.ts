@@ -6,11 +6,13 @@ import { createSidecarPluginRegistry } from "./plugin-registry";
 function provisioner(
   id: string,
   bindingFingerprint = "test-backend:v1",
+  capabilities: SidecarProvisioner["capabilities"] = [],
 ): SidecarProvisioner {
   return {
     id,
     apiVersion: 1,
     bindingFingerprint,
+    capabilities,
     async ensure() {
       return { kind: "accepted" };
     },
@@ -90,5 +92,114 @@ describe("createSidecarPluginRegistry", () => {
         ],
       }),
     ).toThrow(/Unsupported sidecar provisioner API version/);
+  });
+
+  test("rejects invalid capability declarations at runtime", () => {
+    expect(() =>
+      createSidecarPluginRegistry({
+        provisioners: [
+          {
+            ...provisioner("containers"),
+            capabilities: [
+              {
+                capability: "runtime:browser",
+                // @ts-expect-error Exercises validation for JavaScript plugins.
+                state: "sometimes",
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(/Invalid capability declarations/);
+  });
+
+  test("rejects capability declarations with non-hierarchical wildcards", () => {
+    expect(() =>
+      createSidecarPluginRegistry({
+        provisioners: [
+          provisioner("containers", "test-backend:v1", [
+            { capability: "network:*:external", state: "blocked" },
+          ]),
+        ],
+      }),
+    ).toThrow(/Invalid capability declarations/);
+  });
+
+  test("prefers the configured default when it satisfies the policy", () => {
+    const containers = provisioner("containers", "containers:v1", [
+      { capability: "runtime:browser", state: "available" },
+    ]);
+    const virtualMachines = provisioner("virtual-machines", "vms:v1", [
+      { capability: "runtime:browser", state: "available" },
+    ]);
+    const registry = createSidecarPluginRegistry({
+      provisioners: [containers, virtualMachines],
+      defaultProvisionerId: "virtual-machines",
+    });
+
+    expect(
+      registry.selectProvisioner({
+        tenantPolicies: [],
+        workflowRules: [{ capability: "runtime:browser", effect: "require" }],
+      }),
+    ).toEqual({ ok: true, provisioner: virtualMachines });
+  });
+
+  test("selects the only match when the default does not satisfy policy", () => {
+    const containers = provisioner("containers", "containers:v1", [
+      { capability: "platform:ios", state: "blocked" },
+    ]);
+    const ios = provisioner("ios", "ios:v1", [
+      { capability: "platform:ios", state: "available" },
+    ]);
+    const registry = createSidecarPluginRegistry({
+      provisioners: [containers, ios],
+      defaultProvisionerId: "containers",
+    });
+
+    expect(
+      registry.selectProvisioner({
+        tenantPolicies: [],
+        workflowRules: [{ capability: "platform:ios", effect: "require" }],
+      }),
+    ).toEqual({ ok: true, provisioner: ios });
+  });
+
+  test("fails when selection is ambiguous", () => {
+    const registry = createSidecarPluginRegistry({
+      provisioners: [provisioner("b"), provisioner("a")],
+    });
+
+    expect(
+      registry.selectProvisioner({
+        tenantPolicies: [],
+        workflowRules: [],
+      }),
+    ).toEqual({
+      ok: false,
+      reason: "ambiguous",
+      provisionerIds: ["a", "b"],
+    });
+  });
+
+  test("reports each provisioner's capability mismatches", () => {
+    const registry = createSidecarPluginRegistry({
+      provisioners: [provisioner("containers")],
+    });
+
+    const selection = registry.selectProvisioner({
+      tenantPolicies: [],
+      workflowRules: [{ capability: "platform:ios", effect: "require" }],
+    });
+    expect(selection.ok).toBe(false);
+    if (!selection.ok && selection.reason === "no_match") {
+      expect(selection.mismatches["containers"]?.[0]).toEqual({
+        capability: "platform:ios",
+        expected: "available",
+        actual: "unknown",
+        rule: { capability: "platform:ios", effect: "require" },
+        source: { kind: "workflow" },
+      });
+    }
   });
 });
