@@ -34,6 +34,13 @@ export {
 
 export { runtimeRun, type RuntimeRunOptions } from "./run";
 
+export {
+  MAX_CHILD_SPAWN_DEPTH,
+  ChildSpawnDepthExceededError,
+  resolveMaxChildSpawnDepth,
+  assertSpawnDepthWithinLimit,
+} from "./child-depth";
+
 export { RuntimeResumeUnsupportedError } from "./errors";
 
 export {

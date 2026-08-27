@@ -57,6 +57,10 @@ import type {
   WorkflowRuntimeEnv,
 } from "./env";
 import { shouldAbortForDrain } from "./drain";
+import {
+  assertSpawnDepthWithinLimit,
+  resolveMaxChildSpawnDepth,
+} from "./child-depth";
 import { RuntimeResumeUnsupportedError } from "./errors";
 import { scopedStepId } from "./step-scope";
 import {
@@ -103,6 +107,23 @@ export interface RuntimeRunOptions {
    * re-driving.
    */
   resumeFromEvents?: readonly WorkflowEvent[];
+  /**
+   * This run's nesting depth in the childWorkflow spawn chain. The
+   * top-level triggered run is depth 0; a `childWorkflow` child is one
+   * deeper than the run that spawned it. Carried on the spawn seam, not in
+   * the durable log, so a resumed non-root child that re-enters at depth 0
+   * does not re-check depth -- resume of an in-flight `childWorkflow` is
+   * `RuntimeResumeUnsupportedError` anyway. Default 0.
+   */
+  depth?: number;
+  /**
+   * Ceiling on child spawn depth for this run tree, resolved once at the
+   * `runtimeRun` edge (see `resolveMaxChildSpawnDepth`). An injected value
+   * can only lower the ceiling below `MAX_CHILD_SPAWN_DEPTH`, never raise
+   * it. Threaded to each spawned child so the whole tree shares one
+   * ceiling. Default `MAX_CHILD_SPAWN_DEPTH`.
+   */
+  maxChildSpawnDepth?: number;
 }
 
 /**
@@ -293,6 +314,16 @@ async function executeRunBody(
   options: RuntimeRunOptions,
 ): Promise<RunResult> {
   const initialEvents = options.resumeFromEvents ?? [];
+
+  // Resolve the child-spawn depth guard once at this run edge: this run's
+  // own depth (0 at the top level) and the tree-wide ceiling (clamped so an
+  // injected override can only tighten it). Both thread down to the
+  // childWorkflow spawn site, which checks the child's depth before it
+  // commits anything and passes the incremented depth to the child run.
+  const depth = options.depth ?? 0;
+  const maxChildSpawnDepth = resolveMaxChildSpawnDepth(
+    options.maxChildSpawnDepth,
+  );
 
   // Restore prior events to the repo store on resume so a downstream
   // read sees the historical log alongside any newly-appended events.
@@ -667,6 +698,8 @@ async function executeRunBody(
         primitive,
         ctx,
         stepLocalAbort.signal,
+        depth,
+        maxChildSpawnDepth,
       )
         .then((output) => {
           stepOutputs[primitive.id] = output;
@@ -972,6 +1005,8 @@ async function runPrimitive(
   primitive: Primitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
+  depth: number,
+  maxChildSpawnDepth: number,
 ): Promise<unknown> {
   switch (primitive.kind) {
     case "step":
@@ -998,6 +1033,8 @@ async function runPrimitive(
         primitive,
         selectorCtx,
         abort,
+        depth,
+        maxChildSpawnDepth,
       );
     case "escalation":
       return runEscalation(env, runId, primitive, selectorCtx);
@@ -1018,6 +1055,8 @@ async function runPrimitiveSafe(
   primitive: Primitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
+  depth: number,
+  maxChildSpawnDepth: number,
 ): Promise<unknown> {
   try {
     return await runPrimitive(
@@ -1027,6 +1066,8 @@ async function runPrimitiveSafe(
       primitive,
       selectorCtx,
       abort,
+      depth,
+      maxChildSpawnDepth,
     );
   } catch (cause) {
     let state = await reloadState(env, runId);
@@ -3941,8 +3982,16 @@ async function runChildWorkflow(
   primitive: ChildWorkflowPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
+  depth: number,
+  maxChildSpawnDepth: number,
 ): Promise<unknown> {
   void parent;
+  // Bound the spawn chain BEFORE committing StepStarted/ChildSpawned. A
+  // reject here lands a clean StepFailed on this spawn step (runPrimitiveSafe
+  // synthesizes it) and never writes a phantom child-run log. The child runs
+  // one rung deeper; the ceiling is tree-wide (threaded from this run).
+  const childDepth = depth + 1;
+  assertSpawnDepthWithinLimit(childDepth, primitive.id, maxChildSpawnDepth);
   // Post-extraction the child definition is the internal `{ ref }` handle: the
   // deploy step lifts the authored inline child to a standalone definition and
   // the host resolves it from an in-memory closure map keyed by this ref. An
@@ -4014,6 +4063,8 @@ async function runChildWorkflow(
       parentRunId,
       parentStepId: primitive.id,
       signal: abort,
+      depth: childDepth,
+      maxChildSpawnDepth,
     });
   } catch (cause) {
     let afterThrow = await reloadState(env, parentRunId);

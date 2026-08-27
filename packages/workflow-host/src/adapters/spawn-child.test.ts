@@ -97,6 +97,8 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
       parentRunId: "parent-1",
       parentStepId: "step-a",
       signal: ctrl.signal,
+      depth: 1,
+      maxChildSpawnDepth: 32,
     });
 
     expect(result.terminalStatus).toBe("completed");
@@ -126,6 +128,8 @@ describe("workflow-host SpawnChildWorkflow adapter - in-memory resolution", () =
         parentRunId: "parent-2",
         parentStepId: "step-a",
         signal: ctrl.signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
       }),
     ).rejects.toThrow(/no in-memory childWorkflow definition/);
   });
@@ -149,6 +153,8 @@ describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
       parentRunId: "parent-4",
       parentStepId: "step-a",
       signal: ctrl.signal,
+      depth: 1,
+      maxChildSpawnDepth: 32,
     });
     expect(result.terminalStatus).toBe("failed");
   });
@@ -172,6 +178,8 @@ describe("workflow-host SpawnChildWorkflow adapter - child execution", () => {
         parentRunId: "parent-5",
         parentStepId: "step-a",
         signal: ctrl.signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
       }),
     ).rejects.toBe(cause);
   });
@@ -199,6 +207,8 @@ describe("workflow-host SpawnChildWorkflow adapter - abort handling", () => {
         parentRunId: "parent-6",
         parentStepId: "step-a",
         signal: ctrl.signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
       }),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(runCalls).toBe(0);
@@ -235,6 +245,8 @@ describe("workflow-host SpawnChildWorkflow adapter - abort handling", () => {
       parentRunId: "parent-7",
       parentStepId: "step-a",
       signal: ctrl.signal,
+      depth: 1,
+      maxChildSpawnDepth: 32,
     });
     while (observedSignals.length === 0) {
       await new Promise<void>((r) => setTimeout(r, 1));
@@ -319,6 +331,8 @@ describe("workflow-host SpawnChildWorkflow adapter - sub-namespace scoping", () 
       parentRunId: "parent-scope",
       parentStepId: "step-a",
       signal: ctrl.signal,
+      depth: 1,
+      maxChildSpawnDepth: 32,
     });
     expect(result.terminalStatus).toBe("completed");
 

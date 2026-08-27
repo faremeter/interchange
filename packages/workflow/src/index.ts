@@ -34,6 +34,10 @@ export {
 } from "./live-inert-projector";
 export {
   runtimeRun,
+  MAX_CHILD_SPAWN_DEPTH,
+  ChildSpawnDepthExceededError,
+  resolveMaxChildSpawnDepth,
+  assertSpawnDepthWithinLimit,
   RuntimeResumeUnsupportedError,
   createNoopDrainController,
   createEffectContext,

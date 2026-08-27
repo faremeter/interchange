@@ -150,6 +150,10 @@ function extractRuntimeOptions(options: RunLocalOptions): RuntimeRunOptions {
   if (options.resumeFromEvents !== undefined) {
     out.resumeFromEvents = options.resumeFromEvents;
   }
+  if (options.depth !== undefined) out.depth = options.depth;
+  if (options.maxChildSpawnDepth !== undefined) {
+    out.maxChildSpawnDepth = options.maxChildSpawnDepth;
+  }
   return out;
 }
 
@@ -228,7 +232,14 @@ export function createInMemoryEffectLedger(): EffectLedger {
 function createInMemorySpawnChild(
   bodies: ReadonlyMap<string, WorkflowDefinition>,
 ): SpawnChildWorkflow {
-  return async ({ definitionRef, childRunId, input, signal }) => {
+  return async ({
+    definitionRef,
+    childRunId,
+    input,
+    signal,
+    depth,
+    maxChildSpawnDepth,
+  }) => {
     const resolved = bodies.get(definitionRef);
     if (resolved === undefined) {
       // The runtime dispatched a childWorkflow ref with no lifted definition.
@@ -241,10 +252,14 @@ function createInMemorySpawnChild(
     }
     // Recursively invoke runLocal for the resolved child against the
     // parent-allocated childRunId so the parent's audit log and the
-    // child's own log agree on identity.
+    // child's own log agree on identity. Carry the depth (already checked
+    // one rung up) and the tree-wide ceiling so the child's own spawns keep
+    // counting against the same bound.
     const child = runLocal(resolved, {
       triggerPayload: input,
       runId: childRunId,
+      depth,
+      maxChildSpawnDepth,
     });
     const onParentAbort = (): void => {
       void child.cancel("supervisor-operator", "parent cancelled");
