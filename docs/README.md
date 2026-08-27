@@ -35,6 +35,8 @@ see [`LAYOUT.md`](../LAYOUT.md).
 - [`MESSAGE.md`](./MESSAGE.md) — message transport. Mail as the
   first-class communication primitive, raw MIME storage, JMAP-style
   client views.
+- [`SIDECAR_PLACEMENT.md`](./SIDECAR_PLACEMENT.md) — capability-based
+  workflow placement and provisioner selection.
 
 ## HTTP API
 

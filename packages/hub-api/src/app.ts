@@ -28,6 +28,7 @@ import type {
   RepoStore,
   SessionService,
   SidecarRouter,
+  WorkflowAllocationService,
   WorkflowDispatchService,
 } from "@intx/hub-sessions";
 
@@ -111,11 +112,11 @@ export type MountHubRoutesDeps = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
+  workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
   eventCollectors: EventCollectorRegistry;
   /**
-   * Encrypts credential secrets at rest on the credential/oauth write paths
-   * and decrypts tenant-owned credential bindings on workflow deploy.
+   * Encrypts credential secrets at rest on the credential/oauth write paths.
    * Optional: when omitted, a noop cipher is used and a warning is logged.
    * Production supplies a real cipher; tests that do not exercise credential
    * secrets can omit it.
@@ -163,6 +164,7 @@ export function mountHubRoutes(
     db,
     sidecarRouter,
     sessionService,
+    workflowAllocationService,
     workflowDispatchService,
     eventCollectors,
     sidecarWsHandler,
@@ -315,6 +317,9 @@ export function mountHubRoutes(
       createWorkflowRoutes({
         db,
         sessionService,
+        ...(workflowAllocationService !== undefined
+          ? { workflowAllocationService }
+          : {}),
         ...(workflowDispatchService !== undefined
           ? { workflowDispatchService }
           : {}),
@@ -322,7 +327,6 @@ export function mountHubRoutes(
         repoStore,
         grantStore,
         requireGrant,
-        credentialCipher,
       }),
     );
   }
@@ -491,11 +495,11 @@ export type CreateAppOpts = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
+  workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
   eventCollectors: EventCollectorRegistry;
   /**
-   * Encrypts credential secrets at rest on the credential/oauth write paths
-   * and decrypts tenant-owned credential bindings on workflow deploy.
+   * Encrypts credential secrets at rest on the credential/oauth write paths.
    * Optional: when omitted, a noop cipher is used and a warning is logged.
    * Production supplies a real cipher; tests that do not exercise credential
    * secrets can omit it.
@@ -522,6 +526,7 @@ export function createApp({
   db,
   sidecarRouter,
   sessionService,
+  workflowAllocationService,
   workflowDispatchService,
   eventCollectors,
   credentialCipher,
@@ -551,6 +556,9 @@ export function createApp({
     db,
     sidecarRouter,
     sessionService,
+    ...(workflowAllocationService !== undefined
+      ? { workflowAllocationService }
+      : {}),
     ...(workflowDispatchService !== undefined
       ? { workflowDispatchService }
       : {}),

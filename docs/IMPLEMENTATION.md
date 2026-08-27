@@ -291,21 +291,21 @@ Debug and telemetry data (state inspection, trace output, log tailing) flows onl
 
 Debug streams require explicit authorization — not all clients are permitted to attach debuggers to agents.
 
-## Exclusive Sidecar Allocation and Recovery
+## Provisioned Sidecar Allocation and Recovery
 
-Architecture describes the exclusive-placement guarantee. This section describes how the Hub preserves it across a sidecar or infrastructure failure while retaining main's anchor-run workflow model.
+The placement design describes capability-based provisioner selection. This section describes how the Hub preserves the selected binding across a sidecar or infrastructure failure while retaining main's anchor-run workflow model.
 
 ### Durable preparation
 
-An exclusive deployment is prepared transactionally before infrastructure is requested:
+A provisioned deployment is prepared transactionally before infrastructure is requested:
 
 - The deployment's stable id is also the id of its anchor `workflow_run`; the anchor points its `deployment_id` back to itself and owns the deployment address.
 - `workflow_run_launch_spec` stores the workflow definition snapshot and hash, session/domain metadata, catalog offering ids, deploy content, and optional tool-package pins.
-- `sidecar_allocation` stores the provisioner binding, placement, lifecycle state, and generation for that anchor.
+- `sidecar_allocation` stores the provisioner binding, lifecycle state, and generation for that anchor.
 
 The launch spec deliberately stores catalog offering ids rather than resolved provider secrets. Every initial deployment or replacement resolves those offerings again under the original authority, so rotated or revoked credentials take effect during recovery and no raw provider credential becomes recovery state.
 
-The Hub contains the versioned provisioner contract and registry but no built-in infrastructure backend. An operator must inject a provisioner with a stable id, API version, and non-secret binding fingerprint. Without a configured default, exclusive preparation returns an error and creates no partially shared deployment.
+The production Hub registers no infrastructure backend by default. An operator must inject a provisioner with a stable id, API version, and non-secret binding fingerprint. When no provisioner satisfies the workflow and tenant capability policy, preparation returns an error and creates no partial deployment.
 
 ### Allocation state and generation fence
 
@@ -331,7 +331,7 @@ Hub-originated triggers have a separate durable replay path in `workflow_run_dis
 
 - Mail stores the immutable MIME bytes and the stable run's canonical step grants in the same transaction that reserves the run principal/grants. The exact generation receives `run.grants` then `mail.inbound` on one FIFO WebSocket. Later trigger occurrences reuse that snapshot; a grants-only reservation with no `RunStarted` event is still eligible for its first delivery.
 - A sidecar `mail.inbound.ack` proves only that the local inbox accepted the message. The Hub retains it until an accepted workflow-run Git pack shows either the matching `RunStarted` event or a claim-check entry under `addresses/*/consumed/`. An explicit supervisor rejection fails the dispatch instead of settling it.
-- Signals store a validated `signal.deliver` frame and are redelivered with the same `signalId`. Approval decisions for exclusive deployments enqueue that frame in the same transaction that resolves the approval. There is no sidecar signal ack; the Hub settles the row only after an accepted pack contains the corresponding `SignalReceived` event.
+- Signals store a validated `signal.deliver` frame and are redelivered with the same `signalId`. Approval decisions for provisioned deployments enqueue that frame in the same transaction that resolves the approval. There is no sidecar signal ack; the Hub settles the row only after an accepted pack contains the corresponding `SignalReceived` event.
 - When a generation becomes ready, every unsettled dispatch is requeued. Mail claim checks and signal ids make replay idempotent across a worker loss at any point in delivery.
 - Once the stable top-level run becomes terminal, the Hub first settles every dispatch id already recorded by its run log and then fails the genuinely unconsumed remainder. This ordering prevents the terminal event from racing the firing mail's immediately-following claim-check receipt.
 

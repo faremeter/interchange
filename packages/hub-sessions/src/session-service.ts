@@ -915,10 +915,11 @@ async function prepareSourceRefDeploy(
  * path whose anchor `workflow_run` row already exists (inserted at prepare
  * time). It emits the frame but does NOT touch the anchor row: the caller
  * (`deployPreparedCodeSourcedWorkflow`) stamps the acked key under the
- * allocation-ownership lock. On emit failure it throws the raw
- * `DeployFrameFailure` verbatim, which the caller's own error handling wraps.
- * The ordinary path does NOT use this wrapper -- it must interleave the anchor
- * INSERT between prepare and emit, so it drives `prepareSourceRefDeploy` and
+ * allocation-ownership lock. A tagged `DeployFrameFailure` is converted to the
+ * `SessionLaunchError` disposition the allocation reconciler consumes, while
+ * untagged preparation errors remain safe same-generation retries. The ordinary
+ * path does NOT use this wrapper -- it must interleave the anchor INSERT between
+ * prepare and emit, so it drives `prepareSourceRefDeploy` and
  * `sendMultiStepDeployFrame` directly.
  */
 // The non-secret projection of a delivery, persisted on the anchor run so the
@@ -943,14 +944,19 @@ async function emitSourceRefDeployFrame(
   credentialRefs?: WorkflowRunCredentialRefs;
 }> {
   const { definitionId, sendArgs } = await prepareSourceRefDeploy(args);
-  const result = await sendMultiStepDeployFrame(sendArgs);
-  return {
-    publicKey: result.publicKey,
-    definitionId,
-    ...(sendArgs.credentials !== undefined
-      ? { credentialRefs: credentialRefsFromDelivery(sendArgs.credentials) }
-      : {}),
-  };
+  try {
+    const result = await sendMultiStepDeployFrame(sendArgs);
+    return {
+      publicKey: result.publicKey,
+      definitionId,
+      ...(sendArgs.credentials !== undefined
+        ? { credentialRefs: credentialRefsFromDelivery(sendArgs.credentials) }
+        : {}),
+    };
+  } catch (cause) {
+    if (!isDeployFrameFailure(cause)) throw cause;
+    throw new SessionLaunchError("start", cause, cause.frameSent);
+  }
 }
 
 /**

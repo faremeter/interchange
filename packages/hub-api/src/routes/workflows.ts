@@ -20,7 +20,6 @@ import {
   ErrorResponse,
   isSidecarAllocationDispatchable,
   SendMessage,
-  type CredentialCipher,
   type SidecarAllocationStatus,
 } from "@intx/types";
 import { InferenceSource } from "@intx/types/runtime";
@@ -31,7 +30,9 @@ import {
   type RepoStore,
   type SessionService,
   type SidecarRouter,
+  type WorkflowAllocationService,
   type WorkflowDispatchService,
+  WorkflowProvisioningError,
 } from "@intx/hub-sessions";
 import { generateId } from "@intx/hub-common";
 import {
@@ -183,23 +184,23 @@ async function deploymentAnchorRunExists(
 export type CreateWorkflowRoutesDeps = {
   db: DB["db"];
   sessionService: SessionService;
+  workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
   sidecarRouter: SidecarRouter;
   repoStore: RepoStore;
   grantStore: GrantStore;
   requireGrant: RequireGrant;
-  credentialCipher: CredentialCipher;
 };
 
 export function createWorkflowRoutes({
   db,
   sessionService,
+  workflowAllocationService,
   workflowDispatchService,
   sidecarRouter,
   repoStore,
   grantStore,
   requireGrant,
-  credentialCipher,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
   const runReader = createWorkflowRunReader(repoStore);
@@ -232,10 +233,10 @@ export function createWorkflowRoutes({
       tags: ["Workflows"],
       summary: "Deploy a workflow",
       description:
-        "Installs, probes, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, then deploys it by source-ref. Returns the deployment record.",
+        "Installs, probes, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, then creates a pending provisioned deployment. Provisioning continues asynchronously; the response returns the deployment record.",
       responses: {
         201: {
-          description: "Workflow deployed",
+          description: "Workflow deployment accepted for provisioning",
           content: {
             "application/json": {
               schema: resolver(WorkflowDeploymentResponse),
@@ -247,11 +248,12 @@ export function createWorkflowRoutes({
           content: { "application/json": { schema: resolver(ErrorResponse) } },
         },
         409: {
-          description: "Workflow definition or source chain invalid",
+          description:
+            "Workflow definition or source offering chain invalid, workflow provisioning unavailable, or provisioner selection failed",
           content: { "application/json": { schema: resolver(ErrorResponse) } },
         },
         500: {
-          description: "Deployment projection row missing after deploy",
+          description: "Deployment projection row missing after preparation",
           content: { "application/json": { schema: resolver(ErrorResponse) } },
         },
         502: {
@@ -320,39 +322,65 @@ export function createWorkflowRoutes({
         domain: tenant.domain,
       });
 
-      const config: HarnessConfig = {
-        sessionId,
-        agentId: deriveRunAgentId({ runId: anchorRunId }),
-        tenantId: tenant.id,
-        principalId: c.get("principal").id,
-        agentAddress,
-        systemPrompt: "",
-        tools: [],
-        grants: [],
-        sources: body.sources,
-        defaultSource: body.defaultSource,
-      };
       let deployedId: string;
+      let deploymentStatus: string | undefined;
       try {
-        const result = await sessionService.deployWorkflowFromSource({
-          tenantId: tenant.id,
-          anchorRunId,
-          deploymentDomain: tenant.domain,
-          agentAddress,
-          source: body.source,
-          entry: body.entry,
-          ...(body.pin !== undefined ? { pin: body.pin } : {}),
-          definitionAssetId: assetRow.id,
-          config,
-          credentialCipher,
-        });
-        deployedId = result.anchorRunId;
+        if (workflowAllocationService !== undefined) {
+          const prepared =
+            await workflowAllocationService.prepareProvisionedDeployment({
+              tenantId: tenant.id,
+              anchorRunId,
+              deploymentDomain: tenant.domain,
+              source: body.source,
+              entry: body.entry,
+              ...(body.pin !== undefined ? { pin: body.pin } : {}),
+              definitionAssetId: assetRow.id,
+              sessionId,
+              sourceAuthorityPrincipalId: c.get("principal").id,
+              sourceOfferingIds: body.sources.map(({ id }) => id),
+              defaultSourceOfferingId: body.defaultSource,
+              deployContent: { systemPrompt: "" },
+            });
+          deployedId = prepared.anchorRunId;
+          deploymentStatus = prepared.status;
+        } else {
+          const config: HarnessConfig = {
+            sessionId,
+            agentId: deriveRunAgentId({ runId: anchorRunId }),
+            tenantId: tenant.id,
+            principalId: c.get("principal").id,
+            agentAddress,
+            systemPrompt: "",
+            tools: [],
+            grants: [],
+            sources: body.sources,
+            defaultSource: body.defaultSource,
+          };
+          const result = await sessionService.deployWorkflowFromSource({
+            tenantId: tenant.id,
+            anchorRunId,
+            deploymentDomain: tenant.domain,
+            agentAddress,
+            source: body.source,
+            entry: body.entry,
+            ...(body.pin !== undefined ? { pin: body.pin } : {}),
+            definitionAssetId: assetRow.id,
+            config,
+          });
+          deployedId = result.anchorRunId;
+        }
       } catch (err) {
         // An install/gate rejection or an unapproved/mis-ordered source chain
         // is a client/definition error, not a sidecar-reachability failure.
         if (err instanceof WorkflowDefinitionInvalidError) {
           return c.json(
             { error: { code: "invalid_workflow", message: err.message } },
+            409,
+          );
+        }
+        if (err instanceof WorkflowProvisioningError) {
+          return c.json(
+            { error: { code: err.code, message: err.message } },
             409,
           );
         }
@@ -370,8 +398,8 @@ export function createWorkflowRoutes({
         );
       }
 
-      // The sidecar deploy succeeded; reading back the anchor run is an
-      // internal persistence concern. The id is server-minted for this
+      // The pending deployment was persisted; reading back the anchor run is
+      // an internal persistence concern. The id is server-minted for this
       // request, so a missing row is an invariant violation, not a
       // sidecar-reachability failure, and must surface as a 500 rather than be
       // mislabeled 502. Keyed on the run id alone -- no tenant filter -- since
@@ -395,13 +423,13 @@ export function createWorkflowRoutes({
           {
             error: {
               code: "anchor_run_missing",
-              message: `anchor workflow_run ${deployedId} missing after deploy`,
+              message: `anchor workflow_run ${deployedId} missing after deployment preparation`,
             },
           },
           500,
         );
       }
-      return c.json(formatDeployment(row), 201);
+      return c.json(formatDeployment(row, deploymentStatus), 201);
     },
   );
 

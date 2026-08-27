@@ -81,6 +81,7 @@ export type WorkflowAllocationServiceDeps = {
   readonly db: DB["db"];
   readonly plugins: SidecarPluginRegistry;
   readonly preparedDeployer: PreparedWorkflowDeployer;
+  /** Decrypts tenant-owned credential bindings for provisioned deployments. */
   readonly credentialCipher: CredentialCipher;
   readonly allocationRouter: Pick<
     SidecarAllocationRouter,

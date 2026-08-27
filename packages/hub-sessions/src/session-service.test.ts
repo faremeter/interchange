@@ -1474,6 +1474,64 @@ describe("deployCodeSourcedWorkflow", () => {
     }),
   } as unknown as DB["db"];
 
+  async function capturePreparedDeployError(failure: Error): Promise<unknown> {
+    const allocationRouter = createMockAllocationRouter();
+    allocationRouter.sendAgentDeployToAllocation = async () => {
+      throw failure;
+    };
+    const preparedRepoStore = createMockRepoStore();
+    preparedRepoStore.repoStore.resolveRef = async () => null;
+    const service = createSessionService({
+      sidecarRouter: createMockRouter(),
+      sidecarAllocationRouter: allocationRouter,
+      agentRepoStore: preparedRepoStore,
+      db: CAPTURING_DB,
+    });
+    const { approval, projection, closure } = await makeApproveOutput([
+      "inference.source:anthropic:mock-model",
+    ]);
+    if (!approval.ok) throw new Error("expected approval");
+
+    return service
+      .deployPreparedCodeSourcedWorkflow({
+        tenantId: TENANT,
+        anchorRunId: ANCHOR_RUN_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: DEPLOY_ADDRESS,
+        source: SOURCE,
+        approved: { approval, projection, closure },
+        config: CONFIG,
+        allocationTarget: { allocationId: "alloc-test", generation: 1 },
+        credentialCipher: createNoopCredentialCipher(),
+      })
+      .catch((error: unknown) => error);
+  }
+
+  describe("deployPreparedCodeSourcedWorkflow", () => {
+    for (const frameSent of [false, true]) {
+      test(`preserves frameSent=${String(frameSent)} for allocation recovery`, async () => {
+        const failure = Object.assign(new Error("deploy failed"), {
+          frameSent,
+        });
+        const error = await capturePreparedDeployError(failure);
+
+        expect(error).toBeInstanceOf(SessionLaunchError);
+        if (!(error instanceof SessionLaunchError)) {
+          throw new Error("expected SessionLaunchError");
+        }
+        expect(error.phase).toBe("start");
+        expect(error.leakedAgent).toBe(frameSent);
+        expect(error.cause).toBe(failure);
+      });
+    }
+
+    test("does not classify an untagged pre-send failure as possibly live", async () => {
+      const failure = new Error("allocation route unavailable");
+
+      expect(await capturePreparedDeployError(failure)).toBe(failure);
+    });
+  });
+
   test("builds a self-consistent source-ref frame that binds to the gate's frozen hash and inert projection", async () => {
     const mockRouter = createMockRouter();
     const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
