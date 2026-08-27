@@ -1,4 +1,4 @@
-// Per-tool handler factories for the five mail tools. Each factory takes
+// Per-tool handler factories for the mail tools. Each factory takes
 // the bound MessageTransport and returns a closed-over ToolHandler.
 //
 // Keeping the factories at this granularity (one per tool, pure
@@ -61,6 +61,14 @@ const WaitArgs = type({
   "timeout?": "number",
   "mailbox?": "string",
 });
+
+const FlagArgs = type({
+  ref: { uid: "number", mailbox: "string" },
+  "set?": "string[]",
+  "clear?": "string[]",
+});
+
+const ExpungeArgs = type({});
 
 // ---------------------------------------------------------------------------
 // Individual tool handlers
@@ -422,6 +430,82 @@ export function makeMailWaitHandler(transport: MessageTransport): ToolHandler {
         { once: true },
       );
     });
+  };
+}
+
+export function makeMailFlagHandler(transport: MessageTransport): ToolHandler {
+  return async (call, signal) => {
+    const args = FlagArgs(call.arguments);
+    if (args instanceof type.errors) {
+      return errorResult(call.id, args.summary);
+    }
+
+    const set = args.set ?? [];
+    const clear = args.clear ?? [];
+    // Reject an empty mutation at the boundary: a call with neither direction
+    // does nothing, and firing an empty flag write would still round-trip to
+    // the supervisor as a pointless commit.
+    if (set.length === 0 && clear.length === 0) {
+      return errorResult(call.id, "provide flags in 'set' or 'clear'");
+    }
+    // One direction per call. Adding and removing flags in one call would be
+    // two separate supervisor round-trips; if the first landed and the second
+    // failed, the error's "mailbox unchanged" contract would be a lie. Keeping
+    // each call a single mutation makes that contract unconditionally true.
+    if (set.length > 0 && clear.length > 0) {
+      return errorResult(
+        call.id,
+        "provide 'set' or 'clear', not both -- call mail_flag once per direction",
+      );
+    }
+
+    try {
+      if (set.length > 0) {
+        await transport.setFlags(args.ref, set, signal);
+      } else {
+        await transport.clearFlags(args.ref, clear, signal);
+      }
+    } catch (cause) {
+      // A rejection means the supervisor did not apply the mutation, so the
+      // mailbox is unchanged. Surface that so the model does not assume the
+      // flag stuck (and then expunge expecting the message gone).
+      return errorResult(
+        call.id,
+        `flag not applied: ${cause instanceof Error ? cause.message : String(cause)}`,
+        "flag_failed",
+      );
+    }
+
+    return { callId: call.id, content: { ok: true } };
+  };
+}
+
+export function makeMailExpungeHandler(
+  transport: MessageTransport,
+): ToolHandler {
+  return async (call, signal) => {
+    const args = ExpungeArgs(call.arguments);
+    if (args instanceof type.errors) {
+      return errorResult(call.id, args.summary);
+    }
+
+    // The warm agent owns exactly one mailbox; expunge sweeps its INBOX.
+    let outcome;
+    try {
+      outcome = await transport.expunge("INBOX", signal);
+    } catch (cause) {
+      // A rejection means nothing was removed; the mailbox is unchanged.
+      return errorResult(
+        call.id,
+        `expunge not applied: ${cause instanceof Error ? cause.message : String(cause)}`,
+        "expunge_failed",
+      );
+    }
+
+    return {
+      callId: call.id,
+      content: { ok: true, expungedUids: outcome.expungedUids },
+    };
   };
 }
 

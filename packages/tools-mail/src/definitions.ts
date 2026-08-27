@@ -1,4 +1,4 @@
-// Static definitions for the five mail tools. The catalog generator and the
+// Static definitions for the mail tools. The catalog generator and the
 // inference director both consume these as inert data — no factory calls,
 // no runtime side effects.
 //
@@ -11,7 +11,9 @@ export type MailToolName =
   | "mail_reply"
   | "mail_search"
   | "mail_read"
-  | "mail_wait";
+  | "mail_wait"
+  | "mail_flag"
+  | "mail_expunge";
 
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
@@ -148,6 +150,46 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "mail_flag",
+    description:
+      "Set or clear IMAP flags on a message (system flags like \\Seen or \\Deleted, or custom keywords). Provide EITHER 'set' to add flags OR 'clear' to remove them -- one direction per call. To consume a message, flag it \\Deleted then call mail_expunge. An error result means the mailbox was NOT changed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: {
+          type: "object",
+          description: "Mail reference { uid, mailbox }",
+          properties: {
+            uid: { type: "number" },
+            mailbox: { type: "string" },
+          },
+          required: ["uid", "mailbox"],
+        },
+        set: {
+          type: "array",
+          items: { type: "string" },
+          description: 'Flags to add (e.g. ["\\\\Deleted"])',
+        },
+        clear: {
+          type: "array",
+          items: { type: "string" },
+          description: "Flags to remove",
+        },
+      },
+      required: ["ref"],
+    },
+  },
+  {
+    name: "mail_expunge",
+    description:
+      "Permanently remove every message flagged \\Deleted from the INBOX and return the uids removed. Flag a message \\Deleted with mail_flag first. An error result means nothing was removed.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
     },
   },
 ];

@@ -26,6 +26,8 @@ import {
 
 import { createMailTools } from "./index";
 import {
+  makeMailExpungeHandler,
+  makeMailFlagHandler,
   makeMailReadHandler,
   makeMailReplyHandler,
   makeMailSearchHandler,
@@ -45,6 +47,10 @@ type MockTransport = MessageTransport & {
   fireWatch(event: MailboxEvent): void;
   enqueueMessage(ref: MessageRef, msg: InboundMessage): void;
   setSearchResult(refs: MessageRef[]): void;
+  getFlagCalls(): { op: "set" | "clear"; ref: MessageRef; flags: string[] }[];
+  getExpungeCalls(): string[];
+  setExpungeResult(uids: number[]): void;
+  failMutations(err: Error | null): void;
 };
 
 function makeMockTransport(): MockTransport {
@@ -52,6 +58,11 @@ function makeMockTransport(): MockTransport {
   const watchCallbacks: WatchCallback[] = [];
   const messageStore = new Map<string, InboundMessage>();
   let searchResult: MessageRef[] = [];
+  const flagCalls: { op: "set" | "clear"; ref: MessageRef; flags: string[] }[] =
+    [];
+  const expungeCalls: string[] = [];
+  let expungeUids: number[] = [];
+  let mutationError: Error | null = null;
 
   function refKey(ref: MessageRef): string {
     return `${ref.mailbox}:${String(ref.uid)}`;
@@ -71,6 +82,18 @@ function makeMockTransport(): MockTransport {
     },
     setSearchResult(refs: MessageRef[]): void {
       searchResult = refs;
+    },
+    getFlagCalls() {
+      return flagCalls;
+    },
+    getExpungeCalls() {
+      return expungeCalls;
+    },
+    setExpungeResult(uids: number[]): void {
+      expungeUids = uids;
+    },
+    failMutations(err: Error | null): void {
+      mutationError = err;
     },
 
     async send(message: OutboundMessage): Promise<SendReceipt> {
@@ -157,12 +180,14 @@ function makeMockTransport(): MockTransport {
       };
     },
 
-    async setFlags(): Promise<void> {
-      /* noop */
+    async setFlags(ref: MessageRef, flags: string[]): Promise<void> {
+      if (mutationError !== null) throw mutationError;
+      flagCalls.push({ op: "set", ref, flags });
     },
 
-    async clearFlags(): Promise<void> {
-      /* noop */
+    async clearFlags(ref: MessageRef, flags: string[]): Promise<void> {
+      if (mutationError !== null) throw mutationError;
+      flagCalls.push({ op: "clear", ref, flags });
     },
 
     async move(): Promise<void> {
@@ -173,8 +198,10 @@ function makeMockTransport(): MockTransport {
       /* noop */
     },
 
-    async expunge(): Promise<{ expungedUids: number[] }> {
-      return { expungedUids: [] };
+    async expunge(mailbox: string): Promise<{ expungedUids: number[] }> {
+      if (mutationError !== null) throw mutationError;
+      expungeCalls.push(mailbox);
+      return { expungedUids: expungeUids };
     },
 
     watch(_mailbox: string, callback: WatchCallback): Unsubscribe {
@@ -246,7 +273,7 @@ const signal = AbortSignal.timeout(5000);
 // ---------------------------------------------------------------------------
 
 describe("createMailTools", () => {
-  test("definitions include all five mail tools in registered order", () => {
+  test("definitions include all mail tools in registered order", () => {
     const tools = createMailTools({
       capabilities: makeCapabilities(makeMockTransport()),
     });
@@ -257,6 +284,8 @@ describe("createMailTools", () => {
       "mail_search",
       "mail_read",
       "mail_wait",
+      "mail_flag",
+      "mail_expunge",
     ]);
   });
 
@@ -657,5 +686,110 @@ describe("mail_wait handler", () => {
       throw new Error("expected object content");
     expect(result.content["from"]).toBe("alice@test");
     expect(result.content["ref"]).toEqual(ref);
+  });
+});
+
+describe("mail_flag handler", () => {
+  const ref = { uid: 3, mailbox: "INBOX" };
+
+  test("set adds flags via setFlags", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailFlagHandler(transport);
+    const result = await handler(
+      { id: "f1", name: "mail_flag", arguments: { ref, set: ["\\Deleted"] } },
+      signal,
+    );
+    expect(result.isError).toBeUndefined();
+    expect(transport.getFlagCalls()).toEqual([
+      { op: "set", ref, flags: ["\\Deleted"] },
+    ]);
+  });
+
+  test("clear removes flags via clearFlags", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailFlagHandler(transport);
+    await handler(
+      { id: "f2", name: "mail_flag", arguments: { ref, clear: ["\\Seen"] } },
+      signal,
+    );
+    expect(transport.getFlagCalls()).toEqual([
+      { op: "clear", ref, flags: ["\\Seen"] },
+    ]);
+  });
+
+  test("rejects a call that mixes set and clear and touches no transport", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailFlagHandler(transport);
+    const result = await handler(
+      {
+        id: "f3",
+        name: "mail_flag",
+        arguments: { ref, set: ["\\Flagged"], clear: ["\\Seen"] },
+      },
+      signal,
+    );
+    expect(result.isError).toBe(true);
+    // One direction per call keeps each mutation atomic; neither side fires.
+    expect(transport.getFlagCalls()).toHaveLength(0);
+  });
+
+  test("rejects a call with neither set nor clear and touches no transport", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailFlagHandler(transport);
+    const result = await handler(
+      { id: "f4", name: "mail_flag", arguments: { ref } },
+      signal,
+    );
+    expect(result.isError).toBe(true);
+    expect(transport.getFlagCalls()).toHaveLength(0);
+  });
+
+  test("surfaces a rejection as 'not applied' with flag_failed", async () => {
+    const transport = makeMockTransport();
+    transport.failMutations(new Error("supervisor dropped it"));
+    const handler = makeMailFlagHandler(transport);
+    const result = await handler(
+      { id: "f5", name: "mail_flag", arguments: { ref, set: ["\\Deleted"] } },
+      signal,
+    );
+    expect(result.isError).toBe(true);
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["code"]).toBe("flag_failed");
+    expect(String(result.content["error"])).toMatch(
+      /flag not applied: supervisor dropped it/,
+    );
+  });
+});
+
+describe("mail_expunge handler", () => {
+  test("sweeps INBOX and returns the expunged uids", async () => {
+    const transport = makeMockTransport();
+    transport.setExpungeResult([4, 7]);
+    const handler = makeMailExpungeHandler(transport);
+    const result = await handler(
+      { id: "e1", name: "mail_expunge", arguments: {} },
+      signal,
+    );
+    expect(result.isError).toBeUndefined();
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["ok"]).toBe(true);
+    expect(result.content["expungedUids"]).toEqual([4, 7]);
+    expect(transport.getExpungeCalls()).toEqual(["INBOX"]);
+  });
+
+  test("surfaces a rejection as 'not applied' with expunge_failed", async () => {
+    const transport = makeMockTransport();
+    transport.failMutations(new Error("supervisor dropped it"));
+    const handler = makeMailExpungeHandler(transport);
+    const result = await handler(
+      { id: "e2", name: "mail_expunge", arguments: {} },
+      signal,
+    );
+    expect(result.isError).toBe(true);
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["code"]).toBe("expunge_failed");
   });
 });
