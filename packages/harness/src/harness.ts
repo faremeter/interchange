@@ -107,65 +107,6 @@ export type MailToolWrapper = (
 ) => Omit<ToolBundle, "dispose">;
 
 /**
- * Invoke the caller-supplied `onReplySendFailed` callback and absorb any
- * failure it raises. Extracted from the reply drain so the await-the-
- * callback contract is testable in isolation: a bare invocation would
- * compile (TypeScript admits `async () => void` as satisfying a `void`-
- * returning signature) but would let an async callback's rejection
- * escape as an unhandled promise rejection. Awaiting protects against
- * that; the helper exists so the protection is asserted by a test
- * rather than implied by inspection of the drain.
- *
- * Exported only for the regression test in this package; no external
- * consumer should call it.
- *
- * The export-and-mark-internal shape is the codebase's convention
- * for helpers that exist to make a production-code contract
- * testable in isolation. A separate `@intx/harness/testing`
- * entry-point was considered and rejected: the helper is one
- * try/catch wrapper around the production callback, tightly
- * coupled to the `MailEnv` callback type defined adjacent to it.
- * Moving it would either duplicate the production code in a test
- * module (defeating the point) or require a parallel entry-point
- * whose only export is a single function -- bundler ceremony for a
- * boundary TypeScript cannot enforce anyway, since deep imports
- * (`@intx/harness/src/harness`) reach the same module regardless
- * of what `index.ts` re-exports. The docstring convention is
- * load-bearing here: the marker is the contract.
- *
- * `invokeReplyDrainTerminated` (below) follows the same shape for
- * the same reason.
- */
-export async function invokeReplySendFailed(
-  callback: NonNullable<MailEnv["onReplySendFailed"]>,
-  cause: unknown,
-): Promise<void> {
-  try {
-    await callback(cause);
-  } catch (callbackError) {
-    logger.error`onReplySendFailed callback threw: ${callbackError}`;
-  }
-}
-
-/**
- * Invoke the caller-supplied `onReplyDrainTerminated` callback and
- * absorb any failure it raises. Mirrors `invokeReplySendFailed`:
- * extracted from the reply drain so the await-the-callback contract
- * is testable in isolation, exported only for the regression test in
- * this package.
- */
-export async function invokeReplyDrainTerminated(
-  callback: NonNullable<MailEnv["onReplyDrainTerminated"]>,
-  cause: unknown,
-): Promise<void> {
-  try {
-    await callback(cause);
-  } catch (callbackError) {
-    logger.error`onReplyDrainTerminated callback threw: ${callbackError}`;
-  }
-}
-
-/**
  * Build the `load` / `writeMetadata` overrides the harness layers onto
  * `env.storage`. Extracted from `createHarness` so the dirty-bit gating
  * on `load()` is directly testable -- the production path constructs
@@ -180,12 +121,11 @@ export async function invokeReplyDrainTerminated(
  * pre-commit disk value.
  *
  * Exported for the regression test in this package; no external
- * consumer should call it. Same shape and rationale as
- * `invokeReplySendFailed` and `invokeReplyDrainTerminated` above --
- * the helper is tightly coupled to the dirty-bit gating semantics
- * that live in this module, and a separate testing entry-point
- * would buy bundler ceremony for a boundary TypeScript cannot
- * enforce. The docstring "internal" marker is the contract.
+ * consumer should call it. The helper is tightly coupled to the
+ * dirty-bit gating semantics that live in this module, and a separate
+ * testing entry-point would buy bundler ceremony for a boundary
+ * TypeScript cannot enforce. The docstring "internal" marker is the
+ * contract.
  */
 export function createWrappedStorageOverrides(
   baseStorage: ContextStore,
