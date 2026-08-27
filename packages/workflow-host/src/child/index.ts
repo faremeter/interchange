@@ -28,6 +28,14 @@ export {
 } from "./outbound-mail-bridge";
 
 export {
+  createChildMailboxMutationBridge,
+  type ChildMailboxMutationBridge,
+  type CreateChildMailboxMutationBridgeOpts,
+  type MailboxMutation,
+  type MailboxMutationResult,
+} from "./mailbox-mutation-bridge";
+
+export {
   createSupervisorBackedTransport,
   type SupervisorBackedTransportInbound,
 } from "./supervisor-backed-transport";

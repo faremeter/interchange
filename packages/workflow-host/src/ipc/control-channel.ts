@@ -575,6 +575,67 @@ export const ControlPayload = type(
       uid: "number >= 1",
       headers: MailboxNotifyHeaders,
     },
+  })
+  .or({
+    // Child-initiated mailbox-mutation request (INBOUND half of mailbox
+    // ownership, §3b). The supervisor is the sole writer to the
+    // workflow-run mailbox: a step agent reads its INBOX locally but
+    // every mutation -- flag writes and `expunge` -- routes up here so
+    // the supervisor applies it to its owned store. A child flushing the
+    // same ref would race the supervisor's in-memory mirror and break
+    // uid / modseq monotonicity.
+    //
+    // `data` is discriminated on `op`: an `addFlags` / `removeFlags`
+    // carries the target `uid` and the `flags` to change, so the wire
+    // boundary rejects a flag frame that omits them; an `expunge` sweeps
+    // every `\Deleted` message in the mailbox and the child constructs it
+    // with neither. `requestId` correlates the supervisor's
+    // `mailbox.mutate.response` reply.
+    type: "'mailbox.mutate.request'",
+    data: type(
+      {
+        requestId: "string > 0",
+        runId: "string > 0",
+        mailbox: "string > 0",
+        op: "'addFlags' | 'removeFlags'",
+        uid: "number >= 1",
+        flags: "string[]",
+      },
+      "|",
+      {
+        requestId: "string > 0",
+        runId: "string > 0",
+        mailbox: "string > 0",
+        op: "'expunge'",
+      },
+    ),
+  })
+  .or({
+    // Supervisor's terminal reply to a child's `mailbox.mutate.request`.
+    // The `requestId` echoes the child's correlation id so the child's
+    // pending mail-tool awaiter resolves. The reply is sent only after
+    // the supervisor flushes the mutation, so the child's next committed
+    // read observes it -- the same flush-before-signal ordering
+    // `mailbox.notify` relies on. A successful `expunge` carries the
+    // `expungedUids` it swept so the agent tool can report the count; a
+    // flag write carries no operand echo. A failed mutation (unknown
+    // uid, substrate fault) surfaces a structured `{ ok: false, reason }`
+    // the child's bridge rethrows so the mail-tool call fails loudly.
+    type: "'mailbox.mutate.response'",
+    data: {
+      requestId: "string > 0",
+      result: type(
+        {
+          ok: "true",
+          "expungedUids?": "number[]",
+        },
+        "|",
+        {
+          ok: "false",
+          reason: "string > 0",
+        },
+      ),
+    },
   });
 
 export type ControlPayload = typeof ControlPayload.infer;

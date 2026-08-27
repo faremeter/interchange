@@ -140,6 +140,7 @@ import {
   type LoadParkedApproval,
 } from "./parked-correlations";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
+import type { ChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
 import type { MailboxWatchRegistry } from "./mailbox-watch-registry";
 import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
 
@@ -532,6 +533,21 @@ export interface RunWorkflowChildOpts {
    * but no agent on the child side asked for an outbound send.
    */
   outboundMailBridge?: ChildOutboundMailBridge;
+  /**
+   * Optional mailbox-mutation bridge (INBOUND half of mailbox ownership,
+   * §3b). The step agent's mail tools mutate the INBOX -- flag writes and
+   * `expunge` -- through a transport whose write methods route through
+   * this bridge: it emits a `mailbox.mutate.request` upstream control
+   * frame and resolves once the supervisor's matching
+   * `mailbox.mutate.response` lands. The control loop routes the
+   * downstream response frame to the bridge's `handleResult` and invokes
+   * `cancelAll` on any exit path so a pending mutation does not leak an
+   * awaiter after the supervisor tears the IPC down. When omitted,
+   * inbound `mailbox.mutate.response` frames are logged at warn-level and
+   * dropped -- the wire shape is well-formed but no agent on the child
+   * side asked for a mutation.
+   */
+  mailboxMutationBridge?: ChildMailboxMutationBridge;
   /**
    * Optional mailbox watch registry (INBOUND half of mailbox ownership,
    * design §3b). The supervisor -- the sole mail owner -- commits an arrived
@@ -971,6 +987,9 @@ export async function runWorkflowChild(
           ...(opts.outboundMailBridge !== undefined
             ? { outboundMailBridge: opts.outboundMailBridge }
             : {}),
+          ...(opts.mailboxMutationBridge !== undefined
+            ? { mailboxMutationBridge: opts.mailboxMutationBridge }
+            : {}),
           ...(mailboxWatchRegistry !== undefined
             ? { mailboxWatchRegistry }
             : {}),
@@ -999,6 +1018,15 @@ export async function runWorkflowChild(
     // than hang on a torn-down channel.
     if (opts.outboundMailBridge !== undefined) {
       opts.outboundMailBridge.cancelAll("workflow-child control loop exited");
+    }
+    // Same contract for mailbox mutations: a step agent's flag or
+    // `expunge` still awaiting the supervisor's `mailbox.mutate.response`
+    // when the control loop exits must surface a structured rejection
+    // rather than hang on a torn-down channel.
+    if (opts.mailboxMutationBridge !== undefined) {
+      opts.mailboxMutationBridge.cancelAll(
+        "workflow-child control loop exited",
+      );
     }
     // Evict the warm-agent cache (design §3b) on every exit path:
     // graceful (shutdown frame -> iterator end), dirty (thrown error),
@@ -1063,6 +1091,7 @@ async function handleControlPayload(
     credentialWiring: CredentialWiring;
     substrateWriteBridge?: SubstrateWriteResponseSink;
     outboundMailBridge?: ChildOutboundMailBridge;
+    mailboxMutationBridge?: ChildMailboxMutationBridge;
     mailboxWatchRegistry?: MailboxWatchRegistry;
   },
 ): Promise<boolean> {
@@ -1400,6 +1429,28 @@ async function handleControlPayload(
         uid: payload.data.uid,
         headers: payload.data.headers,
       });
+      return false;
+    }
+    case "mailbox.mutate.request": {
+      // `mailbox.mutate.request` is the child->supervisor mailbox-mutation
+      // request frame; receiving one on the child's downstream side is a
+      // protocol violation in the same shape as a downstream
+      // `outbound.message`.
+      throw new Error(
+        "workflow-child received a `mailbox.mutate.request` frame on its inbound control channel; this is a child-only upstream payload",
+      );
+    }
+    case "mailbox.mutate.response": {
+      // Route the supervisor's applied-mutation result to the
+      // mailbox-mutation bridge if one is wired. A response that lands
+      // without an active bridge means a stale supervisor frame for which
+      // no awaiter exists; log and drop rather than throwing so the
+      // runtime keeps progressing (mirrors the `outbound.result` arm).
+      if (ctx.mailboxMutationBridge === undefined) {
+        logger.warn`workflow-child mailbox.mutate.response received without a bridge wired; requestId=${payload.data.requestId} dropped`;
+        return false;
+      }
+      ctx.mailboxMutationBridge.handleResult(payload.data);
       return false;
     }
     case "substrate.merge.request": {
