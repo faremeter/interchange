@@ -105,7 +105,7 @@ function targetForReadyAllocation(
 }
 
 /**
- * Drives Hub-owned workflow triggers onto exclusive sidecars. The database
+ * Drives Hub-owned workflow triggers onto provisioned sidecars. The database
  * row is the delivery authority: websocket acceptance never deletes the raw
  * payload, and a generation replacement requeues every row that has not been
  * settled by the workflow-run Git claim-check.

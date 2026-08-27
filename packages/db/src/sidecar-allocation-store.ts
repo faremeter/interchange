@@ -2,7 +2,6 @@ import { type } from "arktype";
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 
 import {
-  SidecarPlacementRequirement,
   sidecarAllocationStatuses,
   type SidecarAllocationStatus,
 } from "@intx/types";
@@ -43,7 +42,6 @@ export type SidecarAllocation = {
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
   readonly sidecarId?: string;
-  readonly placement: SidecarPlacementRequirement;
   readonly status: SidecarAllocationStatus;
   readonly generation: number;
   readonly ensureAcceptedGeneration?: number;
@@ -67,7 +65,6 @@ export type CreatePendingSidecarAllocationArgs = {
   readonly provisionerId: string;
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
-  readonly placement?: SidecarPlacementRequirement;
   readonly now?: Date;
 };
 
@@ -202,10 +199,6 @@ export type FailSidecarAllocationArgs = {
 function parseSidecarAllocationRow(
   row: SidecarAllocationRow,
 ): SidecarAllocation {
-  const placement = SidecarPlacementRequirement.assert({
-    sharing: row.placementSharing,
-    reuse: row.sidecarReuse,
-  });
   return {
     id: row.id,
     anchorRunId: row.anchorRunId,
@@ -216,7 +209,6 @@ function parseSidecarAllocationRow(
     ),
     provisionerBindingFingerprint: row.provisionerBindingFingerprint,
     ...(row.sidecarId !== null ? { sidecarId: row.sidecarId } : {}),
-    placement,
     status: SidecarAllocationStatusValidator.assert(row.status),
     generation: row.generation,
     ...(row.ensureAcceptedGeneration !== null
@@ -385,9 +377,6 @@ export function createSidecarAllocationStore(db: DBHandle) {
           "sidecarAllocationStore.createPending: unsupported API version",
         );
       }
-      const placement = SidecarPlacementRequirement.assert(
-        args.placement ?? { sharing: "exclusive", reuse: "never" },
-      );
       const now = databaseTimestamp(args.now);
       const [inserted] = await executor
         .insert(sidecarAllocation)
@@ -398,8 +387,6 @@ export function createSidecarAllocationStore(db: DBHandle) {
           provisionerId: args.provisionerId,
           provisionerApiVersion: args.provisionerApiVersion,
           provisionerBindingFingerprint: args.provisionerBindingFingerprint,
-          placementSharing: placement.sharing,
-          sidecarReuse: placement.reuse ?? "never",
           status: "pending",
           generation: 0,
           nextAttemptAt: now,

@@ -119,7 +119,7 @@ export type SidecarEventMap = {
   "mail.persisted": SidecarMailPersistedPayload;
 
   /** Notification after a sidecar confirms a mail trigger is in its durable
-   * local inbox. For an exclusive worker, `allocated` identifies the exact
+   * local inbox. For a provisioned worker, `allocated` identifies the exact
    * generation that acknowledged the message. This is not workflow
    * settlement; the Hub retains the payload until the Git claim-check records
    * consumption. */

@@ -96,7 +96,7 @@ export function createHubSessionOrchestrator(
   unsubscribers.push(
     events.on("agent.deploy.ack", async (event) => {
       const { agentAddress, publicKey, allocated } = event;
-      // Exclusive initialization publishes its key only after every deploy
+      // Provisioned initialization publishes its key only after every deploy
       // and asset pack succeeds under the allocation generation fence.
       if (allocated !== undefined) return;
 

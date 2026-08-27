@@ -22,7 +22,6 @@ function allocation(
     provisionerId: "test",
     provisionerApiVersion: 1,
     provisionerBindingFingerprint: "test:v1",
-    placement: { sharing: "exclusive", reuse: "never" },
     status: "pending",
     generation: 0,
     nextAttemptAt: NOW,

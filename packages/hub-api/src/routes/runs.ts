@@ -159,9 +159,9 @@ export type CreateRunRoutesDeps = {
   // substrate-backed routes then answer 503 rather than fabricating state,
   // since createRunRoutes mounts unconditionally.
   repoStore: RepoStore | null;
-  // The durable dispatch queue an exclusive deployment's trigger enqueues onto.
-  // Absent when the hub runs without durable dispatch; the trigger then 503s an
-  // exclusive send, exactly as the deployment Trigger route does.
+  // The durable dispatch queue a provisioned deployment's trigger enqueues onto.
+  // Absent when the hub runs without durable dispatch; the trigger then 503s a
+  // provisioned send, exactly as the deployment Trigger route does.
   workflowDispatchService?: WorkflowDispatchService;
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;

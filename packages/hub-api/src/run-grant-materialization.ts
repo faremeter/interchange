@@ -321,7 +321,7 @@ export async function lockWorkflowRunState(
 
 /**
  * Lock a deployment's sidecar allocation `FOR UPDATE` and report whether it is
- * still dispatchable. Serializes an exclusive trigger's commit with concurrent
+ * still dispatchable. Serializes a provisioned trigger's commit with concurrent
  * allocation transitions so a durable dispatch is never enqueued against an
  * allocation that has moved to a non-dispatchable state.
  */

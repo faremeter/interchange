@@ -73,8 +73,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
         sidecarId: "sidecar-ack",
-        placementSharing: "exclusive",
-        sidecarReuse: "never",
         status: "allocated",
         generation,
         ensureAcceptedGeneration: generation,

@@ -35,11 +35,6 @@ export const sidecarAllocation = pgTable(
     sidecarId: text("sidecar_id").references(() => sidecar.id, {
       onDelete: "restrict",
     }),
-    placementSharing: text("placement_sharing").$type<"exclusive">().notNull(),
-    sidecarReuse: text("sidecar_reuse")
-      .$type<"never" | "same-deployment">()
-      .notNull()
-      .default("never"),
     status: text("status")
       .$type<SidecarAllocationStatus>()
       .notNull()
@@ -74,10 +69,6 @@ export const sidecarAllocation = pgTable(
     check(
       "sidecar_allocation_status_check",
       sql`${t.status} in ('pending', 'provisioning', 'allocated', 'replacing', 'releasing', 'released', 'failed')`,
-    ),
-    check(
-      "sidecar_allocation_placement_check",
-      sql`${t.placementSharing} = 'exclusive'`,
     ),
     check("sidecar_allocation_generation_check", sql`${t.generation} >= 0`),
     check(

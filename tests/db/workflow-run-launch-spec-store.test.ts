@@ -25,7 +25,7 @@ const DEFINITION_ID = "wfd-launch-spec";
 const ANCHOR_RUN_ID = "dep-launch-spec";
 const PRINCIPAL_ID = "prn-launch-spec";
 
-// A minimal, valid frozen approval bundle -- the recovery input for an exclusive
+// A minimal, valid frozen approval bundle -- the recovery input for a provisioned
 // deploy. It names the source and carries the inert projection/closure/hash; it
 // holds no resolved inference source, so no credential secret can be persisted.
 const FROZEN_APPROVAL_BUNDLE = {

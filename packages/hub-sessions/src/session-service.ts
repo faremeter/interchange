@@ -222,9 +222,9 @@ export type DeployWorkflowFromSourceParams = {
 
 /**
  * Install/probe/gate/freeze inputs for a code-sourced workflow, DECOUPLED from
- * deploy. The exclusive prepare path calls this on shared capacity at request
- * time to freeze the approval, persists the frozen bundle, and deploys it to a
- * dedicated allocation later with no re-probe.
+ * deploy. The provisioned prepare path calls this before allocating capacity,
+ * persists the frozen bundle, and deploys it to the allocation later with no
+ * re-probe.
  */
 export type InstallAndApproveWorkflowSourceParams = {
   /** Where the definition's bytes come from at probe time. */
@@ -270,8 +270,8 @@ export type DeployPreparedCodeSourcedWorkflowParams = {
 
 export type PreparedWorkflowDeployer = {
   /**
-   * Install + probe + gate + freeze a code-sourced definition on shared
-   * capacity, returning the frozen bundle WITHOUT deploying it. The exclusive
+   * Install + probe + gate + freeze a code-sourced definition, returning the
+   * frozen bundle WITHOUT deploying it. The provisioned
    * prepare path persists the bundle and deploys it later via
    * `deployPreparedCodeSourcedWorkflow`.
    */
@@ -305,7 +305,7 @@ export type UserMessageParams = {
 
 export type SessionServiceDeps = {
   sidecarRouter: SidecarRouter;
-  /** Present when this Hub can route deploy phases to exclusive allocations. */
+  /** Present when this Hub can route deploy phases to provisioned allocations. */
   sidecarAllocationRouter?: SidecarAllocationRouter;
   agentRepoStore: AgentRepoStore;
   /**
@@ -534,12 +534,12 @@ export async function sendMultiStepDeployFrame(
       ? { assets: [...args.assets] }
       : {}),
   };
-  // A prepared exclusive deploy routes its frame to the dedicated allocation; a
-  // shared deploy sends it on the shared router. The frozen projection/hash/pin
+  // A prepared provisioned deploy routes its frame to the allocation; an
+  // ordinary deploy sends it on the ordinary router. The frozen projection/hash/pin
   // ride verbatim in both cases -- only the transport differs.
   if (args.allocationTarget !== undefined) {
     if (args.sidecarAllocationRouter === undefined) {
-      throw new Error("Exclusive deployment routing is not configured");
+      throw new Error("Provisioned deployment routing is not configured");
     }
     return args.sidecarAllocationRouter.sendAgentDeployToAllocation(
       args.allocationTarget,
@@ -591,10 +591,10 @@ type DeployCodeSourcedCommonArgs = DeployFrameCommonArgs & {
    */
   credentialCipher?: CredentialCipher;
   /**
-   * Present only for a prepared exclusive deploy: route the source-ref frame to
-   * this dedicated allocation instead of the shared router. `sidecarAllocationRouter`
+   * Present only for a prepared provisioned deploy: route the source-ref frame
+   * to this allocation instead of the ordinary router. `sidecarAllocationRouter`
    * carries the allocation transport and is REQUIRED whenever `allocationTarget`
-   * is set. A shared deploy omits both.
+   * is set. An ordinary deploy omits both.
    */
   allocationTarget?: AllocatedSidecarTarget;
   sidecarAllocationRouter?: SidecarAllocationRouter;
@@ -656,10 +656,10 @@ function isAssetDeployArgs(
  * This does the READ-ONLY preparation ONLY: it runs the guards, resolves
  * credential material, pins the body sources, and builds the asset mounts, then
  * returns the frozen definition id and the assembled send args. It emits NO
- * frame and writes NO row, so it has no side effect to unwind. The shared path
+ * frame and writes NO row, so it has no side effect to unwind. The ordinary path
  * (`deployCodeSourcedWorkflow`) sequences prepare -> INSERT anchor -> emit so
  * the anchor is visible before the frame spawns the child; `emitSourceRefDeployFrame`
- * composes prepare -> emit for the prepared exclusive path, whose anchor row
+ * composes prepare -> emit for the prepared provisioned path, whose anchor row
  * already exists from prepare time. It returns the frozen definition id so each
  * caller writes the same content-addressed identity the gate persisted.
  */
@@ -911,13 +911,13 @@ async function prepareSourceRefDeploy(
 }
 
 /**
- * Prepare then emit the source-ref deploy frame, for the prepared exclusive
+ * Prepare then emit the source-ref deploy frame, for the prepared provisioned
  * path whose anchor `workflow_run` row already exists (inserted at prepare
  * time). It emits the frame but does NOT touch the anchor row: the caller
  * (`deployPreparedCodeSourcedWorkflow`) stamps the acked key under the
  * allocation-ownership lock. On emit failure it throws the raw
  * `DeployFrameFailure` verbatim, which the caller's own error handling wraps.
- * The shared path does NOT use this wrapper -- it must interleave the anchor
+ * The ordinary path does NOT use this wrapper -- it must interleave the anchor
  * INSERT between prepare and emit, so it drives `prepareSourceRefDeploy` and
  * `sendMultiStepDeployFrame` directly.
  */
@@ -985,7 +985,7 @@ async function emitSourceRefDeployFrame(
  * possibly-live: the anchor is fenced `deployed` -> `failed` and the error is
  * `leakedAgent: true`.
  *
- * The prepared exclusive path does NOT use this composition: its anchor row
+ * The prepared provisioned path does NOT use this composition: its anchor row
  * already exists from prepare time, so it drives `emitSourceRefDeployFrame` and
  * an UPDATE-under-allocation-lock instead.
  */
@@ -1124,7 +1124,7 @@ export function createSessionService(
 
   function requireAllocationRouter(): SidecarAllocationRouter {
     if (sidecarAllocationRouter === undefined) {
-      throw new Error("Exclusive deployment routing is not configured");
+      throw new Error("Provisioned deployment routing is not configured");
     }
     return sidecarAllocationRouter;
   }
@@ -1598,8 +1598,8 @@ export function createSessionService(
   // Install + probe + gate + freeze a code-sourced definition, returning the
   // frozen bundle and the (asset-only) attachment resolver. The gate outcome is
   // NOT asserted here: `deployWorkflowFromSource` and `installAndApproveWorkflowSource`
-  // each surface a non-approval as their own domain error. This is the shared
-  // freeze both the shared deploy and the exclusive prepare run.
+  // each surface a non-approval as their own domain error. This is the common
+  // freeze used by both ordinary deploys and provisioned prepare runs.
   async function prepareCodeSourcedApproval(
     params: InstallAndApproveWorkflowSourceParams,
   ): Promise<{
@@ -1612,9 +1612,9 @@ export function createSessionService(
     return { approved, resolveAttachment };
   }
 
-  // Freeze a code-sourced approval on shared capacity WITHOUT deploying it. The
-  // exclusive prepare path persists the returned bundle and deploys it to a
-  // dedicated allocation later. A non-approval fails closed as an invalid
+  // Freeze a code-sourced approval WITHOUT deploying it. The provisioned
+  // prepare path persists the returned bundle and deploys it to an allocation
+  // later. A non-approval fails closed as an invalid
   // definition.
   async function installAndApproveWorkflowSource(
     params: InstallAndApproveWorkflowSourceParams,

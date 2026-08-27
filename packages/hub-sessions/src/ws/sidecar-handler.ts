@@ -442,7 +442,7 @@ export type SidecarAllocationRouter = {
     rawMessage: string,
     messageId: string,
   ): Promise<void>;
-  /** Deliver an idempotent signal to the exact exclusive generation. */
+  /** Deliver an idempotent signal to the exact provisioned generation. */
   sendSignalDeliverToAllocation(
     target: AllocatedSidecarTarget,
     opts: {
@@ -616,7 +616,7 @@ export function createSidecarRouter(
     // barrier closed. Re-materializing at redelivery time is unsafe (it carries
     // commit/authority semantics); replaying the same bytes is not.
     runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] };
-    /** Present for a durable trigger pinned to an exclusive allocation. */
+    /** Present for a durable trigger pinned to a provisioned allocation. */
     allocatedTarget?: AllocatedSidecarTarget;
   };
   const pendingMail = new Map<string, Map<string, PendingMailEntry>>();

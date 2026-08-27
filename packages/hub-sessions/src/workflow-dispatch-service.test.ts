@@ -50,7 +50,6 @@ function allocation(
     provisionerApiVersion: 1,
     provisionerBindingFingerprint: "test:v1",
     sidecarId: "sidecar-1",
-    placement: { sharing: "exclusive", reuse: "never" },
     status: "allocated",
     generation: 2,
     ensureAcceptedGeneration: 2,
