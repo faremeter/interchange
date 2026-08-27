@@ -1205,7 +1205,6 @@ export function createWorkflowSupervisor(
             mailbox: MAILBOX_INBOX_DIR,
             uid,
             headers: decoded.headers,
-            commit,
           },
         });
       });

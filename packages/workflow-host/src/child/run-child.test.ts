@@ -767,7 +767,6 @@ describe("runWorkflowChild", () => {
           date: "",
           messageId: "<m7@integration>",
         },
-        commit: "commit-1",
       },
     });
     // Give the child time to route the frame and the registry's microtask time
