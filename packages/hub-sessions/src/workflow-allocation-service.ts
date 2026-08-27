@@ -1,20 +1,14 @@
 import {
   createSidecarAllocationStore,
   createWorkflowRunLaunchSpecStore,
-  getAncestorChain,
   resolveSourcesByOfferingIds,
   type DB,
   type SidecarAllocation,
 } from "@intx/db";
-import { grant, tenant as tenantTable, workflowRun } from "@intx/db/schema";
-import { eq, inArray } from "drizzle-orm";
+import { grant, workflowRun } from "@intx/db/schema";
+import { eq } from "drizzle-orm";
 import { generateId } from "@intx/hub-common";
-import {
-  hexEncode,
-  TenantConfig,
-  type CredentialCipher,
-  type SidecarPlacementRequirement,
-} from "@intx/types";
+import { hexEncode, type CredentialCipher } from "@intx/types";
 import type { FrozenApprovalBundle } from "@intx/types/sidecar";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
@@ -22,10 +16,7 @@ import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import { deriveRunAddress, deriveRunAgentId } from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
-import {
-  resolveEffectiveSidecarPlacement,
-  type SidecarPluginRegistry,
-} from "./sidecar-allocation";
+import type { SidecarPluginRegistry } from "./sidecar-allocation";
 import {
   SessionLaunchError,
   type DeployWorkflowDefinitionResult,
@@ -34,17 +25,17 @@ import {
 import type { SidecarAllocationRouter } from "./ws/sidecar-handler";
 import type { InstallAndApproveResult } from "./workflow-probe-gate";
 
-export class ExclusiveWorkflowPlacementError extends Error {
+export class WorkflowProvisioningError extends Error {
   readonly code: string;
 
   constructor(code: string, message: string) {
     super(message);
-    this.name = "ExclusiveWorkflowPlacementError";
+    this.name = "WorkflowProvisioningError";
     this.code = code;
   }
 }
 
-export type PrepareExclusiveWorkflowDeploymentArgs = {
+export type PrepareProvisionedWorkflowDeploymentArgs = {
   readonly tenantId: string;
   readonly anchorRunId: string;
   readonly deploymentDomain: string;
@@ -58,9 +49,6 @@ export type PrepareExclusiveWorkflowDeploymentArgs = {
    */
   readonly pin?: string;
   readonly definitionAssetId: string;
-  readonly placement: SidecarPlacementRequirement & {
-    readonly sharing: "exclusive";
-  };
   readonly sessionId: string;
   readonly sourceAuthorityPrincipalId: string;
   readonly sourceOfferingIds: readonly string[];
@@ -69,7 +57,7 @@ export type PrepareExclusiveWorkflowDeploymentArgs = {
   readonly toolPackagePins?: readonly ToolPackagePin[];
 };
 
-export type PreparedExclusiveWorkflowDeployment = {
+export type PreparedProvisionedWorkflowDeployment = {
   readonly anchorRunId: string;
   readonly deploymentAddress: string;
   readonly allocationId: string;
@@ -77,9 +65,9 @@ export type PreparedExclusiveWorkflowDeployment = {
 };
 
 export type WorkflowAllocationService = {
-  prepareExclusiveDeployment(
-    args: PrepareExclusiveWorkflowDeploymentArgs,
-  ): Promise<PreparedExclusiveWorkflowDeployment>;
+  prepareProvisionedDeployment(
+    args: PrepareProvisionedWorkflowDeploymentArgs,
+  ): Promise<PreparedProvisionedWorkflowDeployment>;
   deployReadyAllocation(
     allocation: SidecarAllocation,
   ): Promise<DeployWorkflowDefinitionResult | null>;
@@ -102,36 +90,6 @@ function randomAllocationId(): string {
   return `sal_${hexEncode(crypto.getRandomValues(new Uint8Array(16)))}`;
 }
 
-/** Resolve the tenant-inherited sidecar placement into one launch decision. */
-export async function resolveWorkflowSidecarPlacement(
-  db: DB["db"],
-  tenantId: string,
-): Promise<SidecarPlacementRequirement | null> {
-  const tenantIds = await getAncestorChain(db, tenantId);
-  const rows = await db.query.tenant.findMany({
-    where: inArray(tenantTable.id, tenantIds),
-    columns: { id: true, config: true },
-  });
-  const configsByTenantId = new Map(
-    rows.map((row) => [
-      row.id,
-      row.config === null
-        ? TenantConfig.assert({})
-        : TenantConfig.assert(row.config),
-    ]),
-  );
-  const tenantConfigs = tenantIds.map((id) => {
-    const config = configsByTenantId.get(id);
-    if (config === undefined) {
-      throw new Error(
-        `Tenant ${id} disappeared while resolving sidecar placement`,
-      );
-    }
-    return config;
-  });
-  return resolveEffectiveSidecarPlacement({ tenantConfigs });
-}
-
 export function createWorkflowAllocationService({
   db,
   plugins,
@@ -144,28 +102,25 @@ export function createWorkflowAllocationService({
   const allocationStore = createSidecarAllocationStore(db);
   const launchSpecStore = createWorkflowRunLaunchSpecStore(db);
 
-  async function prepareExclusiveDeployment(
-    args: PrepareExclusiveWorkflowDeploymentArgs,
-  ): Promise<PreparedExclusiveWorkflowDeployment> {
-    // Fail closed before any probe: exclusive placement has no meaning without a
-    // provisioner to stand up its dedicated sidecar, and the shared-capacity
-    // probe below is wasted work if no provisioner exists. (In-tree this is
-    // always null -- exclusive is dormant -- so a live prepare never runs here.)
+  async function prepareProvisionedDeployment(
+    args: PrepareProvisionedWorkflowDeploymentArgs,
+  ): Promise<PreparedProvisionedWorkflowDeployment> {
+    // Fail closed before any probe when no provisioner can satisfy the request.
     const provisioner = plugins.getDefaultProvisioner();
     if (provisioner === null) {
-      throw new ExclusiveWorkflowPlacementError(
-        "exclusive_provisioner_unavailable",
-        "No default sidecar provisioner is configured for exclusive workflows",
+      throw new WorkflowProvisioningError(
+        "provisioner_unavailable",
+        "No default sidecar provisioner is configured",
       );
     }
     if (args.sourceOfferingIds.length === 0) {
-      throw new ExclusiveWorkflowPlacementError(
+      throw new WorkflowProvisioningError(
         "invalid_source_offerings",
-        "Exclusive workflow deployment requires at least one catalog offering",
+        "Provisioned workflow deployment requires at least one catalog offering",
       );
     }
     if (!args.sourceOfferingIds.includes(args.defaultSourceOfferingId)) {
-      throw new ExclusiveWorkflowPlacementError(
+      throw new WorkflowProvisioningError(
         "invalid_source_offerings",
         "The default source offering must be present in the source offering chain",
       );
@@ -178,14 +133,14 @@ export function createWorkflowAllocationService({
       credentialCipher,
     );
     if (!sourceCheck.ok) {
-      throw new ExclusiveWorkflowPlacementError(
+      throw new WorkflowProvisioningError(
         "source_offering_unavailable",
         `Catalog offering ${sourceCheck.offeringId} cannot be used by the deployment authority`,
       );
     }
 
-    // Probe + gate + freeze the code-sourced definition ONCE, on shared
-    // capacity, at request time. The freeze is sidecar-agnostic (a wire hash
+    // Probe + gate + freeze the code-sourced definition once at request time.
+    // The freeze is sidecar-agnostic (a wire hash
     // over the inert projection plus the resolved closure), so the frozen bundle
     // deploys later to the dedicated allocation with no re-probe. A non-approval
     // surfaces as a `WorkflowDefinitionInvalidError` from the deployer, which the
@@ -200,7 +155,7 @@ export function createWorkflowAllocationService({
       // `installAndApproveWorkflowSource` already fails closed on a non-approval;
       // restate the narrowing so the frozen bundle below reads the ok arm.
       throw new Error(
-        "prepareExclusiveDeployment: install did not yield an approved definition",
+        "prepareProvisionedDeployment: install did not yield an approved definition",
       );
     }
     // Capture the narrowed values before the transaction: TS drops the
@@ -272,7 +227,6 @@ export function createWorkflowAllocationService({
           provisionerId: provisioner.id,
           provisionerApiVersion: provisioner.apiVersion,
           provisionerBindingFingerprint: provisioner.bindingFingerprint,
-          placement: args.placement,
           now: createdAt,
         },
         tx,
@@ -397,5 +351,5 @@ export function createWorkflowAllocationService({
     });
   }
 
-  return { prepareExclusiveDeployment, deployReadyAllocation };
+  return { prepareProvisionedDeployment, deployReadyAllocation };
 }

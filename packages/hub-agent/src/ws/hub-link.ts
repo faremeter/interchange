@@ -569,7 +569,7 @@ export type HubLinkConfig = {
   credentialsInboundRouter?: CredentialsInboundRouter;
   /**
    * Restore boundary for Hub→sidecar workflow-run packs. Optional for hosts
-   * that never accept exclusive workflow allocations; receiving such a pack
+   * that never accept provisioned workflow allocations; receiving such a pack
    * without an applier fails closed with `repo.pack.reject`.
    */
   applyWorkflowRunPack?: WorkflowRunPackApplier;

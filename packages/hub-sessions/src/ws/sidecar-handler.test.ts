@@ -5636,7 +5636,7 @@ describe("SidecarRouter", () => {
     });
   });
 
-  describe("exclusive allocation routing", () => {
+  describe("provisioned allocation routing", () => {
     const allocationIdentity = {
       kind: "allocated" as const,
       sidecarId: "sc-allocated",

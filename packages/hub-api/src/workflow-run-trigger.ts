@@ -112,8 +112,8 @@ export type TriggerWorkflowRunResult =
  * Build the workflow-run trigger over its stable per-app dependencies. The
  * returned function fires one trigger occurrence per call: it validates the
  * message, resolves the deployment's anchor run, materializes the run's grants,
- * assembles the signed message, and delivers it either durably (exclusive
- * allocation) or over the sidecar's shared capacity, returning a discriminated
+ * assembles the signed message, and delivers it either durably (provisioned
+ * allocation) or over ordinary sidecar capacity, returning a discriminated
  * result the caller maps onto its route surface.
  */
 export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
@@ -408,7 +408,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
             error: {
               code: "workflow_dispatch_unavailable",
               message:
-                "Durable workflow dispatch is unavailable for this exclusive deployment",
+                "Durable workflow dispatch is unavailable for this provisioned deployment",
             },
           },
         };

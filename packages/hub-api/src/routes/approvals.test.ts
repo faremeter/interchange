@@ -107,7 +107,7 @@ function createMockDB(
   ],
   operationOrder: string[] = [],
 ): DB["db"] {
-  // The resolver locks an exclusive allocation inside `db.transaction`; the
+  // The resolver locks a provisioned allocation inside `db.transaction`; the
   // injected stores ignore the rest of the tx handle. The list route reads
   // `db.query.approval.findMany`; the mock ignores the where/order (tenant
   // scoping and keyset ordering are exercised by the real-DB tests) and returns
@@ -572,7 +572,7 @@ describe("POST /approvals/:approvalId/approve", () => {
     expect(call.payload).toEqual({ outcome: "approved" });
   });
 
-  test("atomically enqueues an exclusive approval decision for replay", async () => {
+  test("atomically enqueues a provisioned approval decision for replay", async () => {
     const signalCalls: SignalCall[] = [];
     const claimCalls: ClaimCall[] = [];
     const enqueues: WorkflowSignalDispatchEnqueue[] = [];
@@ -749,7 +749,7 @@ describe("POST /approvals/:approvalId/approve", () => {
     });
   }
 
-  test("does not resolve an exclusive approval without durable dispatch", async () => {
+  test("does not resolve a provisioned approval without durable dispatch", async () => {
     const claimCalls: ClaimCall[] = [];
     const resolveCalls: ResolveCall[] = [];
     const app = createTestApp({

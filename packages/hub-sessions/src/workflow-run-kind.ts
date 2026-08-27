@@ -3569,7 +3569,7 @@ export type MarkConsumedArgs = {
    * Present when the supervisor deliberately refused the message instead of
    * delivering it to the run. The consumed entry remains the durable dedup
    * record, while Hub projection uses this detail to fail (rather than settle)
-   * an exclusive-dispatch row.
+   * an allocation-dispatch row.
    */
   rejection?: {
     code: string;

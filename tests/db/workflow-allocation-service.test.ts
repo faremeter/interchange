@@ -74,7 +74,7 @@ const provisioner: SidecarProvisioner = {
 };
 
 // A code-sourced deploy: the workflow asset's own git subtree at a pinned
-// commit, evaluated at `entry`. The exclusive prepare freezes the probe of THIS
+// commit, evaluated at `entry`. Provisioning freezes the probe of THIS
 // source on shared capacity, then deploys the frozen bundle to the allocation.
 const SOURCE: WorkflowDefinitionSource = {
   kind: "asset",
@@ -229,7 +229,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
         },
         preparedDeployer: {
-          // The exclusive prepare freezes the definition on shared capacity: the
+          // Preparation freezes the definition before provisioning: the
           // real path persists a workflow_definition row and returns its id, so
           // the mock does the same (the anchor row FKs to it).
           installAndApproveWorkflowSource: async (params) => {
@@ -266,14 +266,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         now: () => new Date("2026-08-03T12:00:00.000Z"),
       });
 
-      const prepared = await service.prepareExclusiveDeployment({
+      const prepared = await service.prepareProvisionedDeployment({
         tenantId: TENANT_ID,
         anchorRunId: "dep-workflow-allocation",
         deploymentDomain: `${TENANT_ID}.example.test`,
         source: SOURCE,
         entry: ENTRY,
         definitionAssetId: ASSET_ID,
-        placement: { sharing: "exclusive", reuse: "same-deployment" },
         sessionId: "ses-workflow-allocation",
         sourceAuthorityPrincipalId: PRINCIPAL_ID,
         sourceOfferingIds: [OFFERING_ID],
@@ -483,7 +482,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       source: SOURCE,
       entry: ENTRY,
       definitionAssetId: ASSET_ID,
-      placement: { sharing: "exclusive", reuse: "same-deployment" },
       sessionId: SESSION_ID,
       sourceAuthorityPrincipalId: PRINCIPAL_ID,
       sourceOfferingIds: [OFFERING_ID],
@@ -554,7 +552,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           deployPreparedCodeSourcedWorkflow,
         });
 
-        const prepared = await service.prepareExclusiveDeployment(prepareArgs);
+        const prepared =
+          await service.prepareProvisionedDeployment(prepareArgs);
         expect(prepared.deploymentAddress).toBe(WORKFLOW_RUN_ADDRESS);
         const allocated = await bindAndAllocate(prepared.allocationId);
 
@@ -612,7 +611,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           deployPreparedCodeSourcedWorkflow,
         });
         const prepared =
-          await prepareService.prepareExclusiveDeployment(prepareArgs);
+          await prepareService.prepareProvisionedDeployment(prepareArgs);
         const allocated = await bindAndAllocate(prepared.allocationId);
 
         // Deploy with a FRESH service instance whose freeze step throws: a

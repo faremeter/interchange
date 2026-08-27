@@ -82,13 +82,11 @@ export {
 export {
   createSidecarPluginRegistry,
   createSidecarAllocationReconciler,
-  resolveEffectiveSidecarPlacement,
   type CreateSidecarPluginRegistryOpts,
   type DestroySidecarRequest,
   type DestroySidecarResult,
   type EnsureSidecarRequest,
   type EnsureSidecarResult,
-  type ResolveEffectiveSidecarPlacementOpts,
   type SidecarCredentialIdentity,
   type SidecarCredentialResolver,
   type SidecarOperationFailure,
@@ -101,10 +99,9 @@ export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 export { workflowSourceAssetMountPath } from "./workflow-closure-resolution";
 export {
   createWorkflowAllocationService,
-  ExclusiveWorkflowPlacementError,
-  resolveWorkflowSidecarPlacement,
-  type PrepareExclusiveWorkflowDeploymentArgs,
-  type PreparedExclusiveWorkflowDeployment,
+  WorkflowProvisioningError,
+  type PrepareProvisionedWorkflowDeploymentArgs,
+  type PreparedProvisionedWorkflowDeployment,
   type WorkflowAllocationService,
   type WorkflowAllocationServiceDeps,
 } from "./workflow-allocation-service";

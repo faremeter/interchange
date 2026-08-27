@@ -1,8 +1,4 @@
 export {
-  resolveEffectiveSidecarPlacement,
-  type ResolveEffectiveSidecarPlacementOpts,
-} from "./placement-policy";
-export {
   createSidecarPluginRegistry,
   type CreateSidecarPluginRegistryOpts,
   type SidecarPluginRegistry,

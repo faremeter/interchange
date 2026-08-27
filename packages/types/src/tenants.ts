@@ -1,10 +1,7 @@
 import { type } from "arktype";
 
-import { SidecarPlacementRequirement } from "./sidecar-placement";
-
 export const TenantConfig = type({
   "[string]": "unknown",
-  "sidecarPlacement?": SidecarPlacementRequirement,
 });
 export type TenantConfig = typeof TenantConfig.infer;
 

@@ -70,8 +70,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "test-provisioner",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test-provisioner:pack-fence",
-        placementSharing: "exclusive",
-        sidecarReuse: "never",
         status: "allocated",
         generation: 1,
         ensureAcceptedGeneration: 1,

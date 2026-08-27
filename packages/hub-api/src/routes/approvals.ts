@@ -162,12 +162,12 @@ type PendingFailureKind = Extract<
  * caller in one tenant must not learn that an approval id exists in another.
  *
  * The claim and the resolve happen inside a single transaction so a duplicate
- * delivery cannot observe a claimed-but-unresolved intermediate state. For an
- * exclusive deployment, that transaction also locks the allocation and
+ * delivery cannot observe a claimed-but-unresolved intermediate state. For a
+ * provisioned deployment, that transaction also locks the allocation and
  * enqueues the stable signal id and payload. Delivery then follows the
  * allocation's durable, generation-fenced dispatch path and remains replayable
- * until workflow Git records the signal as received. Shared deployments retain
- * their direct sidecar delivery behavior.
+ * until workflow Git records the signal as received. Deployments without an
+ * allocation retain their direct sidecar delivery behavior.
  */
 export async function resolveApproval(
   deps: CreateApprovalRoutesDeps,
@@ -249,13 +249,13 @@ export async function resolveApproval(
       }
       return failIfStillPending("dispatch_unavailable");
     }
-    const exclusiveDispatchService =
+    const provisionedDispatchService =
       allocation === undefined ? undefined : workflowDispatchService;
 
-    if (exclusiveDispatchService !== undefined) {
+    if (provisionedDispatchService !== undefined) {
       if (readRunLifecycles === undefined) {
         throw new Error(
-          "exclusive approval dispatch is missing its durable lifecycle reader",
+          "provisioned approval dispatch is missing its durable lifecycle reader",
         );
       }
       // Pack receipt advances the committed Git ref while holding this same
@@ -331,8 +331,8 @@ export async function resolveApproval(
       );
     }
 
-    if (exclusiveDispatchService !== undefined) {
-      await exclusiveDispatchService.enqueueSignal(
+    if (provisionedDispatchService !== undefined) {
+      await provisionedDispatchService.enqueueSignal(
         {
           id: `dispatch:${approval.anchorRunId}:${signalId}`,
           anchorRunId: approval.anchorRunId,
@@ -352,7 +352,7 @@ export async function resolveApproval(
       kind: "resolved",
       claim,
       resolved,
-      exclusiveDispatchService,
+      provisionedDispatchService,
     } as const;
   });
 
@@ -371,10 +371,10 @@ export async function resolveApproval(
     await propagateRunGrantsToSidecar(deps, approval, args.tenantId);
   }
 
-  if (claimed.exclusiveDispatchService !== undefined) {
+  if (claimed.provisionedDispatchService !== undefined) {
     // enqueueSignal may wake before its surrounding transaction commits. Wake
     // once more after commit so the row cannot wait for the periodic sweep.
-    claimed.exclusiveDispatchService.wake();
+    claimed.provisionedDispatchService.wake();
     return { kind: "resolved", approval: claimed.resolved };
   }
 
@@ -731,7 +731,7 @@ function respond(c: Context<TenantEnv>, result: ResolveApprovalOutcome) {
           error: {
             code: "workflow_dispatch_unavailable",
             message:
-              "Durable workflow dispatch is unavailable for this exclusive deployment",
+              "Durable workflow dispatch is unavailable for this provisioned deployment",
           },
         },
         503,
