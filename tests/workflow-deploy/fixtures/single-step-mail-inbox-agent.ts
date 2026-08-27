@@ -1,9 +1,10 @@
 // Source-entry builder for a single-step workflow whose agent PINS the real
 // `@intx/tools-mail` bundle, so it carries the full mail toolset --
-// `mail_send`, `mail_reply`, `mail_search`, `mail_read`, `mail_wait`. Unlike
-// the `single-step-mail-tool` fixture (whose inline module ships only a
-// `mail_send` variant), this imports the production sidecar bundle so the
-// deployed agent exercises the real inbound read/search/wait handlers against
+// `mail_send`, `mail_reply`, `mail_search`, `mail_read`, `mail_wait`,
+// `mail_flag`, `mail_expunge`. Unlike the `single-step-mail-tool` fixture
+// (whose inline module ships only a `mail_send` variant), this imports the
+// production sidecar bundle so the deployed agent exercises the real inbound
+// read/search/wait handlers and the flag/expunge mutation handlers against
 // the supervisor-backed transport.
 //
 // The bundle resolves `mail.transport` from `env.capabilities` (the host
