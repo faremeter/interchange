@@ -304,13 +304,21 @@ export const WORKFLOW_RUN_AGENT_STATE_PREFIX = "agent-state";
  *
  *   - `mailbox/INBOX/index.json` — the mailbox index. MUTABLE: the
  *     backing rewrites it on every flush, so it is exempt from the
- *     append-only / deletion-direction walks the `<uid>.eml` blobs are
- *     subject to.
+ *     retained-blob byte-equality walk the `<uid>.eml` blobs are subject
+ *     to. It must nonetheless PERSIST once it existed: dropping it drops
+ *     the whole mailbox and resets uidValidity/uidNext on the next open.
  *   - `mailbox/INBOX/<uid>.eml` — one message per file, carrying the
- *     raw signed message bytes. `<uid>` is a decimal integer >= 1. The
- *     bytes are opaque and IMMUTABLE once written: a `<uid>.eml` present
- *     in the prior tree must reappear byte-identically in the
- *     prospective tree, exactly like `runs/<runId>/blobs/`.
+ *     raw signed message bytes. `<uid>` is a decimal integer >= 1. A
+ *     RETAINED `<uid>.eml` (present in both prior and prospective) is
+ *     opaque and IMMUTABLE: it must reappear byte-identically, exactly
+ *     like `runs/<runId>/blobs/`. A prior `<uid>.eml` may be ABSENT from
+ *     the prospective tree — that is the warm agent expunging a message.
+ *     The raw bytes are not lost: they stay reachable through the parent
+ *     commit, and a `workflow-run` repo's objects are never GC'd (its
+ *     kind is off the GC allow-list), so an expunged message survives in
+ *     history for the life of the run repo. The audit trail rests on
+ *     "these objects are never pruned", not on the live tree being
+ *     monotonic.
  *
  * The only entries permitted under `mailbox/` are the `INBOX/`
  * directory; the only entries permitted under `mailbox/INBOX/` are
@@ -2329,8 +2337,10 @@ async function validateAgentStateSubtree(
 
 /**
  * Enforce mailbox `<uid>.eml` immutability via prior-tree byte equality.
- * A message blob present in the prior tree must carry byte-identical
- * contents in the prospective tree. Mirrors the blob-immutability
+ * A message blob RETAINED from the prior tree (present in both) must carry
+ * byte-identical contents in the prospective tree. A prior blob absent
+ * from the prospective tree is a legal expunge and never reaches here
+ * (the caller only checks retained paths). Mirrors the blob-immutability
  * discipline (`checkBlobPriorByteEquality`) with mailbox-specific wording.
  */
 async function checkMailboxEmlPriorByteEquality(
@@ -2344,14 +2354,14 @@ async function checkMailboxEmlPriorByteEquality(
   if (prior.byteLength !== prospective.byteLength) {
     return {
       ok: false,
-      reason: `mailbox message ${emlPath} bytes diverge from the prior tree (lengths ${String(prior.byteLength)} vs ${String(prospective.byteLength)}); mailbox messages are append-only`,
+      reason: `mailbox message ${emlPath} bytes diverge from the prior tree (lengths ${String(prior.byteLength)} vs ${String(prospective.byteLength)}); a retained mailbox message is immutable`,
     };
   }
   for (let i = 0; i < prior.byteLength; i++) {
     if (prior[i] !== prospective[i]) {
       return {
         ok: false,
-        reason: `mailbox message ${emlPath} bytes diverge from the prior tree at offset ${String(i)}; mailbox messages are append-only`,
+        reason: `mailbox message ${emlPath} bytes diverge from the prior tree at offset ${String(i)}; a retained mailbox message is immutable`,
       };
     }
   }
@@ -2366,18 +2376,21 @@ async function checkMailboxEmlPriorByteEquality(
  * leaf blob rather than a nested directory (a blob lists as empty, a
  * directory lists its children -- the same discrimination the agent-state
  * and mail-parts walks use). Returns the flat set of `<uid>.eml` blob
- * paths so the caller can apply immutability and deletion-direction
- * checks against the prior tree. An absent `mailbox/` subtree lists as
- * empty and contributes no message paths.
+ * paths so the caller can hold retained messages immutable against the
+ * prior tree, plus `indexPresent` -- whether `index.json` exists under
+ * the INBOX -- so the caller can enforce index continuity. An absent
+ * `mailbox/` subtree lists as empty and contributes no message paths.
  */
 async function enumerateMailboxInbox(
   listDir: (path: string) => Promise<string[]>,
 ): Promise<
-  { ok: true; emlPaths: Set<string> } | { ok: false; reason: string }
+  | { ok: true; emlPaths: Set<string>; indexPresent: boolean }
+  | { ok: false; reason: string }
 > {
   const emlPaths = new Set<string>();
+  let indexPresent = false;
   const mailboxChildren = await listDir(WORKFLOW_RUN_MAILBOX_PREFIX);
-  if (mailboxChildren.length === 0) return { ok: true, emlPaths };
+  if (mailboxChildren.length === 0) return { ok: true, emlPaths, indexPresent };
   for (const child of mailboxChildren) {
     if (child !== WORKFLOW_RUN_MAILBOX_INBOX_DIR) {
       return {
@@ -2407,6 +2420,7 @@ async function enumerateMailboxInbox(
           reason: `mailbox ${entryPath} is a directory; the mailbox index must be a single file`,
         };
       }
+      indexPresent = true;
       continue;
     }
     if (!MAILBOX_EML_FILENAME_RE.test(entry)) {
@@ -2423,17 +2437,29 @@ async function enumerateMailboxInbox(
     }
     emlPaths.add(entryPath);
   }
-  return { ok: true, emlPaths };
+  return { ok: true, emlPaths, indexPresent };
 }
 
 /**
  * Validate the `mailbox/INBOX/` subtree (design conversational-mailbox).
- * Enforces the subtree shape via `enumerateMailboxInbox`, then holds the
- * `<uid>.eml` message blobs immutable against the prior tree in both
- * directions: a retained message must be byte-identical, and a message
- * present in the prior tree must reappear (append-only, no deletion). The
- * `index.json` entry is mutable and carries neither constraint. Mirrors
- * the blob-immutability discipline the `runs/<runId>/blobs/` subtree uses.
+ * Enforces the subtree shape via `enumerateMailboxInbox`, then holds a
+ * RETAINED `<uid>.eml` message blob byte-identical against the prior tree.
+ * A prior `<uid>.eml` absent from the prospective tree is a legal expunge:
+ * the warm agent physically removes a message from the live INBOX. The raw
+ * bytes are not lost -- they stay reachable through the parent commit, and
+ * a `workflow-run` repo's objects are never GC'd (its kind is excluded
+ * from the GC allow-list; see `DEFAULT_GC_KINDS` in `agent-repo`), so the
+ * expunged message survives in history for the life of the run repo. The
+ * audit trail therefore rests on "these objects are never pruned", not on
+ * the live tree being monotonic.
+ *
+ * The `index.json` entry is mutable, but must PERSIST once it existed: if
+ * the prior tree carried an index and the prospective tree drops it, the
+ * whole mailbox has vanished, which would reset `uidValidity` / `uidNext`
+ * on the next open and force uid reuse from 1. That is rejected. A
+ * well-behaved backing always rewrites `index.json` on flush, so the guard
+ * fails no legitimate push. Mirrors the blob-immutability discipline the
+ * `runs/<runId>/blobs/` subtree uses, minus the deletion direction.
  */
 async function validateMailboxSubtree(
   listDir: (path: string) => Promise<string[]>,
@@ -2459,11 +2485,10 @@ async function validateMailboxSubtree(
     );
     if (!immutable.ok) return immutable;
   }
-  for (const emlPath of prior.emlPaths) {
-    if (prospective.emlPaths.has(emlPath)) continue;
+  if (prior.indexPresent && !prospective.indexPresent) {
     return {
       ok: false,
-      reason: `mailbox message ${emlPath} present in the prior tree is missing from the prospective tree; mailbox messages are append-only`,
+      reason: `mailbox ${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE} present in the prior tree is missing from the prospective tree; the mailbox index must persist so uidValidity/uidNext continuity holds across reopens`,
     };
   }
   return { ok: true };
@@ -2566,9 +2591,10 @@ export const workflowRunKindHandler: KindHandler = {
     if (mailboxPresent) {
       // Enter mailbox validation when the prospective OR prior tree
       // carries a `mailbox/` subtree. A prospective tree that drops the
-      // subtree while the prior tree held `<uid>.eml` messages must still
-      // go through the walk so the append-only deletion-direction guard
-      // fires on the vanished messages.
+      // subtree while the prior tree held one must still go through the
+      // walk so the index-continuity guard fires on the vanished
+      // `index.json` (a message-only expunge is legal; dropping the whole
+      // mailbox is not).
       const mailboxCheck = await validateMailboxSubtree(
         listDir,
         readBlob,

@@ -1525,10 +1525,11 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
 describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
   // The substrate mailbox backing commits the warm agent's durable inbox
   // under `mailbox/INBOX/`: a MUTABLE `index.json` rewritten on each flush
-  // plus IMMUTABLE `<uid>.eml` message blobs carrying raw signed bytes.
-  // `<uid>` is a decimal integer >= 1. Message blobs are held append-only
-  // via prior-tree byte equality, mirroring the `runs/<runId>/blobs/`
-  // discipline; the index is exempt.
+  // plus `<uid>.eml` message blobs carrying raw signed bytes. `<uid>` is a
+  // decimal integer >= 1. A RETAINED message blob is held immutable via
+  // prior-tree byte equality, mirroring the `runs/<runId>/blobs/`
+  // discipline; a prior blob may be ABSENT (a legal expunge). The index is
+  // exempt from byte equality but must persist once it existed.
 
   const INBOX = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}`;
 
@@ -1674,7 +1675,11 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     expect(r.ok).toBe(true);
   });
 
-  test("rejects deleting a prior message (append-only)", async () => {
+  test("accepts expunging a prior message while the index persists", async () => {
+    // The warm agent physically removes a message from the live INBOX. The
+    // index is rewritten (mutable) and retained; the `<uid>.eml` blob is
+    // dropped from the tree but survives in git history because a
+    // workflow-run repo is never GC'd.
     const prior = mailboxTree({
       [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
       "1.eml": "raw-bytes",
@@ -1684,20 +1689,44 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
       [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [] }),
     });
     const r = await validate(prospective, { priorFiles: prior });
+    expect(r.ok).toBe(true);
+  });
+
+  test("still holds a retained message immutable while its sibling is expunged", async () => {
+    // Expunging uid 1 is legal, but a co-committed mutation of the retained
+    // uid 2 must still be rejected -- expunge relaxes the deletion direction,
+    // not the byte-equality of messages that stay.
+    const prior = mailboxTree({
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1, 2] }),
+      "1.eml": "first",
+      "2.eml": "second",
+    });
+    const prospective = mailboxTree({
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [2] }),
+      "2.eml": "second-mutated",
+    });
+    const r = await validate(prospective, { priorFiles: prior });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(
-      /mailbox message mailbox\/INBOX\/1\.eml present in the prior tree is missing/,
+      /mailbox message mailbox\/INBOX\/2\.eml bytes diverge from the prior tree/,
     );
   });
 
-  test("rejects dropping the whole mailbox subtree that held messages", async () => {
-    const prior = mailboxTree({ "1.eml": "raw-bytes" });
+  test("rejects dropping the whole mailbox subtree (index continuity)", async () => {
+    // Dropping the whole `mailbox/` subtree removes the index, which would
+    // reset uidValidity/uidNext on the next open and force uid reuse from 1.
+    // A real backing keeps index.json even after expunging every message, so
+    // this rejects only the pathological whole-subtree drop.
+    const prior = mailboxTree({
+      [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: JSON.stringify({ messages: [1] }),
+      "1.eml": "raw-bytes",
+    });
     const prospective = { [WORKFLOW_RUN_GITIGNORE_PATH]: "" };
     const r = await validate(prospective, { priorFiles: prior });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
-    expect(r.reason).toMatch(/present in the prior tree is missing/);
+    expect(r.reason).toMatch(/the mailbox index must persist/);
   });
 });
 
