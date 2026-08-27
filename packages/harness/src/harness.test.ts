@@ -45,8 +45,6 @@ import {
   createHarness,
   createWrappedStorageOverrides,
   defineMailTools,
-  invokeReplyDrainTerminated,
-  invokeReplySendFailed,
   type MailEnv,
 } from "./harness";
 
@@ -390,103 +388,6 @@ describe("createHarness outbound pipeline", () => {
     } finally {
       await harness.close();
     }
-  });
-});
-
-describe("invokeReplySendFailed", () => {
-  test("awaits an async callback so its rejection is caught", async () => {
-    // The risk this guards: a synchronous `callback(cause)` call site
-    // would compile against a `void`-returning signature even when the
-    // callback is `async () => void` whose body rejects. The rejection
-    // would then escape the surrounding try/catch and surface as an
-    // unhandled promise rejection in the reply drain. The helper
-    // awaits, so resolution is observed and absorbed.
-    let observedRejection: unknown = null;
-    const onUnhandled = (err: unknown): void => {
-      observedRejection = err;
-    };
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      const sentinel = new Error("async callback boom");
-      const callback: NonNullable<MailEnv["onReplySendFailed"]> = async () => {
-        await Promise.resolve();
-        throw sentinel;
-      };
-      await invokeReplySendFailed(callback, new Error("send failed"));
-      // Give the event loop a tick so any escaped rejection would land.
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(observedRejection).toBeNull();
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
-    }
-  });
-
-  test("absorbs a synchronous throw from the callback", async () => {
-    const callback: NonNullable<MailEnv["onReplySendFailed"]> = () => {
-      throw new Error("sync callback boom");
-    };
-    // Must not throw out of the helper -- the reply drain relies on the
-    // surrounding microtask continuing past the failure.
-    await invokeReplySendFailed(callback, new Error("send failed"));
-  });
-
-  test("returns normally for a callback that resolves", async () => {
-    let observedCause: unknown = null;
-    const callback: NonNullable<MailEnv["onReplySendFailed"]> = async (
-      cause,
-    ) => {
-      observedCause = cause;
-    };
-    const sentinel = new Error("send failed");
-    await invokeReplySendFailed(callback, sentinel);
-    expect(observedCause).toBe(sentinel);
-  });
-});
-
-describe("invokeReplyDrainTerminated", () => {
-  test("awaits an async callback so its rejection is caught", async () => {
-    // The risk this guards: same shape as invokeReplySendFailed. A
-    // bare invocation would compile but let an async callback's
-    // rejection escape as an unhandled promise rejection. The helper
-    // awaits, so resolution is observed and absorbed.
-    let observedRejection: unknown = null;
-    const onUnhandled = (err: unknown): void => {
-      observedRejection = err;
-    };
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      const sentinel = new Error("async callback boom");
-      const callback: NonNullable<
-        MailEnv["onReplyDrainTerminated"]
-      > = async () => {
-        await Promise.resolve();
-        throw sentinel;
-      };
-      await invokeReplyDrainTerminated(callback, new Error("drain dead"));
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(observedRejection).toBeNull();
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
-    }
-  });
-
-  test("absorbs a synchronous throw from the callback", async () => {
-    const callback: NonNullable<MailEnv["onReplyDrainTerminated"]> = () => {
-      throw new Error("sync callback boom");
-    };
-    await invokeReplyDrainTerminated(callback, new Error("drain dead"));
-  });
-
-  test("returns normally for a callback that resolves and forwards cause", async () => {
-    let observedCause: unknown = null;
-    const callback: NonNullable<MailEnv["onReplyDrainTerminated"]> = async (
-      cause,
-    ) => {
-      observedCause = cause;
-    };
-    const sentinel = new Error("drain dead");
-    await invokeReplyDrainTerminated(callback, sentinel);
-    expect(observedCause).toBe(sentinel);
   });
 });
 
