@@ -1300,6 +1300,98 @@ base-build behavior of the recursive model, with **no sandboxed sub-child yet**.
   loud — a silent downgrade to in-process is a security bug (an
   isolation-requiring node running without isolation).
 
+### Phase 4c-assets — Child-definition per-step asset derivation (model A)
+
+Phase 4c wires the isolation decision and verifies that a child's events and
+writes land under `runs/<childRunId>/...`. It does **not** say where the child
+definition's per-step _assets_ come from — the inference sources its agent steps
+pin, the tool trees they materialize, the grants they authorize against, and the
+sink its events reach. That gap is why `childInvokeStep` is a fail-loud stub
+(`ChildStepNotImplementedError`); this section closes it. The model is **A —
+child definitions are vendored into the parent deployment**, which is already the
+shape of the code: a `childWorkflow` carries its child `{ inline:
+WorkflowDefinition }` (`packages/workflow/src/definition/primitives.ts`), so the
+child travels inside the parent's content-addressed closure. There is no separate
+child deployment and no child `workflow.json`; the assets are derived at **parent
+deploy time** and resolved **in-process** at the rung-0 child.
+
+**Definition and hash.** The child definition is resolved in-memory from the
+parent's re-verified closure (`loadVerifiedWorkflowDefinitionFromClosure` ->
+`childBodiesMap` -> `createInMemorySpawnChild`); the child boot hard-fails rather
+than read a definition off disk. The operative deploy / approval / re-verify hash
+already covers child content: `computeLiveDefinitionHash` /
+`computeWireDefinitionHash` project through `projectChildWorkflow`
+(`packages/workflow/src/live-inert-projector.ts`), which recurses into
+`definition.inline`, so two parents whose child bodies differ hash differently.
+(The runtime `hashDefinition` in `definition/workflow.ts` runs _after_ the inline
+-> `{ ref }` rewrite and sees only the positional `${workflowId}__${stepId}` ref;
+it is deliberately not extended — a child arm there would be dead code that throws
+on function-valued tool factories.)
+
+**Per-step inference sources.** Each child agent step pins its inference source at
+parent deploy through the operator-approval gate (`pickStepInferenceSource`),
+exactly as a top-level or onTrigger-body step does. The pins ride the
+`referencedDefinitions` wire field and stage to
+`assets/workflow/<childBodyRef>/sources.json` via `materializeWorkflowSources`,
+where `<childBodyRef>` is the deploy-minted `${workflowId}__${stepId}` handle. The
+child invoker reads them by that ref (`readBodyStepInferenceSources`). This is a
+new deploy-side producer parallel to `enumerateInertOnTriggerBodies` — the wire
+field and staging loop are shared, but the child enumerator and its per-step
+approval-gate integration are new.
+
+**Per-step tools.** Unlike the onTrigger-body path (which runs toolless), a
+`childWorkflow` step runs real tools — through the same **source-tools** arm the
+top-level source step invoker uses. The child holds the live, re-verified
+`WorkflowDefinition`, so each child step's agent carries live `toolFactories`;
+the invoker builds its env with `sourceTools: true` (and the parent's
+`closurePackageDir` for plugin materialization), which feeds those live factories
+straight into the tool slot. No tool deploy tree is staged and no tool-mark floor
+is recorded: a source tool's runtime name is the bare `definition.name`, for
+which the capability walk already emitted a `tool:<name>` grant into the
+credentials snapshot, so the snapshot authorizes it directly (the floor exists
+only to compensate a _pinned_ tool's namespaced name, which the walk never saw).
+The invoker must not fall through to the pinned-tool arm — with no staged tree it
+resolves the child step's address against the _parent_ deployment's mailbox and
+step count and returns an empty tool set silently, a fail-quiet path a
+tool-bearing child must never take. `sourceTools` and `toolless` are mutually
+exclusive; the child takes `sourceTools`.
+
+**Per-step grants (least-privilege).** The operator approves the transitive
+capability set: the capability walk already folds an inline child's grants into
+the spawning primitive's approval (`collectPrimitiveGrants`), so nothing a child
+step can do exceeds operator consent. At **runtime** each child step runs
+least-privilege rather than inheriting the whole run's flat grant set. Deploy
+stages a per-child-step declared-grant allowlist (the step's own `tool:` /
+`effect:` capabilities plus its credential-requirement ids) beside its
+`sources.json`. `buildChildRunEnv` intersects the run's grants with that allowlist
+**per step**, and writes the result into the single
+`CredentialsSnapshot.steps[].grants` array. That array is the one authority the
+per-child authorize closure reads for **all three** decision kinds — tool-invoke,
+action-step effects, and credential use — so scoping it there bounds every one of
+them. A grant declared only by a sibling top-level step therefore cannot authorize
+a child step's effect or credential. (The flat-inheritance model was not a
+privilege-escalation hole — the union is operator-approved — but it over-grants
+relative to least-privilege, which matters once a real, prompt-injectable agent
+runs in the child.)
+
+**Events.** In-process child step events reach the hub through the rung-0 run's
+`onEvent`, threaded down into the terminal `RunChildWorkflow` seam (which carries
+no sink today; the suspendable/body seam does). Forwarding is a function call up
+the stack, per §3d-bis, terminating in `publishWorkflowInferenceEvent` at the
+DeployRouter.
+
+**Recursion safety.** A monotone depth counter threads through the spawn seam and
+fails loud past a fixed ceiling. This is a **stack-safety bound**, not cycle
+detection: an authored cross-definition cycle is impossible under inline vendoring
+(every lifted `{ ref }` is a strict descendant), so there is nothing to detect —
+but a deeply nested authored chain can still overflow the shared rung-0 stack, and
+the ceiling backstops it. The counter reports absolute depth across both spawn
+seams (the suspendable body rung and the terminal childWorkflow rung).
+
+**No warm-keep.** The child invoker is built cold, with no `warmCache` /
+`durableConversation`: a fan-out branch has no long-lived mail loop to warm-keep
+for, so it instantiates, sends, and tears down per invocation (§6).
+
 ### Phase 5 — Workflow-declared multiplex + retire the in-process runtime
 
 - **Changes.** Generalize the substrate factory + supervisor registry from one
