@@ -156,6 +156,12 @@ const MAILBOX_FLAG_SEEN = "\\Seen";
  * as a workflow turn (a `trigger.fire` or `signal.deliver`).
  */
 const MAILBOX_FLAG_PROCESSED = "$Processed";
+/**
+ * IMAP system flag marking a mailbox entry for expunge. The warm agent sets it
+ * (via `mail_flag`) to consume a processed message; a subsequent `expunge`
+ * sweeps every entry carrying it out of the live INBOX.
+ */
+const MAILBOX_FLAG_DELETED = "\\Deleted";
 
 /**
  * Default crash-loop bound: the supervisor stops respawning and latches
@@ -1416,6 +1422,19 @@ export function createWorkflowSupervisor(
         });
         continue;
       }
+      if (payload.type === "mailbox.mutate.request") {
+        // INBOUND half of mailbox ownership (§3b). The child asked the
+        // supervisor -- the sole mailbox writer -- to apply a flag write or
+        // expunge. Run it off the iterator's loop so the iterator keeps
+        // draining while the store flushes; the handler owns the
+        // `mailbox.mutate.response` reply that resolves the child's awaiter.
+        void handleMailboxMutation(payload.data).catch((cause) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.error`mailbox.mutate.request handler crashed: ${message}`;
+        });
+        continue;
+      }
       if (payload.type === "terminal.event") {
         // The workflow-process child mirrors every terminal-run commit
         // over the control IPC. Fan it out to the COHORT'S broadcaster
@@ -1796,6 +1815,112 @@ export function createWorkflowSupervisor(
       const reason = cause instanceof Error ? cause.message : String(cause);
       await controlSender.send({
         type: "outbound.result",
+        data: {
+          requestId: data.requestId,
+          result: { ok: false, reason },
+        },
+      });
+    }
+  }
+
+  /**
+   * Apply a child-requested mailbox mutation to the owned store (INBOUND
+   * half of mailbox ownership, §3b). The supervisor is the sole writer to
+   * the workflow-run mailbox; the child never flushes it. A flag write
+   * (`addFlags` / `removeFlags`) targets one uid; an `expunge` sweeps every
+   * `\Deleted` message out of the live INBOX. The mutation is applied under
+   * `runMailboxExclusive` and flushed before the reply, so the child's next
+   * committed read observes it -- the flush-before-signal ordering
+   * `commitInboundToMailbox` uses. A failure (unknown uid, wrong mailbox,
+   * substrate fault) surfaces back as a structured `{ ok: false, reason }`
+   * so the agent's mail-tool call fails loudly rather than dropping the
+   * mutation silently.
+   */
+  async function handleMailboxMutation(
+    data: Extract<ControlPayload, { type: "mailbox.mutate.request" }>["data"],
+  ): Promise<void> {
+    // Capture the sender once. Re-fetching after the flush could return a
+    // successor cohort's sender and misroute the reply to the wrong child
+    // (see the substrate-write handler's note). A null sender means the
+    // supervisor is mid-recycle or tearing down: there is nothing to reply
+    // on, so drop and warn -- the child's read end is closing alongside, so
+    // its pending awaiter is rejected by the control loop's `cancelAll`.
+    const controlSender = activeControlSender();
+    if (controlSender === null) {
+      logger.warn`mailbox.mutate.request received outside running phase; requestId=${data.requestId} dropped (child awaiter will fail on pipe close)`;
+      return;
+    }
+    // The supervisor owns exactly one mailbox, the substrate INBOX. Reject a
+    // request for any other name rather than silently mutate INBOX under it,
+    // which would be a wrong-target durable write reported as success. The
+    // frame carries an unconstrained mailbox string, so this is validated
+    // here at the owning layer, not trusted from the child transport.
+    if (data.mailbox !== MAILBOX_INBOX_DIR) {
+      await controlSender.send({
+        type: "mailbox.mutate.response",
+        data: {
+          requestId: data.requestId,
+          result: {
+            ok: false,
+            reason: `unknown mailbox "${data.mailbox}"; only ${MAILBOX_INBOX_DIR} is writable`,
+          },
+        },
+      });
+      return;
+    }
+    try {
+      const expungedUids = await runMailboxExclusive(async () => {
+        const store = await getMailboxStore();
+        if (data.op === "expunge") {
+          // Snapshot the \Deleted uids before removing: `store.messages` is
+          // the live array, so `.filter().map()` materializes the targets
+          // before any `remove` splices it. The whole sweep runs
+          // synchronously under the lock, so no snapshotted uid can vanish
+          // before its `remove`.
+          const uids = store.messages
+            .filter((m) => m.flags.has(MAILBOX_FLAG_DELETED))
+            .map((m) => m.uid);
+          for (const uid of uids) {
+            store.remove(uid);
+            // Bound the id->uid map: drop any entry now pointing at a removed
+            // uid. Not load-bearing -- `markMailboxProcessed` guards with
+            // `find` -- but keeps the map from retaining dead uids.
+            for (const [messageId, mappedUid] of mailboxUidByMessageId) {
+              if (mappedUid === uid) mailboxUidByMessageId.delete(messageId);
+            }
+          }
+          await store.flush();
+          return uids;
+        }
+        if (data.op === "addFlags") {
+          store.addFlags(data.uid, data.flags);
+        } else {
+          store.removeFlags(data.uid, data.flags);
+        }
+        await store.flush();
+        return undefined;
+      });
+      await controlSender.send({
+        type: "mailbox.mutate.response",
+        data: {
+          requestId: data.requestId,
+          result:
+            expungedUids === undefined
+              ? { ok: true }
+              : { ok: true, expungedUids },
+        },
+      });
+    } catch (cause) {
+      // Reply on the same captured sender. If this send itself throws (a
+      // broken pipe), it propagates to the pump's `.catch`, and the child's
+      // awaiter is rejected by the control loop's `cancelAll` -- the backstop
+      // `handleOutboundMessage` also relies on. Accepted window: a mutation
+      // can flush durably while its reply is undeliverable, so the agent tool
+      // errors on a mutation that landed. This is inherent to apply-then-reply
+      // across a teardown boundary and identical to `handleOutboundMessage`.
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      await controlSender.send({
+        type: "mailbox.mutate.response",
         data: {
           requestId: data.requestId,
           result: { ok: false, reason },

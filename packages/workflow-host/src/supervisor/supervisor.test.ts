@@ -157,6 +157,31 @@ function parseMailboxNotifies(lines: readonly string[]): {
 }
 
 /**
+ * Parse every `mailbox.mutate.response` frame the supervisor wrote back to the
+ * child, in write order. Used to assert a child flag write / expunge round-trips
+ * with the applied-mutation result.
+ */
+function parseMailboxMutateResponses(
+  lines: readonly string[],
+): Extract<ControlPayload, { type: "mailbox.mutate.response" }>["data"][] {
+  const out: Extract<
+    ControlPayload,
+    { type: "mailbox.mutate.response" }
+  >["data"][] = [];
+  for (const line of lines) {
+    if (!line.includes("mailbox.mutate.response")) continue;
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) continue;
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) continue;
+    if (payload.type !== "mailbox.mutate.response") continue;
+    out.push(payload.data);
+  }
+  return out;
+}
+
+/**
  * Parse the `Mail` payload of each `trigger.fire` frame, to assert the eager
  * mailbox commit left the step-input trigger payload unchanged.
  */
@@ -1537,6 +1562,138 @@ describe("createWorkflowSupervisor", () => {
     const flags = index.messages[0]?.flags ?? [];
     expect(flags).toContain("\\Seen");
     expect(flags).toContain("$Processed");
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("a child mailbox mutation flags and expunges the owned INBOX", async () => {
+    const baseDir = await makeTempDir("supervisor-mailbox-mutate-");
+    const writes: CapturedWrite[] = [];
+    const wired = await spawnWithRunStart({
+      baseDir,
+      statefulWrites: true,
+      onWrite: (args) =>
+        writes.push({ preservePrefix: args.preservePrefix, files: args.files }),
+    });
+
+    // Seed the mailbox: deliver a message so the eager commit assigns uid 1.
+    const raw = buildInboundMail({
+      from: "sender@example.com",
+      to: MAILBOX_ADDRESS,
+      subject: "consume me",
+      messageId: "<mut-1@example.com>",
+      body: "body",
+    });
+    wired.mailBus.deliver(MAILBOX_ADDRESS, raw);
+    const notifyDeadline = Date.now() + 1000;
+    let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
+    while (notifies.length < 1 && Date.now() < notifyDeadline) {
+      await new Promise((r) => setTimeout(r, 2));
+      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
+    }
+    expect(notifies[0]?.uid).toBe(1);
+
+    const awaitResponse = async (
+      requestId: string,
+    ): Promise<
+      Extract<ControlPayload, { type: "mailbox.mutate.response" }>["data"]
+    > => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const found = parseMailboxMutateResponses(
+          wired.supervisorToChild.flushed(),
+        ).find((r) => r.requestId === requestId);
+        if (found !== undefined) return found;
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      throw new Error(`no mailbox.mutate.response for ${requestId}`);
+    };
+
+    // A mutation targeting a mailbox the agent does not own is rejected -- the
+    // supervisor owns only INBOX and must not silently mutate it under another
+    // name.
+    await wired.childSender.send({
+      type: "mailbox.mutate.request",
+      data: {
+        requestId: "mm-bad-mailbox",
+        runId: "run-x",
+        mailbox: "Sent",
+        op: "expunge",
+      },
+    });
+    const badMailbox = await awaitResponse("mm-bad-mailbox");
+    expect(badMailbox.result.ok).toBe(false);
+    if (badMailbox.result.ok) throw new Error("expected rejection");
+    expect(badMailbox.result.reason).toMatch(/only INBOX is writable/);
+
+    // A flag write on an unknown uid fails loudly rather than silently.
+    await wired.childSender.send({
+      type: "mailbox.mutate.request",
+      data: {
+        requestId: "mm-bad-uid",
+        runId: "run-x",
+        mailbox: "INBOX",
+        op: "addFlags",
+        uid: 999,
+        flags: ["\\Deleted"],
+      },
+    });
+    const badUid = await awaitResponse("mm-bad-uid");
+    expect(badUid.result.ok).toBe(false);
+
+    // Flag uid 1 \Deleted; the committed index carries the flag.
+    await wired.childSender.send({
+      type: "mailbox.mutate.request",
+      data: {
+        requestId: "mm-flag",
+        runId: "run-x",
+        mailbox: "INBOX",
+        op: "addFlags",
+        uid: 1,
+        flags: ["\\Deleted"],
+      },
+    });
+    const flagged = await awaitResponse("mm-flag");
+    expect(flagged.result.ok).toBe(true);
+    const latest = () => {
+      const all = mailboxIndexes(writes);
+      return all[all.length - 1];
+    };
+    const flagDeadline = Date.now() + 1000;
+    while (
+      Date.now() < flagDeadline &&
+      !(latest()?.messages[0]?.flags ?? []).includes("\\Deleted")
+    ) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(latest()?.messages[0]?.flags ?? []).toContain("\\Deleted");
+
+    // Expunge sweeps every \Deleted message out of the live INBOX and reports
+    // the swept uids; the index persists (uidNext stays 2, never reused).
+    await wired.childSender.send({
+      type: "mailbox.mutate.request",
+      data: {
+        requestId: "mm-expunge",
+        runId: "run-x",
+        mailbox: "INBOX",
+        op: "expunge",
+      },
+    });
+    const expunged = await awaitResponse("mm-expunge");
+    expect(expunged.result.ok).toBe(true);
+    if (!expunged.result.ok) throw new Error("expected success");
+    expect(expunged.result.expungedUids).toEqual([1]);
+    const expungeDeadline = Date.now() + 1000;
+    while (
+      Date.now() < expungeDeadline &&
+      (latest()?.messages.length ?? 1) > 0
+    ) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    const finalIndex = latest();
+    if (finalIndex === undefined) throw new Error("no mailbox index committed");
+    expect(finalIndex.messages).toHaveLength(0);
+    expect(finalIndex.uidNext).toBe(2);
 
     await wired.supervisor.shutdown();
   });
