@@ -41,18 +41,17 @@ do not share an implementation:
    and a single-writer workflow-run repo. Its step-invoker started as a stub
    returning `{ output: { reply: req.agent.id, turn: null } }` — no inference,
    no tools, the event firehose dropped. This design makes it real: the
-   single-agent, multi-step, and top-level `map` fan-out paths now run a real
-   `createAgent` in the child with materialized tools and threaded events. The
-   one path still unbuilt is child-definition per-step execution — a
-   `childWorkflow`'s child steps have no deploy-staged assets, so
-   `childInvokeStep` fails loud with `ChildStepNotImplementedError` (INTR-310)
-   rather than fabricating output.
+   single-agent, multi-step, top-level `map` fan-out, and `childWorkflow`
+   fan-out paths all run a real `createAgent` in the child with materialized
+   tools and threaded events. A `childWorkflow`'s child steps run a real
+   per-step agent through the same source-tools invoker, resolving inference
+   against per-child-step sources staged at deploy and authorizing against
+   grants capped to what the child body declares (INTR-310).
 
-The net effect: the durable runtime now runs real agents for the
-single-agent, multi-step, and `map` paths — INTR-209's workflows deploy,
-dispatch, signal, resume, and produce real per-step output — while
-`childWorkflow` child-definition per-step execution remains placeholder
-(INTR-310).
+The net effect: the durable runtime runs real agents for the single-agent,
+multi-step, `map`, and `childWorkflow` fan-out paths — workflows deploy,
+dispatch, signal, resume, spawn children, and produce real per-step output
+at every rung (INTR-209, INTR-310).
 
 ### Why unify
 
@@ -215,9 +214,11 @@ reaches it and consults its declared isolation (§3f). If the node declares no
 stricter boundary, `spawnChild` resolves the child definition and runs it
 **in-process** under the same child (`createSidecarRunChild` recursing on
 itself). The spawn, sub-namespace scoping, and recursion are real and
-exercised; the child definition's per-step agent execution is not yet built —
-`childInvokeStep` fails loud with `ChildStepNotImplementedError` (INTR-310)
-because deploy does not stage the child definition's per-step assets. If the
+exercised, and the child definition's per-step agent execution runs for real
+too: `childInvokeStep` builds a real tool-bearing agent through the
+source-tools invoker, resolves inference against per-child-step sources staged
+at deploy, and authorizes against grants capped to the child body's declared
+capabilities (INTR-310). If the
 node declares a stricter granularity or sandbox boundary, the same `spawnChild`
 path launches a **sandboxed sub-child** through the `SandboxBoundary` seam
 (§3d-bis); that sub-child is itself a `runtimeRun` host with the same
@@ -1098,10 +1099,9 @@ re-serviced.
 - The substrate factory's top-level stub invoker `baseInvokeStep` and the
   throwing-Proxy `StepEnvBase` slots in
   `apps/sidecar/src/workflow-substrate-factory.ts` — replaced by a real
-  step-invoker over `createSidecarStepBuildEnv`. (`childInvokeStep` survives,
-  but is no longer a fabricating stub: it rejects with
-  `ChildStepNotImplementedError` until child-definition per-step execution is
-  built, INTR-310.)
+  step-invoker over `createSidecarStepBuildEnv`. `childInvokeStep` is likewise
+  a real tool-bearing invoker now (INTR-310): the fail-loud
+  `ChildStepNotImplementedError` placeholder is gone.
 
 ### Reused (one implementation, in the child = the sidecar binary)
 
@@ -1302,12 +1302,17 @@ base-build behavior of the recursive model, with **no sandboxed sub-child yet**.
 
 ### Phase 4c-assets — Child-definition per-step asset derivation (model A)
 
+> **Status — implemented (INTR-310).** The fail-loud
+> `ChildStepNotImplementedError` placeholder is gone; a `childWorkflow`'s child
+> steps run real per-step agents end to end.
+
 Phase 4c wires the isolation decision and verifies that a child's events and
 writes land under `runs/<childRunId>/...`. It does **not** say where the child
 definition's per-step _assets_ come from — the inference sources its agent steps
 pin, the tool trees they materialize, the grants they authorize against, and the
-sink its events reach. That gap is why `childInvokeStep` is a fail-loud stub
-(`ChildStepNotImplementedError`); this section closes it. The model is **A —
+sink its events reach. That gap was why `childInvokeStep` began as a fail-loud
+stub (`ChildStepNotImplementedError`); this section is the design that closed
+it. The model is **A —
 child definitions are vendored into the parent deployment**, which is already the
 shape of the code: a `childWorkflow` carries its child `{ inline:
 WorkflowDefinition }` (`packages/workflow/src/definition/primitives.ts`), so the
@@ -1334,7 +1339,7 @@ exactly as a top-level or onTrigger-body step does. The pins ride the
 `referencedDefinitions` wire field and stage to
 `assets/workflow/<childBodyRef>/sources.json` via `materializeWorkflowSources`,
 where `<childBodyRef>` is the deploy-minted `${workflowId}__${stepId}` handle. The
-child invoker reads them by that ref (`readBodyStepInferenceSources`). The inert
+child invoker reads them by that ref (`readChildStepInferenceSources`). The inert
 body enumerator (`enumerateInertBodies`) is generalized to lift both onTrigger
 sections and childWorkflow children transitively, so a single recursive walk
 stages every body's sources under a ref that matches the runtime's per-rung
@@ -1358,29 +1363,42 @@ step count and returns an empty tool set silently, a fail-quiet path a
 tool-bearing child must never take. `sourceTools` and `toolless` are mutually
 exclusive; the child takes `sourceTools`.
 
-**Per-step grants (least-privilege).** The operator approves the transitive
-capability set: the capability walk already folds an inline child's grants into
-the spawning primitive's approval (`collectPrimitiveGrants`), so nothing a child
-step can do exceeds operator consent. At **runtime** each child step runs
-least-privilege rather than inheriting the whole run's flat grant set. Deploy
-stages a per-child-step declared-grant allowlist (the step's own `tool:` /
-`effect:` capabilities plus its credential-requirement ids) beside its
-`sources.json`. `buildChildRunEnv` intersects the run's grants with that allowlist
-**per step**, and writes the result into the single
-`CredentialsSnapshot.steps[].grants` array. That array is the one authority the
-per-child authorize closure reads for **all three** decision kinds — tool-invoke,
-action-step effects, and credential use — so scoping it there bounds every one of
-them. A grant declared only by a sibling top-level step therefore cannot authorize
-a child step's effect or credential. (The flat-inheritance model was not a
-privilege-escalation hole — the union is operator-approved — but it over-grants
-relative to least-privilege, which matters once a real, prompt-injectable agent
-runs in the child.)
+**Grants (least-privilege).** The operator approves the transitive capability
+set: the capability walk folds an inline child's grants into the spawning
+primitive's approval (`collectPrimitiveGrants`), so nothing a child step can do
+exceeds operator consent. At **runtime** the child is capped to what the child
+body itself declares rather than inheriting the whole run's flat grant set.
+`buildChildRunEnv` re-walks the child's own definition in process
+(`walkCapabilities` over the **pre-rewrite** definition, so inline grandchildren
+fold in, with plugin tool definitions loaded from the shared closure) to collect
+the child body's declared resource set, then filters the parent run's grants to
+it (`child-grant-filter.ts`): every `deny` / `ask` rule is kept unconditionally
+(dropping an `ask` floor would punch through an approval gate), and an `allow`
+rule is kept only when its resource pattern covers a declared resource (via
+`matchPattern`, so a wildcard grant survives). The parent stays the ceiling — the
+filter only removes rules, never adds one. The capped set is applied **uniformly
+across the child's steps** (matching the top level's flat-union model, not
+per-step distinctness) and written into **both** grant sinks: the
+`CredentialsSnapshot.steps[].grants` the per-child authorize closure reads for all
+three decision kinds — tool-invoke, action-step effects, and credential use — and
+the child's own `runs/<childRunId>/grants.json`, which is the ceiling a grandchild
+filters against in turn. A grant the child body never declares — a parent-only
+`effect:` / `credential:` or a bare-name `tool:` — therefore cannot authorize a
+child step. (The flat-inheritance model was not a privilege-escalation hole
+against the operator — the union is operator-approved — but a child running the
+whole run's grants over-grants relative to least-privilege, and holding the
+_parent's_ grants rather than the child body's own is a genuine escalation
+surface once a real, prompt-injectable agent runs in the child. The cap derives
+the child's authority from the child body's definition rather than a deploy-staged
+allowlist: the per-child-step walk breakdown is collapsed into the parent at
+deploy and never rides the deploy frame, so an in-process re-walk is the source of
+truth.)
 
 **Events.** In-process child step events reach the hub through the rung-0 run's
-`onEvent`, threaded down into the terminal `RunChildWorkflow` seam (which carries
-no sink today; the suspendable/body seam does). Forwarding is a function call up
-the stack, per §3d-bis, terminating in `publishWorkflowInferenceEvent` at the
-DeployRouter.
+`onEvent`, threaded down into the terminal `RunChildWorkflow` seam as a call
+argument (`HostSpawnChild`, wrapped per run), mirroring the suspendable/body
+seam. Forwarding is a function call up the stack, per §3d-bis, terminating in
+`publishWorkflowInferenceEvent` at the DeployRouter.
 
 **Recursion safety.** A monotone depth counter threads through the spawn seam and
 fails loud past a fixed ceiling. This is a **stack-safety bound**, not cycle
@@ -1750,10 +1768,12 @@ are explicitly **not** a go-live gate for INTR-209.
   (`routeInbound`, `subscribeMailForAddress`).
 - Substrate factory: `apps/sidecar/src/workflow-substrate-factory.ts`
   (`createSidecarSubstrateFactory`, `createSidecarStepBuildEnv`, the real
-  top-level step-invoker, `childInvokeStep` — the fail-loud child-runtime
-  invoker rejecting with `ChildStepNotImplementedError` (INTR-310),
-  `SIDECAR_SUBSTRATE_CONFIG_KEYS`, `STEP_INFERENCE_SOURCES`,
-  `listActiveDeployments`, sub-namespacing).
+  top-level step-invoker, `childInvokeStep` — the real tool-bearing
+  child-runtime invoker (INTR-310), `buildChildRunEnv`,
+  `readChildStepInferenceSources`, `SIDECAR_SUBSTRATE_CONFIG_KEYS`,
+  `STEP_INFERENCE_SOURCES`, `listActiveDeployments`, sub-namespacing).
+- Child grant cap: `apps/sidecar/src/child-grant-filter.ts`
+  (`collectDeclaredResources`, `filterGrantsToDeclaredResources`).
 - Child binary (the child _is_ the sidecar binary): `apps/sidecar/bin/workflow-child`
   (imports `createSubstrate` + `SIDECAR_SUBSTRATE_CONFIG_KEYS`, runs
   `runWorkflowChildFromProcessEnv`).
