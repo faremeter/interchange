@@ -9,7 +9,11 @@
 
 import { canonicalizeForHash } from "@intx/agent";
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
-import type { CredentialBinding, GrantRequirement } from "@intx/types";
+import type {
+  CredentialBinding,
+  GrantRequirement,
+  SidecarCapabilityPolicy,
+} from "@intx/types";
 
 import { normalizeSingularShorthand } from "./shorthand";
 import {
@@ -55,6 +59,7 @@ export interface WorkflowDefinition {
    * binding.
    */
   credentialBindings?: readonly CredentialBinding[];
+  sidecarPlacement?: SidecarCapabilityPolicy;
 }
 
 export interface WorkflowConfig {
@@ -65,6 +70,7 @@ export interface WorkflowConfig {
   state?: { schema?: StateSchema };
   grantRequirements?: readonly GrantRequirement[];
   credentialBindings?: readonly CredentialBinding[];
+  sidecarPlacement?: SidecarCapabilityPolicy;
 }
 
 export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
@@ -75,6 +81,7 @@ export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
   state?: { schema?: StateSchema };
   grantRequirements?: readonly GrantRequirement[];
   credentialBindings?: readonly CredentialBinding[];
+  sidecarPlacement?: SidecarCapabilityPolicy;
 }
 
 /**
@@ -196,6 +203,9 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
       : {}),
     ...(config.credentialBindings !== undefined
       ? { credentialBindings: config.credentialBindings }
+      : {}),
+    ...(config.sidecarPlacement !== undefined
+      ? { sidecarPlacement: config.sidecarPlacement }
       : {}),
   };
   return definition;
@@ -1013,6 +1023,9 @@ function projectForHash(definition: WorkflowDefinition): unknown {
     // grantRequirements is included, or the deploy substrate would dedupe them.
     ...(definition.credentialBindings !== undefined
       ? { credentialBindings: definition.credentialBindings }
+      : {}),
+    ...(definition.sidecarPlacement !== undefined
+      ? { sidecarPlacement: definition.sidecarPlacement }
       : {}),
     steps: Object.fromEntries(
       Object.entries(definition.steps).map(([id, primitive]) => [

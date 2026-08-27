@@ -1730,6 +1730,23 @@ describe("hashDefinition", () => {
     });
     expect(hashDefinition(withGrants)).not.toEqual(hashDefinition(base));
   });
+
+  test("sidecar capability requirements change the content hash", () => {
+    const a = makeAgent("a");
+    const base = defineWorkflow({
+      id: "w",
+      steps: { a: step({ agent: a }) },
+    });
+    const withRequirements = defineWorkflow({
+      id: "w",
+      steps: { a: step({ agent: a }) },
+      sidecarPlacement: {
+        capabilities: [{ capability: "platform:ios", effect: "require" }],
+      },
+    });
+
+    expect(hashDefinition(withRequirements)).not.toEqual(hashDefinition(base));
+  });
 });
 
 describe("onFailure straddler validation", () => {

@@ -8,6 +8,7 @@ import { type } from "arktype";
 
 import { CredentialBinding } from "./credentials";
 import { InferenceSource } from "./runtime";
+import { SidecarCapabilityPolicy } from "./sidecar-capabilities";
 
 /**
  * Fields every wire step carries regardless of `kind`. All other keys pass
@@ -112,6 +113,7 @@ export const WorkflowProjectionDefinition = type({
   // credential request surface (no secret material), so they belong in the
   // hashed projection.
   "credentialBindings?": CredentialBinding.array(),
+  "sidecarPlacement?": SidecarCapabilityPolicy,
   "+": "delete",
 }).narrow((value, ctx) => {
   // Every `stepOrder` entry must name a defined step. A legitimately projected
