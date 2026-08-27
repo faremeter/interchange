@@ -46,4 +46,5 @@ export type {
   AgentEventStream,
   ConnectorReplyDrain,
   ConnectorReplyDrainOpts,
+  ReplySettlement,
 } from "./reply-drain";
