@@ -309,6 +309,29 @@ This is the **load-bearing decision of the whole design.** It is the thing
 that is genuinely hard, and it must be settled before any build. See §6 for
 its failure modes and the open question about reply latency.
 
+**Update — per-workflow mailbox and the conversational loop.** The
+"inbound side is a no-op" surface above was the initial cut. It has since
+been replaced by a per-workflow IMAP mailbox committed to the workflow-run
+substrate: the supervisor stays the sole mail owner and eager-commits each
+inbound message into the mailbox (durable, replicated to the hub), and the
+warm agent reads it locally through the supervisor-backed transport with no
+hub round-trip, so `mail_read` / `mail_search` / `mail_wait` work. The
+agent's `connector.reply` composes a threaded reply and sends it through the
+outbound bridge. This does not reopen the ownership decision: reading a local
+mailbox is not owning ingestion, and there is still exactly one mail owner.
+
+The conversational loop has two first-class shapes, both delivered:
+
+- **Interactive (`triggers: "unbounded"`).** The run re-arms after each turn
+  (§3c, §3h); each subsequent inbound mail is a dispatched turn
+  (`signal.deliver`) that seeds the connector thread, so replies thread turn
+  to turn. This is the equivalent of the general harness's continuous
+  conversation.
+- **Batch step with `mail_wait`.** An ordinary batch step holds the
+  conversation open within its one run by blocking on `mail_wait`; a
+  newly-arrived mail is eager-committed and its notify wakes the wait,
+  independent of turn dispatch.
+
 ### 3b. Warm-agent lifecycle
 
 Today the step-invoker is instantiate-send-teardown:
