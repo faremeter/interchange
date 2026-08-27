@@ -104,6 +104,7 @@ import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
 import { createMailPartReader } from "../adapters/mail-part-store";
 import type {
   HostSpawnSuspendableChild,
+  HostSpawnChild,
   RunSuspendableChild,
   RunChildWorkflow,
 } from "../adapters/spawn-child";
@@ -773,7 +774,10 @@ export async function runWorkflowChild(
   // a misconfiguration and fails loud at startup rather than falling back to a
   // disk read. A definition with no inline child keeps the injected binding (a
   // test seam); its childWorkflow slot is never invoked.
-  let spawnChild: SpawnChildWorkflow;
+  // `HostSpawnChild` (a call-arg `onEvent`) like the suspendable host: the
+  // resolver is deployment-scoped but each run injects its own event sink in
+  // `buildRuntimeEnv`. The two fallback arms ignore the sink.
+  let spawnChild: HostSpawnChild;
   if (childBodiesMap.size > 0) {
     const executor = opts.bindings.runChild;
     if (executor === undefined) {
@@ -787,12 +791,13 @@ export async function runWorkflowChild(
       runChild: executor,
     });
   } else if (opts.bindings.spawnChild !== undefined) {
-    spawnChild = opts.bindings.spawnChild;
+    const injected = opts.bindings.spawnChild;
+    spawnChild = (input, _onEvent) => injected(input);
   } else {
     // No inline child and no injected binding: a workflow that nonetheless
     // reaches a childWorkflow spawn fails loud here rather than silently
     // completing against a child that never ran.
-    spawnChild = async ({ definitionRef }) => {
+    spawnChild = async ({ definitionRef }, _onEvent) => {
       throw new Error(
         `workflow-child: childWorkflow ${definitionRef} reached the runtime ` +
           `but no child executor is wired`,
@@ -1075,7 +1080,7 @@ async function handleControlPayload(
     authorize: WorkflowAuthorizeFn;
     directors: DirectorRegistry;
     suspendableChildHost: HostSpawnSuspendableChild | undefined;
-    spawnChild: SpawnChildWorkflow;
+    spawnChild: HostSpawnChild;
     loopFns: LoopFnRegistry;
     actionResolver: (ref: string) => ActionHandler;
     clock: () => Date;
@@ -1583,7 +1588,7 @@ function buildRuntimeEnv(args: {
   authorize: WorkflowAuthorizeFn;
   directors: DirectorRegistry;
   suspendableChildHost: HostSpawnSuspendableChild | undefined;
-  spawnChild: SpawnChildWorkflow;
+  spawnChild: HostSpawnChild;
   loopFns: LoopFnRegistry;
   actionResolver: (ref: string) => ActionHandler;
   clock: () => Date;
@@ -1652,6 +1657,11 @@ function buildRuntimeEnv(args: {
     hostSuspendable === undefined
       ? undefined
       : (spawnInput) => hostSuspendable(spawnInput, args.onEvent);
+  // Same adaptation for the terminal childWorkflow seam: inject THIS run's event
+  // funnel so a child's live inference events ride the parent run's channel,
+  // while the runtime env keeps the narrow `SpawnChildWorkflow` (no event slot).
+  const spawnChild: SpawnChildWorkflow = (spawnInput) =>
+    args.spawnChild(spawnInput, args.onEvent);
   const env: WorkflowRuntimeEnv = {
     repoStore: args.runtimeRepoStore,
     scheduler: args.bindings.scheduler,
@@ -1660,7 +1670,7 @@ function buildRuntimeEnv(args: {
     directors: args.directors,
     authorize: args.authorize,
     invokeStep,
-    spawnChild: args.spawnChild,
+    spawnChild,
     // Resolve a loop's `while`/`carry` refs against the closure's loop module.
     // Every ref was force-resolved at establish, so a lookup here cannot fail
     // for a definition that passed startup.

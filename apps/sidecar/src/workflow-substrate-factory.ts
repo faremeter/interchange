@@ -143,29 +143,6 @@ import {
 // supervisor's wrapped substrate.
 
 /**
- * Thrown by the child-runtime step invoker when a `childWorkflow` (or a
- * `map` nested inside one) reaches a per-step agent invocation. Real
- * per-step child execution -- threading the child
- * `WorkflowDefinition`-derived inference sources, tools, and grants into
- * a real agent, backed by deploy-side child asset staging and capability
- * approval -- is not built; that work is tracked in INTR-310.
- *
- * Failing here is deliberate. Returning a fabricated success output would
- * report a child run `completed` whose agent never ran, a silent
- * correctness trap; a loud, structured failure is the honest behavior for
- * an unbuilt seam.
- */
-export class ChildStepNotImplementedError extends Error {
-  constructor(agentId: string, stepId: string | undefined) {
-    super(
-      `childWorkflow per-step execution is not implemented (tracked as INTR-310); ` +
-        `the child runtime cannot run a real per-step agent for step ${JSON.stringify(stepId)} (agent ${JSON.stringify(agentId)})`,
-    );
-    this.name = "ChildStepNotImplementedError";
-  }
-}
-
-/**
  * Required substrate-config keys the sidecar's binary forwards into
  * the factory's `substrateConfig` slot. Listed here so the binary
  * passes the same names to the helper; the helper enforces
@@ -1177,31 +1154,32 @@ export function createSidecarStepBuildEnv(
 }
 
 /**
- * Step invoker the child runtime's `env.invokeStep` wraps. It widens the
+ * Real per-step invoker for a childWorkflow child (INTR-310). It widens the
  * workflow-runtime `StepInvoker` with the child's credentials-backed
- * `authorize`: the runtime body calls `env.invokeStep` with the request
- * alone, so the invoker is the seam that resolves each tool call against
- * the run's grants. Mirrors the workflow-process child's `ChildStepInvoker`
- * authorize slot without carrying the event/warm-cache/sources slots the
- * in-process child does not use.
+ * `authorize` (the seam that resolves each tool call against the run's
+ * grants), the child's own per-step inference `sourcesRef` (built fresh per
+ * spawn from the child's on-disk `sources.json`, disjoint from the top-level's
+ * mutable table), and the parent run's `onEvent` funnel (so the child's live
+ * inference events reach the hub timeline). Same shape as
+ * `SidecarBodyStepInvoker`; the two differ only in whether the build env is
+ * tool-bearing (childWorkflow, source-tools) or toolless (onTrigger body).
  */
 export type SidecarChildStepInvoker = (
   req: StepInvokeRequest,
   authorize: WorkflowAuthorizeFn,
+  sourcesRef: SourcesSnapshotRef,
+  onEvent: (event: InferenceEvent) => void,
 ) => Promise<StepInvokeResult>;
 
 /**
- * Real per-step invoker for an onTrigger BODY child, distinct from the
- * `SidecarChildStepInvoker` stub the shared `childRunDeps` carries for
- * childWorkflow spawns (which stay `ChildStepNotImplementedError` until
- * childWorkflow agent execution is built). The body invoker runs a real
- * agent through `createWorkflowStepInvoker` (INTR-310), so it widens the stub
- * with the body's own per-step inference `sourcesRef` -- built fresh per body
- * spawn from the body's on-disk `sources.json`, disjoint from the top-level's
- * mutable source table so a top-level source rotation never leaks into a body.
- * It also carries an `onEvent` funnel that attributes the body child's live
- * inference events to the body run id on the hub timeline, giving a body the
- * same per-run observability the top level has.
+ * Real per-step invoker for an onTrigger BODY child. Structurally identical to
+ * `SidecarChildStepInvoker`; the two differ only in the build env the wrapper
+ * uses -- an onTrigger body is guaranteed toolless (the deploy guard rejects a
+ * tool-bearing body), so this invoker builds a toolless env, while a
+ * childWorkflow step builds a tool-bearing source-tools env. Both run a real
+ * agent through `createWorkflowStepInvoker`, resolving inference against the
+ * child's own per-step `sourcesRef` and funnelling live events through
+ * `onEvent` to the hub timeline.
  */
 export type SidecarBodyStepInvoker = (
   req: StepInvokeRequest,
@@ -1256,10 +1234,9 @@ interface SidecarRunChildDeps {
    * step invocations through that closure surfaces a misleading
    * "no InferenceSource pinned" error for every child step. Callers
    * therefore supply a SEPARATE invokeStep for the child. The substrate
-   * factory's default rejects with `ChildStepNotImplementedError`
-   * because real per-step child execution is not built (see
-   * `childInvokeStep` in `createSidecarSubstrateFactory`); a test may
-   * inject a functional invoker.
+   * factory's default (`childInvokeStep` in
+   * `createSidecarSubstrateFactory`) runs a real, tool-bearing agent
+   * against the child's own staged sources; a test may inject its own.
    *
    * The invoker receives the child's credentials-backed `authorize`
    * alongside the request, mirroring the workflow-process child's
@@ -1269,17 +1246,20 @@ interface SidecarRunChildDeps {
    */
   invokeStep: SidecarChildStepInvoker;
   /**
-   * Real per-step invoker used ONLY for an onTrigger body child's own steps
-   * (INTR-310). `createSidecarSpawnSuspendableChild` wires it onto the body
-   * env; the shared `invokeStep` stub above stays the seam for childWorkflow
-   * spawns and for the body's own childWorkflow grandchildren. Absent leaves
-   * the body on the stub (the pre-INTR-310 behavior a test may exercise).
+   * Toolless per-step invoker used ONLY for an onTrigger body child's own
+   * steps (INTR-310). `createSidecarSpawnSuspendableChild` wires it onto the
+   * body env so a guaranteed-toolless body runs through a toolless build env;
+   * the tool-bearing `invokeStep` above stays the seam for childWorkflow spawns
+   * and for the body's own childWorkflow grandchildren. Absent runs the body's
+   * steps through the tool-bearing invoker (a test-only shape).
    */
   bodyInvokeStep?: SidecarBodyStepInvoker;
   /**
-   * Sidecar data dir, used ONLY on the body path to read a body's on-disk
-   * `assets/workflow/<bodyRef>/sources.json` and build the body's per-step
-   * inference `sourcesRef`. Required whenever `bodyInvokeStep` is wired.
+   * Sidecar data dir, used to read a child's or body's on-disk
+   * `assets/workflow/<childRef>/sources.json` and build its per-step inference
+   * `sourcesRef`. Required for both the terminal childWorkflow path and the
+   * body path -- both run real agents that resolve inference from a staged
+   * `sources.json`.
    */
   dataDir?: string;
   /**
@@ -1397,13 +1377,18 @@ export function createSidecarRunChild(
   // because `childRunId` flows verbatim into the per-rung
   // `blobs`/`signalChannel`/`runtimeRun` calls, keeping every rung's
   // events under `runs/<runId>/...` of the parent's workflow-run repo.
-  const runChild: RunChildWorkflow = async ({
-    definition,
-    childRunId,
-    input,
-    parentRunId,
-    signal,
-  }) => {
+  const runChild: RunChildWorkflow = async (
+    {
+      definition,
+      childRunId,
+      input,
+      parentRunId,
+      signal,
+      depth,
+      maxChildSpawnDepth,
+    },
+    onEvent,
+  ) => {
     const {
       env,
       signalChannel,
@@ -1418,11 +1403,18 @@ export function createSidecarRunChild(
       definition,
       childRunId,
       parentRunId,
+      onEvent,
     });
     try {
+      // Thread this rung's depth/ceiling into the child run so its own
+      // childWorkflow spawns keep counting against the tree-wide bound (the
+      // guard lives in the runtime's runChildWorkflow). Without this the
+      // in-process sidecar recursion would reset to depth 0 each rung.
       const handle = runtimeRun(rewrittenDefinition, env, {
         runId: childRunId,
         triggerPayload: input,
+        depth,
+        maxChildSpawnDepth,
       });
       // The resulting `CancelRequested` is written under the supervisor
       // principal wired into this run's repo store (see `controlPlanePrincipal`
@@ -1529,14 +1521,16 @@ export function createSidecarSpawnSuspendableChild(
       definition,
       childRunId,
       parentRunId,
-      // The BODY env runs real agent steps (INTR-310) when the factory wired a
-      // body invoker; the body's own childWorkflow grandchildren, built via the
-      // internal `createSidecarRunChild(deps)` above, do NOT get it and stay on
-      // the stub. The live event sink is paired with the body invoker: it feeds
-      // the body's inference to the parent run's event channel, and is omitted
-      // for the stub path (which runs no agent).
+      // The live event sink is always threaded (both a body step and a
+      // grandchild childWorkflow step run a real agent). The BODY env adds a
+      // toolless `bodyStepInvoker` when the factory wired one, so a body's
+      // guaranteed-toolless steps run through the toolless build env rather than
+      // the tool-bearing childWorkflow invoker. A body's own childWorkflow
+      // grandchildren, built via the internal `createSidecarRunChild(deps)`
+      // above, run through the tool-bearing `deps.invokeStep`.
+      onEvent,
       ...(deps.bodyInvokeStep !== undefined
-        ? { bodyStepInvoker: deps.bodyInvokeStep, onEvent }
+        ? { bodyStepInvoker: deps.bodyInvokeStep }
         : {}),
     });
 
@@ -1701,22 +1695,20 @@ async function buildChildRunEnv(args: {
   childRunId: string;
   parentRunId: string;
   /**
-   * Real body-step invoker (INTR-310). Present ONLY when this env hosts an
-   * onTrigger body: `createSidecarSpawnSuspendableChild` passes it so the
-   * body's agent steps run for real, resolving inference against the body's
-   * own `sources.json`. Absent for a childWorkflow env (and a body's own
-   * childWorkflow grandchildren), which stay on `deps.invokeStep` (the
-   * `ChildStepNotImplementedError` stub).
+   * Toolless body-step invoker for the onTrigger body path. Present ONLY when
+   * this env hosts an onTrigger body: `createSidecarSpawnSuspendableChild`
+   * passes it so the body's (guaranteed toolless) agent steps run for real. A
+   * childWorkflow env runs its steps through the real, tool-bearing
+   * `deps.invokeStep` instead.
    */
   bodyStepInvoker?: SidecarBodyStepInvoker;
   /**
    * Per-run live inference-event sink, threaded from the parent run's event
-   * channel. Required WHENEVER `bodyStepInvoker` is present (a real body agent
-   * emits inference the hub stream must see); a missing sink there is a wiring
-   * defect, not a silent drop. Absent for the childWorkflow stub path, which
-   * runs no agent.
+   * channel. Required for both paths -- a childWorkflow step and an onTrigger
+   * body step both run a real agent whose inference the hub stream must see, so
+   * a missing sink is a wiring defect, not a silent drop.
    */
-  onEvent?: (event: InferenceEvent) => void;
+  onEvent: (event: InferenceEvent) => void;
 }): Promise<{
   env: WorkflowRuntimeEnv;
   signalChannel: ReturnType<typeof createWorkflowHostSignalChannel>;
@@ -1832,51 +1824,56 @@ async function buildChildRunEnv(args: {
     deps.evaluateGrants,
   );
   const drain = createNoopDrainController(rewrittenDefinition);
+  // Both the terminal childWorkflow path and the onTrigger BODY path run a real
+  // agent that resolves inference against its OWN per-step `sources.json`
+  // (staged beside the body definition at deploy, keyed by the rewritten ref)
+  // and funnels live events to the parent run's channel. So `dataDir` and
+  // `onEvent` are required for both; a missing one is a wiring defect, not a
+  // silent drop. The file is guaranteed present (deploy materializes it), so a
+  // missing/broken read fails loud rather than silently degrading inference.
+  if (deps.dataDir === undefined) {
+    throw new Error(
+      "sidecar child: deps.dataDir is missing; the child's sources.json cannot be resolved",
+    );
+  }
+  if (onEvent === undefined) {
+    throw new Error(
+      "sidecar child: onEvent is missing; child inference events would be silently dropped from the hub stream",
+    );
+  }
+  const childOnEvent = onEvent;
+  // Read fresh per spawn into a `sourcesRef` disjoint from the top-level's
+  // mutable table, so a top-level source rotation never leaks into a child.
+  const sourcesRef: SourcesSnapshotRef = {
+    current: await readChildStepInferenceSources(
+      deps.dataDir,
+      rewrittenDefinition.id,
+    ),
+  };
   // Recursive `spawnChild`: a grandchild embedded inline in this rung is
   // resolved from the in-memory map lifted above and flows back into this same
-  // `runChild` callback. The runtime body's `runChildWorkflow` contract is
-  // depth-agnostic; the in-memory resolver makes the sidecar's adapter
-  // depth-agnostic too, with no on-disk read at any rung.
-  const spawnChild = createInMemorySpawnChild({
+  // `runChild` callback. Inject THIS run's event funnel (mirroring the rung-0
+  // wrap in run-child.ts) so the grandchild's agent steps ride this run's
+  // channel; the runtime env keeps the narrow `SpawnChildWorkflow` (no event
+  // slot). Sub-namespace scoping holds at every depth via `childRunId`.
+  const spawnHost = createInMemorySpawnChild({
     bodies: grandchildMap,
     runChild,
   });
+  const spawnChild: WorkflowRuntimeEnv["spawnChild"] = (spawnInput) =>
+    spawnHost(spawnInput, childOnEvent);
   // Per-step invocation seam. The runtime body invokes `env.invokeStep` with
   // the request alone; the wrapper forwards the child's credentials-backed
-  // authorize so the invoker gates each tool call against the inherited grants.
-  //
-  // Two shapes. The childWorkflow path keeps `deps.invokeStep` -- the
-  // `ChildStepNotImplementedError` stub, which fails a childWorkflow agent step
-  // loud (that feature is unbuilt). The onTrigger BODY path (INTR-310) runs a
-  // real agent: `bodyStepInvoker` resolves inference against the body's OWN
-  // per-step source pins, read fresh per spawn from the body's on-disk
-  // `sources.json` (staged beside the body definition at deploy) into a
-  // `sourcesRef` disjoint from the top-level's mutable table, so a top-level
-  // source rotation never leaks into a body. The file is guaranteed present for
-  // a body (deploy materializes it), so a missing/broken read fails loud rather
-  // than silently degrading inference.
+  // authorize (so each tool call gates against the inherited grants), the run's
+  // `sourcesRef`, and the event funnel. The childWorkflow path runs a real
+  // tool-bearing agent (`deps.invokeStep`, the source-tools arm); the onTrigger
+  // BODY path runs a toolless agent (`bodyStepInvoker`). Both read the same
+  // `sourcesRef`.
   let invokeStep: WorkflowRuntimeEnv["invokeStep"] = (req) =>
-    deps.invokeStep(req, authorize);
+    deps.invokeStep(req, authorize, sourcesRef, childOnEvent);
   if (bodyStepInvoker !== undefined) {
-    if (deps.dataDir === undefined) {
-      throw new Error(
-        "sidecar body child: bodyStepInvoker is wired but deps.dataDir is missing; the body's sources.json cannot be resolved",
-      );
-    }
-    if (onEvent === undefined) {
-      throw new Error(
-        "sidecar body child: bodyStepInvoker is wired but onEvent is missing; body inference events would be silently dropped from the hub stream",
-      );
-    }
-    const bodySourcesRef: SourcesSnapshotRef = {
-      current: await readBodyStepInferenceSources(
-        deps.dataDir,
-        rewrittenDefinition.id,
-      ),
-    };
-    const bodyOnEvent = onEvent;
     invokeStep = (req) =>
-      bodyStepInvoker(req, authorize, bodySourcesRef, bodyOnEvent);
+      bodyStepInvoker(req, authorize, sourcesRef, childOnEvent);
   }
   const env: WorkflowRuntimeEnv = {
     repoStore,
@@ -1895,23 +1892,25 @@ async function buildChildRunEnv(args: {
 }
 
 /**
- * Read an onTrigger body's per-step inference-source pins from
- * `${dataDir}/assets/workflow/<bodyRef>/sources.json`, staged beside the body
- * definition at deploy time. Parsed and validated through the same
+ * Read a spawned child's per-step inference-source pins from
+ * `${dataDir}/assets/workflow/<childRef>/sources.json`, staged beside the child
+ * definition at deploy time. Serves both spawn seams: a childWorkflow fan-out
+ * child and an onTrigger body child. Parsed and validated through the same
  * `parseStepInferenceSources` boundary the top-level `STEP_INFERENCE_SOURCES`
- * env entry uses. A body's sources file is guaranteed present (the deploy
- * router materializes it for every referenced body), so a missing or malformed
- * file is a defect and surfaces loudly rather than degrading to empty pins.
+ * env entry uses. A child's sources file is guaranteed present (the deploy
+ * router materializes it for every referenced definition), so a missing or
+ * malformed file is a defect and surfaces loudly rather than degrading to empty
+ * pins.
  */
-async function readBodyStepInferenceSources(
+async function readChildStepInferenceSources(
   dataDir: string,
-  bodyRef: string,
+  childRef: string,
 ): Promise<StepInferenceSourceTable> {
   const sourcesPath = path.join(
     dataDir,
     "assets",
     "workflow",
-    bodyRef,
+    childRef,
     "sources.json",
   );
   let raw: string;
@@ -1920,7 +1919,7 @@ async function readBodyStepInferenceSources(
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     throw new Error(
-      `sidecar body child: failed to read body inference sources at ${sourcesPath}: ${reason}`,
+      `sidecar child: failed to read child inference sources at ${sourcesPath}: ${reason}`,
       { cause },
     );
   }
@@ -2179,24 +2178,57 @@ export function createSidecarSubstrateFactory(
       builtinCredentialProviders(),
     );
 
-    // childWorkflow step invoker (the STUB). A `childWorkflow` / `map` fan-out
-    // spawns a separate WorkflowDefinition whose stepIds are disjoint from the
-    // parent's, and deploy stages neither its per-step assets nor its tool
-    // trees. Running a real per-step agent for a childWorkflow step is not
-    // built; that is a distinct feature from onTrigger body execution below.
-    //
-    // This is a deliberate hard stop, not a fabricated result. A fake success
-    // output (the shape this once returned) reported a child run `completed`
-    // whose agent never ran -- a silent correctness trap. Failing loudly
-    // surfaces the child step as `StepFailed` with a structured, INTR-310-named
-    // error instead. The `spawnChild` / `runChild` recursion and the
-    // sub-namespace scoping around it are real and exercised right up to this
-    // seam. Wired as `childRunDeps.invokeStep`, so it also covers a body's own
+    // childWorkflow step build env (INTR-310). A childWorkflow child's steps run
+    // real, TOOL-BEARING agents through the same source-tools arm the top level
+    // uses: the child holds the live re-verified definition, so each step agent
+    // carries live `toolFactories` fed from `req.agent.toolFactories`, and the
+    // source arm materializes declared plugins from the shared closure. Built
+    // COLD per invocation -- no `durableConversation`/warm hooks (a fan-out
+    // branch is a fresh run per spawn) and no `inbound` (a spawned child owns no
+    // warm inbound mailbox; inbound-reading tools stay inert). The source arm
+    // records no tool-mark floor (a source tool's bare `tool:<name>` grant is
+    // already in the credentials snapshot), so the floor recorder throw-asserts
+    // that invariant.
+    const coldChildBuildStepEnv = createSidecarStepBuildEnv({
+      dataDir: validated.SIDECAR_DATA_DIR,
+      workflowRunRepoId,
+      signer: conversationSigner,
+      mailboxAddress: env.spawn.mailboxAddress,
+      stepCount: env.spawn.stepCount,
+      outboundMailBridge: env.outboundMailBridge,
+      cache: stepToolCache,
+      adapters: childAdapterRegistry,
+      recordToolMarkFloor: () => {
+        throw new Error(
+          "source-tools child build-env must not record a tool-mark floor",
+        );
+      },
+      toolless: false,
+      sourceTools: true,
+      closurePackageDir: env.spawn.closurePackageDir,
+    });
+    // childWorkflow step invoker (INTR-310). Mirrors `bodyInvokeStep` below but
+    // tool-bearing: it runs a real agent through `createWorkflowStepInvoker`,
+    // resolving inference against the child's own per-step `sourcesRef` (staged
+    // at deploy, read fresh per spawn) and funnelling live events to the parent
+    // run's channel. The child runs credential-free this revision (no
+    // `credentialContext`): a tool that declares a credential consumer fails
+    // closed and loud at its own `resolve("credentials")`, never silently.
+    // Wired as `childRunDeps.invokeStep`, so it also covers a body's own
     // childWorkflow grandchildren.
-    const childInvokeStep: SidecarChildStepInvoker = (req) =>
-      Promise.reject(
-        new ChildStepNotImplementedError(req.agent.id, req.authzContext.stepId),
-      );
+    const childInvokeStep: SidecarChildStepInvoker = (
+      req,
+      authorize,
+      sourcesRef,
+      onEvent,
+    ) =>
+      createWorkflowStepInvoker({
+        workflowAuthorize: authorize,
+        buildEnv: (buildReq) => coldChildBuildStepEnv(buildReq, sourcesRef),
+        agentFactory: stepAgentFactory,
+        sourcesRef,
+        onEvent,
+      })(req);
 
     // onTrigger BODY step invoker (INTR-310). Unlike a childWorkflow child, an
     // onTrigger section body IS staged: its definition and per-step inference

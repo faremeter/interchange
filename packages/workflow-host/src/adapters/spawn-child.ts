@@ -86,17 +86,26 @@ export type ChildTerminalStatus = "completed" | "failed" | "cancelled";
  *
  * The callback receives the same `AbortSignal` the parent runtime
  * passed into the adapter so a parent-initiated cancellation
- * propagates to the child without an intermediate wrapper.
+ * propagates to the child without an intermediate wrapper. It also
+ * receives the parent run's live `onEvent` sink so the child's agent
+ * steps emit inference events up the same channel (mirroring
+ * {@link RunSuspendableChild}), and the spawn `depth` / ceiling so the
+ * child run's own spawns keep counting against the tree-wide bound.
  */
-export type RunChildWorkflow = (input: {
-  definition: WorkflowDefinition;
-  definitionRef: string;
-  childRunId: string;
-  input: unknown;
-  parentRunId: string;
-  parentStepId: string;
-  signal: AbortSignal;
-}) => Promise<{ terminalStatus: ChildTerminalStatus }>;
+export type RunChildWorkflow = (
+  input: {
+    definition: WorkflowDefinition;
+    definitionRef: string;
+    childRunId: string;
+    input: unknown;
+    parentRunId: string;
+    parentStepId: string;
+    signal: AbortSignal;
+    depth: number;
+    maxChildSpawnDepth: number;
+  },
+  onEvent: (event: InferenceEvent) => void,
+) => Promise<{ terminalStatus: ChildTerminalStatus }>;
 
 /**
  * Construct the terminal `WorkflowRuntimeEnv.SpawnChildWorkflow` adapter for an
@@ -112,18 +121,36 @@ export type RunChildWorkflow = (input: {
  * {@link createInMemorySpawnSuspendableChild} but drives the child terminal-only
  * (await its terminal status) rather than across approval parks.
  */
+/**
+ * Host-side widening of the runtime {@link SpawnChildWorkflow} contract: the
+ * same input plus the per-run `onEvent` sink the host injects. The runtime env
+ * carries the narrow `SpawnChildWorkflow` (no event slot); the caller wraps this
+ * with its run's `onEvent`, mirroring {@link HostSpawnSuspendableChild}. The
+ * sink is a call argument (not closed over at construction) because the resolver
+ * is selected once per deployment while `onEvent` is built per run.
+ */
+export type HostSpawnChild = (
+  input: Parameters<SpawnChildWorkflow>[0],
+  onEvent: (event: InferenceEvent) => void,
+) => ReturnType<SpawnChildWorkflow>;
+
 export function createInMemorySpawnChild(opts: {
   bodies: ReadonlyMap<string, WorkflowDefinition>;
   runChild: RunChildWorkflow;
-}): SpawnChildWorkflow {
-  return async ({
-    definitionRef,
-    childRunId,
-    input,
-    parentRunId,
-    parentStepId,
-    signal,
-  }) => {
+}): HostSpawnChild {
+  return async (
+    {
+      definitionRef,
+      childRunId,
+      input,
+      parentRunId,
+      parentStepId,
+      signal,
+      depth,
+      maxChildSpawnDepth,
+    },
+    onEvent,
+  ) => {
     if (signal.aborted) {
       throw abortError(signal);
     }
@@ -147,15 +174,20 @@ export function createInMemorySpawnChild(opts: {
       throw abortError(signal);
     }
 
-    const result = await opts.runChild({
-      definition,
-      definitionRef,
-      childRunId,
-      input,
-      parentRunId,
-      parentStepId,
-      signal,
-    });
+    const result = await opts.runChild(
+      {
+        definition,
+        definitionRef,
+        childRunId,
+        input,
+        parentRunId,
+        parentStepId,
+        signal,
+        depth,
+        maxChildSpawnDepth,
+      },
+      onEvent,
+    );
     return { terminalStatus: result.terminalStatus };
   };
 }
