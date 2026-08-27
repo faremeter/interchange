@@ -173,8 +173,8 @@ function makeMockTransport(): MockTransport {
       /* noop */
     },
 
-    async expunge(): Promise<void> {
-      /* noop */
+    async expunge(): Promise<{ expungedUids: number[] }> {
+      return { expungedUids: [] };
     },
 
     watch(_mailbox: string, callback: WatchCallback): Unsubscribe {

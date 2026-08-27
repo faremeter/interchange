@@ -239,7 +239,10 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
-  async expunge(_mailbox: string, _signal?: AbortSignal): Promise<void> {
+  async expunge(
+    _mailbox: string,
+    _signal?: AbortSignal,
+  ): Promise<{ expungedUids: number[] }> {
     throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
@@ -660,7 +663,10 @@ class ScopedMessageTransport implements MessageTransport {
     });
   }
 
-  async expunge(mailbox: string, _signal?: AbortSignal): Promise<void> {
+  async expunge(
+    mailbox: string,
+    _signal?: AbortSignal,
+  ): Promise<{ expungedUids: number[] }> {
     const store = this.#requireMailbox(mailbox);
     const toExpunge = store.messages.filter((m) => m.flags.has("\\Deleted"));
 
@@ -674,6 +680,8 @@ class ScopedMessageTransport implements MessageTransport {
         uid: msg.uid,
       });
     }
+
+    return { expungedUids: toExpunge.map((m) => m.uid) };
   }
 
   watch(mailbox: string, callback: (event: MailboxEvent) => void): Unsubscribe {

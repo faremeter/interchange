@@ -574,7 +574,15 @@ export interface MessageTransport {
 
   copy(ref: MessageRef, toMailbox: string, signal?: AbortSignal): Promise<void>;
 
-  expunge(mailbox: string, signal?: AbortSignal): Promise<void>;
+  /**
+   * Permanently remove every `\Deleted` message from the mailbox. Returns the
+   * uids that were expunged, so a caller can report how many messages it
+   * consumed and which ones.
+   */
+  expunge(
+    mailbox: string,
+    signal?: AbortSignal,
+  ): Promise<{ expungedUids: number[] }>;
 
   // --- Real-time notification ---
 

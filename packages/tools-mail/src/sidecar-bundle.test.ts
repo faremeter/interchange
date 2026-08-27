@@ -129,7 +129,7 @@ function makeMockTransport(): MessageTransport {
     async copy(): Promise<void> {
       throw new Error("mock: copy not called in this test");
     },
-    async expunge(): Promise<void> {
+    async expunge(): Promise<{ expungedUids: number[] }> {
       throw new Error("mock: expunge not called in this test");
     },
     watch(
