@@ -175,6 +175,14 @@ export type MockToolCall = {
   input: Record<string, unknown>;
 };
 
+/**
+ * One scripted assistant turn for the mock inference server: either a plain
+ * text reply or a single tool call with a fixed input. See `scriptedTurns`.
+ */
+export type ScriptedTurn =
+  | { text: string }
+  | { toolUse: { name: string; input: Record<string, unknown> } };
+
 export type StartMockInferenceOpts = {
   toolCall?: MockToolCall;
   /**
@@ -217,6 +225,21 @@ export type StartMockInferenceOpts = {
     input: Record<string, unknown>;
     resultPrefix: string;
   };
+  /**
+   * A fixed, ordered script of assistant turns, dispatched by how many tool
+   * results the request's history already carries: the Nth turn is returned
+   * once N tool results are present (turn 0 on the first inference, turn 1
+   * after the first tool ran, and so on). This drives a deterministic
+   * multi-tool agent conversation -- e.g. `mail_send` a reply, `mail_wait` for
+   * the next inbound, `mail_send` the next reply -- through the spawned child.
+   * Every turn's tool input is static, so the caller scripts only inputs it
+   * knows up front (the message-ids it fired). Once the script is exhausted,
+   * the mock falls back to the ordinary tool-names text turn.
+   *
+   * Mutually exclusive with `toolCall`/`approvalToolCall`; when set it takes
+   * precedence over the other reply shapes.
+   */
+  scriptedTurns?: ScriptedTurn[];
 };
 
 /**
@@ -267,6 +290,24 @@ function firstToolResultText(req: InferenceRequest): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Count the `tool_result` blocks across a request's message history. The mock
+ * uses this to index its scripted turns: each completed tool call appends
+ * exactly one `tool_result`, so the count is the number of scripted turns
+ * already consumed.
+ */
+function countToolResults(req: InferenceRequest): number {
+  let count = 0;
+  for (const message of req.messages ?? []) {
+    const content = message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block.type === "tool_result") count += 1;
+    }
+  }
+  return count;
 }
 
 // Mock inference server
@@ -323,7 +364,10 @@ export function startMockInference(
     ];
   };
 
-  const toolUseTurn = (call: MockToolCall): string[] => [
+  const toolUseTurn = (
+    call: MockToolCall,
+    toolUseId = "toolu_mock_1",
+  ): string[] => [
     sse("message_start", {
       type: "message_start",
       message: {
@@ -341,7 +385,7 @@ export function startMockInference(
       index: 0,
       content_block: {
         type: "tool_use",
-        id: "toolu_mock_1",
+        id: toolUseId,
         name: call.toolName,
         input: {},
       },
@@ -390,7 +434,26 @@ export function startMockInference(
 
       let events: string[];
       const approval = opts.approvalToolCall;
-      if (approval !== undefined && toolNames.includes(approval.toolName)) {
+      if (opts.scriptedTurns !== undefined) {
+        // Dispatch the scripted turn by how many tool results the history
+        // already carries. Each tool_use gets a distinct id so the child's
+        // reactor correlates each result to its own call across turns.
+        const step = countToolResults(body);
+        const turn = opts.scriptedTurns[step];
+        if (turn === undefined) {
+          events = textTurn(toolNames);
+        } else if ("text" in turn) {
+          events = textTurnText(turn.text);
+        } else {
+          events = toolUseTurn(
+            { toolName: turn.toolUse.name, input: turn.toolUse.input },
+            `toolu_mock_${String(step)}`,
+          );
+        }
+      } else if (
+        approval !== undefined &&
+        toolNames.includes(approval.toolName)
+      ) {
         // Re-issue the call until the history carries its result; then reply
         // with the result content. Persistent (no latch): under the broken
         // resume rail no result ever arrives and this loops (the test times
@@ -713,8 +776,20 @@ export type HubEnv = {
    * for persistence, keyed by the signing sender. A frame reaches here only
    * after the sidecar signed and delivered the send, so its presence proves
    * the sender's identity was registered on the host transport.
+   *
+   * `raw` is the full signed outbound MIME the sidecar delivered on the wire
+   * (the `persistMail` lookup's own `raw` argument, which the wire layer
+   * base64-decodes from the `mail.outbound` frame before calling the lookup).
+   * Retaining it lets a test read the delivered message's actual headers --
+   * `In-Reply-To`, `Message-ID`, `To`, `Cc`, `References` -- via
+   * `parseHeaderSection`, the only faithful way to observe an outbound reply's
+   * threading on the wire (the hub mints no durable mail row here).
    */
-  outboundMail: { senderAddress: string; recipients: string[] }[];
+  outboundMail: {
+    senderAddress: string;
+    recipients: string[];
+    raw: Uint8Array;
+  }[];
   hubDataDir: string;
   /**
    * Every server-side `WsHandle` currently open against this hub. Added on
@@ -924,11 +999,12 @@ export async function startHub(
         return { accepted: true };
       },
       // Capture delivered outbound mail the sidecar forwards for
-      // persistence. Recording the signing sender is enough for the
-      // integration assertions; no durable row is minted, so this returns
-      // an empty result set.
-      persistMail({ senderAddress, recipients }) {
-        outboundMail.push({ senderAddress, recipients });
+      // persistence. Recording the signing sender, recipients, and the raw
+      // signed MIME the wire layer decoded lets a test read the delivered
+      // reply's threading headers directly; no durable row is minted, so this
+      // returns an empty result set.
+      persistMail({ senderAddress, recipients, raw }) {
+        outboundMail.push({ senderAddress, recipients, raw });
         return Promise.resolve([]);
       },
       // Co-write the signal_correlation + approval rows when a suspending
@@ -1297,6 +1373,13 @@ export type StartDeployFlowEnvOpts = {
    */
   inferenceApprovalToolCall?: StartMockInferenceOpts["approvalToolCall"];
   /**
+   * A fixed, ordered script of assistant turns for the mock inference server,
+   * dispatched by how many tool results the history carries. Drives a
+   * deterministic multi-tool agent conversation (e.g. reply, wait, reply)
+   * through the spawned child. See `StartMockInferenceOpts.scriptedTurns`.
+   */
+  inferenceScriptedTurns?: ScriptedTurn[];
+  /**
    * When true, the mock inference server echoes the last user message's
    * text as `echo:<text>` so a test can assert the inbound mail body
    * reached the agent's `agent.send` as the step input. See
@@ -1394,6 +1477,9 @@ export async function startDeployFlowEnv(
       : {}),
     ...(opts.inferenceApprovalToolCall !== undefined
       ? { approvalToolCall: opts.inferenceApprovalToolCall }
+      : {}),
+    ...(opts.inferenceScriptedTurns !== undefined
+      ? { scriptedTurns: opts.inferenceScriptedTurns }
       : {}),
     ...(opts.inferenceEchoUserMessage === true
       ? { echoUserMessage: true }
@@ -1912,6 +1998,20 @@ export type FireMailTriggerOpts = {
    * as non-text inbound content.
    */
   attachments?: MessageAttachment[];
+  /**
+   * RFC 2822 `In-Reply-To` header of the synthesized mail. Set it to a prior
+   * message's `Message-Id` to thread this inbound onto an existing connector
+   * conversation: the connector router treats the message as a continuation
+   * when its `In-Reply-To` matches the thread's last message id. Omitted (no
+   * header) by default, which starts a fresh thread.
+   */
+  inReplyTo?: string;
+  /**
+   * RFC 2822 `References` header (a message-id chain) of the synthesized mail.
+   * The connector router also treats an inbound as a continuation when its
+   * `References` includes the thread root. Omitted (no header) by default.
+   */
+  references?: string[];
 };
 
 /**
@@ -1941,8 +2041,8 @@ export async function fireMailTrigger(
     date: new Date(),
     messageId,
     subject: undefined,
-    inReplyTo: undefined,
-    references: undefined,
+    inReplyTo: opts.inReplyTo,
+    references: opts.references,
     mimeVersion: "1.0",
     interchangeType: "conversation.message",
     interchangeCorrelationId: undefined,
