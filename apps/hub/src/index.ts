@@ -364,6 +364,7 @@ const app = createApp({
   db,
   sidecarRouter,
   sessionService,
+  workflowAllocationService,
   workflowDispatchService,
   eventCollectors,
   credentialCipher,

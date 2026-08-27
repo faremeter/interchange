@@ -591,14 +591,14 @@ Body: WorkflowRollbackRequest
 ### POST /api/tenants/:tenantId/workflows/deployments
 Deploy a workflow
 
-Installs, probes, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, then deploys it by source-ref. Returns the deployment record.
+Installs, probes, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, then creates a pending provisioned deployment. Provisioning continues asynchronously; the response returns the deployment record.
 
 Body: unknown
 
-201: unknown -- Workflow deployed
+201: unknown -- Workflow deployment accepted for provisioning
 404: ErrorResponse -- Workflow asset not found
-409: ErrorResponse -- Workflow definition or source chain invalid
-500: ErrorResponse -- Deployment projection row missing after deploy
+409: ErrorResponse -- Workflow definition or source offering chain invalid, workflow provisioning unavailable, or provisioner selection failed
+500: ErrorResponse -- Deployment projection row missing after preparation
 502: ErrorResponse -- Sidecar unavailable
 
 ### GET /api/tenants/:tenantId/workflows/deployments

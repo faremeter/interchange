@@ -6,14 +6,9 @@ import git from "isomorphic-git";
 import { type, type Type } from "arktype";
 
 import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
-import { createNoopCredentialCipher } from "@intx/crypto";
 import { WorkflowRunDispatchPayloadConflictError } from "@intx/db";
 import { base64Decode, ErrorResponse, signalName } from "@intx/types";
-import type {
-  CredentialCipher,
-  GrantWalkSnapshot,
-  SidecarAllocationStatus,
-} from "@intx/types";
+import type { GrantWalkSnapshot, SidecarAllocationStatus } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
   asset as assetTable,
@@ -52,8 +47,10 @@ import {
   type RepoStore,
   type SessionService,
   type SidecarRouter,
+  type WorkflowAllocationService,
   type WorkflowDispatchService,
   type WorkflowRunLifecycle,
+  WorkflowProvisioningError,
 } from "@intx/hub-sessions";
 import type { GetSession } from "../session";
 
@@ -757,6 +754,7 @@ type TestAppOpts = {
   deployCalls?: DeployWorkflowFromSourceParams[];
   deployResult?: DeployWorkflowDefinitionResult;
   deployError?: Error;
+  workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchEnqueues?: WorkflowDispatchEnqueue[];
   workflowSignalDispatchEnqueues?: WorkflowSignalDispatchEnqueue[];
   workflowSignalDispatchError?: Error;
@@ -764,7 +762,6 @@ type TestAppOpts = {
   tenantConfig?: unknown;
   repoDirById?: Map<string, string>;
   runLifecycle?: WorkflowRunLifecycle | (() => WorkflowRunLifecycle);
-  credentialCipher?: CredentialCipher;
 };
 
 // Project a workflow envelope into the deploy-approved grant-walk snapshot the
@@ -822,6 +819,9 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.deployResult,
       opts.deployError,
     ),
+    ...(opts.workflowAllocationService !== undefined
+      ? { workflowAllocationService: opts.workflowAllocationService }
+      : {}),
     ...(opts.workflowDispatchEnqueues !== undefined
       ? {
           workflowDispatchService: createMockWorkflowDispatchService(
@@ -848,9 +848,6 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.runLifecycle ?? "live",
     ),
     maxTarballBytes: 10_000_000,
-    ...(opts.credentialCipher !== undefined
-      ? { credentialCipher: opts.credentialCipher }
-      : {}),
   });
 }
 
@@ -1007,18 +1004,26 @@ describe("POST /workflows/deployments", () => {
     ]);
   });
 
-  test("forwards the app credential cipher onto the shared deploy", async () => {
+  test("prepares a provisioned deployment when allocation is configured", async () => {
+    const prepared: Parameters<
+      WorkflowAllocationService["prepareProvisionedDeployment"]
+    >[0][] = [];
     const deployCalls: DeployWorkflowFromSourceParams[] = [];
-    const credentialCipher = createNoopCredentialCipher();
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
       deployCalls,
-      deployResult: {
-        anchorRunId: DEPLOYMENT_ID,
-        deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
-        publicKey: "pubkey",
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async (args) => {
+          prepared.push(args);
+          return {
+            anchorRunId: DEPLOYMENT_ID,
+            deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
+            allocationId: "sal-test",
+            status: "pending",
+          };
+        },
+        deployReadyAllocation: async () => null,
       },
-      credentialCipher,
     });
 
     const res = await app.fetch(
@@ -1026,10 +1031,35 @@ describe("POST /workflows/deployments", () => {
     );
 
     expect(res.status).toBe(201);
-    expect(deployCalls).toHaveLength(1);
-    const call = deployCalls[0];
-    if (call === undefined) throw new Error("missing deploy call");
-    expect(call.credentialCipher).toBe(credentialCipher);
+    expect(await res.json()).toMatchObject({
+      id: DEPLOYMENT_ID,
+      status: "pending",
+    });
+    expect(deployCalls).toHaveLength(0);
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]?.sourceOfferingIds).toEqual(["src"]);
+    expect(prepared[0]?.defaultSourceOfferingId).toBe("src");
+  });
+
+  test("reports provisioner selection failures as conflicts", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          throw new WorkflowProvisioningError(
+            "provisioner_no_match",
+            "No sidecar provisioner satisfies the deployment",
+          );
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
+    );
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("provisioner_no_match");
   });
 
   test("rejects a registry-sourced deploy as unsupported on this route", async () => {
