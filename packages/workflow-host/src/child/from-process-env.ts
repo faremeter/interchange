@@ -35,6 +35,7 @@ import {
   createChildOutboundMailBridge,
   type ChildOutboundMailBridge,
 } from "./outbound-mail-bridge";
+import { createChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
 import {
   createControlChannelSender,
   type FrameWriter,
@@ -199,6 +200,9 @@ export async function runWorkflowChildFromProcessEnv(
   const outboundMailBridge = createChildOutboundMailBridge({
     upstreamSender,
   });
+  const mailboxMutationBridge = createChildMailboxMutationBridge({
+    upstreamSender,
+  });
   const bindings = await factory({
     spawn,
     substrateConfig,
@@ -221,6 +225,7 @@ export async function runWorkflowChildFromProcessEnv(
     upstreamSender,
     substrateWriteBridge,
     outboundMailBridge,
+    mailboxMutationBridge,
   });
 }
 
