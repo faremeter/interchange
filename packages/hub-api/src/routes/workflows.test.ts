@@ -49,12 +49,9 @@ import {
   type DeployWorkflowDefinitionResult,
   type DeployWorkflowFromSourceParams,
   type EventCollectorRegistry,
-  type PrepareExclusiveWorkflowDeploymentArgs,
-  type PreparedExclusiveWorkflowDeployment,
   type RepoStore,
   type SessionService,
   type SidecarRouter,
-  type WorkflowAllocationService,
   type WorkflowDispatchService,
   type WorkflowRunLifecycle,
 } from "@intx/hub-sessions";
@@ -572,31 +569,6 @@ function createMockSessionService(
   };
 }
 
-// Mock the exclusive-placement allocation service the route calls when tenant
-// config asks for exclusive sharing. `prepareExclusiveDeployment` records the
-// args and returns the seeded pending result (or throws to model a prepare
-// rejection); `deployReadyAllocation` is never reached from the route.
-function createMockWorkflowAllocationService(
-  prepareCalls: PrepareExclusiveWorkflowDeploymentArgs[],
-  prepared?: PreparedExclusiveWorkflowDeployment,
-  prepareError?: Error,
-): WorkflowAllocationService {
-  return {
-    prepareExclusiveDeployment: (args) => {
-      prepareCalls.push(args);
-      if (prepared === undefined) {
-        throw prepareError ?? new Error("exclusive prepare failed");
-      }
-      return Promise.resolve(prepared);
-    },
-    deployReadyAllocation: () => {
-      throw new Error(
-        "mock: workflowAllocationService.deployReadyAllocation not implemented",
-      );
-    },
-  };
-}
-
 type WorkflowDispatchEnqueue = Parameters<
   WorkflowDispatchService["enqueue"]
 >[0];
@@ -785,9 +757,6 @@ type TestAppOpts = {
   deployCalls?: DeployWorkflowFromSourceParams[];
   deployResult?: DeployWorkflowDefinitionResult;
   deployError?: Error;
-  exclusivePrepareCalls?: PrepareExclusiveWorkflowDeploymentArgs[];
-  exclusivePrepared?: PreparedExclusiveWorkflowDeployment;
-  exclusivePrepareError?: Error;
   workflowDispatchEnqueues?: WorkflowDispatchEnqueue[];
   workflowSignalDispatchEnqueues?: WorkflowSignalDispatchEnqueue[];
   workflowSignalDispatchError?: Error;
@@ -853,17 +822,6 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.deployResult,
       opts.deployError,
     ),
-    ...(opts.exclusivePrepareCalls !== undefined ||
-    opts.exclusivePrepared !== undefined ||
-    opts.exclusivePrepareError !== undefined
-      ? {
-          workflowAllocationService: createMockWorkflowAllocationService(
-            opts.exclusivePrepareCalls ?? [],
-            opts.exclusivePrepared,
-            opts.exclusivePrepareError,
-          ),
-        }
-      : {}),
     ...(opts.workflowDispatchEnqueues !== undefined
       ? {
           workflowDispatchService: createMockWorkflowDispatchService(
@@ -1074,79 +1032,6 @@ describe("POST /workflows/deployments", () => {
     expect(call.credentialCipher).toBe(credentialCipher);
   });
 
-  test("prepares an exclusive deployment and returns a pending record", async () => {
-    const deployCalls: DeployWorkflowFromSourceParams[] = [];
-    const exclusivePrepareCalls: PrepareExclusiveWorkflowDeploymentArgs[] = [];
-    const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
-      deployCalls,
-      exclusivePrepareCalls,
-      exclusivePrepared: {
-        anchorRunId: DEPLOYMENT_ID,
-        deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
-        allocationId: "sal-exclusive",
-        status: "pending",
-      },
-      tenantConfig: {
-        sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
-      },
-    });
-
-    const res = await app.fetch(
-      authedPost(`${base()}/deployments`, sourceDeployBody()),
-    );
-
-    expect(res.status).toBe(201);
-    const json = await res.json();
-    // The deployment surfaces its allocation-pending status, not the shared
-    // "deployed" constant.
-    expect(json).toMatchObject({
-      id: DEPLOYMENT_ID,
-      definitionAssetId: ASSET_ID,
-      status: "pending",
-    });
-
-    // Exclusive freezes at prepare time and never composes the shared deploy.
-    expect(deployCalls).toHaveLength(0);
-    expect(exclusivePrepareCalls).toHaveLength(1);
-    const call = exclusivePrepareCalls[0];
-    if (call === undefined) throw new Error("missing exclusive prepare call");
-    expect(call.source).toEqual({
-      kind: "asset",
-      assetId: ASSET_ID,
-      package: { format: "source", commitSha: DEPLOY_COMMIT },
-    });
-    expect(call.entry).toBe(DEPLOY_ENTRY);
-    expect(call.definitionAssetId).toBe(ASSET_ID);
-    // The route derives the launch spec's offering ids from the inference chain.
-    expect(call.sourceOfferingIds).toEqual(["src"]);
-    expect(call.defaultSourceOfferingId).toBe("src");
-    expect(call.placement).toEqual({
-      sharing: "exclusive",
-      reuse: "same-deployment",
-    });
-  });
-
-  test("rejects exclusive placement when no allocation service is configured", async () => {
-    const deployCalls: DeployWorkflowFromSourceParams[] = [];
-    const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
-      deployCalls,
-      tenantConfig: {
-        sidecarPlacement: { sharing: "exclusive", reuse: "same-deployment" },
-      },
-    });
-
-    const res = await app.fetch(
-      authedPost(`${base()}/deployments`, sourceDeployBody()),
-    );
-
-    expect(res.status).toBe(409);
-    expect(await errorCode(res)).toBe("exclusive_placement_unavailable");
-    // The route rejects before composing any deploy.
-    expect(deployCalls).toHaveLength(0);
-  });
-
   test("rejects a registry-sourced deploy as unsupported on this route", async () => {
     const deployCalls: DeployWorkflowFromSourceParams[] = [];
     const app = createTestApp({
@@ -1327,7 +1212,7 @@ describe("POST /workflows/:anchorRunId/signals", () => {
     expect(call.payload).toEqual({ ok: true });
   });
 
-  test("durably queues a signal for an exclusive deployment", async () => {
+  test("durably queues a signal for a provisioned deployment", async () => {
     const signalCalls: SignalCall[] = [];
     const signalEnqueues: WorkflowSignalDispatchEnqueue[] = [];
     const app = createTestApp({
@@ -1390,7 +1275,7 @@ describe("POST /workflows/:anchorRunId/signals", () => {
     expect(signalEnqueues).toHaveLength(1);
   });
 
-  test("rejects an exclusive signal if Git terminates while it waits for the allocation lock", async () => {
+  test("rejects a provisioned signal if Git terminates while it waits for the allocation lock", async () => {
     const signalEnqueues: WorkflowSignalDispatchEnqueue[] = [];
     const lifecycles = ["live", "terminal"] as const;
     let lifecycleRead = 0;
@@ -1758,7 +1643,7 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     expect(routeMailCalls).toEqual([]);
   });
 
-  test("durably queues an exclusive trigger without routing it through shared capacity", async () => {
+  test("durably queues a provisioned trigger through its allocation", async () => {
     const routeMailCalls: RouteMailCall[] = [];
     const runGrantsCalls: RunGrantsCall[] = [];
     const enqueues: WorkflowDispatchEnqueue[] = [];
@@ -1788,7 +1673,7 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     expect(new TextDecoder().decode(queued.rawMessage)).toContain("kick off");
   });
 
-  test("durably queues the first exclusive trigger while its Git run is absent", async () => {
+  test("durably queues the first provisioned trigger while its Git run is absent", async () => {
     const enqueues: WorkflowDispatchEnqueue[] = [];
     const app = createTestApp({
       grants: [manageGrant()],
@@ -1810,7 +1695,7 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     expect(enqueues).toHaveLength(1);
   });
 
-  test("rejects exclusive mail if Git terminates while it waits for the allocation lock", async () => {
+  test("rejects provisioned mail if Git terminates while it waits for the allocation lock", async () => {
     const enqueues: WorkflowDispatchEnqueue[] = [];
     const inserts: InsertRecord[] = [];
     const lifecycles = ["live", "terminal"] as const;

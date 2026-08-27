@@ -12,11 +12,7 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import {
-  CredentialUnauthorizedError,
-  WorkflowRunDispatchPayloadConflictError,
-  type DB,
-} from "@intx/db";
+import { WorkflowRunDispatchPayloadConflictError, type DB } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
   correlationIdFromSignalName,
@@ -32,12 +28,9 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
   createWorkflowRunReader,
-  ExclusiveWorkflowPlacementError,
-  resolveWorkflowSidecarPlacement,
   type RepoStore,
   type SessionService,
   type SidecarRouter,
-  type WorkflowAllocationService,
   type WorkflowDispatchService,
 } from "@intx/hub-sessions";
 import { generateId } from "@intx/hub-common";
@@ -190,7 +183,6 @@ async function deploymentAnchorRunExists(
 export type CreateWorkflowRoutesDeps = {
   db: DB["db"];
   sessionService: SessionService;
-  workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
   sidecarRouter: SidecarRouter;
   repoStore: RepoStore;
@@ -202,7 +194,6 @@ export type CreateWorkflowRoutesDeps = {
 export function createWorkflowRoutes({
   db,
   sessionService,
-  workflowAllocationService,
   workflowDispatchService,
   sidecarRouter,
   repoStore,
@@ -256,13 +247,11 @@ export function createWorkflowRoutes({
           content: { "application/json": { schema: resolver(ErrorResponse) } },
         },
         409: {
-          description:
-            "Workflow definition invalid, exclusive placement unavailable on this Hub, or exclusive prepare rejected the source chain",
+          description: "Workflow definition or source chain invalid",
           content: { "application/json": { schema: resolver(ErrorResponse) } },
         },
         500: {
-          description:
-            "Deployment projection row missing after deploy, or exclusive prepare failed unexpectedly",
+          description: "Deployment projection row missing after deploy",
           content: { "application/json": { schema: resolver(ErrorResponse) } },
         },
         502: {
@@ -324,27 +313,6 @@ export function createWorkflowRoutes({
         );
       }
 
-      // Placement is now a pure tenant-config concern, decided BEFORE any
-      // definition is installed: a code-sourced deploy never hydrates a live
-      // definition to read declared placement off.
-      let placement;
-      try {
-        placement = await resolveWorkflowSidecarPlacement(db, tenant.id);
-      } catch (err) {
-        return c.json(
-          {
-            error: {
-              code: "placement_resolution_failed",
-              message:
-                err instanceof Error
-                  ? err.message
-                  : "Failed to resolve workflow sidecar placement",
-            },
-          },
-          500,
-        );
-      }
-
       const anchorRunId = generateId("workflowRun");
       const sessionId = generateId("session");
       const agentAddress = deriveRunAddress({
@@ -352,142 +320,54 @@ export function createWorkflowRoutes({
         domain: tenant.domain,
       });
 
+      const config: HarnessConfig = {
+        sessionId,
+        agentId: deriveRunAgentId({ runId: anchorRunId }),
+        tenantId: tenant.id,
+        principalId: c.get("principal").id,
+        agentAddress,
+        systemPrompt: "",
+        tools: [],
+        grants: [],
+        sources: body.sources,
+        defaultSource: body.defaultSource,
+      };
       let deployedId: string;
-      let deploymentStatus = "deployed";
-      if (placement?.sharing === "exclusive") {
-        // Exclusive placement freezes the code-sourced approval on shared
-        // capacity NOW and defers the deploy to a dedicated allocation. The
-        // route only records the intent and returns a pending deployment;
-        // `deployReadyAllocation` deploys the frozen bundle once the sidecar is
-        // provisioned. (Exclusive is dormant in-tree -- no provisioner is
-        // registered -- so `prepareExclusiveDeployment` fails closed unless a
-        // tenant config requests it AND an operator build wires a provisioner.)
-        if (workflowAllocationService === undefined) {
+      try {
+        const result = await sessionService.deployWorkflowFromSource({
+          tenantId: tenant.id,
+          anchorRunId,
+          deploymentDomain: tenant.domain,
+          agentAddress,
+          source: body.source,
+          entry: body.entry,
+          ...(body.pin !== undefined ? { pin: body.pin } : {}),
+          definitionAssetId: assetRow.id,
+          config,
+          credentialCipher,
+        });
+        deployedId = result.anchorRunId;
+      } catch (err) {
+        // An install/gate rejection or an unapproved/mis-ordered source chain
+        // is a client/definition error, not a sidecar-reachability failure.
+        if (err instanceof WorkflowDefinitionInvalidError) {
           return c.json(
-            {
-              error: {
-                code: "exclusive_placement_unavailable",
-                message:
-                  "Exclusive workflow placement is not configured on this Hub",
-              },
-            },
+            { error: { code: "invalid_workflow", message: err.message } },
             409,
           );
         }
-        try {
-          const prepared =
-            await workflowAllocationService.prepareExclusiveDeployment({
-              tenantId: tenant.id,
-              anchorRunId,
-              deploymentDomain: tenant.domain,
-              source: body.source,
-              entry: body.entry,
-              ...(body.pin !== undefined ? { pin: body.pin } : {}),
-              definitionAssetId: assetRow.id,
-              placement,
-              sessionId,
-              sourceAuthorityPrincipalId: c.get("principal").id,
-              sourceOfferingIds: body.sources.map((source) => source.id),
-              defaultSourceOfferingId: body.defaultSource,
-              deployContent: { systemPrompt: "" },
-            });
-          deployedId = prepared.anchorRunId;
-          deploymentStatus = prepared.status;
-        } catch (err) {
-          // The shared-capacity probe/gate ran inside prepare: an unapproved
-          // definition is a client/definition error, not an infra failure.
-          if (err instanceof WorkflowDefinitionInvalidError) {
-            return c.json(
-              { error: { code: "invalid_workflow", message: err.message } },
-              409,
-            );
-          }
-          if (err instanceof ExclusiveWorkflowPlacementError) {
-            return c.json(
-              { error: { code: err.code, message: err.message } },
-              409,
-            );
-          }
-          return c.json(
-            {
-              error: {
-                code: "exclusive_deployment_failed",
-                message:
-                  err instanceof Error
-                    ? err.message
-                    : "Failed to prepare exclusive workflow deployment",
-              },
+        return c.json(
+          {
+            error: {
+              code: "sidecar_unavailable",
+              message:
+                err instanceof Error
+                  ? err.message
+                  : "Failed to deploy workflow",
             },
-            500,
-          );
-        }
-      } else {
-        // The inline inference sources reference their credentials by id; the
-        // deploy composition resolves and decrypts each credential's material
-        // itself (tool bindings + top-level + inline body sources), under the
-        // tenant-ownership authority, and fails closed on any it cannot use. This
-        // route only forwards the source chain.
-        const config: HarnessConfig = {
-          sessionId,
-          agentId: deriveRunAgentId({ runId: anchorRunId }),
-          tenantId: tenant.id,
-          principalId: c.get("principal").id,
-          agentAddress,
-          systemPrompt: "",
-          tools: [],
-          grants: [],
-          sources: body.sources,
-          defaultSource: body.defaultSource,
-        };
-        try {
-          const result = await sessionService.deployWorkflowFromSource({
-            tenantId: tenant.id,
-            anchorRunId,
-            deploymentDomain: tenant.domain,
-            agentAddress,
-            source: body.source,
-            entry: body.entry,
-            ...(body.pin !== undefined ? { pin: body.pin } : {}),
-            definitionAssetId: assetRow.id,
-            config,
-            credentialCipher,
-          });
-          deployedId = result.anchorRunId;
-        } catch (err) {
-          // An install/gate rejection or an unapproved/mis-ordered source chain
-          // is a client/definition error, not a sidecar-reachability failure.
-          if (err instanceof WorkflowDefinitionInvalidError) {
-            return c.json(
-              { error: { code: "invalid_workflow", message: err.message } },
-              409,
-            );
-          }
-          // An inline source references a credential the tenant cannot use: a
-          // client configuration error, not a sidecar-reachability failure.
-          if (err instanceof CredentialUnauthorizedError) {
-            return c.json(
-              {
-                error: {
-                  code: "credential_unauthorized",
-                  message: `Inference source references credential ${err.credentialId}, which is not a tenant-owned credential this tenant can use`,
-                },
-              },
-              409,
-            );
-          }
-          return c.json(
-            {
-              error: {
-                code: "sidecar_unavailable",
-                message:
-                  err instanceof Error
-                    ? err.message
-                    : "Failed to deploy workflow",
-              },
-            },
-            502,
-          );
-        }
+          },
+          502,
+        );
       }
 
       // The sidecar deploy succeeded; reading back the anchor run is an
@@ -521,7 +401,7 @@ export function createWorkflowRoutes({
           500,
         );
       }
-      return c.json(formatDeployment(row, deploymentStatus), 201);
+      return c.json(formatDeployment(row), 201);
     },
   );
 
@@ -549,9 +429,9 @@ export function createWorkflowRoutes({
       // List the deployments as their anchor runs -- the workflow_run whose id
       // equals its own deployment_id. There is deliberately NO run-status
       // filter: allocation lifecycle is separate from run execution status.
-      // Shared deployments have no allocation row and retain the legacy
-      // "deployed" projection; exclusive deployments derive their public
-      // lifecycle from the allocation joined below. The `id = deployment_id`
+      // Deployments without an allocation row retain the legacy "deployed"
+      // projection; provisioned deployments derive their public lifecycle from
+      // the allocation joined below. The `id = deployment_id`
       // predicate (with the explicit non-null, matching
       // deploymentAnchorRunExists) is the anchor-run identity; child and
       // folded runs never satisfy it.
@@ -761,7 +641,7 @@ export function createWorkflowRoutes({
               error: {
                 code: "workflow_dispatch_unavailable",
                 message:
-                  "Durable workflow dispatch is unavailable for this exclusive deployment",
+                  "Durable workflow dispatch is unavailable for this provisioned deployment",
               },
             },
             503,

@@ -28,7 +28,6 @@ import type {
   RepoStore,
   SessionService,
   SidecarRouter,
-  WorkflowAllocationService,
   WorkflowDispatchService,
 } from "@intx/hub-sessions";
 
@@ -112,7 +111,6 @@ export type MountHubRoutesDeps = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
-  workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
   eventCollectors: EventCollectorRegistry;
   /**
@@ -165,7 +163,6 @@ export function mountHubRoutes(
     db,
     sidecarRouter,
     sessionService,
-    workflowAllocationService,
     workflowDispatchService,
     eventCollectors,
     sidecarWsHandler,
@@ -318,9 +315,6 @@ export function mountHubRoutes(
       createWorkflowRoutes({
         db,
         sessionService,
-        ...(workflowAllocationService !== undefined
-          ? { workflowAllocationService }
-          : {}),
         ...(workflowDispatchService !== undefined
           ? { workflowDispatchService }
           : {}),
@@ -497,7 +491,6 @@ export type CreateAppOpts = {
   db: DB["db"];
   sidecarRouter: SidecarRouter;
   sessionService: SessionService;
-  workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
   eventCollectors: EventCollectorRegistry;
   /**
@@ -529,7 +522,6 @@ export function createApp({
   db,
   sidecarRouter,
   sessionService,
-  workflowAllocationService,
   workflowDispatchService,
   eventCollectors,
   credentialCipher,
@@ -559,9 +551,6 @@ export function createApp({
     db,
     sidecarRouter,
     sessionService,
-    ...(workflowAllocationService !== undefined
-      ? { workflowAllocationService }
-      : {}),
     ...(workflowDispatchService !== undefined
       ? { workflowDispatchService }
       : {}),
