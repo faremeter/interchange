@@ -57,7 +57,7 @@ import type {
 import {
   buildInertProjectionStepSources,
   deriveRunAddress,
-  enumerateInertOnTriggerBodies,
+  enumerateInertBodies,
   inertLoopBody,
   pickStepInferenceSource,
   WorkflowDefinitionInvalidError,
@@ -727,7 +727,8 @@ async function prepareSourceRefDeploy(
     credentials = delivery.delivery;
   }
 
-  // Pin per-step inference sources for the projection's inline onTrigger bodies.
+  // Pin per-step inference sources for the projection's inline trigger bodies
+  // -- onTrigger sections and childWorkflow children, enumerated transitively.
   // The hub holds only the frozen inert projection, so it enumerates the inline
   // bodies from the wire form and resolves each body step's source through the
   // same resolver + operator-approval gate the top-level steps use
@@ -749,20 +750,21 @@ async function prepareSourceRefDeploy(
   // workflow-host run-child.ts).
   const referencedDefinitions: WorkflowProjectionWithSources[] =
     await Promise.all(
-      enumerateInertOnTriggerBodies(projection).map(async (body) => {
+      enumerateInertBodies(projection).map(async (body) => {
         const sources: Record<string, InferenceSource[]> = {};
         for (const bodyStepId of body.definition.stepOrder) {
-          // A loop nested inside an onTrigger body is not yet supported: this
-          // per-body pin does not recurse into the loop's own body, so the
-          // loop-body steps' inference sources would be unpinned and the child
-          // would fail loud at the first iteration. Reject at deploy instead of
-          // shipping that latent crash. Top-level loops ARE pinned (the source
-          // pin recurses into their bodies); this gap is only the
-          // loop-in-onTrigger-body combination, tracked as a follow-on.
+          // A loop nested inside a spawned body (onTrigger section or
+          // childWorkflow child) is not yet supported: this per-body pin does
+          // not recurse into the loop's own body, so the loop-body steps'
+          // inference sources would be unpinned and the child would fail loud at
+          // the first iteration. Reject at deploy instead of shipping that
+          // latent crash. Top-level loops ARE pinned (the source pin recurses
+          // into their bodies); this gap is only the loop-in-body combination,
+          // tracked as a follow-on.
           if (inertLoopBody(body.definition.steps[bodyStepId]) !== null) {
             throw new WorkflowDefinitionInvalidError(
               body.ref,
-              `loop step ${bodyStepId} is nested inside an onTrigger body, which is not yet supported: its body steps' inference sources are not pinned. Move the loop to the top level.`,
+              `loop step ${bodyStepId} is nested inside a spawned body, which is not yet supported: its body steps' inference sources are not pinned. Move the loop to the top level.`,
             );
           }
           // Agent-bearing body steps run inference and need a source pinned

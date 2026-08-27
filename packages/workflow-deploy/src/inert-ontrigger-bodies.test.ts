@@ -1,10 +1,18 @@
 import { describe, test, expect } from "bun:test";
 
+import { defineAgent } from "@intx/agent";
 import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import {
-  enumerateInertOnTriggerBodies,
-  inertLoopBody,
-} from "./inert-ontrigger-bodies";
+  childWorkflow,
+  defineWorkflow,
+  onTrigger,
+  projectLiveToInert,
+  rewriteInlineChildWorkflowBodies,
+  rewriteInlineOnTriggerBodies,
+  step,
+  type WorkflowDefinition,
+} from "@intx/workflow";
+import { enumerateInertBodies, inertLoopBody } from "./inert-ontrigger-bodies";
 
 type Projection = typeof WorkflowProjectionDefinition.infer;
 
@@ -35,11 +43,30 @@ function inlineOnTrigger(
   };
 }
 
+function inlineChildWorkflow(
+  bodyId: string,
+  bodySteps: Record<string, unknown>,
+  bodyStepOrder: string[],
+): unknown {
+  return {
+    kind: "childWorkflow",
+    id: "spawn",
+    definition: {
+      inline: {
+        id: bodyId,
+        triggers: [],
+        stepOrder: bodyStepOrder,
+        steps: bodySteps,
+      },
+    },
+  };
+}
+
 function agentStep(provider: string, model: string): unknown {
   return { kind: "step", agent: { modelSources: [{ provider, model }] } };
 }
 
-describe("enumerateInertOnTriggerBodies", () => {
+describe("enumerateInertBodies", () => {
   test("lifts an inline body and reads each step's declared preference", () => {
     const proj = projection(
       {
@@ -56,7 +83,7 @@ describe("enumerateInertOnTriggerBodies", () => {
       ["sect"],
     );
 
-    const bodies = enumerateInertOnTriggerBodies(proj);
+    const bodies = enumerateInertBodies(proj);
 
     expect(bodies).toHaveLength(1);
     const body = bodies[0];
@@ -90,7 +117,7 @@ describe("enumerateInertOnTriggerBodies", () => {
       ["sect"],
     );
 
-    const bodies = enumerateInertOnTriggerBodies(proj);
+    const bodies = enumerateInertBodies(proj);
     expect(bodies[0]?.preferredByStep).toEqual({
       m: { provider: "openai", model: "gpt" },
     });
@@ -108,7 +135,7 @@ describe("enumerateInertOnTriggerBodies", () => {
       ["sect"],
     );
 
-    const bodies = enumerateInertOnTriggerBodies(proj);
+    const bodies = enumerateInertBodies(proj);
     expect(bodies[0]?.preferredByStep).toEqual({ s1: null });
   });
 
@@ -125,12 +152,12 @@ describe("enumerateInertOnTriggerBodies", () => {
       ["sect"],
     );
 
-    expect(enumerateInertOnTriggerBodies(proj)).toHaveLength(0);
+    expect(enumerateInertBodies(proj)).toHaveLength(0);
   });
 
   test("is empty for a projection with no onTrigger step", () => {
     const proj = projection({ w: { kind: "sleep" } }, ["w"]);
-    expect(enumerateInertOnTriggerBodies(proj)).toHaveLength(0);
+    expect(enumerateInertBodies(proj)).toHaveLength(0);
   });
 
   test("enumerates every inline onTrigger body", () => {
@@ -142,7 +169,7 @@ describe("enumerateInertOnTriggerBodies", () => {
       ["a", "b"],
     );
 
-    const refs = enumerateInertOnTriggerBodies(proj)
+    const refs = enumerateInertBodies(proj)
       .map((body) => body.ref)
       .sort();
     expect(refs).toEqual(["wf__a", "wf__b"]);
@@ -156,10 +183,226 @@ describe("enumerateInertOnTriggerBodies", () => {
       ["sect"],
     );
 
-    expect(() => enumerateInertOnTriggerBodies(proj)).toThrow(
+    expect(() => enumerateInertBodies(proj)).toThrow(
       /step s1 is a step primitive but carries no valid agent\.modelSources/,
     );
   });
+
+  test("lifts an inline childWorkflow child, id overridden to the ref", () => {
+    const proj = projection(
+      {
+        spawn: inlineChildWorkflow(
+          "authored-child",
+          { s: agentStep("anthropic", "m1") },
+          ["s"],
+        ),
+      },
+      ["spawn"],
+    );
+
+    const bodies = enumerateInertBodies(proj);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]?.ref).toBe("wf__spawn");
+    expect(bodies[0]?.definition.id).toBe("wf__spawn");
+    expect(bodies[0]?.preferredByStep).toEqual({
+      s: { provider: "anthropic", model: "m1" },
+    });
+  });
+
+  test("recurses into a grandchild, reproducing the runtime's recursive ref", () => {
+    const proj = projection(
+      {
+        spawn: inlineChildWorkflow(
+          "child",
+          {
+            gc: inlineChildWorkflow(
+              "grandchild",
+              { s: agentStep("openai", "gpt") },
+              ["s"],
+            ),
+          },
+          ["gc"],
+        ),
+      },
+      ["spawn"],
+    );
+
+    // Depth-2 refs match rewriteInlineChildWorkflowBodies applied per rung: the
+    // grandchild's enclosing id is the child's own ref.
+    const refs = enumerateInertBodies(proj)
+      .map((b) => b.ref)
+      .sort();
+    expect(refs).toEqual(["wf__spawn", "wf__spawn__gc"]);
+  });
+
+  test("stages a childWorkflow nested inside an onTrigger body (cross-type)", () => {
+    const proj = projection(
+      {
+        sect: inlineOnTrigger(
+          "section",
+          {
+            spawn: inlineChildWorkflow(
+              "child",
+              { s: agentStep("anthropic", "m1") },
+              ["s"],
+            ),
+          },
+          ["spawn"],
+        ),
+      },
+      ["sect"],
+    );
+
+    const refs = enumerateInertBodies(proj)
+      .map((b) => b.ref)
+      .sort();
+    expect(refs).toEqual(["wf__sect", "wf__sect__spawn"]);
+  });
+
+  test("rejects an onTrigger section nested inside a spawned body", () => {
+    // The runtime lifts onTrigger sections only at the top level, so a section
+    // inside a childWorkflow child would reach the runtime inline and fail.
+    const proj = projection(
+      {
+        spawn: inlineChildWorkflow(
+          "child",
+          { sect: inlineOnTrigger("inner", { s: agentStep("p", "m") }, ["s"]) },
+          ["sect"],
+        ),
+      },
+      ["spawn"],
+    );
+
+    expect(() => enumerateInertBodies(proj)).toThrow(
+      /onTrigger section at step sect is nested inside a spawned body/,
+    );
+  });
+
+  test("a childWorkflow body's non-agent steps take the placeholder path, not a throw", () => {
+    // A child body mixing an agent step with three non-agent kinds -- a nested
+    // inline childWorkflow, a sleep, and an awaitSignal. None declares an
+    // inference preference, so each is null (the session-service placeholder),
+    // and the nested child is enumerated as its own body.
+    const proj = projection(
+      {
+        spawn: inlineChildWorkflow(
+          "child",
+          {
+            work: agentStep("anthropic", "m1"),
+            nap: { kind: "sleep" },
+            wait: { kind: "awaitSignal", signalName: "go" },
+            sub: inlineChildWorkflow(
+              "grandchild",
+              { deep: agentStep("openai", "gpt") },
+              ["deep"],
+            ),
+          },
+          ["work", "nap", "wait", "sub"],
+        ),
+      },
+      ["spawn"],
+    );
+
+    const byRef = new Map(enumerateInertBodies(proj).map((b) => [b.ref, b]));
+    expect(byRef.get("wf__spawn")?.preferredByStep).toEqual({
+      work: { provider: "anthropic", model: "m1" },
+      nap: null,
+      wait: null,
+      sub: null,
+    });
+    expect(byRef.get("wf__spawn__sub")?.preferredByStep).toEqual({
+      deep: { provider: "openai", model: "gpt" },
+    });
+    expect([...byRef.keys()].sort()).toEqual(["wf__spawn", "wf__spawn__sub"]);
+  });
+});
+
+// Collect the refs the RUNTIME mints, by applying the same rewrites the runtime
+// applies per rung: onTrigger sections lift only at the top level; childWorkflow
+// children lift at every rung; each lifted body recurses using its own ref as
+// the enclosing id (the extracted body's id is set to its ref).
+function liveBodyRefs(def: WorkflowDefinition, isTopLevel: boolean): string[] {
+  const refs: string[] = [];
+  const bodies = [
+    ...(isTopLevel ? rewriteInlineOnTriggerBodies(def).bodies : []),
+    ...rewriteInlineChildWorkflowBodies(def).bodies,
+  ];
+  for (const body of bodies) {
+    refs.push(body.ref);
+    refs.push(...liveBodyRefs(body.definition, false));
+  }
+  return refs;
+}
+
+describe("enumerateInertBodies agrees with the runtime rewrite refs", () => {
+  const mkAgent = (id: string) =>
+    defineAgent({
+      id,
+      systemPrompt: id,
+      tools: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "openai", model: "gpt" }] },
+    });
+
+  // The deploy enumerator stages each body's sources.json under a ref, and the
+  // runtime reads it back by the ref its rewrite mints. If the two ever diverge
+  // the child fails loud on a missing source. Pin them equal at every depth.
+  const fixtures: Record<string, WorkflowDefinition> = {
+    "depth-2 child chain": defineWorkflow({
+      id: "P",
+      trigger: { type: "manual" },
+      steps: {
+        spawn: childWorkflow({
+          definition: defineWorkflow({
+            id: "child",
+            steps: {
+              gc: childWorkflow({
+                definition: defineWorkflow({
+                  id: "grandchild",
+                  steps: { work: step({ agent: mkAgent("g") }) },
+                }),
+              }),
+            },
+          }),
+        }),
+      },
+    }),
+    "childWorkflow nested in an onTrigger body": defineWorkflow({
+      id: "P",
+      trigger: { type: "manual" },
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: "s@acme.test" },
+          body: defineWorkflow({
+            id: "sect",
+            steps: {
+              spawn: childWorkflow({
+                definition: defineWorkflow({
+                  id: "child",
+                  steps: { work: step({ agent: mkAgent("c") }) },
+                }),
+              }),
+            },
+          }),
+        }),
+      },
+    }),
+  };
+
+  for (const [name, def] of Object.entries(fixtures)) {
+    test(name, () => {
+      // Validate through the wire projection type, exactly as the deploy path
+      // hands the enumerator its frozen projection.
+      const projection = WorkflowProjectionDefinition.assert(
+        projectLiveToInert(def),
+      );
+      const inertRefs = enumerateInertBodies(projection)
+        .map((body) => body.ref)
+        .sort();
+      const runtimeRefs = liveBodyRefs(def, true).sort();
+      expect(inertRefs).toEqual(runtimeRefs);
+    });
+  }
 });
 
 function loopStep(body: unknown): unknown {

@@ -53,7 +53,7 @@ import { generateId } from "@intx/hub-common";
 import { onTriggerBodyRef } from "@intx/workflow";
 import {
   deriveRunAddress,
-  enumerateInertOnTriggerBodies,
+  enumerateInertBodies,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
@@ -670,7 +670,7 @@ describe("many-definitions-from-one-asset monorepo e2e", () => {
     // short-circuit returning a bodiless cached projection would drop it). The
     // ref derives from the shared workflow id + section, so this checks
     // well-formedness, not provenance -- provenance is pinned by topLevel above.
-    const bBodies = enumerateInertOnTriggerBodies(b.projection);
+    const bBodies = enumerateInertBodies(b.projection);
     expect(bBodies.map((body) => body.ref)).toEqual([COLLAPSE_BODY_REF]);
   }, 180_000);
 });

@@ -1334,10 +1334,12 @@ exactly as a top-level or onTrigger-body step does. The pins ride the
 `referencedDefinitions` wire field and stage to
 `assets/workflow/<childBodyRef>/sources.json` via `materializeWorkflowSources`,
 where `<childBodyRef>` is the deploy-minted `${workflowId}__${stepId}` handle. The
-child invoker reads them by that ref (`readBodyStepInferenceSources`). This is a
-new deploy-side producer parallel to `enumerateInertOnTriggerBodies` — the wire
-field and staging loop are shared, but the child enumerator and its per-step
-approval-gate integration are new.
+child invoker reads them by that ref (`readBodyStepInferenceSources`). The inert
+body enumerator (`enumerateInertBodies`) is generalized to lift both onTrigger
+sections and childWorkflow children transitively, so a single recursive walk
+stages every body's sources under a ref that matches the runtime's per-rung
+rewrite; the wire field, staging loop, and per-step approval-gate integration are
+shared with the onTrigger-body path.
 
 **Per-step tools.** Unlike the onTrigger-body path (which runs toolless), a
 `childWorkflow` step runs real tools — through the same **source-tools** arm the

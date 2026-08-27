@@ -137,9 +137,10 @@ export type WorkflowProjectionDefinition =
  * hub-approved wire hash, with the invariant that every `stepOrder` entry has a
  * `sources` failover chain. This is the shared base for BOTH the top-level
  * deploy frame (`AgentDeployWorkflow`, which intersects its extras onto this)
- * AND each extracted onTrigger body under `referencedDefinitions` -- so the
- * field set and the coverage narrow are defined once and a body's sources cover
- * the body's stepOrder just as the top-level's cover the top-level's.
+ * AND each extracted trigger body (onTrigger section or childWorkflow child)
+ * under `referencedDefinitions` -- so the field set and the coverage narrow are
+ * defined once and a body's sources cover the body's stepOrder just as the
+ * top-level's cover the top-level's.
  */
 export const WorkflowProjectionWithSources = type({
   definition: WorkflowProjectionDefinition,
