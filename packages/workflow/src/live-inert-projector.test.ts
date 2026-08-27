@@ -573,6 +573,42 @@ describe("nested grant surfaces are reified", () => {
     const bytes = canonicalJsonStringify(spawn.definition.inline);
     expect(bytes).toContain("beta_do");
   });
+
+  test("the parent hash folds vendored child content", async () => {
+    // A parent whose sole step spawns an inline child differing only in the
+    // child step's tool. The operative deploy/approval/re-verify hash
+    // (computeLiveDefinitionHash, via projectChildWorkflow recursing into the
+    // inline body) must distinguish the two -- otherwise two parents vendoring
+    // different children would share an approved hash and one could run the
+    // other's child content.
+    const withChild = (tool: typeof alphaTool) =>
+      defineWorkflow({
+        id: "wf_hashparent",
+        trigger: { type: "manual" },
+        steps: {
+          spawn: childWorkflow({
+            definition: defineWorkflow({
+              id: "authored-child",
+              steps: {
+                work: step({
+                  agent: mkAgent([tool], baseCapabilities, [OPENAI]),
+                }),
+              },
+            }),
+          }),
+        },
+      });
+    const alphaParent = withChild(alphaTool);
+    const betaParent = withChild(betaTool);
+    const alphaParentAgain = withChild(alphaTool);
+
+    expect(await computeLiveDefinitionHash(alphaParent)).not.toBe(
+      await computeLiveDefinitionHash(betaParent),
+    );
+    expect(await computeLiveDefinitionHash(alphaParent)).toBe(
+      await computeLiveDefinitionHash(alphaParentAgain),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
