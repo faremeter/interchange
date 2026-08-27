@@ -1,8 +1,8 @@
 // Public surface for @intx/tools-mail.
 //
 // createMailTools resolves the bound agent's MessageTransport from the
-// supplied RuntimeCapabilities once at handler-init and wires the five
-// mail handlers around it. The returned MailTools satisfies the
+// supplied RuntimeCapabilities once at handler-init and wires the mail
+// handlers around it. The returned MailTools satisfies the
 // ToolRunner contract the harness consumes.
 
 import type {
@@ -14,6 +14,8 @@ import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 
 import { TOOL_DEFINITIONS } from "./definitions";
 import {
+  makeMailExpungeHandler,
+  makeMailFlagHandler,
   makeMailReadHandler,
   makeMailReplyHandler,
   makeMailSearchHandler,
@@ -47,6 +49,8 @@ export function createMailTools(opts: MailToolsOptions): MailTools {
     ["mail_search", makeMailSearchHandler(transport)],
     ["mail_read", makeMailReadHandler(transport)],
     ["mail_wait", makeMailWaitHandler(transport)],
+    ["mail_flag", makeMailFlagHandler(transport)],
+    ["mail_expunge", makeMailExpungeHandler(transport)],
   ]);
 
   let disposed = false;

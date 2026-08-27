@@ -688,7 +688,7 @@ Returns on error: `{ error: string, code: string }`. Error codes: `not_found` (m
 
 **mail.threads** — Get conversation threads.
 
-> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, and `mail_wait`. The specification below records the intended design; an agent cannot call `mail.threads` yet.
+> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, `mail_wait`, `mail_flag`, and `mail_expunge`. The specification below records the intended design; an agent cannot call `mail.threads` yet.
 
 Parameters:
 
@@ -698,23 +698,33 @@ Parameters:
 
 Returns: array of thread trees, each with message summaries and child threads.
 
-**mail.flag** — Set or clear flags on a message.
-
-> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, and `mail_wait`. The specification below records the intended design; an agent cannot call `mail.flag` yet.
+**mail.flag** (`mail_flag`) — Set or clear flags on a message.
 
 Parameters:
 
 - `ref`: message reference
-- `set`: flags to add (system flags or custom keywords)
+- `set`: flags to add (system flags like `\Deleted`, or custom keywords)
 - `clear`: flags to remove
+
+Provide exactly one of `set` or `clear` — one direction per call. A single call can change several flags in that direction (e.g. `set: ["\Seen", "\Flagged"]`), but adding and removing in one call is rejected: each call is a single atomic mutation, so an error unambiguously means nothing changed.
 
 Returns: `{ ok: true }`
 
-Returns on error: `{ error: string, code: string }`. Error codes: `not_found`, `invalid_flag` (flag name not permitted by server).
+Returns on error: `{ error: string, code: string }`. Error code: `flag_failed` (the mutation was not applied). An error result means the mailbox was NOT changed — the flag did not stick.
+
+**mail.expunge** (`mail_expunge`) — Permanently remove every `\Deleted` message from the INBOX.
+
+Takes no parameters. Flag a message `\Deleted` with `mail.flag` first, then call this to consume it.
+
+Returns: `{ ok: true, expungedUids: number[] }` — the uids removed.
+
+Returns on error: `{ error: string, code: string }`. Error code: `expunge_failed`. An error result means nothing was removed.
+
+The expunged message bytes are removed from the live mailbox but retained in the workflow run's git history, so the audit trail is preserved.
 
 **mail.move** — Move a message to a different mailbox.
 
-> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, and `mail_wait`. The specification below records the intended design; an agent cannot call `mail.move` yet.
+> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, `mail_wait`, `mail_flag`, and `mail_expunge`. The specification below records the intended design; an agent cannot call `mail.move` yet.
 
 Parameters:
 
@@ -747,7 +757,7 @@ Offering tools are convenience wrappers over the message transport for the commo
 
 **offering.invoke** — Invoke an offering on another agent.
 
-> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, and `mail_wait`. The specification below records the intended design; an agent cannot call `offering.invoke` yet.
+> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, `mail_wait`, `mail_flag`, and `mail_expunge`. The specification below records the intended design; an agent cannot call `offering.invoke` yet.
 
 Parameters:
 
@@ -763,7 +773,7 @@ Returns on error: `{ error: string, code: string }`. Error codes: `invalid_addre
 
 **offering.discover** — Query another agent's available offerings.
 
-> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, and `mail_wait`. The specification below records the intended design; an agent cannot call `offering.discover` yet.
+> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, `mail_wait`, `mail_flag`, and `mail_expunge`. The specification below records the intended design; an agent cannot call `offering.discover` yet.
 
 Parameters:
 
