@@ -89,9 +89,10 @@ import {
   createInMemoryRepoStore,
   createInMemoryScheduler,
   createInMemorySignalChannel,
-  createLoopIteration,
   createNoopDrainController,
+  createSpawnLoopIteration,
   defineWorkflow,
+  enumerateInlineLoopBodies,
   escalation,
   loop,
   map,
@@ -946,7 +947,10 @@ describe("per-level pipeline with real agents", () => {
       drain: createNoopDrainController(pipeline),
       loopFns,
     };
-    env.runLoopIteration = createLoopIteration(env);
+    const loopBodies = new Map(
+      enumerateInlineLoopBodies(pipeline).map((b) => [b.ref, b.definition]),
+    );
+    env.spawnLoopIteration = createSpawnLoopIteration(env, loopBodies);
     return env;
   }
 

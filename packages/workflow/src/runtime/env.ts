@@ -14,7 +14,7 @@ import type {
   AuthorizeContext,
   WorkflowAuthorizeFn,
 } from "../authorize-context";
-import type { Primitive, WorkflowDefinition } from "../definition/index";
+import type { Primitive } from "../definition/index";
 import type { WorkflowEvent } from "../state-machine/index";
 import type { DrainController } from "./drain";
 
@@ -400,31 +400,6 @@ export type SpawnSuspendableChild = (input: {
 }) => Promise<SuspendableChildHandle>;
 
 /**
- * Run one loop iteration as a child run. Distinct from `spawnChild`:
- * loop iterations run the inline `bodyDefinition` against a SHARED store
- * (the parent's repoStore + blobs + effects) under a caller-supplied
- * DETERMINISTIC `childRunId`, and return the child's RESOLVED step
- * outputs (not just a terminal status) so the loop's while/carry
- * functions can read them without touching blob refs. The host owns
- * idempotency: a `childRunId` whose durable log is already terminal
- * returns its recorded outputs without re-running. Because a loop body
- * may not suspend (no awaitSignal/sleep/childWorkflow), a persisted
- * child log is always terminal -- a mid-iteration crash drops the whole
- * buffered segment, leaving an empty log the host re-runs fresh.
- */
-export type RunLoopIteration = (input: {
-  bodyDefinition: WorkflowDefinition;
-  childRunId: string;
-  input: unknown;
-  parentRunId: string;
-  parentStepId: string;
-  signal: AbortSignal;
-}) => Promise<{
-  terminalStatus: "completed" | "failed" | "cancelled";
-  output: Record<string, unknown>;
-}>;
-
-/**
  * A loop's `while` predicate or `carry` transform. Deliberately receives
  * only data -- the just-completed iteration's resolved output and the
  * current carry state -- and NO effect context, authorize, or signal.
@@ -564,14 +539,19 @@ export interface WorkflowRuntimeEnv {
    */
   spawnSuspendableChild?: SpawnSuspendableChild;
   /**
-   * Run one loop iteration as a child run against the shared store.
-   * Optional: a host that does not wire it does not support `loop`, and
-   * `runLoop` fails loudly. runLocal wires it.
+   * Spawn one loop iteration as a suspendable child. Same
+   * {@link SpawnSuspendableChild} contract as `spawnSuspendableChild`, but
+   * wired to an executor that runs the body under the parent run's INHERITED
+   * env (real tools, action invoker, grants, and the durable shared store) --
+   * a loop is the parent's own bounded rework, not a fresh capped section
+   * body. `runLoop` drives it across the body's parks exactly as `runOnTrigger`
+   * drives a section body. Optional: a host that does not wire it does not
+   * support `loop`, and `runLoop` fails loudly. runLocal wires it.
    */
-  runLoopIteration?: RunLoopIteration;
+  spawnLoopIteration?: SpawnSuspendableChild;
   /**
    * Resolve a loop's `while`/`carry` refs to pure functions. Optional
-   * for the same reason as `runLoopIteration`.
+   * for the same reason as `spawnLoopIteration`.
    */
   loopFns?: LoopFnRegistry;
   /**

@@ -37,6 +37,7 @@ export {
 export {
   runtimeRun,
   createSuspendableChildHandle,
+  createLoopIterationHandle,
   MAX_CHILD_SPAWN_DEPTH,
   ChildSpawnDepthExceededError,
   resolveMaxChildSpawnDepth,
@@ -60,7 +61,6 @@ export {
   type ParkedApprovalOp,
   type ReadParkedApprovalOps,
   type RepoStore,
-  type RunLoopIteration,
   type RunResult,
   type RuntimeRunOptions,
   type Scheduler,
@@ -78,9 +78,9 @@ export {
 } from "./runtime/index";
 export {
   runLocal,
-  createLoopIteration,
   createDefaultActionInvoker,
   createInMemoryEffectLedger,
+  createSpawnLoopIteration,
   createInMemoryRepoStore,
   createInMemoryScheduler,
   createInMemorySignalChannel,

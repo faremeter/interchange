@@ -7,10 +7,12 @@
 // `runAction` flushes the action's `StepStarted` durably before invoking the
 // handler, and the loop body runs as a child run over the SHARED store, so a
 // faithful crash between the effect and the action's `StepCompleted` leaves the
-// child (`rework__0`) log NON-empty and non-terminal. On resume,
-// `createLoopIteration` reads that non-empty child log, `resumeFromLog` sees a
-// non-terminal phase, and it throws -- the iteration fails loud and the handler
-// is NOT re-invoked. The run settles `failed`.
+// child (`rework__0`) log NON-empty and non-terminal. On resume, the iteration
+// re-spawns through the suspendable-loop seam; the body's `runtimeRun` adopts
+// that durable child log, sees the action `in-flight` (durable `StepStarted`,
+// no `StepCompleted`), and settles it a terminal `StepFailed` via
+// `isCrashedInvocationStep` (the at-most-once refusal) rather than re-invoking
+// the handler. The iteration fails and the run settles `failed`.
 //
 // Contrast `loop-resume.test.ts`, which models an INCONSISTENT store (it drops
 // the child log while keeping the parent) and therefore exercises the
@@ -28,7 +30,9 @@ import {
   createInMemoryScheduler,
   createInMemorySignalChannel,
   createNoopDrainController,
+  createSpawnLoopIteration,
   defineWorkflow,
+  enumerateInlineLoopBodies,
   loop,
   runtimeRun,
   type ActionInvoker,
@@ -39,8 +43,6 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
-
-import { createLoopIteration } from "../runlocal/loop-iteration";
 
 const body = defineWorkflow({
   id: "body",
@@ -151,7 +153,10 @@ function buildEnv(args: {
     drain: createNoopDrainController(parentWorkflow),
     loopFns,
   };
-  env.runLoopIteration = createLoopIteration(env);
+  const loopBodies = new Map(
+    enumerateInlineLoopBodies(parentWorkflow).map((b) => [b.ref, b.definition]),
+  );
+  env.spawnLoopIteration = createSpawnLoopIteration(env, loopBodies);
   return env;
 }
 

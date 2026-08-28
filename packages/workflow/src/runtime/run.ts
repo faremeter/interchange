@@ -64,6 +64,7 @@ import {
 } from "./child-depth";
 import { RuntimeResumeUnsupportedError } from "./errors";
 import { scopedStepId } from "./step-scope";
+import { inlineBodyRef } from "../ontrigger-bodies";
 import {
   controlParkKindOf,
   isTerminalRunPhase,
@@ -1659,13 +1660,14 @@ async function runLoop(
   selectorCtx: SelectorContext,
   abort: AbortSignal,
 ): Promise<unknown> {
-  const runLoopIteration = env.runLoopIteration;
+  const spawnLoopIteration = env.spawnLoopIteration;
   const loopFns = env.loopFns;
-  if (runLoopIteration === undefined || loopFns === undefined) {
+  if (spawnLoopIteration === undefined || loopFns === undefined) {
     throw new Error(
-      `loop ${primitive.id} requires runLoopIteration and loopFns on the env; this host does not support loops`,
+      `loop ${primitive.id} requires spawnLoopIteration and loopFns on the env; this host does not support loops`,
     );
   }
+  const bodyRef = inlineBodyRef(definition.id, primitive.id);
   const whileFn = loopFns(primitive.while);
   const carryFn = loopFns(primitive.carry);
 
@@ -1740,51 +1742,42 @@ async function runLoop(
     if (!state.steps.has(stepId)) {
       await emitStepStartedWithValue(env, runId, stepId, currentInput);
     }
-    state = await reloadState(env, runId);
-    if (!state.children.has(childRunId)) {
-      const spawned: WorkflowEvent = {
-        kind: "ChildSpawned",
-        seq: state.lastSeq + 1,
-        at: env.clock().toISOString(),
-        stepId,
+    // Drive the iteration body through the suspendable-child seam: this commits
+    // ChildSpawned on the loop container step, spawns the body under the
+    // inherited-env executor, proxies any body park up on the container, and
+    // commits ChildCompleted. A non-suspending body drives straight to
+    // terminal; a body that parks in-process (e.g. an agent step on an approval
+    // gate) is serviced by the park proxy above without the body reaching a
+    // terminal. `resume` is undefined: each iteration spawns fresh. A body left
+    // parked across a crash is not recovered on this path -- its container is
+    // left `awaiting-signal`, which no loop resume carve-out admits, so recovery
+    // fails loud rather than silently.
+    const { terminalStatus } = await driveSuspendableOccurrence(
+      env,
+      runId,
+      primitive.id,
+      {
         childRunId,
-        childDefinitionRef: primitive.body.id,
-      };
-      state = await commit(env, runId, spawned);
-      void state;
-    }
-    // Flush the spawn record durable before the child runs so a resumed
-    // parent log records the spawn ahead of any child-side work.
-    await flush(env, runId);
+        bodyRef,
+        input: currentInput,
+        resume: undefined,
+        spawnSuspendableChild: spawnLoopIteration,
+        abort,
+      },
+    );
 
-    const res = await runLoopIteration({
-      bodyDefinition: primitive.body,
-      childRunId,
-      input: currentInput,
-      parentRunId: runId,
-      parentStepId: stepId,
-      signal: abort,
-    });
+    // The drive returns only the terminal status; the iteration's step outputs
+    // live in the child's durable log, so hydrate them here -- the scoped
+    // StepCompleted records them, and while/carry read them.
+    const output = await hydrateChildOutputs(env, childRunId);
 
-    let after = await reloadState(env, runId);
-    if (after.children.get(childRunId)?.terminalStatus === undefined) {
-      const childCompleted: WorkflowEvent = {
-        kind: "ChildCompleted",
-        seq: after.lastSeq + 1,
-        at: env.clock().toISOString(),
-        childRunId,
-        terminalStatus: res.terminalStatus,
-      };
-      after = await commit(env, runId, childCompleted);
-      void after;
-    }
-    after = await reloadState(env, runId);
+    const after = await reloadState(env, runId);
     if (after.steps.get(stepId)?.phase !== "completed") {
-      await emitStepCompletedWithValue(env, runId, stepId, res.output);
+      await emitStepCompletedWithValue(env, runId, stepId, output);
     }
     await flush(env, runId);
 
-    if (res.terminalStatus !== "completed") {
+    if (terminalStatus !== "completed") {
       // A failed or cancelled iteration is a real failure, not an
       // exhaustion. Throw so runPrimitiveSafe lands StepFailed (or
       // CancelPropagated when the run is cancelling) on the loop node.
@@ -1794,11 +1787,11 @@ async function runLoop(
       // dependency is resolved" scheduling (the same as a failed gate).
       // The mutually-exclusive routing holds only on the success path.
       throw new Error(
-        `loop ${primitive.id} iteration ${String(i)} ended ${res.terminalStatus}`,
+        `loop ${primitive.id} iteration ${String(i)} ended ${terminalStatus}`,
       );
     }
 
-    if (!whileFn(res.output, currentInput)) {
+    if (!whileFn(output, currentInput)) {
       outcome = "converged";
       break;
     }
@@ -1806,7 +1799,7 @@ async function runLoop(
       outcome = "exhausted";
       break;
     }
-    currentInput = carryFn(res.output, currentInput);
+    currentInput = carryFn(output, currentInput);
   }
 
   await routeLoopOutcome(definition, env, runId, primitive, outcome, abort);
@@ -2944,6 +2937,28 @@ async function resolveIterationOutput(
     }
   }
   throw new Error(`loop resume: no StepCompleted output for ${stepId}`);
+}
+
+/**
+ * Resolve every `StepCompleted` output in a loop iteration's child log to a
+ * value, keyed by the body step id. The suspendable-child drive returns only a
+ * terminal status, so the loop reads the iteration's own (durable) child run to
+ * rebuild the step-output record its scoped `StepCompleted` records and its
+ * `while`/`carry` functions consume -- the same shape the former in-process
+ * iteration returned directly.
+ */
+async function hydrateChildOutputs(
+  env: WorkflowRuntimeEnv,
+  childRunId: string,
+): Promise<Record<string, unknown>> {
+  const outputs: Record<string, unknown> = {};
+  const log = await env.repoStore.read(childRunId);
+  for (const event of log) {
+    if (event.kind === "StepCompleted") {
+      outputs[event.stepId] = await env.blobs.resolveRef(event.output.ref);
+    }
+  }
+  return outputs;
 }
 
 /**
