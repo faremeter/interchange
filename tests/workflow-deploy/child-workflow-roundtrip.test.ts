@@ -136,12 +136,99 @@ const TOOL_CHILD_DEPLOYMENT_ID = "run_child-workflow-tool-child-1";
 const TOOL_PARENT_WORKFLOW_ID = `wf_${TOOL_PARENT_DEPLOYMENT_ID}`;
 const TOOL_CHILD_WORKFLOW_ID = `wf_${TOOL_CHILD_DEPLOYMENT_ID}`;
 
+// Live-event deployment ids. The parent's ONLY step is the childWorkflow spawn,
+// so the parent runs no agent of its own -- any inference event on the
+// deployment's stream can only have originated in the child.
+const LIVE_EVENT_PARENT_DEPLOYMENT_ID = "run_child-workflow-liveevent-parent-1";
+const LIVE_EVENT_CHILD_DEPLOYMENT_ID = "run_child-workflow-liveevent-child-1";
+const LIVE_EVENT_PARENT_WORKFLOW_ID = `wf_${LIVE_EVENT_PARENT_DEPLOYMENT_ID}`;
+const LIVE_EVENT_CHILD_WORKFLOW_ID = `wf_${LIVE_EVENT_CHILD_DEPLOYMENT_ID}`;
+
+// Whether a captured agent-event payload is a live inference event (its type is
+// in the `inference.*` family the reactor emits during a step's `agent.send`).
+function isLiveInferenceEvent(event: unknown): boolean {
+  if (typeof event !== "object" || event === null || !("type" in event)) {
+    return false;
+  }
+  const { type } = event;
+  return typeof type === "string" && type.startsWith("inference.");
+}
+
+// Map-nested-in-child deployment ids. The child body carries a `map` fan-out,
+// so the composition (a real map running inside a spawned child) is exercised
+// end to end -- including the child-body source staging pinning the map's inner
+// step's inference source.
+const MAP_NESTED_PARENT_DEPLOYMENT_ID = "run_child-workflow-mapnested-parent-1";
+const MAP_NESTED_CHILD_DEPLOYMENT_ID = "run_child-workflow-mapnested-child-1";
+const MAP_NESTED_PARENT_WORKFLOW_ID = `wf_${MAP_NESTED_PARENT_DEPLOYMENT_ID}`;
+const MAP_NESTED_CHILD_WORKFLOW_ID = `wf_${MAP_NESTED_CHILD_DEPLOYMENT_ID}`;
+const MAP_NESTED_ITEM_COUNT = 2;
+
+// A parent whose only step spawns a child whose body is `seed -> fanout =
+// map(...)`. Written as a bespoke entry module (the shared `childWorkflowEntry`
+// fixture renders only agent steps, not a nested map). `bundleWorkflowEntry`
+// inlines this to a self-contained `.mjs` the sidecar evaluates in-child.
+function mapNestedEntry(params: {
+  parentWorkflowId: string;
+  parentAddress: string;
+  childWorkflowId: string;
+  childAddress: string;
+  itemCount: number;
+}): string {
+  const items = Array.from({ length: params.itemCount }, (_unused, i) => ({
+    id: String.fromCharCode(97 + i),
+  }));
+  return `
+import { childWorkflow, defineWorkflow, map, step } from "@intx/workflow/definition";
+import { defineAgent } from "@intx/agent";
+
+const seedAgent = defineAgent({
+  id: "agent-mapnested-child-seed",
+  systemPrompt: "You are the map-nested child's seed step agent.",
+  tools: [],
+  capabilities: [],
+  inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+});
+
+const itemAgent = defineAgent({
+  id: "agent-mapnested-child-item",
+  systemPrompt: "You are the map-nested child's per-item agent.",
+  tools: [],
+  capabilities: [],
+  inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+});
+
+const child = defineWorkflow({
+  id: ${JSON.stringify(params.childWorkflowId)},
+  trigger: { type: "mail", to: ${JSON.stringify(params.childAddress)} },
+  steps: {
+    seed: step({ agent: seedAgent }),
+    fanout: map({
+      over: { literal: ${JSON.stringify(items)} },
+      step: step({ agent: itemAgent }),
+      after: ["seed"],
+    }),
+  },
+});
+
+export const workflow = defineWorkflow({
+  id: ${JSON.stringify(params.parentWorkflowId)},
+  trigger: { type: "mail", to: ${JSON.stringify(params.parentAddress)} },
+  steps: {
+    spawn: childWorkflow({ definition: child, after: [] }),
+  },
+});
+`;
+}
+
 const TENANT_ID = "tnt_child_workflow";
 const CALLER_PRINCIPAL_ID = "prn_child_workflow";
 const SINGLE_DEFINITION_ASSET_ID = "ast_child_workflow_single_wf";
 const NESTED_DEFINITION_ASSET_ID = "ast_child_workflow_nested_wf";
 const SIBLINGS_DEFINITION_ASSET_ID = "ast_child_workflow_siblings_wf";
 const TOOL_DEFINITION_ASSET_ID = "ast_child_workflow_tool_wf";
+const LIVE_EVENT_DEFINITION_ASSET_ID = "ast_child_workflow_liveevent_wf";
+const MAP_NESTED_DEFINITION_ASSET_ID = "ast_child_workflow_mapnested_wf";
 
 let env: DeployFlowEnv;
 let h: TestDb;
@@ -165,6 +252,8 @@ beforeAll(async () => {
     NESTED_DEFINITION_ASSET_ID,
     SIBLINGS_DEFINITION_ASSET_ID,
     TOOL_DEFINITION_ASSET_ID,
+    LIVE_EVENT_DEFINITION_ASSET_ID,
+    MAP_NESTED_DEFINITION_ASSET_ID,
   ]) {
     await seedAsset(h.db, {
       id,
@@ -602,6 +691,241 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // "I see these tools:" prefix with no tool name.
       const childReply = readStepReply(childStepCompleted);
       expect(childReply).toContain(MAIL_TOOL_NAME);
+    }, 180_000);
+
+    // A child's LIVE inference events reach the hub's agent-event stream, not
+    // just the durable per-run log. The parent's only step is the childWorkflow
+    // spawn, so the parent runs no agent of its own; an `inference.*` event on
+    // this deployment's stream can only have originated in the child, threaded
+    // up through the terminal spawn seam's `onEvent`. Before that sink was
+    // wired the child's live events were silently dropped while the durable
+    // events still landed -- an omitted callback and a wired-but-dead one are
+    // indistinguishable without this guard.
+    test("a childWorkflow child's live inference events reach the hub", async () => {
+      const parentMailAddress = deriveRunAddress({
+        runId: LIVE_EVENT_PARENT_DEPLOYMENT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+      const childMailAddress = deriveRunAddress({
+        runId: LIVE_EVENT_CHILD_DEPLOYMENT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${parentMailAddress}`,
+        `mail.address:${childMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      const { workflowRunRepoId: parentWorkflowRunRepoId } = await deployParent(
+        {
+          anchorRunId: LIVE_EVENT_PARENT_DEPLOYMENT_ID,
+          definitionAssetId: LIVE_EVENT_DEFINITION_ASSET_ID,
+          topLevelStepIds: ["spawn"],
+          approvals: operatorApprovals,
+          fixture: {
+            workflowId: LIVE_EVENT_PARENT_WORKFLOW_ID,
+            address: parentMailAddress,
+            // No leading agent step: the parent runs no agent of its own.
+            steps: [],
+            spawns: [
+              {
+                stepId: "spawn",
+                after: [],
+                child: {
+                  workflowId: LIVE_EVENT_CHILD_WORKFLOW_ID,
+                  address: childMailAddress,
+                  steps: [
+                    {
+                      stepId: "childStep",
+                      agentId: "agent-liveevent-child-step",
+                      systemPrompt:
+                        "You are the live-event child's step agent.",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      );
+
+      await fireMailTrigger(env, parentMailAddress, {
+        messageId: "<child-workflow-liveevent-1@integration.interchange>",
+      });
+
+      const parentRunId = await waitForFirstRunId(
+        env,
+        parentWorkflowRunRepoId,
+        {
+          diagnostics: env.sidecarDiagnostics,
+          timeoutMs: 20_000,
+        },
+      );
+
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            LIVE_EVENT_PARENT_DEPLOYMENT_ID,
+            parentRunId,
+          );
+          return events.some((e) => e.type === "RunCompleted");
+        },
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+      );
+
+      // The child's live inference event reached the hub's agent-event stream on
+      // the parent deployment's address. The parent runs no agent, so this event
+      // is the child's, proving the terminal spawn seam's onEvent is live (not
+      // omitted, not wired-but-dead).
+      await waitFor(
+        () =>
+          env.hub.agentEvents.some(
+            (e) =>
+              e.addr === parentMailAddress && isLiveInferenceEvent(e.event),
+          ),
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 10_000 },
+      );
+      const childLiveEvents = env.hub.agentEvents.filter(
+        (e) => e.addr === parentMailAddress && isLiveInferenceEvent(e.event),
+      );
+      expect(childLiveEvents.length).toBeGreaterThan(0);
+    }, 180_000);
+
+    // A map fan-out nested inside a childWorkflow body. The child's runtime is a
+    // full runtime, so a `map` in the child body runs its per-item agents for
+    // real; this also exercises the child-body source staging pinning the map's
+    // inner step's inference source (a map inside a child, not just top-level).
+    test("a map nested inside a childWorkflow body produces real output", async () => {
+      const parentMailAddress = deriveRunAddress({
+        runId: MAP_NESTED_PARENT_DEPLOYMENT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+      const childMailAddress = deriveRunAddress({
+        runId: MAP_NESTED_CHILD_DEPLOYMENT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+      });
+      const inferenceSource: InferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${env.inference.server.port}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${parentMailAddress}`,
+        `mail.address:${childMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      const handle = await deployWorkflowSourceForTest(env, {
+        entryModule: mapNestedEntry({
+          parentWorkflowId: MAP_NESTED_PARENT_WORKFLOW_ID,
+          parentAddress: parentMailAddress,
+          childWorkflowId: MAP_NESTED_CHILD_WORKFLOW_ID,
+          childAddress: childMailAddress,
+          itemCount: MAP_NESTED_ITEM_COUNT,
+        }),
+        db: h.db,
+        tenantId: TENANT_ID,
+        definitionAssetId: MAP_NESTED_DEFINITION_ASSET_ID,
+        anchorRunId: MAP_NESTED_PARENT_DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+        agentAddress: parentMailAddress,
+        approvals: operatorApprovals,
+        config: makeConfig(MAP_NESTED_PARENT_DEPLOYMENT_ID, parentMailAddress),
+        sources: { spawn: [inferenceSource] },
+      });
+      expect(handle.publicKey).toBeTruthy();
+
+      await waitFor(
+        () => env.hub.router.getRoutableAddresses().includes(parentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      await fireMailTrigger(env, parentMailAddress, {
+        messageId: "<child-workflow-mapnested-1@integration.interchange>",
+      });
+
+      const parentRunId = await waitForFirstRunId(
+        env,
+        handle.workflowRunRepoId,
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+      );
+
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            MAP_NESTED_PARENT_DEPLOYMENT_ID,
+            parentRunId,
+          );
+          return events.some((e) => e.type === "ChildSpawned");
+        },
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+      );
+
+      const parentEvents = await readWorkflowRunEvents(
+        env,
+        MAP_NESTED_PARENT_DEPLOYMENT_ID,
+        parentRunId,
+      );
+      const spawnedEvent = parentEvents.find((e) => e.type === "ChildSpawned");
+      if (spawnedEvent === undefined) throw new Error("unreachable");
+      const childRunId = spawnedEvent.body["childRunId"];
+      if (typeof childRunId !== "string") {
+        throw new Error(
+          `ChildSpawned missing string childRunId; got ${typeof childRunId}`,
+        );
+      }
+
+      await waitFor(
+        async () => {
+          const events = await readWorkflowRunEvents(
+            env,
+            MAP_NESTED_PARENT_DEPLOYMENT_ID,
+            childRunId,
+          );
+          return events.some((e) => e.type === "RunCompleted");
+        },
+        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+      );
+
+      const childEvents = await readWorkflowRunEvents(
+        env,
+        MAP_NESTED_PARENT_DEPLOYMENT_ID,
+        childRunId,
+      );
+
+      // Each map iteration in the child produced real agent output under its
+      // scoped step id `fanout[<index>]`, and the seed step ran too.
+      const seedCompleted = childEvents.find(
+        (e) => e.type === "StepCompleted" && e.body["stepId"] === "seed",
+      );
+      expect(readStepReply(seedCompleted)).toBe(EXPECTED_CHILD_REPLY);
+      for (let i = 0; i < MAP_NESTED_ITEM_COUNT; i += 1) {
+        const scopedId = `fanout[${String(i)}]`;
+        const iterationCompleted = childEvents.find(
+          (e) => e.type === "StepCompleted" && e.body["stepId"] === scopedId,
+        );
+        expect(readStepReply(iterationCompleted)).toBe(EXPECTED_CHILD_REPLY);
+      }
+      // Exactly the expected number of iterations ran -- neither under- nor
+      // over-fanned-out. Guards against a map that silently ran one item or
+      // spawned extra scoped iterations.
+      const iterationCount = childEvents.filter(
+        (e) =>
+          e.type === "StepCompleted" &&
+          typeof e.body["stepId"] === "string" &&
+          /^fanout\[\d+\]$/.test(e.body["stepId"]),
+      ).length;
+      expect(iterationCount).toBe(MAP_NESTED_ITEM_COUNT);
     }, 180_000);
 
     // Grandchild-depth recursion. The sidecar's `createSidecarRunChild`
