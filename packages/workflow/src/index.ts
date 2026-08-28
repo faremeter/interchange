@@ -36,6 +36,7 @@ export {
 } from "./live-inert-projector";
 export {
   runtimeRun,
+  createSuspendableChildHandle,
   MAX_CHILD_SPAWN_DEPTH,
   ChildSpawnDepthExceededError,
   resolveMaxChildSpawnDepth,
