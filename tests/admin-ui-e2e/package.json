@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "devDependencies": {
+    "@intx/hub-app": "workspace:*",
+    "@intx/hub-sessions": "workspace:*",
+    "@intx/log": "workspace:*",
     "@intx/storage-isogit": "workspace:*",
     "@intx/types": "workspace:*",
     "@playwright/test": "^1.50.0",
