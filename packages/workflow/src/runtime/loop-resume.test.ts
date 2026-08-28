@@ -41,7 +41,7 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 
-import { isResumableInFlightLoopStep } from "./dag";
+import { isResumableLoopStep } from "./dag";
 
 const body = defineWorkflow({
   id: "body",
@@ -207,7 +207,7 @@ describe("loop resume", () => {
   });
 });
 
-describe("isResumableInFlightLoopStep", () => {
+describe("isResumableLoopStep", () => {
   const def = defineWorkflow({
     id: "predicate",
     trigger: { type: "manual" },
@@ -236,36 +236,31 @@ describe("isResumableInFlightLoopStep", () => {
     },
   });
 
-  test("exempts an in-flight loop container and its synthetic iteration", () => {
-    expect(isResumableInFlightLoopStep(def, "rework", "in-flight")).toBe(true);
-    expect(isResumableInFlightLoopStep(def, "rework[2]", "in-flight")).toBe(
-      true,
-    );
+  test("exempts a loop container and its iteration in-flight or awaiting-signal", () => {
+    expect(isResumableLoopStep(def, "rework", "in-flight")).toBe(true);
+    expect(isResumableLoopStep(def, "rework[2]", "in-flight")).toBe(true);
     // Multi-digit iteration index strips correctly.
-    expect(isResumableInFlightLoopStep(def, "rework[12]", "in-flight")).toBe(
-      true,
-    );
+    expect(isResumableLoopStep(def, "rework[12]", "in-flight")).toBe(true);
+    // A parked body proxies up onto the CONTAINER step as awaiting-signal, so
+    // the container is resumable there. The synthetic iteration id strips to
+    // its container, so the predicate admits it in awaiting-signal too by
+    // symmetry -- though an iteration step itself only ever goes in-flight ->
+    // completed, never awaiting-signal, so that input does not occur at runtime.
+    expect(isResumableLoopStep(def, "rework", "awaiting-signal")).toBe(true);
+    expect(isResumableLoopStep(def, "rework[2]", "awaiting-signal")).toBe(true);
   });
 
   test("rejects non-loop steps, map ids, malformed ids, and terminal phases", () => {
-    expect(isResumableInFlightLoopStep(def, "esc", "in-flight")).toBe(false);
-    expect(isResumableInFlightLoopStep(def, "esc[0]", "in-flight")).toBe(false);
+    expect(isResumableLoopStep(def, "esc", "in-flight")).toBe(false);
+    expect(isResumableLoopStep(def, "esc[0]", "in-flight")).toBe(false);
     // A map container and its synthetic inner id keep rejecting.
-    expect(isResumableInFlightLoopStep(def, "fan", "in-flight")).toBe(false);
-    expect(isResumableInFlightLoopStep(def, "fan[3]", "in-flight")).toBe(false);
+    expect(isResumableLoopStep(def, "fan", "in-flight")).toBe(false);
+    expect(isResumableLoopStep(def, "fan[3]", "in-flight")).toBe(false);
     // Malformed brackets do not strip to a loop container.
-    expect(isResumableInFlightLoopStep(def, "rework[]", "in-flight")).toBe(
-      false,
-    );
-    expect(isResumableInFlightLoopStep(def, "rework[x]", "in-flight")).toBe(
-      false,
-    );
-    expect(isResumableInFlightLoopStep(def, "unknown", "in-flight")).toBe(
-      false,
-    );
-    expect(isResumableInFlightLoopStep(def, "rework", "completed")).toBe(false);
-    expect(
-      isResumableInFlightLoopStep(def, "rework[2]", "awaiting-signal"),
-    ).toBe(false);
+    expect(isResumableLoopStep(def, "rework[]", "in-flight")).toBe(false);
+    expect(isResumableLoopStep(def, "rework[x]", "in-flight")).toBe(false);
+    expect(isResumableLoopStep(def, "unknown", "in-flight")).toBe(false);
+    // A terminal phase is never resumable, even for a loop container.
+    expect(isResumableLoopStep(def, "rework", "completed")).toBe(false);
   });
 });

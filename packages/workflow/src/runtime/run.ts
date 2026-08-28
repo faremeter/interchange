@@ -36,7 +36,7 @@ import {
   hasFailedStep,
   isCrashedInvocationStep,
   isResumableAwaitingSignalStep,
-  isResumableInFlightLoopStep,
+  isResumableLoopStep,
   isResumableOnTriggerStep,
   isResumableReceivedAwaitSignalStep,
   isRunDone,
@@ -454,7 +454,7 @@ async function executeRunBody(
       //     completion (or, on timeout, routes or fails) without parking
       //     (the crash-after-move-before-StepCompleted window).
       if (
-        isResumableInFlightLoopStep(definition, stepId, stepState.phase) ||
+        isResumableLoopStep(definition, stepId, stepState.phase) ||
         isResumableAwaitingSignalStep(definition, stepId, stepState.phase) ||
         isResumableReceivedAwaitSignalStep(
           definition,
@@ -1732,6 +1732,15 @@ async function runLoop(
     }
   }
 
+  // A crash-recovered iteration whose body was parked or mid-relay needs an
+  // active re-link on its FIRST drive below. planLoopResume yields that token
+  // (or undefined when the forward drive can re-adopt the iteration from the
+  // child's own durable log). Cleared after the recovered iteration is driven
+  // so every later iteration spawns fresh.
+  let occurrenceResume = terminated
+    ? undefined
+    : planLoopResume(primitive, state, log, iteration);
+
   let iterations = iteration;
   for (let i = iteration; !terminated && i < primitive.maxIterations; i += 1) {
     iterations = i + 1;
@@ -1747,11 +1756,11 @@ async function runLoop(
     // inherited-env executor, proxies any body park up on the container, and
     // commits ChildCompleted. A non-suspending body drives straight to
     // terminal; a body that parks in-process (e.g. an agent step on an approval
-    // gate) is serviced by the park proxy above without the body reaching a
-    // terminal. `resume` is undefined: each iteration spawns fresh. A body left
-    // parked across a crash is not recovered on this path -- its container is
-    // left `awaiting-signal`, which no loop resume carve-out admits, so recovery
-    // fails loud rather than silently.
+    // gate, or an author `awaitSignal`) is serviced by the park proxy above
+    // without the body reaching a terminal. `occurrenceResume` is non-undefined
+    // only on the recovered iteration of a crash resume, where it re-links a
+    // body parked or mid-relay at the crash; it is cleared after this drive so
+    // every later iteration spawns fresh.
     const { terminalStatus } = await driveSuspendableOccurrence(
       env,
       runId,
@@ -1760,11 +1769,12 @@ async function runLoop(
         childRunId,
         bodyRef,
         input: currentInput,
-        resume: undefined,
+        resume: occurrenceResume,
         spawnSuspendableChild: spawnLoopIteration,
         abort,
       },
     );
+    occurrenceResume = undefined;
 
     // The drive returns only the terminal status; the iteration's step outputs
     // live in the child's durable log, so hydrate them here -- the scoped
@@ -2658,6 +2668,103 @@ function planOnTriggerResume(
   throw new Error(
     `onTrigger ${primitive.id} resume: body child ${childRunId} is in flight and the container is not parked, but no delivered approval grant or relay signal was found`,
   );
+}
+
+/**
+ * The resume token for a crash-recovered loop iteration whose body was parked
+ * or mid-relay at the crash, derived purely from the container's reduced
+ * `state` plus its durable `log` for the given `iteration`. It yields ONLY the
+ * active re-link the body needs on its next drive: re-establish the container's
+ * signal-relay race, relay a grant/signal delivered but not relayed before the
+ * crash, or re-adopt an approval park.
+ *
+ * `undefined` means "nothing to re-link", and `runLoop`'s forward drive
+ * re-adopts the iteration from the child's own durable log -- a terminal body
+ * short-circuits, a body that crashed mid-invocation settles failed, a body
+ * that had not yet worked re-runs. This is where the planner diverges from
+ * `planOnTriggerResume`, which throws in the same spot: `runLoop` owns the
+ * iteration cursor (it passes `iteration` in) rather than an event cursor it
+ * would have to reset, so there is no `fresh` arm to reset and no
+ * `terminal-is-final` arm -- the `isIterationDone` replay and the forward
+ * drive already own the terminal and re-adopt cases.
+ */
+function planLoopResume(
+  primitive: LoopPrimitive,
+  state: RunState,
+  log: readonly WorkflowEvent[],
+  iteration: number,
+): SuspendableOccurrenceResume | undefined {
+  const childRunId = `${primitive.id}__${String(iteration)}`;
+  const child = state.children.get(childRunId);
+  if (child === undefined || child.terminalStatus !== undefined) {
+    return undefined;
+  }
+  const container = state.steps.get(primitive.id);
+  if (container === undefined) {
+    throw new Error(
+      `loop ${primitive.id} resume: body child ${childRunId} is in flight but the container step has no reduced state`,
+    );
+  }
+  if (
+    container.phase === "awaiting-signal" &&
+    container.awaitingSignal !== undefined
+  ) {
+    const parkKind = controlParkKindOf(container.awaitingSignal);
+    if (parkKind === "signal-relay") {
+      // The container is proxy-parked on the body's author `awaitSignal` gate.
+      // Recover the durable await's seq (the FIFO binding key) so the resume
+      // re-drives the race over the same await without re-emitting it.
+      const name = container.awaitingSignal.name;
+      const recovered = lastSignalRelayAwait(primitive.id, log, name);
+      if (recovered === undefined) {
+        throw new Error(
+          `loop ${primitive.id} resume: container awaits signal-relay ${name} but no matching SignalAwaited is in the log`,
+        );
+      }
+      return {
+        kind: "signal-relay-reestablish",
+        name,
+        awaitSeq: recovered.seq,
+      };
+    }
+    if (parkKind !== "approval") {
+      throw new Error(
+        `loop ${primitive.id} resume: container is parked on an input channel while body child ${childRunId} is still in flight`,
+      );
+    }
+    const corr = correlationIdFromSignalName(container.awaitingSignal.name);
+    if (corr === undefined) {
+      throw new Error(
+        `loop ${primitive.id} resume: container awaiting-signal ${container.awaitingSignal.name} is not a reserved control-plane channel`,
+      );
+    }
+    return { kind: "approval", corr, relay: false };
+  }
+  // The container is not parked but the body is still in flight: a grant or
+  // signal was DELIVERED (its SignalReceived moved the container to in-flight)
+  // but not relayed into the body before the crash. Relay it into the
+  // re-adopted body, else the body's silently re-parked gate would wait forever
+  // for a signal already consumed. Any OTHER in-flight body carries no delivered
+  // grant/signal, so it needs no token and the forward drive re-adopts it.
+  const grant = recoverDeliveredApprovalGrant(primitive.id, log);
+  if (grant !== undefined) {
+    return {
+      kind: "approval",
+      corr: grant.corr,
+      relay: true,
+      ...(grant.decision !== undefined ? { decision: grant.decision } : {}),
+    };
+  }
+  const relaySignal = recoverDeliveredSignalRelay(primitive.id, log);
+  if (relaySignal !== undefined) {
+    return {
+      kind: "signal-relay-relay",
+      name: relaySignal.name,
+      payload: relaySignal.payload,
+      signalId: relaySignal.signalId,
+    };
+  }
+  return undefined;
 }
 
 /**
