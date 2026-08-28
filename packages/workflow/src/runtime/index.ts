@@ -34,6 +34,8 @@ export {
 
 export { runtimeRun, type RuntimeRunOptions } from "./run";
 
+export { createSuspendableChildHandle } from "./suspendable-child-handle";
+
 export {
   MAX_CHILD_SPAWN_DEPTH,
   ChildSpawnDepthExceededError,
