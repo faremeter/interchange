@@ -38,7 +38,11 @@ import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources
 import { generateId } from "@intx/hub-common";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { createTestDb, type TestDb } from "@intx/test-harness/db-harness";
+import {
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
@@ -188,7 +192,7 @@ let fixture: WorkflowPackageFixture;
 // synthesizing it from the asset's tarballs; no HTTP).
 let blobsByPath: Map<string, Uint8Array>;
 
-describe("asset-sourced workflow e2e", () => {
+describe.skipIf(!harnessDbEnvAvailable())("asset-sourced workflow e2e", () => {
   beforeAll(async () => {
     scratchDir = await fs.mkdtemp(path.join(os.tmpdir(), "asset-skeleton-"));
     fixture = await buildWorkflowPackageFixture(scratchDir);

@@ -147,6 +147,7 @@ let h: TestDb;
 let deploymentMailAddress: string;
 
 beforeAll(async () => {
+  if (!harnessDbEnvAvailable()) return;
   // The inline `mail_send` tool in its transport variant calls
   // `env.transport.send` (the supervisor-backed transport) and sentinels only
   // on a successful receipt -- the OUTBOUND signed-send proof.

@@ -29,7 +29,11 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import { generateId } from "@intx/hub-common";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
-import { createTestDb, type TestDb } from "@intx/test-harness/db-harness";
+import {
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
@@ -155,167 +159,172 @@ const resolveAttachment = async (
   return { pack, ref, commitSha };
 };
 
-describe("tampered source-workflow deploy is rejected", () => {
-  beforeAll(async () => {
-    scratchDir = await fs.mkdtemp(path.join(os.tmpdir(), "source-tamper-"));
-    const workflowJs = await bundleWorkflowEntry(scratchDir);
+describe.skipIf(!harnessDbEnvAvailable())(
+  "tampered source-workflow deploy is rejected",
+  () => {
+    beforeAll(async () => {
+      scratchDir = await fs.mkdtemp(path.join(os.tmpdir(), "source-tamper-"));
+      const workflowJs = await bundleWorkflowEntry(scratchDir);
 
-    h = await createTestDb();
-    await h.db.insert(tenantTable).values({
-      id: TENANT_ID,
-      name: TENANT_ID,
-      slug: TENANT_ID,
-      domain: DEPLOYMENT_DOMAIN,
-      parentId: null,
-    });
-    await seedPrincipal(h.db, {
-      id: CALLER_PRINCIPAL_ID,
-      tenantId: TENANT_ID,
-      kind: "user",
-    });
+      h = await createTestDb();
+      await h.db.insert(tenantTable).values({
+        id: TENANT_ID,
+        name: TENANT_ID,
+        slug: TENANT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+        parentId: null,
+      });
+      await seedPrincipal(h.db, {
+        id: CALLER_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        kind: "user",
+      });
 
-    env = await startDeployFlowEnv({});
+      env = await startDeployFlowEnv({});
 
-    await env.hub.agentRepoStore.repoStore.initRepo(sourceRepoId);
-    const writeResult = await env.hub.agentRepoStore.repoStore.writeTree(
-      HUB_PRINCIPAL,
-      sourceRepoId,
-      DEFAULT_ASSET_REF,
-      {
-        files: {
-          "package.json": JSON.stringify({
-            name: PACKAGE_NAME,
-            version: PACKAGE_VERSION,
-            interchange: { workflow: WORKFLOW_ENTRY },
-          }),
-          "workflow.mjs": workflowJs,
-        },
-        message: "Seed tamper-skeleton workflow package",
-      },
-    );
-    sourceCommitSha = writeResult.commitSha;
-  });
-
-  afterAll(async () => {
-    if (env !== undefined) await env.teardown();
-    if (h !== undefined) await h.close();
-    if (scratchDir !== undefined) {
-      await fs.rm(scratchDir, { recursive: true, force: true });
-    }
-  });
-
-  test("a byte-tampered delivery fails the deploy and never routes", async () => {
-    await seedAsset(h.db, {
-      id: DEFINITION_ASSET_ID,
-      tenantId: TENANT_ID,
-      kind: "workflow",
-      name: "source-tamper-wf",
-      creatorPrincipalId: CALLER_PRINCIPAL_ID,
-    });
-
-    const source: WorkflowDefinitionAssetSource = {
-      kind: "asset",
-      assetId: SOURCE_ASSET_ID,
-      package: { format: "source", commitSha: sourceCommitSha },
-    };
-
-    const committed =
-      await env.hub.agentRepoStore.repoStore.openCommittedReadsAtCommit(
+      await env.hub.agentRepoStore.repoStore.initRepo(sourceRepoId);
+      const writeResult = await env.hub.agentRepoStore.repoStore.writeTree(
         HUB_PRINCIPAL,
         sourceRepoId,
-        sourceCommitSha,
+        DEFAULT_ASSET_REF,
+        {
+          files: {
+            "package.json": JSON.stringify({
+              name: PACKAGE_NAME,
+              version: PACKAGE_VERSION,
+              interchange: { workflow: WORKFLOW_ENTRY },
+            }),
+            "workflow.mjs": workflowJs,
+          },
+          message: "Seed tamper-skeleton workflow package",
+        },
       );
-    if (committed === null) {
-      throw new Error("tamper e2e: could not open committed reads at commit");
-    }
-
-    const approvals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
-
-    // 1) Install cleanly: the genuine closure is resolved and frozen.
-    const approved = await installAndApproveWorkflowDefinition({
-      source,
-      entry: WORKFLOW_ENTRY,
-      assetId: DEFINITION_ASSET_ID,
-      approvals,
-      router: env.hub.router,
-      db: h.db,
-      reads: committedReadsToSourceTree(committed),
-      registryName: "npmjs",
-      registryConfig: { url: "https://registry.test" },
-      resolveAttachment,
+      sourceCommitSha = writeResult.commitSha;
     });
-    if (!approved.approval.ok) {
-      throw new Error(
-        `tamper e2e: install did not approve: ${JSON.stringify(approved.approval)}`,
-      );
-    }
 
-    // 2) Deploy with a TAMPERED delivery.
-    tamperDelivery = true;
-    const inferenceSource = {
-      id: "anthropic:mock-model",
-      provider: "anthropic",
-      baseURL: `http://localhost:${String(env.inference.server.port)}`,
-      apiKey: "sk-mock",
-      model: "mock-model",
-    };
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: DEPLOYMENT_ID,
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
-      agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the definition)",
-      tools: [],
-      grants: [],
-      sources: [inferenceSource],
-      defaultSource: "anthropic:mock-model",
-    };
+    afterAll(async () => {
+      if (env !== undefined) await env.teardown();
+      if (h !== undefined) await h.close();
+      if (scratchDir !== undefined) {
+        await fs.rm(scratchDir, { recursive: true, force: true });
+      }
+    });
 
-    let deployRejected = false;
-    try {
-      await deployCodeSourcedWorkflow({
-        approved,
-        source,
-        resolveAttachment,
-        sidecarRouter: env.hub.router,
-        agentAddress: deploymentMailAddress,
-        config,
-        sources: { [STEP_ID]: [inferenceSource] },
-        db: h.db,
+    test("a byte-tampered delivery fails the deploy and never routes", async () => {
+      await seedAsset(h.db, {
+        id: DEFINITION_ASSET_ID,
         tenantId: TENANT_ID,
-        anchorRunId: DEPLOYMENT_ID,
-        deploymentDomain: DEPLOYMENT_DOMAIN,
+        kind: "workflow",
+        name: "source-tamper-wf",
+        creatorPrincipalId: CALLER_PRINCIPAL_ID,
       });
-    } catch {
-      deployRejected = true;
-    }
 
-    // Whether the deploy call rejected outright or acked, the tampered source
-    // must never become routable: materialization failed, so the sidecar never
-    // reported the address as deployed.
-    let becameRoutable = false;
-    try {
-      await waitFor(
-        () =>
-          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 8_000 },
-      );
-      becameRoutable = true;
-    } catch {
-      // Expected: the address never became routable within the window.
-    }
-    expect(becameRoutable).toBe(false);
+      const source: WorkflowDefinitionAssetSource = {
+        kind: "asset",
+        assetId: SOURCE_ASSET_ID,
+        package: { format: "source", commitSha: sourceCommitSha },
+      };
 
-    // Positive signal that the failure is the tamper, not a vacuously
-    // non-routing harness: the deploy call itself rejected when the sidecar's
-    // integrity check failed on the tampered pack. (A CLEAN source deploy on
-    // this same harness DOES become routable -- see source-workflow.e2e.)
-    expect(deployRejected).toBe(true);
-  }, 120_000);
-});
+      const committed =
+        await env.hub.agentRepoStore.repoStore.openCommittedReadsAtCommit(
+          HUB_PRINCIPAL,
+          sourceRepoId,
+          sourceCommitSha,
+        );
+      if (committed === null) {
+        throw new Error("tamper e2e: could not open committed reads at commit");
+      }
+
+      const approvals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      // 1) Install cleanly: the genuine closure is resolved and frozen.
+      const approved = await installAndApproveWorkflowDefinition({
+        source,
+        entry: WORKFLOW_ENTRY,
+        assetId: DEFINITION_ASSET_ID,
+        approvals,
+        router: env.hub.router,
+        db: h.db,
+        reads: committedReadsToSourceTree(committed),
+        registryName: "npmjs",
+        registryConfig: { url: "https://registry.test" },
+        resolveAttachment,
+      });
+      if (!approved.approval.ok) {
+        throw new Error(
+          `tamper e2e: install did not approve: ${JSON.stringify(approved.approval)}`,
+        );
+      }
+
+      // 2) Deploy with a TAMPERED delivery.
+      tamperDelivery = true;
+      const inferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: DEPLOYMENT_ID,
+        tenantId: "tenant-1",
+        principalId: "prin_integration-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
+
+      let deployRejected = false;
+      try {
+        await deployCodeSourcedWorkflow({
+          approved,
+          source,
+          resolveAttachment,
+          sidecarRouter: env.hub.router,
+          agentAddress: deploymentMailAddress,
+          config,
+          sources: { [STEP_ID]: [inferenceSource] },
+          db: h.db,
+          tenantId: TENANT_ID,
+          anchorRunId: DEPLOYMENT_ID,
+          deploymentDomain: DEPLOYMENT_DOMAIN,
+        });
+      } catch {
+        deployRejected = true;
+      }
+
+      // Whether the deploy call rejected outright or acked, the tampered source
+      // must never become routable: materialization failed, so the sidecar never
+      // reported the address as deployed.
+      let becameRoutable = false;
+      try {
+        await waitFor(
+          () =>
+            env.hub.router
+              .getRoutableAddresses()
+              .includes(deploymentMailAddress),
+          { timeoutMs: 8_000 },
+        );
+        becameRoutable = true;
+      } catch {
+        // Expected: the address never became routable within the window.
+      }
+      expect(becameRoutable).toBe(false);
+
+      // Positive signal that the failure is the tamper, not a vacuously
+      // non-routing harness: the deploy call itself rejected when the sidecar's
+      // integrity check failed on the tampered pack. (A CLEAN source deploy on
+      // this same harness DOES become routable -- see source-workflow.e2e.)
+      expect(deployRejected).toBe(true);
+    }, 120_000);
+  },
+);

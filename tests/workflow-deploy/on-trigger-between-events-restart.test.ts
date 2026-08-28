@@ -97,6 +97,7 @@ let restartedSidecar: SidecarHandle | undefined;
 const restartTempDirs: string[] = [];
 
 beforeAll(async () => {
+  if (!harnessDbEnvAvailable()) return;
   h = await createTestDb();
   await h.db.insert(tenantTable).values({
     id: TENANT_ID,

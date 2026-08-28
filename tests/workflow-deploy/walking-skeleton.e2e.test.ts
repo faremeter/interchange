@@ -66,7 +66,11 @@ import type { WorkflowDefinitionRegistrySource } from "@intx/types/workflow-sour
 import { generateId } from "@intx/hub-common";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { createTestDb, type TestDb } from "@intx/test-harness/db-harness";
+import {
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
@@ -318,7 +322,7 @@ let tarballUrl: string;
 let bodyFixture: WorkflowPackageFixture;
 let bodyTarballUrl: string;
 
-describe("walking skeleton e2e", () => {
+describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
   beforeAll(async () => {
     scratchDir = await fs.mkdtemp(path.join(os.tmpdir(), "walking-skeleton-"));
     fixture = await buildWorkflowPackageFixture(scratchDir, {
