@@ -16,21 +16,25 @@ import { baseStepId } from "./step-scope";
 
 /**
  * A loop container `<loopId>` (or its synthetic iteration step
- * `<loopId>[i]`) left in-flight in a seed log is the one resumable
- * in-flight shape: `runLoop` re-derives its position from the log and
- * continues. Every other in-flight/awaiting-* step stays rejected on
- * resume. The resume guard and `nextSchedulable` both key their loop
- * carve-out on this single predicate so the id-parsing lives in exactly
- * one place. A synthetic iteration id `<loopId>[i]` is not a definition
- * key (brackets are outside STEP_ID_PATTERN), so it is stripped back to
- * its container to resolve the kind.
+ * `<loopId>[i]`) left non-terminal in a seed log is resumable in both of
+ * its live phases: `in-flight` while an iteration body is mid-flight
+ * (`runLoop` re-derives its cursor from the log and continues) and
+ * `awaiting-signal` while the container is proxy-parked on an iteration
+ * body's approval or author-`awaitSignal` gate (`runLoop`'s resume planner
+ * re-links the park and drives it), mirroring `isResumableOnTriggerStep`.
+ * Every other in-flight/awaiting-* step stays rejected on resume. The
+ * resume guard and `nextSchedulable` both key their loop carve-out on this
+ * single predicate so the id-parsing lives in exactly one place. A
+ * synthetic iteration id `<loopId>[i]` is not a definition key (brackets
+ * are outside STEP_ID_PATTERN), so it is stripped back to its container to
+ * resolve the kind.
  */
-export function isResumableInFlightLoopStep(
+export function isResumableLoopStep(
   def: WorkflowDefinition,
   stepId: string,
   phase: StepPhase,
 ): boolean {
-  if (phase !== "in-flight") return false;
+  if (phase !== "in-flight" && phase !== "awaiting-signal") return false;
   const containerId = baseStepId(stepId);
   return def.steps[containerId]?.kind === "loop";
 }
@@ -57,7 +61,7 @@ export function isResumableInFlightLoopStep(
  * still-awaiting step, and a post-recovery signal would find no awaiter, so
  * a durable suspension would not actually survive a crash. The resume guard
  * and `nextSchedulable` both key on this predicate so the carve-out lives
- * in exactly one place, mirroring `isResumableInFlightLoopStep`.
+ * in exactly one place, mirroring `isResumableLoopStep`.
  */
 export function isResumableAwaitingSignalStep(
   def: WorkflowDefinition,
@@ -143,7 +147,7 @@ export function isResumableOnTriggerStep(
  * its outcome from the log.) A synthetic map/loop inner id (`<id>[i]`) is not a
  * definition key, so it resolves to `undefined` and is excluded here;
  * resumable loop iterations are handled by
- * `isResumableInFlightLoopStep`, and a mid-`map` inner step stays
+ * `isResumableLoopStep`, and a mid-`map` inner step stays
  * unsupported with its container.
  */
 export function isCrashedInvocationStep(
@@ -171,8 +175,9 @@ export function nextSchedulable(
   // surface for re-arming an `awaiting-timer` or a generic in-flight
   // primitive on resume; a seed log that lands a step in those phases is
   // rejected up front by `runtimeRun` with `RuntimeResumeUnsupportedError`.
-  // The exceptions re-offered below are the resumable carve-outs: a
-  // mid-loop container, an `awaitSignal` step still `awaiting-signal`
+  // The exceptions re-offered below are the resumable carve-outs: a loop
+  // container in-flight or awaiting-signal (`isResumableLoopStep`,
+  // re-derived by `runLoop`), an `awaitSignal` step still `awaiting-signal`
   // (`isResumableAwaitingSignalStep`, re-parked so a later signal
   // resolves it), an `awaitSignal` step left `in-flight` by an
   // already-logged `SignalReceived` (`isResumableReceivedAwaitSignalStep`,
@@ -196,7 +201,7 @@ export function nextSchedulable(
     // one to completion).
     if (
       existing !== undefined &&
-      !isResumableInFlightLoopStep(def, stepId, existing.phase) &&
+      !isResumableLoopStep(def, stepId, existing.phase) &&
       !isResumableAwaitingSignalStep(def, stepId, existing.phase) &&
       !isResumableReceivedAwaitSignalStep(def, stepId, existing.phase) &&
       !isResumableOnTriggerStep(def, stepId, existing.phase)
