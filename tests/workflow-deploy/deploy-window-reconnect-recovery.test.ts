@@ -79,6 +79,7 @@ let h: TestDb;
 let deploymentMailAddress: string;
 
 beforeAll(async () => {
+  if (!harnessDbEnvAvailable()) return;
   deploymentMailAddress = deriveRunAddress({
     runId: DEPLOYMENT_ID,
     domain: DEPLOYMENT_DOMAIN,

@@ -40,7 +40,11 @@ import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources
 import { generateId } from "@intx/hub-common";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { createTestDb, type TestDb } from "@intx/test-harness/db-harness";
+import {
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
@@ -190,293 +194,300 @@ const resolveAttachment = async (
   return { pack, ref, commitSha };
 };
 
-describe("monorepo source-workflow e2e", () => {
-  beforeAll(async () => {
-    scratchDir = await fs.mkdtemp(path.join(os.tmpdir(), "source-monorepo-"));
-    const workflowJs = await bundleWorkflowEntry(scratchDir);
+describe.skipIf(!harnessDbEnvAvailable())(
+  "monorepo source-workflow e2e",
+  () => {
+    beforeAll(async () => {
+      scratchDir = await fs.mkdtemp(path.join(os.tmpdir(), "source-monorepo-"));
+      const workflowJs = await bundleWorkflowEntry(scratchDir);
 
-    h = await createTestDb();
-    await h.db.insert(tenantTable).values({
-      id: TENANT_ID,
-      name: TENANT_ID,
-      slug: TENANT_ID,
-      domain: DEPLOYMENT_DOMAIN,
-      parentId: null,
-    });
-    await seedPrincipal(h.db, {
-      id: CALLER_PRINCIPAL_ID,
-      tenantId: TENANT_ID,
-      kind: "user",
-    });
+      h = await createTestDb();
+      await h.db.insert(tenantTable).values({
+        id: TENANT_ID,
+        name: TENANT_ID,
+        slug: TENANT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+        parentId: null,
+      });
+      await seedPrincipal(h.db, {
+        id: CALLER_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        kind: "user",
+      });
 
-    env = await startDeployFlowEnv({});
+      env = await startDeployFlowEnv({});
 
-    // Seed the monorepo source: a private workspace root plus two members, one
-    // the workflow (`@wf/app`) and one its `workspace:*` dependency (`@wf/lib`).
-    // The `workflow`-kind push accepts the root; the resolver enumerates both
-    // members from `packages/*`.
-    await env.hub.agentRepoStore.repoStore.initRepo(sourceRepoId);
-    const writeResult = await env.hub.agentRepoStore.repoStore.writeTree(
-      HUB_PRINCIPAL,
-      sourceRepoId,
-      DEFAULT_ASSET_REF,
-      {
-        files: {
-          "package.json": JSON.stringify({
-            name: "@wf/monorepo-root",
-            private: true,
-            workspaces: ["packages/*"],
-          }),
-          "packages/app/package.json": JSON.stringify({
-            name: APP_PACKAGE_NAME,
-            version: APP_PACKAGE_VERSION,
-            type: "module",
-            interchange: { workflow: WORKFLOW_ENTRY },
-            dependencies: { [LIB_PACKAGE_NAME]: "workspace:*" },
-          }),
-          "packages/app/workflow.mjs": workflowJs,
-          "packages/lib/package.json": JSON.stringify({
-            name: LIB_PACKAGE_NAME,
-            version: LIB_PACKAGE_VERSION,
-            type: "module",
-            exports: "./index.mjs",
-          }),
-          "packages/lib/index.mjs": libSource,
-        },
-        message: "Seed monorepo source workflow",
-      },
-    );
-    sourceCommitSha = writeResult.commitSha;
-  });
-
-  afterAll(async () => {
-    if (restartedSidecar !== undefined) {
-      restartedSidecar.proc.kill();
-      await restartedSidecar.proc.exited;
-    }
-    for (const dir of restartTempDirs.splice(0)) {
-      await fs.rm(dir, { recursive: true, force: true });
-    }
-    if (env !== undefined) await env.teardown();
-    if (h !== undefined) await h.close();
-    if (scratchDir !== undefined) {
-      await fs.rm(scratchDir, { recursive: true, force: true });
-    }
-  });
-
-  test("install -> deploy-by-source-ref -> run, then restart restores from the durable git store", async () => {
-    await seedAsset(h.db, {
-      id: DEFINITION_ASSET_ID,
-      tenantId: TENANT_ID,
-      kind: "workflow",
-      name: "source-monorepo-wf",
-      creatorPrincipalId: CALLER_PRINCIPAL_ID,
-    });
-
-    const source: WorkflowDefinitionAssetSource = {
-      kind: "asset",
-      assetId: SOURCE_ASSET_ID,
-      // The workflow lives in one member of the monorepo; select it by name.
-      package: {
-        format: "source",
-        commitSha: sourceCommitSha,
-        packageName: APP_PACKAGE_NAME,
-      },
-    };
-
-    const committed =
-      await env.hub.agentRepoStore.repoStore.openCommittedReadsAtCommit(
+      // Seed the monorepo source: a private workspace root plus two members, one
+      // the workflow (`@wf/app`) and one its `workspace:*` dependency (`@wf/lib`).
+      // The `workflow`-kind push accepts the root; the resolver enumerates both
+      // members from `packages/*`.
+      await env.hub.agentRepoStore.repoStore.initRepo(sourceRepoId);
+      const writeResult = await env.hub.agentRepoStore.repoStore.writeTree(
         HUB_PRINCIPAL,
         sourceRepoId,
-        sourceCommitSha,
+        DEFAULT_ASSET_REF,
+        {
+          files: {
+            "package.json": JSON.stringify({
+              name: "@wf/monorepo-root",
+              private: true,
+              workspaces: ["packages/*"],
+            }),
+            "packages/app/package.json": JSON.stringify({
+              name: APP_PACKAGE_NAME,
+              version: APP_PACKAGE_VERSION,
+              type: "module",
+              interchange: { workflow: WORKFLOW_ENTRY },
+              dependencies: { [LIB_PACKAGE_NAME]: "workspace:*" },
+            }),
+            "packages/app/workflow.mjs": workflowJs,
+            "packages/lib/package.json": JSON.stringify({
+              name: LIB_PACKAGE_NAME,
+              version: LIB_PACKAGE_VERSION,
+              type: "module",
+              exports: "./index.mjs",
+            }),
+            "packages/lib/index.mjs": libSource,
+          },
+          message: "Seed monorepo source workflow",
+        },
       );
-    if (committed === null) {
-      throw new Error("monorepo e2e: could not open committed reads at commit");
-    }
-    const reads = committedReadsToSourceTree(committed);
-
-    const operatorApprovals: ApprovalSet = new Set<string>([
-      "inference.source:anthropic:mock-model",
-      "director:@intx/agent/default",
-      `mail.address:${deploymentMailAddress}`,
-      `mail.send:${DEPLOYMENT_DOMAIN}`,
-    ]);
-
-    // 1) Install: enumerate the monorepo members, probe, gate, freeze.
-    const approved = await installAndApproveWorkflowDefinition({
-      source,
-      entry: WORKFLOW_ENTRY,
-      assetId: DEFINITION_ASSET_ID,
-      approvals: operatorApprovals,
-      router: env.hub.router,
-      db: h.db,
-      reads,
-      registryName: "npmjs",
-      registryConfig: { url: "https://registry.test" },
-      resolveAttachment,
+      sourceCommitSha = writeResult.commitSha;
     });
 
-    if (!approved.approval.ok) {
-      throw new Error(
-        `install/approve gate did not approve (reason: ${approved.approval.reason}): ` +
-          `${JSON.stringify(approved.approval)}\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    expect(approved.projection.id).toBe("wf_monorepo");
-    expect(approved.projection.stepOrder).toEqual([STEP_ID]);
-    // The top-level pin is the selected member; the closure carries BOTH members
-    // as source entries.
-    expect(approved.closure.topLevel).toEqual([
-      { name: APP_PACKAGE_NAME, version: APP_PACKAGE_VERSION },
-    ]);
-    const byName = new Map(approved.closure.entries.map((e) => [e.name, e]));
-    for (const memberName of [APP_PACKAGE_NAME, LIB_PACKAGE_NAME]) {
-      const entry = byName.get(memberName);
-      if (entry?.source.kind !== "asset") {
-        throw new Error(`monorepo e2e: ${memberName} is not asset-sourced`);
+    afterAll(async () => {
+      if (restartedSidecar !== undefined) {
+        restartedSidecar.proc.kill();
+        await restartedSidecar.proc.exited;
       }
-      expect(entry.source.package.format).toBe("source");
-    }
+      for (const dir of restartTempDirs.splice(0)) {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+      if (env !== undefined) await env.teardown();
+      if (h !== undefined) await h.close();
+      if (scratchDir !== undefined) {
+        await fs.rm(scratchDir, { recursive: true, force: true });
+      }
+    });
 
-    const versionRow = await h.db
-      .select({
-        approvedWireHash: workflowDefinitionVersionTable.approvedWireHash,
-      })
-      .from(workflowDefinitionVersionTable)
-      .where(
-        and(
-          eq(
-            workflowDefinitionVersionTable.definitionId,
-            approved.approval.definitionId,
+    test("install -> deploy-by-source-ref -> run, then restart restores from the durable git store", async () => {
+      await seedAsset(h.db, {
+        id: DEFINITION_ASSET_ID,
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        name: "source-monorepo-wf",
+        creatorPrincipalId: CALLER_PRINCIPAL_ID,
+      });
+
+      const source: WorkflowDefinitionAssetSource = {
+        kind: "asset",
+        assetId: SOURCE_ASSET_ID,
+        // The workflow lives in one member of the monorepo; select it by name.
+        package: {
+          format: "source",
+          commitSha: sourceCommitSha,
+          packageName: APP_PACKAGE_NAME,
+        },
+      };
+
+      const committed =
+        await env.hub.agentRepoStore.repoStore.openCommittedReadsAtCommit(
+          HUB_PRINCIPAL,
+          sourceRepoId,
+          sourceCommitSha,
+        );
+      if (committed === null) {
+        throw new Error(
+          "monorepo e2e: could not open committed reads at commit",
+        );
+      }
+      const reads = committedReadsToSourceTree(committed);
+
+      const operatorApprovals: ApprovalSet = new Set<string>([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${deploymentMailAddress}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
+
+      // 1) Install: enumerate the monorepo members, probe, gate, freeze.
+      const approved = await installAndApproveWorkflowDefinition({
+        source,
+        entry: WORKFLOW_ENTRY,
+        assetId: DEFINITION_ASSET_ID,
+        approvals: operatorApprovals,
+        router: env.hub.router,
+        db: h.db,
+        reads,
+        registryName: "npmjs",
+        registryConfig: { url: "https://registry.test" },
+        resolveAttachment,
+      });
+
+      if (!approved.approval.ok) {
+        throw new Error(
+          `install/approve gate did not approve (reason: ${approved.approval.reason}): ` +
+            `${JSON.stringify(approved.approval)}\n${env.sidecarDiagnostics()}`,
+        );
+      }
+      expect(approved.projection.id).toBe("wf_monorepo");
+      expect(approved.projection.stepOrder).toEqual([STEP_ID]);
+      // The top-level pin is the selected member; the closure carries BOTH members
+      // as source entries.
+      expect(approved.closure.topLevel).toEqual([
+        { name: APP_PACKAGE_NAME, version: APP_PACKAGE_VERSION },
+      ]);
+      const byName = new Map(approved.closure.entries.map((e) => [e.name, e]));
+      for (const memberName of [APP_PACKAGE_NAME, LIB_PACKAGE_NAME]) {
+        const entry = byName.get(memberName);
+        if (entry?.source.kind !== "asset") {
+          throw new Error(`monorepo e2e: ${memberName} is not asset-sourced`);
+        }
+        expect(entry.source.package.format).toBe("source");
+      }
+
+      const versionRow = await h.db
+        .select({
+          approvedWireHash: workflowDefinitionVersionTable.approvedWireHash,
+        })
+        .from(workflowDefinitionVersionTable)
+        .where(
+          and(
+            eq(
+              workflowDefinitionVersionTable.definitionId,
+              approved.approval.definitionId,
+            ),
+            eq(workflowDefinitionVersionTable.version, "1"),
           ),
-          eq(workflowDefinitionVersionTable.version, "1"),
-        ),
-      )
-      .limit(1)
-      .then((rows) => rows[0]);
-    expect(versionRow?.approvedWireHash).toBe(
-      approved.approval.approvedWireHash,
-    );
-
-    // 2) Deploy by source-ref: the frame carries the monorepo asset inline.
-    const inferenceSource = {
-      id: "anthropic:mock-model",
-      provider: "anthropic",
-      baseURL: `http://localhost:${String(env.inference.server.port)}`,
-      apiKey: "sk-mock",
-      model: "mock-model",
-    };
-    const config: HarnessConfig = {
-      sessionId: SESSION_ID,
-      agentId: DEPLOYMENT_ID,
-      tenantId: "tenant-1",
-      principalId: "prin_integration-1",
-      agentAddress: deploymentMailAddress,
-      systemPrompt: "Fallback prompt (overridden per step by the definition)",
-      tools: [],
-      grants: [],
-      sources: [inferenceSource],
-      defaultSource: "anthropic:mock-model",
-    };
-
-    const deployResult = await deployCodeSourcedWorkflow({
-      approved,
-      source,
-      resolveAttachment,
-      sidecarRouter: env.hub.router,
-      agentAddress: deploymentMailAddress,
-      config,
-      sources: { [STEP_ID]: [inferenceSource] },
-      db: h.db,
-      tenantId: TENANT_ID,
-      anchorRunId: DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-    });
-    expect(deployResult.publicKey.length).toBeGreaterThan(0);
-
-    const anchorRow = await h.db
-      .select({ address: workflowRunTable.address })
-      .from(workflowRunTable)
-      .where(eq(workflowRunTable.id, DEPLOYMENT_ID))
-      .limit(1)
-      .then((rows) => rows[0]);
-    expect(anchorRow?.address).toBe(deploymentMailAddress);
-
-    const workflowRunRepoId: RepoId = {
-      kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
-    };
-    env.registerDeployment({
-      anchorRunId: DEPLOYMENT_ID,
-      workflowDefinition: {
-        id: approved.projection.id,
-        triggers: [{ type: "mail", to: deploymentMailAddress }],
-        steps: {},
-        stepOrder: [...approved.projection.stepOrder],
-      },
-      workflowRunRepoId,
-      workflowRunRef: WORKFLOW_RUN_REF,
-      mailAddress: deploymentMailAddress,
-    });
-
-    await waitFor(
-      () =>
-        env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
-
-    // 3) Fire the trigger and assert the run completes. This proves the monorepo
-    // closure resolved BOTH members, the sidecar checked both subtrees out of
-    // the delivered pack, and `@wf/app`'s entry resolved its `@wf/lib`
-    // workspace-local import at evaluation time.
-    await fireMailTrigger(env, deploymentMailAddress, {
-      messageId: "<source-monorepo-e2e@integration.interchange>",
-    });
-    const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-      timeoutMs: 30_000,
-      diagnostics: env.sidecarDiagnostics,
-    });
-    const terminal = await waitForWorkflowRunComplete(
-      env,
-      DEPLOYMENT_ID,
-      runId,
-      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
-    );
-    if (terminal.type !== "RunCompleted") {
-      throw new Error(
-        `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(terminal.body)}\n${env.sidecarDiagnostics()}`,
+        )
+        .limit(1)
+        .then((rows) => rows[0]);
+      expect(versionRow?.approvedWireHash).toBe(
+        approved.approval.approvedWireHash,
       );
-    }
-    expect(terminal.type).toBe("RunCompleted");
 
-    // 4) Restore leg: kill the sidecar and bring a fresh one up against the SAME
-    // data directory. Boot-time restore re-materializes BOTH monorepo members
-    // from the durable indexed-`.git` store alone, so the deployment re-routing
-    // is the load-bearing restore assertion.
-    const restoredDataDir = env.sidecar.dataDir;
-    const hubPort = env.hub.server.port;
-    if (hubPort === undefined) {
-      throw new Error("monorepo e2e: hub.server.port is undefined after kill");
-    }
-    env.sidecar.proc.kill();
-    await env.sidecar.proc.exited;
+      // 2) Deploy by source-ref: the frame carries the monorepo asset inline.
+      const inferenceSource = {
+        id: "anthropic:mock-model",
+        provider: "anthropic",
+        baseURL: `http://localhost:${String(env.inference.server.port)}`,
+        apiKey: "sk-mock",
+        model: "mock-model",
+      };
+      const config: HarnessConfig = {
+        sessionId: SESSION_ID,
+        agentId: DEPLOYMENT_ID,
+        tenantId: "tenant-1",
+        principalId: "prin_integration-1",
+        agentAddress: deploymentMailAddress,
+        systemPrompt: "Fallback prompt (overridden per step by the definition)",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: "anthropic:mock-model",
+      };
 
-    restartedSidecar = await startSidecarSubprocess({
-      hubPort,
-      registerTempDir: (dir) => {
-        restartTempDirs.push(dir);
-      },
-      extraEnv: { SIDECAR_DATA_DIR: restoredDataDir },
-    });
+      const deployResult = await deployCodeSourcedWorkflow({
+        approved,
+        source,
+        resolveAttachment,
+        sidecarRouter: env.hub.router,
+        agentAddress: deploymentMailAddress,
+        config,
+        sources: { [STEP_ID]: [inferenceSource] },
+        db: h.db,
+        tenantId: TENANT_ID,
+        anchorRunId: DEPLOYMENT_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+      });
+      expect(deployResult.publicKey.length).toBeGreaterThan(0);
 
-    await waitFor(
-      () =>
-        env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      {
+      const anchorRow = await h.db
+        .select({ address: workflowRunTable.address })
+        .from(workflowRunTable)
+        .where(eq(workflowRunTable.id, DEPLOYMENT_ID))
+        .limit(1)
+        .then((rows) => rows[0]);
+      expect(anchorRow?.address).toBe(deploymentMailAddress);
+
+      const workflowRunRepoId: RepoId = {
+        kind: "workflow-run",
+        id: deriveDeploymentId(deploymentMailAddress),
+      };
+      env.registerDeployment({
+        anchorRunId: DEPLOYMENT_ID,
+        workflowDefinition: {
+          id: approved.projection.id,
+          triggers: [{ type: "mail", to: deploymentMailAddress }],
+          steps: {},
+          stepOrder: [...approved.projection.stepOrder],
+        },
+        workflowRunRepoId,
+        workflowRunRef: WORKFLOW_RUN_REF,
+        mailAddress: deploymentMailAddress,
+      });
+
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      );
+
+      // 3) Fire the trigger and assert the run completes. This proves the monorepo
+      // closure resolved BOTH members, the sidecar checked both subtrees out of
+      // the delivered pack, and `@wf/app`'s entry resolved its `@wf/lib`
+      // workspace-local import at evaluation time.
+      await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: "<source-monorepo-e2e@integration.interchange>",
+      });
+      const runId = await waitForFirstRunId(env, workflowRunRepoId, {
         timeoutMs: 30_000,
-        diagnostics: () =>
-          `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`,
-      },
-    );
-  }, 180_000);
-});
+        diagnostics: env.sidecarDiagnostics,
+      });
+      const terminal = await waitForWorkflowRunComplete(
+        env,
+        DEPLOYMENT_ID,
+        runId,
+        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+      );
+      if (terminal.type !== "RunCompleted") {
+        throw new Error(
+          `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(terminal.body)}\n${env.sidecarDiagnostics()}`,
+        );
+      }
+      expect(terminal.type).toBe("RunCompleted");
+
+      // 4) Restore leg: kill the sidecar and bring a fresh one up against the SAME
+      // data directory. Boot-time restore re-materializes BOTH monorepo members
+      // from the durable indexed-`.git` store alone, so the deployment re-routing
+      // is the load-bearing restore assertion.
+      const restoredDataDir = env.sidecar.dataDir;
+      const hubPort = env.hub.server.port;
+      if (hubPort === undefined) {
+        throw new Error(
+          "monorepo e2e: hub.server.port is undefined after kill",
+        );
+      }
+      env.sidecar.proc.kill();
+      await env.sidecar.proc.exited;
+
+      restartedSidecar = await startSidecarSubprocess({
+        hubPort,
+        registerTempDir: (dir) => {
+          restartTempDirs.push(dir);
+        },
+        extraEnv: { SIDECAR_DATA_DIR: restoredDataDir },
+      });
+
+      await waitFor(
+        () =>
+          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
+        {
+          timeoutMs: 30_000,
+          diagnostics: () =>
+            `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`,
+        },
+      );
+    }, 180_000);
+  },
+);

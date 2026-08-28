@@ -96,6 +96,7 @@ let headRequests = 0;
 let deadHead: ReturnType<typeof Bun.serve>;
 
 beforeAll(async () => {
+  if (!harnessDbEnvAvailable()) return;
   h = await createTestDb();
   await h.db.insert(tenantTable).values({
     id: TENANT_ID,

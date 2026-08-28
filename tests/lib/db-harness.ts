@@ -24,8 +24,23 @@ import { quoteIdent } from "./grants";
 /**
  * Returns true when the repo has the `.env` files this harness reads:
  * `.env` (connection host/port/database) and `.env.migrate` (the
- * migration role). Test suites use this with `describe.skipIf(...)` so a
- * fresh checkout without a configured database can still run `make all`.
+ * migration role). A suite uses this so a fresh checkout without a
+ * configured database can still run `make all`: the DB-dependent tests
+ * skip instead of failing.
+ *
+ * Apply it in one of two shapes. A skip must gate every place that
+ * reaches the database, and the two shapes cover the two places a hook
+ * can live:
+ *
+ *   1. Wrap the suite in `describe.skipIf(!harnessDbEnvAvailable())(...)`
+ *      and keep the DB-touching `beforeAll`/`beforeEach` inside that
+ *      `describe`. `skipIf` skips the hooks together with the bodies.
+ *
+ *   2. For a setup hook at file scope (column 0, outside any
+ *      `describe`), open the hook with
+ *      `if (!harnessDbEnvAvailable()) return;`. A file-scope `beforeAll`
+ *      runs even when `describe.skipIf` skips the bodies, so the
+ *      `describe` guard alone does not cover it; the early return does.
  *
  * Absence-only: a file that exists but lacks a required key still
  * surfaces a loud error from `loadHarnessDbConfig`. The gate is

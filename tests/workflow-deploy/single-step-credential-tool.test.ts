@@ -169,6 +169,7 @@ let origin: ReturnType<typeof Bun.serve>;
 const originRequests: { path: string; authorization: string | null }[] = [];
 
 beforeAll(async () => {
+  if (!harnessDbEnvAvailable()) return;
   origin = Bun.serve({
     port: 0,
     fetch(req) {

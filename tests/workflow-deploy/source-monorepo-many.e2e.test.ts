@@ -57,7 +57,11 @@ import {
   type ApprovalSet,
 } from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { createTestDb, type TestDb } from "@intx/test-harness/db-harness";
+import {
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
@@ -455,222 +459,225 @@ const collapseApprovals: ApprovalSet = new Set<string>([
   `mail.send:${DEPLOYMENT_DOMAIN}`,
 ]);
 
-describe("many-definitions-from-one-asset monorepo e2e", () => {
-  beforeAll(async () => {
-    scratchDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), "source-monorepo-many-"),
-    );
-    const oneJs = await bundleEntry(
-      scratchDir,
-      distinctEntrySource({
+describe.skipIf(!harnessDbEnvAvailable())(
+  "many-definitions-from-one-asset monorepo e2e",
+  () => {
+    beforeAll(async () => {
+      scratchDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "source-monorepo-many-"),
+      );
+      const oneJs = await bundleEntry(
+        scratchDir,
+        distinctEntrySource({
+          workflowId: ONE_WORKFLOW_ID,
+          stepId: ONE_STEP_ID,
+          systemPrompt: ONE_SYSTEM_PROMPT,
+          address: oneAddress,
+        }),
+        "one",
+      );
+      const twoJs = await bundleEntry(
+        scratchDir,
+        distinctEntrySource({
+          workflowId: TWO_WORKFLOW_ID,
+          stepId: TWO_STEP_ID,
+          systemPrompt: TWO_SYSTEM_PROMPT,
+          address: twoAddress,
+        }),
+        "two",
+      );
+      // Both collapse members ship the SAME bundled workflow.mjs; only their
+      // package.json name differs.
+      const collapseJs = await bundleEntry(
+        scratchDir,
+        collapseEntrySource,
+        "collapse",
+      );
+
+      h = await createTestDb();
+      await h.db.insert(tenantTable).values({
+        id: TENANT_ID,
+        name: TENANT_ID,
+        slug: TENANT_ID,
+        domain: DEPLOYMENT_DOMAIN,
+        parentId: null,
+      });
+      await seedPrincipal(h.db, {
+        id: CALLER_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        kind: "user",
+      });
+      await seedAsset(h.db, {
+        id: DEFINITION_ASSET_ID,
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        name: "source-monorepo-many-wf",
+        creatorPrincipalId: CALLER_PRINCIPAL_ID,
+      });
+
+      env = await startDeployFlowEnv({});
+
+      // Seed the monorepo: a private workspaces root plus four members -- two
+      // distinct-surface workflows and two identical-surface collapse workflows.
+      await env.hub.agentRepoStore.repoStore.initRepo(sourceRepoId);
+      const mkPackageJson = (name: string): string =>
+        JSON.stringify({
+          name,
+          version: PACKAGE_VERSION,
+          type: "module",
+          interchange: { workflow: WORKFLOW_ENTRY },
+        });
+      const writeResult = await env.hub.agentRepoStore.repoStore.writeTree(
+        HUB_PRINCIPAL,
+        sourceRepoId,
+        DEFAULT_ASSET_REF,
+        {
+          files: {
+            "package.json": JSON.stringify({
+              name: "@wf/monorepo-many-root",
+              private: true,
+              workspaces: ["packages/*"],
+            }),
+            "packages/one/package.json": mkPackageJson(ONE_PACKAGE_NAME),
+            "packages/one/workflow.mjs": oneJs,
+            "packages/two/package.json": mkPackageJson(TWO_PACKAGE_NAME),
+            "packages/two/workflow.mjs": twoJs,
+            "packages/collapse-a/package.json": mkPackageJson(
+              COLLAPSE_A_PACKAGE_NAME,
+            ),
+            "packages/collapse-a/workflow.mjs": collapseJs,
+            "packages/collapse-b/package.json": mkPackageJson(
+              COLLAPSE_B_PACKAGE_NAME,
+            ),
+            "packages/collapse-b/workflow.mjs": collapseJs,
+          },
+          message: "Seed many-definitions monorepo source",
+        },
+      );
+      sourceCommitSha = writeResult.commitSha;
+    });
+
+    afterAll(async () => {
+      if (env !== undefined) await env.teardown();
+      if (h !== undefined) await h.close();
+      if (scratchDir !== undefined) {
+        await fs.rm(scratchDir, { recursive: true, force: true });
+      }
+    });
+
+    test("two distinct-surface members install to two rows and each deploys and runs", async () => {
+      const one = await installMember({
+        packageName: ONE_PACKAGE_NAME,
+        approvals: distinctApprovals(oneAddress),
+      });
+      const two = await installMember({
+        packageName: TWO_PACKAGE_NAME,
+        approvals: distinctApprovals(twoAddress),
+      });
+
+      // Distinct surfaces freeze to distinct definitions, each pinning its own
+      // member.
+      expect(one.projection.id).toBe(ONE_WORKFLOW_ID);
+      expect(two.projection.id).toBe(TWO_WORKFLOW_ID);
+      expect(two.approval.definitionId).not.toBe(one.approval.definitionId);
+      expect(one.closure.topLevel).toEqual([
+        { name: ONE_PACKAGE_NAME, version: PACKAGE_VERSION },
+      ]);
+      expect(two.closure.topLevel).toEqual([
+        { name: TWO_PACKAGE_NAME, version: PACKAGE_VERSION },
+      ]);
+
+      // One definition asset now backs both distinct rows. Assert membership of
+      // the two ids rather than a total count, so the check does not couple to
+      // whether the collapse test (which adds a third row to the same asset) has
+      // run yet.
+      const rowIds = new Set(
+        (
+          await h.db
+            .select({ id: workflowDefinitionTable.id })
+            .from(workflowDefinitionTable)
+            .where(eq(workflowDefinitionTable.assetId, DEFINITION_ASSET_ID))
+        ).map((r) => r.id),
+      );
+      expect(rowIds.has(one.approval.definitionId)).toBe(true);
+      expect(rowIds.has(two.approval.definitionId)).toBe(true);
+
+      // Deploy and run each independently; both reach RunCompleted from their own
+      // source-materialized closure.
+      await deployAndRun({
+        approved: one,
+        packageName: ONE_PACKAGE_NAME,
         workflowId: ONE_WORKFLOW_ID,
         stepId: ONE_STEP_ID,
-        systemPrompt: ONE_SYSTEM_PROMPT,
+        anchorRunId: ONE_DEPLOYMENT_ID,
         address: oneAddress,
-      }),
-      "one",
-    );
-    const twoJs = await bundleEntry(
-      scratchDir,
-      distinctEntrySource({
+      });
+      await deployAndRun({
+        approved: two,
+        packageName: TWO_PACKAGE_NAME,
         workflowId: TWO_WORKFLOW_ID,
         stepId: TWO_STEP_ID,
-        systemPrompt: TWO_SYSTEM_PROMPT,
+        anchorRunId: TWO_DEPLOYMENT_ID,
         address: twoAddress,
-      }),
-      "two",
-    );
-    // Both collapse members ship the SAME bundled workflow.mjs; only their
-    // package.json name differs.
-    const collapseJs = await bundleEntry(
-      scratchDir,
-      collapseEntrySource,
-      "collapse",
-    );
-
-    h = await createTestDb();
-    await h.db.insert(tenantTable).values({
-      id: TENANT_ID,
-      name: TENANT_ID,
-      slug: TENANT_ID,
-      domain: DEPLOYMENT_DOMAIN,
-      parentId: null,
-    });
-    await seedPrincipal(h.db, {
-      id: CALLER_PRINCIPAL_ID,
-      tenantId: TENANT_ID,
-      kind: "user",
-    });
-    await seedAsset(h.db, {
-      id: DEFINITION_ASSET_ID,
-      tenantId: TENANT_ID,
-      kind: "workflow",
-      name: "source-monorepo-many-wf",
-      creatorPrincipalId: CALLER_PRINCIPAL_ID,
-    });
-
-    env = await startDeployFlowEnv({});
-
-    // Seed the monorepo: a private workspaces root plus four members -- two
-    // distinct-surface workflows and two identical-surface collapse workflows.
-    await env.hub.agentRepoStore.repoStore.initRepo(sourceRepoId);
-    const mkPackageJson = (name: string): string =>
-      JSON.stringify({
-        name,
-        version: PACKAGE_VERSION,
-        type: "module",
-        interchange: { workflow: WORKFLOW_ENTRY },
       });
-    const writeResult = await env.hub.agentRepoStore.repoStore.writeTree(
-      HUB_PRINCIPAL,
-      sourceRepoId,
-      DEFAULT_ASSET_REF,
-      {
-        files: {
-          "package.json": JSON.stringify({
-            name: "@wf/monorepo-many-root",
-            private: true,
-            workspaces: ["packages/*"],
-          }),
-          "packages/one/package.json": mkPackageJson(ONE_PACKAGE_NAME),
-          "packages/one/workflow.mjs": oneJs,
-          "packages/two/package.json": mkPackageJson(TWO_PACKAGE_NAME),
-          "packages/two/workflow.mjs": twoJs,
-          "packages/collapse-a/package.json": mkPackageJson(
-            COLLAPSE_A_PACKAGE_NAME,
-          ),
-          "packages/collapse-a/workflow.mjs": collapseJs,
-          "packages/collapse-b/package.json": mkPackageJson(
-            COLLAPSE_B_PACKAGE_NAME,
-          ),
-          "packages/collapse-b/workflow.mjs": collapseJs,
-        },
-        message: "Seed many-definitions monorepo source",
-      },
-    );
-    sourceCommitSha = writeResult.commitSha;
-  });
 
-  afterAll(async () => {
-    if (env !== undefined) await env.teardown();
-    if (h !== undefined) await h.close();
-    if (scratchDir !== undefined) {
-      await fs.rm(scratchDir, { recursive: true, force: true });
-    }
-  });
+      // Each child evaluated its OWN member's source: both members' system prompts
+      // reached inference, proving the two runs did not share one definition's
+      // code (and that each step's agent prompt overrode the deploy fallback). The
+      // anthropic provider serializes the system prompt as a `system` array of
+      // text blocks on the wire.
+      const systemTexts = env.inference.requests.flatMap(systemBlockTexts);
+      expect(systemTexts.some((t) => t.includes(ONE_SYSTEM_PROMPT))).toBe(true);
+      expect(systemTexts.some((t) => t.includes(TWO_SYSTEM_PROMPT))).toBe(true);
+    }, 180_000);
 
-  test("two distinct-surface members install to two rows and each deploys and runs", async () => {
-    const one = await installMember({
-      packageName: ONE_PACKAGE_NAME,
-      approvals: distinctApprovals(oneAddress),
-    });
-    const two = await installMember({
-      packageName: TWO_PACKAGE_NAME,
-      approvals: distinctApprovals(twoAddress),
-    });
+    test("two identical-surface members collapse to one row that carries the second member's own source", async () => {
+      const a = await installMember({
+        packageName: COLLAPSE_A_PACKAGE_NAME,
+        approvals: collapseApprovals,
+      });
+      const b = await installMember({
+        packageName: COLLAPSE_B_PACKAGE_NAME,
+        approvals: collapseApprovals,
+      });
 
-    // Distinct surfaces freeze to distinct definitions, each pinning its own
-    // member.
-    expect(one.projection.id).toBe(ONE_WORKFLOW_ID);
-    expect(two.projection.id).toBe(TWO_WORKFLOW_ID);
-    expect(two.approval.definitionId).not.toBe(one.approval.definitionId);
-    expect(one.closure.topLevel).toEqual([
-      { name: ONE_PACKAGE_NAME, version: PACKAGE_VERSION },
-    ]);
-    expect(two.closure.topLevel).toEqual([
-      { name: TWO_PACKAGE_NAME, version: PACKAGE_VERSION },
-    ]);
+      // (a) The collapse itself: identical needs-surfaces yield an equal wire hash
+      // and the (assetId, wireHash) key resolves both installs to the SAME
+      // definition row. These two equalities are what discriminate the collapse --
+      // they fail if the second install forks a second row.
+      expect(a.projection.id).toBe(COLLAPSE_WORKFLOW_ID);
+      expect(b.projection.id).toBe(COLLAPSE_WORKFLOW_ID);
+      expect(b.approval.approvedWireHash).toBe(a.approval.approvedWireHash);
+      expect(b.approval.definitionId).toBe(a.approval.definitionId);
 
-    // One definition asset now backs both distinct rows. Assert membership of
-    // the two ids rather than a total count, so the check does not couple to
-    // whether the collapse test (which adds a third row to the same asset) has
-    // run yet.
-    const rowIds = new Set(
-      (
-        await h.db
-          .select({ id: workflowDefinitionTable.id })
-          .from(workflowDefinitionTable)
-          .where(eq(workflowDefinitionTable.assetId, DEFINITION_ASSET_ID))
-      ).map((r) => r.id),
-    );
-    expect(rowIds.has(one.approval.definitionId)).toBe(true);
-    expect(rowIds.has(two.approval.definitionId)).toBe(true);
+      // (b) Forward regression guard: the second install's carried closure is
+      // re-probed from the SECOND member's own source, independent of the row it
+      // collapses onto, so today it names @wf/collapse-b (its packageName) and
+      // never @wf/collapse-a. This cannot mis-carry the first member's source at
+      // present -- it pins that a future install short-circuit which resolved
+      // source from the shared row (returning A's cached projection) would break.
+      expect(b.closure.topLevel).toEqual([
+        { name: COLLAPSE_B_PACKAGE_NAME, version: PACKAGE_VERSION },
+      ]);
+      const bEntry = b.closure.entries.find(
+        (e) => e.name === COLLAPSE_B_PACKAGE_NAME,
+      );
+      if (bEntry?.source.kind !== "asset") {
+        throw new Error("many-defs e2e: collapse-b entry is not asset-sourced");
+      }
+      expect(bEntry.source.package.format).toBe("source");
+      // A must NOT appear in B's carried closure.
+      expect(
+        b.closure.entries.some((e) => e.name === COLLAPSE_A_PACKAGE_NAME),
+      ).toBe(false);
 
-    // Deploy and run each independently; both reach RunCompleted from their own
-    // source-materialized closure.
-    await deployAndRun({
-      approved: one,
-      packageName: ONE_PACKAGE_NAME,
-      workflowId: ONE_WORKFLOW_ID,
-      stepId: ONE_STEP_ID,
-      anchorRunId: ONE_DEPLOYMENT_ID,
-      address: oneAddress,
-    });
-    await deployAndRun({
-      approved: two,
-      packageName: TWO_PACKAGE_NAME,
-      workflowId: TWO_WORKFLOW_ID,
-      stepId: TWO_STEP_ID,
-      anchorRunId: TWO_DEPLOYMENT_ID,
-      address: twoAddress,
-    });
-
-    // Each child evaluated its OWN member's source: both members' system prompts
-    // reached inference, proving the two runs did not share one definition's
-    // code (and that each step's agent prompt overrode the deploy fallback). The
-    // anthropic provider serializes the system prompt as a `system` array of
-    // text blocks on the wire.
-    const systemTexts = env.inference.requests.flatMap(systemBlockTexts);
-    expect(systemTexts.some((t) => t.includes(ONE_SYSTEM_PROMPT))).toBe(true);
-    expect(systemTexts.some((t) => t.includes(TWO_SYSTEM_PROMPT))).toBe(true);
-  }, 180_000);
-
-  test("two identical-surface members collapse to one row that carries the second member's own source", async () => {
-    const a = await installMember({
-      packageName: COLLAPSE_A_PACKAGE_NAME,
-      approvals: collapseApprovals,
-    });
-    const b = await installMember({
-      packageName: COLLAPSE_B_PACKAGE_NAME,
-      approvals: collapseApprovals,
-    });
-
-    // (a) The collapse itself: identical needs-surfaces yield an equal wire hash
-    // and the (assetId, wireHash) key resolves both installs to the SAME
-    // definition row. These two equalities are what discriminate the collapse --
-    // they fail if the second install forks a second row.
-    expect(a.projection.id).toBe(COLLAPSE_WORKFLOW_ID);
-    expect(b.projection.id).toBe(COLLAPSE_WORKFLOW_ID);
-    expect(b.approval.approvedWireHash).toBe(a.approval.approvedWireHash);
-    expect(b.approval.definitionId).toBe(a.approval.definitionId);
-
-    // (b) Forward regression guard: the second install's carried closure is
-    // re-probed from the SECOND member's own source, independent of the row it
-    // collapses onto, so today it names @wf/collapse-b (its packageName) and
-    // never @wf/collapse-a. This cannot mis-carry the first member's source at
-    // present -- it pins that a future install short-circuit which resolved
-    // source from the shared row (returning A's cached projection) would break.
-    expect(b.closure.topLevel).toEqual([
-      { name: COLLAPSE_B_PACKAGE_NAME, version: PACKAGE_VERSION },
-    ]);
-    const bEntry = b.closure.entries.find(
-      (e) => e.name === COLLAPSE_B_PACKAGE_NAME,
-    );
-    if (bEntry?.source.kind !== "asset") {
-      throw new Error("many-defs e2e: collapse-b entry is not asset-sourced");
-    }
-    expect(bEntry.source.package.format).toBe("source");
-    // A must NOT appear in B's carried closure.
-    expect(
-      b.closure.entries.some((e) => e.name === COLLAPSE_A_PACKAGE_NAME),
-    ).toBe(false);
-
-    // The collapsed second install still enumerates a well-formed inline
-    // onTrigger body from its frozen projection (the same forward guard: a
-    // short-circuit returning a bodiless cached projection would drop it). The
-    // ref derives from the shared workflow id + section, so this checks
-    // well-formedness, not provenance -- provenance is pinned by topLevel above.
-    const bBodies = enumerateInertBodies(b.projection);
-    expect(bBodies.map((body) => body.ref)).toEqual([COLLAPSE_BODY_REF]);
-  }, 180_000);
-});
+      // The collapsed second install still enumerates a well-formed inline
+      // onTrigger body from its frozen projection (the same forward guard: a
+      // short-circuit returning a bodiless cached projection would drop it). The
+      // ref derives from the shared workflow id + section, so this checks
+      // well-formedness, not provenance -- provenance is pinned by topLevel above.
+      const bBodies = enumerateInertBodies(b.projection);
+      expect(bBodies.map((body) => body.ref)).toEqual([COLLAPSE_BODY_REF]);
+    }, 180_000);
+  },
+);

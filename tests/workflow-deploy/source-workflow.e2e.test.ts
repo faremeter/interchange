@@ -43,7 +43,11 @@ import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources
 import { generateId } from "@intx/hub-common";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
-import { createTestDb, type TestDb } from "@intx/test-harness/db-harness";
+import {
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
@@ -149,7 +153,7 @@ const resolveAttachment = async (
   return { pack, ref, commitSha };
 };
 
-describe("source-sourced workflow e2e", () => {
+describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
   beforeAll(async () => {
     scratchDir = await fs.mkdtemp(path.join(os.tmpdir(), "source-skeleton-"));
     const workflowJs = await bundleWorkflowEntry(
