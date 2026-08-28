@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/faremeter/interchange/actions/workflows/ci.yml/badge.svg)](https://github.com/faremeter/interchange/actions/workflows/ci.yml)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)
-[![Version: 0.2.x](https://img.shields.io/badge/version-0.2.x-blue.svg)](#project-status)
+[![Version](https://img.shields.io/github/v/tag/faremeter/interchange?sort=semver&label=version&color=blue)](https://github.com/faremeter/interchange/tags)
 [![License: LGPL-2.1](https://img.shields.io/badge/license-LGPL--2.1-green.svg)](./LICENSE)
 [![Runtimes: Bun | Node | Deno](https://img.shields.io/badge/runtimes-Bun%20%7C%20Node%20%7C%20Deno-black.svg)](#runtime-support)
 
@@ -32,7 +32,7 @@ What you build on top is up to you:
 - **A research harness** of agents that talk to each other
 
 > [!WARNING]
-> **Interchange is alpha (`0.2.x`).** The architecture is settled and
+> **Interchange is alpha.** The architecture is settled and
 > the stack runs real workloads, but public APIs and wire formats can
 > still change between releases. Pin your versions, and see
 > [Project status](#project-status) for what's solid and what's still
@@ -239,7 +239,7 @@ For the full package map and dependency rules, see
 
 ## Project status
 
-Interchange is **alpha (`0.2.x`)** — usable, running real workloads,
+Interchange is **alpha** — usable, running real workloads,
 with the architecture settled and public APIs still liable to change
 before 1.0. This section is the honest state of things, and the
 repository is the source of truth. The design docs in
