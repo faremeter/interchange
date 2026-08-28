@@ -16,6 +16,7 @@ import {
   type WorkflowRunEvent,
   type WorkflowRunEvents,
 } from "@intx/hub-client";
+import type { ModelInfo } from "@intx/types";
 
 import { api } from "@/lib/api";
 import { infiniteListQuery } from "@/lib/queries/pagination";
@@ -887,6 +888,13 @@ export function deleteOfferingMutation(
 // ---------------------------------------------------------------------------
 // Model catalog
 // ---------------------------------------------------------------------------
+
+export function tenantResolvedModelsQuery(tenantId: string) {
+  return queryOptions({
+    queryKey: ["tenants", tenantId, "resolved-models"],
+    queryFn: () => api<ModelInfo[]>("GET", `/api/tenants/${tenantId}/models`),
+  });
+}
 
 export type ModelProviderPluginValue =
   | "anthropic"

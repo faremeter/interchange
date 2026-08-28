@@ -33,7 +33,10 @@ import {
 } from "@intx/hub-sessions";
 import { credentialAad, type SidecarCapabilityRule } from "@intx/types";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
-import { deriveRunAddress } from "@intx/workflow-deploy";
+import {
+  deriveRunAddress,
+  WorkflowDefinitionInvalidError,
+} from "@intx/workflow-deploy";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -107,6 +110,34 @@ function frozenApproval(
       definitionId: DEFINITION_ID,
       approvedWireHash: "a".repeat(64),
       approvedGrants: new Set<string>(),
+      projection,
+    },
+    projection,
+    closure: { schemaVersion: "1", topLevel: [], entries: [] },
+  };
+}
+
+function frozenApprovalWithSource(
+  provider: string,
+  model: string,
+): InstallAndApproveResult {
+  const projection = {
+    id: "wf-source-mismatch",
+    triggers: [],
+    stepOrder: ["only"],
+    steps: {
+      only: {
+        kind: "step",
+        agent: { modelSources: [{ provider, model }] },
+      },
+    },
+  };
+  return {
+    approval: {
+      ok: true,
+      definitionId: DEFINITION_ID,
+      approvedWireHash: "a".repeat(64),
+      approvedGrants: new Set([`inference.source:${provider}:${model}`]),
       projection,
     },
     projection,
@@ -366,6 +397,69 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       expect(error.leakedAgent).toBe(true);
       expect(deployCalls).toHaveLength(1);
+    });
+
+    test("rejects an invalid source chain before creating deployment state", async () => {
+      const anchorRunId = "dep-invalid-source-chain";
+      let selectionAttempted = false;
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        plugins: {
+          getDefaultProvisioner: () => provisioner,
+          getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
+          selectProvisioner: () => {
+            selectionAttempted = true;
+            return { ok: true, provisioner };
+          },
+        },
+        preparedDeployer: {
+          installAndApproveWorkflowSource: async () => {
+            await h.db.insert(workflowDefinition).values({
+              id: DEFINITION_ID,
+              tenantId: TENANT_ID,
+              name: "workflow-allocation-def",
+            });
+            return frozenApprovalWithSource("openai", "gpt-5");
+          },
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("invalid source chain must not reach deployment");
+          },
+        },
+        credentialCipher: CREDENTIAL_CIPHER,
+        allocationRouter: {
+          isAllocatedWorkflowActive: async () => false,
+        },
+        createAllocationId: () => "sal-invalid-source-chain",
+      });
+
+      await expect(
+        service.prepareProvisionedDeployment({
+          tenantId: TENANT_ID,
+          anchorRunId,
+          deploymentDomain: `${TENANT_ID}.example.test`,
+          source: SOURCE,
+          entry: ENTRY,
+          definitionAssetId: ASSET_ID,
+          sessionId: "ses-invalid-source-chain",
+          sourceAuthorityPrincipalId: PRINCIPAL_ID,
+          sourceOfferingIds: [OFFERING_ID],
+          defaultSourceOfferingId: OFFERING_ID,
+          deployContent: { systemPrompt: "" },
+        }),
+      ).rejects.toBeInstanceOf(WorkflowDefinitionInvalidError);
+
+      expect(selectionAttempted).toBe(false);
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, anchorRunId),
+        }),
+      ).toBeUndefined();
+      expect(
+        await createSidecarAllocationStore(h.db).findByAnchorRunId(anchorRunId),
+      ).toBeNull();
+      expect(
+        await createWorkflowRunLaunchSpecStore(h.db).get(anchorRunId),
+      ).toBeNull();
     });
 
     test("persists the provisioner selected from workflow capabilities", async () => {

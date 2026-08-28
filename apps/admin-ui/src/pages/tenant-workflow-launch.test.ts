@@ -8,7 +8,6 @@ import {
   SOURCE_KIND_LABELS,
   SOURCE_KINDS,
   type LaunchDefinition,
-  type LaunchInferenceSource,
 } from "./tenant-workflow-launch";
 
 // A definition whose every field is populated. Each kind test starts here so
@@ -29,38 +28,19 @@ function fullDefinition(
   };
 }
 
-function validSource(
-  overrides: Partial<LaunchInferenceSource> = {},
-): LaunchInferenceSource {
-  return {
-    id: "anthropic:claude-sonnet-5",
-    provider: "anthropic",
-    baseURL: "https://api.anthropic.com",
-    credentialId: "sk-secret",
-    model: "claude-sonnet-5",
-    ...overrides,
-  };
-}
+const OFFERING_ID = "ofr_claude_sonnet";
 
 describe("buildDeployInput", () => {
   test("builds a registry source with a pin and no asset fields", () => {
     const input = buildDeployInput(
       fullDefinition({ kind: "registry" }),
-      validSource(),
+      OFFERING_ID,
     );
     expect(input).toEqual({
       source: { kind: "registry", registry: "acme-registry" },
       entry: "./workflow.mjs",
-      sources: [
-        {
-          id: "anthropic:claude-sonnet-5",
-          provider: "anthropic",
-          baseURL: "https://api.anthropic.com",
-          credentialId: "sk-secret",
-          model: "claude-sonnet-5",
-        },
-      ],
-      defaultSource: "anthropic:claude-sonnet-5",
+      sourceOfferingIds: [OFFERING_ID],
+      defaultSourceOfferingId: OFFERING_ID,
       pin: "@acme/flow@^1.0.0",
     });
   });
@@ -68,7 +48,7 @@ describe("buildDeployInput", () => {
   test("builds an asset tarball source with a pin", () => {
     const input = buildDeployInput(
       fullDefinition({ kind: "asset-tarball" }),
-      validSource(),
+      OFFERING_ID,
     );
     expect(input.source).toEqual({
       kind: "asset",
@@ -81,7 +61,7 @@ describe("buildDeployInput", () => {
   test("builds an asset source tree with a package name and no pin", () => {
     const input = buildDeployInput(
       fullDefinition({ kind: "asset-source" }),
-      validSource(),
+      OFFERING_ID,
     );
     expect(input.source).toEqual({
       kind: "asset",
@@ -99,7 +79,7 @@ describe("buildDeployInput", () => {
   test("omits packageName from an asset source tree when it is blank", () => {
     const input = buildDeployInput(
       fullDefinition({ kind: "asset-source", packageName: "  " }),
-      validSource(),
+      OFFERING_ID,
     );
     expect(input.source).toEqual({
       kind: "asset",
@@ -111,7 +91,7 @@ describe("buildDeployInput", () => {
     }
   });
 
-  test("trims definition and source fields including the credential id", () => {
+  test("trims definition and offering fields", () => {
     const input = buildDeployInput(
       fullDefinition({
         kind: "asset-source",
@@ -120,12 +100,11 @@ describe("buildDeployInput", () => {
         commitSha: "  abc123  ",
         packageName: "  @acme/flow  ",
       }),
-      validSource({ id: "  src-1  ", credentialId: "  cred-1  " }),
+      "  ofr_primary  ",
     );
     expect(input.entry).toBe("./workflow.mjs");
-    expect(input.defaultSource).toBe("src-1");
-    expect(input.sources[0]?.id).toBe("src-1");
-    expect(input.sources[0]?.credentialId).toBe("cred-1");
+    expect(input.defaultSourceOfferingId).toBe("ofr_primary");
+    expect(input.sourceOfferingIds).toEqual(["ofr_primary"]);
     expect(input.source).toEqual({
       kind: "asset",
       assetId: "asset_1",
@@ -142,7 +121,7 @@ describe("buildDeployInput", () => {
     // emit only the registry source, never the stale assetId or commitSha.
     const input = buildDeployInput(
       fullDefinition({ kind: "registry" }),
-      validSource(),
+      OFFERING_ID,
     );
     const serialized = JSON.stringify(input);
     expect(serialized).not.toContain("asset_1");
@@ -196,50 +175,47 @@ describe("definitionReady", () => {
 describe("launchReady", () => {
   test("is true when the kind's fields, entry, and source are all present", () => {
     for (const kind of SOURCE_KINDS) {
-      expect(launchReady(fullDefinition({ kind }), validSource())).toBe(true);
+      expect(launchReady(fullDefinition({ kind }), OFFERING_ID)).toBe(true);
     }
   });
 
   test("is false when the entry module is blank for any kind", () => {
     for (const kind of SOURCE_KINDS) {
       expect(
-        launchReady(fullDefinition({ kind, entry: "  " }), validSource()),
+        launchReady(fullDefinition({ kind, entry: "  " }), OFFERING_ID),
       ).toBe(false);
     }
   });
 
   test("is false when a required definition field for the kind is missing", () => {
     expect(
-      launchReady(fullDefinition({ kind: "registry", pin: "" }), validSource()),
+      launchReady(fullDefinition({ kind: "registry", pin: "" }), OFFERING_ID),
     ).toBe(false);
     expect(
       launchReady(
         fullDefinition({ kind: "asset-tarball", assetId: "" }),
-        validSource(),
+        OFFERING_ID,
       ),
     ).toBe(false);
     expect(
       launchReady(
         fullDefinition({ kind: "asset-source", commitSha: "" }),
-        validSource(),
+        OFFERING_ID,
       ),
     ).toBe(false);
   });
 
-  test("is false when any inference source field is missing", () => {
+  test("is false when no model offering is selected", () => {
     const def = fullDefinition({ kind: "asset-source" });
-    expect(launchReady(def, validSource({ id: "" }))).toBe(false);
-    expect(launchReady(def, validSource({ provider: "  " }))).toBe(false);
-    expect(launchReady(def, validSource({ baseURL: "" }))).toBe(false);
-    expect(launchReady(def, validSource({ credentialId: "" }))).toBe(false);
-    expect(launchReady(def, validSource({ model: "  " }))).toBe(false);
+    expect(launchReady(def, "")).toBe(false);
+    expect(launchReady(def, "  ")).toBe(false);
   });
 
   test("does not require a pin or package name for asset source", () => {
     expect(
       launchReady(
         fullDefinition({ kind: "asset-source", pin: "", packageName: "" }),
-        validSource(),
+        OFFERING_ID,
       ),
     ).toBe(true);
   });

@@ -48,7 +48,6 @@ import {
   ToolPackageManifest,
   type ToolPackagePin,
 } from "@intx/types/tool-packages";
-import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type {
   SourceRefPin,
   WorkflowProjectionWithSources,
@@ -62,9 +61,6 @@ import type {
 import {
   buildInertProjectionStepSources,
   deriveRunAddress,
-  enumerateInertBodies,
-  pickStepInferenceSource,
-  pinInertStepSources,
   WorkflowDefinitionInvalidError,
   type DeployContent as OrchestratorDeployContent,
 } from "@intx/workflow-deploy";
@@ -93,6 +89,7 @@ import {
   type InstallAndApproveArgs,
   type InstallAndApproveResult,
 } from "./workflow-probe-gate";
+import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
 
 const logger = getLogger(["interchange", "hub", "session-service"]);
 
@@ -764,57 +761,11 @@ async function prepareSourceRefDeploy(
   // rather than reading it off disk, so no body workflow.json is staged (see the
   // staging loop in workflow-host-wiring.ts and the anti-fallback guard in
   // workflow-host run-child.ts).
-  const referencedDefinitions: WorkflowProjectionWithSources[] =
-    await Promise.all(
-      enumerateInertBodies(projection).map(async (body) => {
-        // Pin every body step's source, recursing into a loop nested inside the
-        // body (`pinInertStepSources` owns the walk, the loop recursion, and the
-        // flat-map collision rule). The per-step LEAF policy is the body's own:
-        //
-        //   - A genuine non-agent step (sleep, awaitSignal, or the loop
-        //     container itself) declares no preference and runs no inference, so
-        //     it advertises no `inference.source` grant the gate could approve.
-        //     The deploy frame's coverage contract still requires a source entry
-        //     for every body step, so pin the deploy's default source as an inert
-        //     placeholder: the body child resolves a step's source only when that
-        //     step invokes inference, so this entry is never read, which is why
-        //     it needs no operator approval.
-        //   - An agent step -- including one that declares no preference (an
-        //     empty `modelSources`), which still resolves a source at runtime --
-        //     runs inference and gets a source pinned through the approval gate.
-        const sources = pinInertStepSources({
-          definition: body.definition,
-          workflowId: body.ref,
-          context: `deployCodeSourcedWorkflow body ${body.ref}: `,
-          resolveLeafSource: ({ stepId, isAgent, preference }) => {
-            if (!isAgent) {
-              const placeholder = args.config.sources.find(
-                (s) => s.id === args.config.defaultSource,
-              );
-              if (placeholder === undefined) {
-                throw new WorkflowDefinitionInvalidError(
-                  body.ref,
-                  `non-agent body step ${stepId} needs an inert placeholder source, but the deploy config carries no defaultSource entry to pin`,
-                );
-              }
-              return placeholder;
-            }
-            return pickStepInferenceSource({
-              preferred: preference,
-              stepId,
-              workflowId: body.ref,
-              config: args.config,
-              operatorApprovals: approval.approvedGrants,
-            });
-          },
-        });
-        return {
-          definition: body.definition,
-          sources,
-          approvedWireHash: await computeWireDefinitionHash(body.definition),
-        };
-      }),
-    );
+  const referencedDefinitions = await buildReferencedWorkflowSourcePins({
+    projection,
+    config: args.config,
+    operatorApprovals: approval.approvedGrants,
+  });
 
   // Assemble the ONE credential delivery. Its `materials` cover three rails, each
   // authorized upstream on its own terms, deduped by credentialId into one cell:

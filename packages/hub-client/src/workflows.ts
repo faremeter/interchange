@@ -1,6 +1,5 @@
 import { type } from "arktype";
 
-import { InferenceSource } from "@intx/types/runtime";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import type { Transport } from "./transport";
@@ -44,10 +43,10 @@ export type DeployWorkflowInput = {
   source: WorkflowDefinitionSource;
   /** The `interchange.workflow` entry-module path the sidecar evaluates. */
   entry: string;
-  /** The inference chain the deployment's step agents launch against. */
-  sources: InferenceSource[];
-  /** The default source id; the head of the pinned inference chain. */
-  defaultSource: string;
+  /** Ordered catalog offering ids for the deployment's inference chain. */
+  sourceOfferingIds: string[];
+  /** The default catalog offering id; normally the head of the chain. */
+  defaultSourceOfferingId: string;
   /**
    * A `name@range` pin selecting the definition package. Required for the
    * `registry` and asset-`tarball` source variants; omitted for asset-`source`,
@@ -92,14 +91,14 @@ export async function deployWorkflow(
   const body: {
     source: WorkflowDefinitionSource;
     entry: string;
-    sources: InferenceSource[];
-    defaultSource: string;
+    sourceOfferingIds: string[];
+    defaultSourceOfferingId: string;
     pin?: string;
   } = {
     source: input.source,
     entry: input.entry,
-    sources: input.sources,
-    defaultSource: input.defaultSource,
+    sourceOfferingIds: input.sourceOfferingIds,
+    defaultSourceOfferingId: input.defaultSourceOfferingId,
   };
   if (input.pin !== undefined) {
     body.pin = input.pin;
