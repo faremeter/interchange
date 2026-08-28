@@ -4,7 +4,8 @@
 // the ceiling -- not some other failure -- is what stops it. runLocal creates
 // a fresh in-memory store per rung, so the deepest rung's depth-naming message
 // is asserted separately in the fast child-depth unit test; the real-path
-// (shared-repo) message assertion lives in the sidecar roundtrip suite.
+// (shared-repo, real sidecar spawn seam) message assertion lives in
+// `apps/sidecar/src/workflow-substrate-factory-child-depth.test.ts`.
 
 import { describe, test, expect } from "bun:test";
 
