@@ -51,6 +51,7 @@ import {
 } from "./commit-chain";
 import type {
   RunResult,
+  SpawnSuspendableChild,
   SuspendableChildHandle,
   WorkflowPark,
   WorkflowRun,
@@ -1815,6 +1816,200 @@ async function runLoop(
 }
 
 /**
+ * Re-link state for a crash-recovered occurrence whose body is parked. The
+ * resume planner yields at most one of these -- an approval park or a
+ * signal-relay park, never both -- so a single discriminated union encodes the
+ * mutual exclusion the two former locals maintained by discipline.
+ */
+type SuspendableOccurrenceResume =
+  | { kind: "approval"; corr: string; relay: boolean; decision?: unknown }
+  | { kind: "signal-relay-reestablish"; name: string; awaitSeq: number }
+  | {
+      kind: "signal-relay-relay";
+      name: string;
+      payload: unknown;
+      signalId: string;
+    };
+
+/**
+ * Drive one occurrence's suspendable-child body to terminal, durably: commit
+ * `ChildSpawned`, spawn the body, re-link a crash-recovered park, proxy each of
+ * the body's parks up on THIS run's own park machinery over `containerStepId`
+ * (approval -> `parkOnSignal`/`resume`; author `awaitSignal` -> signal-relay),
+ * then commit `ChildCompleted`. Returns only the terminal status; a body's step
+ * outputs live in the child log, so a caller that needs them hydrates them from
+ * there and this seam stays free of occurrence-divergent concerns.
+ *
+ * The drive is agnostic to where an occurrence's input comes from: `input` is
+ * supplied by the caller, and everything occurrence-divergent stays there too --
+ * the terminal-is-final vs tolerate policy and the re-arm that produces the next
+ * occurrence's input. `runOnTrigger` is the caller, one occurrence per trigger
+ * event. `containerStepId` is both the proxy-park step and the child's
+ * `parentStepId`; a caller that proxy-parks on a step other than the child's
+ * parent would need a second knob.
+ */
+async function driveSuspendableOccurrence(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  containerStepId: string,
+  args: {
+    childRunId: string;
+    bodyRef: string;
+    input: unknown;
+    resume: SuspendableOccurrenceResume | undefined;
+    spawnSuspendableChild: SpawnSuspendableChild;
+    abort: AbortSignal;
+  },
+): Promise<{ terminalStatus: "completed" | "failed" | "cancelled" }> {
+  const { childRunId, bodyRef, input, resume, spawnSuspendableChild, abort } =
+    args;
+
+  let before = await reloadState(env, runId);
+  if (!before.children.has(childRunId)) {
+    const spawned: WorkflowEvent = {
+      kind: "ChildSpawned",
+      seq: before.lastSeq + 1,
+      at: env.clock().toISOString(),
+      stepId: containerStepId,
+      childRunId,
+      childDefinitionRef: bodyRef,
+    };
+    before = await commit(env, runId, spawned);
+    void before;
+  }
+  // Flush the spawn record durable before the child runs so a resumed
+  // parent log records the spawn ahead of any child-side work.
+  await flush(env, runId);
+
+  const child = await spawnSuspendableChild({
+    definitionRef: bodyRef,
+    childRunId,
+    input,
+    parentRunId: runId,
+    parentStepId: containerStepId,
+    signal: abort,
+    ...(resume !== undefined
+      ? { resumeFromEvents: await env.repoStore.read(childRunId) }
+      : {}),
+  });
+
+  let terminalStatus: "completed" | "failed" | "cancelled";
+  // `pending` carries a body event already pulled by a signal-relay drive
+  // below (its `next()` raced the signal), so the loop consumes it rather
+  // than calling `next()` a second time and dropping it.
+  let pending: Awaited<ReturnType<typeof child.next>> | undefined;
+
+  if (resume?.kind === "approval") {
+    // Re-link the parent to a body re-spawned from its log and parked on the
+    // shared correlation. A re-park does not re-fire onPark, so the park is
+    // not surfaced via next(); drive the resume directly from the recovered
+    // correlation. A grant already delivered to the parent log (its
+    // SignalReceived consumed the container's park) is relayed as-is;
+    // otherwise re-park the container and await the grant as the steady-state
+    // loop would.
+    let decision: unknown;
+    if (resume.relay) {
+      decision = resume.decision;
+    } else {
+      const parkRearm = await reloadState(env, runId);
+      decision = await parkOnSignal(
+        env,
+        runId,
+        {
+          stepId: containerStepId,
+          signalName: signalName(resume.corr),
+          parkKind: "approval",
+        },
+        parkRearm,
+        abort,
+      );
+    }
+    await child.resume(resume.corr, decision);
+  } else if (resume?.kind === "signal-relay-relay") {
+    // A signal delivered before the crash but not relayed: deliver it (with
+    // its original id, so the body's dedup makes it idempotent) to unblock
+    // the body's gate; the loop then drives the body's next event.
+    await child.deliverSignal(resume.name, resume.payload, resume.signalId);
+  } else if (resume?.kind === "signal-relay-reestablish") {
+    // The container's signal-relay await is durable; the re-spawned body
+    // re-parks on the name silently, so re-drive the race from the recovered
+    // await seq (no re-emit) and continue with the body event it yields.
+    pending = await raceContainerSignalRelay(
+      env,
+      runId,
+      containerStepId,
+      child,
+      resume.name,
+      resume.awaitSeq,
+      abort,
+    );
+  }
+
+  for (;;) {
+    const bodyEvent = pending ?? (await child.next());
+    pending = undefined;
+    if (bodyEvent.kind === "terminal") {
+      terminalStatus = bodyEvent.terminalStatus;
+      break;
+    }
+    if (bodyEvent.kind === "park") {
+      // A body step parked on an approval. Proxy it up on the SAME
+      // correlation via THIS run's own park machinery, so the whole
+      // deployment-runId approval path (registerSuspension/hub/deliver) is
+      // reused unchanged and the approver sees the body step's real
+      // snapshot; then relay the granted decision back into the child so the
+      // body continues.
+      const parkRearm = await reloadState(env, runId);
+      const decision = await parkOnSignal(
+        env,
+        runId,
+        {
+          stepId: containerStepId,
+          signalName: signalName(bodyEvent.park.correlationId),
+          parkKind: "approval",
+          ...(bodyEvent.park.approvalSnapshot !== undefined
+            ? { approvalSnapshot: bodyEvent.park.approvalSnapshot }
+            : {}),
+        },
+        parkRearm,
+        abort,
+      );
+      await child.resume(bodyEvent.park.correlationId, decision);
+      continue;
+    }
+    // A body step parked on an author `awaitSignal` gate. Proxy it up as a
+    // signal-relay await on THIS container run over the SAME author name and
+    // relay the resolved signal back into the body. The drive returns the
+    // body's next event (its `next()` was consumed in the race), so continue
+    // the loop with it.
+    pending = await driveContainerSignalRelay(
+      env,
+      runId,
+      containerStepId,
+      child,
+      bodyEvent.name,
+      abort,
+    );
+  }
+
+  let after = await reloadState(env, runId);
+  if (after.children.get(childRunId)?.terminalStatus === undefined) {
+    const completed: WorkflowEvent = {
+      kind: "ChildCompleted",
+      seq: after.lastSeq + 1,
+      at: env.clock().toISOString(),
+      childRunId,
+      terminalStatus,
+    };
+    after = await commit(env, runId, completed);
+    void after;
+  }
+  await flush(env, runId);
+
+  return { terminalStatus };
+}
+
+/**
  * Run a long-lived onTrigger section. The section services each occurrence
  * of its trigger as an EVENT: it spawns the body as a child run resolved by
  * the deployed `bodyRef`, awaits the body's terminal, then re-arms on a
@@ -1971,156 +2166,47 @@ async function runOnTrigger(
 
   while (true) {
     const childRunId = `${primitive.id}__${String(eventIndex)}`;
-    let before = await reloadState(env, runId);
-    if (!before.children.has(childRunId)) {
-      const spawned: WorkflowEvent = {
-        kind: "ChildSpawned",
-        seq: before.lastSeq + 1,
-        at: env.clock().toISOString(),
-        stepId: primitive.id,
-        childRunId,
-        childDefinitionRef: bodyRef,
-      };
-      before = await commit(env, runId, spawned);
-      void before;
-    }
-    // Flush the spawn record durable before the child runs so a resumed
-    // parent log records the spawn ahead of any child-side work.
-    await flush(env, runId);
-
-    const child = await spawnSuspendableChild({
-      definitionRef: bodyRef,
-      childRunId,
-      input: currentInput,
-      parentRunId: runId,
-      parentStepId: primitive.id,
-      signal: abort,
-      ...(resumeApproval !== undefined || resumeSignalRelay !== undefined
-        ? { resumeFromEvents: await env.repoStore.read(childRunId) }
-        : {}),
-    });
-    let terminalStatus: "completed" | "failed" | "cancelled";
+    let resume: SuspendableOccurrenceResume | undefined;
     if (resumeApproval !== undefined) {
-      // Re-link the parent to a body re-spawned from its log and parked on the
-      // shared correlation. A re-park does not re-fire onPark, so the park is
-      // not surfaced via next(); drive the resume directly from the recovered
-      // correlation. A grant already delivered to the parent log (its
-      // SignalReceived consumed the container's park) is relayed as-is;
-      // otherwise re-park the container and await the grant as the steady-state
-      // loop would.
-      let decision: unknown;
-      if (resumeApproval.relay) {
-        decision = resumeApproval.decision;
-      } else {
-        const parkRearm = await reloadState(env, runId);
-        decision = await parkOnSignal(
-          env,
-          runId,
-          {
-            stepId: primitive.id,
-            signalName: signalName(resumeApproval.corr),
-            parkKind: "approval",
-          },
-          parkRearm,
-          abort,
-        );
-      }
-      await child.resume(resumeApproval.corr, decision);
+      resume = {
+        kind: "approval",
+        corr: resumeApproval.corr,
+        relay: resumeApproval.relay,
+        ...(resumeApproval.decision !== undefined
+          ? { decision: resumeApproval.decision }
+          : {}),
+      };
       resumeApproval = undefined;
-    }
-    // `pending` carries a body event already pulled by a signal-relay drive
-    // below (its `next()` raced the signal), so the loop consumes it rather
-    // than calling `next()` a second time and dropping it.
-    let pending: Awaited<ReturnType<typeof child.next>> | undefined;
-    if (resumeSignalRelay !== undefined) {
-      // Re-link the parent to a body re-spawned from its log and parked
-      // mid-signal-relay. A re-park does not re-fire onSignalPark, so the park
-      // is not surfaced via next(); drive the recovery directly.
-      if (resumeSignalRelay.kind === "relay") {
-        // A signal delivered before the crash but not relayed: deliver it (with
-        // its original id, so the body's dedup makes it idempotent) to unblock
-        // the body's gate; the loop then drives the body's next event.
-        await child.deliverSignal(
-          resumeSignalRelay.name,
-          resumeSignalRelay.payload,
-          resumeSignalRelay.signalId,
-        );
-      } else {
-        // The container's signal-relay await is durable; the re-spawned body
-        // re-parks on the name silently, so re-drive the race from the recovered
-        // await seq (no re-emit) and continue with the body event it yields.
-        pending = await raceContainerSignalRelay(
-          env,
-          runId,
-          primitive.id,
-          child,
-          resumeSignalRelay.name,
-          resumeSignalRelay.awaitSeq,
-          abort,
-        );
-      }
+    } else if (resumeSignalRelay !== undefined) {
+      resume =
+        resumeSignalRelay.kind === "relay"
+          ? {
+              kind: "signal-relay-relay",
+              name: resumeSignalRelay.name,
+              payload: resumeSignalRelay.payload,
+              signalId: resumeSignalRelay.signalId,
+            }
+          : {
+              kind: "signal-relay-reestablish",
+              name: resumeSignalRelay.name,
+              awaitSeq: resumeSignalRelay.awaitSeq,
+            };
       resumeSignalRelay = undefined;
     }
-    for (;;) {
-      const bodyEvent = pending ?? (await child.next());
-      pending = undefined;
-      if (bodyEvent.kind === "terminal") {
-        terminalStatus = bodyEvent.terminalStatus;
-        break;
-      }
-      if (bodyEvent.kind === "park") {
-        // A body step parked on an approval. Proxy it up on the SAME
-        // correlation via THIS run's own park machinery, so the whole
-        // deployment-runId approval path (registerSuspension/hub/deliver) is
-        // reused unchanged and the approver sees the body step's real
-        // snapshot; then relay the granted decision back into the child so the
-        // body continues.
-        const parkRearm = await reloadState(env, runId);
-        const decision = await parkOnSignal(
-          env,
-          runId,
-          {
-            stepId: primitive.id,
-            signalName: signalName(bodyEvent.park.correlationId),
-            parkKind: "approval",
-            ...(bodyEvent.park.approvalSnapshot !== undefined
-              ? { approvalSnapshot: bodyEvent.park.approvalSnapshot }
-              : {}),
-          },
-          parkRearm,
-          abort,
-        );
-        await child.resume(bodyEvent.park.correlationId, decision);
-        continue;
-      }
-      // A body step parked on an author `awaitSignal` gate. Proxy it up as a
-      // signal-relay await on THIS container run over the SAME author name and
-      // relay the resolved signal back into the body. The drive returns the
-      // body's next event (its `next()` was consumed in the race), so continue
-      // the loop with it.
-      pending = await driveContainerSignalRelay(
-        env,
-        runId,
-        primitive.id,
-        child,
-        bodyEvent.name,
-        abort,
-      );
-    }
 
-    let after = await reloadState(env, runId);
-    if (after.children.get(childRunId)?.terminalStatus === undefined) {
-      const completed: WorkflowEvent = {
-        kind: "ChildCompleted",
-        seq: after.lastSeq + 1,
-        at: env.clock().toISOString(),
+    const { terminalStatus } = await driveSuspendableOccurrence(
+      env,
+      runId,
+      primitive.id,
+      {
         childRunId,
-        terminalStatus,
-      };
-      after = await commit(env, runId, completed);
-      void after;
-    }
-    await flush(env, runId);
+        bodyRef,
+        input: currentInput,
+        resume,
+        spawnSuspendableChild,
+        abort,
+      },
+    );
 
     // Terminal-is-final unless the section tolerates a body failure. A cancelled
     // body always ends the section (a drain/operator decision, never tolerated);
