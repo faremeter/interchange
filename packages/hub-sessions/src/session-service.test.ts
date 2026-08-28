@@ -1698,7 +1698,7 @@ describe("deployCodeSourcedWorkflow", () => {
     const body = refs[0];
     if (body === undefined) throw new Error("missing referenced body");
     // Staged under the SHARED body ref, so the sidecar path and the run child's
-    // re-derived ref (onTriggerBodyRef(projection.id, stepId)) agree.
+    // re-derived ref (inlineBodyRef(projection.id, stepId)) agree.
     expect(body.definition.id).toBe("wf_composed_body__section");
     // The wire narrow requires a source chain per body stepOrder entry.
     expect(Object.keys(body.sources).sort()).toEqual(

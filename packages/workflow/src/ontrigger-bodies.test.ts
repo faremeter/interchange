@@ -1,17 +1,21 @@
 import { describe, test, expect } from "bun:test";
 
 import {
+  action,
   childWorkflow,
   defineWorkflow,
+  hashDefinition,
+  loop,
   onTrigger,
   sleep,
   step,
 } from "./definition/index";
 import { defineAgent } from "@intx/agent";
 import {
-  onTriggerBodyRef,
+  inlineBodyRef,
   rewriteInlineOnTriggerBodies,
   rewriteInlineChildWorkflowBodies,
+  enumerateInlineLoopBodies,
 } from "./ontrigger-bodies";
 
 function inlineBodyWorkflow(id: string) {
@@ -30,9 +34,9 @@ function inlineBodyWorkflow(id: string) {
   });
 }
 
-describe("onTriggerBodyRef", () => {
+describe("inlineBodyRef", () => {
   test("joins the workflow id and step id with the `__` scheme", () => {
-    expect(onTriggerBodyRef("wf", "sect")).toBe("wf__sect");
+    expect(inlineBodyRef("wf", "sect")).toBe("wf__sect");
   });
 
   test("is the ref the live rewrite mints (single owner of the scheme)", () => {
@@ -40,7 +44,7 @@ describe("onTriggerBodyRef", () => {
     // back must agree; the rewrite must route through the same helper so the
     // two never drift.
     const { bodies } = rewriteInlineOnTriggerBodies(inlineBodyWorkflow("wf"));
-    expect(bodies[0]?.ref).toBe(onTriggerBodyRef("wf", "sect"));
+    expect(bodies[0]?.ref).toBe(inlineBodyRef("wf", "sect"));
   });
 });
 
@@ -147,7 +151,7 @@ describe("rewriteInlineChildWorkflowBodies", () => {
     expect(bodies).toHaveLength(1);
     // Mints refs through the same `<workflowId>__<stepId>` scheme onTrigger
     // bodies use; a step carries at most one of the two, so they never collide.
-    expect(bodies[0]?.ref).toBe(onTriggerBodyRef("wf", "spawn"));
+    expect(bodies[0]?.ref).toBe(inlineBodyRef("wf", "spawn"));
     expect(bodies[0]?.definition.id).toBe("wf__spawn");
 
     const spawn = workflow.steps["spawn"];
@@ -190,5 +194,126 @@ describe("rewriteInlineChildWorkflowBodies", () => {
     if (sect?.kind === "onTrigger") {
       expect("inline" in sect.body).toBe(true);
     }
+  });
+});
+
+function loopWorkflow(id: string) {
+  return defineWorkflow({
+    id,
+    trigger: { type: "manual" },
+    steps: {
+      rework: loop({
+        body: defineWorkflow({
+          id: "authored-loop-body",
+          steps: { touch: action({ handler: "noop" }) },
+        }),
+        while: "cont",
+        carry: "next",
+        maxIterations: 3,
+        onExhausted: "escalate",
+      }),
+      escalate: action({ handler: "esc", after: ["rework"] }),
+    },
+  });
+}
+
+describe("enumerateInlineLoopBodies", () => {
+  test("collects a loop body under the shared `__` ref with its id set to the ref", () => {
+    const bodies = enumerateInlineLoopBodies(loopWorkflow("wf"));
+
+    expect(bodies).toHaveLength(1);
+    // Same `<workflowId>__<stepId>` scheme the onTrigger/childWorkflow bodies
+    // use; a step is exactly one primitive kind, so the refs never collide.
+    expect(bodies[0]?.ref).toBe(inlineBodyRef("wf", "rework"));
+    // The lifted body's id is the ref, regardless of the authored id.
+    expect(bodies[0]?.definition.id).toBe("wf__rework");
+    expect(Object.keys(bodies[0]?.definition.steps ?? {})).toEqual(["touch"]);
+  });
+
+  test("does not mutate the primitive's inline body, so the hash is unchanged", () => {
+    // A loop keeps its body inline (unlike the onTrigger/childWorkflow rewrite
+    // to a `{ ref }`), because both hash layers project the body inline. The
+    // enumerator must therefore mint a fresh copy and leave the input untouched,
+    // or it would change every existing loop definition's hash.
+    const wf = loopWorkflow("wf");
+    const before = hashDefinition(wf);
+    const bodies = enumerateInlineLoopBodies(wf);
+
+    const rework = wf.steps["rework"];
+    expect(rework?.kind).toBe("loop");
+    if (rework?.kind === "loop") {
+      // The primitive still holds its inline body with its authored id --
+      // untouched, not rewritten to a `{ ref }` and not re-id'd.
+      expect(rework.body.id).toBe("authored-loop-body");
+      // The lifted copy is a fresh top-level object, so rebinding its `id` to
+      // the ref does not touch the primitive's body. (The spread is shallow, so
+      // nested structure is shared -- fine, since the enumerator only rebinds
+      // `id` and never mutates the copy.)
+      expect(bodies[0]?.definition).not.toBe(rework.body);
+    }
+    const after = hashDefinition(wf);
+    expect(after).toEqual(before);
+  });
+
+  test("keeps the loop body inline in the hash, never lifted to a ref", () => {
+    // The hash-safety guarantee: both hash layers project a loop body inline
+    // under the bare `body` field. If a future change lifts loop bodies to a
+    // `{ ref }` (as onTrigger/childWorkflow bodies are), every existing loop's
+    // hash changes and deployed loops fail re-verify. `hashDefinition` returns
+    // the canonical (sorted-key) form, so the loop body serializes inline with
+    // its authored id and its steps, and the workflow carries no `ref` anywhere.
+    const canonical = new TextDecoder().decode(
+      hashDefinition(loopWorkflow("wf")),
+    );
+    expect(canonical).toContain('"body":{"id":"authored-loop-body"');
+    expect(canonical).toContain('"touch"');
+    // A ref-lifted loop body would serialize as `"body":{"ref":"wf__rework"}`.
+    expect(canonical).not.toContain('"ref"');
+  });
+
+  test("is empty for a workflow with no loop", () => {
+    const wf = defineWorkflow({
+      id: "plain",
+      trigger: { type: "manual" },
+      steps: { w: sleep({ duration: 1 }) },
+    });
+
+    expect(enumerateInlineLoopBodies(wf)).toHaveLength(0);
+  });
+
+  test("collects every loop when several are present", () => {
+    const wf = defineWorkflow({
+      id: "multi",
+      trigger: { type: "manual" },
+      steps: {
+        a: loop({
+          body: defineWorkflow({
+            id: "ba",
+            steps: { t: action({ handler: "noop" }) },
+          }),
+          while: "cont",
+          carry: "next",
+          maxIterations: 2,
+          onExhausted: "done",
+        }),
+        b: loop({
+          body: defineWorkflow({
+            id: "bb",
+            steps: { t: action({ handler: "noop" }) },
+          }),
+          while: "cont",
+          carry: "next",
+          maxIterations: 2,
+          onExhausted: "done",
+        }),
+        done: action({ handler: "d", after: ["a", "b"] }),
+      },
+    });
+
+    expect(
+      enumerateInlineLoopBodies(wf)
+        .map((b) => b.ref)
+        .sort(),
+    ).toEqual(["multi__a", "multi__b"]);
   });
 });
