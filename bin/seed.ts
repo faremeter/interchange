@@ -931,12 +931,17 @@ for (const p of catalogProviders) {
   if (!cred) fatalMissing(`credential fixture for provider ${p.name}`);
 
   // Old-system provider that owns the credential. Its plugin mirrors the
-  // catalog plugin (the old provider's plugin is free-form) and the metadata
-  // baseURL matches the catalog endpoint.
+  // catalog plugin (the old provider's plugin is free-form), and both origin
+  // fields match the catalog endpoint.
   const { status: intgStatus, data: intgData } = await api(
     "POST",
     `/api/tenants/${acmeTenantId}/providers`,
-    { name: p.name, plugin: p.plugin, metadata: { baseURL: p.baseURL } },
+    {
+      name: p.name,
+      plugin: p.plugin,
+      apiBaseUrl: p.baseURL,
+      metadata: { baseURL: p.baseURL },
+    },
     aliceCookies,
   );
   checkOrSkip(

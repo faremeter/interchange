@@ -305,7 +305,7 @@ A provisioned deployment is prepared transactionally before infrastructure is re
 
 The launch spec deliberately stores catalog offering ids rather than resolved provider secrets. Every initial deployment or replacement resolves those offerings again under the original authority, so rotated or revoked credentials take effect during recovery and no raw provider credential becomes recovery state.
 
-The production Hub registers no infrastructure backend by default. An operator must inject a provisioner with a stable id, API version, and non-secret binding fingerprint. When no provisioner satisfies the workflow and tenant capability policy, preparation returns an error and creates no partial deployment.
+The production Hub registers no infrastructure backend by default. An operator must inject a provisioner with a stable id, API version, and non-secret binding fingerprint. When no provisioner satisfies the workflow and tenant capability policy, preparation returns an error and creates no partial deployment. The admin UI E2E harness starts the Hub through a test-only composition root that injects a `local-process` provisioner; it spawns allocation-authenticated sidecar subprocesses for hermetic testing but advertises no infrastructure capabilities or isolation guarantees.
 
 ### Allocation state and generation fence
 

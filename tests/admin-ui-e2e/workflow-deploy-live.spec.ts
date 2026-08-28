@@ -26,7 +26,9 @@ function required(name: string, value: string | undefined): string {
 
 async function selectInferenceOffering(page: Page): Promise<void> {
   await page.locator("#source-offering").click();
-  await page.getByRole("option").first().click();
+  await page
+    .getByRole("option", { name: "Claude Sonnet 5 — Anthropic" })
+    .click();
 }
 
 // Read the tenant's deployments straight from the real hub (through the

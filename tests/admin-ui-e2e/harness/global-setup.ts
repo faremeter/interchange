@@ -645,7 +645,12 @@ async function globalSetup(): Promise<() => Promise<void>> {
 
     const hubProc = spawnLabeled(
       "hub",
-      ["bun", "run", "--conditions=intx-src", "apps/hub/src/index.ts"],
+      [
+        "bun",
+        "run",
+        "--conditions=intx-src",
+        "tests/admin-ui-e2e/harness/hub.ts",
+      ],
       hubSpawnEnv,
       REPO_ROOT,
       sidecarRegistered.onLine,
