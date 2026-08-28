@@ -2,7 +2,10 @@ import { describe, test, expect, mock } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { workflowDetailQuery } from "@/lib/queries/tenants";
+import {
+  tenantResolvedModelsQuery,
+  workflowDetailQuery,
+} from "@/lib/queries/tenants";
 import type { WorkflowAssetResponse } from "@/lib/queries/tenants";
 
 // The page reads its route params and renders links through the router. Neither
@@ -15,7 +18,9 @@ await mock.module("@tanstack/react-router", () => ({
   Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
 }));
 
-const { TenantWorkflowDetailPage } = await import("./tenant-workflow-detail");
+const { TenantWorkflowDetailPage, WorkflowModelOfferingField } = await import(
+  "./tenant-workflow-detail"
+);
 
 function makeWorkflow(
   overrides: Partial<WorkflowAssetResponse> = {},
@@ -36,6 +41,26 @@ function makeWorkflow(
 function renderPage(workflow: WorkflowAssetResponse) {
   const qc = new QueryClient();
   qc.setQueryData(workflowDetailQuery("tnt_1", "wf_1").queryKey, workflow);
+  qc.setQueryData(tenantResolvedModelsQuery("tnt_1").queryKey, [
+    {
+      id: "mdl_1",
+      canonicalName: "claude-sonnet-5",
+      displayName: "Claude Sonnet 5",
+      description: null,
+      offerings: [
+        {
+          offeringId: "ofr_1",
+          providerId: "mpr_1",
+          providerName: "Anthropic",
+          plugin: "anthropic",
+          priority: 0,
+          deploymentTags: [],
+          capabilities: [],
+          pricing: [],
+        },
+      ],
+    },
+  ]);
   return renderToStaticMarkup(
     <QueryClientProvider client={qc}>
       <TenantWorkflowDetailPage />
@@ -58,13 +83,27 @@ describe("TenantWorkflowDetailPage launch form", () => {
     expect(html).toContain("Package name");
   });
 
-  test("renders the inference source inputs", () => {
+  test("renders a catalog offering picker instead of credential inputs", () => {
     const html = renderPage(makeWorkflow());
-    expect(html).toContain("Source ID");
-    expect(html).toContain("Provider");
-    expect(html).toContain("Model");
-    expect(html).toContain("Base URL");
-    expect(html).toContain("Credential ID");
+    expect(html).toContain("Model offering");
+    expect(html).not.toContain("Model offering ID");
+    expect(html).not.toContain("Source ID");
+    expect(html).not.toContain("Base URL");
+    expect(html).not.toContain("API Key");
+  });
+
+  test("falls back to a manual offering id when model discovery fails", () => {
+    const html = renderToStaticMarkup(
+      <WorkflowModelOfferingField
+        discoveryUnavailable
+        offerings={[]}
+        value=""
+        onValueChange={() => undefined}
+      />,
+    );
+    expect(html).toContain("Model offering ID");
+    expect(html).toContain("Enter a known catalog offering ID");
+    expect(html).toContain('placeholder="ofr_..."');
   });
 
   test("disables the launch button before the form is filled", () => {

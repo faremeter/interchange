@@ -1,8 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-type-assertion -- Transport.fetch<T> is a generic interface method; mock implementations must use `as T` to satisfy the return type contract */
 import { describe, expect, test } from "bun:test";
 
-import type { InferenceSource } from "@intx/types/runtime";
-
 import { createBrowserTransport, type Transport } from "./transport";
 import {
   deliverWorkflowSignal,
@@ -47,16 +45,6 @@ function makeDeployment(
   };
 }
 
-function makeSource(): InferenceSource {
-  return {
-    id: "src_1",
-    provider: "anthropic",
-    baseURL: "https://api.anthropic.com",
-    model: "claude-3-5-sonnet",
-    credentialId: "sk-test",
-  };
-}
-
 describe("listWorkflowDeployments", () => {
   test("GETs the instances endpoint and returns parsed deployments", async () => {
     const rows = [
@@ -94,13 +82,13 @@ describe("deployWorkflow", () => {
   test("POSTs the code-sourced deploy body and returns the parsed deployment", async () => {
     const deployment = makeDeployment();
     const { transport, calls } = createMockTransport(() => deployment);
-    const sources = [makeSource()];
+    const sourceOfferingIds = ["ofr_1"];
 
     const result = await deployWorkflow(transport, TENANT_ID, {
       source: assetSource,
       entry: "./workflow.mjs",
-      sources,
-      defaultSource: "src_1",
+      sourceOfferingIds,
+      defaultSourceOfferingId: "ofr_1",
     });
 
     expect(calls).toHaveLength(1);
@@ -110,8 +98,8 @@ describe("deployWorkflow", () => {
       body: {
         source: assetSource,
         entry: "./workflow.mjs",
-        sources,
-        defaultSource: "src_1",
+        sourceOfferingIds,
+        defaultSourceOfferingId: "ofr_1",
       },
     });
     expect(result).toEqual(deployment);
@@ -120,21 +108,21 @@ describe("deployWorkflow", () => {
   test("forwards the optional pin when supplied", async () => {
     const deployment = makeDeployment();
     const { transport, calls } = createMockTransport(() => deployment);
-    const sources = [makeSource()];
+    const sourceOfferingIds = ["ofr_1"];
 
     await deployWorkflow(transport, TENANT_ID, {
       source: { kind: "registry", registry: "npmjs" },
       entry: "./workflow.mjs",
-      sources,
-      defaultSource: "src_1",
+      sourceOfferingIds,
+      defaultSourceOfferingId: "ofr_1",
       pin: "@wf/demo@^1.0.0",
     });
 
     expect(calls[0]?.body).toEqual({
       source: { kind: "registry", registry: "npmjs" },
       entry: "./workflow.mjs",
-      sources,
-      defaultSource: "src_1",
+      sourceOfferingIds,
+      defaultSourceOfferingId: "ofr_1",
       pin: "@wf/demo@^1.0.0",
     });
   });
@@ -145,8 +133,8 @@ describe("deployWorkflow", () => {
       deployWorkflow(transport, TENANT_ID, {
         source: assetSource,
         entry: "./workflow.mjs",
-        sources: [makeSource()],
-        defaultSource: "src_1",
+        sourceOfferingIds: ["ofr_1"],
+        defaultSourceOfferingId: "ofr_1",
       }),
     ).rejects.toThrow(/Invalid workflow deploy response/);
   });

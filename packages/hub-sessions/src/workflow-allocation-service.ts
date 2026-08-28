@@ -14,7 +14,11 @@ import type { FrozenApprovalBundle } from "@intx/types/sidecar";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
-import { deriveRunAddress, deriveRunAgentId } from "@intx/workflow-deploy";
+import {
+  buildInertProjectionStepSources,
+  deriveRunAddress,
+  deriveRunAgentId,
+} from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
 import type {
@@ -28,6 +32,7 @@ import {
 } from "./session-service";
 import type { SidecarAllocationRouter } from "./ws/sidecar-handler";
 import type { InstallAndApproveResult } from "./workflow-probe-gate";
+import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
 
 export class WorkflowProvisioningError extends Error {
   readonly code: string;
@@ -93,6 +98,33 @@ export type WorkflowAllocationServiceDeps = {
 
 function randomAllocationId(): string {
   return `sal_${hexEncode(crypto.getRandomValues(new Uint8Array(16)))}`;
+}
+
+function createProvisionedHarnessConfig(args: {
+  readonly tenantId: string;
+  readonly anchorRunId: string;
+  readonly deploymentDomain: string;
+  readonly sessionId: string;
+  readonly sourceAuthorityPrincipalId: string;
+  readonly sources: HarnessConfig["sources"];
+  readonly defaultSource: string;
+}): HarnessConfig {
+  const deploymentAddress = deriveRunAddress({
+    runId: args.anchorRunId,
+    domain: args.deploymentDomain,
+  });
+  return {
+    sessionId: args.sessionId,
+    agentId: deriveRunAgentId({ runId: args.anchorRunId }),
+    tenantId: args.tenantId,
+    principalId: args.sourceAuthorityPrincipalId,
+    agentAddress: deploymentAddress,
+    systemPrompt: "",
+    tools: [],
+    grants: [],
+    sources: args.sources,
+    defaultSource: args.defaultSource,
+  };
 }
 
 export function createWorkflowAllocationService({
@@ -161,6 +193,34 @@ export function createWorkflowAllocationService({
     // Capture the narrowed values before the transaction: TS drops the
     // `approval.ok` narrowing inside the async callback below.
     const definitionId = approved.approval.definitionId;
+    const defaultSource = sourceCheck.sources.find(
+      (source) => source.id === args.defaultSourceOfferingId,
+    );
+    if (defaultSource === undefined) {
+      throw new WorkflowProvisioningError(
+        "invalid_source_offerings",
+        `Default offering ${args.defaultSourceOfferingId} was not resolved for deployment ${args.anchorRunId}`,
+      );
+    }
+    const config = createProvisionedHarnessConfig({
+      tenantId: args.tenantId,
+      anchorRunId: args.anchorRunId,
+      deploymentDomain: args.deploymentDomain,
+      sessionId: args.sessionId,
+      sourceAuthorityPrincipalId: args.sourceAuthorityPrincipalId,
+      sources: sourceCheck.sources,
+      defaultSource: defaultSource.id,
+    });
+    buildInertProjectionStepSources({
+      projection: approved.projection,
+      config,
+      operatorApprovals: approved.approval.approvedGrants,
+    });
+    await buildReferencedWorkflowSourcePins({
+      projection: approved.projection,
+      config,
+      operatorApprovals: approved.approval.approvedGrants,
+    });
     const selection = plugins.selectProvisioner({
       tenantPolicies,
       workflowRules: approved.projection.sidecarPlacement?.capabilities ?? [],
@@ -338,28 +398,21 @@ export function createWorkflowAllocationService({
         `Default offering ${spec.defaultSourceOfferingId} was not resolved for allocation ${allocation.id}`,
       );
     }
-    const deploymentAddress = deriveRunAddress({
-      runId: allocation.anchorRunId,
-      domain: spec.deploymentDomain,
-    });
-    const config: HarnessConfig = {
-      sessionId: spec.sessionId,
-      agentId: deriveRunAgentId({ runId: allocation.anchorRunId }),
+    const config = createProvisionedHarnessConfig({
       tenantId: allocation.tenantId,
-      principalId: spec.sourceAuthorityPrincipalId,
-      agentAddress: deploymentAddress,
-      systemPrompt: "",
-      tools: [],
-      grants: [],
+      anchorRunId: allocation.anchorRunId,
+      deploymentDomain: spec.deploymentDomain,
+      sessionId: spec.sessionId,
+      sourceAuthorityPrincipalId: spec.sourceAuthorityPrincipalId,
       sources: resolved.sources,
       defaultSource: defaultSource.id,
-    };
+    });
 
     return preparedDeployer.deployPreparedCodeSourcedWorkflow({
       tenantId: allocation.tenantId,
       anchorRunId: allocation.anchorRunId,
       deploymentDomain: spec.deploymentDomain,
-      agentAddress: deploymentAddress,
+      agentAddress: config.agentAddress,
       source: bundle.source,
       approved,
       config,

@@ -35,13 +35,25 @@ const deployment = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
-const expectedSources = [
+const OFFERING_ID = "ofr_claude_sonnet";
+const resolvedModels = [
   {
-    id: "anthropic:claude-sonnet-5",
-    provider: "anthropic",
-    baseURL: "https://api.anthropic.com",
-    credentialId: "sk-secret",
-    model: "claude-sonnet-5",
+    id: "mdl_claude_sonnet",
+    canonicalName: "claude-sonnet-5",
+    displayName: "Claude Sonnet 5",
+    description: null,
+    offerings: [
+      {
+        offeringId: OFFERING_ID,
+        providerId: "mpr_anthropic",
+        providerName: "Anthropic",
+        plugin: "anthropic",
+        priority: 0,
+        deploymentTags: [],
+        capabilities: [],
+        pricing: [],
+      },
+    ],
   },
 ];
 
@@ -80,6 +92,14 @@ async function stubWorkflowDetail(
     }),
   );
 
+  await page.route("**/api/tenants/*/models", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(resolvedModels),
+    }),
+  );
+
   await page.route("**/api/tenants/*/workflows/deployments", async (route) => {
     if (route.request().method() === "POST") {
       captured = route.request().postData();
@@ -109,12 +129,11 @@ async function stubWorkflowDetail(
   };
 }
 
-async function fillInferenceSource(page: Page): Promise<void> {
-  await page.locator("#source-id").fill("anthropic:claude-sonnet-5");
-  await page.locator("#source-provider").fill("anthropic");
-  await page.locator("#source-model").fill("claude-sonnet-5");
-  await page.locator("#source-base-url").fill("https://api.anthropic.com");
-  await page.locator("#source-credential-id").fill("sk-secret");
+async function selectInferenceOffering(page: Page): Promise<void> {
+  await page.locator("#source-offering").click();
+  await page
+    .getByRole("option", { name: "Claude Sonnet 5 — Anthropic" })
+    .click();
 }
 
 test("deploys through the registry source picker with a pin", async ({
@@ -135,7 +154,7 @@ test("deploys through the registry source picker with a pin", async ({
   await page.locator("#definition-entry").fill("./workflow.mjs");
   await page.locator("#definition-registry").fill("acme-registry");
   await page.locator("#definition-pin").fill("@acme/flow@^1.0.0");
-  await fillInferenceSource(page);
+  await selectInferenceOffering(page);
 
   await page.getByRole("button", { name: "Launch Workflow" }).click();
 
@@ -143,8 +162,8 @@ test("deploys through the registry source picker with a pin", async ({
   expect(deploy.body()).toEqual({
     source: { kind: "registry", registry: "acme-registry" },
     entry: "./workflow.mjs",
-    sources: expectedSources,
-    defaultSource: "anthropic:claude-sonnet-5",
+    sourceOfferingIds: [OFFERING_ID],
+    defaultSourceOfferingId: OFFERING_ID,
     pin: "@acme/flow@^1.0.0",
   });
 });
@@ -167,7 +186,7 @@ test("deploys through the asset source picker without a pin", async ({
   // pin.
   await page.locator("#definition-entry").fill("./workflow.mjs");
   await page.locator("#definition-commit").fill("abc123");
-  await fillInferenceSource(page);
+  await selectInferenceOffering(page);
 
   await page.getByRole("button", { name: "Launch Workflow" }).click();
 
@@ -180,8 +199,8 @@ test("deploys through the asset source picker without a pin", async ({
       package: { format: "source", commitSha: "abc123" },
     },
     entry: "./workflow.mjs",
-    sources: expectedSources,
-    defaultSource: "anthropic:claude-sonnet-5",
+    sourceOfferingIds: [OFFERING_ID],
+    defaultSourceOfferingId: OFFERING_ID,
   });
   expect(body).not.toHaveProperty("pin");
 });
@@ -207,7 +226,7 @@ test("deploys through the asset tarball source picker with a pin", async ({
   await page.locator("#definition-entry").fill("./workflow.mjs");
   await page.locator("#definition-asset-id").fill("ast_flow_tarball");
   await page.locator("#definition-pin").fill("@acme/flow@1.2.3");
-  await fillInferenceSource(page);
+  await selectInferenceOffering(page);
 
   await page.getByRole("button", { name: "Launch Workflow" }).click();
 
@@ -219,8 +238,8 @@ test("deploys through the asset tarball source picker with a pin", async ({
       package: { format: "tarball" },
     },
     entry: "./workflow.mjs",
-    sources: expectedSources,
-    defaultSource: "anthropic:claude-sonnet-5",
+    sourceOfferingIds: [OFFERING_ID],
+    defaultSourceOfferingId: OFFERING_ID,
     pin: "@acme/flow@1.2.3",
   });
 });

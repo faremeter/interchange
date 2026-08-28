@@ -938,70 +938,78 @@ function sourceDeployBody(
       package: { format: "source", commitSha: DEPLOY_COMMIT },
     },
     entry: DEPLOY_ENTRY,
-    sources: [
-      {
-        id: "src",
-        provider: "anthropic",
-        baseURL: "https://api.example",
-        credentialId: "secret",
-        model: "m",
-      },
-    ],
-    defaultSource: "src",
+    sourceOfferingIds: ["ofr_primary"],
+    defaultSourceOfferingId: "ofr_primary",
     ...overrides,
   };
 }
 
 describe("POST /workflows/deployments", () => {
-  test("deploys a code-sourced workflow and returns the deployment record", async () => {
+  test("rejects the legacy inference-source payload", async () => {
+    const app = createTestApp({ grants: [makeGrant({ action: "create" })] });
+    const res = await app.fetch(
+      authedPost(
+        `${base()}/deployments`,
+        sourceDeployBody({
+          sourceOfferingIds: undefined,
+          defaultSourceOfferingId: undefined,
+          sources: [
+            {
+              id: "anthropic:claude-sonnet-5",
+              provider: "anthropic",
+              baseURL: "https://api.anthropic.com",
+              apiKey: "secret",
+              model: "claude-sonnet-5",
+            },
+          ],
+          defaultSource: "anthropic:claude-sonnet-5",
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects duplicate source offering ids at the request boundary", async () => {
+    let prepareCalled = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          prepareCalled = true;
+          throw new Error("duplicate offerings must not reach preparation");
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(
+        `${base()}/deployments`,
+        sourceDeployBody({
+          sourceOfferingIds: ["ofr_primary", "ofr_primary"],
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(400);
+    expect(prepareCalled).toBe(false);
+  });
+
+  test("rejects deployment when workflow provisioning is unavailable", async () => {
     const deployCalls: DeployWorkflowFromSourceParams[] = [];
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
       deployCalls,
-      deployResult: {
-        anchorRunId: DEPLOYMENT_ID,
-        deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
-        publicKey: "pubkey",
-      },
     });
 
     const res = await app.fetch(
       authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
 
-    expect(res.status).toBe(201);
-    const json = await res.json();
-    expect(json).toMatchObject({
-      id: DEPLOYMENT_ID,
-      definitionAssetId: ASSET_ID,
-    });
-
-    expect(deployCalls).toHaveLength(1);
-    const call = deployCalls[0];
-    if (call === undefined) throw new Error("missing deploy call");
-    expect(call.deploymentDomain).toBe(DOMAIN);
-    expect(call.definitionAssetId).toBe(ASSET_ID);
-    expect(call.entry).toBe(DEPLOY_ENTRY);
-    expect(call.source).toEqual({
-      kind: "asset",
-      assetId: ASSET_ID,
-      package: { format: "source", commitSha: DEPLOY_COMMIT },
-    });
-    // The route derives the deployment address from the minted anchor run and
-    // threads the operator's inference chain onto the harness config.
-    expect(call.agentAddress).toBe(
-      deriveRunAddress({ runId: call.anchorRunId, domain: DOMAIN }),
-    );
-    expect(call.config.defaultSource).toBe("src");
-    expect(call.config.sources).toEqual([
-      {
-        id: "src",
-        provider: "anthropic",
-        baseURL: "https://api.example",
-        credentialId: "secret",
-        model: "m",
-      },
-    ]);
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("workflow_provisioning_unavailable");
+    expect(deployCalls).toHaveLength(0);
   });
 
   test("prepares a provisioned deployment when allocation is configured", async () => {
@@ -1037,8 +1045,8 @@ describe("POST /workflows/deployments", () => {
     });
     expect(deployCalls).toHaveLength(0);
     expect(prepared).toHaveLength(1);
-    expect(prepared[0]?.sourceOfferingIds).toEqual(["src"]);
-    expect(prepared[0]?.defaultSourceOfferingId).toBe("src");
+    expect(prepared[0]?.sourceOfferingIds).toEqual(["ofr_primary"]);
+    expect(prepared[0]?.defaultSourceOfferingId).toBe("ofr_primary");
   });
 
   test("reports provisioner selection failures as conflicts", async () => {
@@ -1093,10 +1101,14 @@ describe("POST /workflows/deployments", () => {
   });
 
   test("reports a sidecar deploy failure as 502 sidecar_unavailable", async () => {
-    // Omitting deployResult makes the session-service mock throw, which
-    // is the sidecar-unavailable path.
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          throw new Error("sidecar unavailable");
+        },
+        deployReadyAllocation: async () => null,
+      },
     });
     const res = await app.fetch(
       authedPost(`${base()}/deployments`, sourceDeployBody()),
@@ -1109,31 +1121,37 @@ describe("POST /workflows/deployments", () => {
     // A WorkflowDefinitionInvalidError from the install/gate or the per-step
     // source pin (an unapproved or mis-ordered chain) is a client/definition
     // error, not a sidecar-reachability failure -- classify it as 409.
-    const deployCalls: DeployWorkflowFromSourceParams[] = [];
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
-      deployCalls,
-      deployError: new WorkflowDefinitionInvalidError(
-        "wf_x",
-        'config.sources[0] ("src-b") must be the default source "src-a"',
-      ),
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          throw new WorkflowDefinitionInvalidError(
+            "wf_x",
+            'resolved offering chain must begin with default offering "ofr_a"',
+          );
+        },
+        deployReadyAllocation: async () => null,
+      },
     });
     const res = await app.fetch(
       authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
     expect(res.status).toBe(409);
     expect(await errorCode(res)).toBe("invalid_workflow");
-    expect(deployCalls).toHaveLength(1);
   });
 
   test("reports a missing post-deploy anchor run as 500, not 502", async () => {
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
       db: { assetRow: workflowAssetRow, deploymentRow: undefined },
-      deployResult: {
-        anchorRunId: DEPLOYMENT_ID,
-        deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
-        publicKey: "pubkey",
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => ({
+          anchorRunId: DEPLOYMENT_ID,
+          deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
+          allocationId: "sal-test",
+          status: "pending",
+        }),
+        deployReadyAllocation: async () => null,
       },
     });
     const res = await app.fetch(

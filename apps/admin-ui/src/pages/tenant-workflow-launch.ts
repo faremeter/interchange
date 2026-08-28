@@ -35,18 +35,6 @@ export type LaunchDefinition = {
   pin: string;
 };
 
-/** The single inference source the launch form collects. */
-export type LaunchInferenceSource = {
-  id: string;
-  provider: string;
-  baseURL: string;
-  // A registered credential the tenant owns. The launch form selects one rather
-  // than accepting a typed key: every source references a credential by id, so
-  // the deploy carries no inline secret (the hub resolves the material).
-  credentialId: string;
-  model: string;
-};
-
 /**
  * Builds the deploy request from the launch form's fields. Only the fields the
  * selected `kind` uses reach the payload: `pin` travels for the `registry` and
@@ -55,20 +43,13 @@ export type LaunchInferenceSource = {
  */
 export function buildDeployInput(
   definition: LaunchDefinition,
-  source: LaunchInferenceSource,
+  sourceOfferingId: string,
 ): DeployWorkflowInput {
+  const offeringId = sourceOfferingId.trim();
   const base = {
     entry: definition.entry.trim(),
-    sources: [
-      {
-        id: source.id.trim(),
-        provider: source.provider.trim(),
-        baseURL: source.baseURL.trim(),
-        credentialId: source.credentialId.trim(),
-        model: source.model.trim(),
-      },
-    ],
-    defaultSource: source.id.trim(),
+    sourceOfferingIds: [offeringId],
+    defaultSourceOfferingId: offeringId,
   };
   switch (definition.kind) {
     case "registry":
@@ -121,19 +102,15 @@ export function definitionReady(definition: LaunchDefinition): boolean {
 
 /**
  * Whether the launch form can be submitted: the entry module, the selected
- * kind's required definition fields, and the inference source are all present.
+ * kind's required definition fields, and a catalog offering are all present.
  */
 export function launchReady(
   definition: LaunchDefinition,
-  source: LaunchInferenceSource,
+  sourceOfferingId: string,
 ): boolean {
   return (
     definition.entry.trim() !== "" &&
     definitionReady(definition) &&
-    source.id.trim() !== "" &&
-    source.provider.trim() !== "" &&
-    source.baseURL.trim() !== "" &&
-    source.credentialId.trim() !== "" &&
-    source.model.trim() !== ""
+    sourceOfferingId.trim() !== ""
   );
 }

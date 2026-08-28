@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
@@ -10,6 +10,7 @@ import {
   deliverWorkflowSignalMutation,
   deployWorkflowMutation,
   triggerWorkflowRunMutation,
+  tenantResolvedModelsQuery,
   workflowDeploymentsQuery,
   workflowDetailQuery,
   workflowRunEventsQuery,
@@ -80,6 +81,66 @@ function isAwaitingSignal(status: string): boolean {
   return status === "running" || status === "deployed";
 }
 
+export function WorkflowModelOfferingField({
+  discoveryUnavailable,
+  offerings,
+  value,
+  onValueChange,
+}: {
+  discoveryUnavailable: boolean;
+  offerings: readonly { id: string; label: string }[];
+  value: string;
+  onValueChange: (value: string) => void;
+}) {
+  if (discoveryUnavailable) {
+    return (
+      <div className="grid gap-1 sm:col-span-2">
+        <Label htmlFor="source-offering-id" className="text-xs">
+          Model offering ID
+        </Label>
+        <Input
+          id="source-offering-id"
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          placeholder="ofr_..."
+          className="h-8 font-mono text-xs"
+        />
+        <p className="text-xs text-muted-foreground">
+          Model discovery is unavailable. Enter a known catalog offering ID.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-1 sm:col-span-2">
+      <Label htmlFor="source-offering" className="text-xs">
+        Model offering
+      </Label>
+      <Select value={value} onValueChange={onValueChange}>
+        <SelectTrigger
+          id="source-offering"
+          size="sm"
+          className="w-full text-xs"
+        >
+          <SelectValue placeholder="Select a catalog offering" />
+        </SelectTrigger>
+        <SelectContent>
+          {offerings.map((offering) => (
+            <SelectItem
+              key={offering.id}
+              value={offering.id}
+              className="text-xs"
+            >
+              {offering.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
 export function TenantWorkflowDetailPage() {
   const { tenantId, workflowId } = useParams({
     from: "/authed/tenants/$tenantId/workflows/$workflowId",
@@ -91,13 +152,22 @@ export function TenantWorkflowDetailPage() {
   );
   const { data: deployments } = useQuery(workflowDeploymentsQuery(tenantId));
 
-  const [launchSource, setLaunchSource] = useState({
-    id: "",
-    provider: "",
-    baseURL: "",
-    credentialId: "",
-    model: "",
-  });
+  const { data: resolvedModels, isError: resolvedModelsUnavailable } = useQuery(
+    tenantResolvedModelsQuery(tenantId),
+  );
+  const launchOfferings = useMemo(
+    () =>
+      (resolvedModels ?? []).flatMap((model) =>
+        model.offerings.map((offering) => ({
+          id: offering.offeringId,
+          label: `${model.displayName ?? model.canonicalName} — ${offering.providerName}`,
+        })),
+      ),
+    [resolvedModels],
+  );
+  const [launchOfferingId, setLaunchOfferingId] = useState("");
+  const selectedLaunchOfferingId =
+    launchOfferingId || launchOfferings[0]?.id || "";
 
   // Where this workflow's code is sourced from. The picker builds any
   // `WorkflowDefinitionSource` variant; `assetId` defaults to this workflow's
@@ -130,13 +200,7 @@ export function TenantWorkflowDetailPage() {
   const deployMut = useMutation({
     ...deployWorkflowMutation(tenantId, queryClient),
     onSuccess: () => {
-      setLaunchSource({
-        id: "",
-        provider: "",
-        baseURL: "",
-        credentialId: "",
-        model: "",
-      });
+      setLaunchOfferingId("");
       setLaunchDefinition(initialLaunchDefinition);
     },
   });
@@ -186,7 +250,9 @@ export function TenantWorkflowDetailPage() {
 
   function submitLaunch(e: React.FormEvent) {
     e.preventDefault();
-    deployMut.mutate(buildDeployInput(launchDefinition, launchSource));
+    deployMut.mutate(
+      buildDeployInput(launchDefinition, selectedLaunchOfferingId),
+    );
   }
 
   function submitApprove(e: React.FormEvent) {
@@ -202,7 +268,7 @@ export function TenantWorkflowDetailPage() {
     );
   }
 
-  const launchReady = isLaunchReady(launchDefinition, launchSource);
+  const launchReady = isLaunchReady(launchDefinition, selectedLaunchOfferingId);
 
   if (isLoading) {
     return <div className="p-4 text-sm text-muted-foreground">Loading...</div>;
@@ -255,7 +321,7 @@ export function TenantWorkflowDetailPage() {
         <h3 className="text-sm font-semibold">Launch Workflow</h3>
         <p className="mt-1 text-xs text-muted-foreground">
           Deploys this workflow definition. The step agents launch against the
-          inference source you supply below.
+          catalog offering selected below.
         </p>
         <form
           onSubmit={submitLaunch}
@@ -430,78 +496,12 @@ export function TenantWorkflowDetailPage() {
             </div>
           )}
           <div className="grid gap-3 sm:grid-cols-2">
-            <div className="grid gap-1">
-              <Label htmlFor="source-id" className="text-xs">
-                Source ID
-              </Label>
-              <Input
-                id="source-id"
-                value={launchSource.id}
-                onChange={(e) =>
-                  setLaunchSource((s) => ({ ...s, id: e.target.value }))
-                }
-                placeholder="e.g. anthropic:claude-sonnet-5"
-                className="h-8 text-xs"
-              />
-            </div>
-            <div className="grid gap-1">
-              <Label htmlFor="source-provider" className="text-xs">
-                Provider
-              </Label>
-              <Input
-                id="source-provider"
-                value={launchSource.provider}
-                onChange={(e) =>
-                  setLaunchSource((s) => ({ ...s, provider: e.target.value }))
-                }
-                placeholder="e.g. anthropic"
-                className="h-8 text-xs"
-              />
-            </div>
-            <div className="grid gap-1">
-              <Label htmlFor="source-model" className="text-xs">
-                Model
-              </Label>
-              <Input
-                id="source-model"
-                value={launchSource.model}
-                onChange={(e) =>
-                  setLaunchSource((s) => ({ ...s, model: e.target.value }))
-                }
-                placeholder="e.g. claude-sonnet-5"
-                className="h-8 text-xs"
-              />
-            </div>
-            <div className="grid gap-1">
-              <Label htmlFor="source-base-url" className="text-xs">
-                Base URL
-              </Label>
-              <Input
-                id="source-base-url"
-                value={launchSource.baseURL}
-                onChange={(e) =>
-                  setLaunchSource((s) => ({ ...s, baseURL: e.target.value }))
-                }
-                placeholder="https://api.anthropic.com"
-                className="h-8 text-xs"
-              />
-            </div>
-            <div className="grid gap-1 sm:col-span-2">
-              <Label htmlFor="source-credential-id" className="text-xs">
-                Credential ID
-              </Label>
-              <Input
-                id="source-credential-id"
-                value={launchSource.credentialId}
-                onChange={(e) =>
-                  setLaunchSource((s) => ({
-                    ...s,
-                    credentialId: e.target.value,
-                  }))
-                }
-                className="h-8 text-xs"
-              />
-            </div>
+            <WorkflowModelOfferingField
+              discoveryUnavailable={resolvedModelsUnavailable}
+              offerings={launchOfferings}
+              value={selectedLaunchOfferingId}
+              onValueChange={setLaunchOfferingId}
+            />
           </div>
           <div className="flex items-center gap-2">
             <Button

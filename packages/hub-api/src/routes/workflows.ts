@@ -22,13 +22,10 @@ import {
   SendMessage,
   type SidecarAllocationStatus,
 } from "@intx/types";
-import { InferenceSource } from "@intx/types/runtime";
-import type { HarnessConfig } from "@intx/types/runtime";
 import { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
   createWorkflowRunReader,
   type RepoStore,
-  type SessionService,
   type SidecarRouter,
   type WorkflowAllocationService,
   type WorkflowDispatchService,
@@ -37,7 +34,6 @@ import {
 import { generateId } from "@intx/hub-common";
 import {
   deriveRunAddress,
-  deriveRunAgentId,
   WorkflowDefinitionInvalidError,
 } from "@intx/workflow-deploy";
 
@@ -63,15 +59,24 @@ import {
 // Request body for the general workflow deploy. The definition is CODE-SOURCED:
 // `source` names where its bytes come from and `entry` the `interchange.workflow`
 // module the sidecar evaluates; the hub installs + probes + gates + freezes it
-// and deploys by source-ref. The caller supplies the inference chain the
-// per-step agents launch against. `pin` selects the definition package for the
-// `registry` and asset-`tarball` variants (asset-`source` selects by
-// `packageName`). The `source` union is validated at this boundary.
+// and deploys by source-ref. The caller supplies the ordered catalog offerings
+// from which the Hub resolves the inference chain. `pin` selects the definition
+// package for the `registry` and asset-`tarball` variants (asset-`source`
+// selects by `packageName`). The `source` union is validated at this boundary.
+const SourceOfferingIds = type("string > 0")
+  .array()
+  .atLeastLength(1)
+  .narrow(
+    (offeringIds, ctx) =>
+      new Set(offeringIds).size === offeringIds.length ||
+      ctx.mustBe("a list of unique catalog offering ids"),
+  );
+
 const DeployWorkflow = type({
   source: WorkflowDefinitionSource,
   entry: "string > 0",
-  sources: InferenceSource.array(),
-  defaultSource: "string",
+  sourceOfferingIds: SourceOfferingIds,
+  defaultSourceOfferingId: "string > 0",
   "pin?": "string > 0",
 });
 
@@ -183,7 +188,6 @@ async function deploymentAnchorRunExists(
 
 export type CreateWorkflowRoutesDeps = {
   db: DB["db"];
-  sessionService: SessionService;
   workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
   sidecarRouter: SidecarRouter;
@@ -194,7 +198,6 @@ export type CreateWorkflowRoutesDeps = {
 
 export function createWorkflowRoutes({
   db,
-  sessionService,
   workflowAllocationService,
   workflowDispatchService,
   sidecarRouter,
@@ -302,13 +305,12 @@ export function createWorkflowRoutes({
         );
       }
 
-      const [firstSource] = body.sources;
-      if (firstSource === undefined) {
+      if (workflowAllocationService === undefined) {
         return c.json(
           {
             error: {
-              code: "invalid_workflow",
-              message: "Workflow deploy requires at least one inference source",
+              code: "workflow_provisioning_unavailable",
+              message: "Workflow provisioning is not configured on this Hub",
             },
           },
           409,
@@ -317,58 +319,27 @@ export function createWorkflowRoutes({
 
       const anchorRunId = generateId("workflowRun");
       const sessionId = generateId("session");
-      const agentAddress = deriveRunAddress({
-        runId: anchorRunId,
-        domain: tenant.domain,
-      });
 
       let deployedId: string;
-      let deploymentStatus: string | undefined;
+      let deploymentStatus: string;
       try {
-        if (workflowAllocationService !== undefined) {
-          const prepared =
-            await workflowAllocationService.prepareProvisionedDeployment({
-              tenantId: tenant.id,
-              anchorRunId,
-              deploymentDomain: tenant.domain,
-              source: body.source,
-              entry: body.entry,
-              ...(body.pin !== undefined ? { pin: body.pin } : {}),
-              definitionAssetId: assetRow.id,
-              sessionId,
-              sourceAuthorityPrincipalId: c.get("principal").id,
-              sourceOfferingIds: body.sources.map(({ id }) => id),
-              defaultSourceOfferingId: body.defaultSource,
-              deployContent: { systemPrompt: "" },
-            });
-          deployedId = prepared.anchorRunId;
-          deploymentStatus = prepared.status;
-        } else {
-          const config: HarnessConfig = {
-            sessionId,
-            agentId: deriveRunAgentId({ runId: anchorRunId }),
-            tenantId: tenant.id,
-            principalId: c.get("principal").id,
-            agentAddress,
-            systemPrompt: "",
-            tools: [],
-            grants: [],
-            sources: body.sources,
-            defaultSource: body.defaultSource,
-          };
-          const result = await sessionService.deployWorkflowFromSource({
+        const prepared =
+          await workflowAllocationService.prepareProvisionedDeployment({
             tenantId: tenant.id,
             anchorRunId,
             deploymentDomain: tenant.domain,
-            agentAddress,
             source: body.source,
             entry: body.entry,
             ...(body.pin !== undefined ? { pin: body.pin } : {}),
             definitionAssetId: assetRow.id,
-            config,
+            sessionId,
+            sourceAuthorityPrincipalId: c.get("principal").id,
+            sourceOfferingIds: body.sourceOfferingIds,
+            defaultSourceOfferingId: body.defaultSourceOfferingId,
+            deployContent: { systemPrompt: "" },
           });
-          deployedId = result.anchorRunId;
-        }
+        deployedId = prepared.anchorRunId;
+        deploymentStatus = prepared.status;
       } catch (err) {
         // An install/gate rejection or an unapproved/mis-ordered source chain
         // is a client/definition error, not a sidecar-reachability failure.
