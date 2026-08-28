@@ -379,15 +379,18 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
   }
 }
 
-// A loop body runs as an isolated child per iteration, so it may not
-// contain a suspending primitive (awaitSignal/sleep) or another
-// child-spawning primitive (loop/childWorkflow) -- those would nest the
-// resume-cancel interaction the first-cut loop deliberately does not
-// support. The outer per-level iteration in a real consumer stays in
-// host code instead of a nested loop.
+// A loop iteration runs through the suspendable-child seam, so its body MAY
+// park on an `awaitSignal` and resume: the container relays the signal park up
+// its signal path. It still may not contain:
+//   - `sleep` -- a parked sleep leaves the step `awaiting-timer`, and the
+//     container relays a signal park, not a timer park, so a loop body has no
+//     timer-park resume path (separate work, INTR-485);
+//   - `childWorkflow` -- a separate terminal-only spawn seam, not yet wired
+//     inside a loop body;
+//   - `loop` -- a nested loop's carry/park interaction is unsupported;
+//   - `onTrigger` -- one subscription layer per run.
 const LOOP_BODY_FORBIDDEN = new Set<Primitive["kind"]>([
   "loop",
-  "awaitSignal",
   "sleep",
   "childWorkflow",
   "onTrigger",
@@ -409,8 +412,8 @@ function validateLoopBody(steps: Record<string, Primitive>): void {
       if (LOOP_BODY_FORBIDDEN.has(bodyPrimitive.kind)) {
         throw new Error(
           `loop ${stepId} body step ${bodyStepId} is a ${bodyPrimitive.kind}; ` +
-            `a loop body may not contain a loop, awaitSignal, sleep, ` +
-            `childWorkflow, or onTrigger`,
+            `a loop body may not contain a loop, sleep, childWorkflow, or ` +
+            `onTrigger`,
         );
       }
     }
@@ -420,10 +423,10 @@ function validateLoopBody(steps: Record<string, Primitive>): void {
 /**
  * Reject an onTrigger section whose body nests another onTrigger. An
  * onTrigger body is otherwise unrestricted at DEFINITION time -- unlike a
- * loop body it may await signals, sleep, spawn child workflows, and so on --
- * because an onTrigger section IS the sanctioned long-lived input loop. The
- * single restriction is one subscription layer per run: a section may not
- * contain a section.
+ * loop body it may sleep, spawn child workflows, and so on (a loop body may
+ * now await signals too, but still not sleep or spawn) -- because an onTrigger
+ * section IS the sanctioned long-lived input loop. The single restriction is
+ * one subscription layer per run: a section may not contain a section.
  *
  * PENDING INTR-310: a body agent `step` is accepted here but is not yet
  * EXECUTABLE -- per-step agent invocation inside a body is stubbed, so a body
