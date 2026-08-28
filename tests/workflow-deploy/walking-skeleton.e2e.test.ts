@@ -128,7 +128,7 @@ const bodyDeploymentMailAddress = deriveRunAddress({
   runId: BODY_DEPLOYMENT_ID,
   domain: DEPLOYMENT_DOMAIN,
 });
-// The ref the hub stages the body under -- onTriggerBodyRef(projection.id,
+// The ref the hub stages the body under -- inlineBodyRef(projection.id,
 // sectionId) -- and the id the run child re-derives from the re-evaluated
 // closure. They must match, or the body's sources.json ENOENTs at runtime.
 const BODY_REF = `${BODY_WORKFLOW_ID}__${BODY_SECTION_ID}`;
@@ -747,7 +747,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     });
 
     // (a) The hub pinned the body's per-step sources and the sidecar staged them
-    // under the SHARED body ref -- onTriggerBodyRef(frozen projection.id,
+    // under the SHARED body ref -- inlineBodyRef(frozen projection.id,
     // sectionId). Staging under the FROZEN inert id is the id-equivalence proof
     // at the staging layer; the run child below reads under the id it re-derives
     // from the re-evaluated closure, and the body only runs if the two match.

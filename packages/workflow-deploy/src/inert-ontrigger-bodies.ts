@@ -28,7 +28,7 @@
 
 import { type } from "arktype";
 import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
-import { onTriggerBodyRef } from "@intx/workflow";
+import { inlineBodyRef } from "@intx/workflow";
 
 /**
  * A body step's declared preferred inference-source identity -- the `(provider,
@@ -46,7 +46,7 @@ export interface InertBodyStepPreference {
  */
 export interface EnumeratedInertBody {
   /**
-   * The body's ref -- `onTriggerBodyRef(projection.id, stepId)`. This is also
+   * The body's ref -- `inlineBodyRef(projection.id, stepId)`. This is also
    * `definition.id`, the id the sidecar stages the body's `sources.json` under,
    * and the id the source-ref run child re-derives when it rewrites the
    * re-evaluated closure -- so the three agree byte-for-byte.
@@ -183,7 +183,7 @@ export function readInertStepPreference(
 
 /**
  * Lift one inline body out of an enclosing projection: validate it, override its
- * id to `onTriggerBodyRef(enclosingId, stepId)` (the ref the sidecar stages
+ * id to `inlineBodyRef(enclosingId, stepId)` (the ref the sidecar stages
  * under and the run child re-derives), and read each body step's declared
  * preference. Every field other than the id rides verbatim so the body's wire
  * hash matches the re-evaluated closure's projection.
@@ -194,7 +194,7 @@ function liftInertBody(
   inlineBody: unknown,
   kind: "onTrigger" | "childWorkflow",
 ): EnumeratedInertBody {
-  const ref = onTriggerBodyRef(enclosingId, stepId);
+  const ref = inlineBodyRef(enclosingId, stepId);
   const validatedBody = WorkflowProjectionDefinition(inlineBody);
   if (validatedBody instanceof type.errors) {
     throw new Error(

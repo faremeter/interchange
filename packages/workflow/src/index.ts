@@ -7,13 +7,15 @@ export * from "./state-machine/index";
 export * from "./definition/index";
 export { collectDeclaredPluginNames } from "./declared-plugins";
 export {
-  onTriggerBodyRef,
+  inlineBodyRef,
   rewriteInlineOnTriggerBodies,
   rewriteInlineChildWorkflowBodies,
+  enumerateInlineLoopBodies,
   type ExtractedOnTriggerBody,
   type OnTriggerBodyRewrite,
   type ExtractedChildWorkflowBody,
   type ChildWorkflowBodyRewrite,
+  type ExtractedLoopBody,
 } from "./ontrigger-bodies";
 export {
   projectLiveToInert,

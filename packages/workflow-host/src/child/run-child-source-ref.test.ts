@@ -703,7 +703,7 @@ describe("source-ref run child", () => {
         bindings,
       }),
     ).rejects.toThrow(
-      /carries onTrigger bodies but the host wired no runSuspendableChild/,
+      /carries suspendable bodies .* but the host wired no runSuspendableChild/,
     );
 
     // The check fires at startup, before the child announces readiness.

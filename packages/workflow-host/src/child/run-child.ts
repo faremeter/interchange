@@ -62,6 +62,7 @@ import type { DirectorRegistry } from "@intx/agent";
 import {
   rewriteInlineOnTriggerBodies,
   rewriteInlineChildWorkflowBodies,
+  enumerateInlineLoopBodies,
 } from "@intx/workflow";
 import type { AuthzCallResult } from "@intx/inference";
 
@@ -742,22 +743,36 @@ export async function runWorkflowChild(
     actionResolver,
   );
 
-  // Suspendable-child (onTrigger body) resolver, selected ONCE per deployment:
-  // the bodies map is immutable and the per-run `onEvent` is injected later in
-  // `buildRuntimeEnv`. Resolve each body from the parent's in-memory closure
-  // (already re-verified above) via the raw executor binding. A deployment that
-  // carries bodies but whose host wired no executor is a misconfiguration --
-  // fail loud at startup rather than silently falling back to a disk read (the
-  // exact behaviour this arm exists to avoid). A deployment with no onTrigger
-  // body leaves the host undefined; its suspendable-child slot is never invoked.
+  // A loop iteration runs its body as a suspendable child through the same seam
+  // an onTrigger body uses, so register each top-level loop body in the same
+  // bodies map under its `<workflowId>__<stepId>` ref. Unlike an onTrigger or
+  // childWorkflow body, a loop keeps its body INLINE on the primitive -- both
+  // hash layers project the body inline, so rewriting it to a `{ ref }` would
+  // change every existing loop's hash. `enumerateInlineLoopBodies` mints a
+  // ref-keyed copy and leaves the primitive untouched. A given step is exactly
+  // one primitive kind, so a loop ref never collides with an onTrigger or
+  // childWorkflow ref.
+  for (const loopBody of enumerateInlineLoopBodies(definition)) {
+    bodiesMap.set(loopBody.ref, loopBody.definition);
+  }
+
+  // Suspendable-child resolver (onTrigger section bodies and loop bodies),
+  // selected ONCE per deployment: the bodies map is immutable and the per-run
+  // `onEvent` is injected later in `buildRuntimeEnv`. Resolve each body from the
+  // parent's in-memory closure (already re-verified above) via the raw executor
+  // binding. A deployment that carries bodies but whose host wired no executor is
+  // a misconfiguration -- fail loud at startup rather than silently falling back
+  // to a disk read (the exact behaviour this arm exists to avoid). A deployment
+  // with no suspendable body leaves the host undefined; its slot is never
+  // invoked.
   let suspendableChildHost: HostSpawnSuspendableChild | undefined;
   if (bodiesMap.size > 0) {
     const executor = opts.bindings.runSuspendableChild;
     if (executor === undefined) {
       throw new Error(
-        "workflow-child: source-ref deployment carries onTrigger bodies but " +
-          "the host wired no runSuspendableChild executor; cannot resolve " +
-          "bodies in-memory",
+        "workflow-child: source-ref deployment carries suspendable bodies " +
+          "(onTrigger sections or loop bodies) but the host wired no " +
+          "runSuspendableChild executor; cannot resolve bodies in-memory",
       );
     }
     suspendableChildHost = createInMemorySpawnSuspendableChild({

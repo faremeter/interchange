@@ -31,16 +31,18 @@ export interface OnTriggerBodyRewrite {
 }
 
 /**
- * Derive an onTrigger section body's ref from its owning workflow id and the
- * step id that carries the section. This is the SINGLE owner of the
- * `<workflowId>__<stepId>` scheme: the live rewrite here and the source-ref
- * hub's inert-body enumerator both mint refs through it, and the source-ref run
- * child re-derives the same ref when it rewrites the re-evaluated closure
- * (`run-child`). A hub that stages a body's `sources.json` under this ref and a
- * run child that reads it back must agree byte-for-byte, so the scheme lives in
- * one place rather than being re-spelled at each site.
+ * Derive an inline body's ref from its owning workflow id and the step id that
+ * carries it. This is the SINGLE owner of the `<workflowId>__<stepId>` scheme,
+ * shared by every inline-body kind -- onTrigger sections, childWorkflow
+ * children, and loop bodies -- because a given step id is exactly one primitive
+ * kind, so refs across the kinds never collide. The live rewrite/enumeration
+ * here and the source-ref hub's inert-body enumerator both mint refs through it,
+ * and the source-ref run child re-derives the same ref when it rewrites the
+ * re-evaluated closure (`run-child`). A hub that stages a body's `sources.json`
+ * under this ref and a run child that reads it back must agree byte-for-byte, so
+ * the scheme lives in one place rather than being re-spelled at each site.
  */
-export function onTriggerBodyRef(workflowId: string, stepId: string): string {
+export function inlineBodyRef(workflowId: string, stepId: string): string {
   return `${workflowId}__${stepId}`;
 }
 
@@ -58,7 +60,7 @@ export function rewriteInlineOnTriggerBodies(
   for (const [stepId, primitive] of Object.entries(steps)) {
     if (primitive.kind !== "onTrigger") continue;
     if (!("inline" in primitive.body)) continue;
-    const ref = onTriggerBodyRef(workflow.id, stepId);
+    const ref = inlineBodyRef(workflow.id, stepId);
     bodies.push({ ref, definition: { ...primitive.body.inline, id: ref } });
     steps[stepId] = { ...primitive, body: { ref } };
   }
@@ -66,6 +68,37 @@ export function rewriteInlineOnTriggerBodies(
     return { workflow, bodies: [] };
   }
   return { workflow: { ...workflow, steps }, bodies };
+}
+
+export interface ExtractedLoopBody {
+  /** The body's ref -- `<workflowId>__<stepId>` -- and the id of `definition`. */
+  readonly ref: string;
+  /** The loop body lifted to a standalone definition (its id is `ref`). */
+  readonly definition: WorkflowDefinition;
+}
+
+/**
+ * Collect each `loop` primitive's inline body as a `{ ref, definition }` pair,
+ * WITHOUT rewriting the workflow. Unlike the onTrigger/childWorkflow rewriters,
+ * a loop keeps its body inline on the primitive: `LoopPrimitive.body` is a bare
+ * `WorkflowDefinition` that both hash layers project inline (`projectForHash`
+ * and the deploy-side `projectLoop`), so replacing it with a `{ ref }` would
+ * change every existing loop's hash. This enumerator instead mints a fresh copy
+ * (`{ ...body, id: ref }`) for the runtime bodies map and leaves `primitive.body`
+ * byte-identical -- the suspendable-child seam resolves a loop body by ref while
+ * the definition's hash is unchanged. Pure and side-effect-free; the loop
+ * body-ban forbids a nested loop, so a single top-level scan is complete.
+ */
+export function enumerateInlineLoopBodies(
+  workflow: WorkflowDefinition,
+): readonly ExtractedLoopBody[] {
+  const bodies: ExtractedLoopBody[] = [];
+  for (const [stepId, primitive] of Object.entries(workflow.steps)) {
+    if (primitive.kind !== "loop") continue;
+    const ref = inlineBodyRef(workflow.id, stepId);
+    bodies.push({ ref, definition: { ...primitive.body, id: ref } });
+  }
+  return bodies;
 }
 
 export interface ExtractedChildWorkflowBody {
@@ -87,7 +120,7 @@ export interface ChildWorkflowBodyRewrite {
  * extracted child definitions (each child's id is its ref). The childWorkflow
  * counterpart to {@link rewriteInlineOnTriggerBodies}: pure and
  * side-effect-free (no walk, no pin, no write), and it mints refs through the
- * same {@link onTriggerBodyRef} `<workflowId>__<stepId>` scheme -- a step
+ * same {@link inlineBodyRef} `<workflowId>__<stepId>` scheme -- a step
  * carries at most one of an onTrigger section or a childWorkflow, so the two
  * rewriters never collide on a ref. The runtime dispatches a `{ ref }` child by
  * resolving the extracted definition from an in-memory map keyed by the ref, so
@@ -103,7 +136,7 @@ export function rewriteInlineChildWorkflowBodies(
   for (const [stepId, primitive] of Object.entries(steps)) {
     if (primitive.kind !== "childWorkflow") continue;
     if (!("inline" in primitive.definition)) continue;
-    const ref = onTriggerBodyRef(workflow.id, stepId);
+    const ref = inlineBodyRef(workflow.id, stepId);
     bodies.push({
       ref,
       definition: { ...primitive.definition.inline, id: ref },

@@ -50,7 +50,7 @@ import {
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import { generateId } from "@intx/hub-common";
-import { onTriggerBodyRef } from "@intx/workflow";
+import { inlineBodyRef } from "@intx/workflow";
 import {
   deriveRunAddress,
   enumerateInertBodies,
@@ -124,7 +124,7 @@ const COLLAPSE_WORKFLOW_ID = "wf_collapse";
 const COLLAPSE_SECTION_ID = "section";
 const COLLAPSE_BODY_STEP_ID = "work";
 const COLLAPSE_ADDRESS = `collapse-shared@${DEPLOYMENT_DOMAIN}`;
-const COLLAPSE_BODY_REF = onTriggerBodyRef(
+const COLLAPSE_BODY_REF = inlineBodyRef(
   COLLAPSE_WORKFLOW_ID,
   COLLAPSE_SECTION_ID,
 );
