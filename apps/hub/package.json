@@ -5,6 +5,11 @@
   "license": "LGPL-2.1-only",
   "private": true,
   "type": "module",
+  "exports": {
+    "./server": {
+      "intx-src": "./src/server.ts"
+    }
+  },
   "dependencies": {
     "@intx/crypto": "workspace:*",
     "@intx/db": "workspace:*",
