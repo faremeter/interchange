@@ -10,7 +10,6 @@ export type {
   ParkedApprovalOp,
   PrimitiveKind,
   ReadParkedApprovalOps,
-  RunLoopIteration,
   RepoStore,
   RunResult,
   Scheduler,
@@ -35,6 +34,8 @@ export {
 export { runtimeRun, type RuntimeRunOptions } from "./run";
 
 export { createSuspendableChildHandle } from "./suspendable-child-handle";
+
+export { createLoopIterationHandle } from "./loop-iteration-handle";
 
 export {
   MAX_CHILD_SPAWN_DEPTH,

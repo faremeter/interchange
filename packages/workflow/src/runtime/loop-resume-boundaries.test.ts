@@ -16,7 +16,9 @@ import {
   createInMemoryScheduler,
   createInMemorySignalChannel,
   createNoopDrainController,
+  createSpawnLoopIteration,
   defineWorkflow,
+  enumerateInlineLoopBodies,
   loop,
   runtimeRun,
   type ActionInvoker,
@@ -28,8 +30,6 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
-
-import { createLoopIteration } from "../runlocal/loop-iteration";
 
 const body = defineWorkflow({
   id: "body",
@@ -166,7 +166,10 @@ function buildEnv(
     drain: createNoopDrainController(def),
     loopFns,
   };
-  env.runLoopIteration = createLoopIteration(env);
+  const loopBodies = new Map(
+    enumerateInlineLoopBodies(def).map((b) => [b.ref, b.definition]),
+  );
+  env.spawnLoopIteration = createSpawnLoopIteration(env, loopBodies);
   return env;
 }
 
@@ -267,6 +270,23 @@ describe("loop resume boundaries (critique)", () => {
       loopId: "rework",
       outcome: "converged",
     });
+    expect(effectRuns).toBe(3);
+  });
+
+  test("crash between an iteration's ChildCompleted and its StepCompleted", async () => {
+    // The suspendable-loop drive flushes ChildCompleted (inside
+    // driveSuspendableOccurrence) BEFORE the caller flushes the scoped
+    // StepCompleted[i]. That split creates a crash window the old single-flush
+    // loop did not have: ChildCompleted for rework__0 is durable but its
+    // StepCompleted[rework[0]] is not, so isIterationDone is false and the
+    // iteration is re-driven. The re-driven effect must NOT double-fire.
+    const { effectRuns, result2 } = await runThenResume(
+      parentConverge,
+      (e) => e.kind === "ChildCompleted" && e.childRunId === "rework__0",
+    );
+    expect(result2.terminalStatus).toBe("completed");
+    expect(result2.outputs.consolidate).toBe("ran:consolidate");
+    // iter0 re-drives at this boundary; the ledger holds the effect count to 3.
     expect(effectRuns).toBe(3);
   });
 });

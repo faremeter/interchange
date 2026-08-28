@@ -18,10 +18,14 @@ import type {
   WorkflowAuthorizeFn,
 } from "../authorize-context";
 import type { WorkflowDefinition } from "../definition/index";
-import { rewriteInlineChildWorkflowBodies } from "../ontrigger-bodies";
+import {
+  enumerateInlineLoopBodies,
+  rewriteInlineChildWorkflowBodies,
+} from "../ontrigger-bodies";
 import { runtimeRun, type RuntimeRunOptions } from "../runtime/run";
 import { createNoopDrainController } from "../runtime/drain";
 import { createEffectContext } from "../runtime/effect-context";
+import { createLoopIterationHandle } from "../runtime/loop-iteration-handle";
 import type {
   ActionInvoker,
   EffectContext,
@@ -29,11 +33,11 @@ import type {
   LoopFnRegistry,
   StepInvoker,
   SpawnChildWorkflow,
+  SpawnSuspendableChild,
   WorkflowRun,
   WorkflowRuntimeEnv,
 } from "../runtime/env";
 import { createInMemoryBlobSubstrate } from "./blob-substrate";
-import { createLoopIteration } from "./loop-iteration";
 import { createInMemoryRepoStore } from "./repo-store";
 import { createInMemoryScheduler } from "./scheduler";
 import { createInMemorySignalChannel } from "./signal-channel";
@@ -110,6 +114,13 @@ export function runLocal(
   const { workflow: rewritten, bodies } =
     rewriteInlineChildWorkflowBodies(definition);
   const childBodies = new Map(bodies.map((b) => [b.ref, b.definition]));
+  // A loop keeps its body inline on the primitive; register a ref-keyed copy so
+  // the suspendable-loop executor resolves it, exactly as the deployed host
+  // does. (Nested loops in child-workflow children are enumerated when their
+  // own recursive `runLocal` call reaches this point.)
+  const loopBodies = new Map(
+    enumerateInlineLoopBodies(rewritten).map((b) => [b.ref, b.definition]),
+  );
 
   const repoStore = createInMemoryRepoStore();
   const env: WorkflowRuntimeEnv = {
@@ -127,10 +138,11 @@ export function runLocal(
     newId,
     drain: createNoopDrainController(rewritten),
   };
-  // Wired after construction because the loop-iteration runner closes
-  // over the env it belongs to, so that each iteration's child run
-  // shares the parent's repoStore, blobs, and effect ledger.
-  env.runLoopIteration = createLoopIteration(env);
+  // Wired after construction because the loop-iteration executor closes over
+  // the env it belongs to, so each iteration's body runs under the parent's
+  // inherited env (its repoStore, blobs, effect ledger, invoker, and grants)
+  // with only its own signal channel and park sinks.
+  env.spawnLoopIteration = createSpawnLoopIteration(env, loopBodies);
   if (options.loopFns !== undefined) {
     env.loopFns = options.loopFns;
   }
@@ -226,6 +238,43 @@ export function createInMemoryEffectLedger(): EffectLedger {
     async record(effectKey, output) {
       store.set(effectKey, { output });
     },
+  };
+}
+
+/**
+ * The local suspendable-loop executor: resolve the loop body from the lifted
+ * map, give it its own in-memory signal channel, and drive it through the
+ * shared park handle over the parent's inherited env. The deployed host wires
+ * the same shape with a substrate-backed channel.
+ */
+export function createSpawnLoopIteration(
+  baseEnv: WorkflowRuntimeEnv,
+  bodies: ReadonlyMap<string, WorkflowDefinition>,
+): SpawnSuspendableChild {
+  return async ({
+    definitionRef,
+    childRunId,
+    input,
+    signal,
+    resumeFromEvents,
+  }) => {
+    const definition = bodies.get(definitionRef);
+    if (definition === undefined) {
+      throw new Error(
+        `loop iteration ${definitionRef} has no lifted body definition; the ` +
+          `loop body should have been enumerated before the run started`,
+      );
+    }
+    return createLoopIterationHandle(baseEnv, {
+      definition,
+      childRunId,
+      input,
+      ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
+      signal,
+      signalChannel: createInMemorySignalChannel({
+        newId: () => baseEnv.newId("sig"),
+      }),
+    });
   };
 }
 

@@ -87,7 +87,7 @@ import {
   baseStepId,
   createDefaultActionInvoker,
   createInMemoryEffectLedger,
-  createLoopIteration,
+  createLoopIterationHandle,
   emptyState,
   runtimeRun,
 } from "@intx/workflow";
@@ -882,6 +882,7 @@ export async function runWorkflowChild(
       authorize,
       directors,
       suspendableChildHost,
+      bodiesMap,
       spawnChild,
       loopFns,
       actionResolver,
@@ -987,6 +988,7 @@ export async function runWorkflowChild(
           authorize,
           directors,
           suspendableChildHost,
+          bodiesMap,
           spawnChild,
           loopFns,
           actionResolver,
@@ -1095,6 +1097,7 @@ async function handleControlPayload(
     authorize: WorkflowAuthorizeFn;
     directors: DirectorRegistry;
     suspendableChildHost: HostSpawnSuspendableChild | undefined;
+    bodiesMap: ReadonlyMap<string, WorkflowDefinition>;
     spawnChild: HostSpawnChild;
     loopFns: LoopFnRegistry;
     actionResolver: (ref: string) => ActionHandler;
@@ -1152,6 +1155,7 @@ async function handleControlPayload(
         authorize: ctx.authorize,
         directors: ctx.directors,
         suspendableChildHost: ctx.suspendableChildHost,
+        bodiesMap: ctx.bodiesMap,
         spawnChild: ctx.spawnChild,
         loopFns: ctx.loopFns,
         actionResolver: ctx.actionResolver,
@@ -1603,6 +1607,7 @@ function buildRuntimeEnv(args: {
   authorize: WorkflowAuthorizeFn;
   directors: DirectorRegistry;
   suspendableChildHost: HostSpawnSuspendableChild | undefined;
+  bodiesMap: ReadonlyMap<string, WorkflowDefinition>;
   spawnChild: HostSpawnChild;
   loopFns: LoopFnRegistry;
   actionResolver: (ref: string) => ActionHandler;
@@ -1712,10 +1717,42 @@ function buildRuntimeEnv(args: {
       ? { readParkedApprovalOps: args.bindings.readParkedApprovalOps }
       : {}),
   };
-  // Run one loop iteration as a child run against the shared store. Assigned
-  // AFTER env construction because it closes over `env`, so each iteration's
-  // child run shares this run's repoStore + blobs (mirrors runLocal).
-  env.runLoopIteration = createLoopIteration(env);
+  // The suspendable-loop executor runs each iteration's body under THIS run's
+  // inherited env (its real tool-bearing invokeStep, invokeAction, credentials
+  // authorize, effect ledger, and durable shared repoStore/blobs), giving the
+  // body only its own substrate-backed signal channel -- the createLoopIteration
+  // env model plus park capability, distinct from an onTrigger body's fresh
+  // capped/toolless env. Resolved from the bodies map by ref (loop bodies were
+  // registered there at establish) and wrapped with this run's event funnel.
+  // Assigned AFTER env construction because it closes over `env`.
+  const loopIterationHost = createInMemorySpawnSuspendableChild({
+    bodies: args.bodiesMap,
+    runSuspendableChild: async (loopInput, _onEvent) => {
+      const childSignalChannel = createWorkflowHostSignalChannel({
+        repoStore: args.bindings.substrate,
+        principal: args.bindings.principal,
+        repoId: args.bindings.workflowRunRepoId,
+        ref: args.bindings.workflowRunRef,
+        runId: loopInput.childRunId,
+        readState: () => emptyState(loopInput.childRunId),
+        newId: () => args.newId("sig"),
+        clock: args.clock,
+      });
+      return createLoopIterationHandle(env, {
+        definition: loopInput.definition,
+        childRunId: loopInput.childRunId,
+        input: loopInput.input,
+        ...(loopInput.resumeFromEvents !== undefined
+          ? { resumeFromEvents: loopInput.resumeFromEvents }
+          : {}),
+        signal: loopInput.signal,
+        signalChannel: childSignalChannel,
+        cleanup: () => childSignalChannel.stop(),
+      });
+    },
+  });
+  env.spawnLoopIteration = (spawnInput) =>
+    loopIterationHost(spawnInput, args.onEvent);
 
   // Action handlers run against a per-run effect ledger. The ledger is
   // IN-MEMORY, and that is correct -- not a shortcut -- on the deployed store:

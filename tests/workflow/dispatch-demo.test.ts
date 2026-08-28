@@ -33,9 +33,10 @@ import {
   createInMemoryRepoStore,
   createInMemoryScheduler,
   createInMemorySignalChannel,
-  createLoopIteration,
   createNoopDrainController,
+  createSpawnLoopIteration,
   defineWorkflow,
+  enumerateInlineLoopBodies,
   escalation,
   loop,
   map,
@@ -235,7 +236,10 @@ function buildEnv(opts: {
     drain: createNoopDrainController(dispatch),
     loopFns,
   };
-  env.runLoopIteration = createLoopIteration(env);
+  const loopBodies = new Map(
+    enumerateInlineLoopBodies(dispatch).map((b) => [b.ref, b.definition]),
+  );
+  env.spawnLoopIteration = createSpawnLoopIteration(env, loopBodies);
   return env;
 }
 

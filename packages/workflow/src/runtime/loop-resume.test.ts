@@ -6,8 +6,9 @@
 // PARENT log, so the child iteration's durable log is GONE while the parent's
 // ChildSpawned survives. On a consistent store both live on one durable ref, so
 // a mid-action-in-loop crash leaves a non-empty, non-terminal child log and the
-// iteration fails loud (the handler is NOT re-invoked) -- see the at-most-once
-// note in `runlocal/loop-iteration.ts` and the faithful test in
+// iteration fails loud -- the re-spawned body's `runtimeRun` adopts that log and
+// settles the crashed action `StepFailed` via `isCrashedInvocationStep`, never
+// re-invoking the handler -- see the faithful test in
 // `loop-action-crash-resume.test.ts`. This test therefore exercises the
 // ledger-dedup re-run path that production never takes; it pins the ledger's
 // behavior ONLY for a store that loses child writes while keeping parent writes.
@@ -24,7 +25,9 @@ import {
   createInMemoryScheduler,
   createInMemorySignalChannel,
   createNoopDrainController,
+  createSpawnLoopIteration,
   defineWorkflow,
+  enumerateInlineLoopBodies,
   loop,
   map,
   runtimeRun,
@@ -39,7 +42,6 @@ import {
 } from "@intx/workflow";
 
 import { isResumableInFlightLoopStep } from "./dag";
-import { createLoopIteration } from "../runlocal/loop-iteration";
 
 const body = defineWorkflow({
   id: "body",
@@ -158,7 +160,10 @@ function buildEnv(
     drain: createNoopDrainController(parentWorkflow),
     loopFns,
   };
-  env.runLoopIteration = createLoopIteration(env);
+  const loopBodies = new Map(
+    enumerateInlineLoopBodies(parentWorkflow).map((b) => [b.ref, b.definition]),
+  );
+  env.spawnLoopIteration = createSpawnLoopIteration(env, loopBodies);
   return env;
 }
 
