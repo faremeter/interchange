@@ -148,13 +148,14 @@ describe("onTrigger primitive", () => {
     expect(def.triggers).toEqual([{ type: "mail", to: "s@x.example" }]);
   });
 
-  test("a section body may contain an awaitSignal, unlike a loop body", () => {
+  test("a section body may contain an awaitSignal", () => {
     const body = defineWorkflow({
       id: "body",
       trigger: { type: "manual" },
       steps: { hold: awaitSignal({ name: "go" }) },
     });
     // Does not throw: an onTrigger body is the sanctioned long-lived loop.
+    // (A loop body may also await now; see the loop-body validation tests.)
     defineWorkflow({
       id: "wf",
       steps: { section: onTrigger({ on: { type: "manual" }, body }) },
@@ -749,13 +750,8 @@ describe("loop validation", () => {
     ).toThrow(/may not contain a loop/);
   });
 
-  test("rejects a loop body containing awaitSignal, sleep, or childWorkflow", () => {
+  test("rejects a loop body containing sleep or childWorkflow", () => {
     const forbiddenBodies: WorkflowDefinition[] = [
-      defineWorkflow({
-        id: "await-body",
-        trigger: { type: "manual" },
-        steps: { wait: awaitSignal({ name: "go" }) },
-      }),
       defineWorkflow({
         id: "sleep-body",
         trigger: { type: "manual" },
@@ -785,6 +781,31 @@ describe("loop validation", () => {
         }),
       ).toThrow(/a loop body may not contain/);
     }
+  });
+
+  test("allows a loop body that parks on an awaitSignal", () => {
+    // awaitSignal is the one suspending primitive a loop body may now hold: it
+    // parks and resumes through the suspendable-child seam.
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          rework: loop({
+            body: defineWorkflow({
+              id: "await-body",
+              trigger: { type: "manual" },
+              steps: { wait: awaitSignal({ name: "go" }) },
+            }),
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "esc",
+          }),
+          esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+        },
+      }),
+    ).not.toThrow();
   });
 
   test("hashes a definition with an inline loop body", () => {

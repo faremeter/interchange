@@ -213,9 +213,9 @@ export interface ActionPrimitive extends PrimitiveBase {
  * runtime's loop-fn registry (mirroring how `handler`/`director` are
  * string refs), so the definition stays hashable. Those functions
  * receive only data and never an effect context -- they run on every
- * resume and must be side-effect free. The loop body may not contain a
- * `loop`, `awaitSignal`, `sleep`, or `childWorkflow` (enforced at
- * definition time).
+ * resume and must be side-effect free. The loop body may park on an
+ * `awaitSignal` and resume, but may not contain a `loop`, `sleep`,
+ * `childWorkflow`, or `onTrigger` (enforced at definition time).
  */
 export interface LoopPrimitive extends PrimitiveBase {
   kind: "loop";

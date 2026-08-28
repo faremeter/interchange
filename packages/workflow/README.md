@@ -77,17 +77,23 @@ loop: a top-level action or agent step that crashes mid-invocation also settles
 fails the run exactly as a crash in any other step does; loops are not special
 here.
 
-Second, suspension -- and this IS the loop-specific limitation. The body-ban
-forbids a loop body from containing an `awaitSignal`, `sleep`, `childWorkflow`,
-or a nested `loop`; the first three are the suspending primitives that matter
-here. A top-level step and an onTrigger section body CAN park on such a
-primitive and resume across a restart; a loop body cannot. Loops run each
-iteration in-process with no durable per-iteration park/resume, so an iteration
-is a short, self-contained unit that runs start-to-finish or fails.
+Second, suspension. The body-ban forbids a loop body from containing a `sleep`,
+`childWorkflow`, a nested `loop`, or an `onTrigger`. It does NOT forbid an
+`awaitSignal`: a loop iteration runs through the suspendable-child seam, so its
+body can park on an `awaitSignal` and resume. The park relays up through the
+container's signal path and delivery resumes the iteration, the same way an
+onTrigger section body parks. This resume is in-process only: a loop iteration
+has no durable per-iteration crash-resume, so a crash while parked fails the run
+(as the crash rule above requires) and the iteration does not resume across a
+restart.
 
-Practical guidance: use a loop to repeat a cheap, self-contained unit until a
-pure `while`/`carry` says stop. Do not model a long-lived, human-in-the-loop, or
-otherwise suspending interaction as a loop body -- put that in an onTrigger
-section (which may `awaitSignal`) or a top-level step. Keep a loop body's action
-idempotent where practical, since a crash fails the run and recovery is a fresh
-trigger, not a mid-loop resume.
+`sleep` stays banned: a parked sleep leaves the step `awaiting-timer`, and the
+container relays a signal park, not a timer park, so a loop body has no
+timer-park resume path (separate work, INTR-485). `childWorkflow` and a nested
+`loop` remain unsupported inside a loop body.
+
+Practical guidance: use a loop to repeat a self-contained unit -- which may park
+on an `awaitSignal` -- until a pure `while`/`carry` says stop. Model a `sleep`
+delay or a child-workflow spawn at a top-level step or an onTrigger section, not
+in a loop body. Keep a loop body's action idempotent where practical, since a
+crash fails the run and recovery is a fresh trigger, not a mid-loop resume.
