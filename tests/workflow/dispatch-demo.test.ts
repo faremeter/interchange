@@ -39,6 +39,7 @@ import {
   enumerateInlineLoopBodies,
   escalation,
   loop,
+  loopBodyRunId,
   map,
   runtimeRun,
   step,
@@ -309,7 +310,11 @@ describe("dispatch demo shape", () => {
     const trimmed: WorkflowEvent[] = [];
     for (const e of result1.events) {
       trimmed.push(e);
-      if (e.kind === "ChildSpawned" && e.childRunId === "amend__0") break;
+      if (
+        e.kind === "ChildSpawned" &&
+        e.childRunId === loopBodyRunId(result1.runId, "amend", 0)
+      )
+        break;
     }
 
     const env2 = buildEnv({

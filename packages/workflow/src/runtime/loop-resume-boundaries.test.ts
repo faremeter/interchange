@@ -20,6 +20,7 @@ import {
   defineWorkflow,
   enumerateInlineLoopBodies,
   loop,
+  loopBodyRunId,
   runtimeRun,
   type ActionInvoker,
   type EffectLedger,
@@ -173,7 +174,11 @@ function buildEnv(
   return env;
 }
 
-type TruncPred = (e: WorkflowEvent, seen: WorkflowEvent[]) => boolean;
+type TruncPred = (
+  e: WorkflowEvent,
+  seen: WorkflowEvent[],
+  runId: string,
+) => boolean;
 
 async function runThenResume(
   def: ReturnType<typeof defineWorkflow>,
@@ -193,7 +198,7 @@ async function runThenResume(
   for (const e of result1.events) {
     trimmed.push(e);
     seen.push(e);
-    if (truncateAfter(e, seen)) break;
+    if (truncateAfter(e, seen, result1.runId)) break;
   }
 
   const repoStore2 = createInMemoryRepoStore();
@@ -232,7 +237,9 @@ describe("loop resume boundaries (critique)", () => {
   test("crash mid-iteration on the exhausted path", async () => {
     const { effectRuns, result2 } = await runThenResume(
       parentExhaust,
-      (e) => e.kind === "ChildSpawned" && e.childRunId === "rework__1",
+      (e, _seen, runId) =>
+        e.kind === "ChildSpawned" &&
+        e.childRunId === loopBodyRunId(runId, "rework", 1),
     );
     expect(result2.terminalStatus).toBe("completed");
     expect(result2.outputs.escalate).toBe("ran:escalate");
@@ -282,7 +289,9 @@ describe("loop resume boundaries (critique)", () => {
     // iteration is re-driven. The re-driven effect must NOT double-fire.
     const { effectRuns, result2 } = await runThenResume(
       parentConverge,
-      (e) => e.kind === "ChildCompleted" && e.childRunId === "rework__0",
+      (e, _seen, runId) =>
+        e.kind === "ChildCompleted" &&
+        e.childRunId === loopBodyRunId(runId, "rework", 0),
     );
     expect(result2.terminalStatus).toBe("completed");
     expect(result2.outputs.consolidate).toBe("ran:consolidate");

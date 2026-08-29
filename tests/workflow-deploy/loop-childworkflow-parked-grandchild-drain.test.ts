@@ -44,10 +44,10 @@ import {
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 import { loopChildWorkflowParkedEntry } from "./fixtures/loop-childworkflow-parked-grandchild";
+import { loopBodyRunId } from "@intx/workflow";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const LOOP_STEP_ID = "rework";
-const BODY_CHILD_RUN_ID = `${LOOP_STEP_ID}__0`;
 const DRAIN_DEADLINE_MS = 1_000;
 
 const TENANT_ID = "tnt_loop_cw_parked_drain";
@@ -192,7 +192,7 @@ async function runGrandchildDrainTest(opts: {
       const events = await readWorkflowRunEvents(
         env,
         anchorRunId,
-        BODY_CHILD_RUN_ID,
+        loopBodyRunId(anchorRunId, LOOP_STEP_ID, 0),
       );
       return events.some((e) => e.type === "ChildSpawned");
     },
@@ -201,7 +201,7 @@ async function runGrandchildDrainTest(opts: {
   const bodyEvents = await readWorkflowRunEvents(
     env,
     anchorRunId,
-    BODY_CHILD_RUN_ID,
+    loopBodyRunId(anchorRunId, LOOP_STEP_ID, 0),
   );
   const spawned = bodyEvents.find((e) => e.type === "ChildSpawned");
   if (spawned === undefined) throw new Error("unreachable");

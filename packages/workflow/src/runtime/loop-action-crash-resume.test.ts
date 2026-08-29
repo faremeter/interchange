@@ -7,12 +7,13 @@
 // `runAction` flushes the action's `StepStarted` durably before invoking the
 // handler, and the loop body runs as a child run over the SHARED store, so a
 // faithful crash between the effect and the action's `StepCompleted` leaves the
-// child (`rework__0`) log NON-empty and non-terminal. On resume, the iteration
-// re-spawns through the suspendable-loop seam; the body's `runtimeRun` adopts
-// that durable child log, sees the action `in-flight` (durable `StepStarted`,
-// no `StepCompleted`), and settles it a terminal `StepFailed` via
-// `isCrashedInvocationStep` (the at-most-once refusal) rather than re-invoking
-// the handler. The iteration fails and the run settles `failed`.
+// child (`loop-parent-run__rework__0`) log NON-empty and non-terminal. On
+// resume, the iteration re-spawns through the suspendable-loop seam; the body's
+// `runtimeRun` adopts that durable child log, sees the action `in-flight`
+// (durable `StepStarted`, no `StepCompleted`), and settles it a terminal
+// `StepFailed` via `isCrashedInvocationStep` (the at-most-once refusal) rather
+// than re-invoking the handler. The iteration fails and the run settles
+// `failed`.
 //
 // Contrast `loop-resume.test.ts`, which models an INCONSISTENT store (it drops
 // the child log while keeping the parent) and therefore exercises the
@@ -34,6 +35,7 @@ import {
   defineWorkflow,
   enumerateInlineLoopBodies,
   loop,
+  loopBodyRunId,
   runtimeRun,
   type ActionInvoker,
   type EffectLedger,
@@ -183,7 +185,11 @@ describe("loop-body action crash resume (consistent store)", () => {
         if (captured) return;
         captured = true;
         parentSnapshot = [...(await repoStore1.read("loop-parent-run"))];
-        childSnapshot = [...(await repoStore1.read("rework__0"))];
+        childSnapshot = [
+          ...(await repoStore1.read(
+            loopBodyRunId("loop-parent-run", "rework", 0),
+          )),
+        ];
       },
     });
 
@@ -196,7 +202,9 @@ describe("loop-body action crash resume (consistent store)", () => {
     // action's StepStarted with no StepCompleted.
     expect(
       parentSnapshot.some(
-        (e) => e.kind === "ChildSpawned" && e.childRunId === "rework__0",
+        (e) =>
+          e.kind === "ChildSpawned" &&
+          e.childRunId === loopBodyRunId("loop-parent-run", "rework", 0),
       ),
     ).toBe(true);
     expect(
@@ -210,7 +218,10 @@ describe("loop-body action crash resume (consistent store)", () => {
     // keeps the child's flushed StepStarted) and a FRESH ledger (as if the
     // in-memory ledger were lost on the crash).
     const repoStore2 = createInMemoryRepoStore();
-    await repoStore2.appendBatch("rework__0", [...childSnapshot]);
+    await repoStore2.appendBatch(
+      loopBodyRunId("loop-parent-run", "rework", 0),
+      [...childSnapshot],
+    );
     const counters2 = { echoInvocations: 0, effectRuns: 0 };
     const env2 = buildEnv({
       repoStore: repoStore2,

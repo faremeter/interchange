@@ -48,6 +48,7 @@ export {
   resolveDrainBehavior,
   scopedStepId,
   baseStepId,
+  loopBodyRunId,
   type ActionInvokeRequest,
   type ActionInvokeResult,
   type ActionInvoker,

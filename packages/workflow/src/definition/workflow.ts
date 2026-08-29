@@ -99,6 +99,18 @@ export function defineWorkflow<EnvReq extends BaseEnv>(
  */
 export const STEP_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
+/**
+ * A run id must be a non-empty sequence of ASCII letters, digits, underscores,
+ * and hyphens -- the same shape as a step id. A run id is used verbatim as a
+ * durable-store path segment (`runs/<runId>/...`) and as the local part of a
+ * derived per-step mail address (`<runId>-<stepId>@<domain>`), so an
+ * unconstrained caller-supplied id is a path-escape and an unroutable-address
+ * hazard. `newId("run")` and the internally-derived child run ids (loop body,
+ * onTrigger section) already satisfy this shape; the pattern is enforced at
+ * the `runtimeRun` boundary where a run id enters the system.
+ */
+export const RUN_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
 function normalize(config: WorkflowConfig): WorkflowDefinition {
   if (!config.id) {
     throw new Error("defineWorkflow requires a non-empty id");
@@ -129,6 +141,18 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     if (!STEP_ID_PATTERN.test(stepId)) {
       throw new Error(
         `step id ${JSON.stringify(stepId)} must match ${STEP_ID_PATTERN.source}`,
+      );
+    }
+    // A loop iteration's body run id is `<runId>__<loopId>__<index>`
+    // (`loopBodyRunId`); a `__` inside the loop id would make that string
+    // ambiguous with a different nesting chain, and the id is a durable-store
+    // key, so the collision is silent shared-state corruption. Reject it here,
+    // at the same boundary that enforces `STEP_ID_PATTERN`. A nested loop body
+    // is its own normalized definition, so this covers every nesting level.
+    if (primitive.kind === "loop" && stepId.includes("__")) {
+      throw new Error(
+        `loop step id ${JSON.stringify(stepId)} must not contain "__"; ` +
+          `a loop body run id joins run id, loop id, and index with "__"`,
       );
     }
     if (primitive.id !== "" && primitive.id !== stepId) {

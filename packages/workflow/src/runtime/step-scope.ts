@@ -12,6 +12,10 @@
 // `baseStepId`. Keeping the encode/decode pair here means the format has one
 // owner rather than a hand-rolled template and several divergent strip
 // regexes scattered across the runtime and the sidecar.
+//
+// This module also owns the related loop-iteration body RUN id format
+// (`loopBodyRunId`): a cross-run store key rather than an in-run step id, so it
+// carries the container run id and is documented separately below.
 
 /**
  * Encode a fan-out iteration's scoped step id from its base step id and
@@ -29,4 +33,31 @@ export function scopedStepId(base: string, index: number): string {
  */
 export function baseStepId(stepId: string): string {
   return stepId.replace(/\[\d+\]$/, "");
+}
+
+/**
+ * Encode a loop iteration's body-child run id from the loop's own run id, the
+ * loop step id, and the zero-based iteration index. Unlike the scoped STEP id
+ * (which lives inside a single run's step namespace), the body run id is a
+ * cross-run store key, so it carries the container run id as an ancestry
+ * prefix: a loop nested in an outer iteration runs under that iteration's body
+ * run id, so `<runId>__<loopId>__<index>` re-roots per nesting level and an
+ * inner loop under two outer iterations gets distinct ids. Deterministic --
+ * crash-resume re-derives the same string rather than reversing it.
+ *
+ * Injectivity does NOT require a `__`-free run id (a nested loop's own run id
+ * contains `__`, and a caller-supplied top-level run id may too). It holds
+ * because `loopId` contains no `__` (rejected at definition time in
+ * `normalize`) and `index` is always digits: the final two `__` in the output
+ * are therefore always the two separators, so the string decomposes to exactly
+ * one (runId, loopId, index) regardless of what the run id contains. The run
+ * id is separately constrained by `RUN_ID_PATTERN` for store-path and
+ * mail-address safety, not for injectivity.
+ */
+export function loopBodyRunId(
+  runId: string,
+  loopId: string,
+  index: number,
+): string {
+  return `${runId}__${loopId}__${String(index)}`;
 }
