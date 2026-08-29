@@ -702,6 +702,31 @@ export async function runWorkflowChild(
     childRewrite.bodies.map((b) => [b.ref, b.definition]),
   );
 
+  // A loop iteration runs its body as a suspendable child through the same seam
+  // an onTrigger body uses, so register each top-level loop body in `bodiesMap`
+  // under its `<workflowId>__<stepId>` ref. Unlike an onTrigger or childWorkflow
+  // body, a loop keeps its body INLINE on the primitive -- both hash layers
+  // project the body inline, so rewriting the primitive would change every
+  // existing loop's hash. `enumerateInlineLoopBodies` mints a ref-keyed COPY and
+  // leaves the primitive untouched, and a given step is exactly one primitive
+  // kind, so a loop ref never collides with an onTrigger or childWorkflow ref.
+  //
+  // A loop body may itself contain a `childWorkflow` grandchild: rewrite the
+  // COPY's inline children to `{ ref }` (the primitive, and thus the hash, is
+  // untouched) and fold the extracted grandchildren into `childBodiesMap` HERE
+  // -- before the eager loop-fn/handler resolution and the terminal-childWorkflow
+  // host selection below, both of which read `childBodiesMap`. Merging later
+  // would resolve a grandchild's refs mid-run instead of at establish, and would
+  // leave `childBodiesMap` empty for a deployment whose only child is a
+  // loop-body grandchild, so its spawn would find no wired terminal host.
+  for (const loopBody of enumerateInlineLoopBodies(definition)) {
+    const bodyRewrite = rewriteInlineChildWorkflowBodies(loopBody.definition);
+    bodiesMap.set(loopBody.ref, bodyRewrite.workflow);
+    for (const grandchild of bodyRewrite.bodies) {
+      childBodiesMap.set(grandchild.ref, grandchild.definition);
+    }
+  }
+
   // Directors resolve from the pinned closure so a custom director authored in
   // the workflow's own package runs. Loading directors OUTSIDE the
   // definition-hash re-verify is safe: the approved hash pins each director's
@@ -742,19 +767,6 @@ export async function runWorkflowChild(
     [definition, ...bodiesMap.values(), ...childBodiesMap.values()],
     actionResolver,
   );
-
-  // A loop iteration runs its body as a suspendable child through the same seam
-  // an onTrigger body uses, so register each top-level loop body in the same
-  // bodies map under its `<workflowId>__<stepId>` ref. Unlike an onTrigger or
-  // childWorkflow body, a loop keeps its body INLINE on the primitive -- both
-  // hash layers project the body inline, so rewriting it to a `{ ref }` would
-  // change every existing loop's hash. `enumerateInlineLoopBodies` mints a
-  // ref-keyed copy and leaves the primitive untouched. A given step is exactly
-  // one primitive kind, so a loop ref never collides with an onTrigger or
-  // childWorkflow ref.
-  for (const loopBody of enumerateInlineLoopBodies(definition)) {
-    bodiesMap.set(loopBody.ref, loopBody.definition);
-  }
 
   // Suspendable-child resolver (onTrigger section bodies and loop bodies),
   // selected ONCE per deployment: the bodies map is immutable and the per-run

@@ -116,11 +116,20 @@ export function runLocal(
   const childBodies = new Map(bodies.map((b) => [b.ref, b.definition]));
   // A loop keeps its body inline on the primitive; register a ref-keyed copy so
   // the suspendable-loop executor resolves it, exactly as the deployed host
-  // does. (Nested loops in child-workflow children are enumerated when their
-  // own recursive `runLocal` call reaches this point.)
-  const loopBodies = new Map(
-    enumerateInlineLoopBodies(rewritten).map((b) => [b.ref, b.definition]),
-  );
+  // does. A loop body may itself contain a `childWorkflow` grandchild, so
+  // rewrite each body's inline children to the `{ ref }` form the runtime
+  // dispatches and fold the extracted grandchildren into `childBodies` -- the
+  // map the iteration's inherited `spawnChild` resolves from -- before that
+  // spawn callback is built below. (Nested loops in child-workflow children are
+  // enumerated when their own recursive `runLocal` call reaches this point.)
+  const loopBodies = new Map<string, WorkflowDefinition>();
+  for (const loopBody of enumerateInlineLoopBodies(rewritten)) {
+    const bodyRewrite = rewriteInlineChildWorkflowBodies(loopBody.definition);
+    loopBodies.set(loopBody.ref, bodyRewrite.workflow);
+    for (const grandchild of bodyRewrite.bodies) {
+      childBodies.set(grandchild.ref, grandchild.definition);
+    }
+  }
 
   const repoStore = createInMemoryRepoStore();
   const env: WorkflowRuntimeEnv = {

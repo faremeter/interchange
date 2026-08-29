@@ -5,6 +5,8 @@ import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import {
   childWorkflow,
   defineWorkflow,
+  enumerateInlineLoopBodies,
+  loop,
   onTrigger,
   projectLiveToInert,
   rewriteInlineChildWorkflowBodies,
@@ -315,6 +317,51 @@ describe("enumerateInertBodies", () => {
     });
     expect([...byRef.keys()].sort()).toEqual(["wf__spawn", "wf__spawn__sub"]);
   });
+
+  test("stages a childWorkflow nested in a loop body, but NOT the loop body itself", () => {
+    // A loop body runs in-process sharing the parent env, so it is never a
+    // staged asset. Its childWorkflow grandchild IS a spawned child that needs
+    // its own asset + sources, so it is lifted under the nested ref
+    // `wf__<loopStep>__<childStep>`, while the loop body ref `wf__rework` is
+    // absent from the output.
+    const loopBody = {
+      id: "rework-body",
+      triggers: [],
+      stepOrder: ["spawn"],
+      steps: {
+        spawn: inlineChildWorkflow(
+          "child",
+          { s: agentStep("anthropic", "m1") },
+          ["s"],
+        ),
+      },
+    };
+    const proj = projection({ rework: loopStep(loopBody) }, ["rework"]);
+
+    const byRef = new Map(enumerateInertBodies(proj).map((b) => [b.ref, b]));
+    expect([...byRef.keys()]).toEqual(["wf__rework__spawn"]);
+    expect(byRef.get("wf__rework__spawn")?.preferredByStep).toEqual({
+      s: { provider: "anthropic", model: "m1" },
+    });
+  });
+
+  test("rejects an onTrigger section nested inside a loop body", () => {
+    // A loop body is recursed into as a non-top-level scope, so a nested
+    // onTrigger section is rejected exactly as one nested in any spawned body.
+    const loopBody = {
+      id: "rework-body",
+      triggers: [],
+      stepOrder: ["sect"],
+      steps: {
+        sect: inlineOnTrigger("inner", { s: agentStep("p", "m") }, ["s"]),
+      },
+    };
+    const proj = projection({ rework: loopStep(loopBody) }, ["rework"]);
+
+    expect(() => enumerateInertBodies(proj)).toThrow(
+      /onTrigger section at step sect is nested inside a spawned body/,
+    );
+  });
 });
 
 // Collect the refs the RUNTIME mints, by applying the same rewrites the runtime
@@ -330,6 +377,12 @@ function liveBodyRefs(def: WorkflowDefinition, isTopLevel: boolean): string[] {
   for (const body of bodies) {
     refs.push(body.ref);
     refs.push(...liveBodyRefs(body.definition, false));
+  }
+  // A loop body is not a lifted body itself, but the runtime rewrites its inline
+  // childWorkflow grandchildren (run-local / run-child), so mirror that descent
+  // to collect the grandchild refs without adding the loop body's own ref.
+  for (const loopBody of enumerateInlineLoopBodies(def)) {
+    refs.push(...liveBodyRefs(loopBody.definition, false));
   }
   return refs;
 }
@@ -385,6 +438,30 @@ describe("enumerateInertBodies agrees with the runtime rewrite refs", () => {
             },
           }),
         }),
+      },
+    }),
+    "childWorkflow nested in a loop body": defineWorkflow({
+      id: "P",
+      trigger: { type: "manual" },
+      steps: {
+        rework: loop({
+          body: defineWorkflow({
+            id: "rework-body",
+            steps: {
+              spawn: childWorkflow({
+                definition: defineWorkflow({
+                  id: "child",
+                  steps: { work: step({ agent: mkAgent("g") }) },
+                }),
+              }),
+            },
+          }),
+          while: "cont",
+          carry: "next",
+          maxIterations: 2,
+          onExhausted: "esc",
+        }),
+        esc: step({ agent: mkAgent("esc"), after: ["rework"] }),
       },
     }),
   };

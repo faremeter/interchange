@@ -750,37 +750,52 @@ describe("loop validation", () => {
     ).toThrow(/may not contain a loop/);
   });
 
-  test("rejects a loop body containing sleep or childWorkflow", () => {
-    const forbiddenBodies: WorkflowDefinition[] = [
+  test("rejects a loop body containing sleep", () => {
+    expect(() =>
       defineWorkflow({
-        id: "sleep-body",
+        id: "w",
         trigger: { type: "manual" },
-        steps: { nap: sleep({ duration: 10 }) },
-      }),
-      defineWorkflow({
-        id: "child-body",
-        trigger: { type: "manual" },
-        steps: { sub: childWorkflow({ definition: simpleBody() }) },
-      }),
-    ];
-    for (const body of forbiddenBodies) {
-      expect(() =>
-        defineWorkflow({
-          id: "w",
-          trigger: { type: "manual" },
-          steps: {
-            rework: loop({
-              body,
-              while: "w",
-              carry: "c",
-              maxIterations: 2,
-              onExhausted: "esc",
+        steps: {
+          rework: loop({
+            body: defineWorkflow({
+              id: "sleep-body",
+              trigger: { type: "manual" },
+              steps: { nap: sleep({ duration: 10 }) },
             }),
-            esc: step({ agent: makeAgent("e"), after: ["rework"] }),
-          },
-        }),
-      ).toThrow(/a loop body may not contain/);
-    }
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "esc",
+          }),
+          esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+        },
+      }),
+    ).toThrow(/a loop body may not contain/);
+  });
+
+  test("allows a loop body that spawns a childWorkflow", () => {
+    // childWorkflow is wired inside a loop body: the grandchild is lifted to a
+    // ref and depth-counted against the tree-wide ceiling like any other child.
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          rework: loop({
+            body: defineWorkflow({
+              id: "child-body",
+              trigger: { type: "manual" },
+              steps: { sub: childWorkflow({ definition: simpleBody() }) },
+            }),
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "esc",
+          }),
+          esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+        },
+      }),
+    ).not.toThrow();
   });
 
   test("allows a loop body that parks on an awaitSignal", () => {
@@ -875,10 +890,10 @@ describe("childWorkflow inline authoring", () => {
   });
 
   test("applies the loop-body ban recursively inside an inline child body", () => {
-    const loopBodyWithChild = defineWorkflow({
+    const loopBodyWithSleep = defineWorkflow({
       id: "loop-body",
       trigger: { type: "manual" },
-      steps: { spawn: childWorkflow({ definition: simpleBody() }) },
+      steps: { nap: sleep({ duration: 10 }) },
     });
     const child = simpleBody();
     const childWithBadLoop: WorkflowDefinition = {
@@ -886,7 +901,7 @@ describe("childWorkflow inline authoring", () => {
       steps: {
         ...child.steps,
         rework: loop({
-          body: loopBodyWithChild,
+          body: loopBodyWithSleep,
           while: "w",
           carry: "c",
           maxIterations: 2,

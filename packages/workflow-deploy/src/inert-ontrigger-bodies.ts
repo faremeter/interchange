@@ -18,7 +18,12 @@
 //     once at child boot, never inside a spawned body), so an onTrigger section
 //     nested inside a spawned body would reach the runtime inline and hard-fail
 //     -- this module rejects it at deploy rather than staging an asset the
-//     runtime will never read.
+//     runtime will never read;
+//   - a loop body is NOT lifted as an asset -- it runs in-process sharing the
+//     parent env, so it needs no sources.json of its own -- but the enumeration
+//     recurses INTO it to lift any childWorkflow grandchild, keyed under
+//     `inlineBodyRef(loopBodyRef, childStepId)` to match the runtime's rewrite
+//     of the loop body copy.
 //
 // It reads NOTHING off an unvalidated `unknown`: the wire projection types its
 // `steps` as pass-through `unknown`, so every field this module reaches is first
@@ -265,6 +270,20 @@ function enumerateInertBodiesAtDepth(
       );
       bodies.push(lifted);
       bodies.push(...enumerateInertBodiesAtDepth(lifted.definition, false));
+      continue;
+    }
+    // A loop body may carry a `childWorkflow` grandchild. Unlike the two arms
+    // above, the loop body itself is NOT pushed to `bodies`: it runs in-process
+    // sharing the parent env, so it is never a staged asset and needs no
+    // sources.json of its own (its agent steps pin into the flat top-level map).
+    // Recurse into it (no longer top level) ONLY to lift its childWorkflow
+    // grandchildren, keying each under its ref so the deploy stages the same ref
+    // the runtime re-derives -- `inlineBodyRef(loopBodyRef, childStepId)`.
+    const loopBody = inertLoopBody(stepValue);
+    if (loopBody !== null) {
+      const loopBodyRef = inlineBodyRef(projection.id, stepId);
+      const loopBodyDefinition = { ...loopBody, id: loopBodyRef };
+      bodies.push(...enumerateInertBodiesAtDepth(loopBodyDefinition, false));
     }
   }
   return bodies;
