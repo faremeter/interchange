@@ -20,12 +20,22 @@ export type LoopChildWorkflowParkedFixtureParams = {
   childWorkflowId: string;
   /** The author signal name the grandchild parks on (never delivered). */
   signalName?: string;
+  /**
+   * The grandchild's single in-flight step. `"awaitSignal"` (default) leaves it
+   * idle-parked; `"sleep"` leaves it mid-step (a long timer) -- so a drain lands
+   * on a RUNNING, not parked, in-process terminal child.
+   */
+  grandchildStep?: "awaitSignal" | "sleep";
 };
 
 export function loopChildWorkflowParkedEntry(
   params: LoopChildWorkflowParkedFixtureParams,
 ): string {
   const signalName = params.signalName ?? "grandchild-never-arrives";
+  const grandchildStep =
+    params.grandchildStep === "sleep"
+      ? `sleep({ duration: 600000 })`
+      : `awaitSignal({ name: ${JSON.stringify(signalName)} })`;
   const agentBlock = (id: string) => `defineAgent({
   id: ${JSON.stringify(id)},
   systemPrompt: ${JSON.stringify(`${id} agent`)},
@@ -34,14 +44,14 @@ export function loopChildWorkflowParkedEntry(
   inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
 })`;
   return `
-import { awaitSignal, childWorkflow, defineWorkflow, loop, step } from "@intx/workflow/definition";
+import { awaitSignal, childWorkflow, defineWorkflow, loop, sleep, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
 
 const child = defineWorkflow({
   id: ${JSON.stringify(params.childWorkflowId)},
   trigger: { type: "manual" },
   steps: {
-    hold: awaitSignal({ name: ${JSON.stringify(signalName)} }),
+    hold: ${grandchildStep},
   },
 });
 

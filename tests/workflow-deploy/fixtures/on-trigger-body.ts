@@ -11,9 +11,11 @@
 //   - "awaitSignal": a single `awaitSignal` gate, exercising the signal-relay
 //                    capability. An optional `timeout` adds an `onTimeout`
 //                    route to a completing `sleep` step.
-//   - "sleep":       a single `sleep` step that completes on its own, so the
-//                    section re-arms for the next event (the between-events
-//                    recovery shape).
+//   - "sleep":       a single `sleep` step. A short duration completes on its
+//                    own so the section re-arms for the next event (the
+//                    between-events recovery shape); a long duration holds the
+//                    body mid-step (the container awaits the body terminal), the
+//                    drain-teardown shape.
 //
 // Parameterised by the mail trigger address, the section id, and the body
 // variant so a caller pins the run's address and selects the body it exercises.
@@ -69,6 +71,17 @@ export type OnTriggerBodyFixtureParams = {
   workflowId?: string;
   /** The body `defineWorkflow` id. Defaults to a stable fixture-local id. */
   bodyWorkflowId?: string;
+  /**
+   * The section's drain behavior. Omitted (the onTrigger default `"wait"`) for
+   * most tests; a drain-teardown test sets `"cancel"` so a drain aborts the
+   * live section.
+   */
+  drainBehavior?: "cancel" | "wait";
+  /**
+   * The section's body-failure policy. Omitted (the default `"end"`) unless a
+   * test exercises `"tolerate"`.
+   */
+  onBodyFailure?: "end" | "tolerate";
 };
 
 function renderAgentBody(
@@ -181,6 +194,14 @@ export function onTriggerBodyEntry(params: OnTriggerBodyFixtureParams): string {
   const bodyWorkflowId = params.bodyWorkflowId ?? "authored-on-trigger-body";
 
   const rendered = renderBody(params.body, bodyWorkflowId);
+  const drainLine =
+    params.drainBehavior !== undefined
+      ? `      drainBehavior: ${JSON.stringify(params.drainBehavior)},\n`
+      : "";
+  const policyLine =
+    params.onBodyFailure !== undefined
+      ? `      onBodyFailure: ${JSON.stringify(params.onBodyFailure)},\n`
+      : "";
 
   return `
 ${rendered.imports}import { onTrigger } from "@intx/workflow/definition";
@@ -192,7 +213,7 @@ export const workflow = defineWorkflow({
     [${JSON.stringify(sectionId)}]: onTrigger({
       on: { type: "mail", to: ${JSON.stringify(params.address)} },
       body,
-    }),
+${drainLine}${policyLine}    }),
   },
 });
 `;

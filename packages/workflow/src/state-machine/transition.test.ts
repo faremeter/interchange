@@ -752,6 +752,65 @@ describe("applyEvent: children", () => {
     expect(state.children.get("child-1")?.terminalStatus).toBe("completed");
   });
 
+  test("reduces ChildCompleted.abortedTeardown into the child state", () => {
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, {
+      kind: "StepStarted",
+      seq: 2,
+      at: T,
+      stepId: "a",
+      attempt: 1,
+      input: { ref: "i" },
+    });
+    state = applyEvent(state, {
+      kind: "ChildSpawned",
+      seq: 3,
+      at: T,
+      stepId: "a",
+      childRunId: "child-abort",
+      childDefinitionRef: "h2",
+    });
+    state = applyEvent(state, {
+      kind: "ChildCompleted",
+      seq: 4,
+      at: T,
+      childRunId: "child-abort",
+      terminalStatus: "failed",
+      abortedTeardown: true,
+    });
+    expect(state.children.get("child-abort")?.abortedTeardown).toBe(true);
+  });
+
+  test("a genuine ChildCompleted{failed} carries no abortedTeardown", () => {
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, {
+      kind: "StepStarted",
+      seq: 2,
+      at: T,
+      stepId: "a",
+      attempt: 1,
+      input: { ref: "i" },
+    });
+    state = applyEvent(state, {
+      kind: "ChildSpawned",
+      seq: 3,
+      at: T,
+      stepId: "a",
+      childRunId: "child-fail",
+      childDefinitionRef: "h2",
+    });
+    state = applyEvent(state, {
+      kind: "ChildCompleted",
+      seq: 4,
+      at: T,
+      childRunId: "child-fail",
+      terminalStatus: "failed",
+    });
+    expect(state.children.get("child-fail")?.abortedTeardown).toBeUndefined();
+  });
+
   test("rejects a duplicate ChildSpawned for the same child id", () => {
     expectThrowsAt(
       [
