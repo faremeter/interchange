@@ -1,16 +1,16 @@
-// A parent abort of an in-process child settles the child CANCELLED, not
-// FAILED, driving the full cancel cascade to a clean RunCancelled terminal.
-// The child's control-plane cancel commits a supervisor-signed
-// `CancelRequested`, and the run body's workflow-process cascade then commits
-// `CancelPropagated`/`RunCancelled` -- which carries the supervisor-signed
-// cancel forward, accepted because the kind handler checks a cancel's origin
-// only on the authoring write.
+// A parent abort of an in-process child tears it down LOCALLY, settling it
+// FAILED, not cancelled. An in-process child writes through the workflow-run
+// proxy substrate, which cannot sign the supervisor `CancelRequested` a
+// control-plane cancel needs (the kind handler refuses a workflow-process-signed
+// cancel), so the child never self-cancels: the parent abort aborts the child's
+// own controller directly, its parked step fails, and the run settles `failed`
+// under its own principal with no `CancelRequested` in the log.
 //
 // Both in-process spawners are covered: the terminal-only `createSidecarRunChild`
 // and the suspendable `createSidecarSpawnSuspendableChild`. Each abort is driven
 // while the child is live and parked on an approval -- the reachable drain-window
-// path -- so the test exercises the real cancel cascade, not a child that
-// already settled.
+// path -- so the test exercises the real teardown, not a child that already
+// settled.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
@@ -236,20 +236,22 @@ async function waitForChildPark(
   throw new Error(`timed out waiting for child ${childRunId} to park`);
 }
 
-// Assert the child's durable log shows the full cancel cascade landed: the
-// supervisor-signed CancelRequested and the terminal RunCancelled.
-async function expectCleanCancelCascade(
+// Assert the child's durable log shows a LOCAL fail teardown: a StepFailed and
+// the terminal RunFailed, and NO CancelRequested (the in-process child cannot
+// sign one, so the teardown never writes one).
+async function expectLocalFailTeardown(
   substrate: ReturnType<typeof createRepoStore>,
   childRunId: string,
 ): Promise<void> {
   const events: readonly WorkflowEvent[] =
     await reader(substrate).read(childRunId);
-  expect(events.some((e) => e.kind === "CancelRequested")).toBe(true);
-  expect(events.some((e) => e.kind === "RunCancelled")).toBe(true);
+  expect(events.some((e) => e.kind === "StepFailed")).toBe(true);
+  expect(events.some((e) => e.kind === "RunFailed")).toBe(true);
+  expect(events.some((e) => e.kind === "CancelRequested")).toBe(false);
 }
 
 describe("in-process child parent-abort", () => {
-  test("createSidecarRunChild settles cancelled, not failed", async () => {
+  test("createSidecarRunChild settles failed via local teardown", async () => {
     const substrate = await makeSubstrate("abort-terminal-");
     const parentRunId = "run-parent";
     await seedRunGrants(substrate, parentRunId, [
@@ -278,11 +280,11 @@ describe("in-process child parent-abort", () => {
     abort.abort();
 
     const result = await settled;
-    expect(result.terminalStatus).toBe("cancelled");
-    await expectCleanCancelCascade(substrate, childRunId);
+    expect(result.terminalStatus).toBe("failed");
+    await expectLocalFailTeardown(substrate, childRunId);
   });
 
-  test("createSidecarSpawnSuspendableChild settles cancelled, not failed", async () => {
+  test("createSidecarSpawnSuspendableChild settles failed via local teardown", async () => {
     const substrate = await makeSubstrate("abort-suspendable-");
     const parentRunId = "run-parent";
     await seedRunGrants(substrate, parentRunId, [
@@ -316,7 +318,7 @@ describe("in-process child parent-abort", () => {
     const terminal = await handle.next();
     expect(terminal.kind).toBe("terminal");
     if (terminal.kind !== "terminal") throw new Error("expected a terminal");
-    expect(terminal.terminalStatus).toBe("cancelled");
-    await expectCleanCancelCascade(substrate, childRunId);
+    expect(terminal.terminalStatus).toBe("failed");
+    await expectLocalFailTeardown(substrate, childRunId);
   });
 });

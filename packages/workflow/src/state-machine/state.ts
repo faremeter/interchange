@@ -73,6 +73,13 @@ export interface ChildState {
   spawnedBy: StepId;
   cancelRequested: boolean;
   terminalStatus?: "completed" | "failed" | "cancelled";
+  /**
+   * Reduced from `ChildCompleted.abortedTeardown`: a `failed` terminal that is
+   * a parent-cascade abort teardown rather than a genuine body failure. The
+   * onTrigger resume classifier reads it to end a torn-down `tolerate` section
+   * rather than resurrect it. See `ChildCompleted`.
+   */
+  abortedTeardown?: boolean;
 }
 
 export interface PendingTimer {

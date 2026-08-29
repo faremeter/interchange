@@ -64,7 +64,6 @@ import {
   type Principal,
   type RepoId,
   type RepoStore,
-  type WorkflowRunSupervisorPrincipal,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions/substrate";
 import { createIsogitStore } from "@intx/storage-isogit/node";
@@ -1350,12 +1349,13 @@ async function writeChildRunGrants(args: {
  * scoped to `childRunId`, invokes `runtimeRun`, and returns the
  * child's terminal status.
  *
- * Abort propagation: the parent-supplied `signal` is observed at every
- * runtime observation point. If the signal aborts mid-flight the
- * runtime body's cancel cascade fires and the returned promise
- * resolves with `terminalStatus: "cancelled"`. A pre-aborted signal is
- * handled by the spawn-child adapter's entry-time short-circuit; the
- * runChild callback itself does not see the pre-abort case.
+ * Abort propagation: the parent-supplied `signal` is wired to the child
+ * run's local-abort seam (`RuntimeRunOptions.localAbort`). If it aborts --
+ * mid-flight or pre-aborted -- the child's own cancel controller aborts, an
+ * in-flight step fails, and the returned promise resolves with
+ * `terminalStatus: "failed"`. There is no durable `CancelRequested`: an
+ * in-process child writes through the proxy substrate and cannot sign the
+ * supervisor cancel one would require.
  *
  * Resource lifecycle: the child's per-run signal channel handle is
  * `stop()`ped in a finally block so any background `subscribeKind`
@@ -1370,14 +1370,10 @@ export function createSidecarRunChild(
   const directors = deps.directors ?? createDefaultDirectorRegistry();
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
-  // The in-process child runs under real supervisor authority; its
-  // control-plane cancel (`CancelRequested`) must be signed by a supervisor
-  // principal, which the kind handler requires and the substrate authorizes for
-  // this deployment. Run-body events keep their workflow-process attribution.
-  const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
-    kind: "supervisor",
-    anchorRunId: deps.workflowRunRepoId.id,
-  };
+  // No `controlPlanePrincipal`: an in-process child tears down through the
+  // runtime's local-abort seam (see the `runtimeRun` call below), not a durable
+  // `CancelRequested`, so it never writes a control-plane cancel this repo store
+  // would have to sign. Run-body events use the workflow-process `principal`.
   // Created once and shared across every child this factory spawns (the
   // runtime scopes reads/subscribes by runId), so sibling and grandchild
   // spawns route through one repo-store handle rather than a fresh one each.
@@ -1385,7 +1381,6 @@ export function createSidecarRunChild(
     substrate: deps.substrate,
     repoId: deps.workflowRunRepoId,
     principal: deps.principal,
-    controlPlanePrincipal: supervisorPrincipal,
     ref: deps.workflowRunRef,
   });
   // Self-referential `RunChildWorkflow` so a child env's recursive
@@ -1431,31 +1426,23 @@ export function createSidecarRunChild(
       // childWorkflow spawns keep counting against the tree-wide bound (the
       // guard lives in the runtime's runChildWorkflow). Without this the
       // in-process sidecar recursion would reset to depth 0 each rung.
+      // A parent abort tears the child down through `runtimeRun`'s local-abort
+      // seam, not a control-plane cancel: the in-process child writes through
+      // the workflow-run PROXY substrate, which cannot sign the supervisor
+      // `CancelRequested` a cancel needs (the kind handler refuses a
+      // workflow-process-signed cancel). Local teardown aborts the child's own
+      // controller directly, so an in-flight step fails and the child settles
+      // `failed` under its own principal -- no durable cancel, no wedge while the
+      // parent awaits the terminal below.
       const handle = runtimeRun(rewrittenDefinition, env, {
         runId: childRunId,
         triggerPayload: input,
         depth,
         maxChildSpawnDepth,
+        localAbort: signal,
       });
-      // The resulting `CancelRequested` is written under the supervisor
-      // principal wired into this run's repo store (see `controlPlanePrincipal`
-      // above): the kind handler requires a supervisor signer for any cancel
-      // origin, so a workflow-process-signed cancel would be refused and a
-      // parent abort would surface as a failed rather than cancelled child.
-      const cancelOnAbort = (): void => {
-        void handle.cancel("supervisor-operator", "parent cancelled");
-      };
-      if (signal.aborted) {
-        cancelOnAbort();
-      } else {
-        signal.addEventListener("abort", cancelOnAbort, { once: true });
-      }
-      try {
-        const result = await handle.complete;
-        return { terminalStatus: result.terminalStatus };
-      } finally {
-        signal.removeEventListener("abort", cancelOnAbort);
-      }
+      const result = await handle.complete;
+      return { terminalStatus: result.terminalStatus };
     } finally {
       await signalChannel.stop();
     }
@@ -1479,22 +1466,24 @@ export function createSidecarRunChild(
  * the suspendable seam does not service -- the caller proxies approvals
  * only, so nothing would ever deliver that input and the child would park
  * forever. Rather than drop the park and hang, `onPark` surfaces it as a
- * hard error on `next()` and cancels the child so the section run ends
- * loudly.
+ * hard error on `next()` and tears the child down locally so the section run
+ * ends loudly (failed).
  *
  * Signal-channel lifecycle: unlike `createSidecarRunChild`, which stops the
  * channel in a `finally` around a single awaited terminal, this keeps the
  * channel alive across every park (so `resume` can deliver) and ties its
  * teardown to the run's terminal -- the one lifecycle moment every path
- * funnels through (normal completion, cancel-on-abort, an illegal-input-park
- * cancel, or a runtime failure). Tearing down per-`next()` would leak the
- * channel when a parent abort makes `runOnTrigger` stop calling `next()`
- * mid-park.
+ * funnels through (normal completion, a parent-abort local teardown, an
+ * illegal-input-park local teardown, or a runtime failure). Tearing down
+ * per-`next()` would leak the channel when a parent abort makes `runOnTrigger`
+ * stop calling `next()` mid-park.
  *
- * Abort propagation: the parent-supplied `signal` is threaded via
- * `handle.cancel` exactly as `createSidecarRunChild` does; the child runtime
- * takes no abort signal of its own. On abort the cancel cascade fires, the
- * run settles `cancelled`, and the terminal-tied teardown runs.
+ * Abort propagation: the parent-supplied `signal` tears the body down through
+ * `createSuspendableChildHandle`'s local-teardown seam -- the in-process body
+ * runs under the `workflow-process` principal and cannot sign the control-plane
+ * `CancelRequested` a durable cancel needs, so on abort its own step fails and
+ * the run settles `failed` (not `cancelled`), and the terminal-tied teardown
+ * runs.
  */
 export function createSidecarSpawnSuspendableChild(
   deps: SidecarRunChildDeps,
@@ -1502,19 +1491,14 @@ export function createSidecarSpawnSuspendableChild(
   const directors = deps.directors ?? createDefaultDirectorRegistry();
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
-  // The in-process body child runs under real supervisor authority; its
-  // control-plane cancel (`CancelRequested`) must be signed by a supervisor
-  // principal, which the kind handler requires and the substrate authorizes for
-  // this deployment. Run-body events keep their workflow-process attribution.
-  const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
-    kind: "supervisor",
-    anchorRunId: deps.workflowRunRepoId.id,
-  };
+  // No `controlPlanePrincipal`: an in-process body tears down through the shared
+  // handle's local-abort seam (`createSuspendableChildHandle`), not a durable
+  // `CancelRequested`, so it never writes a control-plane cancel this repo store
+  // would have to sign. Run-body events use the workflow-process `principal`.
   const repoStore = createWorkflowRunRepoStore({
     substrate: deps.substrate,
     repoId: deps.workflowRunRepoId,
     principal: deps.principal,
-    controlPlanePrincipal: supervisorPrincipal,
     ref: deps.workflowRunRef,
   });
   // A body's own `childWorkflow` grandchildren spawn terminal-only: the
