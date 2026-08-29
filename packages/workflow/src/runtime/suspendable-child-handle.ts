@@ -31,6 +31,15 @@ export function createSuspendableChildHandle(
     definition: WorkflowDefinition;
     childRunId: string;
     input: unknown;
+    /**
+     * The depth the body run executes at (the container's own depth, passed
+     * through unchanged) and the tree-wide ceiling, so a `childWorkflow`
+     * spawned inside the body counts against the same bound as the top-level
+     * run rather than resetting at the body boundary. Mirrors the options
+     * `createSidecarRunChild` threads into a terminal child's `runtimeRun`.
+     */
+    depth: number;
+    maxChildSpawnDepth: number;
     resumeFromEvents?: readonly WorkflowEvent[];
     signal: AbortSignal;
     /**
@@ -42,8 +51,16 @@ export function createSuspendableChildHandle(
     cleanup?: () => void | Promise<void>;
   },
 ): SuspendableChildHandle {
-  const { definition, childRunId, input, resumeFromEvents, signal, cleanup } =
-    args;
+  const {
+    definition,
+    childRunId,
+    input,
+    depth,
+    maxChildSpawnDepth,
+    resumeFromEvents,
+    signal,
+    cleanup,
+  } = args;
 
   if (env.onPark !== undefined || env.onSignalPark !== undefined) {
     throw new Error(
@@ -114,8 +131,8 @@ export function createSuspendableChildHandle(
     definition,
     runEnv,
     resumeFromEvents !== undefined
-      ? { runId: childRunId, resumeFromEvents }
-      : { runId: childRunId, triggerPayload: input },
+      ? { runId: childRunId, resumeFromEvents, depth, maxChildSpawnDepth }
+      : { runId: childRunId, triggerPayload: input, depth, maxChildSpawnDepth },
   );
 
   const cancelOnAbort = (): void => {

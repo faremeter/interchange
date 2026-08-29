@@ -34,12 +34,16 @@ import type {
   WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
 import {
+  childWorkflow,
   createInMemoryScheduler,
   createInMemoryRepoStore,
   defineWorkflow,
   step,
   type WorkflowDefinition,
+  type WorkflowEvent,
 } from "@intx/workflow";
+
+import { createWorkflowRunRepoStore } from "@intx/workflow-host";
 
 import {
   createSidecarSpawnSuspendableChild,
@@ -78,7 +82,15 @@ let bodySourcesDataDir: string;
 beforeAll(async () => {
   signingKey = await generateKeyPair();
   bodySourcesDataDir = await makeTempDir("suspendable-assets-");
-  const dir = path.join(bodySourcesDataDir, "assets", "workflow", "body-wf");
+  // The approval-park body ("body-wf") carries an agent step "s"; the
+  // depth body ("depth-body") carries only a childWorkflow step (no
+  // inference), but `buildChildRunEnv` reads its sources eagerly all the same.
+  await stageBodySources("body-wf");
+  await stageBodySources("depth-body");
+});
+
+async function stageBodySources(id: string): Promise<void> {
+  const dir = path.join(bodySourcesDataDir, "assets", "workflow", id);
   await fs.promises.mkdir(dir, { recursive: true });
   await fs.promises.writeFile(
     path.join(dir, "sources.json"),
@@ -94,7 +106,7 @@ beforeAll(async () => {
       ],
     }),
   );
-});
+}
 
 afterAll(async () => {
   for (const d of tempDirs.splice(0)) {
@@ -243,6 +255,8 @@ describe("createSidecarSpawnSuspendableChild", () => {
         parentRunId,
         parentStepId: "section",
         signal: new AbortController().signal,
+        depth: 0,
+        maxChildSpawnDepth: 32,
       },
       () => undefined,
     );
@@ -268,4 +282,93 @@ describe("createSidecarSpawnSuspendableChild", () => {
     expect(terminal.terminalStatus).toBe("completed");
     expect(record.resumeDecision).toEqual(decision);
   });
+
+  test("threads depth so a body's childWorkflow grandchild trips the ceiling", async () => {
+    const substrate = await makeSubstrate("suspendable-depth-");
+    const parentRunId = "run-parent";
+    await seedRunGrants(substrate, parentRunId, [
+      grant("inference.source:anthropic:m", "invoke"),
+    ]);
+
+    // The invoker must never run: the depth guard fires before the grandchild's
+    // agent step is reached.
+    const spawn = makeSpawner(substrate, () => {
+      throw new Error("depth: no step should run before the guard fires");
+    });
+
+    // Spawn the body AT depth 1 with the ceiling lowered to 1. The body runs at
+    // depth 1 (passed through unchanged), so its `childWorkflow` spawns the
+    // grandchild at depth 2 > 1 and trips the guard. WITHOUT depth threading the
+    // body would run at depth 0 and the grandchild at depth 1 <= 1 -- no trip --
+    // so this failure proves the container's depth reached the body run.
+    const childRunId = "run-depth-body";
+    const handle = await spawn(
+      {
+        definition: childSpawningBody(),
+        definitionRef: REF,
+        childRunId,
+        input: null,
+        parentRunId,
+        parentStepId: "section",
+        signal: new AbortController().signal,
+        depth: 1,
+        maxChildSpawnDepth: 1,
+      },
+      () => undefined,
+    );
+
+    // The body's childWorkflow step failed loud, so the body run settles failed.
+    const terminal = await handle.next();
+    expect(terminal.kind).toBe("terminal");
+    if (terminal.kind !== "terminal") throw new Error("expected a terminal");
+    expect(terminal.terminalStatus).toBe("failed");
+
+    // The guard fired before the body committed a ChildSpawned, and the
+    // StepFailed names the tripped depth 2 (body depth 1 + 1), not the depth 1 a
+    // reset-at-the-body-boundary would give.
+    const bodyEvents: readonly WorkflowEvent[] =
+      await reader(substrate).read(childRunId);
+    expect(bodyEvents.some((e) => e.kind === "ChildSpawned")).toBe(false);
+    const stepFailed = bodyEvents.find((e) => e.kind === "StepFailed");
+    if (stepFailed === undefined || stepFailed.kind !== "StepFailed") {
+      throw new Error(`body run ${childRunId} has no StepFailed event`);
+    }
+    expect(stepFailed.error.message).toContain(
+      'childWorkflow spawn depth 2 exceeds the maximum 1 at step "spawn"',
+    );
+  });
 });
+
+// A body whose single step spawns a `childWorkflow` grandchild. The grandchild
+// carries an agent step that is never reached: the depth guard fires first.
+function childSpawningBody(): WorkflowDefinition {
+  const leaf = defineWorkflow({
+    id: "depth-leaf",
+    trigger: { type: "manual" },
+    steps: {
+      work: step({
+        agent: defineAgent({
+          id: "depth-leaf-agent",
+          systemPrompt: "s",
+          tools: [],
+          capabilities: [],
+          inference: { sources: [{ provider: "anthropic", model: "m" }] },
+        }),
+      }),
+    },
+  });
+  return defineWorkflow({
+    id: "depth-body",
+    trigger: { type: "manual" },
+    steps: { spawn: childWorkflow({ definition: leaf }) },
+  });
+}
+
+function reader(substrate: ReturnType<typeof createRepoStore>) {
+  return createWorkflowRunRepoStore({
+    substrate,
+    repoId: WORKFLOW_RUN_REPO_ID,
+    principal: PRINCIPAL,
+    ref: REF,
+  });
+}

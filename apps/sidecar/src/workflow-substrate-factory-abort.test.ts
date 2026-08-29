@@ -301,6 +301,8 @@ describe("in-process child parent-abort", () => {
         parentRunId,
         parentStepId: "section",
         signal: abort.signal,
+        depth: 0,
+        maxChildSpawnDepth: 32,
       },
       () => undefined,
     );

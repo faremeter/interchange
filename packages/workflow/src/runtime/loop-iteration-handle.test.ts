@@ -90,6 +90,8 @@ describe("createLoopIterationHandle", () => {
       definition: body,
       childRunId: "child-0",
       input: 7,
+      depth: 0,
+      maxChildSpawnDepth: 32,
       resumeFromEvents: first.events,
       signal: new AbortController().signal,
       signalChannel: createInMemorySignalChannel(),

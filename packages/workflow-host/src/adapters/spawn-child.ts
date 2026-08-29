@@ -211,6 +211,8 @@ export type RunSuspendableChild = (
     parentRunId: string;
     parentStepId: string;
     signal: AbortSignal;
+    depth: number;
+    maxChildSpawnDepth: number;
     resumeFromEvents?: readonly WorkflowEvent[];
   },
   /**
@@ -261,6 +263,8 @@ export function createInMemorySpawnSuspendableChild(opts: {
       parentRunId,
       parentStepId,
       signal,
+      depth,
+      maxChildSpawnDepth,
       resumeFromEvents,
     },
     onEvent,
@@ -291,6 +295,8 @@ export function createInMemorySpawnSuspendableChild(opts: {
         parentRunId,
         parentStepId,
         signal,
+        depth,
+        maxChildSpawnDepth,
         ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       },
       onEvent,

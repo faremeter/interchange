@@ -1520,7 +1520,16 @@ export function createSidecarSpawnSuspendableChild(
   const runChild = createSidecarRunChild(deps);
 
   return async (
-    { definition, childRunId, input, parentRunId, signal, resumeFromEvents },
+    {
+      definition,
+      childRunId,
+      input,
+      parentRunId,
+      signal,
+      depth,
+      maxChildSpawnDepth,
+      resumeFromEvents,
+    },
     onEvent,
   ) => {
     const {
@@ -1554,6 +1563,8 @@ export function createSidecarSpawnSuspendableChild(
       definition: rewrittenDefinition,
       childRunId,
       input,
+      depth,
+      maxChildSpawnDepth,
       ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
       cleanup: () => signalChannel.stop(),
