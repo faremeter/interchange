@@ -126,6 +126,17 @@ export interface RuntimeRunOptions {
    * ceiling. Default `MAX_CHILD_SPAWN_DEPTH`.
    */
   maxChildSpawnDepth?: number;
+  /**
+   * A parent-supplied abort that tears this run down LOCALLY on fire: it
+   * aborts the run's own cancel controller directly, so an in-flight or parked
+   * step rethrows and settles `StepFailed` and the run settles `RunFailed`
+   * under THIS run's own principal. Unlike `WorkflowRun.cancel`, it writes NO
+   * durable `CancelRequested` and the run never enters the `cancelling` phase.
+   * This is the teardown for an in-process suspendable child -- a loop iteration
+   * OR an onTrigger section body -- whose `workflow-process` principal cannot
+   * sign the control-plane `CancelRequested` a cascade cancel would require.
+   */
+  localAbort?: AbortSignal;
 }
 
 /**
@@ -165,6 +176,21 @@ export function runtimeRun(
 ): WorkflowRun {
   const runId = options.runId ?? env.newId("run");
   const cancelController = new AbortController();
+  // A local teardown aborts the run's own controller directly -- no durable
+  // `CancelRequested`, so the run fails (a parked/in-flight step aborts to
+  // `StepFailed` -> `RunFailed`) rather than cancelling. See
+  // `RuntimeRunOptions.localAbort`.
+  if (options.localAbort !== undefined) {
+    if (options.localAbort.aborted) {
+      cancelController.abort();
+    } else {
+      options.localAbort.addEventListener(
+        "abort",
+        () => cancelController.abort(),
+        { once: true },
+      );
+    }
+  }
   const completePromise = executeRun(
     definition,
     env,
@@ -2036,6 +2062,14 @@ async function driveSuspendableOccurrence(
       at: env.clock().toISOString(),
       childRunId,
       terminalStatus,
+      // Durably record whether a `failed` terminal is a parent-cascade abort
+      // teardown (an in-process body cannot self-cancel, so it settles `failed`
+      // locally when the container aborts) rather than a genuine body failure.
+      // `planOnTriggerResume` keys the section's end-vs-re-arm decision on this,
+      // the resume analog of the live `abort.aborted` guard below.
+      ...(terminalStatus === "failed" && abort.aborted
+        ? { abortedTeardown: true }
+        : {}),
     };
     after = await commit(env, runId, completed);
     void after;
@@ -2248,15 +2282,21 @@ async function runOnTrigger(
       },
     );
 
-    // Terminal-is-final unless the section tolerates a body failure. A cancelled
-    // body always ends the section (a drain/operator decision, never tolerated);
-    // a failed body ends it only under the default `end` policy. Under
-    // `tolerate`, a failed body falls through to the re-arm below -- the
-    // ChildCompleted{failed} committed above still records the occurrence.
+    // Terminal-is-final unless the section tolerates a body failure. Two cases
+    // always end the section, `tolerate` or not: a `cancelled` body, and ANY
+    // body terminal reached while the container itself is aborting (`abort` --
+    // a drain or operator cancel tearing the section down). An in-process body's
+    // parent-abort teardown surfaces as a `failed` terminal, not `cancelled`
+    // (it cannot durably self-cancel), so the abort check is what makes a
+    // torn-down `tolerate` section end rather than re-arm into a park whose
+    // already-aborted signal never resolves. A `failed` body absent that abort
+    // ends the section only under the default `end` policy; under `tolerate` it
+    // falls through to the re-arm below, and the ChildCompleted{failed}
+    // committed above still records the occurrence.
     if (
       terminalStatus === "cancelled" ||
       (terminalStatus === "failed" &&
-        bodyFailurePolicyOf(primitive) !== "tolerate")
+        (bodyFailurePolicyOf(primitive) !== "tolerate" || abort.aborted))
     ) {
       // Throwing lands the parent terminal via `runPrimitiveSafe`; the run does
       // not relaunch.
@@ -2580,15 +2620,20 @@ function planOnTriggerResume(
   // is already owned -- a body that then completed is caught HERE (reawait-
   // input), not by the in-flight throw. Inverting the order would wrongly fail a
   // post-abandon-completed body.
-  // Terminal-is-final unless the section tolerates a body failure (mirrors the
-  // steady-state drive loop). A cancelled body always ends; a failed body ends
-  // only under the default `end` policy. A tolerated failure falls through to
-  // the completed block below, which re-adopts the SAME input park a completed
-  // body does -- never a bare new arm (which would wedge the section).
+  // Terminal-is-final unless the section tolerates a GENUINE body failure. A
+  // cancelled body always ends; so does an abort-teardown `failed` body
+  // (`abortedTeardown`, the durable record of the live `abort.aborted` guard in
+  // the drive loop) -- the container was being torn down, so a torn-down
+  // `tolerate` section stays ended here rather than resurrecting to await the
+  // next event. A failed body absent that abort ends only under the default
+  // `end` policy; a tolerated genuine failure falls through to the completed
+  // block below, which re-adopts the SAME input park a completed body does --
+  // never a bare new arm (which would wedge the section).
   if (
     child.terminalStatus === "cancelled" ||
     (child.terminalStatus === "failed" &&
-      bodyFailurePolicyOf(primitive) !== "tolerate")
+      (bodyFailurePolicyOf(primitive) !== "tolerate" ||
+        child.abortedTeardown === true))
   ) {
     return {
       kind: "terminal-is-final",

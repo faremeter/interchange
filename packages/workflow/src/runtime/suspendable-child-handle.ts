@@ -123,26 +123,38 @@ export function createSuspendableChildHandle(
     },
   };
 
+  // A suspendable body runs IN-PROCESS under the workflow-process child's own
+  // principal, which cannot sign the control-plane `CancelRequested` a durable
+  // cancel writes -- that needs supervisor authority no in-process body holds
+  // (an onTrigger section body and a loop iteration are identical here). So the
+  // body never self-cancels. A teardown -- a parent-abort cascade (`signal`) or
+  // an illegal input re-arm (in `next()` below) -- aborts the run's OWN cancel
+  // controller through `runtimeRun`'s `localAbort`, which fails a parked step to
+  // `StepFailed` and settles the body `RunFailed` under its own principal, with
+  // no durable cancel to sign. A single controller unifies both teardown
+  // triggers.
+  const localTeardown = new AbortController();
+  const onParentAbort = (): void => {
+    localTeardown.abort();
+  };
+  if (signal.aborted) {
+    onParentAbort();
+  } else {
+    signal.addEventListener("abort", onParentAbort, { once: true });
+  }
+
   // On resume, drive the run from its durable log; the body step re-parks
   // silently (a re-park does not re-fire onPark), and the caller relays the
   // grant via resume on the correlation it recovered from its own log. On a
   // fresh spawn, seed the run with the event's trigger payload.
-  const handle = runtimeRun(
-    definition,
-    runEnv,
+  const baseOptions =
     resumeFromEvents !== undefined
       ? { runId: childRunId, resumeFromEvents, depth, maxChildSpawnDepth }
-      : { runId: childRunId, triggerPayload: input, depth, maxChildSpawnDepth },
-  );
-
-  const cancelOnAbort = (): void => {
-    void handle.cancel("supervisor-operator", "parent cancelled");
-  };
-  if (signal.aborted) {
-    cancelOnAbort();
-  } else {
-    signal.addEventListener("abort", cancelOnAbort, { once: true });
-  }
+      : { runId: childRunId, triggerPayload: input, depth, maxChildSpawnDepth };
+  const handle = runtimeRun(definition, runEnv, {
+    ...baseOptions,
+    localAbort: localTeardown.signal,
+  });
 
   let settled: {
     terminalStatus: "completed" | "failed" | "cancelled";
@@ -156,7 +168,7 @@ export function createSuspendableChildHandle(
       failure = cause instanceof Error ? cause : new Error(String(cause));
     })
     .finally(() => {
-      signal.removeEventListener("abort", cancelOnAbort);
+      signal.removeEventListener("abort", onParentAbort);
       if (cleanup !== undefined) void cleanup();
       notify();
     });
@@ -167,14 +179,13 @@ export function createSuspendableChildHandle(
         const event = events.shift();
         if (event !== undefined) {
           if (event.kind === "error") {
-            // The body re-armed an input park nothing will resolve. Cancel the
-            // child so its terminal (and the channel teardown tied to it)
-            // fires, then surface the error: the throw lands the container
-            // run's terminal via `runPrimitiveSafe`.
-            void handle.cancel(
-              "supervisor-operator",
-              "suspendable body re-armed an unsupported input park",
-            );
+            // The body re-armed an input park nothing will resolve. Tear the
+            // child down locally so its terminal (and the channel teardown tied
+            // to it) fires, then surface the error: the throw lands the
+            // container run's terminal via `runPrimitiveSafe`. Local teardown,
+            // not `handle.cancel`, because an in-process body cannot sign a
+            // control-plane cancel (see the `localTeardown` note above).
+            localTeardown.abort();
             throw event.error;
           }
           if (event.kind === "signal-park") {

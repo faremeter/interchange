@@ -654,7 +654,11 @@ function handleChildCompleted(state: RunState, e: ChildCompleted): RunState {
     return { ...state, lastSeq: e.seq };
   }
   const children = new Map(state.children);
-  children.set(e.childRunId, { ...child, terminalStatus: e.terminalStatus });
+  children.set(e.childRunId, {
+    ...child,
+    terminalStatus: e.terminalStatus,
+    ...(e.abortedTeardown === true ? { abortedTeardown: true } : {}),
+  });
   return { ...state, children, lastSeq: e.seq };
 }
 

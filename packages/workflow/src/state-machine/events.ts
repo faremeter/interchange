@@ -190,6 +190,17 @@ export interface ChildCompleted extends EventBase {
   kind: "ChildCompleted";
   childRunId: RunId;
   terminalStatus: "completed" | "failed" | "cancelled";
+  /**
+   * Set when a `failed` terminal is a parent-cascade abort teardown (the
+   * container aborted, and an in-process suspendable body cannot durably
+   * self-cancel, so it settles `failed` locally) rather than a genuine body
+   * failure. It is the durable record of the live `abort.aborted` fact the
+   * suspendable-occurrence drive keys the section's "end, do not re-arm"
+   * decision on, so the crash-resume classifier can make the same decision --
+   * a torn-down `tolerate` section must stay ended on resume, not resurrect.
+   * Absent (older logs, or a genuine failure) reads as a body-caused failure.
+   */
+  abortedTeardown?: boolean;
 }
 
 export interface RunCompleted extends EventBase {
