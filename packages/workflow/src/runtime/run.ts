@@ -1658,7 +1658,7 @@ async function runAction(
 
 /**
  * Bounded rework loop. Each iteration is a separate child run of the
- * body against the shared store (via `env.runLoopIteration`), scoped
+ * body against the shared store (via `env.spawnLoopIteration`), scoped
  * `<loopId>[<index>]` at the step level (mirroring `runMap`) with a
  * path-safe child run id `<loopId>__<index>`. The registered `while`
  * predicate decides whether to continue on each iteration's output; the
