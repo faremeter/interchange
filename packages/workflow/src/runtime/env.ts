@@ -396,6 +396,18 @@ export type SpawnSuspendableChild = (input: {
   parentRunId: string;
   parentStepId: string;
   signal: AbortSignal;
+  /**
+   * The depth this body run executes AT -- the container step's OWN depth,
+   * passed through UNCHANGED. A suspendable body (an onTrigger section or a
+   * loop iteration) is inlined rework, not a `childWorkflow` spawn, so it does
+   * not consume a depth rung; only a `childWorkflow` inside the body increments
+   * (to this depth + 1) via `runChildWorkflow`. Threading it keeps the
+   * tree-wide ceiling counting a grandchild from the top-level run rather than
+   * resetting at the body boundary. See `child-depth.ts`.
+   */
+  depth: number;
+  /** The tree-wide spawn-depth ceiling, threaded into the body run. */
+  maxChildSpawnDepth: number;
   resumeFromEvents?: readonly WorkflowEvent[];
 }) => Promise<SuspendableChildHandle>;
 

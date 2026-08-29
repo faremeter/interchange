@@ -255,6 +255,8 @@ export function createSpawnLoopIteration(
     definitionRef,
     childRunId,
     input,
+    depth,
+    maxChildSpawnDepth,
     signal,
     resumeFromEvents,
   }) => {
@@ -269,6 +271,8 @@ export function createSpawnLoopIteration(
       definition,
       childRunId,
       input,
+      depth,
+      maxChildSpawnDepth,
       ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       signal,
       signalChannel: createInMemorySignalChannel({

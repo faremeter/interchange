@@ -1016,9 +1016,26 @@ async function runPrimitive(
     case "action":
       return runAction(env, runId, primitive, selectorCtx, abort);
     case "loop":
-      return runLoop(definition, env, runId, primitive, selectorCtx, abort);
+      return runLoop(
+        definition,
+        env,
+        runId,
+        primitive,
+        selectorCtx,
+        abort,
+        depth,
+        maxChildSpawnDepth,
+      );
     case "onTrigger":
-      return runOnTrigger(env, runId, primitive, selectorCtx, abort);
+      return runOnTrigger(
+        env,
+        runId,
+        primitive,
+        selectorCtx,
+        abort,
+        depth,
+        maxChildSpawnDepth,
+      );
     case "map":
       return runMap(env, runId, primitive, selectorCtx, abort);
     case "gate":
@@ -1659,6 +1676,8 @@ async function runLoop(
   primitive: LoopPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
+  depth: number,
+  maxChildSpawnDepth: number,
 ): Promise<unknown> {
   const spawnLoopIteration = env.spawnLoopIteration;
   const loopFns = env.loopFns;
@@ -1771,6 +1790,8 @@ async function runLoop(
         input: currentInput,
         resume: occurrenceResume,
         spawnSuspendableChild: spawnLoopIteration,
+        depth,
+        maxChildSpawnDepth,
         abort,
       },
     );
@@ -1861,11 +1882,21 @@ async function driveSuspendableOccurrence(
     input: unknown;
     resume: SuspendableOccurrenceResume | undefined;
     spawnSuspendableChild: SpawnSuspendableChild;
+    depth: number;
+    maxChildSpawnDepth: number;
     abort: AbortSignal;
   },
 ): Promise<{ terminalStatus: "completed" | "failed" | "cancelled" }> {
-  const { childRunId, bodyRef, input, resume, spawnSuspendableChild, abort } =
-    args;
+  const {
+    childRunId,
+    bodyRef,
+    input,
+    resume,
+    spawnSuspendableChild,
+    depth,
+    maxChildSpawnDepth,
+    abort,
+  } = args;
 
   let before = await reloadState(env, runId);
   if (!before.children.has(childRunId)) {
@@ -1891,6 +1922,8 @@ async function driveSuspendableOccurrence(
     parentRunId: runId,
     parentStepId: containerStepId,
     signal: abort,
+    depth,
+    maxChildSpawnDepth,
     ...(resume !== undefined
       ? { resumeFromEvents: await env.repoStore.read(childRunId) }
       : {}),
@@ -2041,6 +2074,8 @@ async function runOnTrigger(
   primitive: OnTriggerPrimitive,
   selectorCtx: SelectorContext,
   abort: AbortSignal,
+  depth: number,
+  maxChildSpawnDepth: number,
 ): Promise<unknown> {
   if (!("ref" in primitive.body)) {
     throw new Error(
@@ -2207,6 +2242,8 @@ async function runOnTrigger(
         input: currentInput,
         resume,
         spawnSuspendableChild,
+        depth,
+        maxChildSpawnDepth,
         abort,
       },
     );

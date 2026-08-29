@@ -37,10 +37,16 @@ export function createLoopIterationHandle(
     childRunId: string;
     input: unknown;
     /**
-     * A durable child log to re-adopt instead of a fresh spawn. Part of the
-     * shared `SpawnSuspendableChild` contract onTrigger uses fully; `runLoop`
-     * does not currently send it (each iteration spawns fresh), so today only a
-     * direct caller (the handle-contract test) exercises this path.
+     * The depth the iteration body runs at (the loop container's own depth,
+     * unchanged) and the tree-wide ceiling, forwarded so a `childWorkflow`
+     * inside the body counts against the same bound as the top-level run.
+     */
+    depth: number;
+    maxChildSpawnDepth: number;
+    /**
+     * A durable child log to re-adopt instead of a fresh spawn. `runLoop` sends
+     * it when re-linking a parked iteration on crash-resume (planLoopResume);
+     * the handle-contract test drives it directly.
      */
     resumeFromEvents?: readonly WorkflowEvent[];
     signal: AbortSignal;
@@ -63,6 +69,8 @@ export function createLoopIterationHandle(
     definition: args.definition,
     childRunId: args.childRunId,
     input: args.input,
+    depth: args.depth,
+    maxChildSpawnDepth: args.maxChildSpawnDepth,
     ...(args.resumeFromEvents !== undefined
       ? { resumeFromEvents: args.resumeFromEvents }
       : {}),

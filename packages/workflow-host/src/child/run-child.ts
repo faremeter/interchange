@@ -1742,6 +1742,8 @@ function buildRuntimeEnv(args: {
         definition: loopInput.definition,
         childRunId: loopInput.childRunId,
         input: loopInput.input,
+        depth: loopInput.depth,
+        maxChildSpawnDepth: loopInput.maxChildSpawnDepth,
         ...(loopInput.resumeFromEvents !== undefined
           ? { resumeFromEvents: loopInput.resumeFromEvents }
           : {}),

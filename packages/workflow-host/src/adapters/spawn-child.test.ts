@@ -437,6 +437,8 @@ describe("createInMemorySpawnSuspendableChild - in-memory body resolution", () =
       parentRunId: "parent-run",
       parentStepId: "sect",
       signal,
+      depth: 0,
+      maxChildSpawnDepth: 32,
     };
   }
 
