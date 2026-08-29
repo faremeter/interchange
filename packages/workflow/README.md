@@ -78,22 +78,27 @@ fails the run exactly as a crash in any other step does; loops are not special
 here.
 
 Second, suspension. The body-ban forbids a loop body from containing a `sleep`,
-`childWorkflow`, a nested `loop`, or an `onTrigger`. It does NOT forbid an
-`awaitSignal`: a loop iteration runs through the suspendable-child seam, so its
-body can park on an `awaitSignal` and resume. The park relays up through the
+a nested `loop`, or an `onTrigger`. It does NOT forbid an `awaitSignal` or a
+`childWorkflow`. A loop iteration runs through the suspendable-child seam, so its
+body can park on an `awaitSignal` and resume: the park relays up through the
 container's signal path and delivery resumes the iteration, the same way an
-onTrigger section body parks. This resume is in-process only: a loop iteration
-has no durable per-iteration crash-resume, so a crash while parked fails the run
-(as the crash rule above requires) and the iteration does not resume across a
-restart.
+onTrigger section body parks. A parked iteration also survives a crash -- a
+restart re-drives the loop, re-establishes the container's signal relay, and
+resumes the iteration on the next delivery -- so an `awaitSignal` loop body is a
+durable human-in-the-loop pause, not just an in-process one.
+
+A loop body may also spawn a `childWorkflow` grandchild: the child is lifted to
+a ref and runs as its own child run, depth-counted against the tree-wide spawn
+ceiling exactly like any other child.
 
 `sleep` stays banned: a parked sleep leaves the step `awaiting-timer`, and the
 container relays a signal park, not a timer park, so a loop body has no
-timer-park resume path (separate work, INTR-485). `childWorkflow` and a nested
-`loop` remain unsupported inside a loop body.
+timer-park resume path (separate work, INTR-485). A nested `loop` and an
+`onTrigger` stay banned too -- a nested loop's carry/park interaction is
+unsupported, and a run carries a single subscription layer.
 
 Practical guidance: use a loop to repeat a self-contained unit -- which may park
-on an `awaitSignal` -- until a pure `while`/`carry` says stop. Model a `sleep`
-delay or a child-workflow spawn at a top-level step or an onTrigger section, not
+on an `awaitSignal` or spawn a `childWorkflow` -- until a pure `while`/`carry`
+says stop. Model a `sleep` delay at a top-level step or an onTrigger section, not
 in a loop body. Keep a loop body's action idempotent where practical, since a
-crash fails the run and recovery is a fresh trigger, not a mid-loop resume.
+mid-invocation crash fails the run and the effect is never re-run.

@@ -380,19 +380,18 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
 }
 
 // A loop iteration runs through the suspendable-child seam, so its body MAY
-// park on an `awaitSignal` and resume: the container relays the signal park up
-// its signal path. It still may not contain:
+// park on an `awaitSignal` and resume (the container relays the signal park up
+// its signal path), and MAY spawn a `childWorkflow` grandchild -- lifted to a
+// ref and depth-counted against the tree-wide ceiling like any other child. It
+// still may not contain:
 //   - `sleep` -- a parked sleep leaves the step `awaiting-timer`, and the
 //     container relays a signal park, not a timer park, so a loop body has no
 //     timer-park resume path (separate work, INTR-485);
-//   - `childWorkflow` -- a separate terminal-only spawn seam, not yet wired
-//     inside a loop body;
 //   - `loop` -- a nested loop's carry/park interaction is unsupported;
 //   - `onTrigger` -- one subscription layer per run.
 const LOOP_BODY_FORBIDDEN = new Set<Primitive["kind"]>([
   "loop",
   "sleep",
-  "childWorkflow",
   "onTrigger",
 ]);
 
@@ -412,8 +411,7 @@ function validateLoopBody(steps: Record<string, Primitive>): void {
       if (LOOP_BODY_FORBIDDEN.has(bodyPrimitive.kind)) {
         throw new Error(
           `loop ${stepId} body step ${bodyStepId} is a ${bodyPrimitive.kind}; ` +
-            `a loop body may not contain a loop, sleep, childWorkflow, or ` +
-            `onTrigger`,
+            `a loop body may not contain a loop, sleep, or onTrigger`,
         );
       }
     }
