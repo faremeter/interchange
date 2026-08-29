@@ -9,6 +9,7 @@ import {
   onTrigger,
   sleep,
   step,
+  type WorkflowDefinition,
 } from "./definition/index";
 import { defineAgent } from "@intx/agent";
 import {
@@ -315,5 +316,71 @@ describe("enumerateInlineLoopBodies", () => {
         .map((b) => b.ref)
         .sort(),
     ).toEqual(["multi__a", "multi__b"]);
+  });
+
+  test("recurses into nested loop bodies, minting a ref per depth", () => {
+    // The enumerator is a pure structural pass over a `WorkflowDefinition`, so
+    // it can be exercised on a nested-loop definition assembled directly --
+    // `defineWorkflow` rejects a nested loop at authoring time, but the runtime
+    // resolves an inner loop's body from this same map, so the map must carry a
+    // ref at every depth. Swap loop bodies to stack three loop levels
+    // (outer -> inner -> innermost) over a leaf action body.
+    const leaf = defineWorkflow({
+      id: "leaf",
+      steps: { touch: action({ handler: "noop" }) },
+    });
+    const withLoopBody = (
+      wf: WorkflowDefinition,
+      loopStepId: string,
+      body: WorkflowDefinition,
+    ): WorkflowDefinition => {
+      const primitive = wf.steps[loopStepId];
+      if (primitive?.kind !== "loop") {
+        throw new Error(`fixture: ${loopStepId} is not a loop`);
+      }
+      return {
+        ...wf,
+        steps: { ...wf.steps, [loopStepId]: { ...primitive, body } },
+      };
+    };
+    const oneLoop = (id: string, loopStepId: string) =>
+      defineWorkflow({
+        id,
+        trigger: { type: "manual" },
+        steps: {
+          [loopStepId]: loop({
+            body: leaf,
+            while: "cont",
+            carry: "next",
+            maxIterations: 2,
+            onExhausted: "esc",
+          }),
+          esc: action({ handler: "noop", after: [loopStepId] }),
+        },
+      });
+
+    const innermostBody = oneLoop("b-innermost", "innermost");
+    const innerBody = withLoopBody(
+      oneLoop("b-inner", "inner"),
+      "inner",
+      innermostBody,
+    );
+    const outer = withLoopBody(oneLoop("wf", "outer"), "outer", innerBody);
+
+    const refs = enumerateInlineLoopBodies(outer)
+      .map((b) => b.ref)
+      .sort();
+    expect(refs).toEqual([
+      "wf__outer",
+      "wf__outer__inner",
+      "wf__outer__inner__innermost",
+    ]);
+    // Each lifted body's id is set to its ref -- the string runLoop reconstructs
+    // via `inlineBodyRef(definition.id, primitive.id)` at each nesting level.
+    const deepest = enumerateInlineLoopBodies(outer).find(
+      (b) => b.ref === "wf__outer__inner__innermost",
+    );
+    expect(deepest?.definition.id).toBe("wf__outer__inner__innermost");
+    expect(Object.keys(deepest?.definition.steps ?? {})).toEqual(["touch"]);
   });
 });
