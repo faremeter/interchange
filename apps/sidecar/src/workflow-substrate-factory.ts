@@ -1303,11 +1303,16 @@ interface SidecarRunChildDeps {
  *
  * The write goes through the child proxy substrate's
  * `writeTreePreservingPrefix` -- the only write path the proxy forwards
- * to the supervisor -- preserving the child's own `runs/<childRunId>/`
- * subtree (empty at spawn time, before the runtime writes any events)
- * and adding the single `grants.json` file. A later event append under
- * `runs/<childRunId>/events/` preserves a nested prefix, so it leaves
- * this sibling file untouched.
+ * to the supervisor. It names the shallow `runs/<childRunId>/` prefix, whose
+ * merge input is only that level's flat blobs (the prefix read does not
+ * recurse), so the write rebuilds the level with just `grants.json`. This is
+ * safe ONLY because the sole caller (`capAndPersistChildGrants`) is write-once:
+ * it invokes this only when no grants file exists yet, i.e. at the run's birth
+ * before the runtime appends any event, so the `runs/<childRunId>/` subtree is
+ * empty and nothing is dropped. Invoking it over a populated run would delete
+ * that run's committed `events/`/`blobs/` subtrees. A later event append names
+ * the nested `runs/<childRunId>/events/` prefix, so its own subtree-delete does
+ * not reach `grants.json` one level up -- the sibling survives.
  */
 async function writeChildRunGrants(args: {
   substrate: RepoStore;
@@ -1573,6 +1578,85 @@ export function createSidecarSpawnSuspendableChild(
 }
 
 /**
+ * Read the parent run's grants, cap them to what `definition` declares, and
+ * persist the capped set as the child run's own `runs/<childRunId>/grants.json`
+ * -- the file the next spawn hop (a childWorkflow grandchild) reads back as its
+ * ceiling. Returns the capped grants so a caller building a fresh child env can
+ * also key its credentials snapshot on them.
+ *
+ * `definition` MUST be the PRE-rewrite body, its childWorkflow grandchildren
+ * still INLINE: `collectDeclaredResources` skips a `{ ref }` body, so a
+ * rewritten definition would drop the grandchild's declared resources and
+ * under-authorize it. Every birth path materializes a run's grants file, so a
+ * missing parent file is a defect, not a run that legitimately holds none --
+ * fail closed. The cap only removes rules (the parent stays the ceiling),
+ * matching the top level's "authority bounded by declared capabilities" model.
+ *
+ * The grants file is WRITE-ONCE per run: a run's authorization ceiling is fixed
+ * at its birth, so this reads back an existing `runs/<childRunId>/grants.json`
+ * rather than rewriting it. Re-writing on a resume re-drive is not just
+ * redundant, it is CORRUPTING: `writeChildRunGrants` commits at the shallow
+ * `runs/<childRunId>/` prefix through a substrate writer separate from the
+ * runtime's event-log writer, so a re-write racing the runtime's replay
+ * re-appends on the shared repo regresses another run's event seq (a
+ * single-writer-invariant violation), and its wholesale subtree-delete drops the
+ * run's committed `events/`/`blobs/` (the prefix read is non-recursive, so the
+ * merge cannot carry them forward). The read-back returns the same capped set
+ * the birth-time write persisted, so a fresh child-env caller keys its
+ * credentials snapshot on identical grants either way.
+ */
+async function capAndPersistChildGrants(args: {
+  deps: SidecarRunChildDeps;
+  directors: ReturnType<typeof createDefaultDirectorRegistry>;
+  definition: WorkflowDefinition;
+  childRunId: string;
+  parentRunId: string;
+}): Promise<readonly unknown[]> {
+  const { deps, directors, definition, childRunId, parentRunId } = args;
+  const existingChildGrants = await readRunGrants({
+    repoStore: deps.substrate,
+    anchorRunId: deps.workflowRunRepoId.id,
+    runId: childRunId,
+  });
+  if (existingChildGrants !== undefined) return existingChildGrants;
+  const parentGrants = await readRunGrants({
+    repoStore: deps.substrate,
+    anchorRunId: deps.workflowRunRepoId.id,
+    runId: parentRunId,
+  });
+  if (parentGrants === undefined) {
+    throw new Error(
+      `sidecar runChild: parent run ${parentRunId} has no grants file at ${runGrantsPath(parentRunId)}; refusing to spawn child ${childRunId} under-authorized`,
+    );
+  }
+  const pluginDefs: PluginToolDefinitions =
+    deps.closurePackageDir === undefined
+      ? new Map()
+      : await loadWorkflowPluginToolDefinitionsFromClosure({
+          packageDir: deps.closurePackageDir,
+          plugins: collectDeclaredPluginNames(definition),
+        });
+  const declaredResources = collectDeclaredResources(
+    definition,
+    directors,
+    pluginDefs,
+  );
+  const childGrants = filterGrantsToDeclaredResources(
+    parentGrants,
+    declaredResources,
+  );
+  await writeChildRunGrants({
+    substrate: deps.substrate,
+    workflowRunRepoId: deps.workflowRunRepoId,
+    principal: deps.principal,
+    ref: deps.workflowRunRef,
+    childRunId,
+    grants: childGrants,
+  });
+  return childGrants;
+}
+
+/**
  * Build the per-childRunId `WorkflowRuntimeEnv` a spawned child runs
  * against: inherit the parent's grants, assemble the child's credentials
  * snapshot, and wire the per-run repo store / blob substrate / signal
@@ -1636,76 +1720,16 @@ async function buildChildRunEnv(args: {
   const grandchildMap = new Map(
     grandchildBodies.map((b) => [b.ref, b.definition]),
   );
-  // Inherit the parent run's grants as the CEILING. A spawned child runs
-  // under the authority of the run that spawned it, so the parent's per-run
-  // grant set -- read back at `runs/<parentRunId>/grants.json` in the
-  // deployment's workflow-run repo -- bounds what the child can hold; the
-  // cap below narrows it to what the child body declares. Fail closed if the
-  // parent's file is absent: a run that reached the spawn point carries a
-  // grants file (every birth path materializes one), so its absence is a
-  // defect, not a run that legitimately holds no grants.
-  const parentGrants = await readRunGrants({
-    repoStore: deps.substrate,
-    anchorRunId: deps.workflowRunRepoId.id,
-    runId: parentRunId,
-  });
-  if (parentGrants === undefined) {
-    throw new Error(
-      `sidecar runChild: parent run ${parentRunId} has no grants file at ${runGrantsPath(parentRunId)}; refusing to spawn child ${childRunId} under-authorized`,
-    );
-  }
-  // Cap the inherited grants at what the child body itself declares
-  // (INTR-310). The child runs under the parent's authority, but it must
-  // never hold MORE than its own definition declares: a parent-only
-  // `effect:`/`credential:` grant (neither is tool-gated) or a bare-name
-  // `tool:` the child body never declared would otherwise authorize a
-  // capability the child was never written to use. Re-walk the child's own
-  // definition -- its inline grandchildren still intact, so the declared
-  // union stays broad enough to remain the ceiling a grandchild filters
-  // against in turn -- and filter the parent's rules to that set. The
-  // parent stays the ceiling (the filter only removes rules), matching the
-  // top level's "authority bounded by declared capabilities" model. Plugin
-  // tool definitions come from the shared closure so a plugin-contributed
-  // `tool:<name>` the child legitimately loads is declared and survives; a
-  // child body that declares no plugin package needs no closure read.
-  const pluginDefs: PluginToolDefinitions =
-    deps.closurePackageDir === undefined
-      ? new Map()
-      : await loadWorkflowPluginToolDefinitionsFromClosure({
-          packageDir: deps.closurePackageDir,
-          plugins: collectDeclaredPluginNames(definition),
-        });
-  const declaredResources = collectDeclaredResources(
-    definition,
+  // Read the parent's grants, cap them to what this body declares, and persist
+  // the capped set as the child's own `runs/<childRunId>/grants.json` (the file
+  // a grandchild reads as its ceiling). `definition` here is the childWorkflow-
+  // inline form, so the cap keeps a grandchild's declared resources.
+  const childGrants = await capAndPersistChildGrants({
+    deps,
     directors,
-    pluginDefs,
-  );
-  const childGrants = filterGrantsToDeclaredResources(
-    parentGrants,
-    declaredResources,
-  );
-  // Persist the capped grants as the child's OWN per-run file so a
-  // grandchild spawned by this child reads them from
-  // `runs/<childRunId>/grants.json`, exactly as this child read the
-  // parent's. The multi-hop chain never prunes these files, so each
-  // rung's grants stay resolvable for the rung below it -- and each rung's
-  // cap holds, because the grandchild filters against THIS child's capped
-  // set, not the raw parent set.
-  //
-  // Ordering is LOAD-BEARING: this write happens BEFORE `runtimeRun`
-  // dispatches the child, so `runs/<childRunId>/` holds no event blobs
-  // yet and the grants write only adds `grants.json`. Reordering it
-  // AFTER the runtime starts appending events would delete the child's
-  // event log -- `writeChildRunGrants` rebuilds the preserved subtree
-  // from the `merge` callback's inputs, so any run event committed under
-  // `runs/<childRunId>/` before this write is not carried forward.
-  await writeChildRunGrants({
-    substrate: deps.substrate,
-    workflowRunRepoId: deps.workflowRunRepoId,
-    principal: deps.principal,
-    ref: deps.workflowRunRef,
+    definition,
     childRunId,
-    grants: childGrants,
+    parentRunId,
   });
   // The child's credentials snapshot applies the capped grant set
   // uniformly across every step the child definition declares, keyed on
@@ -2522,6 +2546,24 @@ export function createSidecarSubstrateFactory(
       initialSources: stepInferenceSources,
       runChild,
       runSuspendableChild,
+      // A loop iteration runs under the inherited env (not `buildChildRunEnv`),
+      // so it is the one body birth path that writes no grants file of its own.
+      // Materialize it here -- capping the container run's grants to the loop
+      // body's declared resources -- so the body's childWorkflow grandchild
+      // spawn is authorized. `definition` is the PRE-rewrite loop body.
+      materializeLoopIterationGrants: async ({
+        parentRunId,
+        childRunId,
+        definition,
+      }) => {
+        await capAndPersistChildGrants({
+          deps: childRunDeps,
+          directors: childRunDeps.directors ?? createDefaultDirectorRegistry(),
+          definition,
+          childRunId,
+          parentRunId,
+        });
+      },
       scheduler,
       evaluateGrants: evaluateGrantsAdapter,
       loadParkedApproval,

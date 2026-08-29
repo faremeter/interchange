@@ -372,6 +372,63 @@ describe("createSidecarRunChild grant capping", () => {
     expect(grandchildGrants).toEqual([grant(DECLARED_RESOURCE, "invoke")]);
   });
 
+  test("an existing child grants file is read back, not recomputed (write-once)", async () => {
+    const substrate = await makeSubstrate("child-grants-write-once-");
+    const parentRunId = "run-parent";
+    // The parent holds the grant the child body declares, so a RECOMPUTE would
+    // cap to and persist `[DECLARED_RESOURCE]`.
+    await seedRunGrants(substrate, parentRunId, [
+      grant(DECLARED_RESOURCE, "invoke"),
+    ]);
+
+    // Pre-seed the CHILD's own grants file with a sentinel the cap would never
+    // produce (the child body declares `anthropic:m`, not this). A run's
+    // authorization ceiling is fixed at birth, so a re-spawn against the same
+    // childRunId must READ THIS BACK rather than recompute -- the property that
+    // keeps a resume re-drive from racing/clobbering the run's event subtree.
+    const childRunId = "run-child";
+    const sentinel = grant("inference.source:sentinel:preseeded", "invoke");
+    await seedRunGrants(substrate, childRunId, [sentinel]);
+
+    const record = {
+      decisions: [] as { resource: string; effect: string | null }[],
+    };
+    const runChild = makeRunChild(
+      substrate,
+      recordingInvoker(record, [DECLARED_RESOURCE]),
+    );
+
+    const result = await runChild(
+      {
+        definition: childDefinition("child-wf"),
+        definitionRef: REF,
+        childRunId,
+        input: null,
+        parentRunId,
+        parentStepId: "s",
+        signal: new AbortController().signal,
+        depth: 1,
+        maxChildSpawnDepth: 32,
+      },
+      noopOnEvent,
+    );
+
+    expect(result.terminalStatus).toBe("completed");
+    // The persisted file is untouched -- the sentinel, not a recomputed
+    // `[DECLARED_RESOURCE]`.
+    const childGrants = await readRunGrants({
+      repoStore: substrate,
+      anchorRunId: DEPLOYMENT_ID,
+      runId: childRunId,
+    });
+    expect(childGrants).toEqual([sentinel]);
+    // The child authorized against the read-back sentinel, so the body's
+    // declared resource -- which the sentinel does NOT cover -- fails closed.
+    expect(record.decisions).toEqual([
+      { resource: DECLARED_RESOURCE, effect: null },
+    ]);
+  });
+
   test("a child whose parent has no grants file fails closed at spawn", async () => {
     const substrate = await makeSubstrate("child-grants-absent-");
     // No grants file seeded for the parent run.
