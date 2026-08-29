@@ -28,6 +28,7 @@ import type {
 } from "../definition/index";
 import {
   hashDefinition,
+  RUN_ID_PATTERN,
   stepTriggerBudget,
   validateRetryTriggerCombination,
 } from "../definition/index";
@@ -63,7 +64,7 @@ import {
   resolveMaxChildSpawnDepth,
 } from "./child-depth";
 import { RuntimeResumeUnsupportedError } from "./errors";
-import { scopedStepId } from "./step-scope";
+import { loopBodyRunId, scopedStepId } from "./step-scope";
 import { inlineBodyRef } from "../ontrigger-bodies";
 import {
   controlParkKindOf,
@@ -175,6 +176,15 @@ export function runtimeRun(
   options: RuntimeRunOptions = {},
 ): WorkflowRun {
   const runId = options.runId ?? env.newId("run");
+  // A run id is a durable-store path segment and a mail-address local part, so
+  // an unconstrained caller-supplied id is a path-escape and addressing hazard.
+  // Validate at this boundary, where a run id enters the system; derived child
+  // run ids are built from already-validated components and satisfy the shape.
+  if (!RUN_ID_PATTERN.test(runId)) {
+    throw new Error(
+      `run id ${JSON.stringify(runId)} must match ${RUN_ID_PATTERN.source}`,
+    );
+  }
   const cancelController = new AbortController();
   // A local teardown aborts the run's own controller directly -- no durable
   // `CancelRequested`, so the run fails (a parked/in-flight step aborts to
@@ -1686,7 +1696,9 @@ async function runAction(
  * Bounded rework loop. Each iteration is a separate child run of the
  * body against the shared store (via `env.spawnLoopIteration`), scoped
  * `<loopId>[<index>]` at the step level (mirroring `runMap`) with a
- * path-safe child run id `<loopId>__<index>`. The registered `while`
+ * path-safe child run id `<runId>__<loopId>__<index>` (`loopBodyRunId`,
+ * carrying the container run id so a nested loop's iterations stay unique).
+ * The registered `while`
  * predicate decides whether to continue on each iteration's output; the
  * registered `carry` threads the next iteration's input. On convergence
  * (`while` false) the loop routes to its normal `after`-dependents; on
@@ -1747,7 +1759,7 @@ async function runLoop(
   let iteration = 0;
   let terminated = false;
   let outcome: "converged" | "exhausted" = "exhausted";
-  while (isIterationDone(state, primitive.id, iteration)) {
+  while (isIterationDone(state, runId, primitive.id, iteration)) {
     const doneStepId = scopedStepId(primitive.id, iteration);
     const doneInput = await resolveIterationInput(env, log, doneStepId);
     const doneOutput = await resolveIterationOutput(env, log, doneStepId);
@@ -1784,13 +1796,13 @@ async function runLoop(
   // so every later iteration spawns fresh.
   let occurrenceResume = terminated
     ? undefined
-    : planLoopResume(primitive, state, log, iteration);
+    : planLoopResume(primitive, runId, state, log, iteration);
 
   let iterations = iteration;
   for (let i = iteration; !terminated && i < primitive.maxIterations; i += 1) {
     iterations = i + 1;
     const stepId = scopedStepId(primitive.id, i);
-    const childRunId = `${primitive.id}__${String(i)}`;
+    const childRunId = loopBodyRunId(runId, primitive.id, i);
 
     state = await reloadState(env, runId);
     if (!state.steps.has(stepId)) {
@@ -2772,11 +2784,12 @@ function planOnTriggerResume(
  */
 function planLoopResume(
   primitive: LoopPrimitive,
+  runId: string,
   state: RunState,
   log: readonly WorkflowEvent[],
   iteration: number,
 ): SuspendableOccurrenceResume | undefined {
-  const childRunId = `${primitive.id}__${String(iteration)}`;
+  const childRunId = loopBodyRunId(runId, primitive.id, iteration);
   const child = state.children.get(childRunId);
   if (child === undefined || child.terminalStatus !== undefined) {
     return undefined;
@@ -3083,10 +3096,11 @@ export function boundSignalForContainerAwait(
 
 function isIterationDone(
   state: RunState,
+  runId: string,
   loopId: string,
   iteration: number,
 ): boolean {
-  const child = state.children.get(`${loopId}__${String(iteration)}`);
+  const child = state.children.get(loopBodyRunId(runId, loopId, iteration));
   const step = state.steps.get(scopedStepId(loopId, iteration));
   return child?.terminalStatus !== undefined && step?.phase === "completed";
 }

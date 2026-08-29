@@ -95,6 +95,7 @@ import {
   enumerateInlineLoopBodies,
   escalation,
   loop,
+  loopBodyRunId,
   map,
   runtimeRun,
   step,
@@ -1084,7 +1085,11 @@ describe("per-level pipeline with real agents", () => {
     const trimmed: WorkflowEvent[] = [];
     for (const e of result1.events) {
       trimmed.push(e);
-      if (e.kind === "ChildSpawned" && e.childRunId === "amend__1") break;
+      if (
+        e.kind === "ChildSpawned" &&
+        e.childRunId === loopBodyRunId(result1.runId, "amend", 1)
+      )
+        break;
     }
 
     const result2 = await drivePipeline(

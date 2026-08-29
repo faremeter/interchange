@@ -32,6 +32,7 @@ import {
   defineWorkflow,
   enumerateInlineLoopBodies,
   loop,
+  loopBodyRunId,
   runtimeRun,
   step,
   type ActionInvoker,
@@ -234,7 +235,7 @@ describe("loop iteration suspend crash-resume", () => {
     void runtimeRun(awaitParent, env1, { runId }).complete;
     await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
     const parentLog = await repoStore1.read(runId);
-    const childLog = await repoStore1.read("rework__0");
+    const childLog = await repoStore1.read(loopBodyRunId(runId, "rework", 0));
     // The pre-park action ran once, and the body is parked (not complete).
     expect(preRuns1.n).toBe(1);
     expect(childLog.some((e) => e.kind === "ChildCompleted")).toBe(false);
@@ -242,7 +243,7 @@ describe("loop iteration suspend crash-resume", () => {
     // Run 2: resume against a fresh store seeded with the captured logs and a
     // fresh signal channel; deliver the awaited signal after the restart.
     const repoStore2 = createInMemoryRepoStore();
-    await seedChildLog(repoStore2, "rework__0", childLog);
+    await seedChildLog(repoStore2, loopBodyRunId(runId, "rework", 0), childLog);
     const preRuns2 = { n: 0 };
     const env2 = buildEnv({
       parentDef: awaitParent,
@@ -294,7 +295,7 @@ describe("loop iteration suspend crash-resume", () => {
       1,
     );
     const parkedLog = await repoStore1.read(runId);
-    const childLog = await repoStore1.read("rework__0");
+    const childLog = await repoStore1.read(loopBodyRunId(runId, "rework", 0));
 
     // Force the delivered-but-unrelayed window: append the container's
     // SignalReceived (the delivery that consumed the relay await, moving the
@@ -312,7 +313,7 @@ describe("loop iteration suspend crash-resume", () => {
     const parentLog = [...parkedLog, delivered];
 
     const repoStore2 = createInMemoryRepoStore();
-    await seedChildLog(repoStore2, "rework__0", childLog);
+    await seedChildLog(repoStore2, loopBodyRunId(runId, "rework", 0), childLog);
     const preRuns2 = { n: 0 };
     const env2 = buildEnv({
       parentDef: awaitParent,
@@ -421,12 +422,12 @@ describe("loop iteration approval crash-resume", () => {
     void runtimeRun(approvalParent, env1, { runId }).complete;
     await waitForContainerPark(repoStore1, runId, "approval", 1);
     const parentLog = await repoStore1.read(runId);
-    const childLog = await repoStore1.read("rework__0");
+    const childLog = await repoStore1.read(loopBodyRunId(runId, "rework", 0));
     // The step was invoked once (the suspending original send) and is parked.
     expect(invocations1).toHaveLength(1);
 
     const repoStore2 = createInMemoryRepoStore();
-    await seedChildLog(repoStore2, "rework__0", childLog);
+    await seedChildLog(repoStore2, loopBodyRunId(runId, "rework", 0), childLog);
     const invocations2: { resume: unknown }[] = [];
     const channel2 = createInMemorySignalChannel();
     const env2 = buildEnv({
@@ -583,7 +584,7 @@ describe("loop iteration suspend crash-resume carry", () => {
     void runtimeRun(carryParent, env1, { runId }).complete;
     await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
     const parentLog = await repoStore1.read(runId);
-    const childLog = await repoStore1.read("rework__0");
+    const childLog = await repoStore1.read(loopBodyRunId(runId, "rework", 0));
     expect(childLog.some((e) => e.kind === "ChildCompleted")).toBe(false);
 
     // Run 2: resume against a fresh store seeded with iteration 0's parked log.
@@ -592,7 +593,7 @@ describe("loop iteration suspend crash-resume carry", () => {
     // and the second delivery resumes it. The in-memory channel queues both
     // until each relay subscribes, so delivering them up front is safe.
     const repoStore2 = createInMemoryRepoStore();
-    await seedChildLog(repoStore2, "rework__0", childLog);
+    await seedChildLog(repoStore2, loopBodyRunId(runId, "rework", 0), childLog);
     const preRuns2 = { n: 0 };
     const env2 = buildEnv({
       parentDef: carryParent,
@@ -644,14 +645,14 @@ describe("loop iteration suspend crash-resume exhaustion", () => {
     void runtimeRun(exhaustParent, env1, { runId }).complete;
     await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
     const parentLog = await repoStore1.read(runId);
-    const childLog = await repoStore1.read("rework__0");
+    const childLog = await repoStore1.read(loopBodyRunId(runId, "rework", 0));
 
     // Run 2: resume and deliver the signal. Iteration 0 completes, `while`
     // ("always") still wants to continue, but the iteration cap is reached, so
     // the loop exhausts and routes to onExhausted (escalate) -- the branch a
     // converging loop prunes. The exhaustion decision is reached AFTER the park.
     const repoStore2 = createInMemoryRepoStore();
-    await seedChildLog(repoStore2, "rework__0", childLog);
+    await seedChildLog(repoStore2, loopBodyRunId(runId, "rework", 0), childLog);
     const escalateRuns = { n: 0 };
     const invokeAction: ActionInvoker = async ({ handler }) => {
       if (handler === "pre") return { output: { ran: true } };

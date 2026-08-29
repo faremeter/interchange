@@ -29,6 +29,7 @@ import {
   defineWorkflow,
   enumerateInlineLoopBodies,
   loop,
+  loopBodyRunId,
   map,
   runtimeRun,
   step,
@@ -186,7 +187,11 @@ describe("loop resume", () => {
     const trimmed: WorkflowEvent[] = [];
     for (const e of result1.events) {
       trimmed.push(e);
-      if (e.kind === "ChildSpawned" && e.childRunId === "rework__1") break;
+      if (
+        e.kind === "ChildSpawned" &&
+        e.childRunId === loopBodyRunId(result1.runId, "rework", 1)
+      )
+        break;
     }
 
     // Resume: fresh repoStore, SHARED blobs + effects ledger.

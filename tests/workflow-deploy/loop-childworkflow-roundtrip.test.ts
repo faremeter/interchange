@@ -24,6 +24,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { loopBodyRunId } from "@intx/workflow";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -95,8 +96,9 @@ const CHILD_STEP_ID = "childStep";
 const CHILD_AGENT_ID = "agent-nested-child";
 
 // The loop iteration body child run for iteration 0. The runtime keys it on
-// `<loopStepId>__<index>`.
-const BODY_CHILD_RUN_ID = `${LOOP_STEP_ID}__0`;
+// `<runId>__<loopStepId>__<index>` (`loopBodyRunId`); the run's own id is
+// `DEPLOYMENT_ID`.
+const BODY_CHILD_RUN_ID = loopBodyRunId(DEPLOYMENT_ID, LOOP_STEP_ID, 0);
 
 // The ref the deploy assigns to the loop body's inline childWorkflow: the body
 // is `<workflowId>__<loopStepId>`, and its inline childWorkflow lifts to

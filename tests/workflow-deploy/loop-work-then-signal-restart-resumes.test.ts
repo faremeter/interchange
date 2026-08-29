@@ -31,6 +31,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import { loopBodyRunId } from "@intx/workflow";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -63,8 +64,9 @@ const DEPLOYMENT_ID = "run_loop-work-then-signal-1";
 const LOOP_STEP_ID = "rework";
 const WORK_STEP_ID = "work";
 // The loop iteration body child run for iteration 0. The runtime keys it on
-// `<loopStepId>__<index>`.
-const BODY_CHILD_RUN_ID = `${LOOP_STEP_ID}__0`;
+// `<runId>__<loopStepId>__<index>` (`loopBodyRunId`); the run's own id is
+// `DEPLOYMENT_ID`.
+const BODY_CHILD_RUN_ID = loopBodyRunId(DEPLOYMENT_ID, LOOP_STEP_ID, 0);
 
 const TENANT_ID = "tnt_loop_work_then_signal";
 const CALLER_PRINCIPAL_ID = "prn_loop_work_then_signal";

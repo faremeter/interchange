@@ -589,6 +589,28 @@ describe("loop validation", () => {
     ).not.toThrow();
   });
 
+  test("rejects a loop step id containing a double underscore", () => {
+    // A loop body run id joins run id, loop id, and index with `__`
+    // (`loopBodyRunId`), so a `__` inside the loop id would make the run id --
+    // a durable-store key -- ambiguous with a different nesting chain.
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          re__work: loop({
+            body: simpleBody(),
+            while: "shouldContinue",
+            carry: "next",
+            maxIterations: 3,
+            onExhausted: "escalate",
+          }),
+          escalate: step({ agent: makeAgent("e"), after: ["re__work"] }),
+        },
+      }),
+    ).toThrow(/must not contain/);
+  });
+
   test("loop rejects a non-positive-integer maxIterations", () => {
     for (const bad of [0, -1, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() =>
