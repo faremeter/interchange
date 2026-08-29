@@ -1,7 +1,8 @@
 // Source-entry builder for a loop workflow fixture: one mail-triggered `loop`
-// whose body is a single agent `step` (a loop body cannot suspend, so it cannot
-// be a sleep/awaitSignal/childWorkflow; an agent step is the wired,
-// non-suspending body). The entry module exports BOTH `workflow` and the loop
+// whose body is a single non-suspending agent `step` -- the plain-loop roundtrip
+// case. (A loop body MAY now suspend on an `awaitSignal` or spawn a
+// `childWorkflow`; this fixture deliberately keeps the body a straight-through
+// agent step.) The entry module exports BOTH `workflow` and the loop
 // `while`/`carry` functions, so the deployment points `interchange.loops` at the
 // same bundled entry and `loadWorkflowLoopFnsFromClosure` resolves the refs by
 // export name.
