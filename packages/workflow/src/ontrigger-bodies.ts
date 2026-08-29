@@ -86,8 +86,19 @@ export interface ExtractedLoopBody {
  * change every existing loop's hash. This enumerator instead mints a fresh copy
  * (`{ ...body, id: ref }`) for the runtime bodies map and leaves `primitive.body`
  * byte-identical -- the suspendable-child seam resolves a loop body by ref while
- * the definition's hash is unchanged. Pure and side-effect-free; the loop
- * body-ban forbids a nested loop, so a single top-level scan is complete.
+ * the definition's hash is unchanged. Pure and side-effect-free.
+ *
+ * The scan RECURSES into each loop body so a nested loop's body is registered
+ * too, under `inlineBodyRef(<parentBodyRef>, <innerLoopId>)` -- the exact ref
+ * `runLoop` derives at runtime (`inlineBodyRef(definition.id, primitive.id)`)
+ * when the inner loop runs inside the outer body's own run. A loop body inherits
+ * the parent env, so an inner loop resolves its ref from this single top-level
+ * map; the map must therefore carry every depth. The recursion follows loop
+ * bodies only: a `childWorkflow` inside a loop body is a separate child run whose
+ * own loops enumerate when its run boots, so this scan stops at that boundary.
+ * It also stays a pure loop-body LIFT (grandchildren still inline) -- the host
+ * rewrites each returned body's `childWorkflow` children itself and keeps the
+ * pre-rewrite form for the grant cap, which a rewrite folded in here would break.
  */
 export function enumerateInlineLoopBodies(
   workflow: WorkflowDefinition,
@@ -96,7 +107,9 @@ export function enumerateInlineLoopBodies(
   for (const [stepId, primitive] of Object.entries(workflow.steps)) {
     if (primitive.kind !== "loop") continue;
     const ref = inlineBodyRef(workflow.id, stepId);
-    bodies.push({ ref, definition: { ...primitive.body, id: ref } });
+    const definition: WorkflowDefinition = { ...primitive.body, id: ref };
+    bodies.push({ ref, definition });
+    bodies.push(...enumerateInlineLoopBodies(definition));
   }
   return bodies;
 }
