@@ -373,6 +373,24 @@ export interface RunWorkflowChildBindings {
    * that runs no onTrigger section omits it.
    */
   runSuspendableChild?: RunSuspendableChild;
+  /**
+   * Materialize a loop iteration run's own `runs/<childRunId>/grants.json`,
+   * inheriting the parent (container) run's grants capped to the loop body's
+   * declared resources. A loop iteration runs through the workflow-host-local
+   * loop executor (the inherited env), NOT the sidecar's `buildChildRunEnv`, so
+   * it is the one body birth path that does not otherwise write its own grants
+   * file -- and without it the body's `childWorkflow` grandchild spawn is
+   * refused as under-authorized. Wired by the sidecar (the grant-cap helpers
+   * live there); optional so a test or an in-process host that never spawns a
+   * grandchild from a loop body can omit it. `definition` MUST be the PRE-rewrite
+   * loop body (grandchild still inline) so the cap keeps the grandchild's
+   * declared resources.
+   */
+  materializeLoopIterationGrants?: (args: {
+    parentRunId: string;
+    childRunId: string;
+    definition: WorkflowDefinition;
+  }) => Promise<void>;
   /** Host-process scheduler singleton. The child consumes the same instance. */
   scheduler: Scheduler;
   /** Grant evaluator wired against the host's grant-rule grammar. */
@@ -719,7 +737,13 @@ export async function runWorkflowChild(
   // would resolve a grandchild's refs mid-run instead of at establish, and would
   // leave `childBodiesMap` empty for a deployment whose only child is a
   // loop-body grandchild, so its spawn would find no wired terminal host.
+  // Keep each loop body's PRE-rewrite form (its childWorkflow grandchild still
+  // inline) keyed by ref: the grants cap for a loop iteration re-walks it, and
+  // capping the rewritten `{ ref }` form would skip -- and so under-authorize --
+  // the grandchild's declared resources.
+  const loopBodyPreRewrite = new Map<string, WorkflowDefinition>();
   for (const loopBody of enumerateInlineLoopBodies(definition)) {
+    loopBodyPreRewrite.set(loopBody.ref, loopBody.definition);
     const bodyRewrite = rewriteInlineChildWorkflowBodies(loopBody.definition);
     bodiesMap.set(loopBody.ref, bodyRewrite.workflow);
     for (const grandchild of bodyRewrite.bodies) {
@@ -895,6 +919,7 @@ export async function runWorkflowChild(
       directors,
       suspendableChildHost,
       bodiesMap,
+      loopBodyPreRewrite,
       spawnChild,
       loopFns,
       actionResolver,
@@ -1001,6 +1026,7 @@ export async function runWorkflowChild(
           directors,
           suspendableChildHost,
           bodiesMap,
+          loopBodyPreRewrite,
           spawnChild,
           loopFns,
           actionResolver,
@@ -1110,6 +1136,7 @@ async function handleControlPayload(
     directors: DirectorRegistry;
     suspendableChildHost: HostSpawnSuspendableChild | undefined;
     bodiesMap: ReadonlyMap<string, WorkflowDefinition>;
+    loopBodyPreRewrite: ReadonlyMap<string, WorkflowDefinition>;
     spawnChild: HostSpawnChild;
     loopFns: LoopFnRegistry;
     actionResolver: (ref: string) => ActionHandler;
@@ -1168,6 +1195,7 @@ async function handleControlPayload(
         directors: ctx.directors,
         suspendableChildHost: ctx.suspendableChildHost,
         bodiesMap: ctx.bodiesMap,
+        loopBodyPreRewrite: ctx.loopBodyPreRewrite,
         spawnChild: ctx.spawnChild,
         loopFns: ctx.loopFns,
         actionResolver: ctx.actionResolver,
@@ -1620,6 +1648,7 @@ function buildRuntimeEnv(args: {
   directors: DirectorRegistry;
   suspendableChildHost: HostSpawnSuspendableChild | undefined;
   bodiesMap: ReadonlyMap<string, WorkflowDefinition>;
+  loopBodyPreRewrite: ReadonlyMap<string, WorkflowDefinition>;
   spawnChild: HostSpawnChild;
   loopFns: LoopFnRegistry;
   actionResolver: (ref: string) => ActionHandler;
@@ -1740,6 +1769,37 @@ function buildRuntimeEnv(args: {
   const loopIterationHost = createInMemorySpawnSuspendableChild({
     bodies: args.bodiesMap,
     runSuspendableChild: async (loopInput, _onEvent) => {
+      // Materialize this iteration's own grants file BEFORE the body runs (i.e.
+      // before `createLoopIterationHandle` drives the iteration's first event
+      // append), so a `childWorkflow` grandchild spawned from the body reads it
+      // as authority (the sidecar's runChild fails closed on a missing parent
+      // grants file). This ordering is LOAD-BEARING: the grants write is
+      // write-once and its shallow-prefix rebuild is safe only while the
+      // iteration run's subtree is still empty -- see `capAndPersistChildGrants`.
+      // The cap must walk the PRE-rewrite loop body (grandchild still inline);
+      // the rewritten body in `bodiesMap` would skip the grandchild's resources.
+      // Every loop body is registered in `loopBodyPreRewrite` at establish under
+      // the same ref the runtime dispatches, so a miss is a defect -- fail loud
+      // rather than silently skip, which would re-open the fail-closed
+      // grandchild spawn. The BINDING is a separate sidecar-only seam: `runLocal`
+      // keeps no per-run grants file (its grandchild spawn never fails closed),
+      // so it omits the binding, and an absent binding leaves the iteration's
+      // grants unmaterialized -- matching the in-process model with no disk
+      // authority.
+      const preRewriteBody = args.loopBodyPreRewrite.get(
+        loopInput.definitionRef,
+      );
+      if (preRewriteBody === undefined) {
+        throw new Error(
+          `workflow-child: loop iteration ${loopInput.childRunId} has no ` +
+            `pre-rewrite body registered for ref ${loopInput.definitionRef}`,
+        );
+      }
+      await args.bindings.materializeLoopIterationGrants?.({
+        parentRunId: loopInput.parentRunId,
+        childRunId: loopInput.childRunId,
+        definition: preRewriteBody,
+      });
       const childSignalChannel = createWorkflowHostSignalChannel({
         repoStore: args.bindings.substrate,
         principal: args.bindings.principal,
