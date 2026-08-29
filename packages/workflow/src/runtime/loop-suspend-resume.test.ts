@@ -51,6 +51,13 @@ import { resolveDrainBehavior, type DrainController } from "./drain";
 const loopFns = (ref: string): LoopFn => {
   // Converge after the first iteration; `carry` is unused but must resolve.
   if (ref === "cont") return () => false;
+  // Continue while the threaded carry is still below 1, so a loop seeded at 0
+  // runs exactly two iterations (input 0, then the carried 1) before converging.
+  if (ref === "twice")
+    return (_o, currentInput) =>
+      (typeof currentInput === "number" ? currentInput : 0) < 1;
+  // Never converge on its own, so the loop runs until it hits maxIterations.
+  if (ref === "always") return () => true;
   if (ref === "next")
     return (_o, currentInput) =>
       typeof currentInput === "number" ? currentInput + 1 : 0;
@@ -169,6 +176,44 @@ function awaitInvokeAction(preRuns: { n: number }): ActionInvoker {
     throw new Error(`unknown handler ${handler}`);
   };
 }
+
+// A loop that runs TWO iterations: `while` ("twice") continues while the carried
+// input is still below 1, and `carry` ("next") threads 0 -> 1. Convergence at
+// iteration 2 is reachable only if the carry survives a park between iterations.
+const carryParent = defineWorkflow({
+  id: "await-loop-parent-carry",
+  trigger: { type: "manual" },
+  steps: {
+    rework: loop({
+      body: awaitBody,
+      while: "twice",
+      carry: "next",
+      input: { literal: 0 },
+      maxIterations: 3,
+      onExhausted: "escalate",
+    }),
+    escalate: action({ handler: "escalate", after: ["rework"] }),
+  },
+});
+
+// A loop that can never converge on its own (`while` is "always") and is capped
+// at a single iteration, so once that iteration completes the loop exhausts and
+// routes to its onExhausted target.
+const exhaustParent = defineWorkflow({
+  id: "await-loop-parent-exhaust",
+  trigger: { type: "manual" },
+  steps: {
+    rework: loop({
+      body: awaitBody,
+      while: "always",
+      carry: "next",
+      input: { literal: 0 },
+      maxIterations: 1,
+      onExhausted: "escalate",
+    }),
+    escalate: action({ handler: "escalate", after: ["rework"] }),
+  },
+});
 
 describe("loop iteration suspend crash-resume", () => {
   test("re-establishes an awaitSignal park and resumes on a signal delivered after restart", async () => {
@@ -517,5 +562,124 @@ describe("loop iteration drain", () => {
       outcome: "converged",
       iterations: 1,
     });
+  });
+});
+
+describe("loop iteration suspend crash-resume carry", () => {
+  test("threads carry across a durable park into a later iteration", async () => {
+    const runId = "carry-run";
+    const blobs = createInMemoryBlobSubstrate();
+
+    // Run 1: drive to iteration 0's awaitSignal park, then capture the durable
+    // parent + child logs (the process "crashes" parked on the first iteration).
+    const repoStore1 = createInMemoryRepoStore();
+    const env1 = buildEnv({
+      parentDef: carryParent,
+      repoStore: repoStore1,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction({ n: 0 }),
+    });
+    void runtimeRun(carryParent, env1, { runId }).complete;
+    await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
+    const parentLog = await repoStore1.read(runId);
+    const childLog = await repoStore1.read("rework__0");
+    expect(childLog.some((e) => e.kind === "ChildCompleted")).toBe(false);
+
+    // Run 2: resume against a fresh store seeded with iteration 0's parked log.
+    // The first delivery resumes iteration 0; iteration 1 -- a fresh iteration
+    // whose input is the carry threaded across the park -- parks on its own await
+    // and the second delivery resumes it. The in-memory channel queues both
+    // until each relay subscribes, so delivering them up front is safe.
+    const repoStore2 = createInMemoryRepoStore();
+    await seedChildLog(repoStore2, "rework__0", childLog);
+    const preRuns2 = { n: 0 };
+    const env2 = buildEnv({
+      parentDef: carryParent,
+      repoStore: repoStore2,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction(preRuns2),
+    });
+    const run2 = runtimeRun(carryParent, env2, {
+      runId,
+      resumeFromEvents: parentLog,
+    });
+    await run2.signal("go", { done: true }, "sig-0");
+    await run2.signal("go", { done: true }, "sig-1");
+    const result = await run2.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    // Iteration 0's pre-park action replayed from the seeded log (0 re-runs);
+    // only iteration 1's fresh pre action ran in run 2.
+    expect(preRuns2.n).toBe(1);
+    // Convergence at iteration 2 is reachable ONLY if the carry threaded 0 -> 1
+    // across the park: `while` ("twice") converges once the input reaches 1, so
+    // a dropped carry keeps the input at 0, re-parks iteration 2 on a `go` this
+    // test never delivers, and the run hangs (the assertions catch it as a
+    // timeout) rather than reaching this converged result.
+    expect("escalate" in result.outputs).toBe(false);
+    expect(result.outputs.rework).toMatchObject({
+      outcome: "converged",
+      iterations: 2,
+    });
+  });
+});
+
+describe("loop iteration suspend crash-resume exhaustion", () => {
+  test("routes to onExhausted after a parked iteration resumes into the cap", async () => {
+    const runId = "exhaust-run";
+    const blobs = createInMemoryBlobSubstrate();
+
+    // Run 1: drive to iteration 0's park -- the only iteration maxIterations=1
+    // allows -- and capture the durable logs.
+    const repoStore1 = createInMemoryRepoStore();
+    const env1 = buildEnv({
+      parentDef: exhaustParent,
+      repoStore: repoStore1,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction({ n: 0 }),
+    });
+    void runtimeRun(exhaustParent, env1, { runId }).complete;
+    await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
+    const parentLog = await repoStore1.read(runId);
+    const childLog = await repoStore1.read("rework__0");
+
+    // Run 2: resume and deliver the signal. Iteration 0 completes, `while`
+    // ("always") still wants to continue, but the iteration cap is reached, so
+    // the loop exhausts and routes to onExhausted (escalate) -- the branch a
+    // converging loop prunes. The exhaustion decision is reached AFTER the park.
+    const repoStore2 = createInMemoryRepoStore();
+    await seedChildLog(repoStore2, "rework__0", childLog);
+    const escalateRuns = { n: 0 };
+    const invokeAction: ActionInvoker = async ({ handler }) => {
+      if (handler === "pre") return { output: { ran: true } };
+      if (handler === "escalate") {
+        escalateRuns.n += 1;
+        return { output: "escalated" };
+      }
+      throw new Error(`unknown handler ${handler}`);
+    };
+    const env2 = buildEnv({
+      parentDef: exhaustParent,
+      repoStore: repoStore2,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction,
+    });
+    const run2 = runtimeRun(exhaustParent, env2, {
+      runId,
+      resumeFromEvents: parentLog,
+    });
+    await run2.signal("go", { done: true }, "sig-0");
+    const result = await run2.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    // onExhausted ran exactly once and its output is present -- a converging
+    // loop would prune escalate instead (see the converged tests above).
+    expect(escalateRuns.n).toBe(1);
+    expect(result.outputs.escalate).toBe("escalated");
+    expect(result.outputs.rework).toMatchObject({ outcome: "exhausted" });
   });
 });
