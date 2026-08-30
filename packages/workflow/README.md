@@ -77,9 +77,9 @@ loop: a top-level action or agent step that crashes mid-invocation also settles
 fails the run exactly as a crash in any other step does; loops are not special
 here.
 
-Second, suspension. The body-ban forbids a loop body from containing a `sleep`,
-a nested `loop`, or an `onTrigger`. It does NOT forbid an `awaitSignal` or a
-`childWorkflow`. A loop iteration runs through the suspendable-child seam, so its
+Second, suspension. The body-ban forbids a loop body from containing a `sleep`
+or an `onTrigger`. It does NOT forbid an `awaitSignal`, a `childWorkflow`, or a
+nested `loop`. A loop iteration runs through the suspendable-child seam, so its
 body can park on an `awaitSignal` and resume: the park relays up through the
 container's signal path and delivery resumes the iteration, the same way an
 onTrigger section body parks. A parked iteration also survives a crash -- a
@@ -91,14 +91,29 @@ A loop body may also spawn a `childWorkflow` grandchild: the child is lifted to
 a ref and runs as its own child run, depth-counted against the tree-wide spawn
 ceiling exactly like any other child.
 
-`sleep` stays banned: a parked sleep leaves the step `awaiting-timer`, and the
-container relays a signal park, not a timer park, so a loop body has no
-timer-park resume path (separate work, INTR-485). A nested `loop` and an
-`onTrigger` stay banned too -- a nested loop's carry/park interaction is
-unsupported, and a run carries a single subscription layer.
+A loop body may contain a nested `loop`. An inner loop resolves its body ref
+from the same top-level bodies map (a loop iteration inherits its parent's env),
+its body-child run ids carry the container run id so iterations stay unique
+across nesting, and its own signal park relays up through the outer container
+exactly as a leaf gate relays up through its container -- one layer at a time
+until it reaches the run whose channel has a real upstream. On crash the resume
+composes per level: whichever levels durably parked re-establish their relay,
+and a level whose container relay had not yet flushed re-drives it fresh from the
+body's own parked gate when its `runLoop` re-runs during re-adoption. Nesting
+depth is bounded at definition time (a small static limit), since deep nesting
+is authored, not dynamic. One topology is unsupported and fails loud on resume:
+two sibling loops in the same body both parked on author signals at once (the
+container relays one name at a time).
+
+`sleep` stays banned: a parked sleep leaves the step `awaiting-timer`, and every
+container park -- including a nested loop's -- relays a signal park, not a timer
+park, so a loop body still has no timer-park resume path (separate work,
+INTR-485). `onTrigger` stays banned too -- a run carries a single subscription
+layer.
 
 Practical guidance: use a loop to repeat a self-contained unit -- which may park
-on an `awaitSignal` or spawn a `childWorkflow` -- until a pure `while`/`carry`
-says stop. Model a `sleep` delay at a top-level step or an onTrigger section, not
-in a loop body. Keep a loop body's action idempotent where practical, since a
-mid-invocation crash fails the run and the effect is never re-run.
+on an `awaitSignal`, spawn a `childWorkflow`, or run a nested `loop` -- until a
+pure `while`/`carry` says stop. Model a `sleep` delay at a top-level step or an
+onTrigger section, not in a loop body. Keep a loop body's action idempotent
+where practical, since a mid-invocation crash fails the run and the effect is
+never re-run.

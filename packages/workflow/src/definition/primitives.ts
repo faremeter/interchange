@@ -203,10 +203,10 @@ export interface ActionPrimitive extends PrimitiveBase {
 
 /**
  * Bounded rework loop. Each iteration is a separate child run of `body`
- * (own run id `<loopId>[<index>]`, own event log in a shared store).
- * `runLoop` spawns iteration 0, evaluates `while` on its output, threads
- * `carry` to the next iteration's input, caps at `maxIterations`, and
- * routes to `onExhausted` when the cap is hit without `while` going
+ * (own run id `<runId>__<loopId>__<index>`, own event log in a shared
+ * store). `runLoop` spawns iteration 0, evaluates `while` on its output,
+ * threads `carry` to the next iteration's input, caps at `maxIterations`,
+ * and routes to `onExhausted` when the cap is hit without `while` going
  * false.
  *
  * `while` and `carry` are string refs to PURE functions resolved via the
@@ -214,9 +214,9 @@ export interface ActionPrimitive extends PrimitiveBase {
  * string refs), so the definition stays hashable. Those functions
  * receive only data and never an effect context -- they run on every
  * resume and must be side-effect free. The loop body may park on an
- * `awaitSignal` and resume, and may spawn a `childWorkflow` grandchild,
- * but may not contain a `loop`, `sleep`, or `onTrigger` (enforced at
- * definition time).
+ * `awaitSignal` and resume, may spawn a `childWorkflow` grandchild, and
+ * may contain a nested `loop` (bounded depth), but may not contain a
+ * `sleep` or `onTrigger` (all enforced at definition time).
  */
 export interface LoopPrimitive extends PrimitiveBase {
   kind: "loop";

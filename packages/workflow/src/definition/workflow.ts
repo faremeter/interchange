@@ -409,40 +409,58 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
 
 // A loop iteration runs through the suspendable-child seam, so its body MAY
 // park on an `awaitSignal` and resume (the container relays the signal park up
-// its signal path), and MAY spawn a `childWorkflow` grandchild -- lifted to a
-// ref and depth-counted against the tree-wide ceiling like any other child. It
-// still may not contain:
-//   - `sleep` -- a parked sleep leaves the step `awaiting-timer`, and the
-//     container relays a signal park, not a timer park, so a loop body has no
-//     timer-park resume path (separate work, INTR-485);
-//   - `loop` -- a nested loop's carry/park interaction is unsupported;
+// its signal path), MAY spawn a `childWorkflow` grandchild -- lifted to a ref
+// and depth-counted against the tree-wide ceiling like any other child -- and
+// MAY contain a nested `loop`: an inner loop resolves its body ref from the same
+// bodies map (env inheritance) and its own signal park relays up through the
+// outer container the same way a leaf gate does. It still may not contain:
+//   - `sleep` -- a parked sleep leaves the step `awaiting-timer`, and every
+//     container park (including a nested loop's) relays a SIGNAL park, not a
+//     timer park, so a loop body still has no timer-park resume path (INTR-485);
 //   - `onTrigger` -- one subscription layer per run.
-const LOOP_BODY_FORBIDDEN = new Set<Primitive["kind"]>([
-  "loop",
-  "sleep",
-  "onTrigger",
-]);
+const LOOP_BODY_FORBIDDEN = new Set<Primitive["kind"]>(["sleep", "onTrigger"]);
+
+// A static backstop on loop-body NESTING depth. Nesting is fixed by the
+// definition tree, so it is bounded here, at construction, rather than by the
+// runtime `MAX_CHILD_SPAWN_DEPTH` ceiling (which bounds the dynamic, possibly
+// self-referential childWorkflow recursion -- a different constraint that must
+// not be spent on static loop structure). Because a body is built bottom-up and
+// each `defineWorkflow` validates as it constructs, a definition deeper than
+// this cannot be CONSTRUCTED, so no downstream recursive reader
+// (`projectForHash`, `runLoop`'s frames) ever sees one -- this one guard is the
+// single chokepoint. Small on purpose: nobody hand-authors deep loop nesting.
+const MAX_LOOP_NESTING_DEPTH = 8;
 
 /**
- * Reject a loop whose body contains a forbidden primitive. This is a
- * separate pass from `validateAcyclic` because that check does not
- * recurse into a loop's nested body definition (the body is its own
- * `WorkflowDefinition`, already normalized by its own `defineWorkflow`
- * call, but its top-level kinds must still be constrained here).
+ * Reject a loop whose body contains a forbidden primitive, at every nesting
+ * level, and reject nesting deeper than `MAX_LOOP_NESTING_DEPTH`. Recurses into
+ * each loop body -- like `validateChildWorkflowBody` -- so the ban does not
+ * depend on the (type-unenforced) invariant that every loop body came from its
+ * own `defineWorkflow`; a hand-built body is checked here too. The walk
+ * short-circuits at the depth limit, so a pathological input cannot overflow it.
  */
-function validateLoopBody(steps: Record<string, Primitive>): void {
+function validateLoopBody(steps: Record<string, Primitive>, depth = 0): void {
   for (const [stepId, primitive] of Object.entries(steps)) {
     if (primitive.kind !== "loop") continue;
+    const bodyDepth = depth + 1;
+    if (bodyDepth > MAX_LOOP_NESTING_DEPTH) {
+      throw new Error(
+        `loop ${stepId} nests loop bodies deeper than the maximum ` +
+          `${MAX_LOOP_NESTING_DEPTH}; deep static nesting is rejected at ` +
+          `definition time so no recursive reader overflows on it`,
+      );
+    }
     for (const [bodyStepId, bodyPrimitive] of Object.entries(
       primitive.body.steps,
     )) {
       if (LOOP_BODY_FORBIDDEN.has(bodyPrimitive.kind)) {
         throw new Error(
           `loop ${stepId} body step ${bodyStepId} is a ${bodyPrimitive.kind}; ` +
-            `a loop body may not contain a loop, sleep, or onTrigger`,
+            `a loop body may not contain a sleep or onTrigger`,
         );
       }
     }
+    validateLoopBody(primitive.body.steps, bodyDepth);
   }
 }
 
@@ -645,8 +663,9 @@ function projectPrimitive(primitive: Primitive): unknown {
     // A loop carries an inline body definition whose steps may hold
     // agents (function-valued tool factories). Project the body the same
     // way as the top level so the whole thing is function-free before
-    // canonicalization. The body-ban forbids a nested loop, so this
-    // recursion is bounded.
+    // canonicalization. A body may itself hold a nested loop, so this
+    // recursion traverses it -- bounded by the finite definition tree and
+    // the `MAX_LOOP_NESTING_DEPTH` limit enforced at definition time.
     return { ...primitive, body: projectForHash(primitive.body) };
   }
   return primitive;
