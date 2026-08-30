@@ -2452,8 +2452,22 @@ async function driveContainerSignalRelay(
     return child.next();
   }
 
-  // (b) The container is awaiting; race the signal's arrival against the body
-  // advancing on its own.
+  // (b) The container is awaiting. If THIS container is itself a suspendable
+  // child (its env carries an `onSignalPark` sink), surface the relay await up
+  // to its parent so the parent relays a delivery down into this container's
+  // owned channel -- the same way the body's leaf gate surfaced up to here.
+  // Nesting composes: a loop inside a loop (or inside an onTrigger section)
+  // proxies the park one layer at a time until it reaches the run whose channel
+  // has a real upstream. At the top level the sink is unset, so this is a no-op
+  // and the container awaits the real channel directly. Fired on the fresh drive
+  // only, after the durable relay await above -- the reestablish path re-drives
+  // `raceContainerSignalRelay` directly and each level re-establishes from its
+  // own durable await, so it needs no re-fire.
+  if (env.onSignalPark !== undefined) {
+    env.onSignalPark({ runId, name });
+  }
+
+  // Race the signal's arrival against the body advancing on its own.
   return raceContainerSignalRelay(
     env,
     runId,

@@ -216,6 +216,63 @@ const exhaustParent = defineWorkflow({
   },
 });
 
+// Replace a loop step's inline body. `defineWorkflow` rejects a nested loop at
+// authoring time, so a nested fixture is assembled by swapping a valid loop's
+// body for a loop-containing one.
+function withLoopBody(
+  wf: WorkflowDefinition,
+  loopStepId: string,
+  body: WorkflowDefinition,
+): WorkflowDefinition {
+  const primitive = wf.steps[loopStepId];
+  if (primitive?.kind !== "loop") {
+    throw new Error(`fixture: ${loopStepId} is not a loop`);
+  }
+  return {
+    ...wf,
+    steps: { ...wf.steps, [loopStepId]: { ...primitive, body } },
+  };
+}
+
+// A loop over the signal-await body, one nesting level down.
+const innerAwaitParent = defineWorkflow({
+  id: "inner-await-loop",
+  trigger: { type: "manual" },
+  steps: {
+    inner: loop({
+      body: awaitBody,
+      while: "cont",
+      carry: "next",
+      input: { literal: 0 },
+      maxIterations: 3,
+      onExhausted: "iescalate",
+    }),
+    iescalate: action({ handler: "escalate", after: ["inner"] }),
+  },
+});
+
+// outer loop -> inner loop -> signal-await body. Both loops converge after one
+// iteration, so a single "go" delivery services the whole chain.
+const nestedAwaitParent = withLoopBody(
+  defineWorkflow({
+    id: "nested-await-loop-parent",
+    trigger: { type: "manual" },
+    steps: {
+      outer: loop({
+        body: awaitBody,
+        while: "cont",
+        carry: "next",
+        input: { literal: 0 },
+        maxIterations: 3,
+        onExhausted: "escalate",
+      }),
+      escalate: action({ handler: "escalate", after: ["outer"] }),
+    },
+  }),
+  "outer",
+  innerAwaitParent,
+);
+
 describe("loop iteration suspend crash-resume", () => {
   test("re-establishes an awaitSignal park and resumes on a signal delivered after restart", async () => {
     const runId = "await-run";
@@ -335,6 +392,64 @@ describe("loop iteration suspend crash-resume", () => {
 
     expect(result.terminalStatus).toBe("completed");
     // The body re-adopted its parked gate without re-running the pre-park action.
+    expect(preRuns2.n).toBe(0);
+  });
+
+  test("resumes a nested loop whose inner body is parked on a signal at the crash", async () => {
+    const runId = "nested-await-run";
+    const blobs = createInMemoryBlobSubstrate();
+
+    const repoStore1 = createInMemoryRepoStore();
+    const preRuns1 = { n: 0 };
+    const env1 = buildEnv({
+      parentDef: nestedAwaitParent,
+      repoStore: repoStore1,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction(preRuns1),
+    });
+    void runtimeRun(nestedAwaitParent, env1, { runId }).complete;
+    // The outer container's relay await on the root fires only after the inner
+    // container AND the inner body have parked, so this waits for the whole
+    // nested chain to be durable. Without the container relay composing up via
+    // onSignalPark, the outer would never park here and this would time out.
+    await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
+
+    const outerBodyRunId = loopBodyRunId(runId, "outer", 0);
+    const innerBodyRunId = loopBodyRunId(outerBodyRunId, "inner", 0);
+    const rootLog = await repoStore1.read(runId);
+    const outerBodyLog = await repoStore1.read(outerBodyRunId);
+    const innerBodyLog = await repoStore1.read(innerBodyRunId);
+    expect(preRuns1.n).toBe(1);
+    expect(
+      innerBodyLog.some(
+        (e) => e.kind === "SignalAwaited" && e.signalName === "go",
+      ),
+    ).toBe(true);
+
+    // Resume against a consistent store: reseed BOTH nested child logs.
+    const repoStore2 = createInMemoryRepoStore();
+    await seedChildLog(repoStore2, outerBodyRunId, outerBodyLog);
+    await seedChildLog(repoStore2, innerBodyRunId, innerBodyLog);
+    const preRuns2 = { n: 0 };
+    const env2 = buildEnv({
+      parentDef: nestedAwaitParent,
+      repoStore: repoStore2,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction(preRuns2),
+    });
+    const run2 = runtimeRun(nestedAwaitParent, env2, {
+      runId,
+      resumeFromEvents: rootLog,
+    });
+    await run2.signal("go", { done: true }, "sig-1");
+    const result = await run2.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    // The inner body re-adopted its parked gate: the pre-park action did NOT
+    // re-run on resume -- the whole nested chain re-established from durable
+    // state and the delivery cascaded down both container relays.
     expect(preRuns2.n).toBe(0);
   });
 

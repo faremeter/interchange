@@ -14,6 +14,7 @@ import { describe, test, expect } from "bun:test";
 
 import {
   action,
+  awaitSignal,
   defineWorkflow,
   loop,
   runLocal,
@@ -122,5 +123,74 @@ describe("nested loop", () => {
     // The inner loop converged (its onExhausted branch was pruned), so no
     // escalation ran.
     expect("esc" in result.outputs).toBe(false);
+  });
+});
+
+describe("nested loop awaitSignal (in-process park)", () => {
+  test("an inner-loop body signal park relays up through both containers", async () => {
+    // outer loop -> inner loop -> body `awaitSignal("go")`. A single delivery on
+    // the run's real channel must cascade DOWN two container relays to reach the
+    // body's gate: the outer container relays into the inner container's owned
+    // channel, which relays into the body's gate. The inner container surfacing
+    // its relay await to the outer (env.onSignalPark) is what makes that work.
+    const innerBody = defineWorkflow({
+      id: "inner-await-body",
+      trigger: { type: "manual" },
+      steps: { hold: awaitSignal({ name: "go" }) },
+    });
+    const innerLoopWf = defineWorkflow({
+      id: "inner-await-wf",
+      trigger: { type: "manual" },
+      steps: {
+        inner: loop({
+          body: innerBody,
+          while: "stop",
+          carry: "thread",
+          maxIterations: 3,
+          onExhausted: "iesc",
+        }),
+        iesc: action({ handler: "esc", after: ["inner"] }),
+      },
+    });
+    const outer = withLoopBody(
+      defineWorkflow({
+        id: "nested-await-wf",
+        trigger: { type: "manual" },
+        steps: {
+          outer: loop({
+            body: leaf,
+            while: "stop",
+            carry: "thread",
+            maxIterations: 3,
+            onExhausted: "oesc",
+          }),
+          oesc: action({ handler: "esc", after: ["outer"] }),
+        },
+      }),
+      "outer",
+      innerLoopWf,
+    );
+
+    const loopFns = (ref: string): LoopFn => {
+      if (ref === "stop") return () => false;
+      if (ref === "thread") return () => null;
+      throw new Error(`unknown loop fn ${ref}`);
+    };
+    const actionResolver = (ref: string): ActionHandler => {
+      if (ref === "esc") return async () => "escalated";
+      throw new Error(`unknown handler ${ref}`);
+    };
+
+    const run = runLocal(outer, { actionResolver, loopFns });
+    // The in-memory channel queues the delivery until the outermost relay
+    // subscribes, so delivering before the chain parks is fine.
+    await run.signal("go", { done: true }, "sig-1");
+    const result = await run.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    const { outcome, iterations } = outerLoopOutcome(result.outputs.outer);
+    expect(outcome).toBe("converged");
+    expect(iterations).toBe(1);
+    expect("oesc" in result.outputs).toBe(false);
   });
 });
