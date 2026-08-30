@@ -313,9 +313,9 @@ function collectPrimitiveGrants(
  * Walk every step of a nested body (a loop body, an inline onTrigger section
  * body, or an inline childWorkflow definition) and union its grants into
  * `collected`. Each step routes through `collectPrimitiveGrants`, so a body
- * that itself nests another body is covered by the same single dispatch and
- * the loop-body ban (a validator-owned invariant) simply means the recursion
- * never encounters a nesting primitive inside a loop body.
+ * that itself nests another body -- including a loop body that contains a
+ * nested loop -- is covered by the same single dispatch, which recurses into
+ * the inner body's own grants.
  *
  * Duplicate-name handling is scoped per body step: `collectAgentGrants` throws
  * on a duplicate within a single agent, but two DIFFERENT body steps that each
