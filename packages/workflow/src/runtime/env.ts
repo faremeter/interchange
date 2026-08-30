@@ -603,15 +603,18 @@ export interface WorkflowRuntimeEnv {
   onPark?: (park: WorkflowPark) => void;
   /**
    * Optional author-signal park sink, the non-reserved-channel sibling of
-   * `onPark`. Fired once each time a step parks on an author `awaitSignal`
-   * gate (a plain, author-chosen `name`, not a reserved
-   * `signalName(correlationId)` channel), on the fresh park only -- a re-park
-   * resume that finds the step already `awaiting-signal` does not re-fire, the
-   * same discipline as `onPark`. The suspendable-child seam wires it so a
-   * section body's author gate surfaces up to `runOnTrigger`; every other host
-   * -- the container run, runLocal -- leaves it unset, so an author gate there
-   * parks silently on the signal channel exactly as before (no behavior change
-   * off the section-body path).
+   * `onPark`. Fired once each time a park on an author `awaitSignal` gate (a
+   * plain, author-chosen `name`, not a reserved `signalName(correlationId)`
+   * channel) must surface up for a container to relay, on the fresh park only
+   * -- a re-park resume that finds the step already `awaiting-signal` does not
+   * re-fire, the same discipline as `onPark`. Two sites fire it: a body's leaf
+   * `awaitSignal` gate, and a container's own signal-relay await when that
+   * container is itself a suspendable child (a loop iteration or onTrigger
+   * section nested inside another), so the park composes up one layer at a time.
+   * The suspendable-child seam wires it on every body env (loop iteration or
+   * section body); a TOP-LEVEL container run and runLocal leave it unset, so the
+   * outermost relay awaits the run's real channel directly and an author gate
+   * off any suspendable-child path parks silently as before.
    */
   onSignalPark?: (park: WorkflowSignalPark) => void;
   /**
