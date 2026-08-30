@@ -329,6 +329,66 @@ describe("walkCapabilities", () => {
     expect(declarations.grantEffects.get("tool:mail_send")).toBe("allow");
   });
 
+  test("folds a childWorkflow grandchild's grants from inside a nested loop body", () => {
+    // The grandchild lives two loop levels down; the walk must recurse through
+    // both loop bodies (`case "loop"`) so the operator approves its grants at
+    // the top-level loop step, just as for a single-level loop body.
+    const registry = createDefaultDirectorRegistry();
+    const childAgent = defineAgent({
+      id: "ag_nested_grandchild",
+      systemPrompt: "grandchild agent",
+      tools: [makeMailFactory()],
+      capabilities: ["reply"],
+      inference: { sources: [{ provider: "anthropic", model: "claude-3" }] },
+    });
+    const child = defineWorkflow({
+      id: "nested-grandchild",
+      trigger: { type: "manual" },
+      steps: { work: step({ agent: childAgent }) },
+    });
+    const innerLoopBody = defineWorkflow({
+      id: "nested-inner-body",
+      trigger: { type: "manual" },
+      steps: { spawn: childWorkflow({ definition: child }) },
+    });
+    const outerLoopBody = defineWorkflow({
+      id: "nested-outer-body",
+      trigger: { type: "manual" },
+      steps: {
+        inner: loop({
+          body: innerLoopBody,
+          while: "w",
+          carry: "c",
+          maxIterations: 2,
+          onExhausted: "iesc",
+        }),
+        iesc: action({ handler: "noop", after: ["inner"] }),
+      },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_nested_loop_cw",
+      steps: {
+        outer: loop({
+          body: outerLoopBody,
+          while: "w",
+          carry: "c",
+          maxIterations: 2,
+          onExhausted: "oesc",
+        }),
+        oesc: action({ handler: "noop", after: ["outer"] }),
+      },
+    });
+
+    const walk = walkCapabilities(workflow, registry);
+    const declarations = walk.perStep.get("outer");
+    if (declarations === undefined) throw new Error("missing declarations");
+    const grants = new Set(declarations.grants);
+
+    expect(grants.has("tool:mail_send")).toBe(true);
+    expect(grants.has("capability:reply")).toBe(true);
+    expect(grants.has("inference.source:anthropic:claude-3")).toBe(true);
+  });
+
   test("collects a childWorkflow's grants nested inside an onTrigger body", () => {
     // A section body may spawn a childWorkflow, whose owned inline import runs
     // per event. Its grants must reach the parent deploy's approval set --
