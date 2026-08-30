@@ -274,6 +274,70 @@ describe("loop iteration suspend crash-resume", () => {
     });
   });
 
+  test("resumes when the crash lands before the container relay await flushed", async () => {
+    // The crash window between the body's leaf `SignalAwaited` flush (on the
+    // body run) and the container's relay `SignalAwaited` flush (on the
+    // container run): the container step is in-flight with NO relay await. On a
+    // consistent store the body's parked gate is durable, so resume must
+    // recover the author name from the body's own state and drive the container
+    // relay FRESH. Without that, the re-adopted body re-parks silently and the
+    // container blocks forever on `child.next()`.
+    const runId = "pre-relay-flush-run";
+    const blobs = createInMemoryBlobSubstrate();
+
+    const repoStore1 = createInMemoryRepoStore();
+    const preRuns1 = { n: 0 };
+    const env1 = buildEnv({
+      parentDef: awaitParent,
+      repoStore: repoStore1,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction(preRuns1),
+    });
+    void runtimeRun(awaitParent, env1, { runId }).complete;
+    // Let the live run reach the container relay await so ChildSpawned and the
+    // body's leaf park are durable, then reconstruct the EARLIER window by
+    // truncating the parent log to just before the container relay SignalAwaited.
+    await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
+    const parentLogFull = await repoStore1.read(runId);
+    const childLog = await repoStore1.read(loopBodyRunId(runId, "rework", 0));
+    expect(
+      childLog.some((e) => e.kind === "SignalAwaited" && e.signalName === "go"),
+    ).toBe(true);
+    expect(childLog.some((e) => e.kind === "ChildCompleted")).toBe(false);
+
+    // Strip the container's signal-relay SignalAwaited (and everything after),
+    // leaving the container step in-flight with no relay await.
+    const relayIdx = parentLogFull.findIndex(
+      (e) => e.kind === "SignalAwaited" && e.parkKind === "signal-relay",
+    );
+    expect(relayIdx).toBeGreaterThan(-1);
+    const parentLog = parentLogFull.slice(0, relayIdx);
+    expect(parentLog.some((e) => e.kind === "ChildSpawned")).toBe(true);
+
+    // Resume against a consistent store (the body's parked child log survives).
+    const repoStore2 = createInMemoryRepoStore();
+    await seedChildLog(repoStore2, loopBodyRunId(runId, "rework", 0), childLog);
+    const preRuns2 = { n: 0 };
+    const env2 = buildEnv({
+      parentDef: awaitParent,
+      repoStore: repoStore2,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction(preRuns2),
+    });
+    const run2 = runtimeRun(awaitParent, env2, {
+      runId,
+      resumeFromEvents: parentLog,
+    });
+    await run2.signal("go", { done: true }, "sig-1");
+    const result = await run2.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    // The body re-adopted its parked gate without re-running the pre-park action.
+    expect(preRuns2.n).toBe(0);
+  });
+
   test("relays a signal delivered to the container but not relayed before the crash", async () => {
     const runId = "relay-run";
     const blobs = createInMemoryBlobSubstrate();
