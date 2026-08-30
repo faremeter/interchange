@@ -290,7 +290,97 @@ const nestedAwaitParent = withLoopBody(
   innerAwaitParent,
 );
 
+// A loop body with TWO parallel author `awaitSignal` gates, so both park at
+// once -- the concurrent-park topology the resume planner does not support.
+const twoSignalBody = defineWorkflow({
+  id: "two-signal-body",
+  trigger: { type: "manual" },
+  steps: {
+    a: awaitSignal({ name: "goA" }),
+    b: awaitSignal({ name: "goB" }),
+  },
+});
+
+const twoSignalParent = defineWorkflow({
+  id: "two-signal-loop-parent",
+  trigger: { type: "manual" },
+  steps: {
+    rework: loop({
+      body: twoSignalBody,
+      while: "cont",
+      carry: "next",
+      input: { literal: 0 },
+      maxIterations: 3,
+      onExhausted: "escalate",
+    }),
+    escalate: action({ handler: "escalate", after: ["rework"] }),
+  },
+});
+
 describe("loop iteration suspend crash-resume", () => {
+  test("refuses to resume a body parked on two concurrent author signals", async () => {
+    const runId = "two-signal-run";
+    const repoStore1 = createInMemoryRepoStore();
+    const env1 = buildEnv({
+      parentDef: twoSignalParent,
+      repoStore: repoStore1,
+      blobs: createInMemoryBlobSubstrate(),
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction({ n: 0 }),
+    });
+    void runtimeRun(twoSignalParent, env1, { runId }).complete;
+
+    // Wait until BOTH body gates are durably parked, then until the container
+    // has relayed one (so there is a relay await to truncate before).
+    const bodyRunId = loopBodyRunId(runId, "rework", 0);
+    for (let i = 0; i < 200; i += 1) {
+      const log = await repoStore1.read(bodyRunId);
+      const names = new Set<string>();
+      for (const e of log) {
+        if (e.kind === "SignalAwaited") names.add(e.signalName);
+      }
+      if (names.has("goA") && names.has("goB")) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
+
+    const bodyLog = await repoStore1.read(bodyRunId);
+    // The crash lands before either gate's relay flushed: strip the container's
+    // relay await so the container step is in-flight with two un-relayed gates
+    // in the body.
+    const parentLog = truncateBeforeRelay(
+      await repoStore1.read(runId),
+      "rework",
+    );
+
+    const repoStore2 = createInMemoryRepoStore();
+    await seedChildLog(repoStore2, bodyRunId, bodyLog);
+    const env2 = buildEnv({
+      parentDef: twoSignalParent,
+      repoStore: repoStore2,
+      blobs: createInMemoryBlobSubstrate(),
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction({ n: 0 }),
+    });
+
+    // The resume planner refuses the concurrent-park topology loudly rather than
+    // mis-recovering one gate and stranding the other.
+    const result = await runtimeRun(twoSignalParent, env2, {
+      runId,
+      resumeFromEvents: parentLog,
+    }).complete;
+    // The planner refuses the concurrent-park topology loudly: the loop step
+    // fails rather than mis-recovering one gate and stranding the other.
+    expect(result.terminalStatus).toBe("failed");
+    const resumedLog = await repoStore2.read(runId);
+    const failed = resumedLog.find(
+      (e) => e.kind === "StepFailed" && e.stepId === "rework",
+    );
+    expect(failed?.kind === "StepFailed" ? failed.error.message : "").toMatch(
+      /multiple concurrent author signals/,
+    );
+  });
+
   test("re-establishes an awaitSignal park and resumes on a signal delivered after restart", async () => {
     const runId = "await-run";
     const blobs = createInMemoryBlobSubstrate();

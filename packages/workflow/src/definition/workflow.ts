@@ -426,9 +426,12 @@ const LOOP_BODY_FORBIDDEN = new Set<Primitive["kind"]>(["sleep", "onTrigger"]);
 // self-referential childWorkflow recursion -- a different constraint that must
 // not be spent on static loop structure). Because a body is built bottom-up and
 // each `defineWorkflow` validates as it constructs, a definition deeper than
-// this cannot be CONSTRUCTED, so no downstream recursive reader
-// (`projectForHash`, `runLoop`'s frames) ever sees one -- this one guard is the
-// single chokepoint. Small on purpose: nobody hand-authors deep loop nesting.
+// this cannot be built THROUGH `defineWorkflow`, so no downstream recursive
+// reader (`projectForHash`, `runLoop`'s frames) ever sees one from an authored
+// definition -- this one guard is the single chokepoint. (A `WorkflowDefinition`
+// hand-assembled around `defineWorkflow` bypasses this, the same trust boundary
+// every definition-time check relies on.) Small on purpose: nobody hand-authors
+// deep loop nesting.
 const MAX_LOOP_NESTING_DEPTH = 8;
 
 /**
