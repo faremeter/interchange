@@ -5,10 +5,10 @@
 // end-to-end through `runLocal` and asserts the inner loop actually iterates
 // under each outer iteration.
 //
-// The nested definition is assembled by swapping loop bodies rather than through
-// `defineWorkflow`, which rejects a nested loop at authoring time. The runtime
-// is a pure structural executor over a `WorkflowDefinition`, so a hand-built
-// nested definition exercises the resolution seam directly.
+// The fixtures assemble a nested definition by swapping a loop's body for a
+// loop-containing one (`withLoopBody`) -- a terse fixture helper. The runtime is
+// a pure structural executor over a `WorkflowDefinition`, so it runs a nested
+// definition however it was assembled.
 
 import { describe, test, expect } from "bun:test";
 
@@ -192,5 +192,84 @@ describe("nested loop awaitSignal (in-process park)", () => {
     expect(outcome).toBe("converged");
     expect(iterations).toBe(1);
     expect("oesc" in result.outputs).toBe(false);
+  });
+});
+
+describe("nested loop routing", () => {
+  test("an exhausting outer loop routes to onExhausted around converging inner loops", async () => {
+    let ticks = 0;
+    const actionResolver = (ref: string): ActionHandler => {
+      if (ref === "tick")
+        return async () => {
+          ticks += 1;
+          return null;
+        };
+      if (ref === "esc") return async () => "escalated";
+      throw new Error(`unknown handler ${ref}`);
+    };
+    const fns = (ref: string): LoopFn => {
+      if (ref === "always") return () => true;
+      if (ref === "cont") return cont;
+      if (ref === "next") return next;
+      throw new Error(`unknown loop fn ${ref}`);
+    };
+    // Inner loop converges after 3 (while `cont`); outer never converges
+    // (`always`) and caps at 2, so it exhausts and routes to its onExhausted.
+    const innerLoopBody = oneLoop("inner-wf", "inner");
+    const nested = withLoopBody(
+      defineWorkflow({
+        id: "exhaust-nested-wf",
+        trigger: { type: "manual" },
+        steps: {
+          outer: loop({
+            body: leaf,
+            while: "always",
+            carry: "next",
+            input: { literal: 0 },
+            maxIterations: 2,
+            onExhausted: "oesc",
+          }),
+          oesc: action({ handler: "esc", after: ["outer"] }),
+        },
+      }),
+      "outer",
+      innerLoopBody,
+    );
+
+    const result = await runLocal(nested, { actionResolver, loopFns: fns })
+      .complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    const { outcome, iterations } = outerLoopOutcome(result.outputs.outer);
+    expect(outcome).toBe("exhausted");
+    expect(iterations).toBe(2);
+    expect(result.outputs.oesc).toBe("escalated");
+    // 2 outer iterations x 3 inner iterations = 6 leaf ticks.
+    expect(ticks).toBe(6);
+  });
+
+  test("the outer loop threads its carry across nested iterations", async () => {
+    const actionResolver = (ref: string): ActionHandler => {
+      if (ref === "tick") return async () => null;
+      if (ref === "esc") return async () => "escalated";
+      throw new Error(`unknown handler ${ref}`);
+    };
+    // Both loops thread the counter carry; the outer converges when its carry
+    // reaches 2 (0 -> 1 -> 2), so its output carry is the value it converged on.
+    const innerLoopBody = oneLoop("inner-wf", "inner");
+    const nested = withLoopBody(
+      oneLoop("carry-nested-wf", "outer"),
+      "outer",
+      innerLoopBody,
+    );
+
+    const result = await runLocal(nested, { actionResolver, loopFns }).complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    const outer = result.outputs.outer;
+    if (typeof outer !== "object" || outer === null || !("carry" in outer)) {
+      throw new Error("outer loop output missing carry");
+    }
+    expect(outer.carry).toBe(2);
   });
 });

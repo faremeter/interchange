@@ -771,7 +771,7 @@ describe("loop validation", () => {
     ).toThrow(/onExhausted nope which is not a known step/);
   });
 
-  test("rejects a loop whose body contains a nested loop", () => {
+  test("accepts a loop whose body contains a nested loop", () => {
     const nestedBody = defineWorkflow({
       id: "nested-body",
       trigger: { type: "manual" },
@@ -801,7 +801,84 @@ describe("loop validation", () => {
           esc: step({ agent: makeAgent("esc"), after: ["outer"] }),
         },
       }),
-    ).toThrow(/may not contain a loop/);
+    ).not.toThrow();
+  });
+
+  test("recursion catches a sleep in a hand-built (unvalidated) nested loop body", () => {
+    // The per-body `defineWorkflow` guarantee does not hold for a body assembled
+    // directly (bypassing normalization). `validateLoopBody` therefore recurses,
+    // so an outer `defineWorkflow` still rejects a sleep buried in a nested loop
+    // of a hand-built body.
+    const sleepBody = defineWorkflow({
+      id: "sleep-leaf",
+      trigger: { type: "manual" },
+      steps: { nap: sleep({ duration: 1 }) },
+    });
+    // A valid single-level loop body, then swap its inner loop's body to the
+    // sleep-bearing one -- the swap never re-runs validation.
+    const valid = defineWorkflow({
+      id: "hand-built",
+      trigger: { type: "manual" },
+      steps: {
+        inner: loop({
+          body: simpleBody(),
+          while: "w",
+          carry: "c",
+          maxIterations: 2,
+          onExhausted: "e",
+        }),
+        e: action({ handler: "noop", after: ["inner"] }),
+      },
+    });
+    const innerLoop = valid.steps["inner"];
+    if (innerLoop?.kind !== "loop") throw new Error("fixture");
+    const handBuilt: WorkflowDefinition = {
+      ...valid,
+      steps: { ...valid.steps, inner: { ...innerLoop, body: sleepBody } },
+    };
+    expect(() =>
+      defineWorkflow({
+        id: "outer-wf",
+        trigger: { type: "manual" },
+        steps: {
+          outer: loop({
+            body: handBuilt,
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "esc",
+          }),
+          esc: action({ handler: "noop", after: ["outer"] }),
+        },
+      }),
+    ).toThrow(/may not contain a sleep/);
+  });
+
+  test("rejects loop nesting deeper than the static limit", () => {
+    // Build the deepest permitted nesting (8 loop levels), then one more must be
+    // rejected at definition time so no recursive reader overflows on it.
+    const nest = (levels: number): WorkflowDefinition => {
+      let body = simpleBody();
+      for (let i = 0; i < levels; i += 1) {
+        body = defineWorkflow({
+          id: `lvl-${String(i)}`,
+          trigger: { type: "manual" },
+          steps: {
+            rework: loop({
+              body,
+              while: "w",
+              carry: "c",
+              maxIterations: 2,
+              onExhausted: "e",
+            }),
+            e: action({ handler: "noop", after: ["rework"] }),
+          },
+        });
+      }
+      return body;
+    };
+    expect(() => nest(8)).not.toThrow();
+    expect(() => nest(9)).toThrow(/deeper than the maximum/);
   });
 
   test("rejects a loop body containing sleep", () => {

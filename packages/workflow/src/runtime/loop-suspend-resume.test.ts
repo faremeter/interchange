@@ -141,6 +141,25 @@ async function seedChildLog(
   }
 }
 
+// Reconstruct a pre-relay-flush crash window: drop a container's signal-relay
+// `SignalAwaited` (and everything after) so the container step is left in-flight
+// with no relay await, as if the crash landed before that flush.
+function truncateBeforeRelay(
+  log: readonly WorkflowEvent[],
+  containerStepId: string,
+): WorkflowEvent[] {
+  const idx = log.findIndex(
+    (e) =>
+      e.kind === "SignalAwaited" &&
+      e.parkKind === "signal-relay" &&
+      e.stepId === containerStepId,
+  );
+  if (idx < 0) {
+    throw new Error(`no signal-relay await for ${containerStepId} in the log`);
+  }
+  return log.slice(0, idx);
+}
+
 const awaitBody = defineWorkflow({
   id: "await-body",
   trigger: { type: "manual" },
@@ -216,9 +235,7 @@ const exhaustParent = defineWorkflow({
   },
 });
 
-// Replace a loop step's inline body. `defineWorkflow` rejects a nested loop at
-// authoring time, so a nested fixture is assembled by swapping a valid loop's
-// body for a loop-containing one.
+// Replace a loop step's inline body -- a terse way to assemble a nested fixture.
 function withLoopBody(
   wf: WorkflowDefinition,
   loopStepId: string,
@@ -450,6 +467,112 @@ describe("loop iteration suspend crash-resume", () => {
     // The inner body re-adopted its parked gate: the pre-park action did NOT
     // re-run on resume -- the whole nested chain re-established from durable
     // state and the delivery cascaded down both container relays.
+    expect(preRuns2.n).toBe(0);
+  });
+
+  test("resumes a nested loop when neither container relay flushed at the crash", async () => {
+    // Partial-park window: the crash lands after the inner body's leaf gate
+    // flushed but before EITHER container's relay await flushed. Neither
+    // container is parked, so the outer planner classifies undefined and
+    // forward-drives; re-adopting the outer body re-runs the inner loop, whose
+    // planner drives its container relay fresh from the leaf gate and surfaces
+    // it up so the outer's forward drive parks. It must still resume, once.
+    const runId = "nested-partial-both-run";
+    const blobs = createInMemoryBlobSubstrate();
+
+    const repoStore1 = createInMemoryRepoStore();
+    const preRuns1 = { n: 0 };
+    const env1 = buildEnv({
+      parentDef: nestedAwaitParent,
+      repoStore: repoStore1,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction(preRuns1),
+    });
+    void runtimeRun(nestedAwaitParent, env1, { runId }).complete;
+    await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
+
+    const outerBodyRunId = loopBodyRunId(runId, "outer", 0);
+    const innerBodyRunId = loopBodyRunId(outerBodyRunId, "inner", 0);
+    const rootLog = truncateBeforeRelay(await repoStore1.read(runId), "outer");
+    const outerBodyLog = truncateBeforeRelay(
+      await repoStore1.read(outerBodyRunId),
+      "inner",
+    );
+    const innerBodyLog = await repoStore1.read(innerBodyRunId);
+    expect(
+      innerBodyLog.some(
+        (e) => e.kind === "SignalAwaited" && e.signalName === "go",
+      ),
+    ).toBe(true);
+
+    const repoStore2 = createInMemoryRepoStore();
+    await seedChildLog(repoStore2, outerBodyRunId, outerBodyLog);
+    await seedChildLog(repoStore2, innerBodyRunId, innerBodyLog);
+    const preRuns2 = { n: 0 };
+    const env2 = buildEnv({
+      parentDef: nestedAwaitParent,
+      repoStore: repoStore2,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction(preRuns2),
+    });
+    const run2 = runtimeRun(nestedAwaitParent, env2, {
+      runId,
+      resumeFromEvents: rootLog,
+    });
+    await run2.signal("go", { done: true }, "sig-1");
+    const result = await run2.complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    expect(preRuns2.n).toBe(0);
+  });
+
+  test("resumes a nested loop when only the inner container relay flushed", async () => {
+    // Partial-park window: the inner container's relay await IS durable but the
+    // outer container's is not. The outer planner's scan of the outer body finds
+    // the inner container awaiting an author name and classifies it drive-fresh;
+    // re-adopting re-establishes the inner relay. It must resume, once.
+    const runId = "nested-partial-outer-run";
+    const blobs = createInMemoryBlobSubstrate();
+
+    const repoStore1 = createInMemoryRepoStore();
+    const preRuns1 = { n: 0 };
+    const env1 = buildEnv({
+      parentDef: nestedAwaitParent,
+      repoStore: repoStore1,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction(preRuns1),
+    });
+    void runtimeRun(nestedAwaitParent, env1, { runId }).complete;
+    await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
+
+    const outerBodyRunId = loopBodyRunId(runId, "outer", 0);
+    const innerBodyRunId = loopBodyRunId(outerBodyRunId, "inner", 0);
+    const rootLog = truncateBeforeRelay(await repoStore1.read(runId), "outer");
+    const outerBodyLog = await repoStore1.read(outerBodyRunId);
+    const innerBodyLog = await repoStore1.read(innerBodyRunId);
+
+    const repoStore2 = createInMemoryRepoStore();
+    await seedChildLog(repoStore2, outerBodyRunId, outerBodyLog);
+    await seedChildLog(repoStore2, innerBodyRunId, innerBodyLog);
+    const preRuns2 = { n: 0 };
+    const env2 = buildEnv({
+      parentDef: nestedAwaitParent,
+      repoStore: repoStore2,
+      blobs,
+      signalChannel: createInMemorySignalChannel(),
+      invokeAction: awaitInvokeAction(preRuns2),
+    });
+    const run2 = runtimeRun(nestedAwaitParent, env2, {
+      runId,
+      resumeFromEvents: rootLog,
+    });
+    await run2.signal("go", { done: true }, "sig-1");
+    const result = await run2.complete;
+
+    expect(result.terminalStatus).toBe("completed");
     expect(preRuns2.n).toBe(0);
   });
 

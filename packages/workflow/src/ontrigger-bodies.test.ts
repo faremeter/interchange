@@ -319,12 +319,10 @@ describe("enumerateInlineLoopBodies", () => {
   });
 
   test("recurses into nested loop bodies, minting a ref per depth", () => {
-    // The enumerator is a pure structural pass over a `WorkflowDefinition`, so
-    // it can be exercised on a nested-loop definition assembled directly --
-    // `defineWorkflow` rejects a nested loop at authoring time, but the runtime
-    // resolves an inner loop's body from this same map, so the map must carry a
-    // ref at every depth. Swap loop bodies to stack three loop levels
-    // (outer -> inner -> innermost) over a leaf action body.
+    // The enumerator is a pure structural pass over a `WorkflowDefinition`; the
+    // runtime resolves an inner loop's body from this same map, so the map must
+    // carry a ref at every depth. Stack three loop levels (outer -> inner ->
+    // innermost) over a leaf action body by swapping each loop's body.
     const leaf = defineWorkflow({
       id: "leaf",
       steps: { touch: action({ handler: "noop" }) },
