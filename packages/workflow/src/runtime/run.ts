@@ -1796,7 +1796,7 @@ async function runLoop(
   // so every later iteration spawns fresh.
   let occurrenceResume = terminated
     ? undefined
-    : planLoopResume(primitive, runId, state, log, iteration);
+    : await planLoopResume(env, primitive, runId, state, log, iteration);
 
   let iterations = iteration;
   for (let i = iteration; !terminated && i < primitive.maxIterations; i += 1) {
@@ -1891,7 +1891,13 @@ type SuspendableOccurrenceResume =
       name: string;
       payload: unknown;
       signalId: string;
-    };
+    }
+  // The body is parked on an author `awaitSignal` gate, but the container never
+  // emitted its relay await before the crash (in-flight, no durable relay). The
+  // re-adopted body re-parks silently, so there is no await to reestablish and
+  // no `onSignalPark` to surface it -- drive the container relay FRESH over the
+  // recovered name instead.
+  | { kind: "signal-relay-drive-fresh"; name: string };
 
 /**
  * Drive one occurrence's suspendable-child body to terminal, durably: commit
@@ -2015,6 +2021,20 @@ async function driveSuspendableOccurrence(
       child,
       resume.name,
       resume.awaitSeq,
+      abort,
+    );
+  } else if (resume?.kind === "signal-relay-drive-fresh") {
+    // The container never emitted its relay await before the crash, so there is
+    // nothing to reestablish and the re-adopted body re-parks silently (no
+    // onSignalPark). Drive the container relay FRESH over the recovered name --
+    // emit the relay await and race -- so the container ends up awaiting the
+    // signal that will arrive, and continue with the body event it yields.
+    pending = await driveContainerSignalRelay(
+      env,
+      runId,
+      containerStepId,
+      child,
+      resume.name,
       abort,
     );
   }
@@ -2782,13 +2802,14 @@ function planOnTriggerResume(
  * `terminal-is-final` arm -- the `isIterationDone` replay and the forward
  * drive already own the terminal and re-adopt cases.
  */
-function planLoopResume(
+async function planLoopResume(
+  env: WorkflowRuntimeEnv,
   primitive: LoopPrimitive,
   runId: string,
   state: RunState,
   log: readonly WorkflowEvent[],
   iteration: number,
-): SuspendableOccurrenceResume | undefined {
+): Promise<SuspendableOccurrenceResume | undefined> {
   const childRunId = loopBodyRunId(runId, primitive.id, iteration);
   const child = state.children.get(childRunId);
   if (child === undefined || child.terminalStatus !== undefined) {
@@ -2839,8 +2860,7 @@ function planLoopResume(
   // signal was DELIVERED (its SignalReceived moved the container to in-flight)
   // but not relayed into the body before the crash. Relay it into the
   // re-adopted body, else the body's silently re-parked gate would wait forever
-  // for a signal already consumed. Any OTHER in-flight body carries no delivered
-  // grant/signal, so it needs no token and the forward drive re-adopts it.
+  // for a signal already consumed.
   const grant = recoverDeliveredApprovalGrant(primitive.id, log);
   if (grant !== undefined) {
     return {
@@ -2858,6 +2878,38 @@ function planLoopResume(
       payload: relaySignal.payload,
       signalId: relaySignal.signalId,
     };
+  }
+  // Otherwise the body is in flight with nothing delivered to the container.
+  // On a consistent store the body's own durable log may show it parked on an
+  // author `awaitSignal` gate the container never relayed -- the crash landed
+  // after the body's leaf `SignalAwaited` flushed but before the container's
+  // relay `SignalAwaited` flushed. The re-adopted body re-parks silently, so
+  // the forward drive would never surface the gate and the container would
+  // block forever. Recover the parked author name from the body's reduced state
+  // and drive the container relay FRESH. (On an inconsistent store the child
+  // log is gone, so no gate is found and the forward drive re-runs the
+  // iteration -- the existing inconsistent-store behavior.)
+  const childState = await reloadState(env, childRunId);
+  const authorAwaits: string[] = [];
+  for (const step of childState.steps.values()) {
+    if (
+      step.phase === "awaiting-signal" &&
+      step.awaitingSignal !== undefined &&
+      correlationIdFromSignalName(step.awaitingSignal.name) === undefined
+    ) {
+      authorAwaits.push(step.awaitingSignal.name);
+    }
+  }
+  if (authorAwaits.length > 1) {
+    throw new Error(
+      `loop ${primitive.id} resume: body child ${childRunId} is parked on ` +
+        `multiple concurrent author signals (${authorAwaits.join(", ")}); ` +
+        `re-establishing more than one un-relayed gate is not supported`,
+    );
+  }
+  const parkedName = authorAwaits[0];
+  if (parkedName !== undefined) {
+    return { kind: "signal-relay-drive-fresh", name: parkedName };
   }
   return undefined;
 }
