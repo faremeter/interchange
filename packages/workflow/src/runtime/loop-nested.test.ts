@@ -272,4 +272,77 @@ describe("nested loop routing", () => {
     }
     expect(outer.carry).toBe(2);
   });
+
+  test("a nested inner loop exhausts and routes to its own onExhausted", async () => {
+    let ticks = 0;
+    let innerEscalations = 0;
+    const actionResolver = (ref: string): ActionHandler => {
+      if (ref === "tick")
+        return async () => {
+          ticks += 1;
+          return null;
+        };
+      if (ref === "iesc")
+        return async () => {
+          innerEscalations += 1;
+          return "inner-escalated";
+        };
+      if (ref === "esc") return async () => "escalated";
+      throw new Error(`unknown handler ${ref}`);
+    };
+    const fns = (ref: string): LoopFn => {
+      if (ref === "always") return () => true;
+      if (ref === "stop") return () => false;
+      if (ref === "next") return next;
+      throw new Error(`unknown loop fn ${ref}`);
+    };
+    // The inner loop never converges (`always`) and caps at 2, so it exhausts
+    // and routes to ITS onExhausted (iesc) while nested. The outer loop
+    // converges after one iteration.
+    const innerLoopWf = defineWorkflow({
+      id: "inner-exhaust-wf",
+      trigger: { type: "manual" },
+      steps: {
+        inner: loop({
+          body: leaf,
+          while: "always",
+          carry: "next",
+          input: { literal: 0 },
+          maxIterations: 2,
+          onExhausted: "iesc",
+        }),
+        iesc: action({ handler: "iesc", after: ["inner"] }),
+      },
+    });
+    const nested = withLoopBody(
+      defineWorkflow({
+        id: "outer-over-exhausting-inner-wf",
+        trigger: { type: "manual" },
+        steps: {
+          outer: loop({
+            body: leaf,
+            while: "stop",
+            carry: "next",
+            input: { literal: 0 },
+            maxIterations: 3,
+            onExhausted: "oesc",
+          }),
+          oesc: action({ handler: "esc", after: ["outer"] }),
+        },
+      }),
+      "outer",
+      innerLoopWf,
+    );
+
+    const result = await runLocal(nested, { actionResolver, loopFns: fns })
+      .complete;
+
+    expect(result.terminalStatus).toBe("completed");
+    // One outer iteration ran the inner loop, which exhausted at 2 (two leaf
+    // ticks) and ran its onExhausted branch once.
+    expect(ticks).toBe(2);
+    expect(innerEscalations).toBe(1);
+    const { outcome } = outerLoopOutcome(result.outputs.outer);
+    expect(outcome).toBe("converged");
+  });
 });
