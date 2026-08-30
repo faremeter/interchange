@@ -866,6 +866,42 @@ describe("loop iteration drain", () => {
       iterations: 1,
     });
   });
+
+  test("drain sheds a parked nested loop chain", async () => {
+    const runId = "drain-nested-run";
+    const repoStore = createInMemoryRepoStore();
+    const drain = createControllableDrain(nestedAwaitParent);
+    const run = runtimeRun(
+      nestedAwaitParent,
+      buildEnv({
+        parentDef: nestedAwaitParent,
+        repoStore,
+        blobs: createInMemoryBlobSubstrate(),
+        signalChannel: createInMemorySignalChannel(),
+        invokeAction: awaitInvokeAction({ n: 0 }),
+        drain,
+      }),
+      { runId },
+    );
+    // The whole nested chain parks (outer container -> inner container -> body
+    // gate). The outer loop defaults to cancel-on-drain, so the drain aborts the
+    // outer container and the abort cascades DOWN every nested suspendable-child
+    // level (localTeardown), shedding the parked chain -- the run fails.
+    await waitForContainerPark(repoStore, runId, "signal-relay", 1);
+
+    drain.trigger();
+    const result = await run.complete;
+    expect(result.terminalStatus).toBe("failed");
+
+    // The teardown reached the INNERMOST level, not just the top: the inner
+    // body run's parked gate failed as the abort cascaded through both
+    // container levels. This is what distinguishes cancel PROPAGATION through
+    // the nesting from a single-level shed.
+    const outerBodyRunId = loopBodyRunId(runId, "outer", 0);
+    const innerBodyRunId = loopBodyRunId(outerBodyRunId, "inner", 0);
+    const innerBodyLog = await repoStore.read(innerBodyRunId);
+    expect(innerBodyLog.some((e) => e.kind === "StepFailed")).toBe(true);
+  });
 });
 
 describe("loop iteration suspend crash-resume carry", () => {
