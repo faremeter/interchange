@@ -345,6 +345,20 @@ describe("defineWorkflow", () => {
     expect(def.steps.plan?.id).toBe("plan");
   });
 
+  test("rejects any step id containing a double underscore", () => {
+    // `__` is the delimiter joining a step id into the runtime ids derived from
+    // it (inline-body refs, loop/onTrigger body run ids), so a `__` inside a
+    // step id would make one of those ids ambiguous. The rule spans every
+    // primitive kind, not just loops -- a plain step id is rejected too.
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: { plan__b: step({ agent: makeAgent("planner") }) },
+      }),
+    ).toThrow(/must not contain/);
+  });
+
   test("round-trips declared grant requirements", () => {
     const def = defineWorkflow({
       id: "w",
@@ -607,6 +621,24 @@ describe("loop validation", () => {
           }),
           escalate: step({ agent: makeAgent("e"), after: ["re__work"] }),
         },
+      }),
+    ).toThrow(/must not contain/);
+  });
+
+  test("rejects a double underscore in a loop body step id", () => {
+    // A loop body is its own normalized definition, so the ban fires at every
+    // nesting level -- a `__` step id inside the body is caught by the body's
+    // own `defineWorkflow`, not only at the top level.
+    expect(() =>
+      loop({
+        body: defineWorkflow({
+          id: "loop-body",
+          steps: { in__ner: action({ handler: "noop" }) },
+        }),
+        while: "w",
+        carry: "c",
+        maxIterations: 2,
+        onExhausted: "e",
       }),
     ).toThrow(/must not contain/);
   });

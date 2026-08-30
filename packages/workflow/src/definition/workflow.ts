@@ -143,16 +143,20 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
         `step id ${JSON.stringify(stepId)} must match ${STEP_ID_PATTERN.source}`,
       );
     }
-    // A loop iteration's body run id is `<runId>__<loopId>__<index>`
-    // (`loopBodyRunId`); a `__` inside the loop id would make that string
-    // ambiguous with a different nesting chain, and the id is a durable-store
-    // key, so the collision is silent shared-state corruption. Reject it here,
-    // at the same boundary that enforces `STEP_ID_PATTERN`. A nested loop body
+    // `__` is the delimiter that joins a step id into the ids the runtime
+    // derives from it: an inline-body ref (`<workflowId>__<stepId>`, and under
+    // nesting `<parentRef>__<stepId>`), a loop iteration body run id
+    // (`<runId>__<loopId>__<index>`), and an onTrigger section body run id
+    // (`<sectionId>__<index>`, which is parsed back). A `__` inside a step id
+    // would make one of those ids ambiguous with a different chain -- and they
+    // key the durable store, so the collision is silent shared-state
+    // corruption. Reject it in EVERY step id here, at the boundary that owns
+    // the id grammar, so every ref/run-id segment stays atomic. A nested body
     // is its own normalized definition, so this covers every nesting level.
-    if (primitive.kind === "loop" && stepId.includes("__")) {
+    if (stepId.includes("__")) {
       throw new Error(
-        `loop step id ${JSON.stringify(stepId)} must not contain "__"; ` +
-          `a loop body run id joins run id, loop id, and index with "__"`,
+        `step id ${JSON.stringify(stepId)} must not contain "__"; ` +
+          `it becomes a segment of a runtime id joined by "__"`,
       );
     }
     if (primitive.id !== "" && primitive.id !== stepId) {
