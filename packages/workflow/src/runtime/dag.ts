@@ -160,6 +160,33 @@ export function isCrashedInvocationStep(
   return kind === "step" || kind === "action";
 }
 
+/**
+ * A `sleep` step left non-terminal in a seed log is resumable in both of its
+ * live phases: `awaiting-timer` while its `TimerSet` is unfired (`runSleep`
+ * re-adopts the durable timer and re-parks on `waitForTimer`, honouring the
+ * persisted `fireAt` rather than restarting the clock) and `in-flight` after
+ * its `TimerFired` landed but before its `StepCompleted` (`runSleep` completes
+ * it without re-parking -- the crash-after-`TimerFired`-before-`StepCompleted`
+ * window, mirroring `isResumableReceivedAwaitSignalStep`). `TimerFired` is the
+ * only mover off `awaiting-timer` for a sleep, so the in-flight window carries
+ * no competing outcome to reconstruct.
+ *
+ * The kind guard is exact for a reason: a retrying `step`/`action` also parks
+ * in `awaiting-timer` during backoff (`handleAttemptScheduled`), and that
+ * residual has no sleep-resume path -- it must stay `RuntimeResumeUnsupportedError`
+ * and let the host own recovery. Only a `sleep` primitive is admitted here. The
+ * resume guard and `nextSchedulable` both key on this single predicate so the
+ * carve-out lives in exactly one place, mirroring the other predicates.
+ */
+export function isResumableSleepStep(
+  def: WorkflowDefinition,
+  stepId: string,
+  phase: StepPhase,
+): boolean {
+  if (phase !== "awaiting-timer" && phase !== "in-flight") return false;
+  return def.steps[stepId]?.kind === "sleep";
+}
+
 export function nextSchedulable(
   def: WorkflowDefinition,
   state: RunState,
@@ -172,19 +199,20 @@ export function nextSchedulable(
   //
   // `state.steps.has(stepId)` skips steps in `awaiting-signal`,
   // `awaiting-timer`, and `in-flight`. The in-process runtime body has no
-  // surface for re-arming an `awaiting-timer` or a generic in-flight
-  // primitive on resume; a seed log that lands a step in those phases is
-  // rejected up front by `runtimeRun` with `RuntimeResumeUnsupportedError`.
-  // The exceptions re-offered below are the resumable carve-outs: a loop
-  // container in-flight or awaiting-signal (`isResumableLoopStep`,
-  // re-derived by `runLoop`), an `awaitSignal` step still `awaiting-signal`
-  // (`isResumableAwaitingSignalStep`, re-parked so a later signal
-  // resolves it), an `awaitSignal` step left `in-flight` by an
+  // surface for re-arming a generic in-flight primitive on resume; a seed log
+  // that lands a step in those phases is rejected up front by `runtimeRun`
+  // with `RuntimeResumeUnsupportedError`. The exceptions re-offered below are
+  // the resumable carve-outs: a loop container in-flight or awaiting-signal
+  // (`isResumableLoopStep`, re-derived by `runLoop`), an `awaitSignal` step
+  // still `awaiting-signal` (`isResumableAwaitingSignalStep`, re-parked so a
+  // later signal resolves it), an `awaitSignal` step left `in-flight` by an
   // already-logged `SignalReceived` (`isResumableReceivedAwaitSignalStep`,
-  // the crash-after-signal-before-StepCompleted window), and an onTrigger
+  // the crash-after-signal-before-StepCompleted window), an onTrigger
   // section container in-flight or awaiting-signal
-  // (`isResumableOnTriggerStep`, re-derived by `runOnTrigger`). The resume
-  // guard keys on the SAME predicates so the two views agree.
+  // (`isResumableOnTriggerStep`, re-derived by `runOnTrigger`), and a `sleep`
+  // step awaiting-timer or in-flight (`isResumableSleepStep`, re-adopted by
+  // `runSleep`). The resume guard keys on the SAME predicates so the two
+  // views agree.
   if (state.phase !== "running") {
     return [];
   }
@@ -204,7 +232,8 @@ export function nextSchedulable(
       !isResumableLoopStep(def, stepId, existing.phase) &&
       !isResumableAwaitingSignalStep(def, stepId, existing.phase) &&
       !isResumableReceivedAwaitSignalStep(def, stepId, existing.phase) &&
-      !isResumableOnTriggerStep(def, stepId, existing.phase)
+      !isResumableOnTriggerStep(def, stepId, existing.phase) &&
+      !isResumableSleepStep(def, stepId, existing.phase)
     ) {
       continue;
     }
