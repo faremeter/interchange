@@ -40,6 +40,7 @@ import {
   isResumableLoopStep,
   isResumableOnTriggerStep,
   isResumableReceivedAwaitSignalStep,
+  isResumableSleepStep,
   isRunDone,
   nextSchedulable,
 } from "./dag";
@@ -488,7 +489,11 @@ async function executeRunBody(
       //     signal or, for a timed gate, a fired timeout: runAwaitSignal
       //     reconstructs the outcome from the log and short-circuits to
       //     completion (or, on timeout, routes or fails) without parking
-      //     (the crash-after-move-before-StepCompleted window).
+      //     (the crash-after-move-before-StepCompleted window);
+      //   - a `sleep` step still `awaiting-timer` (runSleep re-adopts its
+      //     unfired durable timer and re-parks) or left `in-flight` by its
+      //     fired timer (runSleep completes it without re-parking -- the
+      //     crash-after-TimerFired-before-StepCompleted window).
       if (
         isResumableLoopStep(definition, stepId, stepState.phase) ||
         isResumableAwaitingSignalStep(definition, stepId, stepState.phase) ||
@@ -497,7 +502,8 @@ async function executeRunBody(
           stepId,
           stepState.phase,
         ) ||
-        isResumableOnTriggerStep(definition, stepId, stepState.phase)
+        isResumableOnTriggerStep(definition, stepId, stepState.phase) ||
+        isResumableSleepStep(definition, stepId, stepState.phase)
       ) {
         // The onTrigger container carries no crash-mid-invocation risk (it never
         // self-completes); `runOnTrigger` re-derives its cursor from the log and
@@ -4297,28 +4303,75 @@ async function runSleep(
   primitive: SleepPrimitive,
   abort: AbortSignal,
 ): Promise<unknown> {
-  const delay = primitive.duration ?? computeDelayToUntil(primitive.until, env);
-  await emitStepStartedWithValue(env, runId, primitive.id, {
-    ...(primitive.duration !== undefined
-      ? { duration: primitive.duration }
-      : {}),
-    ...(primitive.until !== undefined ? { until: primitive.until } : {}),
-    ...(primitive.drainBehavior !== undefined
-      ? { drainBehavior: primitive.drainBehavior }
-      : {}),
-  });
+  // Read the log once for resume idempotency. A fresh sleep has no state
+  // entry and mints its `StepStarted`/`TimerSet`; a re-driving run re-adopts
+  // the durable timer instead (mirroring runAwaitSignal / parkOnSignalResult).
   let state = await reloadState(env, runId);
-  const timerId = env.newId("timer");
-  const fireAtDate = new Date(env.clock().getTime() + delay);
-  const timerSet: WorkflowEvent = {
-    kind: "TimerSet",
-    seq: state.lastSeq + 1,
-    at: env.clock().toISOString(),
-    timerId,
-    fireAt: fireAtDate.toISOString(),
-    stepId: primitive.id,
-  };
-  state = await commit(env, runId, timerSet);
+  const resumed = state.steps.has(primitive.id);
+
+  // Short-circuit resume: a `sleep` found `in-flight` means its `TimerFired`
+  // already landed and only its `StepCompleted` is missing -- the
+  // crash-after-TimerFired-before-StepCompleted window. `TimerFired` is the
+  // sole mover off `awaiting-timer` for a sleep (no signal, no payload), and
+  // `StepStarted`+`TimerSet` flush together at `waitForTimer`, so a durable
+  // in-flight sleep always carries a fired timer. Complete with `null`
+  // without re-parking; no outcome to reconstruct from the log.
+  if (resumed && state.steps.get(primitive.id)?.phase === "in-flight") {
+    // handleTimerFired clears the fired timer from `pendingTimers`; a lingering
+    // pending timer on an in-flight sleep would mean the reducer contract broke.
+    if (findUnfiredTimerForStep(state, primitive.id) !== undefined) {
+      throw new Error(
+        `runSleep resume: step ${primitive.id} is in-flight but still has a pending timer; a fired sleep timer must be cleared from pendingTimers`,
+      );
+    }
+    await emitStepCompletedWithValue(env, runId, primitive.id, null);
+    return null;
+  }
+
+  let timerId: string;
+  let fireAtDate: Date;
+  if (resumed) {
+    // Re-park resume (phase `awaiting-timer`): the durable log already carries
+    // this sleep's unfired `TimerSet` in `pendingTimers` (a fired timer would
+    // have moved the step to `in-flight`, handled above). Re-adopt it rather
+    // than minting a second one: a duplicate `TimerSet` would double-count the
+    // deadline and leave two scheduler entries racing to fire, and re-minting
+    // from a recomputed delay would restart the clock and discard the sleep
+    // already elapsed before the crash.
+    const existing = findUnfiredTimerForStep(state, primitive.id);
+    if (existing === undefined) {
+      throw new Error(
+        `runSleep resume: step ${primitive.id} is awaiting-timer but has no pending timer to re-adopt`,
+      );
+    }
+    timerId = existing.timerId;
+    fireAtDate = new Date(existing.fireAt);
+  } else {
+    const delay =
+      primitive.duration ?? computeDelayToUntil(primitive.until, env);
+    await emitStepStartedWithValue(env, runId, primitive.id, {
+      ...(primitive.duration !== undefined
+        ? { duration: primitive.duration }
+        : {}),
+      ...(primitive.until !== undefined ? { until: primitive.until } : {}),
+      ...(primitive.drainBehavior !== undefined
+        ? { drainBehavior: primitive.drainBehavior }
+        : {}),
+    });
+    state = await reloadState(env, runId);
+    timerId = env.newId("timer");
+    fireAtDate = new Date(env.clock().getTime() + delay);
+    const timerSet: WorkflowEvent = {
+      kind: "TimerSet",
+      seq: state.lastSeq + 1,
+      at: env.clock().toISOString(),
+      timerId,
+      fireAt: fireAtDate.toISOString(),
+      stepId: primitive.id,
+    };
+    state = await commit(env, runId, timerSet);
+  }
+  void state;
   await waitForTimer(
     env,
     runId,
@@ -4328,7 +4381,6 @@ async function runSleep(
     env.drain,
     primitive.id,
   );
-  void state;
   await emitStepCompletedWithValue(env, runId, primitive.id, null);
   return null;
 }
