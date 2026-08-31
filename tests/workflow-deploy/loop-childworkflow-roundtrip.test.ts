@@ -113,6 +113,10 @@ let env: DeployFlowEnv;
 let h: TestDb;
 
 beforeAll(async () => {
+  // A file-scope beforeAll fires even when describe.skipIf skips the
+  // suite bodies, so it needs its own guard or a missing DB env throws
+  // here. See the two-shape rule in tests/lib/db-harness.ts.
+  if (!harnessDbEnvAvailable()) return;
   h = await createTestDb();
   await h.db.insert(tenantTable).values({
     id: TENANT_ID,
