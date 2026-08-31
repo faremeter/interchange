@@ -117,3 +117,13 @@ pure `while`/`carry` says stop. Model a `sleep` delay at a top-level step or an
 onTrigger section, not in a loop body. Keep a loop body's action idempotent
 where practical, since a mid-invocation crash fails the run and the effect is
 never re-run.
+
+These primitives are composed end to end by the interchange-demo dispatch
+orchestrator -- an outer per-level `loop` wrapping a Phase-5 verification `loop`
+whose per-task fix `loop` nests a retry `loop` and parks on an `awaitSignal`
+operator escalation, with crash-resume exactly-once effects and the demo's
+resume cases handled through engine resume. It is authored on the engine, and
+its behavior asserted, in `tests/workflow/dispatch-orchestrator.test.ts` (a
+stubbed-invoker routing/resume test) and
+`tests/workflow-deploy/dispatch-orchestrator-real-agents.test.ts` (the same
+composition driven by real agents through the production step-invoker).
