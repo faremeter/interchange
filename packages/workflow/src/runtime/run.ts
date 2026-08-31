@@ -2196,7 +2196,7 @@ async function runOnTrigger(
     // after a crash. Reconstruct the drive position from the reduced state and
     // the log rather than re-running from event 0.
     const log = await env.repoStore.read(runId);
-    const plan = planOnTriggerResume(primitive, initial, log);
+    const plan = await planOnTriggerResume(env, primitive, initial, log);
     switch (plan.kind) {
       case "fresh":
         eventIndex = 0;
@@ -2249,6 +2249,16 @@ async function runOnTrigger(
         // trigger is not dropped.
         currentInput = plan.input;
         eventIndex = plan.eventIndex + 1;
+        break;
+      case "readopt-in-flight-body":
+        // The body child is in flight with no container park (a bare sleep
+        // parked entirely inside the child). Re-adopt this SAME event: re-spawn
+        // the body from its own durable log and await its terminal. `currentInput`
+        // is unused on a re-adopt (the body has a durable RunStarted), and no
+        // resume token is staged -- `resume` stays `undefined`, the sentinel for
+        // "re-adopt from the child log" the loop body path also uses.
+        eventIndex = plan.eventIndex;
+        currentInput = undefined;
         break;
       case "reawait-input": {
         // The current event's body completed; the section is idle on its input
@@ -2626,6 +2636,7 @@ type OnTriggerResumePlan =
     }
   | { kind: "reawait-input"; eventIndex: number; existingSignalName?: string }
   | { kind: "advance-with-input"; eventIndex: number; input: unknown }
+  | { kind: "readopt-in-flight-body"; eventIndex: number }
   | {
       kind: "terminal-is-final";
       eventIndex: number;
@@ -2641,11 +2652,42 @@ function bodyFailurePolicyOf(primitive: OnTriggerPrimitive): BodyFailurePolicy {
   return primitive.onBodyFailure ?? "end";
 }
 
-function planOnTriggerResume(
+/**
+ * The `awaitSignal` gate names a body child is parked on in its reduced state,
+ * split by channel: `author` names are author-chosen (`correlationIdFromSignalName`
+ * undefined); `controlPlane` names are reserved approval/relay channels. Both
+ * signal a crash window where the body's leaf `SignalAwaited` flushed but the
+ * container's proxy await did not, so a naive re-adopt re-parks the body on a
+ * signal the container never relays. The loop planner keys its author-gate
+ * drive-fresh on `author`; the onTrigger planner refuses on either, since it has
+ * no fresh-relay drive for a body still awaiting a signal.
+ */
+function bodyParkedSignals(childState: RunState): {
+  author: string[];
+  controlPlane: string[];
+} {
+  const author: string[] = [];
+  const controlPlane: string[] = [];
+  for (const step of childState.steps.values()) {
+    if (step.phase !== "awaiting-signal" || step.awaitingSignal === undefined) {
+      continue;
+    }
+    const name = step.awaitingSignal.name;
+    if (correlationIdFromSignalName(name) === undefined) {
+      author.push(name);
+    } else {
+      controlPlane.push(name);
+    }
+  }
+  return { author, controlPlane };
+}
+
+async function planOnTriggerResume(
+  env: WorkflowRuntimeEnv,
   primitive: OnTriggerPrimitive,
   state: RunState,
   log: readonly WorkflowEvent[],
-): OnTriggerResumePlan {
+): Promise<OnTriggerResumePlan> {
   const prefix = `${primitive.id}__`;
   let eventIndex = -1;
   for (const childRunId of state.children.keys()) {
@@ -2799,9 +2841,43 @@ function planOnTriggerResume(
       signalId: relaySignal.signalId,
     };
   }
-  throw new Error(
-    `onTrigger ${primitive.id} resume: body child ${childRunId} is in flight and the container is not parked, but no delivered approval grant or relay signal was found`,
-  );
+  // The body is in flight with nothing delivered to the container. Inspect the
+  // body's OWN reduced state. A bare `sleep` parks entirely inside the child
+  // (an `awaiting-timer` step, or an `in-flight` step once its `TimerFired`
+  // landed) and surfaces no container park, so re-adopt the in-flight body and
+  // await its terminal: the re-spawned body re-drives its own durable log and
+  // re-adopts its sleep timer via `isResumableSleepStep`. `resume` stays
+  // `undefined` in the dispatch below -- the sentinel a loop body already uses
+  // for this re-adopt.
+  //
+  // The shape we must NOT re-adopt is a body still parked on a signal the
+  // container has not proxied -- author `awaitSignal` OR a reserved
+  // approval/relay channel -- because its leaf `SignalAwaited` flushed but the
+  // container's proxy await did not. Re-adopting it re-parks the body silently
+  // (no `onPark`) on a signal the container never relays, hanging both sides
+  // forever. onTrigger has no fresh-relay drive (loop's `signal-relay-drive-
+  // fresh` is out of scope here), so keep failing loud. Any body NOT awaiting a
+  // signal re-adopts and its OWN resume classifier decides its terminal: a
+  // `sleep` resumes via `isResumableSleepStep`; a mid-flight `childWorkflow` or
+  // `map` REJECTS, and the seam re-throws that rejection as a loud section
+  // failure -- never a silently-tolerated terminal (see the tolerate regression
+  // test). A crashed agent step instead SETTLES a terminal `StepFailed`: under
+  // the default `end` policy this fails the section as the pre-branch throw did,
+  // and under `tolerate` the section absorbs the crashed body and re-arms. That
+  // last case is the one genuine behavior change here, and it is the intended
+  // reading of `tolerate` -- a real body failure it is meant to swallow, not a
+  // hang or a lost run.
+  const childState = await reloadState(env, childRunId);
+  const { author, controlPlane } = bodyParkedSignals(childState);
+  const parkedSignals = [...author, ...controlPlane];
+  if (parkedSignals.length > 0) {
+    throw new Error(
+      `onTrigger ${primitive.id} resume: body child ${childRunId} is parked ` +
+        `on an un-relayed signal (${parkedSignals.join(", ")}) with no ` +
+        `container proxy await; onTrigger cannot re-establish the relay fresh`,
+    );
+  }
+  return { kind: "readopt-in-flight-body", eventIndex };
 }
 
 /**
@@ -2910,16 +2986,7 @@ async function planLoopResume(
   // log is gone, so no gate is found and the forward drive re-runs the
   // iteration -- the existing inconsistent-store behavior.)
   const childState = await reloadState(env, childRunId);
-  const authorAwaits: string[] = [];
-  for (const step of childState.steps.values()) {
-    if (
-      step.phase === "awaiting-signal" &&
-      step.awaitingSignal !== undefined &&
-      correlationIdFromSignalName(step.awaitingSignal.name) === undefined
-    ) {
-      authorAwaits.push(step.awaitingSignal.name);
-    }
-  }
+  const { author: authorAwaits } = bodyParkedSignals(childState);
   if (authorAwaits.length > 1) {
     throw new Error(
       `loop ${primitive.id} resume: body child ${childRunId} is parked on ` +

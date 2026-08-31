@@ -25,6 +25,7 @@ import {
   createNoopDrainController,
   defineWorkflow,
   runtimeRun,
+  RuntimeResumeUnsupportedError,
   type Primitive,
   type RepoStore,
   type SignalChannel,
@@ -154,6 +155,107 @@ function midSignalRelaySeed(
   return events;
 }
 
+// The durable parent log a section leaves when a body child is parked
+// mid-`sleep`: the container `StepStarted` and the `ChildSpawned` for event 0's
+// body, and NO container `SignalAwaited`. A bare sleep body parks entirely
+// inside the child (its own `awaiting-timer` step) and surfaces no container
+// park, so the container reduces to `in-flight` -- the shape that distinguishes
+// a mid-sleep body from the approval/signal-relay parks above.
+function midSleepSeed(runId: string): WorkflowEvent[] {
+  return [
+    {
+      kind: "RunStarted",
+      seq: 1,
+      at,
+      runId,
+      definitionHash: "x",
+      trigger: { type: "manual", payload: { text: "event-0" } },
+    },
+    {
+      kind: "StepStarted",
+      seq: 2,
+      at,
+      stepId: "section",
+      attempt: 1,
+      input: { ref: "inline:null" },
+    },
+    {
+      kind: "ChildSpawned",
+      seq: 3,
+      at,
+      stepId: "section",
+      childRunId: "section__0",
+      childDefinitionRef: "body-ref",
+    },
+  ];
+}
+
+// A body child's OWN durable log, reduced to a single non-terminal step in the
+// named phase. `planOnTriggerResume` inspects this to decide whether an
+// in-flight body is re-adoptable (a bare sleep parked in `awaiting-timer`) or
+// must stay refused (an un-relayed author `awaitSignal`, still `awaiting-signal`).
+function bodyChildLog(
+  childRunId: string,
+  tail:
+    | { phase: "awaiting-timer" }
+    | { phase: "awaiting-signal"; signalName: string }
+    | { phase: "in-flight" }
+    | { phase: "in-flight-fired" },
+): WorkflowEvent[] {
+  const events: WorkflowEvent[] = [
+    {
+      kind: "RunStarted",
+      seq: 1,
+      at,
+      runId: childRunId,
+      definitionHash: "x",
+      trigger: { type: "manual", payload: undefined },
+    },
+    {
+      kind: "StepStarted",
+      seq: 2,
+      at,
+      stepId: "body-step",
+      attempt: 1,
+      input: { ref: "inline:null" },
+    },
+  ];
+  if (tail.phase === "awaiting-timer") {
+    events.push({
+      kind: "TimerSet",
+      seq: 3,
+      at,
+      timerId: "body-timer-1",
+      fireAt: new Date(Date.now() + 60_000).toISOString(),
+      stepId: "body-step",
+    });
+  } else if (tail.phase === "awaiting-signal") {
+    events.push({
+      kind: "SignalAwaited",
+      seq: 3,
+      at,
+      stepId: "body-step",
+      signalName: tail.signalName,
+    });
+  } else if (tail.phase === "in-flight-fired") {
+    // The body's sleep timer already fired: TimerSet moves the step to
+    // awaiting-timer, TimerFired moves it back to in-flight and clears the
+    // pending timer -- the post-fire window commit 1's short-circuit settles.
+    events.push(
+      {
+        kind: "TimerSet",
+        seq: 3,
+        at,
+        timerId: "body-timer-1",
+        fireAt: at,
+        stepId: "body-step",
+      },
+      { kind: "TimerFired", seq: 4, at, timerId: "body-timer-1" },
+    );
+  }
+  return events;
+}
+
 const noopInvokeStep: StepInvoker = () => {
   throw new Error("onTrigger test: invokeStep must not be called");
 };
@@ -188,13 +290,18 @@ function buildEnv(args: {
 // The DEPLOYED form of a section carries a body ref (deploy materializes the
 // inline body to a workflow asset); build it directly since runOnTrigger runs
 // the body by ref.
-function sectionWorkflow(): WorkflowDefinition {
+function sectionWorkflow(
+  opts: { onBodyFailure?: "end" | "tolerate" } = {},
+): WorkflowDefinition {
   const section: Primitive = {
     kind: "onTrigger",
     id: "",
     on: { type: "mail", to: "run_sec@t.example" },
     body: { ref: "body-ref" },
     drainBehavior: "wait",
+    ...(opts.onBodyFailure !== undefined
+      ? { onBodyFailure: opts.onBodyFailure }
+      : {}),
   };
   return defineWorkflow({ id: "on-trigger-run", steps: { section } });
 }
@@ -429,6 +536,253 @@ describe("runOnTrigger", () => {
 
     await run.cancel("supervisor-operator", "test done");
     await run.complete.catch(() => undefined);
+  });
+
+  test("resumes a body parked mid-sleep after restart", async () => {
+    const runId = "sec-sleep-resume";
+    const seed = midSleepSeed(runId);
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    // The body child's own log leaves its sleep step parked in `awaiting-timer`.
+    await repoStore.appendBatch(
+      "section__0",
+      bodyChildLog("section__0", { phase: "awaiting-timer" }),
+    );
+    const channel = createInMemorySignalChannel();
+    let spawned = false;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      spawned = true;
+      // This mock stands in for a re-adopted bare sleep: it needs no
+      // container-side drive and completes on its own. The body's actual
+      // timer re-adoption is exercised end-to-end by the deploy-level test;
+      // here we verify the container-level plan -> spawn -> re-arm.
+      return {
+        next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
+        resume: async () => undefined,
+        deliverSignal: async () => undefined,
+      };
+    };
+
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    // The recovered container re-adopted the mid-sleep body and awaited its
+    // terminal; on completion it re-arms on an input park for the next event.
+    await waitForPark(repoStore, runId, "input", 1);
+    expect(spawned).toBe(true);
+    const log = await repoStore.read(runId);
+    expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+    expect(log.some((e) => e.kind === "RunFailed")).toBe(false);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("resumes a body whose sleep timer already fired before the container re-drove", async () => {
+    // The race-robust window: on restart the host scheduler re-arms and fires
+    // the body's timer before the container re-reads the child state, so the
+    // body child is in-flight (post-fire), not awaiting-timer. The container
+    // re-adopts it just the same (no awaiting-signal park), and the body's own
+    // in-flight short-circuit settles it.
+    const runId = "sec-sleep-fired-resume";
+    const seed = midSleepSeed(runId);
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    await repoStore.appendBatch(
+      "section__0",
+      bodyChildLog("section__0", { phase: "in-flight-fired" }),
+    );
+    const channel = createInMemorySignalChannel();
+    let spawned = false;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      spawned = true;
+      return {
+        next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
+        resume: async () => undefined,
+        deliverSignal: async () => undefined,
+      };
+    };
+
+    const def = sectionWorkflow();
+    const run = runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    );
+
+    await waitForPark(repoStore, runId, "input", 1);
+    expect(spawned).toBe(true);
+    const log = await repoStore.read(runId);
+    expect(log.filter((e) => e.kind === "ChildCompleted").length).toBe(1);
+    expect(log.some((e) => e.kind === "RunFailed")).toBe(false);
+
+    await run.cancel("supervisor-operator", "test done");
+    await run.complete.catch(() => undefined);
+  });
+
+  test("refuses a resume when the body is parked on an un-relayed author signal", async () => {
+    const runId = "sec-authorsig-refuse";
+    const seed = midSleepSeed(runId);
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    // The body child is parked on an author `awaitSignal` gate whose container
+    // relay await never flushed. Re-adopting it would re-park the body on a
+    // signal the container never relays -- a hang -- so resume must fail loud.
+    await repoStore.appendBatch(
+      "section__0",
+      bodyChildLog("section__0", {
+        phase: "awaiting-signal",
+        signalName: "author-go",
+      }),
+    );
+    const channel = createInMemorySignalChannel();
+    let spawned = false;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      spawned = true;
+      return {
+        next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
+        resume: async () => undefined,
+        deliverSignal: async () => undefined,
+      };
+    };
+
+    const def = sectionWorkflow();
+    const result = await runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    ).complete;
+
+    // Fail loud, not hang: the planner refuses before the body is re-spawned,
+    // and the section never re-arms.
+    expect(result.terminalStatus).toBe("failed");
+    expect(spawned).toBe(false);
+    const log = await repoStore.read(runId);
+    expect(
+      log.some((e) => e.kind === "SignalAwaited" && e.parkKind === "input"),
+    ).toBe(false);
+    const failure = log.find((e) => e.kind === "StepFailed");
+    if (failure?.kind !== "StepFailed")
+      throw new Error("expected a StepFailed");
+    expect(failure.error.message).toContain("un-relayed signal");
+  });
+
+  test("refuses a resume when the body is parked on an un-relayed control-plane approval", async () => {
+    const runId = "sec-approval-refuse";
+    const seed = midSleepSeed(runId);
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    // The body's agent step suspended for approval on a reserved control-plane
+    // channel, and the container's proxy park never flushed. Like the author
+    // case, re-adopting it re-parks the body silently on a decision the container
+    // will never relay -- a hang -- so resume must fail loud, not re-adopt.
+    await repoStore.appendBatch(
+      "section__0",
+      bodyChildLog("section__0", {
+        phase: "awaiting-signal",
+        signalName: signalName("body-corr"),
+      }),
+    );
+    const channel = createInMemorySignalChannel();
+    let spawned = false;
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => {
+      spawned = true;
+      return {
+        next: async () => ({ kind: "terminal", terminalStatus: "completed" }),
+        resume: async () => undefined,
+        deliverSignal: async () => undefined,
+      };
+    };
+
+    const def = sectionWorkflow();
+    const result = await runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    ).complete;
+
+    expect(result.terminalStatus).toBe("failed");
+    expect(spawned).toBe(false);
+    const log = await repoStore.read(runId);
+    expect(
+      log.some((e) => e.kind === "SignalAwaited" && e.parkKind === "input"),
+    ).toBe(false);
+    const failure = log.find((e) => e.kind === "StepFailed");
+    if (failure?.kind !== "StepFailed")
+      throw new Error("expected a StepFailed");
+    expect(failure.error.message).toContain("un-relayed signal");
+  });
+
+  test("a re-adopted in-flight body whose resume is refused fails loud even under tolerate", async () => {
+    const runId = "sec-tolerate-refuse";
+    const seed = midSleepSeed(runId);
+    const repoStore = createInMemoryRepoStore();
+    await repoStore.appendBatch(runId, seed);
+    // An in-flight body with no author gate is re-adopted, but its own resume
+    // classifier refuses (a mid-flight childWorkflow raises
+    // RuntimeResumeUnsupportedError, which REJECTS the body run). The seam
+    // re-throws that rejection, so it is loud -- `tolerate` re-arms only on a
+    // RETURNED failed terminal, never on a rejection.
+    await repoStore.appendBatch(
+      "section__0",
+      bodyChildLog("section__0", { phase: "in-flight" }),
+    );
+    const channel = createInMemorySignalChannel();
+    const spawnSuspendableChild: SpawnSuspendableChild = async () => ({
+      next: async () => {
+        throw new RuntimeResumeUnsupportedError(
+          "body-step",
+          "in-flight",
+          "body resume refused (simulated mid-flight childWorkflow)",
+        );
+      },
+      resume: async () => undefined,
+      deliverSignal: async () => undefined,
+    });
+
+    const def = sectionWorkflow({ onBodyFailure: "tolerate" });
+    const result = await runtimeRun(
+      def,
+      buildEnv({
+        def,
+        repoStore,
+        signalChannel: channel,
+        spawnSuspendableChild,
+      }),
+      { runId, resumeFromEvents: seed },
+    ).complete;
+
+    // The rejection fails the section; tolerate does NOT swallow it and the
+    // section does NOT re-arm for the next event.
+    expect(result.terminalStatus).toBe("failed");
+    const log = await repoStore.read(runId);
+    expect(
+      log.some((e) => e.kind === "SignalAwaited" && e.parkKind === "input"),
+    ).toBe(false);
   });
 
   test("relays an approval grant that landed before the crash relayed it", async () => {
