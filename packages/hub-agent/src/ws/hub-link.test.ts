@@ -5,7 +5,6 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
   type SidecarAuthenticator,
-  type SidecarRouter,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -23,20 +22,114 @@ import {
   type ReconnectScheduler,
 } from "./hub-link";
 import type {
+  AgentDeployFrame,
   AgentErrorFrame,
   PackRejectFrame,
   RepoId,
   SessionErrorFrame,
 } from "@intx/types/sidecar";
+
+type TestSendPackOptions = { mountPath?: string; repoId?: RepoId };
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 
 // These tests exercise routing and the hub-link protocol, not handshake
 // auth, so the router accepts any token and keys off the claimed id.
-const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "shared",
-  sidecarId,
-});
+const testIdentities = new Map<
+  string,
+  Awaited<ReturnType<SidecarAuthenticator>> & object
+>();
+function ensureTestIdentity(sidecarId: string) {
+  const existing = testIdentities.get(sidecarId);
+  if (existing !== undefined) return existing;
+  const identity = {
+    kind: "allocated" as const,
+    sidecarId,
+    allocationId: `allocation-${sidecarId}`,
+    tenantId: "tenant-test",
+    anchorRunId: `anchor-${sidecarId}`,
+    workflowRunAddress: "workflow",
+    generation: 1,
+  };
+  testIdentities.set(sidecarId, identity);
+  return identity;
+}
+const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) =>
+  ensureTestIdentity(sidecarId);
+
+function prepareAllocationFrame(
+  router: ReturnType<typeof createSidecarRouter>,
+  data: string,
+): void {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test server parses the handshake frame emitted by the typed HubLink under test
+  const frame = JSON.parse(data) as {
+    type?: string;
+    sidecarId?: string;
+    agentAddresses?: string[];
+  };
+  if (
+    (frame.type !== "register" && frame.type !== "reconnect") ||
+    frame.sidecarId === undefined
+  ) {
+    return;
+  }
+  router.fenceAllocation(`allocation-${frame.sidecarId}`, 1);
+  const identity = ensureTestIdentity(frame.sidecarId);
+  if (frame.agentAddresses?.length === 1) {
+    Object.assign(identity, {
+      workflowRunAddress: frame.agentAddresses[0],
+    });
+  }
+}
+
+function allocationTargetFor(
+  router: ReturnType<typeof createSidecarRouter>,
+  agentAddress: string,
+) {
+  const sidecarId = router.getConnectedSidecars()[0];
+  if (sidecarId === undefined) throw new Error("No test sidecar is connected");
+  const identity = testIdentities.get(sidecarId);
+  if (identity === undefined || identity.kind !== "allocated") {
+    throw new Error(`No allocation identity for ${sidecarId}`);
+  }
+  Object.assign(identity, { workflowRunAddress: agentAddress });
+  return {
+    allocationId: identity.allocationId,
+    generation: identity.generation,
+  };
+}
+
+function sendAgentDeploy(
+  router: ReturnType<typeof createSidecarRouter>,
+  agentAddress: string,
+  config: HarnessConfig,
+  workflow?: AgentDeployFrame["workflow"],
+) {
+  return router.sendAgentDeployToAllocation(
+    allocationTargetFor(router, agentAddress),
+    agentAddress,
+    config,
+    workflow,
+  );
+}
+
+function sendPack(
+  router: ReturnType<typeof createSidecarRouter>,
+  agentAddress: string,
+  pack: Uint8Array,
+  ref: string,
+  commitSha: string,
+  options?: TestSendPackOptions,
+) {
+  return router.sendPackToAllocation(
+    allocationTargetFor(router, agentAddress),
+    agentAddress,
+    pack,
+    ref,
+    commitSha,
+    options,
+  );
+}
 
 /**
  * Test-only deploy router modelling the current deploy path: record the
@@ -192,14 +285,10 @@ const VALID_MESSAGE = new TextEncoder().encode(
 
 type TestEnv = {
   server: ReturnType<typeof Bun.serve>;
-  router: SidecarRouter;
+  router: ReturnType<typeof createSidecarRouter>;
   agentEvents: { addr: string; sid: string; event: unknown }[];
   outboundMail: { rawMessage: string; recipients: string[] }[];
-  // address -> hex-encoded Ed25519 public key, backing the hub's
-  // `lookupPublicKey`. A workflow deployment announced through the
-  // challenged reconnect frame routes only after signing the hub's nonce
-  // with the key registered here; tests populate it via
-  // `provisionDeploymentKey`.
+  // address -> hex-encoded Ed25519 public key used by the test key store.
   deploymentKeys: Map<string, string>;
 };
 
@@ -212,9 +301,6 @@ function startTestServer(): TestEnv {
     authenticateSidecar: acceptAnySidecar,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
-    lookups: {
-      lookupPublicKey: async (address) => deploymentKeys.get(address) ?? null,
-    },
   });
   router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
     agentEvents.push({ addr: agentAddress, sid: sessionId, event });
@@ -245,6 +331,7 @@ function startTestServer(): TestEnv {
         },
         onMessage(evt, _ws) {
           if (typeof evt.data === "string") {
+            prepareAllocationFrame(router, evt.data);
             router.handleMessage(handle, evt.data);
           }
         },
@@ -338,7 +425,11 @@ describe("sidecar↔hub integration", () => {
         env.router.getConnectedSidecars().includes("sc-create"),
       );
 
-      await env.router.sendAgentDeploy("agent-1@test.interchange", TEST_CONFIG);
+      await sendAgentDeploy(
+        env.router,
+        "agent-1@test.interchange",
+        TEST_CONFIG,
+      );
 
       // The deploy resolves against the ack; the sidecar stays connected
       // after handling it.
@@ -489,7 +580,8 @@ describe("sidecar↔hub integration", () => {
         env.router.getConnectedSidecars().includes("sc-pack-reject"),
       );
 
-      await env.router.sendAgentDeploy(
+      await sendAgentDeploy(
+        env.router,
         "pack-agent@test.interchange",
         TEST_CONFIG,
       );
@@ -499,7 +591,8 @@ describe("sidecar↔hub integration", () => {
       };
 
       await expect(
-        env.router.sendPack(
+        sendPack(
+          env.router,
           "pack-agent@test.interchange",
           new Uint8Array([1, 2, 3]),
           "refs/heads/deploy",
@@ -532,7 +625,8 @@ describe("sidecar↔hub integration", () => {
         env.router.getConnectedSidecars().includes("sc-pack-unsigned"),
       );
 
-      await env.router.sendAgentDeploy(
+      await sendAgentDeploy(
+        env.router,
         "unsigned-agent@test.interchange",
         TEST_CONFIG,
       );
@@ -542,7 +636,8 @@ describe("sidecar↔hub integration", () => {
       };
 
       await expect(
-        env.router.sendPack(
+        sendPack(
+          env.router,
           "unsigned-agent@test.interchange",
           new Uint8Array([1, 2, 3]),
           "refs/heads/deploy",
@@ -587,6 +682,7 @@ describe("sidecar↔hub integration", () => {
           },
           onMessage(evt, _ws) {
             if (typeof evt.data === "string") {
+              prepareAllocationFrame(badRouter, evt.data);
               badRouter.handleMessage(handle, evt.data);
             }
           },
@@ -620,7 +716,7 @@ describe("sidecar↔hub integration", () => {
 
       // Deploy should fail because hexDecode throws on the odd-length key.
       await expect(
-        badRouter.sendAgentDeploy("bad-hex@test.interchange", TEST_CONFIG),
+        sendAgentDeploy(badRouter, "bad-hex@test.interchange", TEST_CONFIG),
       ).rejects.toThrow("odd-length");
     } finally {
       client.close();
@@ -642,7 +738,6 @@ describe("sidecar↔hub integration", () => {
     const deployHubRouter = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
       requestTimeoutMs: 5000,
-      challengeTimeoutMs: 5000,
       hubPublicKey: hubPublicKeyHex,
     });
 
@@ -665,6 +760,7 @@ describe("sidecar↔hub integration", () => {
           },
           onMessage(evt, _ws) {
             if (typeof evt.data === "string") {
+              prepareAllocationFrame(deployHubRouter, evt.data);
               deployHubRouter.handleMessage(handle, evt.data);
             }
           },
@@ -704,7 +800,7 @@ describe("sidecar↔hub integration", () => {
       // The hub's deploy frame carries hubPublicKeyHex; the deploy router
       // records it via keyStore.recordHubKey, so a later pack's verifyCommit
       // is bound to the hub key.
-      await deployHubRouter.sendAgentDeploy(deployedAddress, {
+      await sendAgentDeploy(deployHubRouter, deployedAddress, {
         ...TEST_CONFIG,
         agentAddress: deployedAddress,
       });
@@ -723,7 +819,8 @@ describe("sidecar↔hub integration", () => {
         capturedVerifyCommit = verifyCommit;
       };
 
-      await deployHubRouter.sendPack(
+      await sendPack(
+        deployHubRouter,
         deployedAddress,
         new Uint8Array([1, 2, 3]),
         "refs/heads/deploy",
@@ -820,13 +917,15 @@ describe("sidecar↔hub integration", () => {
         env.router.getConnectedSidecars().includes("sc-asset-route"),
       );
 
-      await env.router.sendAgentDeploy(
+      await sendAgentDeploy(
+        env.router,
         "route-agent@test.interchange",
         TEST_CONFIG,
       );
 
       // Deploy pack (no mountPath) → applyDeployPack.
-      await env.router.sendPack(
+      await sendPack(
+        env.router,
         "route-agent@test.interchange",
         new Uint8Array([1, 2, 3]),
         "refs/heads/deploy",
@@ -836,7 +935,8 @@ describe("sidecar↔hub integration", () => {
       expect(assetCalls).toEqual([]);
 
       // Asset pack (mountPath set) → applyAssetPack.
-      await env.router.sendPack(
+      await sendPack(
+        env.router,
         "route-agent@test.interchange",
         new Uint8Array([4, 5, 6]),
         "refs/heads/main",
@@ -896,10 +996,11 @@ describe("sidecar↔hub integration", () => {
       await waitFor(() =>
         env.router.getConnectedSidecars().includes("sc-workflow-restore-route"),
       );
-      await env.router.sendAgentDeploy(address, TEST_CONFIG);
+      await sendAgentDeploy(env.router, address, TEST_CONFIG);
 
       const pack = new Uint8Array([7, 8, 9]);
-      await env.router.sendPack(
+      await sendPack(
+        env.router,
         address,
         pack,
         "refs/heads/events",
@@ -949,13 +1050,15 @@ describe("sidecar↔hub integration", () => {
       await waitFor(() =>
         env.router.getConnectedSidecars().includes("sc-asset-fail"),
       );
-      await env.router.sendAgentDeploy(
+      await sendAgentDeploy(
+        env.router,
         "fail-asset@test.interchange",
         TEST_CONFIG,
       );
 
       await expect(
-        env.router.sendPack(
+        sendPack(
+          env.router,
           "fail-asset@test.interchange",
           new Uint8Array([1, 2, 3]),
           "refs/heads/main",
@@ -1401,6 +1504,7 @@ describe("sidecar↔hub integration", () => {
               } catch {
                 /* not a JSON frame — ignore */
               }
+              prepareAllocationFrame(wfrRouter, evt.data);
               wfrRouter.handleMessage(handle, evt.data);
             }
           },
@@ -1436,7 +1540,7 @@ describe("sidecar↔hub integration", () => {
       // routable address; otherwise the hub drops the push as
       // "unrouted agent" before it ever reaches `receiveWorkflowRunPack`.
       const agentAddress = "race-agent@test.interchange";
-      await wfrRouter.sendAgentDeploy(agentAddress, TEST_CONFIG);
+      await sendAgentDeploy(wfrRouter, agentAddress, TEST_CONFIG);
       await waitFor(() =>
         wfrRouter.getRoutableAddresses().includes(agentAddress),
       );
@@ -1749,137 +1853,6 @@ describe("initial handshake on connect", () => {
             deployRefs: {
               [restoredAddress]: "refs/heads/deploy/current",
             },
-          },
-        },
-      ]);
-    } finally {
-      client.close();
-      await stopServerBounded(server);
-    }
-  });
-
-  test("drops a challenge response completed for a superseded socket", async () => {
-    const responseFrames: { connection: number; frame: unknown }[] = [];
-    let connectionCount = 0;
-    let closeFirstConnection: (() => void) | undefined;
-    const restoredAddress = "plain-agent-challenge@integration.interchange";
-    const app = new Hono();
-    app.get(
-      "/ws",
-      upgradeWebSocket((_c) => {
-        let connection = 0;
-        return {
-          onOpen(_evt, ws) {
-            connection = ++connectionCount;
-            if (connection === 1) {
-              closeFirstConnection = () => ws.close();
-            }
-          },
-          onMessage(evt, ws) {
-            if (typeof evt.data !== "string") return;
-            const frame: unknown = JSON.parse(evt.data);
-            if (typeof frame !== "object" || frame === null) return;
-            if (!("type" in frame)) return;
-            if (frame.type === "reconnect") {
-              ws.send(
-                JSON.stringify({
-                  type: "challenge",
-                  challenges: [
-                    { address: restoredAddress, nonce: "00".repeat(32) },
-                  ],
-                }),
-              );
-            } else if (frame.type === "challenge.response") {
-              responseFrames.push({ connection, frame });
-            }
-          },
-        };
-      }),
-    );
-    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
-
-    const bindings = withTestDeployBindings();
-    let signAttempts = 0;
-    let firstSignFinished = false;
-    let resolveFirstSign: ((signature: Uint8Array) => void) | undefined;
-    bindings.keyStore.signChallenge = async () => {
-      signAttempts++;
-      if (signAttempts === 1) {
-        const signature = await new Promise<Uint8Array>((resolve) => {
-          resolveFirstSign = resolve;
-        });
-        firstSignFinished = true;
-        return signature;
-      }
-      return new Uint8Array([2]);
-    };
-
-    let pendingReconnect: (() => void) | null = null;
-    const scheduleReconnect: ReconnectScheduler = (callback) => {
-      pendingReconnect = callback;
-      return () => {
-        if (pendingReconnect === callback) pendingReconnect = null;
-      };
-    };
-    function closeInitialConnection(): void {
-      const closeConnection = closeFirstConnection;
-      if (closeConnection === undefined) {
-        throw new Error("initial connection was not open");
-      }
-      closeConnection();
-    }
-    function finishFirstSign(): void {
-      const resolve = resolveFirstSign;
-      if (resolve === undefined) {
-        throw new Error("first challenge signature was not pending");
-      }
-      resolve(new Uint8Array([1]));
-    }
-    function runPendingReconnect(): void {
-      const reconnect = pendingReconnect;
-      if (reconnect === null) {
-        throw new Error("reconnect was not scheduled");
-      }
-      pendingReconnect = null;
-      reconnect();
-    }
-
-    const routableAttempts: string[][] = [];
-    const client = createHubLink({
-      hubURL: `ws://localhost:${server.port}/ws`,
-      sidecarId: "sc-challenge-stale",
-      token: "test-token",
-      transport: createInMemoryTransport(),
-      sessions: createMockSessionManager(),
-      ...bindings,
-      getWorkflowAddresses: () => [restoredAddress],
-      onWorkflowAddressesRoutable: (addresses) => {
-        routableAttempts.push(addresses);
-      },
-      scheduleReconnect,
-    });
-
-    client.connect();
-    try {
-      await waitFor(
-        () => signAttempts === 1 && closeFirstConnection !== undefined,
-      );
-      closeInitialConnection();
-      await waitFor(() => pendingReconnect !== null);
-
-      finishFirstSign();
-      await waitFor(() => firstSignFinished);
-      runPendingReconnect();
-
-      await waitFor(() => responseFrames.length > 0);
-      expect(signAttempts).toBe(2);
-      expect(routableAttempts).toEqual([[restoredAddress]]);
-      expect(responseFrames).toEqual([
-        {
-          connection: 2,
-          frame: {
-            type: "challenge.response",
-            responses: [{ address: restoredAddress, signature: "02" }],
           },
         },
       ]);

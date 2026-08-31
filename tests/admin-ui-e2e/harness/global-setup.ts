@@ -31,13 +31,6 @@ const ADMIN_UI_DIST_INDEX = path.join(ADMIN_UI_DIR, "dist", "index.html");
 const HOST = "127.0.0.1";
 const HUB_READY_TIMEOUT_MS = 30_000;
 const PREVIEW_READY_TIMEOUT_MS = 30_000;
-const SIDECAR_READY_TIMEOUT_MS = 30_000;
-
-// A fixed sidecar identity for the run. The identity row is provisioned with a
-// hash of SIDECAR_TOKEN BEFORE the sidecar spawns, so the hub's
-// token-authenticated handshake accepts the same token the sidecar presents.
-const SIDECAR_ID = "e2e-sidecar-1";
-const SIDECAR_TOKEN = "e2e-sidecar-token";
 
 // The seed pushes this workflow-source asset and authenticates as this user;
 // the live deploy spec logs in as the same user and deploys the same asset.
@@ -51,7 +44,6 @@ const SEED_LOGIN_EMAIL = "alice@example.com";
 const SEED_LOGIN_PASSWORD = "password123";
 const SEED_TENANT_SLUG = "acme";
 
-const PROVISION_SIDECAR = path.join(REPO_ROOT, "bin", "provision-sidecar.ts");
 const SEED = path.join(REPO_ROOT, "bin", "seed.ts");
 
 /** Allocate a free TCP port by binding `:0` on the loopback interface and
@@ -136,50 +128,6 @@ function spawnLabeled(
   return proc;
 }
 
-/**
- * A latch over a labeled process's output. `onLine` is passed to
- * `spawnLabeled`; the first line that satisfies `match` fires the latch.
- * `wait` resolves once the latch has fired and rejects if the deadline
- * passes first, so a readiness gate fails loudly rather than hanging.
- */
-function createLineSignal(match: (line: string) => boolean): {
-  onLine: (line: string) => void;
-  wait: (timeoutMs: number) => Promise<void>;
-} {
-  let fired = false;
-  // Assigned synchronously by the executor below, before any caller can invoke
-  // `onLine`, so the optional call can never observe it unset.
-  let resolveFn: (() => void) | undefined;
-  const fireable = new Promise<void>((resolve) => {
-    resolveFn = resolve;
-  });
-  return {
-    onLine: (line) => {
-      if (!fired && match(line)) {
-        fired = true;
-        resolveFn?.();
-      }
-    },
-    wait: (timeoutMs) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const expired = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () =>
-            reject(
-              new Error(
-                `readiness line not observed within ${timeoutMs / 1000}s`,
-              ),
-            ),
-          timeoutMs,
-        );
-      });
-      return Promise.race([fireable, expired]).finally(() =>
-        clearTimeout(timer),
-      );
-    },
-  };
-}
-
 async function waitForHTTP(url: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -208,9 +156,9 @@ const ProvisionResult = type({
     BETTER_AUTH_SECRET: "string",
     CREDENTIAL_ENCRYPTION_KEY: "string",
   },
-  // The migration role's connection to the provisioned database. The
-  // pre-flight sidecar provisioning and seed write rows as this table-owning
-  // identity; unlike the hub role it always carries a concrete password.
+  // The migration role's connection to the provisioned database. The seed
+  // writes through this table-owning identity; unlike the hub role it always
+  // carries a concrete password.
   dbEnv: {
     DB_HOST: "string",
     DB_PORT: "string",
@@ -238,8 +186,6 @@ type AcquiredStack = {
   database?: string;
   hubDataDir?: string;
   hubProc?: ProcessPromise;
-  sidecarDataDir?: string;
-  sidecarProc?: ProcessPromise;
   previewProc?: ProcessPromise;
 };
 
@@ -282,17 +228,10 @@ const SIGTERM_GRACE_MS = 2000;
  * this whole call to swallow that error and preserve the original.
  */
 async function teardownStack(acquired: AcquiredStack): Promise<void> {
-  const {
-    previewProc,
-    sidecarProc,
-    hubProc,
-    database,
-    hubDataDir,
-    sidecarDataDir,
-  } = acquired;
+  const { previewProc, hubProc, database, hubDataDir } = acquired;
 
   const procs: ProcessPromise[] = [];
-  for (const proc of [previewProc, sidecarProc, hubProc]) {
+  for (const proc of [previewProc, hubProc]) {
     if (proc !== undefined) procs.push(proc);
   }
 
@@ -330,13 +269,6 @@ async function teardownStack(acquired: AcquiredStack): Promise<void> {
   if (hubDataDir !== undefined) {
     try {
       fs.rmSync(hubDataDir, { recursive: true, force: true });
-    } catch (err) {
-      failures.push(err);
-    }
-  }
-  if (sidecarDataDir !== undefined) {
-    try {
-      fs.rmSync(sidecarDataDir, { recursive: true, force: true });
     } catch (err) {
       failures.push(err);
     }
@@ -607,8 +539,8 @@ async function globalSetup(): Promise<() => Promise<void>> {
     );
     acquired.database = database;
 
-    // The DB connection the pre-flight steps (sidecar provisioning, seed)
-    // write through. It uses the table-owning migration role, whose password
+    // The DB connection the seed writes through. It uses the table-owning
+    // migration role, whose password
     // is concrete — the hub role may authenticate under trust auth with an
     // empty password that those bin scripts reject. PG_SCHEMA is stripped for
     // the same reason the hub env strips it: migrations land in `public`.
@@ -633,16 +565,6 @@ async function globalSetup(): Promise<() => Promise<void>> {
     // that does not exist here.
     delete hubSpawnEnv["PG_SCHEMA"];
 
-    // The hub logs a single line naming the verified sidecar id once it
-    // accepts the register handshake, so a live deploy has a routable sidecar.
-    // Latch on that line rather than sleeping. The log formatter wraps the
-    // interpolated id in quotes and ANSI color codes, so match on the id and
-    // the word "registered" being present rather than an exact phrase (the
-    // "disconnected" line names the id too, but never says "registered").
-    const sidecarRegistered = createLineSignal(
-      (line) => line.includes(SIDECAR_ID) && line.includes("registered"),
-    );
-
     const hubProc = spawnLabeled(
       "hub",
       [
@@ -653,7 +575,6 @@ async function globalSetup(): Promise<() => Promise<void>> {
       ],
       hubSpawnEnv,
       REPO_ROOT,
-      sidecarRegistered.onLine,
     );
     acquired.hubProc = hubProc;
 
@@ -662,39 +583,6 @@ async function globalSetup(): Promise<() => Promise<void>> {
     // proxy misconfiguration.
     const hubURL = betterAuthBaseURL;
     await waitForHTTP(`${hubURL}/api/auth/get-session`, HUB_READY_TIMEOUT_MS);
-
-    // Provision the sidecar identity row BEFORE the sidecar spawns: the hub
-    // authenticates the handshake against a per-sidecar token hash, so the row
-    // must carry a hash of the SIDECAR_TOKEN the sidecar presents. `dbSpawnEnv`
-    // carries the table-owning DB connection `provision-sidecar` reads. A
-    // non-zero exit throws and aborts setup.
-    await $({
-      cwd: REPO_ROOT,
-      env: { ...dbSpawnEnv, SIDECAR_ID, SIDECAR_TOKEN },
-    })`bun run --conditions=intx-src ${PROVISION_SIDECAR}`;
-
-    const sidecarDataDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "intx-e2e-sidecar-"),
-    );
-    acquired.sidecarDataDir = sidecarDataDir;
-    const sidecarProc = spawnLabeled(
-      "sidecar",
-      ["bun", "run", "--conditions=intx-src", "apps/sidecar/src/index.ts"],
-      {
-        ...process.env,
-        HUB_WS_URL: `ws://${HOST}:${hubPort}/api/sidecars/ws`,
-        SIDECAR_ID,
-        SIDECAR_TOKEN,
-        SIDECAR_DATA_DIR: sidecarDataDir,
-        // A fixed test key so the spawned sidecar boots with a real at-rest
-        // cipher; the e2e data dir is throwaway.
-        SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
-          "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
-      },
-      REPO_ROOT,
-    );
-    acquired.sidecarProc = sidecarProc;
-    await sidecarRegistered.wait(SIDECAR_READY_TIMEOUT_MS);
 
     // Seed the running hub: users, tenants, model catalog, and a deployable
     // workflow-source asset pushed over the asset smart-HTTP route. The seed

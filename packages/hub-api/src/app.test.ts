@@ -22,8 +22,13 @@ const OpenAPISpec = type({
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
 const mockDb = {} as unknown as DB["db"];
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "shared",
+  kind: "allocated",
   sidecarId,
+  allocationId: `allocation-${sidecarId}`,
+  tenantId: "tenant-test",
+  anchorRunId: `anchor-${sidecarId}`,
+  workflowRunAddress: "workflow",
+  generation: 1,
 });
 const sidecarRouter = createSidecarRouter({
   authenticateSidecar: acceptAnySidecar,
@@ -31,11 +36,6 @@ const sidecarRouter = createSidecarRouter({
 const sessionService: SessionService = {
   stageWorkflowStep(_params) {
     throw new Error("mock: sessionService.stageWorkflowStep not implemented");
-  },
-  deployWorkflowFromSource(_params) {
-    throw new Error(
-      "mock: sessionService.deployWorkflowFromSource not implemented",
-    );
   },
   sendUserMessage(_params) {
     throw new Error("mock: sessionService.sendUserMessage not implemented");

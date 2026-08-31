@@ -259,7 +259,6 @@ export async function createHubServer({
     router: sidecarRouter,
     db,
     eventCollectors,
-    agentRepoStore,
   });
 
   const sessionService = createSessionService({
@@ -290,12 +289,16 @@ export async function createHubServer({
       ? { defaultProvisionerId: defaultSidecarProvisionerId }
       : {}),
   });
+  const hubSidecarWebSocketUrl =
+    process.env["HUB_SIDECAR_WEBSOCKET_URL"] ??
+    `ws://127.0.0.1:${String(port)}/api/sidecars/ws`;
   const workflowAllocationService = createWorkflowAllocationService({
     db,
     plugins: sidecarPlugins,
     preparedDeployer: sessionService,
     credentialCipher,
     allocationRouter: sidecarRouter,
+    hubWebSocketUrl: hubSidecarWebSocketUrl,
   });
   const sidecarAllocationStore = createSidecarAllocationStore(db);
   const workflowDispatchService = createWorkflowDispatchService({
@@ -314,9 +317,7 @@ export async function createHubServer({
     allocationStore: sidecarAllocationStore,
     plugins: sidecarPlugins,
     router: sidecarRouter,
-    hubWebSocketUrl:
-      process.env["HUB_SIDECAR_WEBSOCKET_URL"] ??
-      `ws://127.0.0.1:${String(port)}/api/sidecars/ws`,
+    hubWebSocketUrl: hubSidecarWebSocketUrl,
     onReady: async (allocation) => {
       await workflowAllocationService.deployReadyAllocation(allocation);
       await workflowDispatchService.requeueForReadyAllocation(
@@ -325,6 +326,7 @@ export async function createHubServer({
     },
   });
 
+  await workflowAllocationService.initialize?.();
   await sidecarAllocationReconciler.initialize();
   sidecarRouter.events.on("sidecar.disconnect", ({ allocated }) => {
     if (allocated === undefined) return;
@@ -343,8 +345,11 @@ export async function createHubServer({
 
   const ALLOCATION_RECONCILIATION_INTERVAL_MS = 1_000;
   const ALLOCATION_CONNECTION_REPAIR_INTERVAL_MS = 30_000;
+  const WORKFLOW_PROBE_CLEANUP_INTERVAL_MS = 30_000;
   let nextAllocationConnectionRepairAt =
     Date.now() + ALLOCATION_CONNECTION_REPAIR_INTERVAL_MS;
+  let nextWorkflowProbeCleanupAt =
+    Date.now() + WORKFLOW_PROBE_CLEANUP_INTERVAL_MS;
   function scheduleAllocationReconciliation(delayMs: number): void {
     const timer = setTimeout(() => {
       void reconcileSidecarAllocations();
@@ -354,6 +359,11 @@ export async function createHubServer({
 
   async function reconcileSidecarAllocations(): Promise<void> {
     try {
+      if (Date.now() >= nextWorkflowProbeCleanupAt) {
+        nextWorkflowProbeCleanupAt =
+          Date.now() + WORKFLOW_PROBE_CLEANUP_INTERVAL_MS;
+        await workflowAllocationService.reconcileReleasingProbes?.();
+      }
       await sidecarAllocationReconciler.reconcileUntilIdle();
       await workflowDispatchService.reconcileUntilIdle();
       if (Date.now() >= nextAllocationConnectionRepairAt) {
@@ -362,7 +372,7 @@ export async function createHubServer({
         await sidecarAllocationReconciler.repairUnscheduledConnections();
       }
     } catch (error) {
-      log.error`Sidecar allocation reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
+      log.error`Sidecar reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
       scheduleAllocationReconciliation(ALLOCATION_RECONCILIATION_INTERVAL_MS);
     }

@@ -177,7 +177,6 @@ function notImpl(name: string): never {
 function createMockSessionService(): SessionService {
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
-    deployWorkflowFromSource: () => notImpl("deployWorkflowFromSource"),
     sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
   };
@@ -210,14 +209,9 @@ function createRoutingSidecarRouter(): SidecarRouter {
     handleClose: () => notImplRouter("handleClose"),
     routeMail: () => true,
     sendRunGrants: () => true,
-    sendAgentDeploy: () => notImplRouter("sendAgentDeploy"),
     sendAgentUndeploy: () => notImplRouter("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImplRouter("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImplRouter("sendCredentialsUpdate"),
-    sendPack: () => notImplRouter("sendPack"),
-    sendProvisionStep: () => notImplRouter("sendProvisionStep"),
-    bindStepRoute: () => notImplRouter("bindStepRoute"),
-    unbindStepRoute: () => notImplRouter("unbindStepRoute"),
     sendSyncRequest: () => notImplRouter("sendSyncRequest"),
     sendSignalDeliver: () => notImplRouter("sendSignalDeliver"),
     sendDrain: () => notImplRouter("sendDrain"),

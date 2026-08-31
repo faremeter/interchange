@@ -24,7 +24,7 @@ bin/db-reset && bin/dev --seed
 
 `bun install` materializes the workspace symlinks under `node_modules/@intx/`;
 without it `make build` fails with `TS2307: Cannot find module '@intx/...'`.
-The remaining command gets a clean, running system with seed data. It drops and recreates the database, runs migrations, grants permissions, starts all services (hub, sidecar, admin UI), and seeds test data.
+The remaining command gets a clean Hub and admin UI with seed data. It drops and recreates the database, runs migrations, grants permissions, starts both applications, and seeds test data. The production Hub composition registers no sidecar provisioner, so this stack cannot probe or deploy workflows until a provisioner is injected.
 
 - Hub: `http://localhost:3000`
 - Admin UI: `http://localhost:5173`
@@ -56,9 +56,9 @@ directly and runs `bin/check-env` to verify the environment before each
 build.
 
 `bin/db-reset` only resets postgres. `--clean` additionally wipes
-`HUB_DATA_DIR` and `SIDECAR_DATA_DIR` so the sidecar does not try to
-reconnect stale agent instances against a fresh database. Use it after
-any reset where the sidecar disk state no longer matches the DB.
+`HUB_DATA_DIR` and any configured `SIDECAR_DATA_DIR` so provisioner-managed
+capacity does not reuse state whose allocation identity was removed by the
+reset. Use it after any reset where worker disk state no longer matches the DB.
 
 ### Database
 

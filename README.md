@@ -89,10 +89,11 @@ agent a managed principal instead of a loose script:
   harnesses need no public address and work behind NAT, and it tracks
   the health of every running agent.
 - **Durable by default.** Conversations persist to a git-backed
-  mailbox and agent state is committed locally. When a harness
-  restarts, it proves ownership of each agent by signing a challenge
-  with the agent's key, resumes from persisted state, and flushes any
-  messages that queued while it was gone. Nothing is lost to a restart.
+  mailbox and agent state is committed locally. When provisioned capacity
+  restarts, its allocation credential binds it to one deployment and
+  generation; it restores that deployment from persisted state and resumes
+  durable deliveries. Nothing is lost to a restart when the provisioner
+  preserves the required storage.
 - **Model-agnostic inference with failover.** A definition declares the
   models it needs; the hub resolves an ordered provider list at launch.
   Inference fails over per call across providers _and_ protocols
@@ -185,11 +186,11 @@ to know. The `contextDir` is a real git repository — re-run against
 it and the conversation picks up where it left off. More runnable
 consumers live in [`examples/`](./examples/README.md).
 
-### Run the full stack
+### Run the local control plane
 
 From a fresh clone, point git at the repo hooks, install workspace
-dependencies, build, then reset the database and start the hub,
-sidecar, and admin UI with seed data:
+dependencies, build, then reset the database and start the Hub and admin UI
+with seed data:
 
 ```bash
 git config core.hooksPath .githooks   # required by the environment check
@@ -197,6 +198,11 @@ bun install                           # workspace deps and @intx/* symlinks
 make                                   # lint, build, admin-ui bundle, test
 bin/db-reset && bin/dev --seed         # reset the db, then start the stack
 ```
+
+The in-tree Hub registers no sidecar provisioner, so this local control-plane
+stack cannot probe or deploy workflows. A deployment-capable composition must
+inject a provisioner; the admin UI E2E harness includes a test-only local-process
+implementation.
 
 Entry points are in [`apps/`](./apps). Requires
 [Bun](https://bun.sh/) 1.2+, [git](https://git-scm.com/) 2.34+, and
@@ -316,13 +322,13 @@ something you can run today:
 
 ## Documentation
 
-| You want to…                                          | Go to                                                                        |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Use the agent runtime in your own program             | [`examples/`](./examples/README.md)                                          |
-| Understand how the packages fit together              | [`LAYOUT.md`](./LAYOUT.md)                                                   |
-| Run the full stack (hub + sidecar + admin UI) locally | [`DEV.md`](./DEV.md)                                                         |
-| Read the system design (target architecture)          | [`docs/`](./docs) — [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md), and friends |
-| Browse the HTTP API                                   | [`docs/API.md`](./docs/API.md)                                               |
+| You want to…                                 | Go to                                                                        |
+| -------------------------------------------- | ---------------------------------------------------------------------------- |
+| Use the agent runtime in your own program    | [`examples/`](./examples/README.md)                                          |
+| Understand how the packages fit together     | [`LAYOUT.md`](./LAYOUT.md)                                                   |
+| Run the local Hub and admin UI               | [`DEV.md`](./DEV.md)                                                         |
+| Read the system design (target architecture) | [`docs/`](./docs) — [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md), and friends |
+| Browse the HTTP API                          | [`docs/API.md`](./docs/API.md)                                               |
 
 ## Development
 

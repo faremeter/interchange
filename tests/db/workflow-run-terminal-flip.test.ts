@@ -24,7 +24,7 @@ import {
   createWorkflowRunDispatchStore,
   createWorkflowRunStore,
 } from "@intx/db";
-import { principal, workflowRun } from "@intx/db/schema";
+import { principal, sidecarAllocation, workflowRun } from "@intx/db/schema";
 import {
   createAgentRepoStore,
   createHubSessionLookups,
@@ -115,6 +115,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
         address: DEPLOYMENT_ADDRESS,
+      });
+      await h.db.insert(sidecarAllocation).values({
+        id: "allocation-terminal-flip",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        provisionerId: "test",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "test:v1",
+        status: "allocated",
+        generation: 1,
+        ensureAcceptedGeneration: 1,
       });
     });
 
@@ -255,7 +266,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         pack,
         WFR_REF,
         tip,
-        { kind: "shared", agentAddress: DEPLOYMENT_ADDRESS },
+        {
+          kind: "allocated",
+          agentAddress: DEPLOYMENT_ADDRESS,
+          allocationId: "allocation-terminal-flip",
+          anchorRunId: DEPLOYMENT,
+          generation: 1,
+        },
       );
     }
 
@@ -579,10 +596,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
       }
 
-      // Wrap the real db so the FIRST db.transaction the seam opens throws,
-      // standing in for a transient DB failure on one run's flip. Every other
-      // property forwards to the real handle, and later transactions run for
-      // real, so the second run's flip commits normally.
+      // The first transaction fences pack ingestion under the allocation lock.
+      // Throw from the following transaction, which is the first terminal-row
+      // projection, then let the second run's projection commit normally.
       let transactionCalls = 0;
       const failFirstTxDb = new Proxy(h.db, {
         get(target, prop, receiver) {
@@ -591,7 +607,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               ...args: Parameters<DB["db"]["transaction"]>
             ): ReturnType<DB["db"]["transaction"]> => {
               transactionCalls += 1;
-              if (transactionCalls === 1) {
+              if (transactionCalls === 2) {
                 throw new Error("injected terminal-flip failure");
               }
               return target.transaction(...args);
@@ -609,9 +625,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // The pack was acked despite the mid-loop throw.
       expect(verdict).toEqual({ accepted: true });
-      // Exactly the two per-run transactions were attempted -- one failure did
-      // not short-circuit the loop.
-      expect(transactionCalls).toBe(2);
+      // One allocation-fence transaction plus both per-run transactions were
+      // attempted; one failed projection did not short-circuit the loop.
+      expect(transactionCalls).toBe(3);
 
       const runs = await h.db.select().from(workflowRun);
       const principals = await h.db.select().from(principal);

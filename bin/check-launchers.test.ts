@@ -120,7 +120,7 @@ test("scanLauncher skips comment lines and the shebang", () => {
 });
 
 test("shadowingImports flags a bare ./<name> that a wrapper shadows", () => {
-  const wrappers = new Set(["seed", "provision-sidecar"]);
+  const wrappers = new Set(["seed", "db-reset"]);
   expect(shadowingImports(`import { x } from "./seed";\n`, wrappers)).toEqual([
     "./seed",
   ]);

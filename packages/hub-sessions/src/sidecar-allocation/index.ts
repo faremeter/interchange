@@ -10,15 +10,15 @@ export {
   type SidecarCapabilityMatch,
   type SidecarCapabilityMismatch,
 } from "./capability-policy";
-export type {
-  DestroySidecarRequest,
+export {
   DestroySidecarResult,
-  EnsureSidecarRequest,
   EnsureSidecarResult,
-  SidecarCredentialIdentity,
-  SidecarCredentialResolver,
   SidecarOperationFailure,
-  SidecarProvisioner,
+  type DestroySidecarRequest,
+  type EnsureSidecarRequest,
+  type SidecarCredentialIdentity,
+  type SidecarCredentialResolver,
+  type SidecarProvisioner,
 } from "./contracts";
 export {
   createSidecarAllocationReconciler,

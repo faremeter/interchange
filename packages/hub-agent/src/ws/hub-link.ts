@@ -2,9 +2,8 @@
 //
 // Connects to the hub, sends the register frame, forwards outbound
 // mail and inference events, and handles inbound agent lifecycle
-// commands. Per-agent key material lives on AgentKeyStore;
-// the link calls into the store for challenge signing, deploy-commit
-// verification, and hub-key bookkeeping. The wire layer itself never
+// commands. Per-agent key material lives on AgentKeyStore; the link calls into
+// the store for deploy-commit verification and hub-key bookkeeping. The wire layer itself never
 // touches raw key bytes.
 
 import { getLogger } from "@intx/log";
@@ -19,8 +18,6 @@ import {
   type AgentErrorFrame,
   type SessionErrorFrame,
   type AgentUndeployFrame,
-  type ChallengeFrame,
-  type ChallengeFailedFrame,
   type PackPushFrame,
   type PackDoneFrame,
   type PackAckFrame,
@@ -45,7 +42,7 @@ import {
   DEFAULT_REGISTER_ACK_MAX_ATTEMPTS,
   DEFAULT_REGISTER_ACK_TIMEOUT_MS,
 } from "./register-acker";
-import { base64Decode, base64Encode, hexDecode, hexEncode } from "@intx/types";
+import { base64Decode, base64Encode } from "@intx/types";
 import type { ApprovalSnapshot, InferenceEvent } from "@intx/types/runtime";
 
 import type { AgentKeyStore } from "../agent-key-store";
@@ -587,39 +584,26 @@ export type HubLinkConfig = {
   /**
    * Returns the workflow-substrate deployment addresses this sidecar
    * currently hosts a live supervisor for. Called on every (re)connect to
-   * announce them to the hub for routing through the CHALLENGED reconnect
-   * frame: each deployment carries its own Ed25519 key (minted at deploy,
-   * acked to the hub), so it proves ownership via challenge/response exactly
-   * like a launched agent -- there is no keyless routing shortcut. Without
-   * this announcement the hub drops the deployment's route on a WS reconnect.
+   * announce them to the Hub in the allocation-authenticated reconnect frame.
+   * Without this announcement the Hub drops the deployment's route on a WS
+   * reconnect.
    * Defaults to none when omitted (tests / deployments with no workflow
    * substrate).
    */
   getWorkflowAddresses?: () => string[];
   /**
-   * Invoked once per reconnect ownership challenge with the addresses this
-   * link just signed a `challenge.response` for. Signing the response is the
-   * sidecar-local proxy for "the hub is about to (re)route these addresses":
-   * the hub adds a verified address to its routing index in
-   * `handleChallengeResponse`, and because both `challenge.response` and the
-   * subsequent `repo.pack.push`/`done` frames are QUEUE-class on the hub's
-   * per-connection chain, the hub processes the response (routing the
-   * address) BEFORE it sees any pack re-shipped in reaction to this callback.
-   * The workflow-run pack pusher subscribes so it can re-drive a push that a
-   * disconnect cancelled -- gated on this signal so the re-ship cannot race
-   * ahead of the address becoming routable again. Absent when omitted (tests
-   * / deployments with no workflow-run pack pipeline).
+   * Invoked after the allocation-authenticated reconnect frame is written.
+   * The Hub serializes that frame ahead of later pack frames on the same
+   * socket, so the workflow-run pack pusher can safely re-drive a cancelled
+   * push without overtaking route restoration.
    */
   onWorkflowAddressesRoutable?: (addresses: string[]) => void;
   /**
    * Invoked on WS disconnect with the workflow-substrate addresses this link
-   * hosts (`getWorkflowAddresses()`). Their hub route is gone until the next
-   * reconnect challenge re-proves ownership, so the workflow-run pack pusher
-   * blocks their pushes in the interim -- a push shipped on the fresh,
-   * not-yet-challenged connection is dropped by the hub as "unrouted". Paired
-   * with `onWorkflowAddressesRoutable`, which lifts the block once the
-   * challenge passes. Absent when omitted (tests / deployments with no
-   * workflow-run pack pipeline).
+   * hosts (`getWorkflowAddresses()`). Their Hub route is gone until the next
+   * allocation-authenticated reconnect is processed, so the workflow-run pack
+   * pusher blocks their pushes in the interim. Paired with
+   * `onWorkflowAddressesRoutable`, which lifts the block after re-announcement.
    */
   onWorkflowAddressesUnroutable?: (addresses: string[]) => void;
   pingIntervalMs?: number;
@@ -821,6 +805,17 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     if (!sendOnConnection(connection, frame)) return;
     handshakePending = false;
     flush();
+    if (
+      frame.type === "reconnect" &&
+      frame.agentAddresses.length > 0 &&
+      onWorkflowAddressesRoutable !== undefined
+    ) {
+      // Allocation authentication binds the whole connection to one workflow
+      // generation. The reconnect frame is processed ahead of later frames on
+      // the Hub's per-socket queue, so pushes triggered here cannot overtake
+      // the route restoration.
+      onWorkflowAddressesRoutable(frame.agentAddresses);
+    }
   }
 
   // Wire the transport's remote send handler to push mail.outbound frames
@@ -968,68 +963,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       statePushed,
     });
     logger.info`Undeployed agent ${frame.agentAddress}: ${frame.reason}`;
-  }
-
-  async function handleChallenge(
-    frame: ChallengeFrame,
-    connection: WebSocket,
-  ): Promise<void> {
-    const responses: { address: string; signature: string }[] = [];
-
-    for (const { address, nonce } of frame.challenges) {
-      const nonceBytes = hexDecode(nonce);
-      const addressBytes = new TextEncoder().encode(address);
-      const payload = new Uint8Array(nonceBytes.length + addressBytes.length);
-      payload.set(nonceBytes);
-      payload.set(addressBytes, nonceBytes.length);
-
-      const sig = await keyStore.signChallenge(address, payload);
-      if (sig === null) {
-        logger.warn`No key pair for challenged address ${address}`;
-        continue;
-      }
-
-      responses.push({
-        address,
-        signature: hexEncode(sig),
-      });
-    }
-
-    // A challenge response belongs only to the socket that received its
-    // nonce. Signing is asynchronous, so a disconnect can supersede this
-    // handler before it finishes; never queue that stale response onto the
-    // next connection, where it could consume the next attempt's challenge.
-    if (
-      !sendOnConnection(connection, {
-        type: "challenge.response",
-        responses,
-      })
-    ) {
-      return;
-    }
-
-    // Signal the workflow-run pack pusher that these addresses are becoming
-    // routable again, so it can re-drive a push a disconnect cancelled. Fires
-    // AFTER the response is sent: the hub routes each verified address before
-    // it processes any pack the pusher re-ships in reaction (both frame
-    // families queue on the hub's per-connection chain), so the re-ship
-    // cannot arrive at the hub ahead of the address's routing write. Only the
-    // addresses this link actually signed for are announced; an address with
-    // no key pair was skipped above and stays unrouted, so re-driving its
-    // push would just re-fail.
-    if (onWorkflowAddressesRoutable !== undefined && responses.length > 0) {
-      onWorkflowAddressesRoutable(responses.map((r) => r.address));
-    }
-  }
-
-  async function handleChallengeFailed(
-    frame: ChallengeFailedFrame,
-  ): Promise<void> {
-    // The hub rejected this agent during reconnect -- forget its key
-    // material so the address is freed for future deploys.
-    keyStore.forgetAgent(frame.address);
-
-    logger.warn`Challenge failed for ${frame.address}, agent torn down: ${frame.reason}`;
   }
 
   function handlePackPush(frame: PackPushFrame): void {
@@ -1464,10 +1397,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
-  async function handleMessage(
-    data: string,
-    connection: WebSocket,
-  ): Promise<void> {
+  async function handleMessage(data: string): Promise<void> {
     let raw: unknown;
     try {
       raw = JSON.parse(data) as unknown;
@@ -1554,14 +1484,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       case "agent.undeploy":
         await handleAgentUndeploy(frame);
         break;
-      case "challenge":
-        await handleChallenge(frame, connection);
-        break;
       case "pong":
         lastPongAt = Date.now();
-        break;
-      case "challenge.failed":
-        await handleChallengeFailed(frame);
         break;
       case "repo.pack.push":
         handlePackPush(frame);
@@ -1714,7 +1638,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // dispatch would break that rollback.
         const data = event.data;
         messageQueue = messageQueue.then(() =>
-          handleMessage(data, connection).catch((err: unknown) => {
+          handleMessage(data).catch((err: unknown) => {
             const msg = err instanceof Error ? err.message : String(err);
             logger.warn`Unhandled error in handleMessage: ${msg}`;
           }),

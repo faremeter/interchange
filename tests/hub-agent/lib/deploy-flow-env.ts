@@ -59,8 +59,8 @@ import {
   type AgentRepoStore,
   type InstallAndApproveResult,
   type RepoId,
+  type SidecarCredentialIdentity,
   type SidecarLookups,
-  type SidecarRouter,
   type SessionService,
   type WorkflowRunEvent,
   type WorkflowRunHubPrincipal,
@@ -105,6 +105,10 @@ export const TOKEN = "test-token";
 // second via `startSidecarSubprocess` with these in `extraEnv`.
 export const SECOND_SIDECAR_ID = "sc-integration-2";
 export const SECOND_TOKEN = "test-token-2";
+export const PRIMARY_ALLOCATION_TARGET = {
+  allocationId: "allocation-integration-1",
+  generation: 1,
+} as const;
 
 export async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -533,7 +537,21 @@ export async function buildSyntheticNpmPackageTarball(
 
 export type HubEnv = {
   server: ReturnType<typeof Bun.serve>;
-  router: SidecarRouter;
+  router: ReturnType<typeof createSidecarRouter>;
+  probeRouter: {
+    sendProbe(
+      args: Parameters<
+        ReturnType<typeof createSidecarRouter>["sendProbeToAllocation"]
+      >[1],
+    ): ReturnType<
+      ReturnType<typeof createSidecarRouter>["sendProbeToAllocation"]
+    >;
+  };
+  setPrimaryAllocationIdentity(anchorRunId: string, address: string): void;
+  prepareAllocationIdentity(
+    anchorRunId: string,
+    address: string,
+  ): { allocationId: string; generation: number };
   sessionService: SessionService;
   agentRepoStore: AgentRepoStore;
   agentEvents: { addr: string; sid: string; event: unknown }[];
@@ -646,6 +664,24 @@ export async function startHub(
     signingKey: hubSigningKey,
   });
 
+  const primaryIdentity: SidecarCredentialIdentity = {
+    kind: "allocated",
+    sidecarId: SIDECAR_ID,
+    allocationId: "allocation-integration-1",
+    tenantId: "tenant-integration",
+    anchorRunId: "run-integration-1",
+    workflowRunAddress: "workflow-integration-1@example.test",
+    generation: 1,
+  };
+  const secondaryIdentity: SidecarCredentialIdentity = {
+    kind: "allocated",
+    sidecarId: SECOND_SIDECAR_ID,
+    allocationId: "allocation-integration-2",
+    tenantId: "tenant-integration",
+    anchorRunId: "run-integration-2",
+    workflowRunAddress: "workflow-integration-2@example.test",
+    generation: 1,
+  };
   const router = createSidecarRouter({
     requestTimeoutMs: 10_000,
     hubPublicKey: hexEncode(hubSigningKey.publicKey),
@@ -653,10 +689,8 @@ export async function startHub(
     // resolve to the fixed integration sidecar id, exercising the real
     // token-authenticated handshake rather than accepting any token.
     authenticateSidecar: async ({ token }) => {
-      if (token === TOKEN) return { kind: "shared", sidecarId: SIDECAR_ID };
-      if (token === SECOND_TOKEN) {
-        return { kind: "shared", sidecarId: SECOND_SIDECAR_ID };
-      }
+      if (token === TOKEN) return primaryIdentity;
+      if (token === SECOND_TOKEN) return secondaryIdentity;
       return null;
     },
     lookups: {
@@ -668,9 +702,6 @@ export async function startHub(
       // its own key (captured into `deployAcks` by the `agent.deploy.ack`
       // listener below), and the sidecar re-signs the reconnect challenge
       // with that same key, so a `deployAcks` lookup is the correct oracle.
-      async lookupPublicKey(agentAddress) {
-        return deployAcks.get(agentAddress) ?? null;
-      },
       async receiveAgentStatePack(repoId, pack, ref, commitSha) {
         if (repoId.kind !== "agent-state") {
           throw new Error(
@@ -786,6 +817,8 @@ export async function startHub(
         : {}),
     },
   });
+  router.fenceAllocation(primaryIdentity.allocationId, 1);
+  router.fenceAllocation(secondaryIdentity.allocationId, 1);
   // The hub stamps the hub-approved wire hash onto every source-ref workflow
   // deploy frame before it reaches the sidecar (production does this in
   // `sendMultiStepDeployFrame`), so a frame reaching the sidecar always carries
@@ -830,6 +863,7 @@ export async function startHub(
 
   const sessionService = createSessionService({
     sidecarRouter: router,
+    sidecarAllocationRouter: router,
     agentRepoStore,
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the stub satisfies the narrow surface the session-service paths the deploy tests exercise actually call (query.tenant.findFirst, insert/delete), but cannot structurally satisfy the full drizzle PgDatabase type
     db: fakeDb as unknown as NonNullable<
@@ -877,6 +911,31 @@ export async function startHub(
   return {
     server,
     router,
+    probeRouter: {
+      sendProbe: (args) =>
+        router.sendProbeToAllocation(PRIMARY_ALLOCATION_TARGET, args),
+    },
+    setPrimaryAllocationIdentity(anchorRunId, address) {
+      // The fixture's manually spawned process models one provisioner-owned
+      // allocation. Update the allocation identity before probing/deploying so
+      // every routed operation remains bound to the deployment under test.
+      Object.assign(primaryIdentity, {
+        anchorRunId,
+        workflowRunAddress: address,
+      });
+    },
+    prepareAllocationIdentity(anchorRunId, address) {
+      const usePrimary = router.getConnectedSidecars().includes(SIDECAR_ID);
+      const selected = usePrimary ? primaryIdentity : secondaryIdentity;
+      Object.assign(selected, {
+        anchorRunId,
+        workflowRunAddress: address,
+      });
+      return {
+        allocationId: selected.allocationId,
+        generation: selected.generation,
+      };
+    },
     sessionService,
     agentRepoStore,
     agentEvents,
@@ -1488,12 +1547,19 @@ export async function deployWorkflowSourceForTest(
       ? ({ mode: "approve-probed" } as const)
       : opts.approvals;
 
+  const allocationTarget = env.hub.prepareAllocationIdentity(
+    opts.anchorRunId,
+    agentAddress,
+  );
   const approved = await installAndApproveWorkflowDefinition({
     source,
     entry,
     assetId: opts.definitionAssetId,
     approvals,
-    router: env.hub.router,
+    router: {
+      sendProbe: (args) =>
+        env.hub.router.sendProbeToAllocation(allocationTarget, args),
+    },
     db: opts.db,
     reads,
     registryName: "npmjs",
@@ -1529,7 +1595,8 @@ export async function deployWorkflowSourceForTest(
     approved,
     source,
     resolveAttachment,
-    sidecarRouter: env.hub.router,
+    sidecarAllocationRouter: env.hub.router,
+    allocationTarget,
     agentAddress,
     config: opts.config,
     sources,

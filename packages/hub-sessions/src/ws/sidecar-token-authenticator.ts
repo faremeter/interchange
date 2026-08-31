@@ -1,7 +1,12 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { sha256 } from "@intx/crypto";
 import type { DB } from "@intx/db";
-import { sidecar, sidecarAllocation, workflowRun } from "@intx/db/schema";
+import {
+  sidecar,
+  sidecarAllocation,
+  workflowProbe,
+  workflowRun,
+} from "@intx/db/schema";
 
 import type {
   SidecarCredentialIdentity,
@@ -34,35 +39,49 @@ export function createSidecarCredentialResolver({
     });
     if (row === undefined) return null;
 
-    if (row.credentialScope === "shared") {
-      return { kind: "shared", sidecarId: row.id };
-    }
-
     const allocation = await db.query.sidecarAllocation.findFirst({
       where: eq(sidecarAllocation.sidecarId, row.id),
     });
-    if (allocation === undefined) return null;
+    if (allocation !== undefined) {
+      if (
+        allocation.status !== "provisioning" &&
+        allocation.status !== "allocated"
+      ) {
+        return null;
+      }
+      const anchor = await db.query.workflowRun.findFirst({
+        columns: { address: true },
+        where: eq(workflowRun.id, allocation.anchorRunId),
+      });
+      if (anchor?.address === null || anchor?.address === undefined)
+        return null;
 
+      return {
+        kind: "allocated",
+        sidecarId: row.id,
+        allocationId: allocation.id,
+        tenantId: allocation.tenantId,
+        anchorRunId: allocation.anchorRunId,
+        workflowRunAddress: anchor.address,
+        generation: allocation.generation,
+      };
+    }
+
+    const probe = await db.query.workflowProbe.findFirst({
+      where: eq(workflowProbe.sidecarId, row.id),
+    });
     if (
-      allocation.status !== "provisioning" &&
-      allocation.status !== "allocated"
+      probe === undefined ||
+      (probe.status !== "provisioning" && probe.status !== "probing")
     ) {
       return null;
     }
-    const anchor = await db.query.workflowRun.findFirst({
-      columns: { address: true },
-      where: eq(workflowRun.id, allocation.anchorRunId),
-    });
-    if (anchor?.address === null || anchor?.address === undefined) return null;
-
     return {
-      kind: "allocated",
+      kind: "probe",
       sidecarId: row.id,
-      allocationId: allocation.id,
-      tenantId: allocation.tenantId,
-      anchorRunId: allocation.anchorRunId,
-      workflowRunAddress: anchor.address,
-      generation: allocation.generation,
+      allocationId: probe.id,
+      tenantId: probe.tenantId,
+      generation: probe.generation,
     };
   }
 
@@ -70,12 +89,22 @@ export function createSidecarCredentialResolver({
     identity: SidecarCredentialIdentity,
     use: "registration" | "readiness" | "routing",
   ): Promise<boolean> {
-    if (identity.kind === "shared") {
-      const allocation = await db.query.sidecarAllocation.findFirst({
+    if (identity.kind === "probe") {
+      const statuses =
+        use === "registration"
+          ? (["provisioning", "probing"] as const)
+          : (["probing"] as const);
+      const probe = await db.query.workflowProbe.findFirst({
         columns: { id: true },
-        where: eq(sidecarAllocation.sidecarId, identity.sidecarId),
+        where: and(
+          eq(workflowProbe.id, identity.allocationId),
+          eq(workflowProbe.sidecarId, identity.sidecarId),
+          eq(workflowProbe.tenantId, identity.tenantId),
+          eq(workflowProbe.generation, identity.generation),
+          inArray(workflowProbe.status, statuses),
+        ),
       });
-      return allocation === undefined;
+      return probe !== undefined;
     }
 
     const statuses =

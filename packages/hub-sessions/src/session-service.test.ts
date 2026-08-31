@@ -12,7 +12,10 @@ import type {
 import { base64Decode, hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { projectLiveToInert } from "@intx/workflow";
-import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import {
+  type AgentDeployFrame,
+  WorkflowProjectionDefinition,
+} from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { extractAttachments } from "@intx/mime";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
@@ -37,7 +40,25 @@ import { createSidecarEmitter } from "./ws/sidecar-events";
 
 type Call = { method: string; args: unknown[] };
 
-function createMockRouter(): SidecarRouter & {
+type TestSidecarRouter = SidecarRouter & {
+  sendAgentDeploy(
+    agentAddress: string,
+    config: HarnessConfig,
+    workflow?: AgentDeployFrame["workflow"],
+  ): Promise<{ publicKey: string }>;
+  sendPack(
+    agentAddress: string,
+    pack: Uint8Array,
+    ref: string,
+    commitSha: string,
+    options?: SendPackOptions,
+  ): Promise<void>;
+  sendProvisionStep(agentAddress: string, config: HarnessConfig): Promise<void>;
+  bindStepRoute(stepAddress: string): void;
+  unbindStepRoute(stepAddress: string): void;
+};
+
+function createMockRouter(): TestSidecarRouter & {
   calls: Call[];
   routeMailResult: boolean;
 } {
@@ -52,7 +73,7 @@ function createMockRouter(): SidecarRouter & {
   // track() returns a generic variadic function; each SidecarRouter method has
   // a specific typed signature. The casts below are unavoidable given the
   // generic tracker design — each method's parameter types cannot be inferred.
-  const mock: SidecarRouter & {
+  const mock: TestSidecarRouter & {
     calls: Call[];
     routeMailResult: boolean;
   } = {
@@ -79,14 +100,14 @@ function createMockRouter(): SidecarRouter & {
     sendAgentDeploy: ((
       agentAddress: string,
       config: HarnessConfig,
-      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       calls.push({
         method: "sendAgentDeploy",
         args: [agentAddress, config, workflow],
       });
       return Promise.resolve({ publicKey: "mock-public-key" });
-    }) as SidecarRouter["sendAgentDeploy"],
+    }) as TestSidecarRouter["sendAgentDeploy"],
     sendAgentUndeploy: track(
       "sendAgentUndeploy",
     ) as SidecarRouter["sendAgentUndeploy"],
@@ -108,10 +129,10 @@ function createMockRouter(): SidecarRouter & {
         args: [agentAddress, pack, ref, commitSha, options],
       });
       return Promise.resolve();
-    }) as SidecarRouter["sendPack"],
+    }) as TestSidecarRouter["sendPack"],
     sendProvisionStep: track(
       "sendProvisionStep",
-    ) as SidecarRouter["sendProvisionStep"],
+    ) as TestSidecarRouter["sendProvisionStep"],
     bindStepRoute(stepAddress: string) {
       calls.push({ method: "bindStepRoute", args: [stepAddress] });
     },
@@ -139,7 +160,9 @@ function createMockRouter(): SidecarRouter & {
   return mock;
 }
 
-function createMockAllocationRouter(): SidecarAllocationRouter & {
+function createMockAllocationRouter(
+  deployRouter?: TestSidecarRouter,
+): SidecarAllocationRouter & {
   calls: Call[];
 } {
   const calls: Call[] = [];
@@ -151,8 +174,15 @@ function createMockAllocationRouter(): SidecarAllocationRouter & {
     waitForAllocatedSidecar: async () => undefined,
     isAllocatedSidecarReady: async () => true,
     isAllocatedWorkflowActive: async () => false,
+    disconnectAllocation: () => undefined,
+    sendProbeToAllocation: async () => {
+      throw new Error("mock allocated probe is not configured");
+    },
     sendAgentDeployToAllocation: async (...args) => {
       calls.push({ method: "sendAgentDeployToAllocation", args });
+      if (deployRouter !== undefined) {
+        return deployRouter.sendAgentDeploy(args[1], args[2], args[3]);
+      }
       return { publicKey: "allocated-public-key" };
     },
     sendPackToAllocation: async (...args) => {
@@ -345,40 +375,6 @@ describe("SessionService", () => {
     repoStore = createMockRepoStore();
   });
 
-  test("stageWorkflowStep stages without a warm harness", async () => {
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    await service.stageWorkflowStep({
-      agentAddress: AGENT_ADDRESS,
-      agentId: AGENT_ID,
-      runId: INSTANCE_ID,
-      config: MOCK_CONFIG,
-      deployContent: MOCK_CONTENT,
-    });
-
-    const methods = [
-      ...repoStore.calls.map((c) => c.method),
-      ...router.calls.map((c) => c.method),
-    ];
-
-    // A stage-only per-step deploy binds a transient route, fires the
-    // no-spawn provision frame, delivers the deploy pack, and unbinds the
-    // route -- and NEVER provisions a warm harness (`sendAgentDeploy` with
-    // no workflow frame).
-    expect(methods).toEqual([
-      "writeDeployTree",
-      "createDeployPack",
-      "bindStepRoute",
-      "sendProvisionStep",
-      "sendPack",
-      "unbindStepRoute",
-    ]);
-    expect(methods).not.toContain("sendAgentDeploy");
-  });
-
   test("stageWorkflowStep keeps every phase on its allocated worker", async () => {
     const allocationRouter = createMockAllocationRouter();
     const service = createSessionService({
@@ -407,10 +403,13 @@ describe("SessionService", () => {
   });
 
   test("stageWorkflowStep unbinds the route even when the pack fails", async () => {
-    router.sendPack = () => Promise.reject(new Error("pack failed"));
+    const allocationRouter = createMockAllocationRouter();
+    allocationRouter.sendPackToAllocation = () =>
+      Promise.reject(new Error("pack failed"));
 
     const service = createSessionService({
       sidecarRouter: router,
+      sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
     });
 
@@ -421,22 +420,24 @@ describe("SessionService", () => {
         runId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
+        allocationTarget: { allocationId: "alloc-1", generation: 1 },
       })
       .catch((e: unknown) => e);
 
-    const routerMethods = router.calls.map((c) => c.method);
+    const routerMethods = allocationRouter.calls.map((c) => c.method);
     // The transient route is dropped in the `finally`, even on failure, so no
     // stale per-step route leaks. A stage-only step has no warm harness to
     // tear down, so it never undeploys.
-    expect(routerMethods).toContain("unbindStepRoute");
-    expect(routerMethods).not.toContain("sendAgentUndeploy");
+    expect(routerMethods).toContain("unbindAllocatedStepRoute");
   });
 
   test("launchSession does not provision on write failure", async () => {
     repoStore.writeDeployTree = () => Promise.reject(new Error("write failed"));
 
+    const allocationRouter = createMockAllocationRouter();
     const service = createSessionService({
       sidecarRouter: router,
+      sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
     });
 
@@ -447,6 +448,7 @@ describe("SessionService", () => {
         runId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
+        allocationTarget: { allocationId: "alloc-1", generation: 1 },
       })
       .catch((e: unknown) => e);
 
@@ -454,15 +456,17 @@ describe("SessionService", () => {
     if (!(err instanceof SessionLaunchError)) throw new Error("unreachable");
     expect(err.phase).toBe("write");
     expect(err.leakedAgent).toBe(false);
-    expect(router.calls.length).toBe(0);
+    expect(allocationRouter.calls.length).toBe(0);
   });
 
   test("launchSession does not send pack on provision failure", async () => {
-    router.sendProvisionStep = () =>
+    const allocationRouter = createMockAllocationRouter();
+    allocationRouter.sendProvisionStepToAllocation = () =>
       Promise.reject(new Error("provision failed"));
 
     const service = createSessionService({
       sidecarRouter: router,
+      sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
     });
 
@@ -473,6 +477,7 @@ describe("SessionService", () => {
         runId: INSTANCE_ID,
         config: MOCK_CONFIG,
         deployContent: MOCK_CONTENT,
+        allocationTarget: { allocationId: "alloc-1", generation: 1 },
       })
       .catch((e: unknown) => e);
 
@@ -481,9 +486,8 @@ describe("SessionService", () => {
     expect(err.phase).toBe("provision");
     expect(err.leakedAgent).toBe(false);
 
-    const routerMethods = router.calls.map((c) => c.method);
-    expect(routerMethods).not.toContain("sendPack");
-    expect(routerMethods).not.toContain("sendAgentUndeploy");
+    const routerMethods = allocationRouter.calls.map((c) => c.method);
+    expect(routerMethods).not.toContain("sendPackToAllocation");
   });
 
   test("endSession awaits undeploy ack", async () => {
@@ -982,7 +986,11 @@ describe("SessionService", () => {
         return {
           values(row: CapturedSessionAssetRow) {
             captured.push(row);
-            return Promise.resolve();
+            return {
+              onConflictDoNothing: () => ({
+                returning: () => Promise.resolve([{ runId: row.runId }]),
+              }),
+            };
           },
         };
       },
@@ -1010,8 +1018,10 @@ describe("SessionService", () => {
     (repoStore as unknown as { repoStore: RepoStore }).repoStore =
       fakeRepoStore;
 
+    const allocationRouter = createMockAllocationRouter();
     const service = createSessionService({
       sidecarRouter: router,
+      sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
       assetService,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- DB stub satisfies the narrow surface session-service actually calls (query.tenant.findFirst, query.asset.findMany, insert/delete)
@@ -1031,6 +1041,7 @@ describe("SessionService", () => {
       config: MOCK_CONFIG,
       deployContent: MOCK_CONTENT,
       toolPackagePins: [{ name: "tools-resolved", version: "1.0.0" }],
+      allocationTarget: { allocationId: "alloc-1", generation: 1 },
     });
 
     expect(captured).toHaveLength(1);
@@ -1048,7 +1059,7 @@ describe("SessionService", () => {
     );
   });
 
-  test("launchSession rolls back earlier-committed session_asset rows on a later fan-out failure", async () => {
+  test("allocated launch preserves recovery rows on a later fan-out failure", async () => {
     // Two resolver-derived package-registry attachments, one per
     // registry (routed by scope), so the fan-out has two items. The
     // first attachment pack sends cleanly; the second fails. The
@@ -1147,7 +1158,11 @@ describe("SessionService", () => {
         return {
           values(row: CapturedSessionAssetRow) {
             captured.push(row);
-            return Promise.resolve();
+            return {
+              onConflictDoNothing: () => ({
+                returning: () => Promise.resolve([{ runId: row.runId }]),
+              }),
+            };
           },
         };
       },
@@ -1173,25 +1188,20 @@ describe("SessionService", () => {
       fakeRepoStore;
 
     let attachmentPackCalls = 0;
-    const originalSendPack = router.sendPack.bind(router);
-    router.sendPack = ((
-      agentAddress: string,
-      pack: Uint8Array,
-      ref: string,
-      commitSha: string,
-      options?: SendPackOptions,
-    ) => {
+    const allocationRouter = createMockAllocationRouter();
+    allocationRouter.sendPackToAllocation = async (...args) => {
+      const options = args[5];
       if (options !== undefined) {
         attachmentPackCalls += 1;
         if (attachmentPackCalls === 2) {
-          return Promise.reject(new Error("induced fan-out failure"));
+          throw new Error("induced fan-out failure");
         }
       }
-      return originalSendPack(agentAddress, pack, ref, commitSha, options);
-    }) as SidecarRouter["sendPack"];
+    };
 
     const service = createSessionService({
       sidecarRouter: router,
+      sidecarAllocationRouter: allocationRouter,
       agentRepoStore: repoStore,
       assetService,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- DB stub satisfies the narrow surface session-service actually calls
@@ -1220,32 +1230,32 @@ describe("SessionService", () => {
           name: r.pkg,
           version: "1.0.0",
         })),
+        allocationTarget: { allocationId: "alloc-1", generation: 1 },
       });
     } catch (e) {
       err = e;
     }
     expect(err).toBeInstanceOf(SessionLaunchError);
-    // Both attachment rows are inserted before their pack sends; the
-    // second send fails. Its own catch rolls back its row, and the
-    // outer rollback sweep removes the first (already-committed) row —
-    // at least two delete calls total.
+    // Allocated rows are durable recovery intent, so a later generation can
+    // retry the exact same materialization after this failed send.
     expect(captured.length).toBeGreaterThanOrEqual(2);
-    expect(deleteCalls).toBeGreaterThanOrEqual(2);
+    expect(deleteCalls).toBe(0);
   });
 });
 
 describe("sendMultiStepDeployFrame", () => {
   test("source-ref arm carries the gate-frozen hash and inert projection verbatim", async () => {
     const mockRouter = createMockRouter();
-    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    const sentWorkflows: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2][] =
+      [];
     mockRouter.sendAgentDeploy = ((
       _agentAddress: string,
       _config: HarnessConfig,
-      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
-    }) as SidecarRouter["sendAgentDeploy"];
+    }) as TestSidecarRouter["sendAgentDeploy"];
 
     const { sendMultiStepDeployFrame } = await import("./session-service");
     const { defineWorkflow, step } = await import("@intx/workflow/definition");
@@ -1302,7 +1312,8 @@ describe("sendMultiStepDeployFrame", () => {
 
     await sendMultiStepDeployFrame({
       lineage: "source-ref",
-      sidecarRouter: mockRouter,
+      sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
+      allocationTarget: { allocationId: "alloc-test", generation: 1 },
       agentAddress: "ins_dep_src@workflow.interchange",
       config,
       sources,
@@ -1414,9 +1425,10 @@ describe("deployCodeSourcedWorkflow", () => {
   // These unit tests assert FRAME logic plus the SHAPE of the anchor
   // workflow_run row the composed entrypoint writes (status, self-ref, born
   // null-key) and its post-ack public-key stamp -- not its persistence (the
-  // real anchor-in-a-live-DB proof, including the anchor-before-frame ordering,
-  // is the tests/db regression test). A capturing db records the anchor insert
-  // and the success-path public-key update, and answers the persisted-definition
+  // real anchor-in-a-live-DB proof, including the prepare-before-deploy ordering,
+  // lives in tests/db/workflow-allocation-service.test.ts). A capturing db
+  // records the anchor insert and the success-path public-key update, and
+  // answers the persisted-definition
   // guard's existence query with a matching row; the fail-path tests throw
   // before reaching the insert.
   let capturedAnchorRow: Record<string, unknown> | undefined;
@@ -1534,15 +1546,16 @@ describe("deployCodeSourcedWorkflow", () => {
 
   test("builds a self-consistent source-ref frame that binds to the gate's frozen hash and inert projection", async () => {
     const mockRouter = createMockRouter();
-    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    const sentWorkflows: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2][] =
+      [];
     mockRouter.sendAgentDeploy = ((
       _agentAddress: string,
       _config: HarnessConfig,
-      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
-    }) as SidecarRouter["sendAgentDeploy"];
+    }) as TestSidecarRouter["sendAgentDeploy"];
 
     const { deployCodeSourcedWorkflow } = await import("./session-service");
     const { approval, projection, closure, wireHash } = await makeApproveOutput(
@@ -1554,7 +1567,8 @@ describe("deployCodeSourcedWorkflow", () => {
     expect(approval.projection).toBe(projection);
 
     await deployCodeSourcedWorkflow({
-      sidecarRouter: mockRouter,
+      sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
+      allocationTarget: { allocationId: "alloc-test", generation: 1 },
       agentAddress: DEPLOY_ADDRESS,
       config: CONFIG,
       sources: SOURCES,
@@ -1604,7 +1618,7 @@ describe("deployCodeSourcedWorkflow", () => {
     mockRouter.sendAgentDeploy = (() => {
       deployAttempted = true;
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
-    }) as SidecarRouter["sendAgentDeploy"];
+    }) as TestSidecarRouter["sendAgentDeploy"];
 
     const { deployCodeSourcedWorkflow } = await import("./session-service");
     const { projection, closure } = await makeApproveOutput([
@@ -1621,7 +1635,8 @@ describe("deployCodeSourcedWorkflow", () => {
 
     await expect(
       deployCodeSourcedWorkflow({
-        sidecarRouter: mockRouter,
+        sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
+        allocationTarget: { allocationId: "alloc-test", generation: 1 },
         agentAddress: DEPLOY_ADDRESS,
         config: CONFIG,
         sources: SOURCES,
@@ -1642,7 +1657,7 @@ describe("deployCodeSourcedWorkflow", () => {
     mockRouter.sendAgentDeploy = (() => {
       deployAttempted = true;
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
-    }) as SidecarRouter["sendAgentDeploy"];
+    }) as TestSidecarRouter["sendAgentDeploy"];
 
     const { deployCodeSourcedWorkflow } = await import("./session-service");
     const { approval, projection, closure } = await makeApproveOutput([
@@ -1666,7 +1681,8 @@ describe("deployCodeSourcedWorkflow", () => {
 
     await expect(
       deployCodeSourcedWorkflow({
-        sidecarRouter: mockRouter,
+        sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
+        allocationTarget: { allocationId: "alloc-test", generation: 1 },
         agentAddress: DEPLOY_ADDRESS,
         config: CONFIG,
         sources: SOURCES,
@@ -1876,15 +1892,16 @@ describe("deployCodeSourcedWorkflow", () => {
 
   test("pins and carries per-step inference sources for an inline onTrigger body", async () => {
     const mockRouter = createMockRouter();
-    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    const sentWorkflows: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2][] =
+      [];
     mockRouter.sendAgentDeploy = ((
       _agentAddress: string,
       _config: HarnessConfig,
-      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
-    }) as SidecarRouter["sendAgentDeploy"];
+    }) as TestSidecarRouter["sendAgentDeploy"];
 
     const { deployCodeSourcedWorkflow } = await import("./session-service");
     // Approve the body agent's declared inference source so the pin resolves it.
@@ -1897,7 +1914,8 @@ describe("deployCodeSourcedWorkflow", () => {
     if (!approval.ok) throw new Error("expected approval");
 
     await deployCodeSourcedWorkflow({
-      sidecarRouter: mockRouter,
+      sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
+      allocationTarget: { allocationId: "alloc-test", generation: 1 },
       agentAddress: DEPLOY_ADDRESS,
       config: CONFIG,
       sources: SOURCES,
@@ -1942,7 +1960,7 @@ describe("deployCodeSourcedWorkflow", () => {
     mockRouter.sendAgentDeploy = (() => {
       deployAttempted = true;
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
-    }) as SidecarRouter["sendAgentDeploy"];
+    }) as TestSidecarRouter["sendAgentDeploy"];
 
     const { deployCodeSourcedWorkflow } = await import("./session-service");
     // Approve everything EXCEPT the body agent's inference source. The frozen
@@ -1958,7 +1976,8 @@ describe("deployCodeSourcedWorkflow", () => {
 
     await expect(
       deployCodeSourcedWorkflow({
-        sidecarRouter: mockRouter,
+        sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
+        allocationTarget: { allocationId: "alloc-test", generation: 1 },
         agentAddress: DEPLOY_ADDRESS,
         config: CONFIG,
         sources: SOURCES,
@@ -1975,15 +1994,16 @@ describe("deployCodeSourcedWorkflow", () => {
 
   test("pins a loop nested inside an onTrigger body, recursing into its body", async () => {
     const mockRouter = createMockRouter();
-    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    const sentWorkflows: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2][] =
+      [];
     mockRouter.sendAgentDeploy = ((
       _agentAddress: string,
       _config: HarnessConfig,
-      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+      workflow?: Parameters<TestSidecarRouter["sendAgentDeploy"]>[2],
     ) => {
       sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
-    }) as SidecarRouter["sendAgentDeploy"];
+    }) as TestSidecarRouter["sendAgentDeploy"];
 
     const { deployCodeSourcedWorkflow } = await import("./session-service");
     const { approval, projection, closure } = await makeLoopInBodyApproveOutput(
@@ -1997,7 +2017,8 @@ describe("deployCodeSourcedWorkflow", () => {
     if (!approval.ok) throw new Error("expected approval");
 
     await deployCodeSourcedWorkflow({
-      sidecarRouter: mockRouter,
+      sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
+      allocationTarget: { allocationId: "alloc-test", generation: 1 },
       agentAddress: DEPLOY_ADDRESS,
       config: CONFIG,
       sources: SOURCES,
@@ -2035,7 +2056,7 @@ describe("deployCodeSourcedWorkflow", () => {
     mockRouter.sendAgentDeploy = (() => {
       deployAttempted = true;
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
-    }) as SidecarRouter["sendAgentDeploy"];
+    }) as TestSidecarRouter["sendAgentDeploy"];
 
     const { deployCodeSourcedWorkflow } = await import("./session-service");
     // Approve director + mail but NOT the deploy default's inference source. An
@@ -2052,7 +2073,8 @@ describe("deployCodeSourcedWorkflow", () => {
 
     await expect(
       deployCodeSourcedWorkflow({
-        sidecarRouter: mockRouter,
+        sidecarAllocationRouter: createMockAllocationRouter(mockRouter),
+        allocationTarget: { allocationId: "alloc-test", generation: 1 },
         agentAddress: DEPLOY_ADDRESS,
         config: CONFIG,
         sources: SOURCES,

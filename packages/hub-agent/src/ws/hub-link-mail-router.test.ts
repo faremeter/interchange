@@ -18,7 +18,6 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
   type SidecarAuthenticator,
-  type SidecarRouter,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -162,17 +161,32 @@ const VALID_MESSAGE = new TextEncoder().encode(
 
 type TestEnv = {
   server: ReturnType<typeof Bun.serve>;
-  router: SidecarRouter;
-  // address -> hex-encoded Ed25519 public key, backing the hub's fail-closed
-  // `lookupPublicKey`. A workflow deployment routes only after signing the
-  // hub's reconnect nonce with the key registered here.
+  router: ReturnType<typeof createSidecarRouter>;
+  // address -> hex-encoded Ed25519 public key used by the test key store.
   deploymentKeys: Map<string, string>;
 };
 
-const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "shared",
-  sidecarId,
-});
+const identities = new Map<
+  string,
+  Exclude<Awaited<ReturnType<SidecarAuthenticator>>, null>
+>();
+function ensureIdentity(sidecarId: string) {
+  const existing = identities.get(sidecarId);
+  if (existing !== undefined) return existing;
+  const identity = {
+    kind: "allocated" as const,
+    sidecarId,
+    allocationId: `allocation-${sidecarId}`,
+    tenantId: "tenant-test",
+    anchorRunId: `anchor-${sidecarId}`,
+    workflowRunAddress: "workflow",
+    generation: 1,
+  };
+  identities.set(sidecarId, identity);
+  return identity;
+}
+const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) =>
+  ensureIdentity(sidecarId);
 
 function startTestServer(): TestEnv {
   const deploymentKeys = new Map<string, string>();
@@ -180,9 +194,6 @@ function startTestServer(): TestEnv {
     authenticateSidecar: acceptAnySidecar,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
-    lookups: {
-      lookupPublicKey: async (address) => deploymentKeys.get(address) ?? null,
-    },
   });
 
   const app = new Hono();
@@ -204,6 +215,24 @@ function startTestServer(): TestEnv {
         },
         onMessage(evt, _ws) {
           if (typeof evt.data === "string") {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test server parses the handshake frame emitted by the typed HubLink under test
+            const frame = JSON.parse(evt.data) as {
+              type?: string;
+              sidecarId?: string;
+              agentAddresses?: string[];
+            };
+            if (
+              (frame.type === "register" || frame.type === "reconnect") &&
+              frame.sidecarId !== undefined
+            ) {
+              router.fenceAllocation(`allocation-${frame.sidecarId}`, 1);
+              const identity = ensureIdentity(frame.sidecarId);
+              if (frame.agentAddresses?.length === 1) {
+                Object.assign(identity, {
+                  workflowRunAddress: frame.agentAddresses[0],
+                });
+              }
+            }
             router.handleMessage(handle, evt.data);
           }
         },

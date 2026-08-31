@@ -311,7 +311,7 @@ async function installMember(spec: {
     entry: WORKFLOW_ENTRY,
     assetId: DEFINITION_ASSET_ID,
     approvals: spec.approvals,
-    router: env.hub.router,
+    router: env.hub.probeRouter,
     db: h.db,
     reads: committedReadsToSourceTree(committed),
     registryName: "npmjs",
@@ -373,11 +373,16 @@ async function deployAndRun(spec: {
     { [spec.stepId]: [inferenceSource] },
     config,
   );
+  env.hub.setPrimaryAllocationIdentity(spec.anchorRunId, spec.address);
   await deployCodeSourcedWorkflow({
     approved: spec.approved,
     source,
     resolveAttachment,
-    sidecarRouter: env.hub.router,
+    sidecarAllocationRouter: env.hub.router,
+    allocationTarget: {
+      allocationId: "allocation-integration-1",
+      generation: 1,
+    },
     agentAddress: spec.address,
     config,
     sources: { [spec.stepId]: [inferenceSource] },

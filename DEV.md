@@ -20,7 +20,7 @@ If env files are already configured (see Environment Setup below):
 bin/db-reset && bin/dev --seed
 ```
 
-This drops and recreates the database, runs migrations, grants permissions, starts all services, and seeds test data. After startup, the hub is at `http://localhost:3000` and the admin UI is at `http://localhost:5173`.
+This drops and recreates the database, runs migrations, grants permissions, starts the Hub and admin UI, and seeds test data. After startup, the Hub is at `http://localhost:3000` and the admin UI is at `http://localhost:5173`. The production Hub composition registers no sidecar provisioner, so this stack cannot probe or deploy workflows until one is injected.
 
 Seed accounts (all use password `password123`):
 
@@ -38,17 +38,15 @@ Copy each example env file and fill in values:
 cp .env.example .env
 cp .env.hub.example .env.hub
 cp .env.migrate.example .env.migrate
-cp .env.sidecar.example .env.sidecar   # optional, dev defaults are provided
 ```
 
 The example files contain working dev defaults for most values. The only value you must generate is `BETTER_AUTH_SECRET` in `.env.hub` (any 32+ byte hex string works, e.g. `openssl rand -hex 32`).
 
-| File           | Contains                                                                                         |
-| -------------- | ------------------------------------------------------------------------------------------------ |
-| `.env`         | Shared settings: database host/port/name, demo runner config                                     |
-| `.env.hub`     | Hub secrets: database credentials, auth secret, OAuth (optional)                                 |
-| `.env.migrate` | Migration database credentials (DDL user)                                                        |
-| `.env.sidecar` | Sidecar overrides: hub URL, sidecar ID, handshake token, data directory (optional, has defaults) |
+| File           | Contains                                                         |
+| -------------- | ---------------------------------------------------------------- |
+| `.env`         | Shared settings: database host/port/name, demo runner config     |
+| `.env.hub`     | Hub secrets: database credentials, auth secret, OAuth (optional) |
+| `.env.migrate` | Migration database credentials (DDL user)                        |
 
 ### Optional Environment Overrides
 
@@ -94,15 +92,15 @@ If you get "role already exists" errors, the users are already set up and you ca
 
 ## Running the Stack
 
-The dev orchestrator starts everything in the correct order with colored log output:
+The dev orchestrator starts the Hub and admin UI in the correct order with colored log output:
 
 ```bash
 bin/dev
 ```
 
-This runs: database migration, sidecar-identity provisioning, hub server (with `--watch` for auto-reload), sidecar, and admin UI dev server. Press Ctrl+C for graceful shutdown of all services.
+This runs database migration, the Hub server (with `--watch` for auto-reload), and the admin UI dev server. Press Ctrl+C for graceful shutdown of all services.
 
-The hub authenticates the sidecar's WebSocket handshake against a per-sidecar token hash stored in the database, so the orchestrator provisions the dev sidecar's row (hashing the resolved `SIDECAR_TOKEN` from `.env.sidecar` or its default) before the sidecar starts. This step is skipped with `--no-sidecar`.
+The Hub does not start or trust an ambient sidecar. Workflow probing and execution both require a configured sidecar provisioner; the provisioner receives a probe- or allocation-scoped identity and starts or reuses suitable capacity. The production composition registers no provisioner by default, so deployment is unavailable until one is injected. The admin UI E2E harness injects a test-only local-process provisioner.
 
 Options:
 
@@ -110,10 +108,9 @@ Options:
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--seed`                | Seed the database after the hub is ready                                                                                                                            |
 | `--no-admin-ui`         | Skip the admin UI dev server                                                                                                                                        |
-| `--no-sidecar`          | Skip the sidecar                                                                                                                                                    |
 | `--no-publish-builtins` | Skip publishing the built-in tool packages. Incompatible with `--seed` (errors out — the seed pins the built-ins, so the launch would fail with `tarball.missing`). |
 
-Default ports: hub on 3000, admin UI on 5173. The sidecar connects to the hub via websocket at `ws://localhost:3000/api/sidecars/ws`.
+Default ports: hub on 3000 and admin UI on 5173. Provisioned sidecars connect outbound to `ws://localhost:3000/api/sidecars/ws` unless the provisioner is given another Hub WebSocket URL.
 
 ## Database
 
@@ -137,7 +134,7 @@ Pass `--clean` to additionally wipe the hub and sidecar on-disk state directorie
 bin/db-reset --clean
 ```
 
-Without `--clean`, the postgres tables are wiped but the sidecar's per-agent git repos and key pairs stay on disk. On the next start the sidecar tries to reconnect those orphaned agents and the hub rejects the challenge with `Unknown agent address`. Use `--clean` whenever you want a fresh stack with no leftover agent state.
+Without `--clean`, the postgres tables are wiped but any provisioner-managed local sidecar data may remain on disk. A later worker must not reuse that state against a fresh database because its allocation identity no longer exists. Use `--clean` whenever you want a fresh stack with no leftover worker state.
 
 ### Applying Migrations Only
 
@@ -231,21 +228,20 @@ It requires the same one-time Chromium installation as the admin UI suite.
 
 All scripts live in `bin/`. The bash scripts source the bundled [opsh](https://github.com/alexanderguy/opsh) framework as a library from `bin/opsh`, so opsh does not need to be installed separately.
 
-| Script                  | Usage                                            | Description                                                                                                               |
-| ----------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| `bin/dev`               | `bin/dev [flags]`                                | Dev orchestrator (see above)                                                                                              |
-| `bin/hub`               | `bin/hub`                                        | Run the hub server standalone (loads `.env` and `.env.hub`)                                                               |
-| `bin/db-migrate`        | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`)                                                  |
-| `bin/db-reset`          | `bin/db-reset [--clean]`                         | Drop, recreate, migrate, and grant permissions. `--clean` also wipes the hub and sidecar on-disk state.                   |
-| `bin/seed`              | `bin/seed`                                       | Seed the database via the hub API (requires running hub, uses `HUB_URL`)                                                  |
-| `bin/provision-sidecar` | `bin/provision-sidecar`                          | Write the sidecar identity row from `SIDECAR_ID`/`SIDECAR_TOKEN` so the handshake authenticates (reads DB creds from env) |
-| `bin/add-package`       | `bin/add-package <name>`                         | Scaffold a new `@intx/<name>` package                                                                                     |
-| `bin/check-env`         | `bin/check-env`                                  | Verify git hooks are configured                                                                                           |
-| `bin/audit`             | `bin/audit --dir <path> --session <id> [--json]` | Inspect an agent's tool authorization audit trail                                                                         |
-| `bin/discover`          | `bin/discover --provider <name> [flags]`         | Run the wire-capture rig against a registered inference provider (needs provider credentials in env)                      |
-| `bin/gen-api-docs`      | `bin/gen-api-docs`                               | Generate API documentation from route schemas                                                                             |
-| `bin/posix-demo`        | `bin/posix-demo`                                 | Run the POSIX (alpha/beta) agent demo (auto-loads `.env`; reads `ALPHA_*`/`BETA_*`)                                       |
-| `bin/ring-demo`         | `bin/ring-demo`                                  | Run the ring agent demo (auto-loads `.env`; reads `RING_*`)                                                               |
+| Script             | Usage                                            | Description                                                                                          |
+| ------------------ | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `bin/dev`          | `bin/dev [flags]`                                | Dev orchestrator (see above)                                                                         |
+| `bin/hub`          | `bin/hub`                                        | Run the hub server standalone (loads `.env` and `.env.hub`)                                          |
+| `bin/db-migrate`   | `bin/db-migrate`                                 | Generate and apply database migrations (loads `.env` and `.env.migrate`)                             |
+| `bin/db-reset`     | `bin/db-reset [--clean]`                         | Drop, recreate, migrate, and grant permissions. `--clean` also wipes Hub and local sidecar data.     |
+| `bin/seed`         | `bin/seed`                                       | Seed the database via the hub API (requires running hub, uses `HUB_URL`)                             |
+| `bin/add-package`  | `bin/add-package <name>`                         | Scaffold a new `@intx/<name>` package                                                                |
+| `bin/check-env`    | `bin/check-env`                                  | Verify git hooks are configured                                                                      |
+| `bin/audit`        | `bin/audit --dir <path> --session <id> [--json]` | Inspect an agent's tool authorization audit trail                                                    |
+| `bin/discover`     | `bin/discover --provider <name> [flags]`         | Run the wire-capture rig against a registered inference provider (needs provider credentials in env) |
+| `bin/gen-api-docs` | `bin/gen-api-docs`                               | Generate API documentation from route schemas                                                        |
+| `bin/posix-demo`   | `bin/posix-demo`                                 | Run the POSIX (alpha/beta) agent demo (auto-loads `.env`; reads `ALPHA_*`/`BETA_*`)                  |
+| `bin/ring-demo`    | `bin/ring-demo`                                  | Run the ring agent demo (auto-loads `.env`; reads `RING_*`)                                          |
 
 ## Seed Data
 

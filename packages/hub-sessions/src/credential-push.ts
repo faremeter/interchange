@@ -130,6 +130,11 @@ async function pushSourceUpdatesToTenants(
             `running run ${instance.id} matched the non-null-address filter but has a null address`,
           );
         }
+        if (instance.definitionId === null) {
+          throw new Error(
+            `running run ${instance.id} has no workflow definition`,
+          );
+        }
         return pushInstanceSourceUpdate(
           db,
           sidecarRouter,

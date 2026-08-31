@@ -19,7 +19,6 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
   type SidecarAuthenticator,
-  type SidecarRouter,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -31,8 +30,13 @@ import { createSidecarOrchestrator } from "./sidecar-orchestrator";
 import type { WorkflowProbeExecutor, WorkflowProbeResult } from "./ws/hub-link";
 
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "shared",
+  kind: "allocated",
   sidecarId,
+  allocationId: `allocation-${sidecarId}`,
+  tenantId: "tenant-test",
+  anchorRunId: `anchor-${sidecarId}`,
+  workflowRunAddress: "workflow",
+  generation: 1,
 });
 
 async function waitFor(
@@ -50,7 +54,7 @@ async function waitFor(
 
 function startTestServer(): {
   server: ReturnType<typeof Bun.serve>;
-  router: SidecarRouter;
+  router: ReturnType<typeof createSidecarRouter>;
 } {
   const router = createSidecarRouter({
     authenticateSidecar: acceptAnySidecar,
@@ -175,21 +179,21 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
       workflowProbeExecutor,
     });
 
+    env.router.fenceAllocation(`allocation-${sidecarId}`, 1);
     orchestrator.start();
     try {
       await waitFor(() =>
         env.router.getConnectedSidecars().includes(sidecarId),
       );
 
-      const sendProbe = env.router.sendProbe;
-      if (sendProbe === undefined) {
-        throw new Error("createSidecarRouter did not expose sendProbe");
-      }
-      const result = await sendProbe({
-        source: { kind: "registry", registry: "npmjs" },
-        closure: CLOSURE,
-        entry: "./workflow.js",
-      });
+      const result = await env.router.sendProbeToAllocation(
+        { allocationId: `allocation-${sidecarId}`, generation: 1 },
+        {
+          source: { kind: "registry", registry: "npmjs" },
+          closure: CLOSURE,
+          entry: "./workflow.js",
+        },
+      );
 
       // The injected executor -- not the rejecting placeholder -- handled the
       // probe: it saw the frame and its inert result flowed back to the hub.

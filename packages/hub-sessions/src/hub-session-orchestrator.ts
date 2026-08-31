@@ -18,10 +18,8 @@ import { parseMailToEmail } from "@intx/mime";
 import { parseInferenceEvent } from "@intx/types/runtime";
 import { getLogger } from "@intx/log";
 
-import type { AgentRepoStore } from "./agent-repo";
 import type { EventCollectorRegistry } from "./event-collector-registry";
 import type { SidecarEventEmitter } from "./ws/sidecar-events";
-import { parseAgentId } from "./hub-session-lookups";
 
 const log = getLogger(["hub", "orchestrator"]);
 
@@ -29,12 +27,6 @@ const log = getLogger(["hub", "orchestrator"]);
  * narrow surface keeps tests honest and decouples the orchestrator
  * from the rest of the router API. */
 export type HubSessionRouterFacade = {
-  sendPack(
-    agentAddress: string,
-    pack: Uint8Array,
-    ref: string,
-    commitSha: string,
-  ): Promise<void>;
   dispatchAgentEvent(agentAddress: string, event: unknown): void;
 };
 
@@ -43,7 +35,6 @@ export type HubSessionOrchestratorDeps = {
   router: HubSessionRouterFacade;
   db: DB["db"];
   eventCollectors: EventCollectorRegistry;
-  agentRepoStore: AgentRepoStore;
 };
 
 export type HubSessionOrchestrator = {
@@ -56,7 +47,7 @@ export type HubSessionOrchestrator = {
 export function createHubSessionOrchestrator(
   deps: HubSessionOrchestratorDeps,
 ): HubSessionOrchestrator {
-  const { events, router, db, eventCollectors, agentRepoStore } = deps;
+  const { events, router, db, eventCollectors } = deps;
 
   const unsubscribers: (() => void)[] = [];
 
@@ -102,23 +93,14 @@ export function createHubSessionOrchestrator(
 
       // Every deploy address names a workflow run whose public key lives on its
       // single self-anchored workflow_run row, keyed by address. Persist it
-      // there so the reconnect ownership challenge can verify the address off
-      // the same row `lookupPublicKey` reads. Only the deployment-level address
-      // owns a row, so a stray per-step ack updates nothing.
+      // there as the deployment's published identity. Reconnect routing is
+      // allocation-authenticated, so this projection is not connection
+      // authority. Only the deployment-level address owns a row, so a stray
+      // per-step ack updates nothing.
       await db
         .update(workflowRun)
         .set({ publicKey })
         .where(eq(workflowRun.address, agentAddress));
-    }),
-  );
-
-  unsubscribers.push(
-    events.on("deploy.ref.stale", async ({ agentAddress }) => {
-      const agentId = parseAgentId(agentAddress);
-      const { pack, commitSha, ref } =
-        await agentRepoStore.createDeployPack(agentId);
-      await router.sendPack(agentAddress, pack, ref, commitSha);
-      log.info("Re-deployed stale agent {agentAddress}", { agentAddress });
     }),
   );
 

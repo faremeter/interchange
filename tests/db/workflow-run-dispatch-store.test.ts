@@ -62,7 +62,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(sidecar).values({
         id: "sidecar-ack",
         tokenHashSha256: new Uint8Array([1, 2, 3]),
-        credentialScope: "allocated",
         status: "online",
       });
       await h.db.insert(sidecarAllocation).values({

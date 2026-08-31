@@ -68,6 +68,14 @@ export type CreatePendingSidecarAllocationArgs = {
   readonly now?: Date;
 };
 
+export type CreateAdoptedSidecarAllocationArgs =
+  CreatePendingSidecarAllocationArgs & {
+    readonly sidecarId: string;
+    readonly generation: number;
+    readonly externalRef?: string;
+    readonly connectDeadline: Date;
+  };
+
 export type ClaimSidecarAllocationArgs = {
   readonly leaseId: string;
   readonly leaseDurationMs: number;
@@ -261,7 +269,6 @@ export function createSidecarAllocationStore(db: DBHandle) {
       id: args.sidecarId,
       url: null,
       tokenHashSha256: args.tokenHashSha256,
-      credentialScope: "allocated",
       status: "offline",
       createdAt: args.now,
       updatedAt: args.now,
@@ -397,6 +404,41 @@ export function createSidecarAllocationStore(db: DBHandle) {
       if (inserted === undefined) {
         throw new Error(
           `sidecarAllocationStore.createPending: insert returned no row for ${args.id}`,
+        );
+      }
+      return parseSidecarAllocationRow(inserted);
+    },
+
+    async createAdopted(
+      args: CreateAdoptedSidecarAllocationArgs,
+      tx?: DBExecutor,
+    ): Promise<SidecarAllocation> {
+      const createdAt = databaseTimestamp(args.now);
+      const [inserted] = await (tx ?? db)
+        .insert(sidecarAllocation)
+        .values({
+          id: args.id,
+          anchorRunId: args.anchorRunId,
+          tenantId: args.tenantId,
+          provisionerId: args.provisionerId,
+          provisionerApiVersion: args.provisionerApiVersion,
+          provisionerBindingFingerprint: args.provisionerBindingFingerprint,
+          sidecarId: args.sidecarId,
+          status: "allocated",
+          generation: args.generation,
+          ensureAcceptedGeneration: args.generation,
+          ...(args.externalRef !== undefined
+            ? { externalRef: args.externalRef }
+            : {}),
+          connectDeadline: args.connectDeadline,
+          nextAttemptAt: createdAt,
+          createdAt,
+          updatedAt: createdAt,
+        })
+        .returning();
+      if (inserted === undefined) {
+        throw new Error(
+          `sidecarAllocationStore.createAdopted: insert returned no row for ${args.id}`,
         );
       }
       return parseSidecarAllocationRow(inserted);

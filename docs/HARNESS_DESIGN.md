@@ -12,18 +12,18 @@ The sidecar manages agent workloads on behalf of the hub. Each deployment runs i
 │  - Agent definitions, credentials                                │
 │  - Session management, message persistence                       │
 │  - Harness registration and lifecycle management                 │
-│  - Sidecar WebSocket handler (challenge/response, deploy/undeploy)│
+│  - Allocation-authenticated sidecar WebSocket handler             │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
                             │ Persistent WebSocket (outbound from sidecar)
                             │
 ┌───────────────────────────┴─────────────────────────────────────┐
 │              Sidecar (apps/sidecar/)                              │
-│  - One per machine                                                │
+│  - Created or reused only through a provisioner                   │
 │  - Pure WebSocket client (no HTTP server)                        │
 │  - Spawns a supervised workflow child process per deployment     │
 │  - Self-restores agent sessions from disk on restart             │
-│  - Proves agent ownership via Ed25519 challenge/response         │
+│  - Bound to one allocation anchor and generation                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -49,20 +49,9 @@ apps/sidecar/
 └── tsconfig.json
 ```
 
-## Configuration
-
-Environment variables:
-
-```env
-HUB_WS_URL=ws://localhost:3000/api/sidecars/ws
-SIDECAR_ID=dev-sidecar-1
-SIDECAR_TOKEN=dev-token
-SIDECAR_DATA_DIR=./tmp/sidecar-data
-```
-
 ## Hub ↔ Sidecar Communication
 
-All communication between hub and sidecar is over a single persistent WebSocket connection. The sidecar connects outbound to the hub. There are no REST endpoints on the sidecar.
+All communication between hub and sidecar is over a single persistent WebSocket connection. The provisioner supplies the full Hub WebSocket URL, normally `ws://<hub>/api/sidecars/ws`, and the sidecar connects outbound to it. There are no REST endpoints on the sidecar.
 
 ### Deployment Frames
 
@@ -80,7 +69,7 @@ All communication between hub and sidecar is over a single persistent WebSocket 
 | `agent.deploy.ack` | `agentAddress`, `publicKey` | Agent deployed, here is its public key |
 | `agent.error`      | `agentAddress`, `error`     | Deployment failed                      |
 
-When the hub sends `agent.deploy`, the sidecar spawns a supervised **workflow-process child** to host the deployment and responds with `agent.deploy.ack`. For a single-step (launched-agent) deployment the sidecar generates the agent's key pair (if new) or loads the existing one, records the hub's public key for later deploy-pack verification, initializes the head's on-disk deploy-tree repository (the narrow `initRepo`, not the retired `provisionAgent`), and acks the agent's hex-encoded public key — the hub stores it in `agent_instance.publicKey` for reconnect verification. A multi-step deployment's address is workflow-derived and has no `agent_instance` row, so the ack carries the deployment address's own key — the same Ed25519 key the sidecar signs reconnect challenges with — and the hub stores it on the deployment's `workflow_deployment` row (keyed by address), mirroring the launched-agent path so both are reconnect-verifiable. Before the child is spawned, the inputs a restart cannot otherwise recover — the per-step inference sources, the session id, and (single-step only) the hub public key — are written to a per-deployment `deployment.json` record.
+When the Hub sends `agent.deploy`, the sidecar spawns a supervised **workflow-process child** to host the deployment and responds with `agent.deploy.ack`. The sidecar records the Hub key used for deploy-pack verification and returns the supervisor public key. The Hub publishes that key only after initialization completes under the current allocation lock; reconnect authority remains the allocation credential, not the projected public key. Before the child is spawned, inputs a restart cannot otherwise recover are written to a per-deployment record.
 
 When the hub sends `agent.undeploy`, the sidecar shuts the deployment's supervisor down (killing the workflow-process child and releasing its IPC pipes and event-channel handle), unregisters the deployment address from the transport and from the mail/signal/drain routers, reclaims the deployment's per-step scratch, and deletes the `deployment.json` record so a later boot does not re-spawn a torn-down deployment. The agent's key pair and its durable agent-state / conversation repositories are left in place so a redeploy on the same address resumes them.
 
@@ -88,7 +77,7 @@ Credentials travel in the `agent.deploy` frame's inference **sources** — `conf
 
 ## Per-Agent Key Pairs
 
-Each agent has its own Ed25519 key pair, generated when the agent is first deployed to the sidecar and stored alongside the agent's isogit repository. The key pair persists across sidecar restarts. The public key is transmitted to the hub in the initial `agent.deploy.ack` frame so the hub can verify ownership on reconnect.
+Each agent has its own Ed25519 key pair, generated when the agent is first deployed to the sidecar and stored alongside the agent's isogit repository. The key pair persists across sidecar restarts. The public key is transmitted to the Hub in the initial `agent.deploy.ack` frame for the deployment's published identity and signed-content provenance. Allocation credentials, not agent keys, authorize reconnect routing.
 
 Keys are stored as raw 32-byte binary files under a `keys/` directory within the agent's data directory.
 
@@ -152,67 +141,24 @@ Two observable windows where the cache may be empty or stale, both of which fall
 1. **Between WebSocket connection and the reactor's first `wrappedStore.load()`.** A user message composed in this window finds an absent cache entry. After the load, a bootstrap frame populates the cache.
 2. **Between a sidecar disconnect and the same sidecar's next `wrappedStore.load()` on reconnect.** The disconnect clears the cache. A user message composed in this window also finds an absent entry. If the cache was ahead of the persisted store at disconnect (a state mutation fired between the last `writeMetadata` cycle and the drop), the bootstrap will restore the persisted snapshot rather than the prior in-memory cache value. The cache reflects the freshest source of truth available, not a continuous history.
 
-## Registration
+## Registration and Reconnection
 
-On first connection (no restorable agents in `SIDECAR_DATA_DIR`), the sidecar sends a `register` frame to identify itself to the hub. The hub responds by sending `agent.deploy` frames for any agents assigned to this sidecar.
+A provisioner creates the sidecar identity before starting capacity. The bearer token resolves to one durable workflow probe or allocation and generation; there is no ambient registration pool. Probe identities carry no workflow address and may register only an empty address list.
 
-| Direction     | Frame      | Fields                                           | Description                 |
-| ------------- | ---------- | ------------------------------------------------ | --------------------------- |
-| Sidecar → Hub | `register` | `sidecarId`, `token`, `agentAddresses: string[]` | Identify sidecar to the hub |
+Possession of the raw token is sufficient to authenticate as that durable owner while it remains active. Provisioners and workers must never log it. A provisioner that must persist the token for restartable capacity must use access-controlled secret storage and delete it when the durable owner becomes terminal. Connections crossing a non-loopback or otherwise untrusted transport must use `wss://`; plaintext `ws://` is only appropriate for local loopback development.
 
-On reconnection (agents successfully restored from `SIDECAR_DATA_DIR`), the sidecar sends a `reconnect` frame instead, which triggers the challenge/response verification flow described below.
+On first connection, the worker sends an empty `register` frame. After restoring a live supervisor from its allocation storage, it sends `reconnect` with that allocation's deployment address. The Hub accepts either frame only when the token resolves to the currently fenced generation. A reconnect may announce only the anchor address carried by that identity; a stale generation or unrelated address closes the socket.
 
-## Reconnection Protocol
+The Hub restores that one address directly after validation. Frames following the reconnect are serialized behind it on the same socket, so a workflow-run pack re-driven by `onWorkflowAddressesRoutable` cannot overtake route restoration. Trigger and signal durability lives in `workflow_run_dispatch`; the Hub does not maintain an unscoped, in-memory queue for arbitrary disconnected sidecars.
 
-### Self-Restoration
+| Direction     | Frame       | Fields                                       | Description                                      |
+| ------------- | ----------- | -------------------------------------------- | ------------------------------------------------ |
+| Sidecar → Hub | `register`  | `sidecarId`, `token`, empty `agentAddresses` | Register probe or undeployed allocation capacity |
+| Sidecar → Hub | `reconnect` | `sidecarId`, `token`, the allocation address | Restore the current generation's route           |
 
-At boot, **before** opening the WebSocket connection to the hub, the sidecar scans `SIDECAR_DATA_DIR/workflow-runs/` for `deployment.json` records (`scanWorkflowDeploymentRecords`). Each record is validated at the trust boundary, its stored `agentAddress` is cross-checked against its directory name, its workflow definition is re-read and re-validated off disk with the same gates a fresh deploy applies, and its pinned inference sources are re-admitted against the providers this sidecar can build; a record that fails any check is logged and skipped so one bad deployment cannot strand the rest. Each surviving record is restored through the **same** spawn path a live deploy uses — a supervised workflow-process child, with the single-step head's key pair and recorded hub key re-established. Restoration completes before the `register` or `reconnect` frame is sent, and happens entirely on the sidecar side; the hub is not involved in restoration.
+## Self-Restoration
 
-### Challenge/Response Verification
-
-After self-restoration, the sidecar connects to the hub and proves ownership of each run address:
-
-1. Sidecar sends a `reconnect` frame listing the addresses it restored and their current deploy commit SHAs (`deployRefs`)
-2. Hub generates a 32-byte random nonce per address and sends a `challenge` frame
-3. Sidecar signs `nonce || agent_address` (concatenated bytes) with each agent's private key and sends a `challenge.response` frame
-4. Hub verifies each signature against the stored public key for that address
-5. Verified addresses are provisionally added to the routing table so the hub's `agent.reconnected` reaction can run for each
-6. Hub compares each agent's advertised deploy ref against its own. For agents whose ref is stale or absent, the hub creates and sends a fresh deploy pack (fire-and-forget, does not block reconnect completion)
-7. On a successful reaction, the address remains in the routing table and queued messages are flushed
-8. On failure (the reconnect reaction rejected by governance), the address is rolled back from the routing table — its queue is preserved for the next reconnect attempt and the sidecar receives `challenge.failed`
-9. For addresses that fail cryptographic verification, hub sends `challenge.failed` with the address and reason
-
-A supervised deployment carries its grants in the deploy pack and refreshes them over the supervisor's IPC credentials snapshot at spawn and recycle, so reconnect no longer performs a grant-refresh round-trip over the wire.
-
-### Reconnection Frames
-
-**Sidecar to Hub:**
-
-| Frame                | Fields                                                                                  | Description                                         |
-| -------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| `reconnect`          | `sidecarId`, `token`, `agentAddresses: string[]`, `deployRefs?: Record<string, string>` | Sidecar announces addresses and current deploy SHAs |
-| `challenge.response` | `responses: { address, signature }[]`                                                   | Signed proof of key ownership per address           |
-
-**Hub to Sidecar:**
-
-| Frame              | Fields                             | Description                         |
-| ------------------ | ---------------------------------- | ----------------------------------- |
-| `challenge`        | `challenges: { address, nonce }[]` | One nonce per address to be signed  |
-| `challenge.failed` | `address`, `reason`                | Verification failed for one address |
-
-### Nonce Security
-
-Nonces are single-use. The hub marks each nonce as consumed after verification and rejects any reuse. The signing surface is `nonce || agent_address` (concatenated bytes), which prevents a signature for one address from being replayed for a different address.
-
-### Partial Failure
-
-Verification is per-address. If a sidecar presents three addresses and one fails verification, the hub accepts the two verified addresses and rejects the failed one. The sidecar logs the rejection and continues serving the verified agents. A failed address does not affect other addresses on the same connection.
-
-## Hub Message Queuing
-
-While a sidecar is disconnected, the hub queues messages in memory. These messages are flushed to the sidecar immediately after successful challenge verification. The queue has a configurable TTL (default 5 minutes) and maximum size (default 100 frames per run address). Messages that exceed the TTL or queue size are dropped.
-
-When a sidecar sends a `register` frame (first connection, no prior state), any existing disconnect queue for addresses on that sidecar is discarded — `register` bypasses challenge verification, so queued messages cannot be delivered without ownership proof.
+At boot, before opening the WebSocket connection, the in-tree sidecar scans its allocation data directory for a deployment record. The record is validated and restored through the same supervised workflow-child spawn path used by a fresh deploy. A provisioner may preserve or discard that storage according to the isolation and recovery guarantees it advertises.
 
 ## Authority Model
 
@@ -228,9 +174,9 @@ Key rotation is not yet implemented. The architecture supports it: the sidecar w
 
 ## Failure Paths
 
-If the hub rejects all addresses on reconnect, the sidecar logs the failure and does not serve any agents. It does not attempt fresh deployments for rejected addresses, since that would bypass the ownership proof. The operator must investigate the key mismatch.
+If the Hub rejects a reconnect because its token is stale or its announced address does not match the allocation anchor, it closes the socket and leaves that capacity unroutable. The provisioner and allocation reconciler own recovery; the worker cannot mint a new identity or claim another address.
 
-If the sidecar discovers agent repositories but has no key pairs for them (e.g., keys were deleted), it skips those agents and logs a warning. It does not generate new keys, since the hub would reject signatures from unknown keys.
+If the sidecar discovers agent repositories but has no key pairs for them (for example, keys were deleted), it skips those agents and logs a warning rather than generating a replacement identity that would break signed-content continuity.
 
 ## Mail and Event Flow
 

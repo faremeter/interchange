@@ -468,7 +468,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       entry: WORKFLOW_ENTRY,
       assetId: DEFINITION_ASSET_ID,
       approvals: operatorApprovals,
-      router: env.hub.router,
+      router: env.hub.probeRouter,
       db: h.db,
       fetchPackument,
     });
@@ -539,10 +539,15 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       { [STEP_ID]: [inferenceSource] },
       config,
     );
+    env.hub.setPrimaryAllocationIdentity(DEPLOYMENT_ID, deploymentMailAddress);
     const deployResult = await deployCodeSourcedWorkflow({
       approved,
       source,
-      sidecarRouter: env.hub.router,
+      sidecarAllocationRouter: env.hub.router,
+      allocationTarget: {
+        allocationId: "allocation-integration-1",
+        generation: 1,
+      },
       agentAddress: deploymentMailAddress,
       config,
       sources: { [STEP_ID]: [inferenceSource] },
@@ -689,7 +694,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       entry: WORKFLOW_ENTRY,
       assetId: BODY_DEFINITION_ASSET_ID,
       approvals: operatorApprovals,
-      router: env.hub.router,
+      router: env.hub.probeRouter,
       db: h.db,
       fetchPackument,
     });
@@ -729,10 +734,18 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       { [BODY_SECTION_ID]: [inferenceSource] },
       config,
     );
+    env.hub.setPrimaryAllocationIdentity(
+      BODY_DEPLOYMENT_ID,
+      bodyDeploymentMailAddress,
+    );
     const deployResult = await deployCodeSourcedWorkflow({
       approved,
       source,
-      sidecarRouter: env.hub.router,
+      sidecarAllocationRouter: env.hub.router,
+      allocationTarget: {
+        allocationId: "allocation-integration-1",
+        generation: 1,
+      },
       agentAddress: bodyDeploymentMailAddress,
       config,
       sources: { [BODY_SECTION_ID]: [inferenceSource] },

@@ -41,8 +41,6 @@ import { deriveRunRuntimeGrantRows } from "../run-grant-materialization";
 import {
   createSidecarEmitter,
   type AssetService,
-  type DeployWorkflowDefinitionResult,
-  type DeployWorkflowFromSourceParams,
   type EventCollectorRegistry,
   type RepoStore,
   type SessionService,
@@ -519,14 +517,9 @@ function createMockSidecarRouter(
       sendOrder.push({ kind: "run.grants", address });
       return runGrantsResult;
     },
-    sendAgentDeploy: () => notImpl("sendAgentDeploy"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
-    sendPack: () => notImpl("sendPack"),
-    sendProvisionStep: () => notImpl("sendProvisionStep"),
-    bindStepRoute: () => notImpl("bindStepRoute"),
-    unbindStepRoute: () => notImpl("unbindStepRoute"),
     sendSyncRequest: () => notImpl("sendSyncRequest"),
     sendSignalDeliver: (opts) => {
       signalCalls.push(opts);
@@ -541,26 +534,12 @@ function createMockSidecarRouter(
   };
 }
 
-function createMockSessionService(
-  deployCalls: DeployWorkflowFromSourceParams[],
-  result?: DeployWorkflowDefinitionResult,
-  deployError?: Error,
-): SessionService {
+function createMockSessionService(): SessionService {
   function notImpl(name: string): never {
     throw new Error(`mock: sessionService.${name} not implemented`);
   }
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
-    // The `POST /deployments` route now composes a code-sourced deploy through
-    // this one method; the mock records the args and returns the seeded result
-    // (or throws to model an install/gate or sidecar failure).
-    deployWorkflowFromSource: (params) => {
-      deployCalls.push(params);
-      if (result === undefined) {
-        throw deployError ?? new Error("deploy failed");
-      }
-      return Promise.resolve(result);
-    },
     sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
   };
@@ -751,9 +730,6 @@ type TestAppOpts = {
   runGrantsCalls?: RunGrantsCall[];
   sendOrder?: SendCall[];
   runGrantsResult?: boolean;
-  deployCalls?: DeployWorkflowFromSourceParams[];
-  deployResult?: DeployWorkflowDefinitionResult;
-  deployError?: Error;
   workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchEnqueues?: WorkflowDispatchEnqueue[];
   workflowSignalDispatchEnqueues?: WorkflowSignalDispatchEnqueue[];
@@ -814,11 +790,7 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.sendOrder ?? [],
       opts.runGrantsResult ?? true,
     ),
-    sessionService: createMockSessionService(
-      opts.deployCalls ?? [],
-      opts.deployResult,
-      opts.deployError,
-    ),
+    sessionService: createMockSessionService(),
     ...(opts.workflowAllocationService !== undefined
       ? { workflowAllocationService: opts.workflowAllocationService }
       : {}),
@@ -997,10 +969,8 @@ describe("POST /workflows/deployments", () => {
   });
 
   test("rejects deployment when workflow provisioning is unavailable", async () => {
-    const deployCalls: DeployWorkflowFromSourceParams[] = [];
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
-      deployCalls,
     });
 
     const res = await app.fetch(
@@ -1009,17 +979,14 @@ describe("POST /workflows/deployments", () => {
 
     expect(res.status).toBe(409);
     expect(await errorCode(res)).toBe("workflow_provisioning_unavailable");
-    expect(deployCalls).toHaveLength(0);
   });
 
   test("prepares a provisioned deployment when allocation is configured", async () => {
     const prepared: Parameters<
       WorkflowAllocationService["prepareProvisionedDeployment"]
     >[0][] = [];
-    const deployCalls: DeployWorkflowFromSourceParams[] = [];
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
-      deployCalls,
       workflowAllocationService: {
         prepareProvisionedDeployment: async (args) => {
           prepared.push(args);
@@ -1043,7 +1010,6 @@ describe("POST /workflows/deployments", () => {
       id: DEPLOYMENT_ID,
       status: "pending",
     });
-    expect(deployCalls).toHaveLength(0);
     expect(prepared).toHaveLength(1);
     expect(prepared[0]?.sourceOfferingIds).toEqual(["ofr_primary"]);
     expect(prepared[0]?.defaultSourceOfferingId).toBe("ofr_primary");
@@ -1071,10 +1037,8 @@ describe("POST /workflows/deployments", () => {
   });
 
   test("rejects a registry-sourced deploy as unsupported on this route", async () => {
-    const deployCalls: DeployWorkflowFromSourceParams[] = [];
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
-      deployCalls,
     });
 
     const res = await app.fetch(
@@ -1089,7 +1053,6 @@ describe("POST /workflows/deployments", () => {
 
     expect(res.status).toBe(400);
     expect(await errorCode(res)).toBe("unsupported_source");
-    expect(deployCalls).toHaveLength(0);
   });
 
   test("rejects a caller without the workflow create grant", async () => {

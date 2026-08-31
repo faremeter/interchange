@@ -12,10 +12,6 @@ import { eq } from "drizzle-orm";
 import { createWorkflowRunStore } from "@intx/db";
 import { workflowDefinition, workflowRun } from "@intx/db/schema";
 import {
-  createHubSessionLookups,
-  type AgentRepoStore,
-} from "@intx/hub-sessions";
-import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
@@ -82,30 +78,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
-    // lookupPublicKey never touches the repo store, so a throwing stub keeps the
-    // AgentRepoStore surface satisfied without a real on-disk store.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; lookupPublicKey does not touch the repo store
-    const stubRepoStore = new Proxy(
-      {},
-      {
-        get() {
-          throw new Error("agentRepoStore is not used by lookupPublicKey");
-        },
-      },
-    ) as AgentRepoStore;
-
-    function lookupPublicKey(address: string): Promise<string | null> {
-      return createHubSessionLookups({
-        db: h.db,
-        agentRepoStore: stubRepoStore,
-      }).lookupPublicKey(address);
-    }
-
     test("stays live before the first trigger, flips on it, and no-ops on the second", async () => {
-      // Pre-trigger: the reconnect ownership challenge must resolve the key off
-      // the "deployed" anchor. A "running"-only gate would fail this closed.
-      expect(await lookupPublicKey(ADDRESS)).toBe(PUBLIC_KEY);
-
       const [beforeTrigger] = await h.db
         .select()
         .from(workflowRun)
@@ -137,9 +110,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .where(eq(workflowRun.id, RUN_ID));
       expect(afterFirst?.status).toBe("running");
       expect(afterFirst?.principalId).toBe("prn-run");
-
-      // The key still resolves once running (the live gate accepts both).
-      expect(await lookupPublicKey(ADDRESS)).toBe(PUBLIC_KEY);
 
       // A second trigger (a redelivery) reconciles nothing: the three-part guard
       // no longer matches once the anchor is "running", so it is a no-op on the
