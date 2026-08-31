@@ -51,7 +51,11 @@ import {
 } from "./workflow-closure-resolution";
 import type { SourceTreeReads } from "./workflow-source-closure";
 import { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
-import type { SidecarRouter, WorkflowProbeResult } from "./ws/sidecar-handler";
+import type { SendProbeArgs, WorkflowProbeResult } from "./ws/sidecar-handler";
+
+type WorkflowProbeRouter = {
+  sendProbe(args: SendProbeArgs): Promise<WorkflowProbeResult>;
+};
 
 // The version `ensureWorkflowDefinitionForAsset` projects for a fresh
 // definition, and therefore the row the approval freeze targets. Kept in step
@@ -278,9 +282,11 @@ type InstallAndApproveCommonArgs = {
    */
   readonly approvals: ProbeApprovalPolicy;
   /** The sidecar router carrying the probe transport. */
-  readonly router: Pick<SidecarRouter, "sendProbe">;
+  readonly router: WorkflowProbeRouter;
   /** Executor the freeze writes through. */
   readonly db: DBExecutor;
+  /** Optional durable handoff invoked before the approval gate writes. */
+  readonly onProbeResult?: (result: WorkflowProbeResult) => Promise<void>;
 };
 
 /** Install a definition published to an npm registry. */
@@ -426,18 +432,13 @@ export async function installAndApproveWorkflowDefinition(
     assets = [];
   }
 
-  const { sendProbe } = args.router;
-  if (sendProbe === undefined) {
-    throw new Error(
-      "installAndApproveWorkflowDefinition: router does not support sendProbe",
-    );
-  }
-  const probeResult = await sendProbe({
+  const probeResult = await args.router.sendProbe({
     source: args.source,
     closure,
     entry: args.entry,
     ...(assets.length > 0 ? { assets } : {}),
   });
+  await args.onProbeResult?.(probeResult);
 
   const approval = await gateAndFreezeProbeResult({
     assetId: args.assetId,

@@ -46,18 +46,13 @@ export type SidecarMailPersistedPayload = SidecarMailPersistedRow & {
 };
 
 /** Authenticated connection scope attached to a workflow-run pack. */
-export type WorkflowRunPackSource =
-  | {
-      readonly kind: "shared";
-      readonly agentAddress: string;
-    }
-  | {
-      readonly kind: "allocated";
-      readonly agentAddress: string;
-      readonly allocationId: string;
-      readonly anchorRunId: string;
-      readonly generation: number;
-    };
+export type WorkflowRunPackSource = {
+  readonly kind: "allocated";
+  readonly agentAddress: string;
+  readonly allocationId: string;
+  readonly anchorRunId: string;
+  readonly generation: number;
+};
 
 /**
  * Outcome of reserving a mail-triggered run's grants. `skip` means the
@@ -155,26 +150,6 @@ export type SidecarEventMap = {
     agentAddress: string;
     connectorState: ConnectorThreadState | null;
   };
-
-  /** Awaited. Emitted per address after challenge verification
-   * succeeds and before the disconnect queue is flushed. Rejection
-   * rolls that address back from the routing table; earlier listeners
-   * in registration order have already executed and their side effects
-   * are not undone. A subsequent reconnect arriving mid-flight may
-   * supersede this one, so listeners must be idempotent. */
-  "agent.reconnected": {
-    agentAddress: string;
-  };
-
-  /** Awaited. Emitted per address after the wire layer has confirmed
-   * the sidecar's deploy ref is stale relative to the hub's current
-   * ref. The listener's job is to push a fresh deploy pack. The wire
-   * layer fires this only when staleness is confirmed; subscribing
-   * without a `lookupDeployRef` configured on the router will never
-   * deliver. */
-  "deploy.ref.stale": {
-    agentAddress: string;
-  };
 };
 
 export type SidecarEventType = keyof SidecarEventMap;
@@ -208,8 +183,6 @@ export function createSidecarEmitter(): SidecarEventEmitter {
     "mail.persisted": new Set(),
     "mail.inbound.acknowledged": new Set(),
     "agent.deploy.ack": new Set(),
-    "agent.reconnected": new Set(),
-    "deploy.ref.stale": new Set(),
     "connector.state.changed": new Set(),
   };
 

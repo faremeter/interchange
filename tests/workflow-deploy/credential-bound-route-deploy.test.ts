@@ -1,28 +1,20 @@
 // Route-to-resolution coverage for a credential-bound workflow deploy.
 //
 // A definition that carries a `credentialBindings` entry is deployed through the
-// PRODUCTION `POST /workflows/deployments` route on the shared (non-exclusive)
-// path, against a REAL session service backed by real Postgres and a live
-// sidecar subprocess. The route threads the app's credential cipher into
-// `deployWorkflowFromSource`, which resolves the binding against the DB-seeded
-// provider + credential and DECRYPTS the stored secret through that cipher
-// before it emits the deploy frame. The deploy returns only after the sidecar
-// acks the frame, so a 201 proves the binding resolved and decrypted -- the
-// resolution runs strictly before the frame send.
-//
-// The existing coverage leaves this exact path unguarded: the route unit test
-// drives a MOCKED session service (the real deploy never runs), and the two
-// real-credential-decryption tests call the deploy composition directly,
-// bypassing both the route and the shared deploy method. The cipher forward is
-// an optional field at every hop, so dropping it compiles clean; only a deploy
-// that resolves a real binding through the route catches a regression.
+// PRODUCTION `POST /workflows/deployments` route, against a REAL session service
+// backed by real Postgres and a live allocation-authenticated sidecar process.
+// The injected allocation-service seam mirrors the production composition: it
+// probes and freezes the source, then performs the source-ref deploy with the
+// composition's credential cipher. Binding resolution reads the DB-seeded
+// provider + credential and DECRYPTS the stored secret before emitting the
+// deploy frame. The deploy returns only after the sidecar acks the frame, so a
+// 201 proves the binding resolved and decrypted.
 //
 // The tests exercise the same seeded ciphertext through the route:
 //   * Positive: the app holds the SAME key the secret was sealed under, so the
 //     binding resolves and decrypts -- 201. If the route dropped the cipher or
 //     the shared deploy stopped forwarding it, resolution fails closed on the
-//     "no credentialCipher was supplied" guard and the deploy is 502; the
-//     positive assertion catches that.
+//     deploy is 502; the positive assertion catches that.
 //   * Wrong key: the app holds a DIFFERENT key over the same ciphertext, so the
 //     AEAD decrypt refuses the key-id mismatch and the deploy fails closed
 //     (502). If the cipher stopped being invoked (a pass-through regression),
@@ -41,7 +33,10 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { createEnvKeyCredentialCipher } from "@intx/crypto";
+import {
+  createEnvKeyCredentialCipher,
+  createNoopCredentialCipher,
+} from "@intx/crypto";
 import { createGrantStore } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
@@ -49,12 +44,19 @@ import {
   createAssetService,
   createSessionService,
   DEFAULT_ASSET_REF,
+  deployCodeSourcedWorkflow,
   type EventCollectorRegistry,
+  type PreparedWorkflowDeployer,
   type SessionService,
+  type WorkflowAllocationService,
 } from "@intx/hub-sessions";
-import { credentialAad } from "@intx/types";
-import type { InferenceSource } from "@intx/types/runtime";
+import { credentialAad, type CredentialCipher } from "@intx/types";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
+import {
+  buildInertProjectionStepSources,
+  deriveRunAddress,
+} from "@intx/workflow-deploy";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -103,7 +105,7 @@ const WORKFLOW_ENTRY = "./workflow.mjs";
 
 let env: DeployFlowEnv;
 let h: TestDb;
-let sessionService: SessionService;
+let sessionService: SessionService & PreparedWorkflowDeployer;
 
 function createMockGetSession(userId: string): GetSession {
   const now = new Date("2025-01-01");
@@ -207,7 +209,7 @@ async function seedBindingSource(assetId: string): Promise<{
 // noop cipher -- the keyless-composition case.
 async function deployBindingThroughRoute(opts: {
   assetId: string;
-  appCipher?: ReturnType<typeof createTestCredentialCipher>;
+  appCipher?: CredentialCipher;
 }): Promise<Response> {
   await seedAsset(h.db, {
     id: opts.assetId,
@@ -231,6 +233,100 @@ async function deployBindingThroughRoute(opts: {
     credentialId: CREDENTIAL_ID,
     model: "mock-model",
   };
+  const allocationCipher = opts.appCipher ?? createNoopCredentialCipher();
+  const workflowAllocationService: WorkflowAllocationService = {
+    async prepareProvisionedDeployment(args) {
+      if (args.source.kind !== "asset") {
+        throw new Error("credential-route test requires an asset source");
+      }
+      const source = args.source;
+      const agentAddress = deriveRunAddress({
+        runId: args.anchorRunId,
+        domain: args.deploymentDomain,
+      });
+      const allocationTarget = env.hub.prepareAllocationIdentity(
+        args.anchorRunId,
+        agentAddress,
+      );
+      const approved = await sessionService.installAndApproveWorkflowSource({
+        source,
+        entry: args.entry,
+        ...(args.pin !== undefined ? { pin: args.pin } : {}),
+        definitionAssetId: args.definitionAssetId,
+        allocationTarget,
+      });
+      if (!approved.approval.ok) {
+        throw new Error(
+          `credential-route probe was not approved: ${approved.approval.reason}`,
+        );
+      }
+      const config: HarnessConfig = {
+        sessionId: args.sessionId,
+        agentId: args.anchorRunId,
+        tenantId: args.tenantId,
+        principalId: args.sourceAuthorityPrincipalId,
+        agentAddress,
+        systemPrompt: "",
+        tools: [],
+        grants: [],
+        sources: [inferenceSource],
+        defaultSource: inferenceSource.id,
+      };
+      const sources = buildInertProjectionStepSources({
+        projection: approved.projection,
+        config,
+        operatorApprovals: approved.approval.approvedGrants,
+      });
+      const repoId = { kind: "workflow", id: source.assetId } as const;
+      const resolveAttachment = async (requestedAssetId: string) => {
+        if (requestedAssetId !== source.assetId) {
+          throw new Error(
+            `credential-route test received unexpected asset ${requestedAssetId}`,
+          );
+        }
+        const commitSha = await env.hub.agentRepoStore.repoStore.resolveRef(
+          { kind: "hub" },
+          repoId,
+          DEFAULT_ASSET_REF,
+        );
+        if (commitSha === null) {
+          throw new Error(
+            `credential-route source ${requestedAssetId} is empty`,
+          );
+        }
+        const { pack, ref } = await env.hub.agentRepoStore.repoStore.createPack(
+          { kind: "hub" },
+          repoId,
+          DEFAULT_ASSET_REF,
+        );
+        return { pack, ref, commitSha };
+      };
+      await deployCodeSourcedWorkflow({
+        approved,
+        source,
+        resolveAttachment,
+        sidecarAllocationRouter: env.hub.router,
+        allocationTarget,
+        agentAddress,
+        config,
+        sources,
+        db: h.db,
+        tenantId: args.tenantId,
+        anchorRunId: args.anchorRunId,
+        deploymentDomain: args.deploymentDomain,
+        credentialCipher: allocationCipher,
+      });
+      return {
+        anchorRunId: args.anchorRunId,
+        deploymentAddress: agentAddress,
+        allocationId: allocationTarget.allocationId,
+        status: "pending",
+      };
+    },
+    async deployReadyAllocation() {
+      throw new Error("credential-route test does not reconcile allocations");
+    },
+  };
 
   const app = createApp({
     getSession: createMockGetSession(CALLER_USER_ID),
@@ -239,6 +335,7 @@ async function deployBindingThroughRoute(opts: {
     grantStore: createGrantStore(h.db),
     sidecarRouter: env.hub.router,
     sessionService,
+    workflowAllocationService,
     ...(opts.appCipher !== undefined
       ? { credentialCipher: opts.appCipher }
       : {}),
@@ -257,8 +354,8 @@ async function deployBindingThroughRoute(opts: {
     body: JSON.stringify({
       source,
       entry: WORKFLOW_ENTRY,
-      sources: [inferenceSource],
-      defaultSource: inferenceSource.id,
+      sourceOfferingIds: [inferenceSource.id],
+      defaultSourceOfferingId: inferenceSource.id,
     }),
   });
 }
@@ -325,6 +422,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // real sidecar-connected router and repo store.
       sessionService = createSessionService({
         sidecarRouter: env.hub.router,
+        sidecarAllocationRouter: env.hub.router,
         agentRepoStore: env.hub.agentRepoStore,
         assetService: createAssetService({
           db: h.db,

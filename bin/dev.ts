@@ -3,7 +3,7 @@
 
 // Local development orchestrator.
 //
-// Starts the database migration, hub server, sidecar, and admin UI dev
+// Starts the database migration, hub server, and admin UI dev
 // server in the correct order, with colored log prefixes and graceful
 // shutdown.
 //
@@ -12,10 +12,9 @@
 // runtime regardless of whether it references Buffer.
 //
 // Usage:
-//   bun bin/dev.ts                       # start hub + sidecar + admin-ui
+//   bun bin/dev.ts                       # start hub + admin-ui
 //   bun bin/dev.ts --seed                # also seed the database after hub is ready
 //   bun bin/dev.ts --no-admin-ui         # skip the admin UI dev server
-//   bun bin/dev.ts --no-sidecar          # skip the sidecar
 //   bun bin/dev.ts --no-publish-builtins # skip the built-in tool-package publish
 
 import { $, type ProcessPromise, type ProcessOutput } from "zx";
@@ -49,7 +48,6 @@ function hasStderr(err: unknown): err is { stderr: string } {
 const args = new Set(process.argv.slice(2));
 const wantSeed = args.delete("--seed");
 const skipAdminUI = args.delete("--no-admin-ui");
-const skipSidecar = args.delete("--no-sidecar");
 const skipPublishBuiltins = args.delete("--no-publish-builtins");
 
 if (args.size > 0) {
@@ -222,26 +220,6 @@ const migrateEnv = requireEnvFiles(".env", ".env.migrate");
 
 const hubPort = hubEnv["PORT"] ?? "3000";
 const hubURL = `http://localhost:${hubPort}`;
-const hubWsURL = `ws://localhost:${hubPort}/api/sidecars/ws`;
-
-// Sidecar env — use .env.sidecar if present, otherwise provide dev defaults.
-// The resolved SIDECAR_ID/SIDECAR_TOKEN below are what the sidecar presents
-// on its handshake; the provisioning step hashes this same SIDECAR_TOKEN into
-// the sidecar row so the hub's token-authenticated handshake accepts it.
-const sidecarFileEnv = loadEnvFile(resolve(ROOT, ".env.sidecar"));
-const sidecarEnv: Record<string, string> = {
-  ...sharedEnv,
-  HUB_WS_URL: hubWsURL,
-  SIDECAR_ID: "dev-sidecar-1",
-  SIDECAR_TOKEN: "dev-token",
-  SIDECAR_DATA_DIR: resolve(ROOT, "tmp/sidecar-data"),
-  // A fixed dev key so the sidecar boots with a real at-rest cipher over the
-  // throwaway `tmp/sidecar-data` store. Override via `.env.sidecar` for a
-  // stable key across resets. Never a production key.
-  SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
-    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
-  ...sidecarFileEnv,
-};
 
 // -- Step 1: Migrate --
 
@@ -270,43 +248,6 @@ try {
 }
 
 console.log("Migrations complete.");
-
-// -- Step 1b: Provision the sidecar identity --
-//
-// The hub authenticates the sidecar handshake against a per-sidecar token
-// hash on the sidecar table, so the sidecar cannot connect until its row
-// exists. Provision it before the sidecar spawns, hashing the same
-// SIDECAR_TOKEN the sidecar will present. Skipped when no sidecar runs.
-
-if (!skipSidecar) {
-  console.log("Provisioning sidecar identity...");
-
-  try {
-    const provision = await $({
-      env: {
-        ...process.env,
-        ...migrateEnv,
-        SIDECAR_ID: sidecarEnv["SIDECAR_ID"],
-        SIDECAR_TOKEN: sidecarEnv["SIDECAR_TOKEN"],
-      },
-    })`bun run --conditions=intx-src ${resolve(ROOT, "bin/provision-sidecar.ts")}`;
-
-    for (const line of provision.stdout.split("\n")) {
-      if (line) console.log(`\x1b[90m[provision]\x1b[0m ${line}`);
-    }
-    for (const line of provision.stderr.split("\n")) {
-      if (line) console.error(`\x1b[90m[provision]\x1b[0m ${line}`);
-    }
-  } catch (err) {
-    console.error("Sidecar provisioning failed:");
-    if (hasStderr(err)) {
-      console.error(err.stderr);
-    }
-    process.exit(1);
-  }
-
-  console.log("Sidecar provisioning complete.");
-}
 
 // -- Step 2: Start hub --
 
@@ -433,21 +374,7 @@ if (wantSeed) {
   console.log("Seeding complete.");
 }
 
-// -- Step 4: Start sidecar --
-
-if (!skipSidecar) {
-  console.log("Starting sidecar...");
-
-  const sidecarProc = spawnLabeled(
-    "sidecar",
-    "\x1b[33m", // yellow
-    ["bun", "run", "--conditions=intx-src", "apps/sidecar/src/index.ts"],
-    sidecarEnv,
-  );
-  watchProcess("sidecar", sidecarProc);
-}
-
-// -- Step 5: Start Admin UI --
+// -- Step 4: Start Admin UI --
 
 if (!skipAdminUI) {
   console.log("Starting admin UI dev server on port 5173...");
@@ -464,7 +391,6 @@ if (!skipAdminUI) {
 
 console.log("\n\x1b[1mDev environment is running.\x1b[0m");
 console.log(`  Hub:      ${hubURL}`);
-if (!skipSidecar) console.log(`  Sidecar:  connecting to ${hubWsURL}`);
 if (!skipAdminUI) console.log(`  Admin UI: http://localhost:5173`);
 console.log("\nPress Ctrl+C to stop all services.\n");
 

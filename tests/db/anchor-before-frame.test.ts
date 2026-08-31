@@ -1,4 +1,4 @@
-// Anchor-before-frame ordering for the SHARED source-ref deploy (real DB).
+// Anchor-before-frame ordering for the allocation-routed source-ref deploy (real DB).
 //
 // `deployCodeSourcedWorkflow` must INSERT the deployment's anchor `workflow_run`
 // row -- committed on the autocommit handle, so visible to a separate
@@ -7,7 +7,7 @@
 // fails closed with `path_violation` on a missing live anchor. Emit-then-insert
 // (the previous order) rejected that first pack and never bootstrapped the log.
 //
-// The tripwire probes INSIDE the send: the fake `sendAgentDeploy`, at the moment
+// The tripwire probes INSIDE the send: the fake `sendAgentDeployToAllocation`, at the moment
 // it is called (standing in for the child's first pack arriving while the frame
 // is on the wire), runs the REAL `receiveWorkflowRunPack` for the deployment
 // address and records whether it was accepted. A post-hoc assertion cannot tell
@@ -35,14 +35,18 @@ import { eq } from "drizzle-orm";
 
 import { defineAgent } from "@intx/agent";
 import { createNoopCredentialCipher, generateKeyPair } from "@intx/crypto";
-import { workflowDefinition, workflowRun } from "@intx/db/schema";
+import {
+  sidecarAllocation,
+  workflowDefinition,
+  workflowRun,
+} from "@intx/db/schema";
 import {
   createAgentRepoStore,
   createHubSessionLookups,
   deployCodeSourcedWorkflow,
   SessionLaunchError,
   type AgentRepoStore,
-  type SidecarRouter,
+  type SidecarAllocationRouter,
 } from "@intx/hub-sessions";
 import {
   createTestDb,
@@ -77,6 +81,8 @@ const DEPLOY_ADDRESS = deriveRunAddress({
 const WORKFLOW_RUN_REPO_ID = deriveWorkflowRunRepoId(DEPLOY_ADDRESS);
 const WORKFLOW_RUN_REF = "refs/heads/events";
 const ACKED_PUBLIC_KEY = "ed25519-anchor-before-frame-pubkey";
+const ALLOC_ID = "alloc-anchor-test";
+const ALLOC_GENERATION = 1;
 
 const INFERENCE_SOURCE: InferenceSource = {
   id: "src-only",
@@ -99,7 +105,7 @@ const CONFIG: HarnessConfig = {
   defaultSource: "src-only",
 };
 
-// Reproduce the approve output the shared entrypoint consumes, by hand: the
+// Reproduce the approve output the allocation-routed entrypoint consumes, by hand: the
 // gate's ok-arm is a plain object, so a real gate/freeze run is unnecessary to
 // exercise the deploy ORDERING under test. Project a trivial single-step
 // definition to inert wire form, hash it, and pair it with an empty closure.
@@ -209,15 +215,39 @@ describe.skipIf(!harnessDbEnvAvailable())(
         new Uint8Array(),
         WORKFLOW_RUN_REF,
         "pack-tip",
-        { kind: "shared", agentAddress: DEPLOY_ADDRESS },
+        {
+          kind: "allocated",
+          agentAddress: DEPLOY_ADDRESS,
+          allocationId: ALLOC_ID,
+          anchorRunId: ANCHOR_RUN_ID,
+          generation: ALLOC_GENERATION,
+        },
       );
     }
 
-    async function deployWith(router: SidecarRouter): Promise<void> {
+    async function seedAllocation(): Promise<void> {
+      await h.db.insert(sidecarAllocation).values({
+        id: ALLOC_ID,
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "provisioner-anchor-test",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "fp-anchor-test",
+        status: "allocated",
+        generation: ALLOC_GENERATION,
+        ensureAcceptedGeneration: ALLOC_GENERATION,
+      });
+    }
+
+    async function deployWith(router: SidecarAllocationRouter): Promise<void> {
       const { approval, projection, closure } = await makeApproveBundle();
       await seedInferenceCredentials(h.db, TENANT_ID, SOURCES, CONFIG);
       await deployCodeSourcedWorkflow({
-        sidecarRouter: router,
+        sidecarAllocationRouter: router,
+        allocationTarget: {
+          allocationId: ALLOC_ID,
+          generation: ALLOC_GENERATION,
+        },
         agentAddress: DEPLOY_ADDRESS,
         config: CONFIG,
         sources: SOURCES,
@@ -251,14 +281,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
     function throwingRouter(
       cause: unknown,
       onSend?: () => Promise<void>,
-    ): SidecarRouter {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: the shared deploy path only calls sendAgentDeploy
+    ): SidecarAllocationRouter {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: the shared deploy path only calls sendAgentDeployToAllocation
       return {
-        sendAgentDeploy: async () => {
+        sendAgentDeployToAllocation: async () => {
           if (onSend !== undefined) await onSend();
           throw cause;
         },
-      } as unknown as SidecarRouter;
+      } as unknown as SidecarAllocationRouter;
     }
 
     async function expectLeaked(
@@ -284,18 +314,28 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The probe stands in for the child's first events pack racing back while
       // the deploy frame is on the wire.
       let probeAccepted: boolean | undefined;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: the shared deploy path only calls sendAgentDeploy
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: the shared deploy path only calls sendAgentDeployToAllocation
       const router = {
-        sendAgentDeploy: async () => {
+        sendAgentDeployToAllocation: async () => {
+          // In production the provisioner records the allocation before the
+          // deploy runs. Here the anchor row only exists once deploy's
+          // pre-emit INSERT has committed -- and the allocation FK references
+          // it -- so the seed goes here, at the moment the frame would hit
+          // the wire, just ahead of the probe.
+          await seedAllocation();
           const result = await probePack(lookups);
           probeAccepted = result.accepted;
           return { publicKey: ACKED_PUBLIC_KEY };
         },
-      } as unknown as SidecarRouter;
+      } as unknown as SidecarAllocationRouter;
 
       await seedInferenceCredentials(h.db, TENANT_ID, SOURCES, CONFIG);
       await deployCodeSourcedWorkflow({
-        sidecarRouter: router,
+        sidecarAllocationRouter: router,
+        allocationTarget: {
+          allocationId: ALLOC_ID,
+          generation: ALLOC_GENERATION,
+        },
         agentAddress: DEPLOY_ADDRESS,
         config: CONFIG,
         sources: SOURCES,
@@ -419,6 +459,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         address: DEPLOY_ADDRESS,
         status: "deployed",
       });
+      await seedAllocation();
       const lookups = await makeLookups();
 
       const result = await probePack(lookups);

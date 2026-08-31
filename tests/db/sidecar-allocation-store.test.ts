@@ -117,9 +117,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         await h.db.query.sidecar.findFirst({
           where: (row, { eq }) => eq(row.id, "sidecar-generation-1"),
-          columns: { credentialScope: true },
+          columns: { status: true },
         }),
-      ).toEqual({ credentialScope: "allocated" });
+      ).toEqual({ status: "offline" });
 
       const allocated = await store.markAllocated({
         allocationId: pending.id,
@@ -195,9 +195,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         await h.db.query.sidecar.findFirst({
           where: (row, { eq }) => eq(row.id, "sidecar-generation-2"),
-          columns: { credentialScope: true },
+          columns: { status: true },
         }),
-      ).toEqual({ credentialScope: "allocated" });
+      ).toEqual({ status: "offline" });
 
       expect(
         await store.markAllocated({

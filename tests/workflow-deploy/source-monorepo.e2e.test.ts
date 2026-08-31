@@ -318,7 +318,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         entry: WORKFLOW_ENTRY,
         assetId: DEFINITION_ASSET_ID,
         approvals: operatorApprovals,
-        router: env.hub.router,
+        router: env.hub.probeRouter,
         db: h.db,
         reads,
         registryName: "npmjs",
@@ -395,11 +395,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { [STEP_ID]: [inferenceSource] },
         config,
       );
+      env.hub.setPrimaryAllocationIdentity(
+        DEPLOYMENT_ID,
+        deploymentMailAddress,
+      );
       const deployResult = await deployCodeSourcedWorkflow({
         approved,
         source,
         resolveAttachment,
-        sidecarRouter: env.hub.router,
+        sidecarAllocationRouter: env.hub.router,
+        allocationTarget: {
+          allocationId: "allocation-integration-1",
+          generation: 1,
+        },
         agentAddress: deploymentMailAddress,
         config,
         sources: { [STEP_ID]: [inferenceSource] },

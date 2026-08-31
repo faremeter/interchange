@@ -278,9 +278,6 @@ function createMockSidecarRouter(
     sendRunGrants(_addr, _runId, _stepGrants) {
       return notImpl("sendRunGrants");
     },
-    sendAgentDeploy(_addr, _config) {
-      return notImpl("sendAgentDeploy");
-    },
     sendAgentUndeploy(_addr, _reason) {
       return notImpl("sendAgentUndeploy");
     },
@@ -289,18 +286,6 @@ function createMockSidecarRouter(
     },
     sendCredentialsUpdate(_addr, _delivery) {
       return notImpl("sendCredentialsUpdate");
-    },
-    sendPack(_addr, _pack, _ref, _sha) {
-      return notImpl("sendPack");
-    },
-    sendProvisionStep(_agentAddress, _config) {
-      return notImpl("sendProvisionStep");
-    },
-    bindStepRoute(_stepAddress) {
-      notImpl("bindStepRoute");
-    },
-    unbindStepRoute(_stepAddress) {
-      notImpl("unbindStepRoute");
     },
     sendSyncRequest(_addr) {
       notImpl("sendSyncRequest");
@@ -333,9 +318,6 @@ function createMockSessionService(): SessionService {
   return {
     stageWorkflowStep(_params) {
       return notImpl("stageWorkflowStep");
-    },
-    deployWorkflowFromSource(_params) {
-      return notImpl("deployWorkflowFromSource");
     },
     sendUserMessage(_params) {
       return notImpl("sendUserMessage");

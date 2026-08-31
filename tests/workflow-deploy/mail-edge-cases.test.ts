@@ -50,7 +50,15 @@
 // supervisor's `onMailMessage` consumes; the wire transport
 // preserves bytes verbatim.
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 
 import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
@@ -131,13 +139,19 @@ beforeAll(async () => {
       creatorPrincipalId: CALLER_PRINCIPAL_ID,
     });
   }
-
-  env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  if (env !== undefined) await env.teardown();
   if (h !== undefined) await h.close();
+});
+
+beforeEach(async () => {
+  if (!harnessDbEnvAvailable()) return;
+  env = await startDeployFlowEnv();
+});
+
+afterEach(async () => {
+  if (env !== undefined) await env.teardown();
 });
 
 describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {

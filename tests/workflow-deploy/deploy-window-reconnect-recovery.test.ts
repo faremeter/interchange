@@ -1,33 +1,12 @@
-// A reconnect racing the deploy window recovers cleanly instead of wedging.
-//
-// The deploy window is the interval where the sidecar's supervisor is LIVE
-// (so it re-announces its deployment address on reconnect) but the hub has
-// not yet recorded the deployment's public key. A reconnect that lands in
-// that window fails the ownership challenge: the hub answers
-// `challenge.failed` "Unknown run address", and the sidecar's
-// `handleChallengeFailed` calls `keyStore.forgetAgent`, wiping the
-// in-memory signing key.
-//
-// The regression this guards: once the key is landed and a later reconnect
-// is challenged, the sidecar must still be able to sign. `signChallenge`
-// reloads the durable on-disk key on a cache miss, so the wiped in-memory
-// key is not fatal -- the address becomes routable again and mail runs to
-// completion. Before that reload, the wiped cache stranded the address
-// permanently (signChallenge returned null on every subsequent challenge).
-//
-// Gating technique: the hub's `lookupPublicKey` reads `env.hub.deployAcks`,
-// which the `agent.deploy.ack` listener populates at deploy time. The test
-// stashes the real acked key, then holds the deploy window open by deleting
-// the entry from `deployAcks` (so `lookupPublicKey` returns null), forces a
-// reconnect there to fail the first challenge, then "lands" the key by
-// restoring the entry and forces a further reconnect. This makes the racing
-// reconnect deterministic rather than timing-dependent.
+// An allocation-authenticated reconnect does not depend on the deployment
+// public-key projection. The provisioner token already binds the worker to the
+// anchor and generation, so a reconnect remains routable even if that derived
+// projection is temporarily absent.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, a real workflow-process child, and a test inference provider.
 // The drops are genuine server-side WebSocket closes; the recovery is the
-// sidecar's real `hub-link` reconnect path passing the hub's ownership
-// challenge after the key lands.
+// sidecar's real `hub-link` allocation-authenticated reconnect path.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -121,7 +100,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    test("a reconnect that fails in the deploy window recovers once the key lands", async () => {
+    test("a reconnect remains authorized while the public-key projection is absent", async () => {
       expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
       // ---- deploy a single-step workflow ----
@@ -186,10 +165,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
       );
 
-      // Capture the real acked key, then simulate the deploy window: the
-      // sidecar is live, but the hub has not yet recorded the key. Deleting
-      // the entry makes `lookupPublicKey` (which reads `deployAcks`) return
-      // null for the racing reconnect while the sidecar deployment stays live.
+      // Remove the derived public-key projection before dropping the link. It
+      // is not reconnect authority and must not prevent route restoration.
       const ackedKey = env.hub.deployAcks.get(deploymentMailAddress);
       if (ackedKey === undefined) {
         throw new Error(
@@ -197,8 +174,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       }
       env.hub.deployAcks.delete(deploymentMailAddress);
-
-      // ---- racing reconnect in the deploy window (key not recorded) ----
       dropHubLink(env);
       await waitFor(
         () =>
@@ -208,38 +183,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
       );
 
-      // The sidecar reconnects (~3s) and re-announces the address. The hub's
-      // `lookupPublicKey` returns null, so it answers `challenge.failed`
-      // "Unknown run address"; the sidecar's `handleChallengeFailed` wipes
-      // the in-memory signing key via `forgetAgent`. Wait past several 3s
-      // reconnect cycles and confirm the address stays out of routing: with
-      // the key still gated, the challenge cannot pass.
-      let routableInWindow = false;
-      const windowStart = Date.now();
-      while (Date.now() - windowStart < 8_000) {
-        if (
-          env.hub.router.getRoutableAddresses().includes(deploymentMailAddress)
-        ) {
-          routableInWindow = true;
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      expect(routableInWindow).toBe(false);
-
-      // ---- the key lands: restore the entry and force a fresh reconnect ----
-      // `lookupPublicKey` now returns the acked key. The sidecar's in-memory
-      // key was wiped by the earlier `challenge.failed`, so recovery depends
-      // on `signChallenge` reloading the durable on-disk key on the cache
-      // miss. Force a reconnect so the challenge is re-issued now that the
-      // key is landed.
-      env.hub.deployAcks.set(deploymentMailAddress, ackedKey);
-      dropHubLink(env);
-
-      // ---- clean recovery: the address becomes routable again ----
       const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
         timeoutMs: 30_000,
       });
+      env.hub.deployAcks.set(deploymentMailAddress, ackedKey);
       // A generous lower bound guards against a false "already routable" pass
       // that never actually dropped; the upper bound catches a hung link.
       expect(reconnectMs).toBeGreaterThan(1_000);

@@ -216,13 +216,13 @@ These are boundaries inside a sidecar. Workflows can also require an infrastruct
 
 Workflow definitions declare the runtime capabilities they require without naming a provisioner. Provisioners advertise capabilities they guarantee as available or blocked, and every tenant in the deployment tenant's ancestor chain may add capability policy. Workflow and descendant-tenant rules cannot weaken an ancestor policy. The full selector and matching contract is defined in [SIDECAR_PLACEMENT.md](./SIDECAR_PLACEMENT.md).
 
-After probing and freezing the workflow, the Hub folds requirements from the top-level definition and its inline loops, trigger bodies, and child workflows. It selects the configured default provisioner when that provisioner satisfies every workflow and tenant rule, otherwise the sole matching provisioner. No match or multiple matches fail closed. Provisioner registration order is not a tiebreaker.
+Before creating a deployment, the Hub records a `workflow_probe` and provisions temporary probe capacity through the configured default provisioner (or the sole registered provisioner). The probe runs there, never on the Hub or an ambient sidecar. After freezing the result, the Hub folds requirements from the top-level definition and its inline loops, trigger bodies, and child workflows. It adopts the probe capacity as the deployment allocation when its provisioner still satisfies every rule; otherwise it destroys that capacity and creates a normal pending allocation for the selected provisioner. No match or multiple matches fail closed. Provisioner registration order is not a tiebreaker.
 
-Every deployment is anchored to a durable sidecar allocation and routed through its authenticated generation. Provisioners decide internally whether backing capacity is created, isolated, shared, or reused; the Hub relies only on their declared guarantees. Shared scheduling excludes allocated workers, and every deployment, trigger, signal, and workflow-state write revalidates the allocation generation.
+Every deployment is anchored to a durable sidecar allocation and routed through its authenticated generation. Provisioners decide internally whether backing capacity is created, isolated, shared, or reused; the Hub relies only on their declared guarantees. The Hub has no shared or non-provisioner sidecar identity, and every probe, deployment, trigger, signal, and workflow-state write revalidates the allocation generation.
 
 A deployment owns one addressable top-level run. Its stable run id is the deployment mail address. The first inbound trigger fires it; later trigger occurrences can resume a live `onTrigger` section through the run's current correlation, but they do not create another top-level run. Terminal event history is immutable and a terminal deployment cannot be fired again. Internal section/body children have distinct synthetic run ids and are not directly addressable from the Hub API. The run's authorization snapshot is reserved once and reused for every trigger occurrence in that run.
 
-Placement can only be strengthened. Each ancestor policy is enforced independently, so a child tenant or workflow cannot override it with a narrower exception. The selected provisioner binding is fixed when the deployment anchor is prepared. If no configured provisioner satisfies the effective policy, deployment fails closed.
+Placement can only be strengthened. Each ancestor policy is enforced independently, so a child tenant or workflow cannot override it with a narrower exception. The final provisioner binding is fixed after the workflow probe exposes its capability requirements. If no configured provisioner satisfies the effective policy, deployment fails closed and the probe allocation is released.
 
 When replacement recovery is explicitly enabled, a provisioned deployment keeps the same durable identity across worker loss: the same deployment id, anchor `workflow_run`, mail address, workflow-run Git repository, and sidecar allocation. Replacement advances the allocation generation and rehydrates that deployment on new capacity from Hub-owned state. A replacement worker is therefore a continuation of the existing deployment, not a new workflow run. Replacement recovery is disabled by default because Hub-owned state does not include arbitrary files created in the sidecar or its isolation containers.
 
@@ -248,7 +248,7 @@ Every harness and every agent has its own asymmetric key pair. These keys serve 
 
 **Per-agent keys** identify the agent across its lifecycle, independent of which harness instance is running it. The agent's key pair is generated at launch and persists for the agent's lifetime. When an agent produces content — messages, tool invocations, checkpoints — the harness signs it with the agent's key. Recipients can verify that a specific agent generated specific content, providing a chain of provenance.
 
-Key pairs are generated at agent launch time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems. Public keys are published to the control plane and included in the agent's discovery metadata. The control plane stores agent public keys so it can verify ownership claims when a harness reconnects after a restart.
+Key pairs are generated at agent launch time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems. Public keys are published to the control plane and included in the agent's discovery metadata so signed content and commits remain attributable to the producing agent. Reconnect routing is authorized separately by the allocation-scoped credential.
 
 **Commit signing** extends per-agent keys to the git layer. Every state commit (context checkpoints, audit records) is signed with the agent's Ed25519 key using SSH signature format. This means standard `git verify-commit` works with no custom tooling. The control plane verifies signatures when the sidecar pushes state, rejecting any commit not signed by the registered key. Deploy commits are signed by the hub's own key; sidecars verify deploy signatures before accepting content. See Implementation for the wire protocol details.
 
@@ -256,14 +256,14 @@ The control plane maintains a key validity history per agent — a list of `(pub
 
 ### Agent Continuity
 
-Agents survive harness restarts. The harness persists agent state (conversation context, pending operations, key pairs) in the agent's local storage. When the harness restarts, it discovers previously managed agents, proves ownership of each run address by signing a cryptographic challenge with the agent's private key, and resumes operation from the persisted state. Continuity refers to a single agent surviving its own harness restart, not portability across agents from the same definition.
+Agents survive harness restarts when their provisioner preserves the required local state. On reconnect, the allocation-scoped credential binds the worker to one deployment and generation; the worker may re-announce only that allocation's run address. Continuity refers to a single deployment surviving its own provisioned worker restart, not portability across unrelated allocations.
 
 The authority model for agent continuity is:
 
 - **Harness local storage is authoritative** for agent inference context — conversation history, pending operations, and token usage. This is the source of truth for what the agent knows.
 - **Control plane is a delivery queue** for user messages. Messages sent while the harness is disconnected are queued and flushed to the harness on successful reconnect. The harness incorporates delivered messages into the agent's context through the normal message handling path.
 
-The reconnection protocol requires the harness to prove it holds the private key for each run address it claims to manage. This prevents a rogue harness from hijacking agents.
+The reconnection protocol resolves the provisioner-issued bearer token to one allocation, anchor address, and generation. The Hub accepts only that address while the generation remains current, so a worker cannot claim another deployment's route.
 
 Signatures are attached to:
 

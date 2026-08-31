@@ -24,7 +24,15 @@
 // the sidecar's real hub-link reconnect path passing the hub's ownership
 // challenge and re-driving the latched push.
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 
 import { deriveWorkflowRunId, isRunAddress } from "@intx/types";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
@@ -106,13 +114,19 @@ beforeAll(async () => {
       creatorPrincipalId: CALLER_PRINCIPAL_ID,
     });
   }
-
-  env = await startDeployFlowEnv();
 });
 
 afterAll(async () => {
-  if (env !== undefined) await env.teardown();
   if (h !== undefined) await h.close();
+});
+
+beforeEach(async () => {
+  if (!harnessDbEnvAvailable()) return;
+  env = await startDeployFlowEnv();
+});
+
+afterEach(async () => {
+  if (env !== undefined) await env.teardown();
 });
 
 /**

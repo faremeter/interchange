@@ -297,14 +297,9 @@ function createMockSidecarRouter(
     // principal is seeded, so loadCommittedRunGrants returns null before this is
     // reached); sendRunGrants is never called.
     sendRunGrants: () => notImpl("sendRunGrants"),
-    sendAgentDeploy: () => notImpl("sendAgentDeploy"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
-    sendPack: () => notImpl("sendPack"),
-    sendProvisionStep: () => notImpl("sendProvisionStep"),
-    bindStepRoute: () => notImpl("bindStepRoute"),
-    unbindStepRoute: () => notImpl("unbindStepRoute"),
     sendSyncRequest: () => notImpl("sendSyncRequest"),
     sendSignalDeliver: (opts) => {
       signalCalls.push(opts);
@@ -328,7 +323,6 @@ function createMockSessionService(): SessionService {
   }
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
-    deployWorkflowFromSource: () => notImpl("deployWorkflowFromSource"),
     sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
   };

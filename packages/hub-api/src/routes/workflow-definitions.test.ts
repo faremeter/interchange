@@ -176,14 +176,9 @@ function createMockSidecarRouter(): SidecarRouter {
     handleClose: () => notImpl("handleClose"),
     routeMail: () => notImpl("routeMail"),
     sendRunGrants: () => notImpl("sendRunGrants"),
-    sendAgentDeploy: () => notImpl("sendAgentDeploy"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
-    sendPack: () => notImpl("sendPack"),
-    sendProvisionStep: () => notImpl("sendProvisionStep"),
-    bindStepRoute: () => notImpl("bindStepRoute"),
-    unbindStepRoute: () => notImpl("unbindStepRoute"),
     sendSyncRequest: () => notImpl("sendSyncRequest"),
     sendSignalDeliver: () => notImpl("sendSignalDeliver"),
     sendDrain: () => notImpl("sendDrain"),
@@ -199,7 +194,6 @@ function createMockSidecarRouter(): SidecarRouter {
 function createMockSessionService(): SessionService {
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
-    deployWorkflowFromSource: () => notImpl("deployWorkflowFromSource"),
     sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
   };

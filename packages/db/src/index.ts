@@ -45,6 +45,7 @@ export {
   type BeginSidecarReplacementArgs,
   type BindInitialSidecarArgs,
   type BindReplacementSidecarArgs,
+  type CreateAdoptedSidecarAllocationArgs,
   type ClaimSidecarAllocationArgs,
   type CreatePendingSidecarAllocationArgs,
   type FailSidecarAllocationArgs,
@@ -57,6 +58,13 @@ export {
   type SidecarAllocation,
   type SidecarAllocationStore,
 } from "./sidecar-allocation-store";
+export {
+  createWorkflowProbeStore,
+  type BindWorkflowProbeSidecarArgs,
+  type CreateWorkflowProbeArgs,
+  type WorkflowProbe,
+  type WorkflowProbeStore,
+} from "./workflow-probe-store";
 export {
   createWorkflowDefinitionStore,
   loadFrozenGrantSnapshot,

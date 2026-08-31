@@ -10,7 +10,6 @@ export {
   deployCodeSourcedWorkflow,
   type SessionService,
   type DeployWorkflowDefinitionResult,
-  type DeployWorkflowFromSourceParams,
   type DeployPreparedCodeSourcedWorkflowParams,
   type InstallAndApproveWorkflowSourceParams,
   type PreparedWorkflowDeployer,

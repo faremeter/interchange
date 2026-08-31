@@ -8,13 +8,16 @@ import {
 } from "bun:test";
 
 import { sha256 } from "@intx/crypto";
-import { sidecar } from "@intx/db/schema";
+import { sidecar, sidecarAllocation } from "@intx/db/schema";
 import { createSidecarTokenAuthenticator } from "@intx/hub-sessions";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
+import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+
+const TENANT_ID = "tnt-sidecar-auth";
 
 // The mock-DB unit test proves the authenticator's control flow, but it
 // never exercises the real `bytea` lookup: the token hash is written to
@@ -40,6 +43,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     beforeEach(async () => {
       await h.reset();
+      await seedTenants(h.db, [{ id: TENANT_ID }]);
     });
 
     // Seed a sidecar identity the same way provisioning does: store the
@@ -48,26 +52,63 @@ describe.skipIf(!harnessDbEnvAvailable())(
     async function seedSidecar(opts: {
       id: string;
       token: string;
-      credentialScope?: "shared" | "allocated";
-    }): Promise<void> {
+      allocated?: boolean;
+    }): Promise<{
+      kind: "allocated";
+      sidecarId: string;
+      allocationId: string;
+      tenantId: string;
+      anchorRunId: string;
+      workflowRunAddress: string;
+      generation: number;
+    }> {
+      const anchorRunId = `run-${opts.id}`;
+      const workflowRunAddress = `${opts.id}@sidecar-auth.example.test`;
       await h.db.insert(sidecar).values({
         id: opts.id,
         url: "ws://dev-sidecar",
         tokenHashSha256: await sha256(opts.token),
-        ...(opts.credentialScope !== undefined
-          ? { credentialScope: opts.credentialScope }
-          : {}),
       });
+      if (opts.allocated !== false) {
+        await seedWorkflowRun(h.db, {
+          id: anchorRunId,
+          anchorRunId,
+          tenantId: TENANT_ID,
+          address: workflowRunAddress,
+          status: "deployed",
+        });
+        await h.db.insert(sidecarAllocation).values({
+          id: `allocation-${opts.id}`,
+          anchorRunId,
+          tenantId: TENANT_ID,
+          provisionerId: "test",
+          provisionerApiVersion: 1,
+          provisionerBindingFingerprint: "test:v1",
+          sidecarId: opts.id,
+          status: "allocated",
+          generation: 1,
+          ensureAcceptedGeneration: 1,
+        });
+      }
+      return {
+        kind: "allocated",
+        sidecarId: opts.id,
+        allocationId: `allocation-${opts.id}`,
+        tenantId: TENANT_ID,
+        anchorRunId,
+        workflowRunAddress,
+        generation: 1,
+      };
     }
 
     test("resolves a valid token to the seeded sidecar's identity", async () => {
       const token = "sidecar-secret";
-      await seedSidecar({ id: "sc-1", token });
+      const expected = await seedSidecar({ id: "sc-1", token });
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
       const identity = await authenticate({ sidecarId: "sc-1", token });
 
-      expect(identity).toEqual({ kind: "shared", sidecarId: "sc-1" });
+      expect(identity).toEqual(expected);
     });
 
     test("rejects a wrong token with null", async () => {
@@ -99,7 +140,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedSidecar({
         id: "sc-replaced",
         token,
-        credentialScope: "allocated",
+        allocated: false,
       });
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
@@ -110,12 +151,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     test("derives identity from the token, not a spoofed claimed sidecarId", async () => {
       const token = "sidecar-secret";
-      await seedSidecar({ id: "sc-real", token });
+      const expected = await seedSidecar({ id: "sc-real", token });
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
       const identity = await authenticate({ sidecarId: "sc-spoofed", token });
 
-      expect(identity).toEqual({ kind: "shared", sidecarId: "sc-real" });
+      expect(identity).toEqual(expected);
     });
 
     test("selects the matching row by hash among several sidecars", async () => {
@@ -125,18 +166,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // equality actually keys the lookup on the presented token's digest.
       const tokenA = "sidecar-secret-a";
       const tokenB = "sidecar-secret-b";
-      await seedSidecar({ id: "sc-a", token: tokenA });
-      await seedSidecar({ id: "sc-b", token: tokenB });
+      const expectedA = await seedSidecar({ id: "sc-a", token: tokenA });
+      const expectedB = await seedSidecar({ id: "sc-b", token: tokenB });
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
-      expect(await authenticate({ sidecarId: "sc-a", token: tokenA })).toEqual({
-        kind: "shared",
-        sidecarId: "sc-a",
-      });
-      expect(await authenticate({ sidecarId: "sc-b", token: tokenB })).toEqual({
-        kind: "shared",
-        sidecarId: "sc-b",
-      });
+      expect(await authenticate({ sidecarId: "sc-a", token: tokenA })).toEqual(
+        expectedA,
+      );
+      expect(await authenticate({ sidecarId: "sc-b", token: tokenB })).toEqual(
+        expectedB,
+      );
     });
   },
 );

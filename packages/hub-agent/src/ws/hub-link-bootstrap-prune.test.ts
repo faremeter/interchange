@@ -25,7 +25,6 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
   type SidecarAuthenticator,
-  type SidecarRouter,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -156,7 +155,11 @@ async function waitFor(
 
 type TestEnv = {
   server: ReturnType<typeof Bun.serve>;
-  router: SidecarRouter;
+  router: ReturnType<typeof createSidecarRouter>;
+  deployForTest(
+    agentAddress: string,
+    config: HarnessConfig,
+  ): Promise<{ publicKey: string }>;
   receiveCount: { value: number };
   rejectFirstOfEvery: { value: number };
 };
@@ -170,10 +173,25 @@ function startTestServer(): TestEnv {
   let attemptsThisEpoch = 0;
   let currentEpoch = 0;
 
-  const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-    kind: "shared",
-    sidecarId,
-  });
+  const identities = new Map<
+    string,
+    Exclude<Awaited<ReturnType<SidecarAuthenticator>>, null>
+  >();
+  const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => {
+    const existing = identities.get(sidecarId);
+    if (existing !== undefined) return existing;
+    const identity = {
+      kind: "allocated" as const,
+      sidecarId,
+      allocationId: `allocation-${sidecarId}`,
+      tenantId: "tenant-test",
+      anchorRunId: `anchor-${sidecarId}`,
+      workflowRunAddress: "workflow",
+      generation: 1,
+    };
+    identities.set(sidecarId, identity);
+    return identity;
+  };
   const router = createSidecarRouter({
     authenticateSidecar: acceptAnySidecar,
     requestTimeoutMs: 5000,
@@ -213,6 +231,17 @@ function startTestServer(): TestEnv {
         },
         onMessage(evt, _ws) {
           if (typeof evt.data === "string") {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test server parses the handshake frame emitted by the typed HubLink under test
+            const frame = JSON.parse(evt.data) as {
+              type?: string;
+              sidecarId?: string;
+            };
+            if (
+              (frame.type === "register" || frame.type === "reconnect") &&
+              frame.sidecarId !== undefined
+            ) {
+              router.fenceAllocation(`allocation-${frame.sidecarId}`, 1);
+            }
             router.handleMessage(handle, evt.data);
           }
         },
@@ -229,7 +258,28 @@ function startTestServer(): TestEnv {
     port: 0,
   });
 
-  return { server, router, receiveCount, rejectFirstOfEvery };
+  return {
+    server,
+    router,
+    receiveCount,
+    rejectFirstOfEvery,
+    deployForTest(agentAddress, config) {
+      const sidecarId = router.getConnectedSidecars()[0];
+      if (sidecarId === undefined) throw new Error("No test sidecar connected");
+      const identity = identities.get(sidecarId);
+      if (identity === undefined)
+        throw new Error("No test allocation identity");
+      Object.assign(identity, { workflowRunAddress: agentAddress });
+      return router.sendAgentDeployToAllocation(
+        {
+          allocationId: identity.allocationId,
+          generation: identity.generation,
+        },
+        agentAddress,
+        config,
+      );
+    },
+  };
 }
 
 const env = startTestServer();
@@ -261,7 +311,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       );
 
       const agentAddress = TEST_CONFIG.agentAddress;
-      await env.router.sendAgentDeploy(agentAddress, TEST_CONFIG);
+      await env.deployForTest(agentAddress, TEST_CONFIG);
       await waitFor(() =>
         env.router.getRoutableAddresses().includes(agentAddress),
       );
@@ -298,7 +348,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       // Re-deploy with the same address so the anchorRunId is
       // identical -- mirrors the disaster-recovery scenario where the
       // hub's workflow-run repo for `(kind, id, ref)` is reset.
-      await env.router.sendAgentDeploy(agentAddress, TEST_CONFIG);
+      await env.deployForTest(agentAddress, TEST_CONFIG);
       await waitFor(() =>
         env.router.getRoutableAddresses().includes(agentAddress),
       );

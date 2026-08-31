@@ -9,8 +9,8 @@ import {
 
 import { eq, ne, sql } from "drizzle-orm";
 
-import { generateKeyPair, signEd25519 } from "@intx/crypto";
-import { hexDecode, hexEncode, signalName } from "@intx/types";
+import { generateKeyPair } from "@intx/crypto";
+import { hexEncode, signalName } from "@intx/types";
 import {
   createApprovalStore,
   createDB,
@@ -44,8 +44,7 @@ import {
 } from "@intx/test-harness/seed";
 
 // The register handler never touches the repo store, so a throwing stub keeps
-// the AgentRepoStore surface satisfied without a real on-disk store. Mirrors
-// deployment-key-lookup.test.ts.
+// the AgentRepoStore surface satisfied without a real on-disk store.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; registerSignalCorrelation does not touch the repo store
 const stubRepoStore = new Proxy(
   {},
@@ -58,9 +57,16 @@ const stubRepoStore = new Proxy(
   },
 ) as AgentRepoStore;
 
+let authenticatedAddress = "";
+let authenticatedAnchorRunId = "";
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "shared",
+  kind: "allocated",
   sidecarId,
+  allocationId: "allocation-test",
+  tenantId: TENANT,
+  anchorRunId: authenticatedAnchorRunId,
+  workflowRunAddress: authenticatedAddress,
+  generation: 1,
 });
 
 function createMockWs(): WsHandle & { sent: string[]; closed: boolean } {
@@ -74,24 +80,6 @@ function createMockWs(): WsHandle & { sent: string[]; closed: boolean } {
       this.closed = true;
     },
   };
-}
-
-function findFrame(ws: ReturnType<typeof createMockWs>, type: string) {
-  return ws.sent.map((s) => JSON.parse(s)).find((f) => f.type === type);
-}
-
-async function signChallenge(
-  nonce: string,
-  address: string,
-  privateKey: Uint8Array,
-): Promise<string> {
-  const nonceBytes = hexDecode(nonce);
-  const addressBytes = new TextEncoder().encode(address);
-  const payload = new Uint8Array(nonceBytes.length + addressBytes.length);
-  payload.set(nonceBytes);
-  payload.set(addressBytes, nonceBytes.length);
-  const sig = await signEd25519(privateKey, payload);
-  return hexEncode(new Uint8Array(sig));
 }
 
 // The backend pid of a handle's single connection. Only meaningful for a
@@ -194,8 +182,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
     async function reconnectAndVerify(
       router: ReturnType<typeof createSidecarRouter>,
       ws: ReturnType<typeof createMockWs>,
-      privateKey: Uint8Array,
+      _privateKey: Uint8Array,
     ): Promise<void> {
+      authenticatedAddress = WF_ADDR;
+      authenticatedAnchorRunId = DEPLOYMENT;
+      router.fenceAllocation("allocation-test", 1);
       router.handleOpen(ws);
       router.handleMessage(
         ws,
@@ -204,22 +195,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sidecarId: "sc-1",
           token: "tok",
           agentAddresses: [WF_ADDR],
-        }),
-      );
-      await new Promise((res) => setTimeout(res, 50));
-
-      const challenge = findFrame(ws, "challenge");
-      const { address, nonce } = challenge.challenges[0];
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "challenge.response",
-          responses: [
-            {
-              address,
-              signature: await signChallenge(nonce, address, privateKey),
-            },
-          ],
         }),
       );
       await new Promise((res) => setTimeout(res, 50));
@@ -232,8 +207,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       router: ReturnType<typeof createSidecarRouter>,
       ws: ReturnType<typeof createMockWs>,
       address: string,
-      privateKey: Uint8Array,
+      _privateKey: Uint8Array,
     ): Promise<void> {
+      authenticatedAddress = address;
+      authenticatedAnchorRunId =
+        address === WF_ADDR_2 ? DEPLOYMENT_2 : DEPLOYMENT;
+      router.fenceAllocation("allocation-test", 1);
       router.handleOpen(ws);
       router.handleMessage(
         ws,
@@ -242,28 +221,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sidecarId: "sc-1",
           token: "tok",
           agentAddresses: [address],
-        }),
-      );
-      await new Promise((res) => setTimeout(res, 50));
-
-      const challenge = findFrame(ws, "challenge");
-      const entry = challenge.challenges.find(
-        (c: { address: string }) => c.address === address,
-      );
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "challenge.response",
-          responses: [
-            {
-              address: entry.address,
-              signature: await signChallenge(
-                entry.nonce,
-                entry.address,
-                privateKey,
-              ),
-            },
-          ],
         }),
       );
       await new Promise((res) => setTimeout(res, 50));
@@ -276,7 +233,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       return createSidecarRouter({
         authenticateSidecar: acceptAnySidecar,
-        challengeTimeoutMs: 5000,
         lookups,
       });
     }

@@ -208,15 +208,10 @@ function createMockSidecarRouter(): SidecarRouter {
     handleClose: () => notImpl("handleClose"),
     routeMail: () => notImpl("routeMail"),
     sendRunGrants: () => notImpl("sendRunGrants"),
-    sendAgentDeploy: () => notImpl("sendAgentDeploy"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     // Mutations fire a fire-and-forget source push; resolve so it is a no-op.
     sendSourcesUpdate: () => Promise.resolve(),
     sendCredentialsUpdate: () => Promise.resolve(),
-    sendPack: () => notImpl("sendPack"),
-    sendProvisionStep: () => notImpl("sendProvisionStep"),
-    bindStepRoute: () => notImpl("bindStepRoute"),
-    unbindStepRoute: () => notImpl("unbindStepRoute"),
     sendSyncRequest: () => notImpl("sendSyncRequest"),
     sendSignalDeliver: () => notImpl("sendSignalDeliver"),
     sendDrain: () => notImpl("sendDrain"),
@@ -233,11 +228,6 @@ function createMockSessionService(): SessionService {
   return {
     stageWorkflowStep: () => {
       throw new Error("mock: sessionService.stageWorkflowStep not implemented");
-    },
-    deployWorkflowFromSource: () => {
-      throw new Error(
-        "mock: sessionService.deployWorkflowFromSource not implemented",
-      );
     },
     sendUserMessage: () => {
       throw new Error("mock: sessionService.sendUserMessage not implemented");

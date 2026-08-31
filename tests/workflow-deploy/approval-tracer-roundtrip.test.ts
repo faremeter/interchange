@@ -243,7 +243,6 @@ function notImpl(name: string): never {
 function createMockSessionService(): SessionService {
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
-    deployWorkflowFromSource: () => notImpl("deployWorkflowFromSource"),
     sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
   };

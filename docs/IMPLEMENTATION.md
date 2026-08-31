@@ -238,7 +238,7 @@ The IMAP inbox is the source of truth for conversation history. Session channels
 
 **Prototype (hub-mediated sidecar transport):**
 
-1. Sidecar reconnects to the hub and proves ownership of run addresses via signed challenge (see HARNESS_DESIGN.md)
+1. Sidecar reconnects to the Hub with its allocation-scoped credential and re-announces its one run address
 2. Hub flushes queued undelivered messages as `message.send` frames for verified agents
 3. Sidecar loads agent context from isogit and resumes operation
 
@@ -266,18 +266,15 @@ Undeploy is an acknowledged operation. The sidecar shuts the deployment's superv
 
 **Reconnection:**
 
-| Direction     | Frame                | Purpose                                        |
-| ------------- | -------------------- | ---------------------------------------------- |
-| Sidecar → Hub | `reconnect`          | Announce run addresses after WebSocket connect |
-| Hub → Sidecar | `challenge`          | Per-address nonces to sign                     |
-| Sidecar → Hub | `challenge.response` | Signed proofs of key ownership                 |
-| Hub → Sidecar | `challenge.failed`   | Verification failure for a specific address    |
+| Direction     | Frame       | Purpose                                        |
+| ------------- | ----------- | ---------------------------------------------- |
+| Sidecar → Hub | `reconnect` | Announce run addresses after WebSocket connect |
 
 **Grant management:**
 
 The live `grants.update` wire path has been retired. A supervised deployment receives its grants in the deploy pack and refreshes them over the supervisor's IPC credentials snapshot at spawn and recycle; there is no wire frame that pushes a grant change to an already-running deployment. Propagating a mid-run grant change (for example, a revocation) to a running deployment is not currently implemented.
 
-On first connection (no existing agents), the sidecar sends a `register` frame. On reconnection (agents in data directory), it sends `reconnect`. After successful challenge verification, verified addresses are provisionally added to the routing table so the hub's `agent.reconnected` reaction can run for each; an address whose reaction is rejected by governance is rolled back from the routing table and its queued messages are preserved for the next reconnect attempt.
+On first connection the sidecar sends a `register` frame. On reconnection it sends `reconnect` with its restored deployment address. The Hub accepts the frame only when the bearer token resolves to the current allocation generation and the announced address equals that allocation's anchor address; it then restores the route directly.
 
 ### Debug and Telemetry Streams
 
@@ -295,17 +292,15 @@ Debug streams require explicit authorization — not all clients are permitted t
 
 The placement design describes capability-based provisioner selection. This section describes how the Hub preserves the selected binding across a sidecar or infrastructure failure while retaining main's anchor-run workflow model.
 
-### Durable preparation
+### Probe preparation
 
-A provisioned deployment is prepared transactionally before infrastructure is requested:
+`workflow_probe` owns only the probe operation: source, entry, optional pin, status, raw result, failure, and the temporary provisioner binding needed to clean up remote capacity. It does not store catalog offerings, session/domain data, deploy content, or a workflow launch specification.
 
-- The deployment's stable id is also the id of its anchor `workflow_run`; the anchor points its `deployment_id` back to itself and owns the deployment address.
-- `workflow_run_launch_spec` stores the workflow definition snapshot and hash, session/domain metadata, catalog offering ids, deploy content, and optional tool-package pins.
-- `sidecar_allocation` stores the provisioner binding, lifecycle state, and generation for that anchor.
+The deployment request stays open while the configured default provisioner (or sole registered provisioner) starts probe capacity and the exact authenticated generation returns `workflow.probe.result`. The Hub freezes that result and selects the final provisioner through the existing capability matcher. If the same binding still matches, the Hub atomically creates the normal anchor run, frozen launch spec, and an allocated `sidecar_allocation` that adopts the connected capacity. Otherwise it destroys the probe capacity and creates a normal pending allocation for the selected binding. Only then does the deployment exist.
+
+The provisioner contract is unchanged: a probe passes its own id as the opaque owner id to the existing `ensure`/`destroy` lifecycle. `destroy` must identify capacity from `(allocationId, generation, sidecarId)` alone. The optional `externalRef` is persisted only after `ensure` returns, so a Hub crash after capacity creation can require cleanup without it. Startup cleanup moves every active probe left by an interrupted request to durable `releasing` state and attempts to destroy its capacity. A transient destroy failure does not block Hub startup; periodic reconciliation retries the cleanup row. The production Hub registers no infrastructure backend by default; the admin UI E2E harness injects a test-only `local-process` provisioner.
 
 The launch spec deliberately stores catalog offering ids rather than resolved provider secrets. Every initial deployment or replacement resolves those offerings again under the original authority, so rotated or revoked credentials take effect during recovery and no raw provider credential becomes recovery state.
-
-The production Hub registers no infrastructure backend by default. An operator must inject a provisioner with a stable id, API version, and non-secret binding fingerprint. When no provisioner satisfies the workflow and tenant capability policy, preparation returns an error and creates no partial deployment. The admin UI E2E harness starts the Hub through a test-only composition root that injects a `local-process` provisioner; it spawns allocation-authenticated sidecar subprocesses for hermetic testing but advertises no infrastructure capabilities or isolation guarantees.
 
 ### Allocation state and generation fence
 
@@ -313,11 +308,13 @@ An allocation moves through `pending → provisioning → allocated`. An uncerta
 
 Every replacement increments `generation`. The generation is persisted before the provisioner is called and appears in the ensure/destroy request and the sidecar's authenticated identity. Provisioners must make ensure/destroy idempotent and reject a generation older than one they have already observed. The Hub separately records `ensure_accepted_generation`; registration may occur while capacity is converging, but readiness and routing require the exact generation to be accepted.
 
-Raw sidecar bearer tokens are never persisted. Each stored token hash is durably scoped as either shared or allocated, so an allocated identity without a current matching allocation is rejected rather than admitted to the shared pool. If the Hub restarts after binding a generation but before recording ensure acceptance, it treats the outcome as uncertain, fences that generation, destroys it idempotently, and mints a replacement identity. On Hub startup, every active allocation fence is rebuilt before allocated sockets are admitted.
+The Hub never persists raw sidecar bearer tokens; it stores only their hashes. Every stored sidecar token hash belongs to a current workflow probe or allocation; an identity without either active owner is rejected. If the Hub restarts during a probe, startup cleanup marks its temporary capacity for release and attempts destruction; reconciliation retries a failed attempt. If it restarts after binding an allocation generation but before recording ensure acceptance, it treats that outcome as uncertain, fences the generation, destroys it idempotently, and mints a replacement identity. On Hub startup, probe cleanup runs before active allocation fences are rebuilt.
 
-An allocated WebSocket may register only the anchor's deployment address. Shared scheduling excludes any sidecar with an allocation row. All allocated deploy, mail, and signal sends resolve the exact `(allocationId, generation)` and revalidate its database identity before routing. A generation advance closes the prior socket and rejects its waiters.
+The allocation token is a bearer secret: possession is sufficient to authenticate as that probe or allocation while its durable owner remains active. Provisioners and workers must never log the raw token. A provisioner that must persist it for restartable capacity must use access-controlled secret storage and delete it when the durable owner becomes terminal. The sidecar WebSocket must use TLS (`wss://`) whenever it crosses a non-loopback or otherwise untrusted transport; plaintext `ws://` is reserved for local loopback development.
 
-Workflow-run pack ingestion applies the fence in the reverse direction. The wire layer derives pack ownership from the authenticated socket, requires the repository id to equal the slug derived from its owned deployment address, and passes that source to the Hub lookup. Immediately before advancing the Git ref, the lookup revalidates the running anchor and the current accepted allocation generation. A shared connection cannot write a deployment that has an allocation, and terminal events are projected into SQL only when their run row belongs to that anchor.
+A probe-scoped WebSocket may register no addresses and can receive only the allocation-bound probe operation. An allocated WebSocket may register only the anchor's deployment address. Probe, deploy, mail, and signal sends resolve the exact `(allocationId, generation)` and revalidate its database identity before routing. A generation advance closes the prior socket and rejects its waiters.
+
+Workflow-run pack ingestion applies the fence in the reverse direction. The wire layer derives pack ownership from the authenticated socket, requires the repository id to equal the slug derived from its owned deployment address, and passes that source to the Hub lookup. Immediately before advancing the Git ref, the lookup revalidates the running anchor and the current accepted allocation generation. Terminal events are projected into SQL only when their run row belongs to that anchor.
 
 ### Replacement and replay
 
@@ -907,7 +904,7 @@ future alternative-sidecar implementer belongs inside the
 
 ### How This Differs From The Hub-Sidecar WebSocket Boundary
 
-The session-channels transport documented above runs between two services across a network, and the hub does not treat the sidecar as trusted on connection. A per-sidecar bearer token, presented on the sidecar's first `register`/`reconnect` frame, authenticates the connection; the router keys off the verified identity, not the id claimed in the frame. Ed25519 per-address challenge/response then proves deployment ownership on reconnect. There is no mutual TLS or transport-level client authentication, and network isolation is not enforced in code. Framing is JSON over WebSocket; reconnection handles transport flakiness with sequence numbers carried on the resume; lifecycle frames travel alongside event frames on the same wire.
+The session-channels transport documented above runs between two services across a network, and the Hub does not trust a sidecar merely because it connected. A provisioner-generated bearer token, presented on `register`/`reconnect`, resolves to an exact allocation id, anchor, and generation; the router keys off that verified identity rather than the id claimed in the frame. There is no mutual TLS or transport-level client authentication, and network isolation is not enforced in code. Framing is JSON over WebSocket; lifecycle frames travel alongside event frames on the same wire.
 
 The supervisor/child IPC runs between two processes on the same host where one of them is the trust anchor and the other is not. The threat model is "compromised user code in the child," not "lossy network in the middle." That changes three things in shape:
 
@@ -1213,8 +1210,6 @@ The following frames are additions to the hub-sidecar protocol:
 
 Each pack transfer is scoped to an `agentAddress` and carries a `transferId` for correlation. Multiple transfers for different agents can be in flight concurrently.
 
-Additionally, `ReconnectFrame` gains an optional `deployRefs` field: a mapping of run addresses to their current deploy commit SHA. This allows the hub to determine whether a pack transfer is needed on reconnect.
-
 ### Encoding and Flow Control
 
 Packfile chunks are base64-encoded within JSON frames, consistent with how mail bytes are encoded in the protocol. Each `repo.pack.push` frame carries a bounded chunk (64 KiB before encoding) to avoid blocking the frame parser.
@@ -1264,7 +1259,7 @@ Deployment is a two-phase operation: stage and pack delivery. There is no separa
 
 The agent is now running and can receive messages.
 
-On first deploy a full packfile is sent. On subsequent deploys, if the sidecar advertises its current deploy ref in `ReconnectFrame.deployRefs`, the hub can send a thin pack containing only the delta.
+Each provisioned deployment receives the full pack for its frozen deploy tree. Reconnect restores the existing local tree; it does not negotiate deploy refs or reconcile a newer definition.
 
 ### Undeploy Flow
 
@@ -1289,27 +1284,25 @@ If the sidecar disconnects before sending the ack, the hub removes the agent fro
 
 ### Partial Transfer Recovery
 
-If the WebSocket disconnects mid-transfer, no git state is corrupted: the sidecar buffers chunks in memory and only unpacks on `repo.pack.done`. On reconnect, the sidecar advertises its current deploy ref. The hub detects it is behind and initiates a fresh transfer.
+If the WebSocket disconnects mid-transfer, no git state is corrupted: the receiver buffers chunks in memory and only unpacks on `repo.pack.done`. Allocation reconciliation retries initialization when a Hub-to-sidecar transfer is interrupted. For sidecar-to-Hub workflow-run packs, the sender re-drives unacknowledged commits after authenticated reconnect restores the route.
 
 ### Reconnect Sequencing
 
-On reconnect the sidecar restores its workflow deployments from local disk (see the deployment restore path) and re-announces them so the hub restores their routes. A workflow-deployment address is **not** keyless: it carries the deployment's own Ed25519 key (minted at deploy, acked to the hub), so it proves ownership through the same challenge/response a launched agent does.
+On reconnect a provisioned sidecar restores its workflow deployment from local disk (see the deployment restore path) and re-announces it so the Hub restores its route.
 
-1. After local restoration, the sidecar sends exactly one initial handshake: an empty `register` when it hosts no live workflow deployment, or a `reconnect` carrying its complete live workflow-deployment address set (in `agentAddresses`). A restored sidecar never sends a preliminary empty `register`, so the Hub cannot mistake its not-yet-announced inventory for an empty one
-2. For each address the hub resolves the stored deployment key (`workflow_deployment.publicKey`, gated on a live `deployed` status), issues a random nonce, and routes the address only after the sidecar returns a valid signature over `nonce ‖ address`. An address with no live key fails closed and stays unrouted — a token-holding sidecar cannot reclaim a deployment's route without the deployment's key
-3. The hub does not run its deploy-ref freshness catch-up for a workflow-deployment address — that pack-transfer path is launched-agent only (`isRunAddress` short-circuits it). A deployment's in-flight run state is reconstructed sidecar-locally at restore, not re-fetched from the hub
+1. After local restoration, the sidecar sends exactly one initial handshake: an empty `register` when it hosts no live workflow deployment, or a `reconnect` carrying its allocation's workflow-deployment address.
+2. The Hub resolves the bearer token to the current allocation generation and accepts only the address stored on that allocation's anchor run. A stale generation or unrelated address fails closed.
+3. The deployment's in-flight run state is reconstructed sidecar-locally at restore; Hub-owned workflow-run refs are restored only during allocation initialization, before a supervisor is active.
 
 The sidecar verifies every inbound deploy pack's commit signature against the hub key it recorded at deploy time before applying it, so pack content is never applied on an unverified signature.
 
-On first deploy (no prior key exists), the sidecar is authenticated by its registration token but cannot prove agent key ownership (the key does not exist yet). The hub sends `agent.deploy` to provision the agent, and the sidecar generates the key and returns it in `agent.deploy.ack`. The registration token, validated on the sidecar's `register` frame before any route is established, bounds the trust for first-deploy; challenge/response protects all subsequent interactions.
-
-The hub enforces that boundary structurally in `handleRegister`: a `register` frame routes an address only when `lookupPublicKey` returns null for it — a genuine keyless first-deploy. An address that already has a stored key is refused and must re-enter routing through the challenged reconnect, so a token-holding sidecar cannot reclaim a keyed address's route (its own or a victim's) on token auth alone. The check runs before any routing mutation, so a refused address never even evicts its current owner. If the key lookup is not configured, register fails closed (routes nothing and logs an error) rather than routing unverified.
+The sidecar generates the deployment key and returns it in `agent.deploy.ack`, but routing authority comes from the allocation credential. `handleAllocatedRegister` checks the in-memory generation fence, revalidates the durable identity, and rejects any address other than the anchor's deployment address before mutating routing state.
 
 #### Workflow Definition Versioning: Pinned-Forever
 
 A workflow deployment is pinned to its deploy-time definition. It keeps that definition — the frozen source closure the child re-evaluates, the workflow-asset repo, the per-step `agent-state` repos — until an explicit undeploy/redeploy replaces it. A definition change made on the hub does **not** reconcile onto a live deployment; it affects only deployments created after the change.
 
-This holds across a sidecar↔hub disconnect. If the workflow definition is edited on the hub while a sidecar is disconnected, the reconnect does not pull the newer definition down: the deploy-ref freshness catch-up that re-deploys a stale launched agent is deliberately skipped for a workflow-derived address (`isRunAddress` short-circuits it in the reconnect path — see item 3 above and the exclusion-branch comment in `sidecar-handler.ts`). The reconnected deployment resumes on the definition it deployed with; picking up the new definition requires an explicit redeploy. This is the pinned-forever decision, and it is orthogonal to recycle (same deploy tree, fresh process) as documented under "Recycle" — recycle likewise never refetches the deploy tree.
+This holds across a sidecar↔Hub disconnect. Reconnect restores routing and resumes the locally persisted frozen definition; it does not negotiate deploy refs or pull newer definition bytes. Picking up a definition change requires an explicit redeploy. This is orthogonal to recycle, which also keeps the same deploy tree while starting a fresh process.
 
 ### State Push Policy
 

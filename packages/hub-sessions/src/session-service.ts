@@ -15,7 +15,6 @@ import {
   type DB,
 } from "@intx/db";
 import {
-  grant as grantTable,
   sidecarAllocation as sidecarAllocationTable,
   workflowDefinition as workflowDefinitionTable,
   workflowRun as workflowRunTable,
@@ -27,7 +26,6 @@ import type {
   CredentialMaterialEntry,
 } from "@intx/types/sidecar";
 import type { CredentialCipher } from "@intx/types";
-import { generateId } from "@intx/hub-common";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type {
   CryptoProvider,
@@ -73,8 +71,10 @@ import {
 } from "./asset-service";
 import type {
   AllocatedSidecarTarget,
+  SendProbeArgs,
   SidecarAllocationRouter,
   SidecarRouter,
+  WorkflowProbeResult,
 } from "./ws/sidecar-handler";
 import { isDeployFrameFailure } from "./ws/sidecar-handler";
 import type { Principal, RepoId, RepoKind } from "./repo-store";
@@ -126,32 +126,8 @@ export type SessionService = {
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
-    allocationTarget?: AllocatedSidecarTarget;
+    allocationTarget: AllocatedSidecarTarget;
   }): Promise<void>;
-
-  /**
-   * Deploy a CODE-SOURCED workflow definition end to end: install + probe +
-   * gate + freeze (`approve-probed`), then deploy the frozen definition by
-   * source-ref. This is the general workflow deploy entry point the
-   * `POST /deployments` route drives; it never hydrates a live definition from a
-   * static `workflow.json`.
-   *
-   * The service owns the source-read wiring (`repoStore` committed reads and
-   * asset pack fan-out) and the registry configuration, so the caller passes
-   * only the deploy intent: where the definition's bytes come from
-   * (`source`/`entry`/`pin`), the `workflow`-kind asset the definition projects
-   * over (`definitionAssetId`), and the shared harness config. The method
-   * dispatches on `source.kind`/`source.package.format` to build the install
-   * args, pins every top-level step's inference source under the frozen
-   * approval, and persists the deployment's anchor run.
-   *
-   * Persists the deployment's anchor `workflow_run` (id = `anchorRunId`) via
-   * `deployCodeSourcedWorkflow`, so the deployment is listable per tenant.
-   * Returns the supervisor's principal public key from the sidecar deploy ack.
-   */
-  deployWorkflowFromSource(
-    params: DeployWorkflowFromSourceParams,
-  ): Promise<DeployWorkflowDefinitionResult>;
 
   /**
    * Compose a signed RFC 2822 message from the user and deliver it to the
@@ -175,53 +151,11 @@ export type DeployWorkflowDefinitionResult = {
   publicKey: string;
 };
 
-export type DeployWorkflowFromSourceParams = {
-  /** Owning tenant; recorded on the deployment's anchor run. */
-  tenantId: string;
-  /**
-   * Stable deployment identifier and anchor-run id. The deployment-level
-   * address derives from it; the caller owns its generation.
-   */
-  anchorRunId: string;
-  /** Mail domain the deployment's derived addresses live under. */
-  deploymentDomain: string;
-  /**
-   * The deployment-level mail address, derived by the caller from `anchorRunId`
-   * + `deploymentDomain`. Re-derived and asserted coherent inside
-   * `deployCodeSourcedWorkflow`.
-   */
-  agentAddress: string;
-  /** Where the definition's bytes come from at apply time. */
-  source: WorkflowDefinitionSource;
-  /** The `interchange.workflow` entry-module path the sidecar evaluates. */
-  entry: string;
-  /**
-   * A `name@range` spec for the definition package. REQUIRED for the `registry`
-   * and asset-`tarball` variants (the pin selects the member); omitted for the
-   * asset-`source` variant, whose member is selected by `package.packageName`.
-   */
-  pin?: string;
-  /**
-   * The `workflow`-kind asset the frozen definition projects a
-   * `workflow_definition` over. Distinct from a `source.kind === "asset"`
-   * source's `assetId`, which names where the bytes live.
-   */
-  definitionAssetId: string;
-  /**
-   * Harness config shared across the deployment. Its `sources`/`defaultSource`
-   * are the operator-supplied inference chain; the method pins each top-level
-   * step to one approved source from it.
-   */
-  config: HarnessConfig;
-  /** Cipher for the definition's tenant-owned credential bindings, if any. */
-  credentialCipher?: CredentialCipher;
-};
-
 /**
  * Install/probe/gate/freeze inputs for a code-sourced workflow, DECOUPLED from
- * deploy. The provisioned prepare path calls this before allocating capacity,
- * persists the frozen bundle, and deploys it to the allocation later with no
- * re-probe.
+ * deploy. The provisioned prepare path calls this on probe-scoped capacity,
+ * persists the frozen bundle, and deploys it to the workflow allocation later
+ * with no re-probe.
  */
 export type InstallAndApproveWorkflowSourceParams = {
   /** Where the definition's bytes come from at probe time. */
@@ -235,6 +169,10 @@ export type InstallAndApproveWorkflowSourceParams = {
   pin?: string;
   /** The `workflow`-kind asset the frozen definition projects a definition over. */
   definitionAssetId: string;
+  /** The exact provisioned generation that executes the probe. */
+  allocationTarget: AllocatedSidecarTarget;
+  /** Optional durable handoff invoked with the raw probe answer. */
+  onProbeResult?: (result: WorkflowProbeResult) => Promise<void>;
 };
 
 /**
@@ -433,9 +371,8 @@ export function bridgeOrchestratorDeployContent(
 
 /** Fields the deploy frame carries onto `sendAgentDeploy`. */
 type DeployFrameCommonArgs = {
-  sidecarRouter: SidecarRouter;
-  sidecarAllocationRouter?: SidecarAllocationRouter;
-  allocationTarget?: AllocatedSidecarTarget;
+  sidecarAllocationRouter: SidecarAllocationRouter;
+  allocationTarget: AllocatedSidecarTarget;
   agentAddress: string;
   config: HarnessConfig;
   sources: Record<string, InferenceSource[]>;
@@ -531,21 +468,8 @@ export async function sendMultiStepDeployFrame(
       ? { assets: [...args.assets] }
       : {}),
   };
-  // A prepared provisioned deploy routes its frame to the allocation; an
-  // ordinary deploy sends it on the ordinary router. The frozen projection/hash/pin
-  // ride verbatim in both cases -- only the transport differs.
-  if (args.allocationTarget !== undefined) {
-    if (args.sidecarAllocationRouter === undefined) {
-      throw new Error("Provisioned deployment routing is not configured");
-    }
-    return args.sidecarAllocationRouter.sendAgentDeployToAllocation(
-      args.allocationTarget,
-      args.agentAddress,
-      args.config,
-      workflow,
-    );
-  }
-  return args.sidecarRouter.sendAgentDeploy(
+  return args.sidecarAllocationRouter.sendAgentDeployToAllocation(
+    args.allocationTarget,
     args.agentAddress,
     args.config,
     workflow,
@@ -587,14 +511,6 @@ type DeployCodeSourcedCommonArgs = DeployFrameCommonArgs & {
    * neither.
    */
   credentialCipher?: CredentialCipher;
-  /**
-   * Present only for a prepared provisioned deploy: route the source-ref frame
-   * to this allocation instead of the ordinary router. `sidecarAllocationRouter`
-   * carries the allocation transport and is REQUIRED whenever `allocationTarget`
-   * is set. An ordinary deploy omits both.
-   */
-  allocationTarget?: AllocatedSidecarTarget;
-  sidecarAllocationRouter?: SidecarAllocationRouter;
 };
 
 /** Deploy a definition published to an npm registry: the sidecar fetches its
@@ -661,10 +577,7 @@ function isAssetDeployArgs(
  * caller writes the same content-addressed identity the gate persisted.
  */
 async function prepareSourceRefDeploy(
-  args: DeployCodeSourcedWorkflowArgs & {
-    allocationTarget?: AllocatedSidecarTarget;
-    sidecarAllocationRouter?: SidecarAllocationRouter;
-  },
+  args: DeployCodeSourcedWorkflowArgs,
 ): Promise<{ definitionId: string; sendArgs: SendMultiStepDeployFrameArgs }> {
   const { approval, projection, closure } = args.approved;
   if (!approval.ok) {
@@ -839,13 +752,8 @@ async function prepareSourceRefDeploy(
 
   const sendArgs: SendMultiStepDeployFrameArgs = {
     lineage: "source-ref",
-    sidecarRouter: args.sidecarRouter,
-    ...(args.sidecarAllocationRouter !== undefined
-      ? { sidecarAllocationRouter: args.sidecarAllocationRouter }
-      : {}),
-    ...(args.allocationTarget !== undefined
-      ? { allocationTarget: args.allocationTarget }
-      : {}),
+    sidecarAllocationRouter: args.sidecarAllocationRouter,
+    allocationTarget: args.allocationTarget,
     agentAddress: args.agentAddress,
     config: args.config,
     sources: args.sources,
@@ -911,8 +819,8 @@ async function emitSourceRefDeployFrame(
 }
 
 /**
- * The single public composition entrypoint for a SHARED code-sourced (npm)
- * deploy: prepare, INSERT the deployment's anchor `workflow_run` row, THEN emit
+ * A direct allocation-bound composition entrypoint for tests and low-level
+ * callers: prepare, INSERT the deployment's anchor `workflow_run` row, THEN emit
  * the source-ref frame. The anchor row is the deployment's first-class record
  * that owns its routing address and public key. Run-grant materialization keys
  * off this row (address + live status), so WITHOUT it no per-run grants (tool,
@@ -1112,7 +1020,7 @@ export function createSessionService(
      * spawns the child.
      */
     stageOnly?: boolean;
-    allocationTarget?: AllocatedSidecarTarget;
+    allocationTarget: AllocatedSidecarTarget;
   }): Promise<void> {
     const { agentAddress, agentId, runId, config, deployContent } = params;
     const toolPackagePins = params.toolPackagePins ?? [];
@@ -1223,14 +1131,10 @@ export function createSessionService(
     // route is held only for the pack window and dropped in the `finally`.
     if (stageOnly) {
       try {
-        if (params.allocationTarget === undefined) {
-          sidecarRouter.bindStepRoute(agentAddress);
-        } else {
-          await requireAllocationRouter().bindAllocatedStepRoute(
-            params.allocationTarget,
-            agentAddress,
-          );
-        }
+        await requireAllocationRouter().bindAllocatedStepRoute(
+          params.allocationTarget,
+          agentAddress,
+        );
       } catch (err) {
         throw new SessionLaunchError("provision", err, false);
       }
@@ -1243,15 +1147,11 @@ export function createSessionService(
       // exist before the pack applies.
       try {
         if (stageOnly) {
-          if (params.allocationTarget === undefined) {
-            await sidecarRouter.sendProvisionStep(agentAddress, config);
-          } else {
-            await requireAllocationRouter().sendProvisionStepToAllocation(
-              params.allocationTarget,
-              agentAddress,
-              config,
-            );
-          }
+          await requireAllocationRouter().sendProvisionStepToAllocation(
+            params.allocationTarget,
+            agentAddress,
+            config,
+          );
         } else {
           // Every caller supplies `stageOnly`. A deploy without it has no
           // provisioning shape -- the legacy warm-harness and single-step-head
@@ -1271,35 +1171,23 @@ export function createSessionService(
       // the orphaned repo. This is an acceptable minor leak on the exceptional
       // staging-failure path, not a live-path cost.
       try {
-        if (params.allocationTarget === undefined) {
-          await sidecarRouter.sendPack(agentAddress, pack, ref, commitSha);
-        } else {
-          await requireAllocationRouter().sendPackToAllocation(
-            params.allocationTarget,
-            agentAddress,
-            pack,
-            ref,
-            commitSha,
-          );
-        }
-      } catch (err) {
-        if (!stageOnly && params.allocationTarget === undefined) {
-          await attemptCleanup(agentAddress, "pack", err);
-        }
-        throw new SessionLaunchError(
-          "pack",
-          err,
-          !stageOnly && params.allocationTarget !== undefined,
+        await requireAllocationRouter().sendPackToAllocation(
+          params.allocationTarget,
+          agentAddress,
+          pack,
+          ref,
+          commitSha,
         );
+      } catch (err) {
+        throw new SessionLaunchError("pack", err, !stageOnly);
       }
 
       // Phase 2b: Asset-pack fan-out. For each attached asset, build a
       // pack, reserve the manifest row, then send the pack. The manifest
       // reservation MUST happen before the pack send: if the sidecar acks
       // but the row is missing, the session has materialization without
-      // a recorded manifest. An allocated replacement may reuse the exact
-      // row its predecessor recorded; ordinary launches still require a new
-      // row. If reservation fails, the pack send must not happen.
+      // a recorded manifest. An allocated replacement may reuse the exact row
+      // its predecessor recorded. If reservation fails, no pack is sent.
       //
       // The fan-out materializes the package-registry assets the
       // tool-package resolver picked. They live behind tenant
@@ -1308,43 +1196,25 @@ export function createSessionService(
       // `manifestAssetAttachments`.
       const fanOut: ResolvedAttachment[] = manifestAssetAttachments;
       if (assetService !== undefined && fanOut.length > 0) {
-        // Track the rows this attempt owns so a later fan-out failure can roll
-        // them back in lockstep with the sidecar undeploy. Allocated rows are
-        // durable recovery intent, not attempt-owned materialization state, so
-        // replacement failures must leave them in place for the next worker.
-        const committed: SessionAssetRecord[] = [];
         for (const att of fanOut) {
           try {
-            const committedRecord = await sendAttachmentPack(
+            await sendAttachmentPack(
               runId,
               agentAddress,
               att,
               params.allocationTarget,
             );
-            if (committedRecord !== null) committed.push(committedRecord);
           } catch (err) {
-            await rollbackCommittedAttachments(committed);
-            if (!stageOnly && params.allocationTarget === undefined) {
-              await attemptCleanup(agentAddress, "pack", err);
-            }
-            throw new SessionLaunchError(
-              "pack",
-              err,
-              !stageOnly && params.allocationTarget !== undefined,
-            );
+            throw new SessionLaunchError("pack", err, !stageOnly);
           }
         }
       }
     } finally {
       if (stageOnly) {
-        if (params.allocationTarget === undefined) {
-          sidecarRouter.unbindStepRoute(agentAddress);
-        } else {
-          requireAllocationRouter().unbindAllocatedStepRoute(
-            params.allocationTarget,
-            agentAddress,
-          );
-        }
+        requireAllocationRouter().unbindAllocatedStepRoute(
+          params.allocationTarget,
+          agentAddress,
+        );
       }
     }
   }
@@ -1366,7 +1236,7 @@ export function createSessionService(
     config: HarnessConfig;
     deployContent: DeployContent;
     toolPackagePins?: readonly ToolPackagePin[];
-    allocationTarget?: AllocatedSidecarTarget;
+    allocationTarget: AllocatedSidecarTarget;
   }): Promise<void> {
     await executeLaunchPhases({
       agentAddress: params.agentAddress,
@@ -1378,9 +1248,7 @@ export function createSessionService(
       ...(params.toolPackagePins !== undefined
         ? { toolPackagePins: params.toolPackagePins }
         : {}),
-      ...(params.allocationTarget !== undefined
-        ? { allocationTarget: params.allocationTarget }
-        : {}),
+      allocationTarget: params.allocationTarget,
     });
   }
 
@@ -1454,11 +1322,21 @@ export function createSessionService(
       );
     }
     const dbHandle = db;
+    const allocationTarget = params.allocationTarget;
     const common = {
       entry: params.entry,
       assetId: params.definitionAssetId,
       approvals: { mode: "approve-probed" } as const,
-      router: sidecarRouter,
+      router: {
+        sendProbe: (args: SendProbeArgs) =>
+          requireAllocationRouter().sendProbeToAllocation(
+            allocationTarget,
+            args,
+          ),
+      },
+      ...(params.onProbeResult !== undefined
+        ? { onProbeResult: params.onProbeResult }
+        : {}),
       db: dbHandle,
     };
     const source = params.source;
@@ -1556,7 +1434,7 @@ export function createSessionService(
   // frozen bundle and the (asset-only) attachment resolver. The gate outcome is
   // NOT asserted here: `deployWorkflowFromSource` and `installAndApproveWorkflowSource`
   // each surface a non-approval as their own domain error. This is the common
-  // freeze used by both ordinary deploys and provisioned prepare runs.
+  // freeze used by direct tests and provisioned prepare runs.
   async function prepareCodeSourcedApproval(
     params: InstallAndApproveWorkflowSourceParams,
   ): Promise<{
@@ -1584,90 +1462,6 @@ export function createSessionService(
       );
     }
     return approved;
-  }
-
-  async function deployWorkflowFromSource(
-    params: DeployWorkflowFromSourceParams,
-  ): Promise<DeployWorkflowDefinitionResult> {
-    if (db === undefined) {
-      throw new Error(
-        "deployWorkflowFromSource requires a db handle to record the deployment's anchor run",
-      );
-    }
-    const source = params.source;
-    const { approved, resolveAttachment } =
-      await prepareCodeSourcedApproval(params);
-    if (!approved.approval.ok) {
-      throw new WorkflowDefinitionInvalidError(
-        approved.projection.id,
-        `code-sourced workflow install did not approve (reason: ${approved.approval.reason})`,
-      );
-    }
-
-    // Pin every top-level step's inference source under the frozen approval,
-    // then hand the frozen bundle to the source-ref deploy.
-    const sources = buildInertProjectionStepSources({
-      projection: approved.projection,
-      config: params.config,
-      operatorApprovals: approved.approval.approvedGrants,
-    });
-
-    const commonDeploy = {
-      approved,
-      sidecarRouter,
-      agentAddress: params.agentAddress,
-      config: params.config,
-      sources,
-      db,
-      tenantId: params.tenantId,
-      anchorRunId: params.anchorRunId,
-      deploymentDomain: params.deploymentDomain,
-      ...(params.credentialCipher !== undefined
-        ? { credentialCipher: params.credentialCipher }
-        : {}),
-    };
-    // Branch on the source discriminant so the deploy args match the
-    // asset/registry arms of `DeployCodeSourcedWorkflowArgs`: an asset arm
-    // carries the attachment resolver (asserted non-null here to satisfy the
-    // union and fail loud on a mis-wired caller), a registry arm carries none.
-    let result: { publicKey: string };
-    if (source.kind === "asset") {
-      if (resolveAttachment === null) {
-        throw new Error(
-          "deployWorkflowFromSource: asset source deploy is missing its attachment resolver",
-        );
-      }
-      result = await deployCodeSourcedWorkflow({
-        ...commonDeploy,
-        source,
-        resolveAttachment,
-      });
-    } else {
-      result = await deployCodeSourcedWorkflow({ ...commonDeploy, source });
-    }
-
-    // Seed the deploying principal's read grant on the deployment's workflow-run
-    // resource. `deployCodeSourcedWorkflow` wrote the anchor row but deliberately
-    // leaves this grant to the route, which carries the authenticated deployer
-    // principal.
-    const now = new Date();
-    await db.insert(grantTable).values({
-      id: generateId("grant"),
-      tenantId: params.tenantId,
-      principalId: params.config.principalId,
-      resource: `workflow-run:${params.anchorRunId}`,
-      action: "read",
-      effect: "allow",
-      origin: "creator",
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    return {
-      anchorRunId: params.anchorRunId,
-      deploymentAddress: params.agentAddress,
-      publicKey: result.publicKey,
-    };
   }
 
   /**
@@ -1778,7 +1572,7 @@ export function createSessionService(
     const resolveAttachment = bindSourceAttachmentResolver(source);
 
     // Re-pin every top-level step's inference source from the re-resolved chain
-    // under the frozen approval -- the same pin the shared deploy computes.
+    // under the frozen approval -- the same pin the source-ref deploy computes.
     const sources = buildInertProjectionStepSources({
       projection: params.approved.projection,
       config: params.config,
@@ -1796,7 +1590,6 @@ export function createSessionService(
 
     const commonEmit = {
       approved: params.approved,
-      sidecarRouter,
       sidecarAllocationRouter: allocationRouter,
       allocationTarget: params.allocationTarget,
       agentAddress: params.agentAddress,
@@ -1850,38 +1643,12 @@ export function createSessionService(
     };
   }
 
-  async function rollbackCommittedAttachments(
-    committed: readonly SessionAssetRecord[],
-  ): Promise<void> {
-    if (db === undefined) return;
-    if (committed.length === 0) return;
-    // Per-row try/catch so a single rollback failure does not stop the
-    // sweep — every committed row needs to come off the books before
-    // the caller emits the original sendPack error.
-    for (const record of committed) {
-      try {
-        await db
-          .delete(sessionAssetTable)
-          .where(
-            and(
-              eq(sessionAssetTable.runId, record.runId),
-              eq(sessionAssetTable.mountPath, record.mountPath),
-              eq(sessionAssetTable.assetPackSha, record.assetPackSha),
-              eq(sessionAssetTable.sourceCommitSha, record.sourceCommitSha),
-            ),
-          );
-      } catch (err) {
-        logger.warn`session_asset rollback failed for earlier-committed instance=${record.runId} mountPath=${record.mountPath}: ${err instanceof Error ? err.message : String(err)}`;
-      }
-    }
-  }
-
   async function sendAttachmentPack(
     runId: string,
     agentAddress: string,
     attachment: ResolvedAttachment,
-    allocationTarget?: AllocatedSidecarTarget,
-  ): Promise<SessionAssetRecord | null> {
+    allocationTarget: AllocatedSidecarTarget,
+  ): Promise<void> {
     if (db === undefined) {
       // Guarded at construction; reassert defensively so the
       // narrowing is visible to readers and a future refactor cannot
@@ -1899,107 +1666,49 @@ export function createSessionService(
       sourceCommitSha,
     };
 
-    // Reserve the manifest row before the pack send so we never end up in the
-    // materialized-without-manifest state. Only an allocated launch may reuse
-    // an identical row: replacement workers keep the stable instance id and
-    // mount path, while the shared path retains its duplicate-launch guard.
-    const rollbackRecord = allocationTarget === undefined ? record : null;
-    if (allocationTarget === undefined) {
-      await db
-        .insert(sessionAssetTable)
-        .values({ ...record, materializedAt: new Date() });
-    } else {
-      const inserted = await db
-        .insert(sessionAssetTable)
-        .values({ ...record, materializedAt: new Date() })
-        .onConflictDoNothing({
-          target: [sessionAssetTable.runId, sessionAssetTable.mountPath],
-        })
-        .returning({ runId: sessionAssetTable.runId });
-      if (inserted.length === 0) {
-        const existing = await db.query.sessionAsset.findFirst({
-          where: and(
-            eq(sessionAssetTable.runId, runId),
-            eq(sessionAssetTable.mountPath, mountPath),
-          ),
-          columns: {
-            assetPackSha: true,
-            sourceCommitSha: true,
-          },
-        });
-        if (existing === undefined) {
-          throw new Error(
-            `session_asset ${runId}/${mountPath} disappeared after its insert conflicted`,
-          );
-        }
-        if (
-          existing.assetPackSha !== assetPackSha ||
-          existing.sourceCommitSha !== sourceCommitSha
-        ) {
-          throw new Error(
-            `session_asset ${runId}/${mountPath} conflicts with the allocated workflow's restored asset`,
-          );
-        }
+    // Reserve durable recovery intent before the pack send. A replacement
+    // generation may reuse the exact row its predecessor recorded.
+    const inserted = await db
+      .insert(sessionAssetTable)
+      .values({ ...record, materializedAt: new Date() })
+      .onConflictDoNothing({
+        target: [sessionAssetTable.runId, sessionAssetTable.mountPath],
+      })
+      .returning({ runId: sessionAssetTable.runId });
+    if (inserted.length === 0) {
+      const existing = await db.query.sessionAsset.findFirst({
+        where: and(
+          eq(sessionAssetTable.runId, runId),
+          eq(sessionAssetTable.mountPath, mountPath),
+        ),
+        columns: {
+          assetPackSha: true,
+          sourceCommitSha: true,
+        },
+      });
+      if (existing === undefined) {
+        throw new Error(
+          `session_asset ${runId}/${mountPath} disappeared after its insert conflicted`,
+        );
+      }
+      if (
+        existing.assetPackSha !== assetPackSha ||
+        existing.sourceCommitSha !== sourceCommitSha
+      ) {
+        throw new Error(
+          `session_asset ${runId}/${mountPath} conflicts with the allocated workflow's restored asset`,
+        );
       }
     }
 
-    try {
-      const options = { mountPath, repoId };
-      if (allocationTarget === undefined) {
-        await sidecarRouter.sendPack(
-          agentAddress,
-          pack,
-          ref,
-          sourceCommitSha,
-          options,
-        );
-      } else {
-        await requireAllocationRouter().sendPackToAllocation(
-          allocationTarget,
-          agentAddress,
-          pack,
-          ref,
-          sourceCommitSha,
-          options,
-        );
-      }
-    } catch (err) {
-      // Shared launches own the row they just created and roll it back when
-      // the send fails. Allocated rows are durable recovery intent: even a row
-      // first inserted by this attempt can already be reused by another
-      // reconciler, so no replacement attempt may delete it.
-      // The forensic value of a manifest-without-materialization row is
-      // negligible because no agent will read against it. Wrap the
-      // rollback in its own try/catch so a rollback failure (DB gone,
-      // connection killed mid-launch) is logged rather than masking the
-      // primary sendPack error — the caller needs to see the original
-      // failure, not the secondary one.
-      if (rollbackRecord !== null) {
-        try {
-          await db
-            .delete(sessionAssetTable)
-            .where(
-              and(
-                eq(sessionAssetTable.runId, rollbackRecord.runId),
-                eq(sessionAssetTable.mountPath, rollbackRecord.mountPath),
-                eq(sessionAssetTable.assetPackSha, rollbackRecord.assetPackSha),
-                eq(
-                  sessionAssetTable.sourceCommitSha,
-                  rollbackRecord.sourceCommitSha,
-                ),
-              ),
-            );
-        } catch (rollbackErr) {
-          const msg =
-            rollbackErr instanceof Error
-              ? rollbackErr.message
-              : String(rollbackErr);
-          logger.warn`session_asset rollback failed for instance=${runId} mountPath=${mountPath}: ${msg}`;
-        }
-      }
-      throw err;
-    }
-    return rollbackRecord;
+    await requireAllocationRouter().sendPackToAllocation(
+      allocationTarget,
+      agentAddress,
+      pack,
+      ref,
+      sourceCommitSha,
+      { mountPath, repoId },
+    );
   }
 
   /**
@@ -2137,21 +1846,6 @@ export function createSessionService(
     };
   }
 
-  async function attemptCleanup(
-    agentAddress: string,
-    failedPhase: string,
-    originalErr: unknown,
-  ): Promise<void> {
-    try {
-      await sidecarRouter.sendAgentUndeploy(agentAddress, failedPhase);
-    } catch (cleanupErr) {
-      logger.error`Failed to clean up agent ${agentAddress} after ${failedPhase} failure: ${String(cleanupErr)}`;
-      // Preserve the original error as cause so the root cause is not
-      // lost when the cleanup also fails.
-      throw new SessionLaunchError(failedPhase, originalErr, true);
-    }
-  }
-
   async function sendUserMessage(
     params: UserMessageParams,
   ): Promise<Uint8Array> {
@@ -2221,7 +1915,6 @@ export function createSessionService(
 
   return {
     stageWorkflowStep,
-    deployWorkflowFromSource,
     installAndApproveWorkflowSource,
     deployPreparedCodeSourcedWorkflow,
     sendUserMessage,

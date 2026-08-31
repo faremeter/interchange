@@ -52,8 +52,13 @@ function mockGetSession(userId: string): GetSession {
 }
 
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "shared",
+  kind: "allocated",
   sidecarId,
+  allocationId: "allocation-test",
+  tenantId: "tenant-test",
+  anchorRunId: "run-test",
+  workflowRunAddress: "workflow-test@example.test",
+  generation: 1,
 });
 
 function mockSessionService(): SessionService {
@@ -62,7 +67,6 @@ function mockSessionService(): SessionService {
   };
   return {
     stageWorkflowStep: notImpl("stageWorkflowStep"),
-    deployWorkflowFromSource: notImpl("deployWorkflowFromSource"),
     sendUserMessage: notImpl("sendUserMessage"),
     endSession: notImpl("endSession"),
   };

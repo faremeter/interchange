@@ -11,7 +11,6 @@ import {
 type SidecarRow = {
   id: string;
   tokenHashSha256: Uint8Array;
-  credentialScope: "shared" | "allocated";
 };
 
 type MockDBOpts = {
@@ -24,6 +23,13 @@ type MockDBOpts = {
     status: string;
     generation: number;
     ensureAcceptedGeneration: number | null;
+  } | null;
+  probe?: {
+    id: string;
+    sidecarId: string;
+    tenantId: string;
+    status: string;
+    generation: number;
   } | null;
   anchorAddress?: string | null;
   onFindFirst?: (args: { where: unknown }) => void;
@@ -42,6 +48,9 @@ function createMockDB(opts: MockDBOpts): DB["db"] {
       },
       sidecarAllocation: {
         findFirst: async () => opts.allocation ?? undefined,
+      },
+      workflowProbe: {
+        findFirst: async () => opts.probe ?? undefined,
       },
       workflowRun: {
         findFirst: async () =>
@@ -63,14 +72,13 @@ describe("createSidecarTokenAuthenticator", () => {
         sidecar: {
           id: "sc-1",
           tokenHashSha256: await sha256(token),
-          credentialScope: "shared",
         },
       }),
     });
 
     const identity = await authenticate({ sidecarId: "sc-1", token });
 
-    expect(identity).toEqual({ kind: "shared", sidecarId: "sc-1" });
+    expect(identity).toBeNull();
   });
 
   test("rejects an unknown token with null", async () => {
@@ -93,14 +101,13 @@ describe("createSidecarTokenAuthenticator", () => {
         sidecar: {
           id: "sc-real",
           tokenHashSha256: await sha256(token),
-          credentialScope: "shared",
         },
       }),
     });
 
     const identity = await authenticate({ sidecarId: "sc-claimed", token });
 
-    expect(identity).toEqual({ kind: "shared", sidecarId: "sc-real" });
+    expect(identity).toBeNull();
   });
 
   test("looks up by the token's hash, never the raw token", async () => {
@@ -134,7 +141,6 @@ describe("createSidecarTokenAuthenticator", () => {
         sidecar: {
           id: "sc-allocated",
           tokenHashSha256: await sha256(token),
-          credentialScope: "allocated",
         },
         allocation: {
           id: "alloc-1",
@@ -171,13 +177,43 @@ describe("createSidecarTokenAuthenticator", () => {
         sidecar: {
           id: "sc-replaced",
           tokenHashSha256: await sha256(token),
-          credentialScope: "allocated",
         },
         allocation: null,
       }),
     });
 
     expect(await resolver.resolve(token)).toBeNull();
+  });
+
+  test("resolves and revalidates probe-scoped capacity", async () => {
+    const token = "probe-secret";
+    const resolver = createSidecarCredentialResolver({
+      db: createMockDB({
+        sidecar: {
+          id: "sc-probe",
+          tokenHashSha256: await sha256(token),
+        },
+        probe: {
+          id: "probe-1",
+          sidecarId: "sc-probe",
+          tenantId: "tenant-1",
+          status: "probing",
+          generation: 0,
+        },
+      }),
+    });
+
+    const identity = await resolver.resolve(token);
+
+    expect(identity).toEqual({
+      kind: "probe",
+      sidecarId: "sc-probe",
+      allocationId: "probe-1",
+      tenantId: "tenant-1",
+      generation: 0,
+    });
+    if (identity === null) throw new Error("expected probe identity");
+    expect(await resolver.isCurrent(identity, "routing")).toBe(true);
   });
 });
 

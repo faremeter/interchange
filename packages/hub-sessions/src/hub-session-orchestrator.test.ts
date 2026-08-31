@@ -127,15 +127,11 @@ function createMockDB(opts: MockDBOpts) {
   /* eslint-enable @typescript-eslint/no-unsafe-type-assertion */
 }
 
-type RouterCall =
-  | {
-      kind: "sendPack";
-      addr: string;
-      pack: Uint8Array;
-      ref: string;
-      sha: string;
-    }
-  | { kind: "dispatchAgentEvent"; addr: string; event: unknown };
+type RouterCall = {
+  kind: "dispatchAgentEvent";
+  addr: string;
+  event: unknown;
+};
 
 function createRouterFacade(): {
   facade: Parameters<typeof createHubSessionOrchestrator>[0]["router"];
@@ -145,9 +141,6 @@ function createRouterFacade(): {
   return {
     calls,
     facade: {
-      async sendPack(addr, pack, ref, sha) {
-        calls.push({ kind: "sendPack", addr, pack, ref, sha });
-      },
       dispatchAgentEvent(addr, event) {
         calls.push({ kind: "dispatchAgentEvent", addr, event });
       },
@@ -283,7 +276,6 @@ function setup(opts: MockDBOpts = {}): Harness {
     router: router.facade,
     db,
     eventCollectors: collectors.registry,
-    agentRepoStore: repo.store,
   });
 
   return {
@@ -386,25 +378,6 @@ describe("createHubSessionOrchestrator", () => {
       });
 
       expect(harness.updates).toEqual([]);
-    });
-  });
-
-  describe("deploy.ref.stale", () => {
-    test("creates a deploy pack and pushes it via the router", async () => {
-      await harness.events.emitAndAwait("deploy.ref.stale", {
-        agentAddress: AGENT_ADDRESS,
-      });
-
-      expect(harness.repo.calls).toEqual([
-        { kind: "createDeployPack", agentId: "run_1" },
-      ]);
-
-      const sendPack = harness.router.calls.find((c) => c.kind === "sendPack");
-      expect(sendPack).toBeDefined();
-      if (sendPack?.kind === "sendPack") {
-        expect(sendPack.addr).toBe(AGENT_ADDRESS);
-        expect(sendPack.ref).toBe("refs/heads/deploy");
-      }
     });
   });
 
