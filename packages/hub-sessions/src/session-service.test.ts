@@ -1726,6 +1726,66 @@ describe("deployCodeSourcedWorkflow", () => {
     return { approval, projection, closure, wireHash };
   }
 
+  // Like makeBodyApproveOutput, but the body agent declares NO inference source
+  // (an empty `modelSources`). Such an agent still resolves a source at runtime,
+  // so the per-body pin must run it through the approval gate, not the never-read
+  // placeholder path a genuine non-agent step gets.
+  async function makeEmptyAgentBodyApproveOutput(grants: string[]) {
+    const { defineWorkflow, step, onTrigger } = await import(
+      "@intx/workflow/definition"
+    );
+    const { defineAgent } = await import("@intx/agent");
+    const { gateAndFreezeProbeResult } = await import("./workflow-probe-gate");
+    const bodyAgent = defineAgent({
+      id: "composed-empty-source-agent",
+      systemPrompt: "you are the composed body agent with no declared source",
+      tools: [],
+      capabilities: [],
+      inference: { sources: [] },
+    });
+    const definition = defineWorkflow({
+      id: "wf_composed_empty_body",
+      trigger: { type: "mail", to: DEPLOY_ADDRESS },
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: DEPLOY_ADDRESS },
+          body: defineWorkflow({
+            id: "authored-empty-body",
+            trigger: { type: "manual" },
+            steps: { work: step({ agent: bodyAgent }) },
+          }),
+        }),
+      },
+    });
+    const roundTripped: unknown = JSON.parse(
+      JSON.stringify(projectLiveToInert(definition)),
+    );
+    const projection = WorkflowProjectionDefinition(roundTripped);
+    if (projection instanceof type.errors) {
+      throw new Error(
+        `inert projection failed WorkflowProjectionDefinition validation: ${projection.summary}`,
+      );
+    }
+    const wireHash = await computeWireDefinitionHash(projection);
+    const approval = await gateAndFreezeProbeResult({
+      assetId: "asset-composed-empty-body",
+      probeResult: {
+        projection,
+        grants,
+        grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+        wireHash,
+      },
+      approvals: new Set(grants),
+      persist: async () => ({ definitionId: "def-composed-empty-body" }),
+    });
+    const closure: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [],
+      entries: [],
+    };
+    return { approval, projection, closure, wireHash };
+  }
+
   test("pins and carries per-step inference sources for an inline onTrigger body", async () => {
     const mockRouter = createMockRouter();
     const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
@@ -1824,11 +1884,15 @@ describe("deployCodeSourcedWorkflow", () => {
     expect(deployAttempted).toBe(false);
   });
 
-  test("rejects a loop nested inside an onTrigger body at deploy", async () => {
+  test("pins a loop nested inside an onTrigger body, recursing into its body", async () => {
     const mockRouter = createMockRouter();
-    let deployAttempted = false;
-    mockRouter.sendAgentDeploy = (() => {
-      deployAttempted = true;
+    const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
+    mockRouter.sendAgentDeploy = ((
+      _agentAddress: string,
+      _config: HarnessConfig,
+      workflow?: Parameters<SidecarRouter["sendAgentDeploy"]>[2],
+    ) => {
+      sentWorkflows.push(workflow);
       return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
     }) as SidecarRouter["sendAgentDeploy"];
 
@@ -1841,6 +1905,59 @@ describe("deployCodeSourcedWorkflow", () => {
         `mail.send:${DEPLOYMENT_DOMAIN}`,
       ],
     );
+    if (!approval.ok) throw new Error("expected approval");
+
+    await deployCodeSourcedWorkflow({
+      sidecarRouter: mockRouter,
+      agentAddress: DEPLOY_ADDRESS,
+      config: CONFIG,
+      sources: SOURCES,
+      approved: { approval, projection, closure },
+      source: SOURCE,
+      db: CAPTURING_DB,
+      tenantId: TENANT,
+      anchorRunId: ANCHOR_RUN_ID,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
+    });
+
+    const sent = sentWorkflows[0];
+    if (sent === undefined) throw new Error("missing workflow projection");
+    const refs = sent.referencedDefinitions;
+    if (refs === undefined) {
+      throw new Error("frame carried no referencedDefinitions for the body");
+    }
+    expect(refs).toHaveLength(1);
+    const body = refs[0];
+    if (body === undefined) throw new Error("missing referenced body");
+    // `turn` lives inside the loop body; its presence in the body's source map
+    // proves the per-body pin recursed into the loop instead of rejecting it.
+    expect(body.sources["turn"]).toEqual(SOURCES.only);
+    // The dependent agent step is pinned too.
+    expect(body.sources["esc"]).toEqual(SOURCES.only);
+    // The loop container is a non-agent step: it gets the never-read placeholder
+    // default.
+    expect(body.sources["rework"]?.[0]?.id).toBe("src-only");
+  });
+
+  test("approval-gates a body agent that declares no source instead of placeholding it", async () => {
+    const mockRouter = createMockRouter();
+    let deployAttempted = false;
+    mockRouter.sendAgentDeploy = (() => {
+      deployAttempted = true;
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { deployCodeSourcedWorkflow } = await import("./session-service");
+    // Approve director + mail but NOT the deploy default's inference source. An
+    // agent that declares no preference still resolves the default at runtime, so
+    // the pin must approval-check it and fail closed -- it must NOT pin the
+    // unapproved default as a never-read placeholder.
+    const { approval, projection, closure } =
+      await makeEmptyAgentBodyApproveOutput([
+        "director:@intx/agent/default",
+        `mail.address:${DEPLOY_ADDRESS}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]);
     if (!approval.ok) throw new Error("expected approval");
 
     await expect(
@@ -1856,7 +1973,7 @@ describe("deployCodeSourcedWorkflow", () => {
         anchorRunId: ANCHOR_RUN_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
       }),
-    ).rejects.toThrow(/nested inside a spawned body/);
+    ).rejects.toThrow(/no approved inference source/);
     expect(deployAttempted).toBe(false);
   });
 });
