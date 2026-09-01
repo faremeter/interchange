@@ -29,6 +29,7 @@ export {
 
 export {
   controlParkKindOf,
+  decideTerminalRunFlip,
   emptyState,
   isTerminalRunPhase,
   isTerminalStepPhase,
@@ -39,6 +40,7 @@ export {
   type RunState,
   type StepPhase,
   type StepState,
+  type TerminalRunPhase,
 } from "./state";
 
 export {
