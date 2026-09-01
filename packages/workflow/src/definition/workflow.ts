@@ -315,6 +315,9 @@ function validateSteps(steps: Record<string, Primitive>): void {
   // Runs after validateAfterRefs so every after/then/else endpoint is
   // already known to name a real step; this pass only rejects cycles.
   validateAcyclic(steps);
+  // Runs after validateAcyclic so the dependency graph is known acyclic and
+  // the reachability walk terminates.
+  validateConcurrentAwaitSignalNames(steps);
   validateLoopBody(steps);
   validateOnTriggerBody(steps);
   validateChildWorkflowBody(steps);
@@ -610,6 +613,126 @@ function buildDependencyAdjacency(
     }
   }
   return adjacency;
+}
+
+/**
+ * Reject a definition that lets two schedulable-concurrent `awaitSignal` steps
+ * await the same signal name. `handleSignalReceived` is a FIFO single-consumer
+ * scan keyed on the name, so two gates awaiting one name simultaneously make a
+ * delivery's binding order-dependent, and on resume the consumed signal cannot
+ * be durably re-bound to a specific gate. INTR-277 added a runtime fail-loud
+ * guard for this topology; rejecting it here makes it unauthorable.
+ *
+ * A loop or inline onTrigger body's awaitSignal park relays up into the parent
+ * run over the body's own author signal name, so a container step contributes
+ * its body's await names into the parent's concurrency set (recursively through
+ * nested loop / inline onTrigger bodies). A childWorkflow runs as a separate
+ * run with its own signal namespace, so its awaiters never collide with the
+ * parent's and are excluded.
+ *
+ * Two static-analysis limitations remain, both backstopped by the runtime
+ * guard:
+ *   - Conservative over-reject: two same-name awaiters on a gate's mutually
+ *     exclusive then/else branches are rejected, because deciding they can
+ *     never both be live is a dominator analysis whose permissive-direction
+ *     error would re-admit the hazard.
+ *   - Under-reject: a `{ ref }` onTrigger body is a separately-deployed asset
+ *     not visible here, so an await name it relays is not collected; a
+ *     collision with such a body is caught by the runtime guard, not here.
+ */
+function validateConcurrentAwaitSignalNames(
+  steps: Record<string, Primitive>,
+): void {
+  const reaches = makeReachability(buildDependencyAdjacency(steps));
+  const awaiters: { name: string; node: string; label: string }[] = [];
+  for (const [stepId, primitive] of Object.entries(steps)) {
+    if (primitive.kind === "awaitSignal") {
+      awaiters.push({ name: primitive.name, node: stepId, label: stepId });
+      continue;
+    }
+    for (const relayed of collectRelayedAwaitSignalNames(primitive)) {
+      awaiters.push({
+        name: relayed.name,
+        node: stepId,
+        label: `${stepId} (body awaitSignal ${relayed.bodyStepId})`,
+      });
+    }
+  }
+  for (let i = 0; i < awaiters.length; i++) {
+    const a = awaiters[i];
+    if (a === undefined) continue;
+    for (let j = i + 1; j < awaiters.length; j++) {
+      const b = awaiters[j];
+      if (b === undefined) continue;
+      if (a.name !== b.name || a.node === b.node) continue;
+      if (!reaches(a.node, b.node) && !reaches(b.node, a.node)) {
+        throw new Error(
+          `awaitSignal steps ${a.label} and ${b.label} can concurrently ` +
+            `await signal name ${a.name}; a signal name may have at most ` +
+            `one concurrent awaiter`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Collect the author signal names a loop or inline onTrigger body relays up to
+ * the parent run, recursing through nested loop and inline onTrigger bodies. A
+ * flat `steps` record keys gate branches and onTimeout targets as siblings, so
+ * enumerating the record covers them without a graph walk. A childWorkflow body
+ * runs in a separate signal namespace and is not relayed, so it is skipped.
+ */
+function collectRelayedAwaitSignalNames(
+  primitive: Primitive,
+): { name: string; bodyStepId: string }[] {
+  let body: Record<string, Primitive> | undefined;
+  if (primitive.kind === "loop") {
+    body = primitive.body.steps;
+  } else if (primitive.kind === "onTrigger" && "inline" in primitive.body) {
+    body = primitive.body.inline.steps;
+  }
+  if (body === undefined) return [];
+  const names: { name: string; bodyStepId: string }[] = [];
+  for (const [bodyStepId, bodyPrimitive] of Object.entries(body)) {
+    if (bodyPrimitive.kind === "awaitSignal") {
+      names.push({ name: bodyPrimitive.name, bodyStepId });
+    }
+    for (const nested of collectRelayedAwaitSignalNames(bodyPrimitive)) {
+      names.push({
+        name: nested.name,
+        bodyStepId: `${bodyStepId}/${nested.bodyStepId}`,
+      });
+    }
+  }
+  return names;
+}
+
+/**
+ * A memoized descendant-reachability predicate over the dependency adjacency.
+ * The graph is acyclic (validateAcyclic runs first), so the walk terminates.
+ */
+function makeReachability(
+  adjacency: Map<string, string[]>,
+): (from: string, to: string) => boolean {
+  const descendants = new Map<string, Set<string>>();
+  const descendantsOf = (start: string): Set<string> => {
+    const cached = descendants.get(start);
+    if (cached !== undefined) return cached;
+    const seen = new Set<string>();
+    const stack = [...(adjacency.get(start) ?? [])];
+    while (stack.length > 0) {
+      const node = stack.pop();
+      if (node === undefined || seen.has(node)) continue;
+      seen.add(node);
+      for (const next of adjacency.get(node) ?? []) {
+        stack.push(next);
+      }
+    }
+    descendants.set(start, seen);
+    return seen;
+  };
+  return (from, to) => descendantsOf(from).has(to);
 }
 
 /**

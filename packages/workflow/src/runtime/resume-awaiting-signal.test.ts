@@ -79,14 +79,27 @@ const timedGateWithHandler = defineWorkflow({
   },
 });
 
-const twoGatesSameName = defineWorkflow({
-  id: "wait-resume-two-gates",
-  trigger: { type: "manual" },
-  steps: {
-    gateA: awaitSignal({ name: "go" }),
-    gateB: awaitSignal({ name: "go" }),
-  },
-});
+// Two dependency-free gates awaiting the same signal name is the ambiguous
+// single-consumer topology the resume guard defends. defineWorkflow rejects it
+// at authoring time (INTR-281), so build it with distinct names and rewrite
+// gateB's name to reproduce the topology -- bypassing the load-time check that
+// the runtime guard exercised here is the backstop for.
+const twoGatesSameName = ((): WorkflowDefinition => {
+  const def = defineWorkflow({
+    id: "wait-resume-two-gates",
+    trigger: { type: "manual" },
+    steps: {
+      gateA: awaitSignal({ name: "go" }),
+      gateB: awaitSignal({ name: "goB" }),
+    },
+  });
+  const gateB = def.steps.gateB;
+  if (gateB === undefined || gateB.kind !== "awaitSignal") {
+    throw new Error("expected gateB to be an awaitSignal");
+  }
+  gateB.name = "go";
+  return def;
+})();
 
 const gateThenStep = defineWorkflow({
   id: "wait-resume-gate-then-step",

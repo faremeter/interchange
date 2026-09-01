@@ -1122,6 +1122,228 @@ describe("awaitSignal onTimeout validation", () => {
   });
 });
 
+describe("concurrent awaitSignal name validation", () => {
+  test("rejects two dependency-free gates sharing a signal name", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          gateA: awaitSignal({ name: "go" }),
+          gateB: awaitSignal({ name: "go" }),
+        },
+      }),
+    ).toThrow(/can concurrently await signal name go/);
+  });
+
+  test("accepts concurrent gates with distinct signal names", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          gateA: awaitSignal({ name: "go" }),
+          gateB: awaitSignal({ name: "stop" }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts same-name gates that are dependency-ordered", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          first: awaitSignal({ name: "go" }),
+          second: awaitSignal({ name: "go", after: ["first"] }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects a parent gate concurrent with a loop body awaiting the same name", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          wait: awaitSignal({ name: "go" }),
+          rework: loop({
+            body: defineWorkflow({
+              id: "body",
+              trigger: { type: "manual" },
+              steps: { inner: awaitSignal({ name: "go" }) },
+            }),
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "esc",
+          }),
+          esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+        },
+      }),
+    ).toThrow(/can concurrently await signal name go/);
+  });
+
+  test("accepts a loop body awaiting a name its parent gate is ordered before", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          wait: awaitSignal({ name: "go" }),
+          rework: loop({
+            body: defineWorkflow({
+              id: "body",
+              trigger: { type: "manual" },
+              steps: { inner: awaitSignal({ name: "go" }) },
+            }),
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "esc",
+            after: ["wait"],
+          }),
+          esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts a same-name awaiter across a childWorkflow boundary", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          wait: awaitSignal({ name: "go" }),
+          child: childWorkflow({
+            definition: defineWorkflow({
+              id: "child",
+              trigger: { type: "manual" },
+              steps: { inner: awaitSignal({ name: "go" }) },
+            }),
+          }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects a nested inner-loop body awaiting a name concurrent with a parent gate", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          wait: awaitSignal({ name: "go" }),
+          outer: loop({
+            body: defineWorkflow({
+              id: "outer-body",
+              trigger: { type: "manual" },
+              steps: {
+                inner: loop({
+                  body: defineWorkflow({
+                    id: "inner-body",
+                    trigger: { type: "manual" },
+                    steps: { w: awaitSignal({ name: "go" }) },
+                  }),
+                  while: "w",
+                  carry: "c",
+                  maxIterations: 2,
+                  onExhausted: "innerEsc",
+                }),
+                innerEsc: step({ agent: makeAgent("ie"), after: ["inner"] }),
+              },
+            }),
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "esc",
+          }),
+          esc: step({ agent: makeAgent("e"), after: ["outer"] }),
+        },
+      }),
+    ).toThrow(/can concurrently await signal name go/);
+  });
+
+  test("rejects an inline onTrigger body awaiting a name concurrent with a parent gate", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          wait: awaitSignal({ name: "go" }),
+          section: onTrigger({
+            on: { type: "manual" },
+            body: defineWorkflow({
+              id: "section-body",
+              trigger: { type: "manual" },
+              steps: { w: awaitSignal({ name: "go" }) },
+            }),
+          }),
+        },
+      }),
+    ).toThrow(/can concurrently await signal name go/);
+  });
+
+  test("accepts a childWorkflow nested in a loop body awaiting the parent's name", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          wait: awaitSignal({ name: "go" }),
+          rework: loop({
+            body: defineWorkflow({
+              id: "body",
+              trigger: { type: "manual" },
+              steps: {
+                sub: childWorkflow({
+                  definition: defineWorkflow({
+                    id: "child",
+                    trigger: { type: "manual" },
+                    steps: { w: awaitSignal({ name: "go" }) },
+                  }),
+                }),
+              },
+            }),
+            while: "w",
+            carry: "c",
+            maxIterations: 2,
+            onExhausted: "esc",
+          }),
+          esc: step({ agent: makeAgent("e"), after: ["rework"] }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects same-name awaiters on a gate's then and else branches (conservative)", () => {
+    // Documents the accepted over-reject: the two gates are mutually exclusive
+    // at runtime, but deciding that statically is a dominator analysis whose
+    // permissive-direction error would re-admit the hazard, so this is rejected
+    // and the runtime guard remains the backstop.
+    expect(() =>
+      defineWorkflow({
+        id: "wf",
+        trigger: { type: "manual" },
+        steps: {
+          p: step({ agent: makeAgent("p") }),
+          decide: gate({
+            when: { from: "steps.p.output" },
+            then: "left",
+            else: "right",
+            after: ["p"],
+          }),
+          left: awaitSignal({ name: "go", after: ["decide"] }),
+          right: awaitSignal({ name: "go", after: ["decide"] }),
+        },
+      }),
+    ).toThrow(/can concurrently await signal name go/);
+  });
+});
+
 describe("primitive defaults", () => {
   test("step defaults drainBehavior to cancel (batch)", () => {
     const s = step({ agent: makeAgent("a") });
