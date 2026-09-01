@@ -3324,17 +3324,8 @@ async function routeLoopOutcome(
   const selected = outcome === "converged" ? normalDependents : onExhausted;
 
   const toSkip = collectBranchClosure(definition, notSelected, selected);
-  // On a resume where routing already happened before the crash, the
-  // sentinels are durable; re-emitting a StepStarted for one would throw
-  // step-already-started. Skip anything already in state.steps.
-  const state = await reloadState(env, runId);
-  for (const skipId of toSkip) {
-    if (abort.aborted) break;
-    if (state.steps.has(skipId)) continue;
-    const sentinel = { skipped: true, loopId: primitive.id, outcome };
-    await emitStepStartedWithValue(env, runId, skipId, sentinel);
-    await emitStepCompletedWithValue(env, runId, skipId, sentinel);
-  }
+  const sentinel = { skipped: true, loopId: primitive.id, outcome };
+  await emitSkipClosure(env, runId, definition, toSkip, sentinel, abort);
 }
 
 /**
@@ -3500,27 +3491,14 @@ async function runGate(
   // closure as skipped before the gate's own StepCompleted lands, so
   // the DAG scheduler treats them as resolved without ever invoking
   // their bodies. The selected branch's closure is left untouched and
-  // proceeds through the normal schedule path. Honoring `abort` in
-  // the loop keeps cancellation from leaving the skip closure half-
-  // written -- the runtime body's cancel sweep then picks up the
-  // remaining steps via CancelPropagated.
+  // proceeds through the normal schedule path. The skipped step's output
+  // is a structured sentinel naming the gate and the not-selected branch
+  // head, so a diamond-join reading both branches sees a well-defined
+  // value and can branch on `skipped` without ambiguity against a
+  // legitimate `null`.
   const toSkip = collectBranchClosure(definition, [notSelected], [selected]);
-  for (const skipId of toSkip) {
-    if (abort.aborted) break;
-    const sentinel = {
-      skipped: true,
-      gateId: primitive.id,
-      branch: notSelected,
-    };
-    await emitStepStartedWithValue(env, runId, skipId, sentinel);
-    // The skipped step's output is committed through the substrate
-    // as a structured sentinel so a diamond-join step that reads
-    // both branches' outputs sees a well-defined value for the
-    // not-selected side. The sentinel names the gate and the
-    // not-selected branch head so the join author can branch on
-    // `skipped` without ambiguity against a legitimate `null` output.
-    await emitStepCompletedWithValue(env, runId, skipId, sentinel);
-  }
+  const sentinel = { skipped: true, gateId: primitive.id, branch: notSelected };
+  await emitSkipClosure(env, runId, definition, toSkip, sentinel, abort);
   const output = { branch: selected, value };
   await emitStepCompletedWithValue(env, runId, primitive.id, output);
   return output;
@@ -3592,6 +3570,87 @@ function downstreamClosure(
     }
   }
   return visited;
+}
+
+/**
+ * Order the members of a skip closure so a member is completed before any
+ * member it `after`-depends on -- leaf-first over the induced subgraph (edges
+ * = `after` restricted to closure members). `collectBranchClosure` returns
+ * BFS-from-roots order, which is not topological across a diamond, so this
+ * recomputes the order rather than reversing that output.
+ */
+function leafFirstOrder(
+  definition: WorkflowDefinition,
+  closure: readonly string[],
+): readonly string[] {
+  const members = new Set(closure);
+  const visited = new Set<string>();
+  const depsFirst: string[] = [];
+  const visit = (node: string): void => {
+    if (visited.has(node)) return;
+    visited.add(node);
+    for (const dep of definition.steps[node]?.after ?? []) {
+      if (members.has(dep)) visit(dep);
+    }
+    depsFirst.push(node);
+  };
+  for (const node of closure) visit(node);
+  // depsFirst puts a dependency before its dependents; reverse so a dependent
+  // is completed first.
+  return depsFirst.reverse();
+}
+
+/**
+ * Emit the skip sentinels for a branch-prune closure, the shared body of
+ * every route-to-handler prune (gate, loop, onFailure). Completes the closure
+ * LEAF-FIRST: a skipped step is completed only after every skipped step that
+ * depends on it. This closes a scheduling race -- while the container/unit is
+ * in-flight the scheduler offers none of its direct dependents, but a skipped
+ * INTERMEDIATE that completed before its skipped dependent was settled would
+ * unblock that dependent, and the drive loop (woken by an unrelated sibling
+ * settling) could schedule it. Leaf-first means a skipped step's dependents
+ * are already terminal when it completes, and while a step is briefly
+ * in-flight its dependencies are not yet terminal, so `areDepsResolved` never
+ * offers it -- this holds even for the resumable kinds (sleep/loop/onTrigger/
+ * awaitSignal) that `nextSchedulable` offers while in-flight.
+ *
+ * A step already in the log is not re-started (idempotent replay); a step left
+ * in-flight by a crash mid-prune is re-completed. The prune bails only for a
+ * run that is no longer `running` (a cancelling/terminal run, whose cancel
+ * sweep settles the closure via CancelPropagated); it MUST complete for a
+ * drained-but-still-running run, since the caller commits the unit's terminal
+ * right after and a half-pruned branch would leave the not-taken side live. A
+ * cancel that lands mid-prune makes the next StepStarted throw and propagate;
+ * a step already started still completes, so no step is left half-emitted.
+ */
+async function emitSkipClosure(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  definition: WorkflowDefinition,
+  toSkip: readonly string[],
+  sentinel: unknown,
+  abort: AbortSignal,
+): Promise<void> {
+  const snapshot = await reloadState(env, runId);
+  // Bail only when an abort coincides with the run no longer being `running`:
+  // then the cancel sweep owns settling the closure and a skip StepStarted
+  // would throw anyway. A DRAIN abort leaves the run `running`, and the prune
+  // -- DAG bookkeeping -- MUST complete, or the caller commits the unit's
+  // terminal over a half-pruned branch and the not-taken side runs. `abort`
+  // fires on drain too, so `abort.aborted` alone cannot make this call.
+  if (abort.aborted && snapshot.phase !== "running") return;
+  for (const skipId of leafFirstOrder(definition, toSkip)) {
+    // No per-iteration abort bail: if the run turns cancelling mid-prune the
+    // next StepStarted throws (the reducer requires `running`) and propagates
+    // to the cancel sweep; a step already started still completes
+    // (StepCompleted has no run-phase guard), so no skip is left half-emitted.
+    const phase = snapshot.steps.get(skipId)?.phase;
+    if (phase !== undefined && phase !== "in-flight") continue;
+    if (phase === undefined) {
+      await emitStepStartedWithValue(env, runId, skipId, sentinel);
+    }
+    await emitStepCompletedWithValue(env, runId, skipId, sentinel);
+  }
 }
 
 /**
