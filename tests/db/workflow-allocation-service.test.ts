@@ -168,6 +168,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
     }
 
+    function sharedPluginPools(provisioners: readonly SidecarProvisioner[]) {
+      const plugins = createSidecarPluginRegistry({ provisioners });
+      return { deploymentPlugins: plugins, probePlugins: plugins };
+    }
+
     async function freeze(
       params: InstallAndApproveWorkflowSourceParams,
       capabilities: readonly SidecarCapabilityRule[] = [],
@@ -222,7 +227,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const service = createWorkflowAllocationService({
         db: h.db,
-        plugins: createSidecarPluginRegistry({
+        probePlugins: createSidecarPluginRegistry({
+          provisioners: [provisioner],
+        }),
+        deploymentPlugins: createSidecarPluginRegistry({
           provisioners: [provisioner],
         }),
         preparedDeployer: {
@@ -300,7 +308,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       let anchorVisibleDuringDeploy = false;
       const service = createWorkflowAllocationService({
         db: h.db,
-        plugins: createSidecarPluginRegistry({ provisioners: [provisioner] }),
+        ...sharedPluginPools([provisioner]),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
           deployPreparedCodeSourcedWorkflow: async (params) => {
@@ -393,7 +401,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
       const service = createWorkflowAllocationService({
         db: h.db,
-        plugins: createSidecarPluginRegistry({ provisioners: [provisioner] }),
+        ...sharedPluginPools([provisioner]),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
           deployPreparedCodeSourcedWorkflow: async (params) => ({
@@ -468,9 +476,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const service = createWorkflowAllocationService({
         db: h.db,
-        plugins: createSidecarPluginRegistry({
-          provisioners: [provisioner],
-        }),
+        ...sharedPluginPools([provisioner]),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
           deployPreparedCodeSourcedWorkflow: async (params) => ({
@@ -543,9 +549,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const service = createWorkflowAllocationService({
         db: h.db,
-        plugins: createSidecarPluginRegistry({
-          provisioners: [probeProvisioner, deploymentProvisioner],
-        }),
+        ...sharedPluginPools([probeProvisioner, deploymentProvisioner]),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) =>
             freeze(params, [{ capability: "platform:ios", effect: "require" }]),
@@ -636,7 +640,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const service = createWorkflowAllocationService({
         db: h.db,
-        plugins: createSidecarPluginRegistry({ provisioners: [provisioner] }),
+        ...sharedPluginPools([provisioner]),
         preparedDeployer: {
           installAndApproveWorkflowSource: async () => {
             throw new Error("not reached");
@@ -707,8 +711,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const ids = ["sal-probe-released", "sal-workflow-pending"];
       const service = createWorkflowAllocationService({
         db: h.db,
-        plugins: createSidecarPluginRegistry({
-          provisioners: [sandbox, worker],
+        probePlugins: createSidecarPluginRegistry({
+          provisioners: [sandbox],
+        }),
+        deploymentPlugins: createSidecarPluginRegistry({
+          provisioners: [worker],
         }),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) =>
@@ -781,9 +788,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const ids = ["sal-isolated-probe", "sal-general-workflow"];
       const service = createWorkflowAllocationService({
         db: h.db,
-        plugins: createSidecarPluginRegistry({
-          provisioners: [general, sandbox],
-        }),
+        ...sharedPluginPools([general, sandbox]),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
           deployPreparedCodeSourcedWorkflow: async () => {
@@ -840,9 +845,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(() =>
         createWorkflowAllocationService({
           db: h.db,
-          plugins: createSidecarPluginRegistry({
-            provisioners: [provisioner],
-          }),
+          ...sharedPluginPools([provisioner]),
           preparedDeployer: {
             installAndApproveWorkflowSource: (params) => freeze(params),
             deployPreparedCodeSourcedWorkflow: async () => {

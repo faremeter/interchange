@@ -28,6 +28,7 @@ import {
   WORKSPACE_BUILTINS_REGISTRY,
   type SidecarLookups,
   type SidecarProvisioner,
+  type SidecarProvisionerChooser,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { generateKeyPair } from "@intx/crypto";
@@ -36,12 +37,22 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@intx/log";
 
 export type CreateHubServerOpts = {
+  /** Provisioners eligible to host frozen workflow deployments. */
   readonly sidecarProvisioners?: readonly SidecarProvisioner[];
+  /** Selects among matching deployment provisioners. Defaults to the first. */
+  readonly sidecarProvisionerChooser?: SidecarProvisionerChooser;
+  /** Provisioners eligible to evaluate workflow source code. */
+  readonly probeSidecarProvisioners?: readonly SidecarProvisioner[];
+  /** Selects among matching probe provisioners. Defaults to the first. */
+  readonly probeSidecarProvisionerChooser?: SidecarProvisionerChooser;
   readonly probeSidecarCapabilityRules?: readonly SidecarCapabilityRule[];
 };
 
 export async function createHubServer({
   sidecarProvisioners = [],
+  sidecarProvisionerChooser,
+  probeSidecarProvisioners = [],
+  probeSidecarProvisionerChooser,
   probeSidecarCapabilityRules = [],
 }: CreateHubServerOpts = {}) {
   await setup();
@@ -285,13 +296,23 @@ export async function createHubServer({
 
   const sidecarPlugins = createSidecarPluginRegistry({
     provisioners: sidecarProvisioners,
+    ...(sidecarProvisionerChooser !== undefined
+      ? { chooser: sidecarProvisionerChooser }
+      : {}),
+  });
+  const probeSidecarPlugins = createSidecarPluginRegistry({
+    provisioners: probeSidecarProvisioners,
+    ...(probeSidecarProvisionerChooser !== undefined
+      ? { chooser: probeSidecarProvisionerChooser }
+      : {}),
   });
   const hubSidecarWebSocketUrl =
     process.env["HUB_SIDECAR_WEBSOCKET_URL"] ??
     `ws://127.0.0.1:${String(port)}/api/sidecars/ws`;
   const workflowAllocationService = createWorkflowAllocationService({
     db,
-    plugins: sidecarPlugins,
+    deploymentPlugins: sidecarPlugins,
+    probePlugins: probeSidecarPlugins,
     preparedDeployer: sessionService,
     credentialCipher,
     probeCapabilityRules: probeSidecarCapabilityRules,

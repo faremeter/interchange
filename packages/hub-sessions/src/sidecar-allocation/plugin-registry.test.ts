@@ -101,7 +101,7 @@ describe("createSidecarPluginRegistry", () => {
     ).toThrow(/Invalid capability declarations/);
   });
 
-  test("selects the first matching provisioner", () => {
+  test("selects the first matching provisioner", async () => {
     const containers = provisioner("containers", "containers:v1", [
       { capability: "runtime:browser", state: "available" },
     ]);
@@ -113,14 +113,51 @@ describe("createSidecarPluginRegistry", () => {
     });
 
     expect(
-      registry.selectProvisioner({
+      await registry.selectProvisioner({
         tenantPolicies: [],
         workflowRules: [{ capability: "runtime:browser", effect: "require" }],
       }),
     ).toEqual({ ok: true, provisioner: containers });
   });
 
-  test("skips earlier provisioners that do not match", () => {
+  test("lets a custom chooser select from every match", async () => {
+    const containers = provisioner("containers", "containers:v1", [
+      { capability: "runtime:browser", state: "available" },
+    ]);
+    const virtualMachines = provisioner("virtual-machines", "vms:v1", [
+      { capability: "runtime:browser", state: "available" },
+    ]);
+    const seen: (readonly SidecarProvisioner[])[] = [];
+    const registry = createSidecarPluginRegistry({
+      provisioners: [containers, virtualMachines],
+      chooser: async (candidates) => {
+        seen.push(candidates);
+        return virtualMachines;
+      },
+    });
+
+    expect(
+      await registry.selectProvisioner({
+        tenantPolicies: [],
+        workflowRules: [{ capability: "runtime:browser", effect: "require" }],
+      }),
+    ).toEqual({ ok: true, provisioner: virtualMachines });
+    expect(seen).toEqual([[containers, virtualMachines]]);
+  });
+
+  test("rejects a chooser result outside the matching candidates", async () => {
+    const containers = provisioner("containers");
+    const registry = createSidecarPluginRegistry({
+      provisioners: [containers],
+      chooser: () => provisioner("unregistered"),
+    });
+
+    await expect(
+      registry.selectProvisioner({ tenantPolicies: [], workflowRules: [] }),
+    ).rejects.toThrow(/outside the matching candidates/);
+  });
+
+  test("skips earlier provisioners that do not match", async () => {
     const containers = provisioner("containers", "containers:v1", [
       { capability: "platform:ios", state: "blocked" },
     ]);
@@ -132,19 +169,19 @@ describe("createSidecarPluginRegistry", () => {
     });
 
     expect(
-      registry.selectProvisioner({
+      await registry.selectProvisioner({
         tenantPolicies: [],
         workflowRules: [{ capability: "platform:ios", effect: "require" }],
       }),
     ).toEqual({ ok: true, provisioner: ios });
   });
 
-  test("reports each provisioner's capability mismatches", () => {
+  test("reports each provisioner's capability mismatches", async () => {
     const registry = createSidecarPluginRegistry({
       provisioners: [provisioner("containers")],
     });
 
-    const selection = registry.selectProvisioner({
+    const selection = await registry.selectProvisioner({
       tenantPolicies: [],
       workflowRules: [{ capability: "platform:ios", effect: "require" }],
     });

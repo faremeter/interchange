@@ -105,7 +105,8 @@ export type WorkflowAllocationService = {
 
 export type WorkflowAllocationServiceDeps = {
   readonly db: DB["db"];
-  readonly plugins: SidecarPluginRegistry;
+  readonly deploymentPlugins: SidecarPluginRegistry;
+  readonly probePlugins: SidecarPluginRegistry;
   readonly preparedDeployer: PreparedWorkflowDeployer;
   /** Decrypts tenant-owned credential bindings for provisioned deployments. */
   readonly credentialCipher: CredentialCipher;
@@ -197,7 +198,8 @@ function createProvisionedHarnessConfig(args: {
 
 export function createWorkflowAllocationService({
   db,
-  plugins,
+  deploymentPlugins,
+  probePlugins,
   preparedDeployer,
   credentialCipher,
   probeCapabilityRules = [],
@@ -231,7 +233,7 @@ export function createWorkflowAllocationService({
   function matchingProvisioner(
     probe: WorkflowProbe,
   ): SidecarProvisioner | null {
-    const provisioner = plugins.getProvisioner(probe.provisionerId);
+    const provisioner = probePlugins.getProvisioner(probe.provisionerId);
     return provisioner !== null &&
       provisioner.apiVersion === probe.provisionerApiVersion &&
       provisioner.bindingFingerprint === probe.provisionerBindingFingerprint
@@ -476,7 +478,7 @@ export function createWorkflowAllocationService({
       );
     }
     const probeProvisioner = selectProvisioner(
-      plugins.selectProvisioner({
+      await probePlugins.selectProvisioner({
         tenantPolicies,
         probeRules: configuredProbeCapabilityRules,
         workflowRules: [],
@@ -600,7 +602,7 @@ export function createWorkflowAllocationService({
         operatorApprovals: approved.approval.approvedGrants,
       });
       const deploymentProvisioner = selectProvisioner(
-        plugins.selectProvisioner({
+        await deploymentPlugins.selectProvisioner({
           tenantPolicies,
           workflowRules:
             approved.projection.sidecarPlacement?.capabilities ?? [],

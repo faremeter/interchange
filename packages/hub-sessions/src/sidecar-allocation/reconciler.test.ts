@@ -91,7 +91,7 @@ function deps(args: {
     allocationStore: args.store,
     plugins: {
       getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
-      selectProvisioner: () => ({ ok: true, provisioner }),
+      selectProvisioner: async () => ({ ok: true, provisioner }),
     },
     router: {
       fenceAllocation(id, generation) {
