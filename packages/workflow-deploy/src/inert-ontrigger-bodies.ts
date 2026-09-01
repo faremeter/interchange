@@ -3,11 +3,11 @@
 //
 // On the source-ref (code-sourced) deploy the hub never holds a live
 // `WorkflowDefinition` -- it has only the inert `WorkflowProjectionDefinition`
-// the gate froze and hashed. This module walks that frozen projection, lifts
-// each inline body, and surfaces each body step's declared `(provider, model)`
-// preference from the projection's `modelSources` so the hub can pin per-body
-// inference sources through the resolver + approval gate
-// (`pickStepInferenceSource`).
+// the gate froze and hashed. This module walks that frozen projection and lifts
+// each inline body so the hub can stage it and pin its per-step inference
+// sources. Enumeration itself is purely structural: the deploy pin reads each
+// body step's declared `(provider, model)` preference through
+// `readInertStepInference` when it resolves sources.
 //
 // The walk mirrors the runtime's per-rung rewrite exactly, so the ref each body
 // is staged under equals the ref the runtime reads it back by:
@@ -78,15 +78,6 @@ export interface EnumeratedInertBody {
    * must be the same inert form the closure projects to.
    */
   readonly definition: typeof WorkflowProjectionDefinition.infer;
-  /**
-   * Each body step's declared preference, keyed by the body's own step id, one
-   * entry per `definition.stepOrder` entry. `null` for a step that declares no
-   * preference (a non-agent step, or an agent with an empty `modelSources`); the
-   * resolver then pins the deploy's approved `defaultSource`.
-   */
-  readonly preferredByStep: Readonly<
-    Record<string, InertBodyStepPreference | null>
-  >;
 }
 
 // A single `modelSources` entry, canonicalized to its `(provider, model)`
@@ -212,9 +203,9 @@ export function readInertStepInference(
 /**
  * Lift one inline body out of an enclosing projection: validate it, override its
  * id to `inlineBodyRef(enclosingId, stepId)` (the ref the sidecar stages
- * under and the run child re-derives), and read each body step's declared
- * preference. Every field other than the id rides verbatim so the body's wire
- * hash matches the re-evaluated closure's projection.
+ * under and the run child re-derives). Every field other than the id rides
+ * verbatim so the body's wire hash matches the re-evaluated closure's
+ * projection.
  */
 function liftInertBody(
   enclosingId: string,
@@ -230,23 +221,15 @@ function liftInertBody(
     );
   }
   const definition = { ...validatedBody, id: ref };
-  const preferredByStep: Record<string, InertBodyStepPreference | null> = {};
-  for (const bodyStepId of definition.stepOrder) {
-    preferredByStep[bodyStepId] = readInertStepInference(
-      definition.steps[bodyStepId],
-      `enumerateInertBodies: body ${ref} `,
-      bodyStepId,
-    ).preference;
-  }
-  return { ref, definition, preferredByStep };
+  return { ref, definition };
 }
 
 /**
  * Enumerate a frozen inert projection's inline trigger bodies -- onTrigger
  * sections and childWorkflow children -- transitively. Pure: it only reads
  * `projection`, validating every field it reaches. Each returned body carries
- * its ref, the inline body projection (id set to the ref), and each body step's
- * declared preference. A projection with no inline body yields an empty array.
+ * its ref and the inline body projection (id set to the ref). A projection with
+ * no inline body yields an empty array.
  *
  * The descent mirrors the runtime's per-rung rewrite (see the module comment):
  * childWorkflow children are lifted at every depth; onTrigger sections are
