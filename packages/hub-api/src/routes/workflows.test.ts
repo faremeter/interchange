@@ -6,9 +6,14 @@ import git from "isomorphic-git";
 import { type, type Type } from "arktype";
 
 import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
+import { createNoopCredentialCipher } from "@intx/crypto";
 import { WorkflowRunDispatchPayloadConflictError } from "@intx/db";
 import { base64Decode, ErrorResponse, signalName } from "@intx/types";
-import type { GrantWalkSnapshot, SidecarAllocationStatus } from "@intx/types";
+import type {
+  CredentialCipher,
+  GrantWalkSnapshot,
+  SidecarAllocationStatus,
+} from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
   asset as assetTable,
@@ -790,6 +795,7 @@ type TestAppOpts = {
   tenantConfig?: unknown;
   repoDirById?: Map<string, string>;
   runLifecycle?: WorkflowRunLifecycle | (() => WorkflowRunLifecycle);
+  credentialCipher?: CredentialCipher;
 };
 
 // Project a workflow envelope into the deploy-approved grant-walk snapshot the
@@ -884,6 +890,9 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.runLifecycle ?? "live",
     ),
     maxTarballBytes: 10_000_000,
+    ...(opts.credentialCipher !== undefined
+      ? { credentialCipher: opts.credentialCipher }
+      : {}),
   });
 }
 
@@ -1038,6 +1047,31 @@ describe("POST /workflows/deployments", () => {
         model: "m",
       },
     ]);
+  });
+
+  test("forwards the app credential cipher onto the shared deploy", async () => {
+    const deployCalls: DeployWorkflowFromSourceParams[] = [];
+    const credentialCipher = createNoopCredentialCipher();
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      deployCalls,
+      deployResult: {
+        anchorRunId: DEPLOYMENT_ID,
+        deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
+        publicKey: "pubkey",
+      },
+      credentialCipher,
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
+    );
+
+    expect(res.status).toBe(201);
+    expect(deployCalls).toHaveLength(1);
+    const call = deployCalls[0];
+    if (call === undefined) throw new Error("missing deploy call");
+    expect(call.credentialCipher).toBe(credentialCipher);
   });
 
   test("prepares an exclusive deployment and returns a pending record", async () => {
