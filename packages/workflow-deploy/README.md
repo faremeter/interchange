@@ -28,9 +28,12 @@ Public surface:
 - `createApprovalSetGate(approvals)` / `createApprovalSourceGate(source)`
   — operator-approval gating against a flat `ApprovalSet` or an async
   source.
-- `pickStepInferenceSource(...)` / `buildInertProjectionStepSources(...)`
-  — resolve each step's inference source against the operator-approved
-  grant set, so an unapproved source fails the deploy closed.
+- `pickStepInferenceSource(...)` / `pinInertStepSources(...)` /
+  `buildInertProjectionStepSources(...)` — resolve each step's inference
+  source against the operator-approved grant set, so an unapproved source
+  fails the deploy closed. `pinInertStepSources` is the shared walk (step
+  order, loop-body recursion, flat-map collision rule) parameterized by a
+  per-step leaf resolver.
 - `enumerateInertBodies(...)` — lift each inline trigger body (onTrigger section or childWorkflow child), transitively,
   out of a frozen inert projection and surface its declared
   `(provider, model)` preference for per-body source pinning.

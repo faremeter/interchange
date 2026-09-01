@@ -10,7 +10,7 @@
 //   - deploy derivation + source pinning: pure address derivation
 //     (`deriveRunAddress`, `deriveStepAddress`, `resolveStepAddress`, ...)
 //     and per-step inference-source resolution against the operator-
-//     approved grant set (`pickStepInferenceSource`,
+//     approved grant set (`pickStepInferenceSource`, `pinInertStepSources`,
 //     `buildInertProjectionStepSources`).
 
 export {
@@ -36,6 +36,7 @@ export {
 } from "./inert-ontrigger-bodies";
 export {
   pickStepInferenceSource,
+  pinInertStepSources,
   buildInertProjectionStepSources,
   buildSingleStepAgentDefinition,
   deriveRunAddress,

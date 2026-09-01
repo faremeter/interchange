@@ -45,6 +45,20 @@ export interface InertBodyStepPreference {
 }
 
 /**
+ * A body step's inference shape as read off the inert projection: whether the
+ * step is agent-bearing, and its declared `(provider, model)` preference. An
+ * agent whose `modelSources` is empty reads as `{ isAgent: true, preference:
+ * null }` -- distinct from a genuine non-agent step (`{ isAgent: false }`),
+ * because an agent resolves and reads a source at runtime and so needs an
+ * approval-checked pin even when it declares no preference, whereas a non-agent
+ * step never resolves a source.
+ */
+export interface InertStepInference {
+  readonly isAgent: boolean;
+  readonly preference: InertBodyStepPreference | null;
+}
+
+/**
  * An inline trigger body (an onTrigger section or a childWorkflow child) lifted
  * out of a frozen inert projection, ready for the source-ref hub to pin per-step
  * sources and carry as a `referencedDefinitions` entry.
@@ -125,18 +139,6 @@ function firstPreference(
     : null;
 }
 
-/**
- * Read an inert projection step's declared inference preference. Mirrors
- * `extractAgent`: a `step` carries the agent directly, a `map` carries it on its
- * inner step, and any other primitive declares none (`null`). A `step`/`map`
- * that fails the agent shape is a malformed projection and throws.
- *
- * `context` is a caller label the throw prefixes with, so a malformed step is
- * traceable to whoever read it (an inline onTrigger body enumeration, or the
- * top-level projection step-source pinning). Exported so both the body
- * enumeration here and the top-level source pin in `orchestrator.ts` read a
- * step's preference through one validator.
- */
 const InertLoopStep = type({ kind: "'loop'", body: "unknown" });
 
 /**
@@ -161,18 +163,39 @@ export function inertLoopBody(
   return body;
 }
 
-export function readInertStepPreference(
+/**
+ * Read an inert projection step's inference shape: whether it is agent-bearing
+ * and its declared `(provider, model)` preference. Mirrors `extractAgent`: a
+ * `step` carries the agent directly, a `map` carries it on its inner step, and
+ * any other primitive is a non-agent (`{ isAgent: false, preference: null }`).
+ * A `step`/`map` that fails the agent shape is a malformed projection and
+ * throws. An agent with an empty `modelSources` reads as `{ isAgent: true,
+ * preference: null }`, so a caller can tell it apart from a non-agent step and
+ * still pin it an approval-checked source.
+ *
+ * `context` is a caller label the throw prefixes with, so a malformed step is
+ * traceable to whoever read it (an inline body enumeration, or the top-level
+ * projection step-source pinning). Exported so both the body enumeration here
+ * and the source pins in `orchestrator.ts` read a step through one validator.
+ */
+export function readInertStepInference(
   stepValue: unknown,
   context: string,
   stepId: string,
-): InertBodyStepPreference | null {
+): InertStepInference {
   const asStep = StepWithAgent(stepValue);
   if (!(asStep instanceof type.errors)) {
-    return firstPreference(asStep.agent.modelSources);
+    return {
+      isAgent: true,
+      preference: firstPreference(asStep.agent.modelSources),
+    };
   }
   const asMap = MapWithAgent(stepValue);
   if (!(asMap instanceof type.errors)) {
-    return firstPreference(asMap.step.agent.modelSources);
+    return {
+      isAgent: true,
+      preference: firstPreference(asMap.step.agent.modelSources),
+    };
   }
   const kind = StepKind(stepValue);
   if (
@@ -183,7 +206,7 @@ export function readInertStepPreference(
       `${context}step ${stepId} is a ${kind.kind} primitive but carries no valid agent.modelSources`,
     );
   }
-  return null;
+  return { isAgent: false, preference: null };
 }
 
 /**
@@ -209,11 +232,11 @@ function liftInertBody(
   const definition = { ...validatedBody, id: ref };
   const preferredByStep: Record<string, InertBodyStepPreference | null> = {};
   for (const bodyStepId of definition.stepOrder) {
-    preferredByStep[bodyStepId] = readInertStepPreference(
+    preferredByStep[bodyStepId] = readInertStepInference(
       definition.steps[bodyStepId],
       `enumerateInertBodies: body ${ref} `,
       bodyStepId,
-    );
+    ).preference;
   }
   return { ref, definition, preferredByStep };
 }
