@@ -820,3 +820,136 @@ describe("onTrigger onBodyFailure projection and hash", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// onFailure is bound into the projection and the approval hash
+// ---------------------------------------------------------------------------
+
+describe("onFailure projection and hash", () => {
+  // onFailure names WHICH handler a permanent failure routes to, so it is part
+  // of the operator-approved surface: it must move both the projected bytes and
+  // the approval hash, or a tampered registry could serve a different handler
+  // than was approved. The escape surface is three separate projectors -- step,
+  // action, childWorkflow -- so each is pinned independently; the existing
+  // suite would stay green if a new field escaped any one of them.
+  function handlerAgent(): AgentDefinition {
+    return mkAgent([alphaTool], baseCapabilities, [OPENAI]);
+  }
+
+  function stepWorkflow(onFailure?: string): WorkflowDefinition {
+    return defineWorkflow({
+      id: "wf_onfailure_step",
+      trigger: { type: "mail", to: "wf@acme.test" },
+      steps: {
+        unit: step({
+          agent: mkAgent([alphaTool, betaTool], baseCapabilities, [OPENAI]),
+          ...(onFailure !== undefined ? { onFailure } : {}),
+        }),
+        handler: step({ agent: handlerAgent(), after: ["unit"] }),
+      },
+    });
+  }
+
+  function actionWorkflow(onFailure?: string): WorkflowDefinition {
+    return defineWorkflow({
+      id: "wf_onfailure_action",
+      trigger: { type: "mail", to: "wf@acme.test" },
+      steps: {
+        unit: action({
+          handler: "do-thing",
+          ...(onFailure !== undefined ? { onFailure } : {}),
+        }),
+        handler: step({ agent: handlerAgent(), after: ["unit"] }),
+      },
+    });
+  }
+
+  function childWorkflowWorkflow(onFailure?: string): WorkflowDefinition {
+    const child = defineWorkflow({
+      id: "wf_child",
+      trigger: { type: "mail", to: "child@acme.test" },
+      steps: { inner: step({ agent: handlerAgent() }) },
+    });
+    return defineWorkflow({
+      id: "wf_onfailure_child",
+      trigger: { type: "mail", to: "wf@acme.test" },
+      steps: {
+        unit: childWorkflow({
+          definition: child,
+          ...(onFailure !== undefined ? { onFailure } : {}),
+        }),
+        handler: step({ agent: handlerAgent(), after: ["unit"] }),
+      },
+    });
+  }
+
+  test("a default step omits onFailure from the inert projection", () => {
+    const json = canonicalJsonStringify(projectLiveToInert(stepWorkflow()));
+    expect(json).not.toContain("onFailure");
+  });
+
+  test("onFailure on a step moves both the projection bytes and the hash", async () => {
+    const dflt = stepWorkflow();
+    const routed = stepWorkflow("handler");
+    expect(canonicalJsonStringify(projectLiveToInert(routed))).not.toBe(
+      canonicalJsonStringify(projectLiveToInert(dflt)),
+    );
+    expect(await computeLiveDefinitionHash(routed)).not.toBe(
+      await computeLiveDefinitionHash(dflt),
+    );
+  });
+
+  test("a default action omits onFailure from the inert projection", () => {
+    const json = canonicalJsonStringify(projectLiveToInert(actionWorkflow()));
+    expect(json).not.toContain("onFailure");
+  });
+
+  test("onFailure on an action moves both the projection bytes and the hash", async () => {
+    const dflt = actionWorkflow();
+    const routed = actionWorkflow("handler");
+    expect(canonicalJsonStringify(projectLiveToInert(routed))).not.toBe(
+      canonicalJsonStringify(projectLiveToInert(dflt)),
+    );
+    expect(await computeLiveDefinitionHash(routed)).not.toBe(
+      await computeLiveDefinitionHash(dflt),
+    );
+  });
+
+  test("a default childWorkflow omits onFailure from the inert projection", () => {
+    const json = canonicalJsonStringify(
+      projectLiveToInert(childWorkflowWorkflow()),
+    );
+    expect(json).not.toContain("onFailure");
+  });
+
+  test("onFailure on a childWorkflow moves both the projection bytes and the hash", async () => {
+    const dflt = childWorkflowWorkflow();
+    const routed = childWorkflowWorkflow("handler");
+    expect(canonicalJsonStringify(projectLiveToInert(routed))).not.toBe(
+      canonicalJsonStringify(projectLiveToInert(dflt)),
+    );
+    expect(await computeLiveDefinitionHash(routed)).not.toBe(
+      await computeLiveDefinitionHash(dflt),
+    );
+  });
+
+  test("a projected onFailure survives WorkflowProjectionDefinition validation", () => {
+    // `WorkflowProjectionDefinition` carries `"+": "delete"`, but a step's own
+    // keys are validated by the open `WorkflowStep` schema, which passes
+    // unknown keys through -- onFailure rides that passthrough. If `WorkflowStep`
+    // were ever closed, onFailure would vanish at the wire boundary silently and
+    // the sidecar's re-verify would diverge from the hub hash. Round-trip a
+    // projected step through the schema and assert onFailure survives. One step
+    // case locks the invariant for all three primitives (shared passthrough).
+    const projection = projectLiveToInert(stepWorkflow("handler"));
+    const validated = WorkflowProjectionDefinition(projection);
+    if (validated instanceof type.errors) {
+      throw new Error(
+        `projection failed the wire schema: ${validated.summary}`,
+      );
+    }
+    expect(canonicalJsonStringify(validated)).toContain(
+      '"onFailure":"handler"',
+    );
+  });
+});
