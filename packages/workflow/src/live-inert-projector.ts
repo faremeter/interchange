@@ -121,6 +121,7 @@ export interface InertStepStep {
   readonly timeout?: number;
   readonly drainBehavior?: DrainBehavior;
   readonly triggers?: number | "unbounded";
+  readonly onFailure?: string;
 }
 
 export interface InertMap {
@@ -174,6 +175,7 @@ export interface InertChildWorkflow {
   readonly input?: Selector;
   readonly drainBehavior?: DrainBehavior;
   readonly after?: readonly string[];
+  readonly onFailure?: string;
 }
 
 // The gate/awaitSignal/sleep/escalation/action primitives carry no functions
@@ -338,6 +340,7 @@ function projectStepPrimitive(step: StepPrimitive): InertStepStep {
       ? { drainBehavior: step.drainBehavior }
       : {}),
     ...(step.triggers !== undefined ? { triggers: step.triggers } : {}),
+    ...(step.onFailure !== undefined ? { onFailure: step.onFailure } : {}),
   };
 }
 
@@ -403,6 +406,9 @@ function projectAction(primitive: ActionPrimitive): ActionPrimitive {
       ? { drainBehavior: primitive.drainBehavior }
       : {}),
     ...(primitive.after !== undefined ? { after: [...primitive.after] } : {}),
+    ...(primitive.onFailure !== undefined
+      ? { onFailure: primitive.onFailure }
+      : {}),
   };
 }
 
@@ -469,6 +475,9 @@ function projectChildWorkflow(
       ? { drainBehavior: primitive.drainBehavior }
       : {}),
     ...(primitive.after !== undefined ? { after: [...primitive.after] } : {}),
+    ...(primitive.onFailure !== undefined
+      ? { onFailure: primitive.onFailure }
+      : {}),
   };
 }
 

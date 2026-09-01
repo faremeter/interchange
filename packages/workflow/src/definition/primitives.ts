@@ -101,6 +101,12 @@ export interface StepPrimitive extends PrimitiveBase {
    * the launch trigger and never re-service the consumed one.
    */
   triggers?: number | "unbounded";
+  /**
+   * Names the handler step a permanent failure of this unit routes to: the
+   * failure that remains after any retries are exhausted. Absent means a
+   * permanent failure fails the run.
+   */
+  onFailure?: string;
 }
 
 export interface MapPrimitive extends PrimitiveBase {
@@ -144,6 +150,8 @@ export interface ChildWorkflowPrimitive extends PrimitiveBase {
   definition: ChildWorkflowBody;
   input?: Selector;
   drainBehavior?: DrainBehavior;
+  /** See {@link StepPrimitive.onFailure}. */
+  onFailure?: string;
 }
 
 /**
@@ -199,6 +207,8 @@ export interface ActionPrimitive extends PrimitiveBase {
   effect?: EffectSpec;
   timeout?: number;
   drainBehavior?: DrainBehavior;
+  /** See {@link StepPrimitive.onFailure}. */
+  onFailure?: string;
 }
 
 /**
@@ -308,6 +318,8 @@ export interface StepOpts<EnvReq extends BaseEnv> {
   after?: readonly string[];
   /** See {@link StepPrimitive.triggers}. Absent means `1` (batch). */
   triggers?: number | "unbounded";
+  /** See {@link StepPrimitive.onFailure}. */
+  onFailure?: string;
 }
 
 /**
@@ -396,6 +408,7 @@ export function step<EnvReq extends BaseEnv>(
     ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
     ...(opts.after !== undefined ? { after: opts.after } : {}),
     ...(opts.triggers !== undefined ? { triggers: opts.triggers } : {}),
+    ...(opts.onFailure !== undefined ? { onFailure: opts.onFailure } : {}),
   };
   validateRetryTriggerCombination(primitive);
   return primitive;
@@ -499,6 +512,8 @@ export interface ChildWorkflowOpts {
   input?: Selector;
   drainBehavior?: DrainBehavior;
   after?: readonly string[];
+  /** See {@link StepPrimitive.onFailure}. */
+  onFailure?: string;
 }
 
 export function childWorkflow(opts: ChildWorkflowOpts): ChildWorkflowPrimitive {
@@ -511,6 +526,7 @@ export function childWorkflow(opts: ChildWorkflowOpts): ChildWorkflowPrimitive {
     drainBehavior,
     ...(opts.input !== undefined ? { input: opts.input } : {}),
     ...(opts.after !== undefined ? { after: opts.after } : {}),
+    ...(opts.onFailure !== undefined ? { onFailure: opts.onFailure } : {}),
   };
 }
 
@@ -537,6 +553,8 @@ export interface ActionOpts {
   timeout?: number;
   drainBehavior?: DrainBehavior;
   after?: readonly string[];
+  /** See {@link StepPrimitive.onFailure}. */
+  onFailure?: string;
 }
 
 export function action(opts: ActionOpts): ActionPrimitive {
@@ -550,6 +568,7 @@ export function action(opts: ActionOpts): ActionPrimitive {
     ...(opts.effect !== undefined ? { effect: opts.effect } : {}),
     ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
     ...(opts.after !== undefined ? { after: opts.after } : {}),
+    ...(opts.onFailure !== undefined ? { onFailure: opts.onFailure } : {}),
   };
 }
 
