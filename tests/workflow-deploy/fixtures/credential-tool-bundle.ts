@@ -1,8 +1,8 @@
 // A real, type-checked credential-consuming tool bundle for the single-step
-// credential-tool e2e. `buildSyntheticCredentialToolTarball` compiles THIS
-// module into the synthetic package's `sidecar-bundle.js` with Bun.build, so
-// the e2e drives the production tool-package loader against a genuine bundle
-// rather than a hand-written string blob.
+// credential-tool e2e. `credential-tool-workflow.ts` inlines THIS module into
+// the workflow's source closure via `bundleWorkflowEntry`, so the e2e drives
+// the production tool loader against a genuine bundle rather than a
+// hand-written string blob.
 //
 // The tool declares one credential handle and, at run, resolves it from the
 // host-assembled `credentials` capability into an http mediated credential,
@@ -19,10 +19,9 @@ import { defineTool, type BaseEnv } from "@intx/agent";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 
 /**
- * The credential handle the tool declares and resolves. The package.json the
- * tarball builder writes MUST declare the same handle under
- * `interchange.credentials`, or the launch-time declared-vs-bound reconcile
- * fails the deploy closed.
+ * The credential handle the tool declares and resolves. The workflow's
+ * declared credential binding MUST bind this same handle, or the launch-time
+ * declared-vs-bound reconcile fails the deploy closed.
  */
 export const CREDENTIAL_HANDLE = "api-token";
 
