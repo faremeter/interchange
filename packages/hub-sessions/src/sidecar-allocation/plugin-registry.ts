@@ -17,15 +17,9 @@ export type SidecarProvisionerSelection =
       readonly mismatches: Readonly<
         Record<string, readonly SidecarCapabilityMismatch[]>
       >;
-    }
-  | {
-      readonly ok: false;
-      readonly reason: "ambiguous";
-      readonly provisionerIds: readonly string[];
     };
 
 export type SidecarPluginRegistry = {
-  getDefaultProvisioner(): SidecarProvisioner | null;
   /** Missing plugins return null so reconciliation can stop fail-closed. */
   getProvisioner(id: string): SidecarProvisioner | null;
   selectProvisioner(
@@ -34,13 +28,12 @@ export type SidecarPluginRegistry = {
 };
 
 export type CreateSidecarPluginRegistryOpts = {
+  /** Ordered by selection priority; the first matching provisioner wins. */
   readonly provisioners: readonly SidecarProvisioner[];
-  readonly defaultProvisionerId?: string;
 };
 
 export function createSidecarPluginRegistry({
   provisioners,
-  defaultProvisionerId,
 }: CreateSidecarPluginRegistryOpts): SidecarPluginRegistry {
   const provisionersById = new Map<string, SidecarProvisioner>();
   for (const provisioner of provisioners) {
@@ -69,26 +62,11 @@ export function createSidecarPluginRegistry({
     provisionersById.set(provisioner.id, provisioner);
   }
 
-  if (defaultProvisionerId !== undefined) {
-    validateId(defaultProvisionerId);
-    if (!provisionersById.has(defaultProvisionerId)) {
-      throw new Error(
-        `Default sidecar provisioner ${defaultProvisionerId} is not registered`,
-      );
-    }
-  }
-
   return {
-    getDefaultProvisioner() {
-      return defaultProvisionerId === undefined
-        ? null
-        : (provisionersById.get(defaultProvisionerId) ?? null);
-    },
     getProvisioner(id) {
       return provisionersById.get(id) ?? null;
     },
     selectProvisioner(policy) {
-      const eligible: SidecarProvisioner[] = [];
       const mismatches: Record<string, readonly SidecarCapabilityMismatch[]> =
         {};
       for (const provisioner of provisionersById.values()) {
@@ -97,34 +75,12 @@ export function createSidecarPluginRegistry({
           provisioner.capabilities,
         );
         if (match.ok) {
-          eligible.push(provisioner);
+          return { ok: true, provisioner };
         } else {
           mismatches[provisioner.id] = match.mismatches;
         }
       }
-
-      const preferred =
-        defaultProvisionerId === undefined
-          ? null
-          : (provisionersById.get(defaultProvisionerId) ?? null);
-      if (preferred !== null && eligible.includes(preferred)) {
-        return { ok: true, provisioner: preferred };
-      }
-      if (eligible.length === 1) {
-        const provisioner = eligible[0];
-        if (provisioner === undefined) {
-          throw new Error("Eligible provisioner disappeared during selection");
-        }
-        return { ok: true, provisioner };
-      }
-      if (eligible.length === 0) {
-        return { ok: false, reason: "no_match", mismatches };
-      }
-      return {
-        ok: false,
-        reason: "ambiguous",
-        provisionerIds: eligible.map(({ id }) => id).sort(),
-      };
+      return { ok: false, reason: "no_match", mismatches };
     },
   };
 }

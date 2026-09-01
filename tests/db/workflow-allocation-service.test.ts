@@ -224,7 +224,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         plugins: createSidecarPluginRegistry({
           provisioners: [provisioner],
-          defaultProvisionerId: provisioner.id,
         }),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
@@ -471,7 +470,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         plugins: createSidecarPluginRegistry({
           provisioners: [provisioner],
-          defaultProvisionerId: provisioner.id,
         }),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
@@ -547,7 +545,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         plugins: createSidecarPluginRegistry({
           provisioners: [probeProvisioner, deploymentProvisioner],
-          defaultProvisionerId: probeProvisioner.id,
         }),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) =>
@@ -712,7 +709,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         plugins: createSidecarPluginRegistry({
           provisioners: [sandbox, worker],
-          defaultProvisionerId: sandbox.id,
         }),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) =>
@@ -787,7 +783,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         plugins: createSidecarPluginRegistry({
           provisioners: [general, sandbox],
-          defaultProvisionerId: general.id,
         }),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
@@ -847,7 +842,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           db: h.db,
           plugins: createSidecarPluginRegistry({
             provisioners: [provisioner],
-            defaultProvisionerId: provisioner.id,
           }),
           preparedDeployer: {
             installAndApproveWorkflowSource: (params) => freeze(params),

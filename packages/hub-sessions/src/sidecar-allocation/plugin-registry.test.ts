@@ -23,34 +23,16 @@ function provisioner(
 }
 
 describe("createSidecarPluginRegistry", () => {
-  test("resolves the explicit default and registered provisioners", () => {
+  test("resolves registered provisioners", () => {
     const containers = provisioner("containers");
     const virtualMachines = provisioner("virtual-machines");
     const registry = createSidecarPluginRegistry({
       provisioners: [containers, virtualMachines],
-      defaultProvisionerId: "virtual-machines",
     });
 
-    expect(registry.getDefaultProvisioner()).toBe(virtualMachines);
     expect(registry.getProvisioner("containers")).toBe(containers);
+    expect(registry.getProvisioner("virtual-machines")).toBe(virtualMachines);
     expect(registry.getProvisioner("missing")).toBeNull();
-  });
-
-  test("does not infer a default from registration order", () => {
-    const registry = createSidecarPluginRegistry({
-      provisioners: [provisioner("containers")],
-    });
-
-    expect(registry.getDefaultProvisioner()).toBeNull();
-  });
-
-  test("rejects an unregistered default provisioner", () => {
-    expect(() =>
-      createSidecarPluginRegistry({
-        provisioners: [provisioner("containers")],
-        defaultProvisionerId: "missing",
-      }),
-    ).toThrow(/Default sidecar provisioner missing is not registered/);
   });
 
   test("rejects duplicate provisioner ids", () => {
@@ -72,12 +54,6 @@ describe("createSidecarPluginRegistry", () => {
         provisioners: [provisioner("containers", " ")],
       }),
     ).toThrow(/requires a binding fingerprint/);
-    expect(() =>
-      createSidecarPluginRegistry({
-        provisioners: [],
-        defaultProvisionerId: " ",
-      }),
-    ).toThrow(/id must be non-empty/);
   });
 
   test("rejects unsupported provisioner API versions at runtime", () => {
@@ -125,7 +101,7 @@ describe("createSidecarPluginRegistry", () => {
     ).toThrow(/Invalid capability declarations/);
   });
 
-  test("prefers the configured default when it satisfies the policy", () => {
+  test("selects the first matching provisioner", () => {
     const containers = provisioner("containers", "containers:v1", [
       { capability: "runtime:browser", state: "available" },
     ]);
@@ -134,7 +110,6 @@ describe("createSidecarPluginRegistry", () => {
     ]);
     const registry = createSidecarPluginRegistry({
       provisioners: [containers, virtualMachines],
-      defaultProvisionerId: "virtual-machines",
     });
 
     expect(
@@ -142,10 +117,10 @@ describe("createSidecarPluginRegistry", () => {
         tenantPolicies: [],
         workflowRules: [{ capability: "runtime:browser", effect: "require" }],
       }),
-    ).toEqual({ ok: true, provisioner: virtualMachines });
+    ).toEqual({ ok: true, provisioner: containers });
   });
 
-  test("selects the only match when the default does not satisfy policy", () => {
+  test("skips earlier provisioners that do not match", () => {
     const containers = provisioner("containers", "containers:v1", [
       { capability: "platform:ios", state: "blocked" },
     ]);
@@ -154,7 +129,6 @@ describe("createSidecarPluginRegistry", () => {
     ]);
     const registry = createSidecarPluginRegistry({
       provisioners: [containers, ios],
-      defaultProvisionerId: "containers",
     });
 
     expect(
@@ -163,23 +137,6 @@ describe("createSidecarPluginRegistry", () => {
         workflowRules: [{ capability: "platform:ios", effect: "require" }],
       }),
     ).toEqual({ ok: true, provisioner: ios });
-  });
-
-  test("fails when selection is ambiguous", () => {
-    const registry = createSidecarPluginRegistry({
-      provisioners: [provisioner("b"), provisioner("a")],
-    });
-
-    expect(
-      registry.selectProvisioner({
-        tenantPolicies: [],
-        workflowRules: [],
-      }),
-    ).toEqual({
-      ok: false,
-      reason: "ambiguous",
-      provisionerIds: ["a", "b"],
-    });
   });
 
   test("reports each provisioner's capability mismatches", () => {

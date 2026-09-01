@@ -37,13 +37,11 @@ import { setup, getLogger } from "@intx/log";
 
 export type CreateHubServerOpts = {
   readonly sidecarProvisioners?: readonly SidecarProvisioner[];
-  readonly defaultSidecarProvisionerId?: string;
   readonly probeSidecarCapabilityRules?: readonly SidecarCapabilityRule[];
 };
 
 export async function createHubServer({
   sidecarProvisioners = [],
-  defaultSidecarProvisionerId,
   probeSidecarCapabilityRules = [],
 }: CreateHubServerOpts = {}) {
   await setup();
@@ -287,9 +285,6 @@ export async function createHubServer({
 
   const sidecarPlugins = createSidecarPluginRegistry({
     provisioners: sidecarProvisioners,
-    ...(defaultSidecarProvisionerId !== undefined
-      ? { defaultProvisionerId: defaultSidecarProvisionerId }
-      : {}),
   });
   const hubSidecarWebSocketUrl =
     process.env["HUB_SIDECAR_WEBSOCKET_URL"] ??

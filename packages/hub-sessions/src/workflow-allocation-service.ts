@@ -142,12 +142,6 @@ function selectProvisioner(
   selection: SidecarProvisionerSelection,
 ): SidecarProvisioner {
   if (selection.ok) return selection.provisioner;
-  if (selection.reason === "ambiguous") {
-    throw new WorkflowProvisioningError(
-      "provisioner_ambiguous",
-      `Multiple sidecar provisioners satisfy the deployment: ${selection.provisionerIds.join(", ")}`,
-    );
-  }
   throw new WorkflowProvisioningError(
     "provisioner_no_match",
     formatProvisionerMismatches(selection.mismatches),

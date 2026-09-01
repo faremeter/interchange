@@ -132,9 +132,9 @@ After probing and freezing the workflow, the Hub:
 
 1. Reads the folded workflow requirements.
 2. Resolves inherited tenant policy.
-3. Filters provisioners by their declared guarantees.
-4. Uses the configured default when it matches, or the only remaining match.
-5. Fails when no provisioner matches or selection is ambiguous.
+3. Evaluates provisioners in registration order against their declared guarantees.
+4. Selects the first matching provisioner.
+5. Fails when no provisioner matches.
 6. Stores the selected provisioner binding for reconciliation and cleanup.
 
-Plugin registration order is never a tiebreaker.
+Plugin registration order is the operator-defined selection priority.
