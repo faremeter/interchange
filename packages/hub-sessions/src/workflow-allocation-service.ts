@@ -89,7 +89,7 @@ export type WorkflowAllocationServiceDeps = {
   readonly db: DB["db"];
   readonly plugins: SidecarPluginRegistry;
   readonly preparedDeployer: PreparedWorkflowDeployer;
-  readonly credentialCipher?: CredentialCipher;
+  readonly credentialCipher: CredentialCipher;
   readonly allocationRouter: Pick<
     SidecarAllocationRouter,
     "isAllocatedWorkflowActive"
@@ -393,7 +393,7 @@ export function createWorkflowAllocationService({
       approved,
       config,
       allocationTarget,
-      ...(credentialCipher !== undefined ? { credentialCipher } : {}),
+      credentialCipher,
     });
   }
 

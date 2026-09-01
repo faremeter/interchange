@@ -7,6 +7,7 @@ import {
   test,
 } from "bun:test";
 
+import { createNoopCredentialCipher } from "@intx/crypto";
 import { workflowDefinition } from "@intx/db/schema";
 import { pushSourceUpdates, type SidecarRouter } from "@intx/hub-sessions";
 import type { InferenceSource } from "@intx/types/runtime";
@@ -130,7 +131,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const pushed: Pushed[] = [];
-      await pushSourceUpdates(h.db, recordingRouter(pushed), "tnt_root");
+      await pushSourceUpdates(
+        h.db,
+        recordingRouter(pushed),
+        "tnt_root",
+        createNoopCredentialCipher(),
+      );
 
       expect(pushed).toHaveLength(1);
       expect(pushed[0]?.address).toBe("run1@tnt.test");
@@ -167,7 +173,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const pushed: Pushed[] = [];
-      await pushSourceUpdates(h.db, recordingRouter(pushed), "tnt_root");
+      await pushSourceUpdates(
+        h.db,
+        recordingRouter(pushed),
+        "tnt_root",
+        createNoopCredentialCipher(),
+      );
 
       expect(pushed).toHaveLength(0);
     });

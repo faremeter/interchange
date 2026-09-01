@@ -7,6 +7,7 @@ import {
   test,
 } from "bun:test";
 
+import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   resolveInferencePreferences,
   resolveInstanceModelSources,
@@ -33,6 +34,12 @@ import {
 } from "@intx/test-harness/seed";
 
 const REQ_OPUS: ModelRequirement[] = [{ model: "opus" }];
+
+// These direct-call tests seed PLAINTEXT secrets, so they resolve through an
+// explicit noop cipher (which passes a plaintext value through). The two tests
+// that seed real ciphertext -- or that assert the strict decrypt rejects a
+// plaintext -- pass a real `createTestCredentialCipher()` instead.
+const noopCipher = createNoopCredentialCipher();
 
 // Credential use is authorized by tenant ownership within the hierarchy (see
 // buildSource), so these direct-call tests seed the credential on the resolving
@@ -129,13 +136,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
     describe("resolveModelSources", () => {
       test("returns no_requirements for an empty requirement list", async () => {
         await seedBase();
-        const result = await resolveModelSources(h.db, "tnt_root", []);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          [],
+          noopCipher,
+        );
         expect(result).toEqual({ ok: false, reason: "no_requirements" });
       });
 
       test("builds a credential-backed source from the catalog", async () => {
         await seedBase();
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.sources).toEqual([
@@ -186,9 +203,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           providerId: "mpv_anthropic",
         });
 
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS, {
-          credentialCipher: cipher,
-        });
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          cipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         // The delivered apiKey is the decrypted plaintext, not the stored blob.
@@ -202,9 +222,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedBase();
         const cipher = createTestCredentialCipher();
         await expect(
-          resolveModelSources(h.db, "tnt_root", REQ_OPUS, {
-            credentialCipher: cipher,
-          }),
+          resolveModelSources(h.db, "tnt_root", REQ_OPUS, cipher),
         ).rejects.toThrow(/not an enc:aead/);
       });
 
@@ -212,7 +230,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await seedBase({
           offeringQuirks: { forceAssistantReasoningContent: true },
         });
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         const [source] = result.sources;
@@ -223,7 +246,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       test("omits quirks on the resolved source when the row has none", async () => {
         await seedBase();
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         const [source] = result.sources;
@@ -234,7 +262,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("orders sources by ascending priority", async () => {
         await seedBase();
         await addRelay(5);
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.sources.map((s) => s.id)).toEqual(["mof_a", "mof_relay"]);
@@ -242,17 +275,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       test("matches when an offering carries the required capability", async () => {
         await seedBase({ offeringCapabilities: ["vision-input"] });
-        const result = await resolveModelSources(h.db, "tnt_root", [
-          { model: "opus", capabilities: ["vision-input"] },
-        ]);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          [{ model: "opus", capabilities: ["vision-input"] }],
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
       });
 
       test("is unavailable when no offering carries the required capability", async () => {
         await seedBase();
-        const result = await resolveModelSources(h.db, "tnt_root", [
-          { model: "opus", capabilities: ["vision-input"] },
-        ]);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          [{ model: "opus", capabilities: ["vision-input"] }],
+          noopCipher,
+        );
         expect(result).toMatchObject({
           ok: false,
           reason: "model_unavailable",
@@ -262,9 +301,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("hard-pin restricts to the named providers in order", async () => {
         await seedBase();
         await addRelay(0);
-        const result = await resolveModelSources(h.db, "tnt_root", [
-          { model: "opus", providers: { mode: "pin", order: ["relay"] } },
-        ]);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          [{ model: "opus", providers: { mode: "pin", order: ["relay"] } }],
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.sources.map((s) => s.id)).toEqual(["mof_relay"]);
@@ -275,12 +317,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await addRelay(0);
         // relay has the better catalog priority, but the creator prefers
         // anthropic.
-        const result = await resolveModelSources(h.db, "tnt_root", [
-          {
-            model: "opus",
-            providers: { mode: "prefer", order: ["anthropic"] },
-          },
-        ]);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          [
+            {
+              model: "opus",
+              providers: { mode: "prefer", order: ["anthropic"] },
+            },
+          ],
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.sources.map((s) => s.id)).toEqual(["mof_a", "mof_relay"]);
@@ -306,7 +353,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           modelId: "mdl_opus",
           providerId: "mpv_anthropic",
         });
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          noopCipher,
+        );
         expect(result).toMatchObject({
           ok: false,
           reason: "model_unavailable",
@@ -352,7 +404,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           modelId: "mdl_opus",
           providerId: "mpv_anthropic",
         });
-        const result = await resolveModelSources(h.db, "tnt_root", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_root",
+          REQ_OPUS,
+          noopCipher,
+        );
         expect(result).toMatchObject({
           ok: false,
           reason: "model_unavailable",
@@ -373,6 +430,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               providers: { mode: "prefer", order: ["anthropic"] },
             },
           ],
+          noopCipher,
           { invokerPreferences: { opus: { mode: "pin", order: ["relay"] } } },
         );
         expect(result.ok).toBe(true);
@@ -390,6 +448,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           h.db,
           "tnt_root",
           REQ_OPUS,
+          noopCipher,
         );
         // The credential-free {provider, model} projection -- no apiKey/baseURL.
         expect(prefs).toEqual([{ provider: "anthropic", model: "opus" }]);
@@ -398,7 +457,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       test("throws when the requirements resolve to no source", async () => {
         await seedBase();
         await expect(
-          resolveInferencePreferences(h.db, "tnt_root", []),
+          resolveInferencePreferences(h.db, "tnt_root", [], noopCipher),
         ).rejects.toThrow();
       });
 
@@ -408,9 +467,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // resolves model_unavailable, which must raise rather than yield an
         // empty preference list.
         await expect(
-          resolveInferencePreferences(h.db, "tnt_root", [
-            { model: "not-in-catalog" },
-          ]),
+          resolveInferencePreferences(
+            h.db,
+            "tnt_root",
+            [{ model: "not-in-catalog" }],
+            noopCipher,
+          ),
         ).rejects.toThrow();
       });
     });
@@ -450,10 +512,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       test("resolves from the folded definition's persisted modelRequirements", async () => {
         await seedDefinitionWithRelay([{ model: "opus" }]);
-        const result = await resolveInstanceModelSources(h.db, "tnt_root", {
-          definitionId: "wfd_1",
-          modelPreferences: null,
-        });
+        const result = await resolveInstanceModelSources(
+          h.db,
+          "tnt_root",
+          { definitionId: "wfd_1", modelPreferences: null },
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         // mof_a (priority 0) before mof_relay (priority 1).
@@ -462,12 +526,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       test("applies the invoker preferences persisted on the instance", async () => {
         await seedDefinitionWithRelay([{ model: "opus" }]);
-        const result = await resolveInstanceModelSources(h.db, "tnt_root", {
-          definitionId: "wfd_1",
-          modelPreferences: [
-            { model: "opus", providers: { mode: "pin", order: ["relay"] } },
-          ],
-        });
+        const result = await resolveInstanceModelSources(
+          h.db,
+          "tnt_root",
+          {
+            definitionId: "wfd_1",
+            modelPreferences: [
+              { model: "opus", providers: { mode: "pin", order: ["relay"] } },
+            ],
+          },
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         // The invoker pin restricts to relay despite mof_a's better priority.
@@ -476,29 +545,40 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       test("returns no_requirements when the definition has none", async () => {
         await seedDefinitionWithRelay(null);
-        const result = await resolveInstanceModelSources(h.db, "tnt_root", {
-          definitionId: "wfd_1",
-          modelPreferences: null,
-        });
+        const result = await resolveInstanceModelSources(
+          h.db,
+          "tnt_root",
+          { definitionId: "wfd_1", modelPreferences: null },
+          noopCipher,
+        );
         expect(result).toEqual({ ok: false, reason: "no_requirements" });
       });
 
       test("returns no_requirements when no definition matches in the tenant", async () => {
         await seedDefinitionWithRelay([{ model: "opus" }]);
-        const result = await resolveInstanceModelSources(h.db, "tnt_root", {
-          definitionId: "wfd_missing",
-          modelPreferences: null,
-        });
+        const result = await resolveInstanceModelSources(
+          h.db,
+          "tnt_root",
+          { definitionId: "wfd_missing", modelPreferences: null },
+          noopCipher,
+        );
         expect(result).toEqual({ ok: false, reason: "no_requirements" });
       });
 
       test("throws on malformed persisted modelPreferences", async () => {
         await seedDefinitionWithRelay([{ model: "opus" }]);
         await expect(
-          resolveInstanceModelSources(h.db, "tnt_root", {
-            definitionId: "wfd_1",
-            modelPreferences: [{ model: "opus", providers: { mode: "force" } }],
-          }),
+          resolveInstanceModelSources(
+            h.db,
+            "tnt_root",
+            {
+              definitionId: "wfd_1",
+              modelPreferences: [
+                { model: "opus", providers: { mode: "force" } },
+              ],
+            },
+            noopCipher,
+          ),
         ).rejects.toThrow();
       });
     });

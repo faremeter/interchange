@@ -35,7 +35,7 @@ export async function pushInstanceSourceUpdate(
     tenantId: string;
     modelPreferences: unknown;
   },
-  credentialCipher?: CredentialCipher,
+  credentialCipher: CredentialCipher,
 ): Promise<void> {
   const resolution = await resolveInstanceModelSources(
     db,
@@ -67,7 +67,7 @@ async function pushSourceUpdatesToTenants(
   db: DB["db"],
   sidecarRouter: SidecarRouter,
   tenantIds: string[],
-  credentialCipher?: CredentialCipher,
+  credentialCipher: CredentialCipher,
 ): Promise<void> {
   if (tenantIds.length === 0) return;
 
@@ -137,7 +137,7 @@ export async function pushSourceUpdates(
   db: DB["db"],
   sidecarRouter: SidecarRouter,
   tenantId: string,
-  credentialCipher?: CredentialCipher,
+  credentialCipher: CredentialCipher,
 ): Promise<void> {
   await pushSourceUpdatesToTenants(
     db,
@@ -157,7 +157,7 @@ export async function pushSourceUpdatesSubtree(
   db: DB["db"],
   sidecarRouter: SidecarRouter,
   tenantId: string,
-  credentialCipher?: CredentialCipher,
+  credentialCipher: CredentialCipher,
 ): Promise<void> {
   let tenants: string[];
   try {

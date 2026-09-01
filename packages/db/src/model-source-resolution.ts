@@ -1,6 +1,5 @@
 import { and, eq } from "drizzle-orm";
 
-import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   InvokerModelPreferences,
   ModelRequirements,
@@ -202,7 +201,7 @@ export async function resolveSourcesByOfferingIds(
   db: DB["db"],
   tenantId: string,
   offeringIds: readonly string[],
-  credentialCipher: CredentialCipher = createNoopCredentialCipher(),
+  credentialCipher: CredentialCipher,
 ): Promise<OfferingSourceResolution> {
   const visible = await listVisibleOfferings(db, tenantId);
   const byId = new Map(visible.map((entry) => [entry.offering.id, entry]));
@@ -247,20 +246,19 @@ export async function resolveModelSources(
   db: DB["db"],
   tenantId: string,
   requirements: ModelRequirement[],
+  // Decrypts each resolved credential secret at its point of use in
+  // `buildSource`. Required: the edge (the launch route / rotation push /
+  // allocation service) owns the cipher and always supplies a real one; the
+  // noop fallback for a keyless composition is resolved once at that edge
+  // (`resolveCredentialCipher` in the hub app), never defaulted here.
+  credentialCipher: CredentialCipher,
   opts?: {
     invokerPreferences?: Record<string, ProviderPreference>;
-    // Decrypts credential secrets at the point of use. Defaults to the noop
-    // cipher (passthrough) so callers reading plaintext-stored secrets -- tests
-    // and any not-yet-encrypted path -- resolve unchanged; production passes a
-    // real cipher.
-    credentialCipher?: CredentialCipher;
   },
 ): Promise<CatalogSourceResolution> {
   if (requirements.length === 0) {
     return { ok: false, reason: "no_requirements" };
   }
-  const credentialCipher =
-    opts?.credentialCipher ?? createNoopCredentialCipher();
 
   const visible = await listVisibleOfferings(db, tenantId);
   const sources: InferenceSource[] = [];
@@ -334,8 +332,19 @@ export async function resolveInferencePreferences(
   db: DB["db"],
   tenantId: string,
   requirements: ModelRequirement[],
+  // Required even though the result discards the credential: this reuses the
+  // full `resolveModelSources` path, which decrypts each secret at its point of
+  // use in `buildSource` before the `{provider, model}` projection drops it. So
+  // the caller must still supply the edge's real cipher; a noop here would throw
+  // the moment a tenant's secret is stored encrypted.
+  credentialCipher: CredentialCipher,
 ): Promise<{ provider: string; model: string }[]> {
-  const resolution = await resolveModelSources(db, tenantId, requirements);
+  const resolution = await resolveModelSources(
+    db,
+    tenantId,
+    requirements,
+    credentialCipher,
+  );
   if (!resolution.ok) {
     throw new Error(
       `cannot resolve inference preferences for the folded definition: ${resolution.reason}`,
@@ -388,7 +397,7 @@ export async function resolveInstanceModelSources(
   db: DB["db"],
   tenantId: string,
   instance: { definitionId: string; modelPreferences: unknown },
-  credentialCipher?: CredentialCipher,
+  credentialCipher: CredentialCipher,
 ): Promise<CatalogSourceResolution> {
   // Resolve from the run's own definition by primary key. This is the SAME row
   // the launch resolves its requirements from, so a rotation or catalog edit
@@ -425,8 +434,7 @@ export async function resolveInstanceModelSources(
     invokerPreferences[preference.model] = preference.providers;
   }
 
-  return resolveModelSources(db, tenantId, requirements, {
+  return resolveModelSources(db, tenantId, requirements, credentialCipher, {
     invokerPreferences,
-    ...(credentialCipher !== undefined ? { credentialCipher } : {}),
   });
 }

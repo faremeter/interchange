@@ -7,6 +7,7 @@ import {
   test,
 } from "bun:test";
 
+import { createNoopCredentialCipher } from "@intx/crypto";
 import { resolveDefinitionSources } from "@intx/hub-api";
 import type { ModelRequirement } from "@intx/types";
 import {
@@ -107,6 +108,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         modelRequirements: args.modelRequirements,
         fallbackModel: args.fallbackModel,
         invokerPreferences: {},
+        // The catalog seeds a plaintext secret, so a noop cipher passes it
+        // through unchanged.
+        credentialCipher: createNoopCredentialCipher(),
       });
     }
 

@@ -7,6 +7,7 @@ import {
   test,
 } from "bun:test";
 
+import { createNoopCredentialCipher } from "@intx/crypto";
 import { resolveInstanceModelSources, resolveModelSources } from "@intx/db";
 import { workflowDefinition } from "@intx/db/schema";
 import type { ModelRequirement } from "@intx/types";
@@ -37,6 +38,10 @@ import {
 
 const SECRET = "sk-parent-tenant-credential";
 const REQ_OPUS: ModelRequirement[] = [{ model: "opus" }];
+
+// Every credential in this suite is seeded as PLAINTEXT, so resolution runs
+// through an explicit noop cipher (a plaintext value passes through unchanged).
+const noopCipher = createNoopCredentialCipher();
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "credential-use authorization by tenant ownership (real DB)",
@@ -129,7 +134,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           credentialPrincipalId: null,
           creatorPrincipalId: "prn_child_creator",
         });
-        const result = await resolveModelSources(h.db, "tnt_child", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_child",
+          REQ_OPUS,
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.sources.map((s) => s.apiKey)).toEqual([SECRET]);
@@ -140,10 +150,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           credentialPrincipalId: null,
           creatorPrincipalId: "prn_child_creator",
         });
-        const result = await resolveInstanceModelSources(h.db, "tnt_child", {
-          definitionId: "wfd_1",
-          modelPreferences: null,
-        });
+        const result = await resolveInstanceModelSources(
+          h.db,
+          "tnt_child",
+          { definitionId: "wfd_1", modelPreferences: null },
+          noopCipher,
+        );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
         expect(result.sources.map((s) => s.apiKey)).toEqual([SECRET]);
@@ -151,12 +163,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       test("a definition with no creator still launches a tenant-owned source", async () => {
         await seed({ credentialPrincipalId: null, creatorPrincipalId: null });
-        const launch = await resolveModelSources(h.db, "tnt_child", REQ_OPUS);
+        const launch = await resolveModelSources(
+          h.db,
+          "tnt_child",
+          REQ_OPUS,
+          noopCipher,
+        );
         expect(launch.ok).toBe(true);
-        const rotation = await resolveInstanceModelSources(h.db, "tnt_child", {
-          definitionId: "wfd_1",
-          modelPreferences: null,
-        });
+        const rotation = await resolveInstanceModelSources(
+          h.db,
+          "tnt_child",
+          { definitionId: "wfd_1", modelPreferences: null },
+          noopCipher,
+        );
         expect(rotation.ok).toBe(true);
       });
     });
@@ -174,7 +193,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           credentialPrincipalId: "prn_owner",
           creatorPrincipalId: "prn_child_creator",
         });
-        const result = await resolveModelSources(h.db, "tnt_child", REQ_OPUS);
+        const result = await resolveModelSources(
+          h.db,
+          "tnt_child",
+          REQ_OPUS,
+          noopCipher,
+        );
         expect(JSON.stringify(result)).not.toContain(SECRET);
         expect(result).toMatchObject(denial);
       });
@@ -184,10 +208,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
           credentialPrincipalId: "prn_owner",
           creatorPrincipalId: "prn_child_creator",
         });
-        const result = await resolveInstanceModelSources(h.db, "tnt_child", {
-          definitionId: "wfd_1",
-          modelPreferences: null,
-        });
+        const result = await resolveInstanceModelSources(
+          h.db,
+          "tnt_child",
+          { definitionId: "wfd_1", modelPreferences: null },
+          noopCipher,
+        );
         expect(JSON.stringify(result)).not.toContain(SECRET);
         expect(result).toMatchObject(denial);
       });
