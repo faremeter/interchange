@@ -79,8 +79,10 @@ import {
   createWorkflowRunRepoStore,
   createWorkflowHostSignalChannel,
   createInMemorySpawnChild,
+  createInMemorySpawnSuspendableChild,
   createWorkflowStepInvoker,
   hashGrants,
+  loadWorkflowLoopFnsFromClosure,
   loadWorkflowPluginFactoriesFromClosure,
   loadWorkflowPluginToolDefinitionsFromClosure,
   type ChildMailboxReader,
@@ -101,11 +103,15 @@ import {
 import {
   baseStepId,
   collectDeclaredPluginNames,
+  createLoopIterationHandle,
   createNoopDrainController,
   createSuspendableChildHandle,
+  eagerlyResolveLoopFns,
   emptyState,
+  enumerateInlineLoopBodies,
   rewriteInlineChildWorkflowBodies,
   runtimeRun,
+  type LoopFnRegistry,
   type ParkedApprovalOp,
   type ReadParkedApprovalOps,
   type Scheduler,
@@ -1710,6 +1716,47 @@ async function buildChildRunEnv(args: {
   const grandchildMap = new Map(
     grandchildBodies.map((b) => [b.ref, b.definition]),
   );
+  // Enumerate any `loop` bodies nested in this spawned body so a loop can run
+  // here (the runtime needs `env.loopFns` + `env.spawnLoopIteration`, wired
+  // below). A loop body stays inline on its primitive, so mint a ref-keyed copy
+  // for the loop-iteration host, keep the pre-rewrite form for the per-iteration
+  // grant cap, and merge each loop body's own childWorkflow grandchildren into
+  // `grandchildMap` so a grandchild spawned from a loop body resolves in-memory.
+  // Mirrors the top-level loop-body registration in run-child.ts.
+  const loopBodies = enumerateInlineLoopBodies(definition);
+  const loopBodiesMap = new Map<string, WorkflowDefinition>();
+  const loopBodyPreRewrite = new Map<string, WorkflowDefinition>();
+  for (const loopBody of loopBodies) {
+    loopBodyPreRewrite.set(loopBody.ref, loopBody.definition);
+    const bodyRewrite = rewriteInlineChildWorkflowBodies(loopBody.definition);
+    loopBodiesMap.set(loopBody.ref, bodyRewrite.workflow);
+    for (const grandchild of bodyRewrite.bodies) {
+      grandchildMap.set(grandchild.ref, grandchild.definition);
+    }
+  }
+  // Resolve the loop while/carry fns from the closure so a loop in this body can
+  // run. Only load when the body contains a loop. If it declares a loop but no
+  // closure is wired, that is a wiring defect -- fail loud, mirroring the
+  // establish-time posture rather than deferring to a mid-run resolve failure.
+  let loopFns: LoopFnRegistry | undefined;
+  if (loopBodies.length > 0) {
+    if (deps.closurePackageDir === undefined) {
+      throw new Error(
+        "sidecar child: a loop is nested in this spawned body but deps.closurePackageDir is missing; the loop while/carry fns cannot be resolved",
+      );
+    }
+    loopFns = await loadWorkflowLoopFnsFromClosure({
+      packageDir: deps.closurePackageDir,
+    });
+    eagerlyResolveLoopFns(
+      [
+        rewrittenDefinition,
+        ...loopBodiesMap.values(),
+        ...grandchildMap.values(),
+      ],
+      loopFns,
+    );
+  }
   // Read the parent's grants, cap them to what this body declares, and persist
   // the capped set as the child's own `runs/<childRunId>/grants.json` (the file
   // a grandchild reads as its ceiling). `definition` here is the childWorkflow-
@@ -1830,7 +1877,73 @@ async function buildChildRunEnv(args: {
     clock,
     newId,
     drain,
+    ...(loopFns !== undefined ? { loopFns } : {}),
   };
+  // Wire loop-iteration spawning for a `loop` nested in this body. Assigned
+  // AFTER the env literal because the iteration host closes over `env`: a loop
+  // iteration re-enters THIS body env, so a nested loop composes and inherits
+  // the body's toolless step invoker, capped grants, and in-memory spawnChild.
+  //
+  // This deliberately REPLICATES the top-level loop host in run-child.ts rather
+  // than sharing a helper. The two live in different packages and differ in the
+  // grants seam (here `capAndPersistChildGrants` is in scope and called
+  // directly; the top level injects it as a binding), and the loop-in-body
+  // crash-resume path is not yet proven identical to the top level's. Extract a
+  // shared helper only once a deployed loop-in-body resume test shows the two
+  // paths match.
+  //
+  // Boundary: the suspendable-child seam services APPROVAL parks only. A loop
+  // iteration in a body that awaits an externally-delivered signal, or re-arms
+  // an onTrigger, inherits that approvals-only limit and cannot park on an
+  // external input channel.
+  if (loopFns !== undefined) {
+    const loopIterationHost = createInMemorySpawnSuspendableChild({
+      bodies: loopBodiesMap,
+      runSuspendableChild: async (loopInput, _onEvent) => {
+        const preRewriteBody = loopBodyPreRewrite.get(loopInput.definitionRef);
+        if (preRewriteBody === undefined) {
+          throw new Error(
+            `sidecar child: no pre-rewrite loop body for ref ${loopInput.definitionRef}`,
+          );
+        }
+        // Cap the iteration's grants against the body's own grants (the
+        // iteration's parent IS the body run) and persist them before the
+        // iteration appends its first event.
+        await capAndPersistChildGrants({
+          deps,
+          directors,
+          definition: preRewriteBody,
+          childRunId: loopInput.childRunId,
+          parentRunId: loopInput.parentRunId,
+        });
+        const iterationSignalChannel = createWorkflowHostSignalChannel({
+          repoStore: deps.substrate,
+          principal: deps.principal,
+          repoId: deps.workflowRunRepoId,
+          ref: deps.workflowRunRef,
+          runId: loopInput.childRunId,
+          readState: () => emptyState(loopInput.childRunId),
+          newId: () => newId("sig"),
+          clock,
+        });
+        return createLoopIterationHandle(env, {
+          definition: loopInput.definition,
+          childRunId: loopInput.childRunId,
+          input: loopInput.input,
+          depth: loopInput.depth,
+          maxChildSpawnDepth: loopInput.maxChildSpawnDepth,
+          ...(loopInput.resumeFromEvents !== undefined
+            ? { resumeFromEvents: loopInput.resumeFromEvents }
+            : {}),
+          signal: loopInput.signal,
+          signalChannel: iterationSignalChannel,
+          cleanup: () => iterationSignalChannel.stop(),
+        });
+      },
+    });
+    env.spawnLoopIteration = (spawnInput) =>
+      loopIterationHost(spawnInput, childOnEvent);
+  }
   return { env, signalChannel, definition: rewrittenDefinition };
 }
 

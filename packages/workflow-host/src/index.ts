@@ -1,10 +1,12 @@
 export {
   loadWorkflowDefinitionFromClosure,
   loadWorkflowDirectorRegistryFromClosure,
+  loadWorkflowLoopFnsFromClosure,
   loadWorkflowPluginFactoriesFromClosure,
   loadWorkflowPluginToolDefinitionsFromClosure,
   type LoadWorkflowDefinitionFromClosureArgs,
   type LoadWorkflowDirectorRegistryFromClosureArgs,
+  type LoadWorkflowLoopFnsFromClosureArgs,
   type LoadWorkflowPluginsFromClosureArgs,
 } from "./workflow-definition-loader";
 export {
