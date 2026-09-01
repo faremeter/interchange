@@ -263,7 +263,7 @@ export async function resolveApproval(
       // so a terminal pack cannot race between this check and the claim.
       const lifecycles = await readRunLifecycles(
         approval.agentAddress,
-        approval.agentAddress,
+        approval.anchorRunId,
         approval.runId,
       );
       if (lifecycles.topLevel !== "live" || lifecycles.target !== "live") {
