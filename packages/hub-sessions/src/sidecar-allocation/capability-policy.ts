@@ -8,6 +8,7 @@ import {
 
 export type EffectiveSidecarCapabilityPolicy = {
   readonly tenantPolicies: readonly TenantSidecarCapabilityPolicy[];
+  readonly probeRules?: readonly SidecarCapabilityRule[];
   readonly workflowRules: readonly SidecarCapabilityRule[];
 };
 
@@ -18,6 +19,7 @@ export type SidecarCapabilityMismatch = {
   readonly rule: SidecarCapabilityRule;
   readonly source:
     | { readonly kind: "tenant"; readonly tenantId: string }
+    | { readonly kind: "probe" }
     | { readonly kind: "workflow" };
 };
 
@@ -50,12 +52,14 @@ export function matchSidecarCapabilityPolicy(
     ...tenantPolicy,
     rules: tenantPolicy.rules.map(parseRule),
   }));
+  const probeRules = (policy.probeRules ?? []).map(parseRule);
   const workflowRules = policy.workflowRules.map(parseRule);
   const parsedDeclarations = declarations.map(parseDeclaration);
   const boundaries = collectBoundaries(
     tenantPolicies.flatMap(({ rules }) =>
       rules.map(({ selector }) => selector),
     ),
+    probeRules.map(({ selector }) => selector),
     workflowRules.map(({ selector }) => selector),
     parsedDeclarations.map(({ selector }) => selector),
   );
@@ -74,6 +78,17 @@ export function matchSidecarCapabilityPolicy(
           { kind: "tenant", tenantId: tenantPolicy.tenantId },
         );
       }
+    }
+
+    const probeRule = resolveRules(probeRules, boundary);
+    if (probeRule !== null) {
+      addMismatch(
+        mismatches,
+        probeRule.rule,
+        resolveDeclarations(parsedDeclarations, boundary),
+        capability,
+        { kind: "probe" },
+      );
     }
 
     const workflowRule = resolveRules(workflowRules, boundary);

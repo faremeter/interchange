@@ -50,6 +50,30 @@ describe("matchSidecarCapabilityPolicy", () => {
     }
   });
 
+  test("enforces probe rules independently and labels their mismatches", () => {
+    expect(
+      matchSidecarCapabilityPolicy(
+        {
+          tenantPolicies: [],
+          probeRules: [{ capability: "isolation:workload", effect: "require" }],
+          workflowRules: [],
+        },
+        [],
+      ),
+    ).toEqual({
+      ok: false,
+      mismatches: [
+        {
+          capability: "isolation:workload",
+          expected: "available",
+          actual: "unknown",
+          rule: { capability: "isolation:workload", effect: "require" },
+          source: { kind: "probe" },
+        },
+      ],
+    });
+  });
+
   test("treats an omitted provisioner capability as unknown", () => {
     expect(
       matchSidecarCapabilityPolicy(

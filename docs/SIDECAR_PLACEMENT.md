@@ -101,6 +101,31 @@ const config: TenantConfig = {
 Every policy in the tenant ancestry is enforced independently. Workflows and
 child tenants may add constraints but cannot override an ancestor's policy.
 
+## Probe policy
+
+A Hub composition may add provider-neutral requirements for the temporary
+capacity that evaluates workflow source code:
+
+```ts
+await createHubServer({
+  sidecarProvisioners,
+  probeSidecarCapabilityRules: [
+    { capability: "isolation:workload", effect: "require" },
+    { capability: "network:outbound", effect: "block" },
+  ],
+});
+```
+
+Probe rules are enforced independently from tenant policy and apply only to
+probe provisioner selection. They do not become workflow requirements. If the
+selected probe provisioner does not satisfy the final workflow requirements,
+the Hub destroys the probe capacity and creates the deployment through the
+final selected provisioner.
+
+Capabilities describe guarantees, not vendors. A sandbox-backed provisioner
+can declare `isolation:workload` and a more specific mechanism such as
+`isolation:microvm`; policies should not name the provisioner implementation.
+
 ## Selection
 
 After probing and freezing the workflow, the Hub:

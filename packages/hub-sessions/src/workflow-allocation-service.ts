@@ -15,7 +15,11 @@ import { grant, workflowRun } from "@intx/db/schema";
 import { eq } from "drizzle-orm";
 import { generateId } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
-import { hexEncode, type CredentialCipher } from "@intx/types";
+import {
+  hexEncode,
+  SidecarCapabilityRule,
+  type CredentialCipher,
+} from "@intx/types";
 import type { FrozenApprovalBundle } from "@intx/types/sidecar";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
@@ -105,6 +109,7 @@ export type WorkflowAllocationServiceDeps = {
   readonly preparedDeployer: PreparedWorkflowDeployer;
   /** Decrypts tenant-owned credential bindings for provisioned deployments. */
   readonly credentialCipher: CredentialCipher;
+  readonly probeCapabilityRules?: readonly SidecarCapabilityRule[];
   readonly allocationRouter: Pick<
     SidecarAllocationRouter,
     | "disconnectAllocation"
@@ -201,6 +206,7 @@ export function createWorkflowAllocationService({
   plugins,
   preparedDeployer,
   credentialCipher,
+  probeCapabilityRules = [],
   allocationRouter,
   hubWebSocketUrl,
   createAllocationId = randomAllocationId,
@@ -212,6 +218,17 @@ export function createWorkflowAllocationService({
   const allocationStore = createSidecarAllocationStore(db);
   const probeStore = createWorkflowProbeStore(db);
   const launchSpecStore = createWorkflowRunLaunchSpecStore(db);
+  const validatedProbeCapabilityRules =
+    SidecarCapabilityRule.array()(probeCapabilityRules);
+
+  if (validatedProbeCapabilityRules instanceof type.errors) {
+    throw new Error(
+      `Invalid workflow probe capability rules: ${validatedProbeCapabilityRules.summary}`,
+    );
+  }
+  const configuredProbeCapabilityRules = validatedProbeCapabilityRules.map(
+    (rule) => ({ ...rule }),
+  );
 
   if (connectTimeoutMs <= 0) {
     throw new Error("connectTimeoutMs must be positive");
@@ -465,7 +482,11 @@ export function createWorkflowAllocationService({
       );
     }
     const probeProvisioner = selectProvisioner(
-      plugins.selectProvisioner({ tenantPolicies, workflowRules: [] }),
+      plugins.selectProvisioner({
+        tenantPolicies,
+        probeRules: configuredProbeCapabilityRules,
+        workflowRules: [],
+      }),
     );
     const probeId = createAllocationId();
     let probe = await probeStore.create({

@@ -763,5 +763,112 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ios-worker",
       });
     });
+
+    test("selects probe capacity with Hub-configured capability rules", async () => {
+      const generalEnsure: unknown[] = [];
+      const generalDestroy: unknown[] = [];
+      const sandboxEnsure: unknown[] = [];
+      const sandboxDestroy: unknown[] = [];
+      const general = makeProvisioner({
+        id: "general",
+        ensureCalls: generalEnsure,
+        destroyCalls: generalDestroy,
+      });
+      const sandbox = makeProvisioner({
+        id: "probe-sandbox",
+        capabilities: [
+          { capability: "isolation:workload", state: "available" },
+        ],
+        ensureCalls: sandboxEnsure,
+        destroyCalls: sandboxDestroy,
+      });
+      const ids = ["sal-isolated-probe", "sal-general-workflow"];
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        plugins: createSidecarPluginRegistry({
+          provisioners: [general, sandbox],
+          defaultProvisionerId: general.id,
+        }),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: (params) => freeze(params),
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("pending allocation is not ready");
+          },
+        },
+        credentialCipher: CIPHER,
+        probeCapabilityRules: [
+          { capability: "isolation:workload", effect: "require" },
+        ],
+        allocationRouter: {
+          fenceAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          disconnectAllocation: () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        createAllocationId: () => {
+          const id = ids.shift();
+          if (id === undefined) throw new Error("unexpected allocation id");
+          return id;
+        },
+        createSidecarId: () => "sc-isolated-probe",
+        createToken: () => "probe-token",
+      });
+
+      const prepared = await service.prepareProvisionedDeployment(
+        prepareArgs("run-probe-policy"),
+      );
+
+      expect(prepared.allocationId).toBe("sal-general-workflow");
+      expect(sandboxEnsure).toHaveLength(1);
+      expect(sandboxDestroy).toHaveLength(1);
+      expect(generalEnsure).toHaveLength(0);
+      expect(generalDestroy).toHaveLength(0);
+      expect(
+        await createSidecarAllocationStore(h.db).findByAnchorRunId(
+          "run-probe-policy",
+        ),
+      ).toMatchObject({
+        provisionerId: "general",
+        status: "pending",
+      });
+    });
+
+    test("rejects invalid Hub-configured probe capability rules", () => {
+      const provisioner = makeProvisioner({
+        id: "invalid-probe-policy",
+        ensureCalls: [],
+        destroyCalls: [],
+      });
+
+      expect(() =>
+        createWorkflowAllocationService({
+          db: h.db,
+          plugins: createSidecarPluginRegistry({
+            provisioners: [provisioner],
+            defaultProvisionerId: provisioner.id,
+          }),
+          preparedDeployer: {
+            installAndApproveWorkflowSource: (params) => freeze(params),
+            deployPreparedCodeSourcedWorkflow: async () => {
+              throw new Error("not reached");
+            },
+          },
+          credentialCipher: CIPHER,
+          probeCapabilityRules: [
+            { capability: "isolation:*:invalid", effect: "require" },
+          ],
+          allocationRouter: {
+            fenceAllocation: () => undefined,
+            waitForAllocatedSidecar: async () => undefined,
+            sendProbeToAllocation: async () => probeResult(),
+            isAllocatedWorkflowActive: async () => false,
+            disconnectAllocation: () => undefined,
+          },
+          hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        }),
+      ).toThrow(/Invalid workflow probe capability rules/);
+    });
   },
 );
