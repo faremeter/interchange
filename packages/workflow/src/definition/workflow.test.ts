@@ -1344,6 +1344,277 @@ describe("concurrent awaitSignal name validation", () => {
   });
 });
 
+describe("onFailure validation", () => {
+  test("accepts a top-level step routing its failure to a handler", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "rescue" }),
+          rescue: step({ agent: makeAgent("r"), after: ["unit"] }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts a top-level action routing its failure to a handler", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: action({ handler: "do-thing", onFailure: "rescue" }),
+          rescue: step({ agent: makeAgent("r"), after: ["unit"] }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts a top-level childWorkflow routing its failure to a handler", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: childWorkflow({
+            definition: simpleBody(),
+            onFailure: "rescue",
+          }),
+          rescue: step({ agent: makeAgent("r"), after: ["unit"] }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts onFailure on a step inside a childWorkflow inline body", () => {
+    // A childWorkflow body is its own workflow root with its own routing, so a
+    // member step there may carry onFailure -- validated against the child's
+    // own steps by the validateChildWorkflowBody re-entry.
+    const child = defineWorkflow({
+      id: "child",
+      trigger: { type: "manual" },
+      steps: {
+        work: step({ agent: makeAgent("w"), onFailure: "rescue" }),
+        rescue: step({ agent: makeAgent("r"), after: ["work"] }),
+      },
+    });
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: { spawn: childWorkflow({ definition: child }) },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects onFailure naming an unknown step", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "nope" }),
+        },
+      }),
+    ).toThrow(/onFailure nope which is not a known step/);
+  });
+
+  test("rejects onFailure naming itself", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "unit" }),
+        },
+      }),
+    ).toThrow(/cannot name itself as onFailure/);
+  });
+
+  test("rejects a handler that does not depend on the unit", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "rescue" }),
+          rescue: step({ agent: makeAgent("r") }),
+        },
+      }),
+    ).toThrow(/onFailure rescue must name unit in its after/);
+  });
+
+  test("rejects onFailure on a map inner step", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          m: map({
+            over: { from: "trigger.payload" },
+            step: step({ agent: makeAgent("i"), onFailure: "rescue" }),
+          }),
+          rescue: step({ agent: makeAgent("r"), after: ["m"] }),
+        },
+      }),
+    ).toThrow(/map .* inner step/);
+  });
+
+  test("rejects onFailure on a map inner step inside a loop body", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          rework: loop({
+            body: defineWorkflow({
+              id: "body",
+              trigger: { type: "manual" },
+              steps: {
+                m: map({
+                  over: { from: "trigger.payload" },
+                  step: step({ agent: makeAgent("i"), onFailure: "x" }),
+                }),
+              },
+            }),
+            while: "steps.m.output.again",
+            carry: "steps.m.output.next",
+            maxIterations: 3,
+            onExhausted: "done",
+          }),
+          done: step({ agent: makeAgent("d"), after: ["rework"] }),
+        },
+      }),
+    ).toThrow(/map .* inner step/);
+  });
+
+  test("rejects onFailure on a member step inside a loop body", () => {
+    // The loop body constructs on its own (onFailure is legal on a body root
+    // step there); the parent's loop-body walk is what rejects it.
+    const body = defineWorkflow({
+      id: "body",
+      trigger: { type: "manual" },
+      steps: {
+        work: step({ agent: makeAgent("w"), onFailure: "rescue" }),
+        rescue: step({ agent: makeAgent("r"), after: ["work"] }),
+      },
+    });
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          rework: loop({
+            body,
+            while: "steps.work.output.again",
+            carry: "steps.work.output.next",
+            maxIterations: 3,
+            onExhausted: "done",
+          }),
+          done: step({ agent: makeAgent("d"), after: ["rework"] }),
+        },
+      }),
+    ).toThrow(/may not carry onFailure/);
+  });
+
+  test("rejects a hand-assembled onFailure on a non-member kind", () => {
+    // The type blocks onFailure on a gate, but a hand-assembled definition
+    // rides the open wire schema. Inject the field the way such a definition
+    // would, to prove the definition-time defense fires.
+    const tampered = {
+      ...gate({
+        when: { from: "steps.a.output" },
+        then: "yes",
+        else: "no",
+        after: ["a"],
+      }),
+      onFailure: "yes",
+    };
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-assembled definition can carry a field the constructors forbid; construct that shape to exercise the definition-time defense
+    const injected = tampered as unknown as Primitive;
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          a: step({ agent: makeAgent("a") }),
+          g: injected,
+          yes: step({ agent: makeAgent("y"), after: ["g"] }),
+          no: step({ agent: makeAgent("n"), after: ["g"] }),
+        },
+      }),
+    ).toThrow(/gate g may not carry onFailure/);
+  });
+
+  test("rejects a dependency cycle through an onFailure handler", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({
+            agent: makeAgent("u"),
+            onFailure: "rescue",
+            after: ["rescue"],
+          }),
+          rescue: step({ agent: makeAgent("r"), after: ["unit"] }),
+        },
+      }),
+    ).toThrow(/dependency cycle/);
+  });
+
+  test("accepts onFailure on a member step inside an onTrigger body", () => {
+    // A section body runs as its own child run, structurally like a
+    // childWorkflow body, so a member step there may route its own failure.
+    const body = defineWorkflow({
+      id: "sec",
+      trigger: { type: "manual" },
+      steps: {
+        work: step({ agent: makeAgent("w"), onFailure: "rescue" }),
+        rescue: step({ agent: makeAgent("r"), after: ["work"] }),
+      },
+    });
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        steps: { section: onTrigger({ on: { type: "manual" }, body }) },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects a hand-assembled onFailure on a non-member in an onTrigger body", () => {
+    // A hand-assembled section body bypasses the body's own defineWorkflow, so
+    // the parent must re-validate it. A gate may never carry onFailure.
+    const gateNode = {
+      ...gate({ when: { from: "steps.a.output" }, then: "yes", else: "no" }),
+      onFailure: "yes",
+    };
+    const sectionBody = {
+      id: "sec",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["g", "yes", "no"],
+      steps: {
+        g: gateNode,
+        yes: step({ agent: makeAgent("y"), after: ["g"] }),
+        no: step({ agent: makeAgent("n"), after: ["g"] }),
+      },
+    };
+    const section = {
+      kind: "onTrigger",
+      id: "",
+      on: { type: "manual" },
+      body: { inline: sectionBody },
+      drainBehavior: "wait",
+    };
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-assembled section body bypasses its own defineWorkflow; construct that shape to exercise the parent's re-validation
+    const injected = section as unknown as Primitive;
+    expect(() =>
+      defineWorkflow({ id: "w", steps: { section: injected } }),
+    ).toThrow(/gate g may not carry onFailure/);
+  });
+});
+
 describe("primitive defaults", () => {
   test("step defaults drainBehavior to cancel (batch)", () => {
     const s = step({ agent: makeAgent("a") });
