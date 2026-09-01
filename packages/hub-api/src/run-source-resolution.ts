@@ -35,10 +35,11 @@ export async function resolveDefinitionSources(args: {
   modelRequirements: ModelRequirement[] | null;
   fallbackModel: string | null;
   invokerPreferences: Record<string, ProviderPreference>;
-  // Decrypts credential secrets at the point of use. Optional: omitted callers
-  // (tests reading plaintext-stored secrets) fall back to the noop cipher inside
-  // resolveModelSources; the launch route passes the real cipher.
-  credentialCipher?: CredentialCipher;
+  // Decrypts each resolved credential secret at its point of use inside
+  // resolveModelSources. Required: the launch route owns and supplies the app's
+  // real cipher (resolved to a noop only at that edge for a keyless dev/test
+  // composition).
+  credentialCipher: CredentialCipher;
 }): Promise<DefinitionSourceResolution> {
   const requirements: ModelRequirement[] =
     args.modelRequirements !== null
@@ -51,12 +52,8 @@ export async function resolveDefinitionSources(args: {
     args.db,
     args.tenantId,
     requirements,
-    {
-      invokerPreferences: args.invokerPreferences,
-      ...(args.credentialCipher !== undefined
-        ? { credentialCipher: args.credentialCipher }
-        : {}),
-    },
+    args.credentialCipher,
+    { invokerPreferences: args.invokerPreferences },
   );
   if (!resolution.ok) {
     const message =

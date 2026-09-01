@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 
+import { createNoopCredentialCipher } from "@intx/crypto";
 import type { DB } from "@intx/db";
 
 import { pushSourceUpdates, pushSourceUpdatesSubtree } from "./credential-push";
@@ -23,18 +24,28 @@ function rejectingDB(): DB["db"] {
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- unused by the failing paths under test
 const dummyRouter = {} as unknown as SidecarRouter;
 
+// The DB scan rejects before any credential is resolved, so the cipher is never
+// reached; a noop stands in for the required parameter.
+const dummyCipher = createNoopCredentialCipher();
+
 describe("source push error containment", () => {
   test("pushSourceUpdatesSubtree resolves when descendant lookup fails", async () => {
     const result = await pushSourceUpdatesSubtree(
       rejectingDB(),
       dummyRouter,
       "tnt_1",
+      dummyCipher,
     );
     expect(result).toBeUndefined();
   });
 
   test("pushSourceUpdates resolves when the instance scan fails", async () => {
-    const result = await pushSourceUpdates(rejectingDB(), dummyRouter, "tnt_1");
+    const result = await pushSourceUpdates(
+      rejectingDB(),
+      dummyRouter,
+      "tnt_1",
+      dummyCipher,
+    );
     expect(result).toBeUndefined();
   });
 });
