@@ -2871,6 +2871,54 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     ).resolves.toBe("absent");
   });
 
+  test("readWorkflowRunLifecycle and readCommittedWorkflowRunLifecycle agree across states", async () => {
+    // Both readers run one shared classification core over different read
+    // surfaces (working-tree fs vs committed git objects). Seed one tree and
+    // read every run BOTH ways to prove the two surfaces classify identically.
+    const { store, repoId, principal } = await makeClaimCheckStore("cc-equiv-");
+    const sealedLog =
+      [runStartedBody("sealed"), runCompletedBody(1)].join("\n") + "\n";
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/staged/grants.json`]: JSON.stringify({
+          stepGrants: [],
+        }),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/live/events/0.json`]:
+          runStartedBody("live-message"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/0.json`]:
+          runStartedBody("done-message"),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/done/events/1.json`]: runCompletedBody(1),
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/sealed/events.jsonl`]: sealedLog,
+      },
+      message: "seed lifecycle states for the equivalence check",
+    });
+
+    const reads = await store.openCommittedReads(
+      principal,
+      repoId,
+      "refs/heads/main",
+    );
+    expect(reads).not.toBeNull();
+
+    const cases = [
+      ["missing", "absent"],
+      ["staged", "absent"],
+      ["live", "live"],
+      ["done", "terminal"],
+      ["sealed", "terminal"],
+    ] as const;
+    for (const [runId, expected] of cases) {
+      const fsResult = await readWorkflowRunLifecycle(store, repoId, runId);
+      const committedResult = await readCommittedWorkflowRunLifecycle(
+        reads,
+        runId,
+      );
+      expect(fsResult).toBe(expected);
+      expect(committedResult).toBe(expected);
+      expect(committedResult).toBe(fsResult);
+    }
+  });
+
   test("a CancelRequested-without-finalizer run is still owned (its message stays suppressed)", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore(
       "cc-owned-cancelling-",

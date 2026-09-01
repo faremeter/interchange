@@ -3874,50 +3874,31 @@ export async function scanRunsForBoot(
 
 export type WorkflowRunLifecycle = "absent" | "live" | "terminal";
 
-/** Read one run's lifecycle from a committed workflow-run tree. */
-export async function readCommittedWorkflowRunLifecycle(
-  reads: CommittedReads | null,
-  runId: string,
-): Promise<WorkflowRunLifecycle> {
-  if (reads === null) return "absent";
-  const runPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
-  const runChildren = await reads.listDir(runPath);
-  if (
-    runChildren.some(
-      (entry) =>
-        entry.type === "blob" && entry.name === WORKFLOW_RUN_EVENTS_FILE,
-    )
-  ) {
-    return "terminal";
-  }
-
-  const eventsPath = `${runPath}/${WORKFLOW_RUN_EVENTS_DIR}`;
-  const eventEntries = (await reads.listDir(eventsPath)).filter(
-    (entry) => entry.type === "blob" && parseEventSeq(entry.name) !== null,
-  );
-  const latest = eventEntries.reduce<(typeof eventEntries)[number] | undefined>(
-    (candidate, entry) => {
-      if (candidate === undefined) return entry;
-      const candidateSeq = parseEventSeq(candidate.name);
-      const entrySeq = parseEventSeq(entry.name);
-      return entrySeq !== null &&
-        candidateSeq !== null &&
-        entrySeq > candidateSeq
-        ? entry
-        : candidate;
-    },
+/**
+ * Classify a run's lifecycle from a read surface. The committed (git-object)
+ * and working-tree (node:fs) readers share this core: a sealed combined log is
+ * terminal; otherwise the latest per-event file decides terminal-vs-live, and a
+ * run with no events is absent. The surface owns every read detail -- the
+ * absent/ENOENT discrimination, the per-surface entry filter, and wrapping an
+ * unreadable latest event as `workflow_run_event_unreadable` -- so this core
+ * never sees a raw read error.
+ */
+async function classifyRunLifecycle<
+  E extends { readonly seq: number },
+>(surface: {
+  sealedLogPresent(): Promise<boolean>;
+  listEventEntries(): Promise<readonly E[]>;
+  readEvent(entry: E): Promise<unknown>;
+}): Promise<WorkflowRunLifecycle> {
+  if (await surface.sealedLogPresent()) return "terminal";
+  const entries = await surface.listEventEntries();
+  const latest = entries.reduce<E | undefined>(
+    (candidate, entry) =>
+      candidate === undefined || entry.seq > candidate.seq ? entry : candidate,
     undefined,
   );
   if (latest !== undefined) {
-    const eventPath = `${eventsPath}/${latest.name}`;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(
-        new TextDecoder().decode(await reads.readBlobByOid(latest.oid)),
-      );
-    } catch (cause) {
-      throw new Error(`workflow_run_event_unreadable: ${eventPath}`, { cause });
-    }
+    const parsed = await surface.readEvent(latest);
     if (
       typeof parsed === "object" &&
       parsed !== null &&
@@ -3928,7 +3909,46 @@ export async function readCommittedWorkflowRunLifecycle(
       return "terminal";
     }
   }
-  return eventEntries.length === 0 ? "absent" : "live";
+  return entries.length === 0 ? "absent" : "live";
+}
+
+/** Read one run's lifecycle from a committed workflow-run tree. */
+export async function readCommittedWorkflowRunLifecycle(
+  reads: CommittedReads | null,
+  runId: string,
+): Promise<WorkflowRunLifecycle> {
+  if (reads === null) return "absent";
+  const runPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
+  const eventsPath = `${runPath}/${WORKFLOW_RUN_EVENTS_DIR}`;
+  return classifyRunLifecycle<{ seq: number; name: string; oid: string }>({
+    async sealedLogPresent() {
+      const runChildren = await reads.listDir(runPath);
+      return runChildren.some(
+        (entry) =>
+          entry.type === "blob" && entry.name === WORKFLOW_RUN_EVENTS_FILE,
+      );
+    },
+    async listEventEntries() {
+      const eventEntries = await reads.listDir(eventsPath);
+      return eventEntries.flatMap((entry) => {
+        if (entry.type !== "blob") return [];
+        const seq = parseEventSeq(entry.name);
+        return seq === null ? [] : [{ seq, name: entry.name, oid: entry.oid }];
+      });
+    },
+    async readEvent(entry) {
+      const eventPath = `${eventsPath}/${entry.name}`;
+      try {
+        return JSON.parse(
+          new TextDecoder().decode(await reads.readBlobByOid(entry.oid)),
+        );
+      } catch (cause) {
+        throw new Error(`workflow_run_event_unreadable: ${eventPath}`, {
+          cause,
+        });
+      }
+    },
+  });
 }
 
 /**
@@ -3955,59 +3975,53 @@ export async function readWorkflowRunLifecycle(
     WORKFLOW_RUN_RUNS_PREFIX,
     runId,
   );
-
-  try {
-    await fs.access(path.join(runDir, WORKFLOW_RUN_EVENTS_FILE));
-    return "terminal";
-  } catch (cause) {
-    if (
-      !(cause instanceof Error) ||
-      !("code" in cause) ||
-      cause.code !== "ENOENT"
-    ) {
-      throw cause;
-    }
-  }
-
   const eventsDir = path.join(runDir, WORKFLOW_RUN_EVENTS_DIR);
-  let files: string[];
-  try {
-    files = await fs.readdir(eventsDir);
-  } catch (cause) {
-    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") {
-      return "absent";
-    }
-    throw cause;
-  }
-
-  const eventFiles = files.filter((file) => parseEventSeq(file) !== null);
-  const latest = eventFiles.reduce<string | undefined>((candidate, file) => {
-    if (candidate === undefined) return file;
-    const candidateSeq = parseEventSeq(candidate);
-    const fileSeq = parseEventSeq(file);
-    return fileSeq !== null && candidateSeq !== null && fileSeq > candidateSeq
-      ? file
-      : candidate;
-  }, undefined);
-  if (latest !== undefined) {
-    const eventPath = path.join(eventsDir, latest);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(await fs.readFile(eventPath, "utf8"));
-    } catch (cause) {
-      throw new Error(`workflow_run_event_unreadable: ${eventPath}`, { cause });
-    }
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "type" in parsed &&
-      typeof parsed.type === "string" &&
-      TERMINAL_EVENT_TYPES.has(parsed.type)
-    ) {
-      return "terminal";
-    }
-  }
-  return eventFiles.length === 0 ? "absent" : "live";
+  return classifyRunLifecycle<{ seq: number; name: string }>({
+    async sealedLogPresent() {
+      try {
+        await fs.access(path.join(runDir, WORKFLOW_RUN_EVENTS_FILE));
+        return true;
+      } catch (cause) {
+        if (
+          !(cause instanceof Error) ||
+          !("code" in cause) ||
+          cause.code !== "ENOENT"
+        ) {
+          throw cause;
+        }
+        return false;
+      }
+    },
+    async listEventEntries() {
+      let files: string[];
+      try {
+        files = await fs.readdir(eventsDir);
+      } catch (cause) {
+        if (
+          cause instanceof Error &&
+          "code" in cause &&
+          cause.code === "ENOENT"
+        ) {
+          return [];
+        }
+        throw cause;
+      }
+      return files.flatMap((file) => {
+        const seq = parseEventSeq(file);
+        return seq === null ? [] : [{ seq, name: file }];
+      });
+    },
+    async readEvent(entry) {
+      const eventPath = path.join(eventsDir, entry.name);
+      try {
+        return JSON.parse(await fs.readFile(eventPath, "utf8"));
+      } catch (cause) {
+        throw new Error(`workflow_run_event_unreadable: ${eventPath}`, {
+          cause,
+        });
+      }
+    },
+  });
 }
 
 export type ReplayProcessingToInboxOpts = {
