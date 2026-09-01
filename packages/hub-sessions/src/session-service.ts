@@ -58,8 +58,8 @@ import {
   buildInertProjectionStepSources,
   deriveRunAddress,
   enumerateInertBodies,
-  inertLoopBody,
   pickStepInferenceSource,
+  pinInertStepSources,
   WorkflowDefinitionInvalidError,
   type DeployContent as OrchestratorDeployContent,
 } from "@intx/workflow-deploy";
@@ -753,55 +753,47 @@ async function prepareSourceRefDeploy(
   const referencedDefinitions: WorkflowProjectionWithSources[] =
     await Promise.all(
       enumerateInertBodies(projection).map(async (body) => {
-        const sources: Record<string, InferenceSource[]> = {};
-        for (const bodyStepId of body.definition.stepOrder) {
-          // A loop nested inside a spawned body (onTrigger section or
-          // childWorkflow child) is not yet supported: this per-body pin does
-          // not recurse into the loop's own body, so the loop-body steps'
-          // inference sources would be unpinned and the child would fail loud at
-          // the first iteration. Reject at deploy instead of shipping that
-          // latent crash. Top-level loops ARE pinned (the source pin recurses
-          // into their bodies); this gap is only the loop-in-body combination,
-          // tracked as a follow-on.
-          if (inertLoopBody(body.definition.steps[bodyStepId]) !== null) {
-            throw new WorkflowDefinitionInvalidError(
-              body.ref,
-              `loop step ${bodyStepId} is nested inside a spawned body, which is not yet supported: its body steps' inference sources are not pinned. Move the loop to the top level.`,
-            );
-          }
-          // Agent-bearing body steps run inference and need a source pinned
-          // through the approval gate. A non-agent body step (sleep,
-          // awaitSignal) declares no preference and runs no inference, so it
-          // advertises no `inference.source` grant the gate could approve --
-          // but the deploy frame's coverage contract still requires a source
-          // entry for EVERY body step. Pin the deploy's default source as an
-          // inert placeholder for such a step: the body child resolves a
-          // step's source only when that step invokes inference, so this entry
-          // is never read, which is why it needs no operator approval.
-          const preferred = body.preferredByStep[bodyStepId] ?? null;
-          if (preferred === null) {
-            const placeholder = args.config.sources.find(
-              (s) => s.id === args.config.defaultSource,
-            );
-            if (placeholder === undefined) {
-              throw new WorkflowDefinitionInvalidError(
-                body.ref,
-                `non-agent body step ${bodyStepId} needs an inert placeholder source, but the deploy config carries no defaultSource entry to pin`,
+        // Pin every body step's source, recursing into a loop nested inside the
+        // body (`pinInertStepSources` owns the walk, the loop recursion, and the
+        // flat-map collision rule). The per-step LEAF policy is the body's own:
+        //
+        //   - A genuine non-agent step (sleep, awaitSignal, or the loop
+        //     container itself) declares no preference and runs no inference, so
+        //     it advertises no `inference.source` grant the gate could approve.
+        //     The deploy frame's coverage contract still requires a source entry
+        //     for every body step, so pin the deploy's default source as an inert
+        //     placeholder: the body child resolves a step's source only when that
+        //     step invokes inference, so this entry is never read, which is why
+        //     it needs no operator approval.
+        //   - An agent step -- including one that declares no preference (an
+        //     empty `modelSources`), which still resolves a source at runtime --
+        //     runs inference and gets a source pinned through the approval gate.
+        const sources = pinInertStepSources({
+          definition: body.definition,
+          workflowId: body.ref,
+          context: `deployCodeSourcedWorkflow body ${body.ref}: `,
+          resolveLeafSource: ({ stepId, isAgent, preference }) => {
+            if (!isAgent) {
+              const placeholder = args.config.sources.find(
+                (s) => s.id === args.config.defaultSource,
               );
+              if (placeholder === undefined) {
+                throw new WorkflowDefinitionInvalidError(
+                  body.ref,
+                  `non-agent body step ${stepId} needs an inert placeholder source, but the deploy config carries no defaultSource entry to pin`,
+                );
+              }
+              return placeholder;
             }
-            sources[bodyStepId] = [placeholder];
-            continue;
-          }
-          sources[bodyStepId] = [
-            pickStepInferenceSource({
-              preferred,
-              stepId: bodyStepId,
+            return pickStepInferenceSource({
+              preferred: preference,
+              stepId,
               workflowId: body.ref,
               config: args.config,
               operatorApprovals: approval.approvedGrants,
-            }),
-          ];
-        }
+            });
+          },
+        });
         return {
           definition: body.definition,
           sources,
