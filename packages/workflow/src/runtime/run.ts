@@ -613,10 +613,24 @@ async function executeRunBody(
 
   // Settle each crashed-mid-invocation step as a terminal `StepFailed`
   // (`retriesExhausted: true`), advancing `state`/`seq` per commit. This
-  // moves the step to phase `failed`, so `nextSchedulable` will not
-  // re-schedule it and the agent is never re-invoked; the post-loop
-  // `hasFailedStep` path is left to commit `RunFailed` and settle the run.
+  // moves the step to a terminal phase, so `nextSchedulable` will not
+  // re-schedule it and the agent is never re-invoked. A unit carrying
+  // `onFailure` routes rather than going fatal: the identical logical outcome
+  // (the unit did not complete) routes when reached through normal
+  // exhaustion, so a crash mid-invocation is the same "run the fallback"
+  // case. The onFailure resume reconciliation below observes the `routed`
+  // phase, prunes its normal dependents, and reconstructs its sentinel. A unit
+  // with no `onFailure` stays a bare fatal `StepFailed`, and the post-loop
+  // `hasFailedStep` path commits `RunFailed`. (`isCrashedInvocationStep`
+  // matches only `step`/`action`; a crashed `childWorkflow` is a host-owned
+  // recovery surface handled elsewhere.)
   for (const { stepId, attempt } of crashedInFlight) {
+    const primitive = definition.steps[stepId];
+    const onFailure =
+      primitive !== undefined &&
+      (primitive.kind === "step" || primitive.kind === "action")
+        ? primitive.onFailure
+        : undefined;
     const failed: WorkflowEvent = {
       kind: "StepFailed",
       seq: state.lastSeq + 1,
@@ -628,6 +642,7 @@ async function executeRunBody(
         code: "crash-mid-invocation",
       },
       retriesExhausted: true,
+      ...(onFailure !== undefined ? { routedTo: onFailure } : {}),
     };
     state = await commitDurable(env, runId, failed);
   }

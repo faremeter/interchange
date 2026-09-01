@@ -23,6 +23,7 @@ import {
   step,
   type StepInvoker,
   type WorkflowDefinition,
+  type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 
@@ -133,5 +134,68 @@ describe("onFailure route crash-resume", () => {
       stepId: "unit",
       error: { message: "unit boom" },
     });
+  });
+
+  test("a unit that crashes mid-invocation routes to its handler on resume", async () => {
+    // Live run so the unit gets a durable StepStarted; its work is irrelevant.
+    const live = buildEnv(def, async () => ({ output: null }));
+    const liveRes = await runtimeRun(def, live.env, {
+      runId: "run-crash",
+      triggerPayload: null,
+    }).complete;
+    expect(liveRes.terminalStatus).toBe("completed");
+
+    const emitted = await live.repoStore.read("run-crash");
+    // Slice right after the unit's StepStarted: the unit is in-flight with no
+    // terminal and no prune -- the crash-mid-invocation window.
+    const startedIdx = emitted.findIndex(
+      (e) => e.kind === "StepStarted" && e.stepId === "unit",
+    );
+    expect(startedIdx).toBeGreaterThan(-1);
+    const window = emitted.slice(0, startedIdx + 1);
+    expect(
+      window.some(
+        (e) =>
+          (e.kind === "StepFailed" || e.kind === "StepCompleted") &&
+          e.stepId === "unit",
+      ),
+    ).toBe(false);
+
+    const invoked: string[] = [];
+    let handlerInput: unknown;
+    const resume = buildEnv(def, async (req) => {
+      invoked.push(req.agent.id);
+      if (req.agent.id === "rescue") handlerInput = req.input;
+      return { output: null };
+    });
+    const resumedRes = await runtimeRun(def, resume.env, {
+      runId: "run-crash",
+      resumeFromEvents: window,
+    }).complete;
+
+    expect(resumedRes.terminalStatus).toBe("completed");
+    // The crashed unit is not re-invoked (at-most-once); it routes instead of
+    // going fatal, its normal dependent stays pruned, and the handler runs.
+    expect(invoked).not.toContain("unit");
+    expect(invoked).not.toContain("normal");
+    expect(invoked).toContain("rescue");
+    // The reconstructed sentinel the handler reads is message-only: the crash
+    // `code` must not leak into steps.<unit>.output (toEqual is exact, so an
+    // extra `code` key would fail), though the durable event keeps it below.
+    expect(handlerInput).toEqual({
+      failed: true,
+      stepId: "unit",
+      error: {
+        message:
+          "step unit crashed mid-invocation; the invoked primitive is non-deterministic and unrecorded, so it is not re-invoked (at-most-once)",
+      },
+    });
+
+    const routed = resumedRes.events.find(
+      (e): e is Extract<WorkflowEvent, { kind: "StepFailed" }> =>
+        e.kind === "StepFailed" && e.stepId === "unit",
+    );
+    expect(routed?.routedTo).toBe("rescue");
+    expect(routed?.error.code).toBe("crash-mid-invocation");
   });
 });
