@@ -140,7 +140,7 @@ const TOOL_NAME = MAIL_TOOL_NAME;
 const ASK_RESOURCE = `tool:${TOOL_NAME}`;
 const STEP_AGENT_ID = "agent-reconnect-reemit";
 
-// The `mail_send` arguments the mock issues. The synthetic bundle writes its
+// The `mail_send` arguments the mock issues. The fixture tool writes its
 // `to` argument into the file named by `body`; the run parks before the tool
 // ever runs, so these only travel as far as the approval snapshot's arguments.
 const CALL_TO = "correlation-recovery";

@@ -1,12 +1,11 @@
 // The `mail_send` tool as a real, type-checked `defineTool` source module.
 //
-// Reproduces the three variants of the ex-synthetic `@intx/tools-mail`
-// bundle (`buildSyntheticToolsMailTarball` in the deploy-flow env) as a real
+// Provides the three variants of the `@intx/tools-mail` bundle as a real
 // module so a code-sourced workflow carries the tool in its own source
 // closure. A fixture entry module imports `mailSendTool(variant)` and lists it
 // in a step agent's `tools`; `bundleWorkflowEntry` inlines this module into the
-// workflow bundle, so the tool evaluates in-child with the same filesystem /
-// transport side effect the synthetic bundle produced.
+// workflow bundle, so the tool evaluates in-child with a filesystem /
+// transport side effect.
 //
 // Three variants, selected by the `variant` parameter:
 //   - "fs":        writes the `body` arg as a filename under `env.workdir`
