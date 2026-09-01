@@ -11,6 +11,7 @@ export {
   rewriteInlineOnTriggerBodies,
   rewriteInlineChildWorkflowBodies,
   enumerateInlineLoopBodies,
+  eagerlyResolveLoopFns,
   type ExtractedOnTriggerBody,
   type OnTriggerBodyRewrite,
   type ExtractedChildWorkflowBody,

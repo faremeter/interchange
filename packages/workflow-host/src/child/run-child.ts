@@ -63,6 +63,7 @@ import {
   rewriteInlineOnTriggerBodies,
   rewriteInlineChildWorkflowBodies,
   enumerateInlineLoopBodies,
+  eagerlyResolveLoopFns,
 } from "@intx/workflow";
 import type { AuthzCallResult } from "@intx/inference";
 
@@ -1590,31 +1591,6 @@ async function handleControlPayload(
  * shape; the substrate handle and per-deployment `RepoStore` adapter
  * are shared across runs.
  */
-/**
- * Force-resolve every loop `while`/`carry` ref reachable from these definitions
- * against the registry, so a missing loop fn surfaces at establish rather than
- * when the loop is first driven mid-run. Recurses into a loop's inline body (a
- * nested loop resolves against the same shared registry). The caller passes the
- * lifted onTrigger/childWorkflow bodies separately, since those are `{ ref }` in
- * the top-level definition and this walk does not descend into them.
- */
-function eagerlyResolveLoopFns(
-  definitions: readonly WorkflowDefinition[],
-  loopFns: LoopFnRegistry,
-): void {
-  const visit = (def: WorkflowDefinition): void => {
-    for (const step of Object.values(def.steps)) {
-      if (step.kind === "loop") {
-        // Each call throws (fail closed) if the ref names no export, or an
-        // export that is not a function.
-        loopFns(step.while);
-        loopFns(step.carry);
-        visit(step.body);
-      }
-    }
-  };
-  for (const def of definitions) visit(def);
-}
 
 /**
  * Force-resolve every `action` handler ref reachable from these definitions
