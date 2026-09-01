@@ -323,6 +323,35 @@ function validateSteps(steps: Record<string, Primitive>): void {
   validateChildWorkflowBody(steps);
 }
 
+/**
+ * Reject an `onFailure` that sits where it cannot route. onFailure is honored
+ * only on a member kind (`step`/`action`/`childWorkflow`) that is a direct
+ * entry of a workflow root's `steps` record -- the top level, a childWorkflow
+ * inline body, or an onTrigger section body, each validated as its own root.
+ * Everywhere else a
+ * set onFailure hashes into the approved surface yet never routes, so it is a
+ * hash-bound no-op the author cannot see. The first arm rejects the field on
+ * any node it does not belong on: the type blocks a constructor author from
+ * setting it on a non-member, but a hand-assembled definition rides the open
+ * wire schema -- the trust boundary every pass here guards. The second arm
+ * rejects the `map` inner-step template, a member kind reached through the map
+ * rather than as a root entry.
+ */
+function assertNoRoutableFailure(stepId: string, primitive: Primitive): void {
+  if ("onFailure" in primitive && primitive.onFailure !== undefined) {
+    throw new Error(
+      `${primitive.kind} ${stepId} may not carry onFailure; onFailure is ` +
+        `honored only on a step, action, or childWorkflow at a workflow root`,
+    );
+  }
+  if (primitive.kind === "map" && primitive.step.onFailure !== undefined) {
+    throw new Error(
+      `map ${stepId} sets onFailure on its inner step; a map inner step is ` +
+        `not a routing unit (a failed item is not routed in v1)`,
+    );
+  }
+}
+
 function validateAfterRefs(steps: Record<string, Primitive>): void {
   const ids = new Set(Object.keys(steps));
   for (const [stepId, primitive] of Object.entries(steps)) {
@@ -407,6 +436,38 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
         );
       }
     }
+    if (
+      primitive.kind === "step" ||
+      primitive.kind === "action" ||
+      primitive.kind === "childWorkflow"
+    ) {
+      if (primitive.onFailure !== undefined) {
+        if (!ids.has(primitive.onFailure)) {
+          throw new Error(
+            `${primitive.kind} ${stepId} names onFailure ${primitive.onFailure} which is not a known step`,
+          );
+        }
+        if (primitive.onFailure === stepId) {
+          throw new Error(
+            `${primitive.kind} ${stepId} cannot name itself as onFailure`,
+          );
+        }
+        // onFailure routes only on a permanent failure, so the handler must
+        // depend on the unit. Without `after: [unit]` it would be schedulable
+        // from RunStarted and the handler would fire on every run.
+        const target = steps[primitive.onFailure];
+        if (
+          target !== undefined &&
+          !(target.after?.includes(stepId) ?? false)
+        ) {
+          throw new Error(
+            `${primitive.kind} ${stepId} onFailure ${primitive.onFailure} must name ${stepId} in its after`,
+          );
+        }
+      }
+    } else {
+      assertNoRoutableFailure(stepId, primitive);
+    }
   }
 }
 
@@ -465,18 +526,27 @@ function validateLoopBody(steps: Record<string, Primitive>, depth = 0): void {
             `a loop body may not contain a sleep or onTrigger`,
         );
       }
+      // A loop iteration is dependent (carry threads output into the next
+      // input), so per-iteration "route and proceed" is incoherent -- a routed
+      // body step yields no output to carry. Reject onFailure on any body
+      // step, including a map's inner step reached through this walk.
+      assertNoRoutableFailure(bodyStepId, bodyPrimitive);
     }
     validateLoopBody(primitive.body.steps, bodyDepth);
   }
 }
 
 /**
- * Reject an onTrigger section whose body nests another onTrigger. An
- * onTrigger body is otherwise unrestricted at DEFINITION time -- unlike a
- * loop body it may sleep, spawn child workflows, and so on (a loop body may
- * now await signals too, but still not sleep or spawn) -- because an onTrigger
- * section IS the sanctioned long-lived input loop. The single restriction is
- * one subscription layer per run: a section may not contain a section.
+ * Validate an onTrigger section body as a full workflow root, and reject a
+ * body that nests another onTrigger. The body runs as its own child run per
+ * occurrence, so -- like a childWorkflow body -- it must be as valid as a
+ * top-level definition; this pass re-enters `validateSteps` on the inline
+ * body, so a malformed section body (dangling after, cycle, forbidden loop
+ * body, misplaced onFailure) is rejected at the parent's authoring time. The
+ * one restriction ADDED over a top-level root is the subscription-layer ban:
+ * a section may not contain a section. Unlike a loop body, a section body may
+ * sleep and spawn child workflows -- an onTrigger section IS the sanctioned
+ * long-lived input loop.
  *
  * PENDING INTR-310: a body agent `step` is accepted here but is not yet
  * EXECUTABLE -- per-step agent invocation inside a body is stubbed, so a body
@@ -503,6 +573,12 @@ function validateOnTriggerBody(steps: Record<string, Primitive>): void {
         );
       }
     }
+    // The section body runs as its own child run, so validate it as a full
+    // root (mirroring validateChildWorkflowBody). This reaches every
+    // placement check -- including assertNoRoutableFailure -- so a misplaced
+    // onFailure in a hand-assembled section body is rejected here too. The
+    // nested-section ban above runs first so its specific message wins.
+    validateSteps(primitive.body.inline.steps);
   }
 }
 
@@ -610,6 +686,14 @@ function buildDependencyAdjacency(
       // Same shape -- include the edge so an onTimeout naming an ancestor is
       // rejected as a cycle rather than corrupting branch pruning at runtime.
       addEdge(stepId, primitive.onTimeout);
+    }
+    if ("onFailure" in primitive && primitive.onFailure !== undefined) {
+      // onFailure is a routing target like a loop's onExhausted: on a permanent
+      // failure the unit routes to it instead of failing the run. Include the
+      // edge so an onFailure naming an ancestor is rejected as a cycle. This
+      // runs after validateAfterRefs has already rejected onFailure on any
+      // non-member kind, so it fires only for step/action/childWorkflow.
+      addEdge(stepId, primitive.onFailure);
     }
   }
   return adjacency;
