@@ -57,7 +57,6 @@ import {
   DEFAULT_ASSET_REF,
   parseAgentId,
   type AgentRepoStore,
-  type AssetService,
   type InstallAndApproveResult,
   type RepoId,
   type SidecarLookups,
@@ -101,12 +100,6 @@ export const TOKEN = "test-token";
 // second via `startSidecarSubprocess` with these in `extraEnv`.
 export const SECOND_SIDECAR_ID = "sc-integration-2";
 export const SECOND_TOKEN = "test-token-2";
-
-const TENANT_ID = "tenant-1";
-const REGISTRY_NAME = "workspace-builtins";
-const ASSET_ID = `ast_${REGISTRY_NAME.replace(/-/g, "_")}`;
-
-export { TENANT_ID, REGISTRY_NAME, ASSET_ID };
 
 export async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -598,12 +591,8 @@ export type HubEnv = {
 };
 
 // Hub WebSocket server (in-process) wired against a real AgentRepoStore
-// and SessionService.
-//
-// The hub seeds an empty `package-registry` asset repo. Deploy tests carry
-// their tools inline in the workflow source closure, so no tool package is
-// seeded here; the resolver walk over a seeded registry is covered by the
-// tool-packaging end-to-end test instead.
+// and SessionService. It wires no tool-package registry surface; the DB stub
+// below explains why.
 export async function startHub(
   registerTempDir: (dir: string) => void,
   opts: {
@@ -803,84 +792,19 @@ export async function startHub(
     deployAcks.set(agentAddress, publicKey);
   });
 
-  // Seed the single package-registry asset. No tool package is seeded --
-  // deploy tests carry their tools inline in the workflow source closure --
-  // so the registry is empty. The AssetService below still serves it: the
-  // walker reads each tarball's own `package.json` to resolve a pin.
-  const tarballs: { filename: string; bytes: Uint8Array }[] = [];
-  const tarballByBlobPath = new Map(
-    tarballs.map((t) => [`tarballs/${t.filename}`, t.bytes]),
-  );
-  const seededFiles: Record<string, Uint8Array> = {};
-  for (const t of tarballs) {
-    seededFiles[`tarballs/${t.filename}`] = t.bytes;
-  }
-  await agentRepoStore.repoStore.initRepo({
-    kind: "package-registry",
-    id: ASSET_ID,
-  });
-  await agentRepoStore.repoStore.writeTree(
-    { kind: "hub" },
-    { kind: "package-registry", id: ASSET_ID },
-    DEFAULT_ASSET_REF,
-    {
-      files: seededFiles,
-      message: "Seed tool-package tarballs",
-    },
-  );
-
-  // The AssetService and DB stubs satisfy the narrow surface that the
-  // session-service tool-package path actually consults: blob reads for
-  // the resolver, tenant-walk and asset list for the registry map build,
-  // and a session_asset insert/delete for audit. The other members of the
-  // AssetService and DB interfaces throw on access so the test fails
-  // loudly if the production code drifts into a dependency the stub does
-  // not cover.
-  const assetRow = {
-    id: ASSET_ID,
-    tenantId: TENANT_ID,
-    kind: "package-registry" as const,
-    name: REGISTRY_NAME,
-    displayName: null,
-    creatorPrincipalId: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
-  const assetService: AssetService = {
-    createAsset: () => {
-      throw new Error("deploy-flow: AssetService.createAsset not used");
-    },
-    populateAsset: () => {
-      throw new Error("deploy-flow: AssetService.populateAsset not used");
-    },
-    readAssetBlob: async ({ assetId, path: p }) => {
-      if (assetId !== ASSET_ID) {
-        throw new Error(`deploy-flow: unexpected readAssetBlob ${assetId}`);
-      }
-      const bytes = tarballByBlobPath.get(p);
-      if (bytes === undefined) {
-        throw new Error(`deploy-flow: unexpected blob path ${p}`);
-      }
-      return bytes;
-    },
-    listAssetBlobs: async ({ assetId, dir: d }) => {
-      if (assetId !== ASSET_ID) {
-        throw new Error(`deploy-flow: unexpected listAssetBlobs ${assetId}`);
-      }
-      if (d !== "tarballs") {
-        throw new Error(`deploy-flow: unexpected list dir ${d}`);
-      }
-      return tarballs.map((t) => t.filename);
-    },
-  };
+  // The DB stub satisfies the narrow surface the session-service paths the
+  // deploy tests exercise actually consult: a tenant lookup and the
+  // session_asset insert/delete audit writes. Its other members throw on
+  // access so the test fails loudly if production code drifts into a
+  // dependency the stub does not cover. No package-registry asset or
+  // tool-package registry is wired: deploy tests carry their tools inline in
+  // the workflow source closure, so the session-service tool-package resolver
+  // path is never entered.
   const fakeDb = {
     query: {
       tenant: {
         findFirst: async (_args: unknown) =>
           ({ parentId: null }) as { parentId: string | null },
-      },
-      asset: {
-        findMany: async (_args: unknown) => [assetRow],
       },
     },
     insert(_table: unknown) {
@@ -902,16 +826,10 @@ export async function startHub(
   const sessionService = createSessionService({
     sidecarRouter: router,
     agentRepoStore,
-    assetService,
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the stub satisfies the narrow surface the session-service tool-package path actually calls (query.tenant.findFirst, query.asset.findMany, insert/delete), but cannot structurally satisfy the full drizzle PgDatabase type
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the stub satisfies the narrow surface the session-service paths the deploy tests exercise actually call (query.tenant.findFirst, insert/delete), but cannot structurally satisfy the full drizzle PgDatabase type
     db: fakeDb as unknown as NonNullable<
       Parameters<typeof createSessionService>[0]["db"]
     >,
-    toolPackageRegistries: {
-      httpRegistries: new Map(),
-      defaultRegistry: REGISTRY_NAME,
-      scopeRouting: [{ scope: "@intx", registry: REGISTRY_NAME }],
-    },
   });
 
   const app = new Hono();
