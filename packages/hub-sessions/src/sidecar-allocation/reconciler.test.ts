@@ -90,7 +90,6 @@ function deps(args: {
   return {
     allocationStore: args.store,
     plugins: {
-      getDefaultProvisioner: () => provisioner,
       getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
       selectProvisioner: () => ({ ok: true, provisioner }),
     },

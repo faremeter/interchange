@@ -30,5 +30,4 @@ process.once("SIGTERM", shutdown);
 
 export default await createHubServer({
   sidecarProvisioners: [localProcessProvisioner.provisioner],
-  defaultSidecarProvisionerId: localProcessProvisioner.provisioner.id,
 });
