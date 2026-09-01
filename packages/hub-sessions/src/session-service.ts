@@ -211,6 +211,8 @@ export type DeployWorkflowFromSourceParams = {
    * step to one approved source from it.
    */
   config: HarnessConfig;
+  /** Cipher for the definition's tenant-owned credential bindings, if any. */
+  credentialCipher?: CredentialCipher;
 };
 
 /**
@@ -1567,6 +1569,9 @@ export function createSessionService(
       tenantId: params.tenantId,
       anchorRunId: params.anchorRunId,
       deploymentDomain: params.deploymentDomain,
+      ...(params.credentialCipher !== undefined
+        ? { credentialCipher: params.credentialCipher }
+        : {}),
     };
     // Branch on the source discriminant so the deploy args match the
     // asset/registry arms of `DeployCodeSourcedWorkflowArgs`: an asset arm

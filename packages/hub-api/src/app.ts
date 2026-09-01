@@ -327,6 +327,7 @@ export function mountHubRoutes(
         repoStore,
         grantStore,
         requireGrant,
+        credentialCipher,
       }),
     );
   }

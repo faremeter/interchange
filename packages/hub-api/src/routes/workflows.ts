@@ -20,6 +20,7 @@ import {
   ErrorResponse,
   isSidecarAllocationDispatchable,
   SendMessage,
+  type CredentialCipher,
   type SidecarAllocationStatus,
 } from "@intx/types";
 import { InferenceSource } from "@intx/types/runtime";
@@ -191,6 +192,7 @@ export type CreateWorkflowRoutesDeps = {
   repoStore: RepoStore;
   grantStore: GrantStore;
   requireGrant: RequireGrant;
+  credentialCipher: CredentialCipher;
 };
 
 export function createWorkflowRoutes({
@@ -202,6 +204,7 @@ export function createWorkflowRoutes({
   repoStore,
   grantStore,
   requireGrant,
+  credentialCipher,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
   const runReader = createWorkflowRunReader(repoStore);
@@ -438,6 +441,7 @@ export function createWorkflowRoutes({
             ...(body.pin !== undefined ? { pin: body.pin } : {}),
             definitionAssetId: assetRow.id,
             config,
+            credentialCipher,
           });
           deployedId = result.anchorRunId;
         } catch (err) {
