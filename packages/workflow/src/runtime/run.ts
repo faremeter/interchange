@@ -1046,7 +1046,7 @@ async function runPrimitive(
 ): Promise<unknown> {
   switch (primitive.kind) {
     case "step":
-      return runStep(env, runId, primitive, selectorCtx, abort);
+      return runStep(definition, env, runId, primitive, selectorCtx, abort);
     case "action":
       return runAction(env, runId, primitive, selectorCtx, abort);
     case "loop":
@@ -1071,7 +1071,7 @@ async function runPrimitive(
         maxChildSpawnDepth,
       );
     case "map":
-      return runMap(env, runId, primitive, selectorCtx, abort);
+      return runMap(definition, env, runId, primitive, selectorCtx, abort);
     case "gate":
       return runGate(definition, env, runId, primitive, selectorCtx, abort);
     case "awaitSignal":
@@ -1221,6 +1221,7 @@ async function runPrimitiveSafe(
  * second flush.
  */
 async function runStep(
+  definition: WorkflowDefinition,
   env: WorkflowRuntimeEnv,
   runId: string,
   step: StepPrimitive,
@@ -1499,6 +1500,22 @@ async function runStep(
       }
       const outputRef = (await env.blobs.recordOutput(step.id, attempt, output))
         .ref;
+      // A unit carrying onFailure routes on BOTH outcomes: on success the
+      // handler branch must be pruned, or the scheduler would offer the
+      // failure handler off its `after: [unit]` once the unit is terminal.
+      // Prune while the unit is still in-flight -- before the StepCompleted
+      // below -- so no sibling settling can schedule the handler mid-prune.
+      if (step.onFailure !== undefined) {
+        await pruneAroundRoute(
+          definition,
+          env,
+          runId,
+          step.id,
+          step.onFailure,
+          "completed",
+          abort,
+        );
+      }
       let after = await reloadState(env, runId);
       const completed: WorkflowEvent = {
         kind: "StepCompleted",
@@ -1532,6 +1549,54 @@ async function runStep(
         after = await commit(env, runId, propagated);
         void after;
         throw cause;
+      }
+      if (exhausted && step.onFailure !== undefined) {
+        // Route the permanent failure to the handler instead of failing the
+        // run. Prune the unit's normal dependents FIRST -- while the unit is
+        // still in-flight -- then land the unit `routed` with a single
+        // StepFailed{routedTo} (never a failed->routed promotion). The
+        // returned sentinel becomes the unit's own output in the in-process
+        // stepOutputs (via the drive loop's `.then`), so the handler reads
+        // steps.<unit>.output.error.message. There is no StepCompleted for a
+        // routed unit, so that output is live-path only.
+        await pruneAroundRoute(
+          definition,
+          env,
+          runId,
+          step.id,
+          step.onFailure,
+          "routed",
+          abort,
+        );
+        after = await reloadState(env, runId);
+        // Cancellation wins over routing, mirroring the cancelling guard
+        // above: if the run started cancelling across the prune's awaits,
+        // settle the unit `cancelled` rather than land a routed failure whose
+        // (pruned) handler branch the cancel sweep will never service.
+        if (after.phase === "cancelling") {
+          const propagated: WorkflowEvent = {
+            kind: "CancelPropagated",
+            seq: after.lastSeq + 1,
+            at: env.clock().toISOString(),
+            stepId: step.id,
+          };
+          after = await commit(env, runId, propagated);
+          void after;
+          throw cause;
+        }
+        const routed: WorkflowEvent = {
+          kind: "StepFailed",
+          seq: after.lastSeq + 1,
+          at: env.clock().toISOString(),
+          stepId: step.id,
+          attempt,
+          error: { message },
+          retriesExhausted: true,
+          routedTo: step.onFailure,
+        };
+        after = await commit(env, runId, routed);
+        void after;
+        return { failed: true, stepId: step.id, error: { message } };
       }
       const failed: WorkflowEvent = {
         kind: "StepFailed",
@@ -3329,6 +3394,40 @@ async function routeLoopOutcome(
 }
 
 /**
+ * Prune around an onFailure route, the mirror of `routeLoopOutcome`. A unit
+ * carrying `onFailure` settles on both outcomes, so both prune the not-taken
+ * side: a routed failure prunes the unit's normal after-dependents and spares
+ * the handler branch; a success prunes the handler branch and spares the
+ * normal dependents. A diamond-join reachable from the spared side stays live
+ * (the `collectBranchClosure` guard). The caller runs this BEFORE it commits
+ * the unit's terminal event, so the unit is still in-flight while the skips
+ * land -- the scheduler offers none of the unit's direct dependents until it
+ * is terminal, and `emitSkipClosure`'s leaf-first order covers the deeper
+ * members.
+ */
+async function pruneAroundRoute(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  unitId: string,
+  handlerId: string,
+  settled: "routed" | "completed",
+  abort: AbortSignal,
+): Promise<void> {
+  const normalDependents = Object.entries(definition.steps)
+    .filter(
+      ([id, p]) => id !== handlerId && (p.after?.includes(unitId) ?? false),
+    )
+    .map(([id]) => id);
+  const handler = [handlerId];
+  const notSelected = settled === "routed" ? normalDependents : handler;
+  const selected = settled === "routed" ? handler : normalDependents;
+  const toSkip = collectBranchClosure(definition, notSelected, selected);
+  const sentinel = { skipped: true, onFailureStepId: unitId, settled };
+  await emitSkipClosure(env, runId, definition, toSkip, sentinel, abort);
+}
+
+/**
  * Event-sourced timer wait.
  *
  * Tells the scheduler to commit `TimerFired{timerId}` at `fireAt`,
@@ -3428,6 +3527,7 @@ function computeBackoff(
 }
 
 async function runMap(
+  definition: WorkflowDefinition,
   env: WorkflowRuntimeEnv,
   runId: string,
   primitive: MapPrimitive,
@@ -3464,7 +3564,14 @@ async function runMap(
         ? { retry: primitive.retry }
         : {}),
     };
-    const output = await runStep(env, runId, scopedStep, itemCtx, abort);
+    const output = await runStep(
+      definition,
+      env,
+      runId,
+      scopedStep,
+      itemCtx,
+      abort,
+    );
     outputs.push(output);
   }
   await emitStepCompletedWithValue(env, runId, primitive.id, outputs);
