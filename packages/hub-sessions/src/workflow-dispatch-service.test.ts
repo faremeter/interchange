@@ -89,7 +89,7 @@ function fakeAllocationStore(
 }
 
 describe("createWorkflowDispatchService", () => {
-  test("routes immutable trigger bytes to the accepted allocation generation", async () => {
+  test("routes trigger bytes with distinct deployment address and run id", async () => {
     const claimed = dispatch();
     let didClaim = false;
     const deliveries: unknown[][] = [];
@@ -112,7 +112,7 @@ describe("createWorkflowDispatchService", () => {
           deliveries.push(args);
         },
       },
-      resolveAnchorAddress: async () => "workflow@tenant.example",
+      resolveAnchorAddress: async () => "run_abc@acme.localhost",
       createLeaseId: () => "lease-1",
       now: () => NOW,
     });
@@ -121,8 +121,8 @@ describe("createWorkflowDispatchService", () => {
     expect(deliveries).toEqual([
       [
         { allocationId: "allocation-1", generation: 2 },
-        "workflow@tenant.example",
-        "workflow@tenant.example",
+        "run_abc@acme.localhost",
+        "run_abc",
         [],
         "cmF3IG1haWw=",
         "message-1",

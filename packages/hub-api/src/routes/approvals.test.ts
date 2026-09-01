@@ -420,6 +420,11 @@ type TestAppOpts = {
     topLevel: WorkflowRunLifecycle;
     target: WorkflowRunLifecycle;
   };
+  lifecycleReadCalls?: {
+    agentAddress: string;
+    topLevelRunId: string;
+    targetRunId: string;
+  }[];
   workflowRunStatuses?: readonly ("running" | "completed")[];
   operationOrder?: string[];
 };
@@ -480,8 +485,17 @@ function createTestApp(opts: TestAppOpts = {}) {
       : {}),
     ...(opts.workflowSignalEnqueues !== undefined
       ? {
-          readRunLifecycles: async () => {
+          readRunLifecycles: async (
+            agentAddress,
+            topLevelRunId,
+            targetRunId,
+          ) => {
             opts.operationOrder?.push("git-lifecycle");
+            opts.lifecycleReadCalls?.push({
+              agentAddress,
+              topLevelRunId,
+              targetRunId,
+            });
             return opts.runLifecycles ?? { topLevel: "live", target: "live" };
           },
         }
@@ -574,6 +588,8 @@ describe("POST /approvals/:approvalId/approve", () => {
     const wakeCalls: string[] = [];
     const allocationLocks: string[] = [];
     const operationOrder: string[] = [];
+    const lifecycleReadCalls: NonNullable<TestAppOpts["lifecycleReadCalls"]> =
+      [];
     const app = createTestApp({
       hasSidecarAllocation: true,
       signalCalls,
@@ -583,6 +599,7 @@ describe("POST /approvals/:approvalId/approve", () => {
       dispatchWakeCalls: wakeCalls,
       allocationLocks,
       operationOrder,
+      lifecycleReadCalls,
     });
 
     const res = await app.fetch(
@@ -601,6 +618,13 @@ describe("POST /approvals/:approvalId/approve", () => {
       "claim",
       "resolve",
       "enqueue",
+    ]);
+    expect(lifecycleReadCalls).toEqual([
+      {
+        agentAddress: AGENT_ADDRESS,
+        topLevelRunId: DEPLOYMENT_ID,
+        targetRunId: RUN_ID,
+      },
     ]);
     expect(wakeCalls).toEqual(["wake"]);
     expect(enqueues).toHaveLength(1);
