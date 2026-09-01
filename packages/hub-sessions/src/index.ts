@@ -79,6 +79,7 @@ export {
   pushCredentialReconcile,
 } from "./credential-push";
 export {
+  chooseFirstSidecarProvisioner,
   createSidecarPluginRegistry,
   createSidecarAllocationReconciler,
   type CreateSidecarPluginRegistryOpts,
@@ -91,6 +92,7 @@ export {
   type SidecarOperationFailure,
   type SidecarPluginRegistry,
   type SidecarProvisioner,
+  type SidecarProvisionerChooser,
   type SidecarAllocationReconciler,
   type SidecarAllocationReconcilerDeps,
 } from "./sidecar-allocation";

@@ -19,21 +19,38 @@ export type SidecarProvisionerSelection =
       >;
     };
 
+/** Selects one provisioner from the capability-matched candidates. */
+export type SidecarProvisionerChooser = (
+  candidates: readonly SidecarProvisioner[],
+) => SidecarProvisioner | Promise<SidecarProvisioner>;
+
 export type SidecarPluginRegistry = {
   /** Missing plugins return null so reconciliation can stop fail-closed. */
   getProvisioner(id: string): SidecarProvisioner | null;
   selectProvisioner(
     policy: EffectiveSidecarCapabilityPolicy,
-  ): SidecarProvisionerSelection;
+  ): Promise<SidecarProvisionerSelection>;
 };
 
 export type CreateSidecarPluginRegistryOpts = {
-  /** Ordered by selection priority; the first matching provisioner wins. */
+  /** Ordered candidates; the default chooser selects the first match. */
   readonly provisioners: readonly SidecarProvisioner[];
+  readonly chooser?: SidecarProvisionerChooser;
 };
+
+export function chooseFirstSidecarProvisioner(
+  candidates: readonly SidecarProvisioner[],
+): SidecarProvisioner {
+  const first = candidates[0];
+  if (first === undefined) {
+    throw new Error("No matching sidecar provisioners are available");
+  }
+  return first;
+}
 
 export function createSidecarPluginRegistry({
   provisioners,
+  chooser = chooseFirstSidecarProvisioner,
 }: CreateSidecarPluginRegistryOpts): SidecarPluginRegistry {
   const provisionersById = new Map<string, SidecarProvisioner>();
   for (const provisioner of provisioners) {
@@ -66,21 +83,31 @@ export function createSidecarPluginRegistry({
     getProvisioner(id) {
       return provisionersById.get(id) ?? null;
     },
-    selectProvisioner(policy) {
+    async selectProvisioner(policy) {
       const mismatches: Record<string, readonly SidecarCapabilityMismatch[]> =
         {};
+      const candidates: SidecarProvisioner[] = [];
       for (const provisioner of provisionersById.values()) {
         const match = matchSidecarCapabilityPolicy(
           policy,
           provisioner.capabilities,
         );
         if (match.ok) {
-          return { ok: true, provisioner };
+          candidates.push(provisioner);
         } else {
           mismatches[provisioner.id] = match.mismatches;
         }
       }
-      return { ok: false, reason: "no_match", mismatches };
+      if (candidates.length === 0) {
+        return { ok: false, reason: "no_match", mismatches };
+      }
+      const provisioner = await chooser(candidates);
+      if (!candidates.includes(provisioner)) {
+        throw new Error(
+          "Sidecar provisioner chooser returned a provisioner outside the matching candidates",
+        );
+      }
+      return { ok: true, provisioner };
     },
   };
 }

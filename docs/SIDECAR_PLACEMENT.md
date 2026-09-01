@@ -109,6 +109,7 @@ capacity that evaluates workflow source code:
 ```ts
 await createHubServer({
   sidecarProvisioners,
+  probeSidecarProvisioners,
   probeSidecarCapabilityRules: [
     { capability: "isolation:workload", effect: "require" },
     { capability: "network:outbound", effect: "block" },
@@ -122,19 +123,26 @@ selected probe provisioner does not satisfy the final workflow requirements,
 the Hub destroys the probe capacity and creates the deployment through the
 final selected provisioner.
 
+Probe and deployment provisioners are configured as separate lists. The same
+provisioner may appear in both lists, which permits the Hub to adopt matching
+probe capacity for the deployment.
+
 Capabilities describe guarantees, not vendors. A sandbox-backed provisioner
 can declare `isolation:workload` and a more specific mechanism such as
 `isolation:microvm`; policies should not name the provisioner implementation.
 
 ## Selection
 
-After probing and freezing the workflow, the Hub:
+The Hub resolves inherited tenant policy before selecting probe capacity. After
+probing and freezing the workflow, it:
 
 1. Reads the folded workflow requirements.
-2. Resolves inherited tenant policy.
-3. Evaluates provisioners in registration order against their declared guarantees.
-4. Selects the first matching provisioner.
-5. Fails when no provisioner matches.
+2. Combines those requirements with the already-resolved tenant policy.
+3. Evaluates every configured deployment provisioner against its declared guarantees.
+4. Fails when no provisioner matches.
+5. Passes the non-empty matching set to the configured chooser.
 6. Stores the selected provisioner binding for reconciliation and cleanup.
 
-Plugin registration order is the operator-defined selection priority.
+The default chooser selects the first match in registration order. A Hub
+composition may provide an asynchronous chooser for probe capacity, deployment
+capacity, or both to implement another policy such as round-robin selection.
