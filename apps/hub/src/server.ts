@@ -5,7 +5,7 @@ import {
   createWorkflowRunDispatchStore,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
-import { hexDecode } from "@intx/types";
+import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
 import {
   createApp,
   createAuth,
@@ -38,11 +38,13 @@ import { setup, getLogger } from "@intx/log";
 export type CreateHubServerOpts = {
   readonly sidecarProvisioners?: readonly SidecarProvisioner[];
   readonly defaultSidecarProvisionerId?: string;
+  readonly probeSidecarCapabilityRules?: readonly SidecarCapabilityRule[];
 };
 
 export async function createHubServer({
   sidecarProvisioners = [],
   defaultSidecarProvisionerId,
+  probeSidecarCapabilityRules = [],
 }: CreateHubServerOpts = {}) {
   await setup();
 
@@ -297,6 +299,7 @@ export async function createHubServer({
     plugins: sidecarPlugins,
     preparedDeployer: sessionService,
     credentialCipher,
+    probeCapabilityRules: probeSidecarCapabilityRules,
     allocationRouter: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,
   });
