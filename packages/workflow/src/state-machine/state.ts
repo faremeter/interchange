@@ -31,6 +31,7 @@ export type StepPhase =
   | "awaiting-timer"
   | "completed"
   | "failed"
+  | "routed"
   | "cancelled";
 
 export interface StepState {
@@ -158,5 +159,10 @@ export function decideTerminalRunFlip(phase: RunPhase): TerminalRunPhase {
 }
 
 export function isTerminalStepPhase(phase: StepPhase): boolean {
-  return phase === "completed" || phase === "failed" || phase === "cancelled";
+  return (
+    phase === "completed" ||
+    phase === "failed" ||
+    phase === "routed" ||
+    phase === "cancelled"
+  );
 }
