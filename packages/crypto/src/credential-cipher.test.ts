@@ -38,7 +38,17 @@ describe("createEnvKeyCredentialCipher", () => {
     ).rejects.toThrow();
   });
 
-  test("the noop cipher passes secrets through unencrypted", async () => {
+  test("defensively copies the key so a later buffer mutation does not change it", async () => {
+    const mutable = new Uint8Array(32).fill(7);
+    const cipher = createEnvKeyCredentialCipher(mutable);
+    const blob = await cipher.encrypt("x", "aad");
+    mutable.fill(9);
+    expect(await cipher.decrypt(blob, "aad")).toBe("x");
+  });
+});
+
+describe("createNoopCredentialCipher", () => {
+  test("passes a plaintext secret through unencrypted", async () => {
     const cipher = createNoopCredentialCipher();
     const aad = credentialAad("cred_x", "secret");
     const stored = await cipher.encrypt("sk-plain", aad);
@@ -48,12 +58,23 @@ describe("createEnvKeyCredentialCipher", () => {
     expect(await cipher.decrypt(stored, aad)).toBe("sk-plain");
   });
 
-  test("defensively copies the key so a later buffer mutation does not change it", async () => {
-    const mutable = new Uint8Array(32).fill(7);
-    const cipher = createEnvKeyCredentialCipher(mutable);
-    const blob = await cipher.encrypt("x", "aad");
-    mutable.fill(9);
-    expect(await cipher.decrypt(blob, "aad")).toBe("x");
+  test("refuses to pass a real ciphertext through as plaintext", async () => {
+    const real = createEnvKeyCredentialCipher(KEY);
+    const aad = credentialAad("cred_x", "secret");
+    const sealed = await real.encrypt("sk-secret", aad);
+    expect(sealed).toStartWith("enc:aead:");
+    // A value a real cipher sealed is unreadable through the keyless noop: it
+    // must throw, not hand the ciphertext back as a garbage secret.
+    await expect(
+      createNoopCredentialCipher().decrypt(sealed, aad),
+    ).rejects.toThrow(/refusing to pass an enc: ciphertext/);
+  });
+
+  test("refuses any enc: scheme, not just enc:aead:", async () => {
+    // The noop holds no key of any scheme, so it rejects every ciphertext form.
+    await expect(
+      createNoopCredentialCipher().decrypt("enc:kms:opaque-blob", "aad"),
+    ).rejects.toThrow(/refusing to pass an enc: ciphertext/);
   });
 });
 
