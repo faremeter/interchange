@@ -157,4 +157,25 @@ describe("buildInertProjectionStepSources (loop bodies)", () => {
       }),
     ).toThrow(WorkflowDefinitionInvalidError);
   });
+
+  test("throws when a body step claims to be an agent but has no valid modelSources", () => {
+    const raw = WorkflowProjectionDefinition({
+      id: "wf-malformed",
+      triggers: [],
+      stepOrder: ["s1"],
+      steps: { s1: { kind: "step" } },
+    });
+    if (raw instanceof type.errors) {
+      throw new Error(`projection failed validation: ${raw.summary}`);
+    }
+    expect(() =>
+      buildInertProjectionStepSources({
+        projection: raw,
+        config: CONFIG,
+        operatorApprovals: new Set(["inference.source:anthropic:worker-model"]),
+      }),
+    ).toThrow(
+      /step s1 is a step primitive but carries no valid agent\.modelSources/,
+    );
+  });
 });

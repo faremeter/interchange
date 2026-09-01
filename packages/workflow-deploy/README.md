@@ -34,9 +34,11 @@ Public surface:
   fails the deploy closed. `pinInertStepSources` is the shared walk (step
   order, loop-body recursion, flat-map collision rule) parameterized by a
   per-step leaf resolver.
-- `enumerateInertBodies(...)` — lift each inline trigger body (onTrigger section or childWorkflow child), transitively,
-  out of a frozen inert projection and surface its declared
-  `(provider, model)` preference for per-body source pinning.
+- `enumerateInertBodies(...)` — lift each inline trigger body (onTrigger
+  section or childWorkflow child), transitively, out of a frozen inert
+  projection so the hub can stage it and pin its per-step sources. The
+  enumeration is purely structural; each body step's `(provider, model)`
+  preference is read at pin time by `pinInertStepSources`.
 - `deriveRunAddress` / `deriveStepAddress` / `resolveStepAddress` /
   `deriveRunAgentId` / `deriveStepAgentId` / `deriveWorkflowRunRepoId`
   — the pure address and id derivation helpers.

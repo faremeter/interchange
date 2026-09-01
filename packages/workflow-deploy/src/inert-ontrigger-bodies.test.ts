@@ -14,7 +14,11 @@ import {
   step,
   type WorkflowDefinition,
 } from "@intx/workflow";
-import { enumerateInertBodies, inertLoopBody } from "./inert-ontrigger-bodies";
+import {
+  enumerateInertBodies,
+  inertLoopBody,
+  readInertStepInference,
+} from "./inert-ontrigger-bodies";
 
 type Projection = typeof WorkflowProjectionDefinition.infer;
 
@@ -69,14 +73,13 @@ function agentStep(provider: string, model: string): unknown {
 }
 
 describe("enumerateInertBodies", () => {
-  test("lifts an inline body and reads each step's declared preference", () => {
+  test("lifts an inline body, overriding its id to the ref", () => {
     const proj = projection(
       {
         sect: inlineOnTrigger(
           "inner",
           {
             s1: agentStep("anthropic", "m1"),
-            // A non-agent step declares no preference.
             w: { kind: "sleep" },
           },
           ["s1", "w"],
@@ -94,51 +97,6 @@ describe("enumerateInertBodies", () => {
     expect(body?.definition.id).toBe("wf__sect");
     // Every other body field rides verbatim.
     expect(body?.definition.stepOrder).toEqual(["s1", "w"]);
-    expect(body?.preferredByStep).toEqual({
-      s1: { provider: "anthropic", model: "m1" },
-      w: null,
-    });
-  });
-
-  test("reads a map body step's preference from its inner step's agent", () => {
-    const proj = projection(
-      {
-        sect: inlineOnTrigger(
-          "inner",
-          {
-            m: {
-              kind: "map",
-              step: {
-                agent: { modelSources: [{ provider: "openai", model: "gpt" }] },
-              },
-            },
-          },
-          ["m"],
-        ),
-      },
-      ["sect"],
-    );
-
-    const bodies = enumerateInertBodies(proj);
-    expect(bodies[0]?.preferredByStep).toEqual({
-      m: { provider: "openai", model: "gpt" },
-    });
-  });
-
-  test("yields a null preference for an agent with an empty modelSources", () => {
-    const proj = projection(
-      {
-        sect: inlineOnTrigger(
-          "inner",
-          { s1: { kind: "step", agent: { modelSources: [] } } },
-          ["s1"],
-        ),
-      },
-      ["sect"],
-    );
-
-    const bodies = enumerateInertBodies(proj);
-    expect(bodies[0]?.preferredByStep).toEqual({ s1: null });
   });
 
   test("skips an already-ref onTrigger body", () => {
@@ -177,19 +135,6 @@ describe("enumerateInertBodies", () => {
     expect(refs).toEqual(["wf__a", "wf__b"]);
   });
 
-  test("throws on a body step step that carries no agent.modelSources", () => {
-    const proj = projection(
-      {
-        sect: inlineOnTrigger("inner", { s1: { kind: "step" } }, ["s1"]),
-      },
-      ["sect"],
-    );
-
-    expect(() => enumerateInertBodies(proj)).toThrow(
-      /step s1 is a step primitive but carries no valid agent\.modelSources/,
-    );
-  });
-
   test("lifts an inline childWorkflow child, id overridden to the ref", () => {
     const proj = projection(
       {
@@ -206,9 +151,6 @@ describe("enumerateInertBodies", () => {
     expect(bodies).toHaveLength(1);
     expect(bodies[0]?.ref).toBe("wf__spawn");
     expect(bodies[0]?.definition.id).toBe("wf__spawn");
-    expect(bodies[0]?.preferredByStep).toEqual({
-      s: { provider: "anthropic", model: "m1" },
-    });
   });
 
   test("recurses into a grandchild, reproducing the runtime's recursive ref", () => {
@@ -280,11 +222,10 @@ describe("enumerateInertBodies", () => {
     );
   });
 
-  test("a childWorkflow body's non-agent steps take the placeholder path, not a throw", () => {
+  test("enumerates a childWorkflow body with mixed step kinds and lifts its grandchild", () => {
     // A child body mixing an agent step with three non-agent kinds -- a nested
-    // inline childWorkflow, a sleep, and an awaitSignal. None declares an
-    // inference preference, so each is null (the session-service placeholder),
-    // and the nested child is enumerated as its own body.
+    // inline childWorkflow, a sleep, and an awaitSignal. The nested child is
+    // enumerated as its own body; the non-agent kinds do not obstruct the lift.
     const proj = projection(
       {
         spawn: inlineChildWorkflow(
@@ -306,16 +247,13 @@ describe("enumerateInertBodies", () => {
     );
 
     const byRef = new Map(enumerateInertBodies(proj).map((b) => [b.ref, b]));
-    expect(byRef.get("wf__spawn")?.preferredByStep).toEqual({
-      work: { provider: "anthropic", model: "m1" },
-      nap: null,
-      wait: null,
-      sub: null,
-    });
-    expect(byRef.get("wf__spawn__sub")?.preferredByStep).toEqual({
-      deep: { provider: "openai", model: "gpt" },
-    });
     expect([...byRef.keys()].sort()).toEqual(["wf__spawn", "wf__spawn__sub"]);
+    expect(byRef.get("wf__spawn")?.definition.stepOrder).toEqual([
+      "work",
+      "nap",
+      "wait",
+      "sub",
+    ]);
   });
 
   test("stages a childWorkflow nested in a loop body, but NOT the loop body itself", () => {
@@ -340,9 +278,7 @@ describe("enumerateInertBodies", () => {
 
     const byRef = new Map(enumerateInertBodies(proj).map((b) => [b.ref, b]));
     expect([...byRef.keys()]).toEqual(["wf__rework__spawn"]);
-    expect(byRef.get("wf__rework__spawn")?.preferredByStep).toEqual({
-      s: { provider: "anthropic", model: "m1" },
-    });
+    expect(byRef.get("wf__rework__spawn")?.definition.stepOrder).toEqual(["s"]);
   });
 
   test("rejects an onTrigger section nested inside a loop body", () => {
@@ -512,6 +448,67 @@ describe("inertLoopBody", () => {
   test("throws when a loop step's body is not a valid projection", () => {
     expect(() => inertLoopBody(loopStep({ not: "a projection" }))).toThrow(
       /not a valid workflow projection/,
+    );
+  });
+});
+
+describe("readInertStepInference", () => {
+  test("reads a step's agent preference and marks it agent-bearing", () => {
+    expect(
+      readInertStepInference(
+        {
+          kind: "step",
+          agent: { modelSources: [{ provider: "anthropic", model: "m1" }] },
+        },
+        "ctx: ",
+        "s1",
+      ),
+    ).toEqual({
+      isAgent: true,
+      preference: { provider: "anthropic", model: "m1" },
+    });
+  });
+
+  test("reads a map step's preference from its inner step's agent", () => {
+    expect(
+      readInertStepInference(
+        {
+          kind: "map",
+          step: {
+            agent: { modelSources: [{ provider: "openai", model: "gpt" }] },
+          },
+        },
+        "ctx: ",
+        "m",
+      ),
+    ).toEqual({
+      isAgent: true,
+      preference: { provider: "openai", model: "gpt" },
+    });
+  });
+
+  test("marks an agent with an empty modelSources as agent-bearing with no preference", () => {
+    expect(
+      readInertStepInference(
+        { kind: "step", agent: { modelSources: [] } },
+        "ctx: ",
+        "s1",
+      ),
+    ).toEqual({ isAgent: true, preference: null });
+  });
+
+  test("marks a non-agent step as non-agent with no preference", () => {
+    expect(readInertStepInference({ kind: "sleep" }, "ctx: ", "w")).toEqual({
+      isAgent: false,
+      preference: null,
+    });
+  });
+
+  test("throws on a step that claims to be an agent but has no valid modelSources", () => {
+    expect(() =>
+      readInertStepInference({ kind: "step" }, "body ref: ", "s1"),
+    ).toThrow(
+      /body ref: step s1 is a step primitive but carries no valid agent\.modelSources/,
     );
   });
 });
