@@ -105,9 +105,8 @@ export const SECOND_TOKEN = "test-token-2";
 const TENANT_ID = "tenant-1";
 const REGISTRY_NAME = "workspace-builtins";
 const ASSET_ID = `ast_${REGISTRY_NAME.replace(/-/g, "_")}`;
-const TARBALL_FILENAME = "tools-mail-0.1.2.tgz";
 
-export { TENANT_ID, REGISTRY_NAME, ASSET_ID, TARBALL_FILENAME };
+export { TENANT_ID, REGISTRY_NAME, ASSET_ID };
 
 export async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -498,149 +497,6 @@ function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-// Synthetic @intx/tools-mail tarball
-//
-// The integration test's loader path is unmodified production code; it
-// imports the tarball's `interchange.tools` entry as a real ESM module.
-// The tarball ships a minimal `sidecar-bundle.js` that exports an
-// AnnotatedToolFactory with the same `id` shape as the real bundle
-// (`@intx/tools-mail/sidecar-bundle`) and a single `mail_send` definition.
-// The loader prefixes the definition name with the bundle id to yield the
-// `@intx/tools-mail/sidecar-bundle:mail_send` tool the model ends up
-// seeing.
-export async function buildSyntheticToolsMailTarball(
-  registerTempDir: (dir: string) => void,
-  opts: { transportBacked?: boolean; approvalMarked?: boolean } = {},
-): Promise<Uint8Array> {
-  const stagingDir = await fs.promises.mkdtemp(
-    path.join(os.tmpdir(), "tools-mail-fixture-"),
-  );
-  registerTempDir(stagingDir);
-  const packageDir = path.join(stagingDir, "package");
-  await fs.promises.mkdir(packageDir, { recursive: true });
-
-  await fs.promises.writeFile(
-    path.join(packageDir, "package.json"),
-    JSON.stringify({
-      name: "@intx/tools-mail",
-      version: "0.1.2",
-      type: "module",
-      interchange: { tools: "./sidecar-bundle.js" },
-    }),
-  );
-
-  // Two bundle shapes, selected by `opts.transportBacked`:
-  //
-  // Default (filesystem-only): the tool's `run` writes a sentinel file
-  // into the agent's `env.workdir` so a spawned-child test can prove the
-  // tool executed IN THE CHILD by observing the file in the per-step
-  // workspace. It declares `requires: []` and never touches the agent's
-  // transport. Tests that never drive the model to call the tool never
-  // invoke `run`, so the write is inert for them.
-  //
-  // Transport-backed (the 4.6 milestone's OUTBOUND proof): the tool calls
-  // `env.transport.send(...)` -- the SAME supervisor-backed transport the
-  // unified child wires for a step agent -- so the call exercises the
-  // real OUTBOUND chain (mail tool -> supervisor-backed transport ->
-  // outbound bridge -> `outbound.message` IPC -> supervisor `sendOutbound`
-  // -> host transport signed send -> `SendReceipt`). It declares
-  // `requires: ["transport", "address"]` so the loader populates those
-  // env slots, sends to the `to` argument, and writes the sentinel ONLY
-  // after a successful receipt. A broken outbound path rejects inside
-  // `send`, so no sentinel is written and the run fails -- making the
-  // sentinel a load-bearing proof of the signed-outbound composition.
-  // The static `definitions` the loader exposes on the AnnotatedToolFactory
-  // is what the sidecar's tool-mark floor deriver reads to authorize a
-  // pinned tool. Stamping `approval: "ask"` here makes the derived floor
-  // `ask`, so a call suspends for approval WITHOUT any hand-injected ask
-  // grant -- the proof that the sidecar floor authorizes a pinned
-  // ask-marked tool on its own static mark.
-  const staticDefinitions =
-    opts.approvalMarked === true
-      ? `[{ name: "mail_send", approval: "ask" }]`
-      : `[{ name: "mail_send" }]`;
-  const bundleSource = opts.transportBacked
-    ? `
-import fs from "node:fs";
-import path from "node:path";
-const factory = (env) => ({
-  definitions: [
-    {
-      name: "mail_send",
-      description: "Send a mail message",
-      inputSchema: {
-        type: "object",
-        properties: { to: { type: "string" }, body: { type: "string" } },
-        required: ["to", "body"],
-      },
-    },
-  ],
-  run: async (call, signal) => {
-    const args = call.arguments ?? {};
-    const to = typeof args.to === "string" ? args.to : env.address;
-    const filename = typeof args.body === "string" ? args.body : "tool-ran.txt";
-    const receipt = await env.transport.send({
-      to,
-      type: "conversation.message",
-      content: "Reply produced by the unified-host step agent.",
-    }, signal);
-    await fs.promises.mkdir(env.workdir, { recursive: true });
-    await fs.promises.writeFile(
-      path.join(env.workdir, filename),
-      JSON.stringify({ messageId: receipt.messageId, status: receipt.status }),
-    );
-    return { callId: call.id, content: "sent " + receipt.messageId };
-  },
-});
-export const mail = Object.assign(factory, {
-  id: "@intx/tools-mail/sidecar-bundle",
-  requires: ["transport", "address"],
-  definitions: ${staticDefinitions},
-});
-`.trimStart()
-    : `
-import fs from "node:fs";
-import path from "node:path";
-const factory = (env) => ({
-  definitions: [
-    {
-      name: "mail_send",
-      description: "Send a mail message",
-      inputSchema: {
-        type: "object",
-        properties: { to: { type: "string" }, body: { type: "string" } },
-        required: ["to", "body"],
-      },
-    },
-  ],
-  run: async (call, signal) => {
-    const args = call.arguments ?? {};
-    const filename = typeof args.body === "string" ? args.body : "tool-ran.txt";
-    const content = typeof args.to === "string" ? args.to : "ok";
-    await fs.promises.mkdir(env.workdir, { recursive: true });
-    await fs.promises.writeFile(path.join(env.workdir, filename), content);
-    return { callId: call.id, content: "wrote " + filename };
-  },
-});
-export const mail = Object.assign(factory, {
-  id: "@intx/tools-mail/sidecar-bundle",
-  requires: [],
-  definitions: ${staticDefinitions},
-});
-`.trimStart();
-  await fs.promises.writeFile(
-    path.join(packageDir, "sidecar-bundle.js"),
-    bundleSource,
-  );
-
-  const tarballPath = path.join(stagingDir, "out.tgz");
-  await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
-    "package",
-  ]);
-  const bytes = await fs.promises.readFile(tarballPath);
-  return new Uint8Array(bytes);
-}
-
 /**
  * Build a plain npm-package tarball (package.json + index.mjs), for serving as
  * a workflow's EXTERNAL dependency from an in-process registry. The registry
@@ -696,14 +552,13 @@ export type SyntheticCredentialToolOpts = {
 
 // Synthetic credential-consuming tool tarball
 //
-// Unlike `buildSyntheticToolsMailTarball` (which inlines its bundle as a
-// string), this compiles a REAL, type-checked fixture module
+// This compiles a REAL, type-checked fixture module
 // (`tests/workflow-deploy/fixtures/credential-tool-bundle.ts`) into the
-// package's `sidecar-bundle.js` with
-// Bun.build, so the e2e drives the production loader against a genuine ESM
-// bundle. The caller passes the fixture's absolute path (resolved from the
-// tests/workflow-deploy project, which owns the fixture) rather than importing
-// it, so this hub-agent-project helper carries no cross-project type edge.
+// package's `sidecar-bundle.js` with Bun.build, so the e2e drives the
+// production loader against a genuine ESM bundle. The caller passes the
+// fixture's absolute path (resolved from the tests/workflow-deploy project,
+// which owns the fixture) rather than importing it, so this hub-agent-project
+// helper carries no cross-project type edge.
 //
 // The written `package.json` declares BOTH `interchange.tools` (the bundle
 // entry) and `interchange.credentials` (the handle the tool resolves), so the
@@ -829,21 +684,20 @@ export type HubEnv = {
 // Hub WebSocket server (in-process) wired against a real AgentRepoStore
 // and SessionService.
 //
-// The hub seeds a `package-registry` asset repo with a synthetic
-// `@intx/tools-mail@0.1.2` tarball so the session-service tool-package
-// resolver path exercises the real registry walker end-to-end.
+// The hub seeds a `package-registry` asset repo. It is empty unless the
+// caller opts a tool package in via `credentialTool`, in which case the
+// session-service tool-package resolver path exercises the real registry
+// walker end-to-end.
 export async function startHub(
   registerTempDir: (dir: string) => void,
   opts: {
-    transportBackedMailTool?: boolean;
-    approvalMarkedMailTool?: boolean;
     registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
     materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
     /**
-     * When set, seed a second tool package alongside tools-mail: a real
-     * credential-consuming bundle compiled from a fixture module, so the
-     * credential-delivery e2e drives the production loader + capability path
-     * against a genuine tool that resolves a mediated credential.
+     * When set, seed a tool package: a real credential-consuming bundle
+     * compiled from a fixture module, so the credential-delivery e2e drives
+     * the production loader + capability path against a genuine tool that
+     * resolves a mediated credential.
      */
     credentialTool?: SyntheticCredentialToolOpts;
   } = {},
@@ -1040,24 +894,13 @@ export async function startHub(
     deployAcks.set(agentAddress, publicKey);
   });
 
-  // Seed one tarball per tool package into the single package-registry asset.
-  // tools-mail is always present; the credential-consuming package joins it
-  // only when the caller opts in. The registry walker reads each tarball's
-  // own `package.json` to resolve a pin, so the filename is arbitrary as long
-  // as it is both listed and readable through the AssetService below.
-  const tarballs: { filename: string; bytes: Uint8Array }[] = [
-    {
-      filename: TARBALL_FILENAME,
-      bytes: await buildSyntheticToolsMailTarball(registerTempDir, {
-        ...(opts.transportBackedMailTool === true
-          ? { transportBacked: true }
-          : {}),
-        ...(opts.approvalMarkedMailTool === true
-          ? { approvalMarked: true }
-          : {}),
-      }),
-    },
-  ];
+  // Seed one tarball per opted-in tool package into the single
+  // package-registry asset. The credential-consuming package joins the
+  // registry only when the caller opts in; otherwise the registry is empty.
+  // The registry walker reads each tarball's own `package.json` to resolve a
+  // pin, so the filename is arbitrary as long as it is both listed and
+  // readable through the AssetService below.
+  const tarballs: { filename: string; bytes: Uint8Array }[] = [];
   if (opts.credentialTool !== undefined) {
     const credentialTool = opts.credentialTool;
     const filename = `${credentialTool.packageName
@@ -1387,30 +1230,9 @@ export type StartDeployFlowEnvOpts = {
    */
   inferenceEchoUserMessage?: boolean;
   /**
-   * When true, the synthetic `@intx/tools-mail` tarball the hub seeds
-   * ships the transport-backed `mail_send` bundle: its `run` calls
-   * `env.transport.send(...)` (the supervisor-backed transport the
-   * unified child wires) and writes its workspace sentinel only after a
-   * successful `SendReceipt`. This drives the real OUTBOUND signed-send
-   * chain through the spawned child, proving the 4.3 path composes with
-   * the rest of the single-agent lifecycle. The default filesystem-only
-   * bundle is unchanged for tests that only assert in-child tool
-   * execution.
-   */
-  transportBackedMailTool?: boolean;
-  /**
-   * When true, the synthetic `@intx/tools-mail` tarball's static tool
-   * definition carries `approval: "ask"`. The sidecar derives the pinned
-   * tool's authorization floor from this static mark, so the tool
-   * suspends for approval on its own -- no hand-injected `ask` grant. Used
-   * to prove the sidecar-derived floor authorizes a pinned ask-marked tool
-   * end-to-end.
-   */
-  approvalMarkedMailTool?: boolean;
-  /**
-   * When set, seed a second tool package -- a real credential-consuming
-   * bundle compiled from a fixture module -- alongside tools-mail, so a test
-   * can pin it and drive the credential-delivery + capability rail end-to-end.
+   * When set, seed a tool package -- a real credential-consuming bundle
+   * compiled from a fixture module -- so a test can pin it and drive the
+   * credential-delivery + capability rail end-to-end.
    */
   credentialTool?: SyntheticCredentialToolOpts;
   /**
@@ -1449,12 +1271,6 @@ export async function startDeployFlowEnv(
   };
 
   const hub = await startHub(registerTempDir, {
-    ...(opts.transportBackedMailTool === true
-      ? { transportBackedMailTool: true }
-      : {}),
-    ...(opts.approvalMarkedMailTool === true
-      ? { approvalMarkedMailTool: true }
-      : {}),
     ...(opts.registerSignalCorrelation !== undefined
       ? { registerSignalCorrelation: opts.registerSignalCorrelation }
       : {}),

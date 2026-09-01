@@ -161,13 +161,13 @@ const STEP_AGENT_ID = "agent-approval-capstone";
 // The sentinel the recording tool writes when (and only when) it actually runs
 // in the child. Absent before approval (the ask grant suspends the call);
 // written exactly once after approval (the re-dispatch runs the parked call).
-// The synthetic `mail_send` bundle writes `SENTINEL_CONTENT` (its `to`
+// The `mail_send` fixture tool writes `SENTINEL_CONTENT` (its `to`
 // argument) into the file named by its `body` argument, and returns
 // `"wrote " + <filename>` as the tool result, which the resumed reply echoes.
 const SENTINEL_FILENAME = "approval-tool-ran.txt";
 const SENTINEL_CONTENT = "tool-executed";
-// The tool's result string is `"wrote " + <body argument>`; see the synthetic
-// bundle in deploy-flow-env. The mock's resumed reply is
+// The tool's result string is `"wrote " + <body argument>`; see the
+// `mail-tool.ts` fixture. The mock's resumed reply is
 // `RESUME_REPLY_PREFIX + <that result>`, so a test can assert the run continued
 // with the tool's real output rather than a re-inference that skipped it.
 const TOOL_RESULT = `wrote ${SENTINEL_FILENAME}`;
@@ -603,11 +603,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // (child -> sidecar -> hub -> co-write) intact. Every field the snapshot
       // carries is pinned verbatim: the name and arguments the model issued,
       // and the description and inputSchema of the resolved tool definition.
-      // All four are test-owned -- the tool is the synthetic `@intx/tools-mail`
-      // harness bundle whose `mail_send` definition is fixed in
-      // `deploy-flow-env.ts` (the loader namespaces its name to TOOL_NAME) --
-      // so a hop that dropped or mangled any field between the park and the
-      // co-write fails this assertion.
+      // All four are test-owned -- the tool is the `mail_send` definition from
+      // the `mail-tool.ts` fixture, whose model-facing name the test pins as
+      // TOOL_NAME (MAIL_TOOL_NAME) -- so a hop that dropped or mangled any
+      // field between the park and the co-write fails this assertion.
       expect(approvalRow.toolDefinition).toEqual({
         name: TOOL_NAME,
         description: "Send a mail message",
