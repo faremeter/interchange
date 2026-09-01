@@ -533,90 +533,6 @@ export async function buildSyntheticNpmPackageTarball(
   return new Uint8Array(bytes);
 }
 
-/**
- * Inputs for seeding the synthetic credential-consuming tool package. The
- * caller (the tests/workflow-deploy e2e, which owns the fixture) resolves
- * `entryPath` from its own project so this hub-agent-project helper never
- * imports the fixture across a project boundary.
- */
-export type SyntheticCredentialToolOpts = {
-  /** Absolute path to the fixture module compiled into the bundle entry. */
-  entryPath: string;
-  /** Package name stamped into `package.json` (the tool consumer identity). */
-  packageName: string;
-  /** Package version stamped into `package.json`. */
-  version: string;
-  /** The credential handle declared under `interchange.credentials`. */
-  handle: string;
-};
-
-// Synthetic credential-consuming tool tarball
-//
-// This compiles a REAL, type-checked fixture module
-// (`tests/workflow-deploy/fixtures/credential-tool-bundle.ts`) into the
-// package's `sidecar-bundle.js` with Bun.build, so the e2e drives the
-// production loader against a genuine ESM bundle. The caller passes the
-// fixture's absolute path (resolved from the tests/workflow-deploy project,
-// which owns the fixture) rather than importing it, so this hub-agent-project
-// helper carries no cross-project type edge.
-//
-// The written `package.json` declares BOTH `interchange.tools` (the bundle
-// entry) and `interchange.credentials` (the handle the tool resolves), so the
-// launch-time declared-vs-bound reconcile sees the handle the delivery binds.
-export async function buildSyntheticCredentialToolTarball(
-  registerTempDir: (dir: string) => void,
-  opts: SyntheticCredentialToolOpts,
-): Promise<Uint8Array> {
-  const stagingDir = await fs.promises.mkdtemp(
-    path.join(os.tmpdir(), "cred-tool-fixture-"),
-  );
-  registerTempDir(stagingDir);
-  const packageDir = path.join(stagingDir, "package");
-  await fs.promises.mkdir(packageDir, { recursive: true });
-
-  await fs.promises.writeFile(
-    path.join(packageDir, "package.json"),
-    JSON.stringify({
-      name: opts.packageName,
-      version: opts.version,
-      type: "module",
-      interchange: {
-        tools: "./sidecar-bundle.js",
-        credentials: [{ handle: opts.handle }],
-      },
-    }),
-  );
-
-  // Resolve `@intx/*` workspace deps to their TypeScript source via the
-  // `intx-src` export condition (mirroring bin/build-builtins.ts), so the
-  // packed bundle is a genuine module the production loader imports.
-  const result = await Bun.build({
-    entrypoints: [opts.entryPath],
-    outdir: packageDir,
-    naming: "sidecar-bundle.js",
-    target: "node",
-    format: "esm",
-    conditions: ["intx-src"],
-    minify: false,
-    sourcemap: "none",
-  });
-  if (!result.success) {
-    const messages = result.logs
-      .map((log) => (log instanceof Error ? log.message : String(log)))
-      .join("\n");
-    throw new Error(
-      `buildSyntheticCredentialToolTarball: Bun.build failed for ${opts.entryPath}:\n${messages || "(no diagnostics)"}`,
-    );
-  }
-
-  const tarballPath = path.join(stagingDir, "out.tgz");
-  await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
-    "package",
-  ]);
-  const bytes = await fs.promises.readFile(tarballPath);
-  return new Uint8Array(bytes);
-}
-
 export type HubEnv = {
   server: ReturnType<typeof Bun.serve>;
   router: SidecarRouter;
@@ -684,22 +600,15 @@ export type HubEnv = {
 // Hub WebSocket server (in-process) wired against a real AgentRepoStore
 // and SessionService.
 //
-// The hub seeds a `package-registry` asset repo. It is empty unless the
-// caller opts a tool package in via `credentialTool`, in which case the
-// session-service tool-package resolver path exercises the real registry
-// walker end-to-end.
+// The hub seeds an empty `package-registry` asset repo. Deploy tests carry
+// their tools inline in the workflow source closure, so no tool package is
+// seeded here; the resolver walk over a seeded registry is covered by the
+// tool-packaging end-to-end test instead.
 export async function startHub(
   registerTempDir: (dir: string) => void,
   opts: {
     registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
     materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
-    /**
-     * When set, seed a tool package: a real credential-consuming bundle
-     * compiled from a fixture module, so the credential-delivery e2e drives
-     * the production loader + capability path against a genuine tool that
-     * resolves a mediated credential.
-     */
-    credentialTool?: SyntheticCredentialToolOpts;
   } = {},
 ): Promise<HubEnv> {
   const agentEvents: HubEnv["agentEvents"] = [];
@@ -894,26 +803,11 @@ export async function startHub(
     deployAcks.set(agentAddress, publicKey);
   });
 
-  // Seed one tarball per opted-in tool package into the single
-  // package-registry asset. The credential-consuming package joins the
-  // registry only when the caller opts in; otherwise the registry is empty.
-  // The registry walker reads each tarball's own `package.json` to resolve a
-  // pin, so the filename is arbitrary as long as it is both listed and
-  // readable through the AssetService below.
+  // Seed the single package-registry asset. No tool package is seeded --
+  // deploy tests carry their tools inline in the workflow source closure --
+  // so the registry is empty. The AssetService below still serves it: the
+  // walker reads each tarball's own `package.json` to resolve a pin.
   const tarballs: { filename: string; bytes: Uint8Array }[] = [];
-  if (opts.credentialTool !== undefined) {
-    const credentialTool = opts.credentialTool;
-    const filename = `${credentialTool.packageName
-      .replace(/^@intx\//, "")
-      .replace(/\//g, "-")}-${credentialTool.version}.tgz`;
-    tarballs.push({
-      filename,
-      bytes: await buildSyntheticCredentialToolTarball(
-        registerTempDir,
-        credentialTool,
-      ),
-    });
-  }
   const tarballByBlobPath = new Map(
     tarballs.map((t) => [`tarballs/${t.filename}`, t.bytes]),
   );
@@ -1230,12 +1124,6 @@ export type StartDeployFlowEnvOpts = {
    */
   inferenceEchoUserMessage?: boolean;
   /**
-   * When set, seed a tool package -- a real credential-consuming bundle
-   * compiled from a fixture module -- so a test can pin it and drive the
-   * credential-delivery + capability rail end-to-end.
-   */
-  credentialTool?: SyntheticCredentialToolOpts;
-  /**
    * Co-write hook for the `signal.correlation.register` frame a suspending
    * agent step emits. When set, the mock hub's sidecar router wires it as
    * the `registerSignalCorrelation` lookup, so a parked run's correlation +
@@ -1279,9 +1167,6 @@ export async function startDeployFlowEnv(
           materializeMailTriggeredRunGrants:
             opts.materializeMailTriggeredRunGrants,
         }
-      : {}),
-    ...(opts.credentialTool !== undefined
-      ? { credentialTool: opts.credentialTool }
       : {}),
   });
   const inference = startMockInference({
