@@ -17,18 +17,21 @@
 // an optional field at every hop, so dropping it compiles clean; only a deploy
 // that resolves a real binding through the route catches a regression.
 //
-// The two tests form a mutation-detecting pair over the same seeded ciphertext:
+// The tests exercise the same seeded ciphertext through the route:
 //   * Positive: the app holds the SAME key the secret was sealed under, so the
 //     binding resolves and decrypts -- 201. If the route dropped the cipher or
 //     the shared deploy stopped forwarding it, resolution fails closed on the
 //     "no credentialCipher was supplied" guard and the deploy is 502; the
 //     positive assertion catches that.
-//   * Negative: the app holds a DIFFERENT key over the same ciphertext, so the
+//   * Wrong key: the app holds a DIFFERENT key over the same ciphertext, so the
 //     AEAD decrypt refuses the key-id mismatch and the deploy fails closed
 //     (502). If the cipher stopped being invoked (a pass-through regression),
-//     the wrong key would 201; the negative assertion catches that. A no-op
-//     cipher cannot serve as this control -- it never throws, so both cases
-//     would return 201 and the pair would lose its signal.
+//     the wrong key would 201; this assertion catches that.
+//   * Keyless: the app is built with NO cipher, so it resolves the noop cipher
+//     (a hub booted without CREDENTIAL_ENCRYPTION_KEY). The noop refuses the
+//     real ciphertext rather than passing it through, so the deploy fails
+//     closed (502) instead of delivering an un-decrypted secret -- the
+//     misconfigured-production case.
 //
 // The credential delivery is not observable as a return value or a DB row (it
 // rides the sidecar frame), and a real AES-256-GCM decrypt authenticates the
@@ -199,10 +202,12 @@ async function seedBindingSource(assetId: string): Promise<{
 }
 
 // Deploy the credential-bound definition through the real route with `appCipher`
-// as the app's credential cipher, returning the raw response for assertion.
+// as the app's credential cipher, returning the raw response for assertion. When
+// `appCipher` is omitted the app is built with no cipher, so it resolves the
+// noop cipher -- the keyless-composition case.
 async function deployBindingThroughRoute(opts: {
   assetId: string;
-  appCipher: ReturnType<typeof createTestCredentialCipher>;
+  appCipher?: ReturnType<typeof createTestCredentialCipher>;
 }): Promise<Response> {
   await seedAsset(h.db, {
     id: opts.assetId,
@@ -228,7 +233,9 @@ async function deployBindingThroughRoute(opts: {
     grantStore: createGrantStore(h.db),
     sidecarRouter: env.hub.router,
     sessionService,
-    credentialCipher: opts.appCipher,
+    ...(opts.appCipher !== undefined
+      ? { credentialCipher: opts.appCipher }
+      : {}),
     eventCollectors: createMockEventCollectors(),
     assetService: createAssetService({
       db: h.db,
@@ -365,6 +372,25 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ? JSON.stringify(body)
           : String(body);
       expect(message).toMatch(/key id .* does not match/);
+    });
+
+    test("fails closed when the app has no cipher and the binding is encrypted", async () => {
+      // A keyless app (no CREDENTIAL_ENCRYPTION_KEY) resolves the noop cipher.
+      // The binding's credential is stored as real ciphertext, which the noop
+      // refuses rather than passing through, so the deploy fails closed (502)
+      // instead of delivering an un-decrypted secret.
+      const res = await deployBindingThroughRoute({
+        assetId: "ast_credential_route_keyless",
+      });
+      expect(res.status).toBe(502);
+      const body: unknown = await res.json();
+      // Assert the noop-rejection message so a genuine sidecar outage (also 502)
+      // cannot pass this test for the wrong reason.
+      const message =
+        typeof body === "object" && body !== null && "error" in body
+          ? JSON.stringify(body)
+          : String(body);
+      expect(message).toMatch(/refusing to pass an enc: ciphertext/);
     });
   },
 );
