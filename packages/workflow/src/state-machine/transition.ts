@@ -256,9 +256,14 @@ function handleStepFailed(state: RunState, e: StepFailed): RunState {
     );
   }
   const steps = new Map(state.steps);
+  // A failure that names a handler lands `routed`: a terminal, non-retry-
+  // eligible settlement that the run-failure scan does not count. An unrouted
+  // failure lands `failed` as before. Absence is checked explicitly, so an
+  // empty handler id is malformed rather than silently treated as unrouted.
+  const phase = e.routedTo !== undefined ? "routed" : "failed";
   steps.set(e.stepId, {
     ...withoutAwaiters(step),
-    phase: "failed",
+    phase,
     lastError: e.error,
   });
   return { ...state, steps, lastSeq: e.seq };
@@ -269,13 +274,19 @@ function handleAttemptScheduled(
   e: AttemptScheduled,
 ): RunState {
   const step = requireStep(state, e, e.stepId);
-  // AttemptScheduled rejects against a completed or cancelled step:
+  // AttemptScheduled rejects against a completed, routed, or cancelled step:
   // those terminal phases must not be resurrected into awaiting-timer
-  // by a stray retry event. The legitimate retry path goes through
-  // StepFailed which leaves the step in `failed` (also terminal under
+  // by a stray retry event. A `routed` step settled its failure to a
+  // handler and is not retry-eligible, so it belongs with completed and
+  // cancelled here. The legitimate retry path goes through StepFailed
+  // which leaves the step in `failed` (also terminal under
   // `isTerminalStepPhase`) but is explicitly the retry-eligible
   // terminal; the handler permits that transition by name.
-  if (step.phase === "completed" || step.phase === "cancelled") {
+  if (
+    step.phase === "completed" ||
+    step.phase === "routed" ||
+    step.phase === "cancelled"
+  ) {
     throw new TransitionError(
       "step-phase",
       `AttemptScheduled refused to resurrect step ${e.stepId} from ${step.phase}`,

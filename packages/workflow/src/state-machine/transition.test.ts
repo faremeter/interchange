@@ -301,6 +301,31 @@ describe("applyEvent: StepCompleted / StepFailed", () => {
     expect(state.steps.get("a")?.phase).toBe("failed");
     expect(state.steps.get("a")?.lastError?.message).toBe("boom");
   });
+
+  test("StepFailed with routedTo lands routed and preserves the error", () => {
+    let state = fresh();
+    state = applyEvent(state, startRun());
+    state = applyEvent(state, {
+      kind: "StepStarted",
+      seq: 2,
+      at: T,
+      stepId: "a",
+      attempt: 1,
+      input: { ref: "i" },
+    });
+    state = applyEvent(state, {
+      kind: "StepFailed",
+      seq: 3,
+      at: T,
+      stepId: "a",
+      attempt: 1,
+      error: { message: "boom" },
+      retriesExhausted: true,
+      routedTo: "handler",
+    });
+    expect(state.steps.get("a")?.phase).toBe("routed");
+    expect(state.steps.get("a")?.lastError?.message).toBe("boom");
+  });
 });
 
 describe("applyEvent: AttemptScheduled and TimerSet pairing", () => {
@@ -428,6 +453,42 @@ describe("applyEvent: AttemptScheduled and TimerSet pairing", () => {
     });
     expect(state.steps.get("a")?.phase).toBe("awaiting-timer");
     expect(state.steps.get("a")?.currentAttempt).toBe(2);
+  });
+
+  test("AttemptScheduled refuses to resurrect a routed step", () => {
+    expectThrowsAt(
+      [
+        startRun(),
+        {
+          kind: "StepStarted",
+          seq: 2,
+          at: T,
+          stepId: "a",
+          attempt: 1,
+          input: { ref: "i" },
+        },
+        {
+          kind: "StepFailed",
+          seq: 3,
+          at: T,
+          stepId: "a",
+          attempt: 1,
+          error: { message: "boom" },
+          retriesExhausted: true,
+          routedTo: "handler",
+        },
+        {
+          kind: "AttemptScheduled",
+          seq: 4,
+          at: T,
+          stepId: "a",
+          nextAttempt: 2,
+          timerId: "t-1",
+          fireAt: T,
+        },
+      ],
+      /refused to resurrect step a from routed/,
+    );
   });
 });
 

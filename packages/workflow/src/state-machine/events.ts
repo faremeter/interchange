@@ -91,6 +91,13 @@ export interface StepFailed extends EventBase {
   attempt: AttemptId;
   error: { message: string; code?: string };
   retriesExhausted: boolean;
+  /**
+   * The handler step this failure routes to. When present, the reducer lands
+   * the step in the `routed` terminal phase instead of `failed`, so the
+   * run-level failure scan does not count it. Absent for an unrouted failure,
+   * which lands `failed`.
+   */
+  routedTo?: StepId;
 }
 
 export interface AttemptScheduled extends EventBase {
