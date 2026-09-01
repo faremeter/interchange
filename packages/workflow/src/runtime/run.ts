@@ -1048,7 +1048,7 @@ async function runPrimitive(
     case "step":
       return runStep(definition, env, runId, primitive, selectorCtx, abort);
     case "action":
-      return runAction(env, runId, primitive, selectorCtx, abort);
+      return runAction(definition, env, runId, primitive, selectorCtx, abort);
     case "loop":
       return runLoop(
         definition,
@@ -1184,6 +1184,63 @@ async function runPrimitiveSafe(
         state = await commit(env, runId, propagated);
       } else {
         const message = cause instanceof Error ? cause.message : String(cause);
+        // action/childWorkflow route their permanent failure to an onFailure
+        // handler HERE -- this arm commits their terminal StepFailed (unlike
+        // `step`, which routes inside runStep and reaches this safety-net arm
+        // only on an out-of-band rejection; it is NOT routed here, so gate on
+        // the invocation kinds explicitly). This covers only a post-StepStarted
+        // invocation failure; a structural pre-StepStarted throw lands in the
+        // no-StepStarted arm above and fails hard by design. A cancelled child
+        // keeps its current disposition (bare StepFailed, no routedTo): routing
+        // it would fire the fallback handler on an operator's intentional stop.
+        const unit = definition.steps[primitive.id];
+        const onFailure =
+          unit !== undefined &&
+          (unit.kind === "action" || unit.kind === "childWorkflow")
+            ? unit.onFailure
+            : undefined;
+        const cancelledChild =
+          cause instanceof ChildWorkflowFailedError &&
+          cause.childTerminalStatus === "cancelled";
+        if (onFailure !== undefined && !cancelledChild) {
+          await pruneAroundRoute(
+            definition,
+            env,
+            runId,
+            primitive.id,
+            onFailure,
+            "routed",
+            abort,
+          );
+          state = await reloadState(env, runId);
+          // Cancellation wins over routing: a cancel that landed across the
+          // prune's awaits settles the unit `cancelled` rather than routed,
+          // mirroring the cancelling arm above and the step failure route.
+          if (state.phase === "cancelling") {
+            const propagated: WorkflowEvent = {
+              kind: "CancelPropagated",
+              seq: state.lastSeq + 1,
+              at: env.clock().toISOString(),
+              stepId: primitive.id,
+            };
+            state = await commit(env, runId, propagated);
+            void state;
+            throw cause;
+          }
+          const routed: WorkflowEvent = {
+            kind: "StepFailed",
+            seq: state.lastSeq + 1,
+            at: env.clock().toISOString(),
+            stepId: primitive.id,
+            attempt: stepState.currentAttempt,
+            error: { message },
+            retriesExhausted: true,
+            routedTo: onFailure,
+          };
+          state = await commit(env, runId, routed);
+          void state;
+          return { failed: true, stepId: primitive.id, error: { message } };
+        }
         const failed: WorkflowEvent = {
           kind: "StepFailed",
           seq: state.lastSeq + 1,
@@ -1689,6 +1746,7 @@ async function runStep(
  * action non-re-invocable at the runtime layer.
  */
 async function runAction(
+  definition: WorkflowDefinition,
   env: WorkflowRuntimeEnv,
   runId: string,
   primitive: ActionPrimitive,
@@ -1747,6 +1805,20 @@ async function runAction(
       authzContext: { stepId: primitive.id, attempt: 1, runId },
       signal: actionAbort.signal,
     });
+    // Mirror runStep's success prune: a unit carrying onFailure routes on
+    // both outcomes, so on success prune the handler branch before the
+    // terminal lands, while the unit is still in-flight.
+    if (primitive.onFailure !== undefined) {
+      await pruneAroundRoute(
+        definition,
+        env,
+        runId,
+        primitive.id,
+        primitive.onFailure,
+        "completed",
+        abort,
+      );
+    }
     await emitStepCompletedWithValue(env, runId, primitive.id, result.output);
     return result.output;
   } finally {
@@ -4632,7 +4704,6 @@ async function runChildWorkflow(
   depth: number,
   maxChildSpawnDepth: number,
 ): Promise<unknown> {
-  void parent;
   // Bound the spawn chain BEFORE committing StepStarted/ChildSpawned. A
   // reject here lands a clean StepFailed on this spawn step (runPrimitiveSafe
   // synthesizes it) and never writes a phantom child-run log. The child runs
@@ -4746,6 +4817,20 @@ async function runChildWorkflow(
     throw new ChildWorkflowFailedError(
       `child run ${childRunId} (${definitionRef}) ended ${child.terminalStatus}`,
       child.terminalStatus,
+    );
+  }
+  // Mirror runStep's success prune: a unit carrying onFailure routes on both
+  // outcomes, so on success prune the handler branch before the terminal
+  // lands, while the unit is still in-flight.
+  if (primitive.onFailure !== undefined) {
+    await pruneAroundRoute(
+      parent,
+      env,
+      parentRunId,
+      primitive.id,
+      primitive.onFailure,
+      "completed",
+      abort,
     );
   }
   const output = { childRunId, terminalStatus: child.terminalStatus };
