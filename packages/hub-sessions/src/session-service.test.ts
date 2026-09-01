@@ -1653,6 +1653,79 @@ describe("deployCodeSourcedWorkflow", () => {
     return { approval, projection, closure, wireHash };
   }
 
+  // Like makeBodyApproveOutput, but the inline onTrigger body carries a `loop`
+  // whose own body has an agent step. Exercises the per-body pin's recursion
+  // into a loop nested inside a spawned body.
+  async function makeLoopInBodyApproveOutput(grants: string[]) {
+    const { defineWorkflow, step, onTrigger, loop } = await import(
+      "@intx/workflow/definition"
+    );
+    const { defineAgent } = await import("@intx/agent");
+    const { gateAndFreezeProbeResult } = await import("./workflow-probe-gate");
+    const bodyAgent = defineAgent({
+      id: "composed-loop-body-agent",
+      systemPrompt: "you are the composed loop body agent",
+      tools: [],
+      capabilities: [],
+      inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
+    });
+    const definition = defineWorkflow({
+      id: "wf_composed_loop_body",
+      trigger: { type: "mail", to: DEPLOY_ADDRESS },
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: DEPLOY_ADDRESS },
+          body: defineWorkflow({
+            id: "authored-loop-body",
+            trigger: { type: "manual" },
+            steps: {
+              rework: loop({
+                body: defineWorkflow({
+                  id: "authored-inner-loop",
+                  trigger: { type: "manual" },
+                  steps: { turn: step({ agent: bodyAgent }) },
+                }),
+                while: "w",
+                carry: "c",
+                input: { literal: 0 },
+                maxIterations: 3,
+                onExhausted: "esc",
+              }),
+              esc: step({ agent: bodyAgent, after: ["rework"] }),
+            },
+          }),
+        }),
+      },
+    });
+    const roundTripped: unknown = JSON.parse(
+      JSON.stringify(projectLiveToInert(definition)),
+    );
+    const projection = WorkflowProjectionDefinition(roundTripped);
+    if (projection instanceof type.errors) {
+      throw new Error(
+        `inert projection failed WorkflowProjectionDefinition validation: ${projection.summary}`,
+      );
+    }
+    const wireHash = await computeWireDefinitionHash(projection);
+    const approval = await gateAndFreezeProbeResult({
+      assetId: "asset-composed-loop-body",
+      probeResult: {
+        projection,
+        grants,
+        grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+        wireHash,
+      },
+      approvals: new Set(grants),
+      persist: async () => ({ definitionId: "def-composed-loop-body" }),
+    });
+    const closure: ToolPackageManifest = {
+      schemaVersion: "1",
+      topLevel: [],
+      entries: [],
+    };
+    return { approval, projection, closure, wireHash };
+  }
+
   test("pins and carries per-step inference sources for an inline onTrigger body", async () => {
     const mockRouter = createMockRouter();
     const sentWorkflows: Parameters<SidecarRouter["sendAgentDeploy"]>[2][] = [];
@@ -1748,6 +1821,42 @@ describe("deployCodeSourcedWorkflow", () => {
         deploymentDomain: DEPLOYMENT_DOMAIN,
       }),
     ).rejects.toThrow(/no approved inference source/);
+    expect(deployAttempted).toBe(false);
+  });
+
+  test("rejects a loop nested inside an onTrigger body at deploy", async () => {
+    const mockRouter = createMockRouter();
+    let deployAttempted = false;
+    mockRouter.sendAgentDeploy = (() => {
+      deployAttempted = true;
+      return Promise.resolve({ publicKey: "ed25519-supervisor-pubkey" });
+    }) as SidecarRouter["sendAgentDeploy"];
+
+    const { deployCodeSourcedWorkflow } = await import("./session-service");
+    const { approval, projection, closure } = await makeLoopInBodyApproveOutput(
+      [
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${DEPLOY_ADDRESS}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ],
+    );
+    if (!approval.ok) throw new Error("expected approval");
+
+    await expect(
+      deployCodeSourcedWorkflow({
+        sidecarRouter: mockRouter,
+        agentAddress: DEPLOY_ADDRESS,
+        config: CONFIG,
+        sources: SOURCES,
+        approved: { approval, projection, closure },
+        source: SOURCE,
+        db: CAPTURING_DB,
+        tenantId: TENANT,
+        anchorRunId: ANCHOR_RUN_ID,
+        deploymentDomain: DEPLOYMENT_DOMAIN,
+      }),
+    ).rejects.toThrow(/nested inside a spawned body/);
     expect(deployAttempted).toBe(false);
   });
 });
