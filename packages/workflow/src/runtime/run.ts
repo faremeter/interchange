@@ -686,6 +686,67 @@ async function executeRunBody(
     if (event.kind !== "StepCompleted") continue;
     stepOutputs[event.stepId] = await env.blobs.resolveRef(event.output.ref);
   }
+
+  // onFailure resume reconciliation, after the log hydration above and before
+  // the first `nextSchedulable`. A routed unit records no StepCompleted, so its
+  // live failure sentinel -- held only in the in-process `stepOutputs` map --
+  // is lost on resume; the hydration above cannot rebuild it, and its handler
+  // reads `steps.<unit>.output.error.message`. Rebuild it from the routed
+  // StepFailed's reduced error so the selector resolves the same value it saw
+  // before the crash. The pass also completes the branch prune for each routed
+  // or completed onFailure unit. That prune is idempotent: the durable log is a
+  // prefix and each route emits its prune BEFORE its terminal in one batch, so
+  // a durable terminal already carries its skips and `emitSkipClosure`
+  // re-emits nothing; the pass keeps it so a unit whose prune is not durable is
+  // still completed here. Skip the pass unless the run is `running` -- a
+  // cancelling/terminal resume is owned by the drive loop's settlement, and a
+  // skip StepStarted would throw against a non-running run.
+  if (state.phase === "running") {
+    for (const [stepId, primitive] of Object.entries(definition.steps)) {
+      const onFailure =
+        primitive.kind === "step" ||
+        primitive.kind === "action" ||
+        primitive.kind === "childWorkflow"
+          ? primitive.onFailure
+          : undefined;
+      if (onFailure === undefined) continue;
+      const phase = state.steps.get(stepId)?.phase;
+      if (phase === "completed") {
+        await pruneAroundRoute(
+          definition,
+          env,
+          runId,
+          stepId,
+          onFailure,
+          "completed",
+          cancelController.signal,
+        );
+      } else if (phase === "routed") {
+        await pruneAroundRoute(
+          definition,
+          env,
+          runId,
+          stepId,
+          onFailure,
+          "routed",
+          cancelController.signal,
+        );
+        const lastError = state.steps.get(stepId)?.lastError;
+        if (lastError === undefined) {
+          throw new Error(
+            `routed unit ${stepId} has no lastError to reconstruct its onFailure sentinel`,
+          );
+        }
+        stepOutputs[stepId] = {
+          failed: true,
+          stepId,
+          error: { message: lastError.message },
+        };
+      }
+    }
+    state = await reloadState(env, runId);
+  }
+
   const stepPromises = new Map<string, Promise<void>>();
   const justSettled = new Set<string>();
   // Per-step local abort controllers. Each scheduled primitive gets
