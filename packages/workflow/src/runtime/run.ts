@@ -1202,7 +1202,16 @@ async function runPrimitiveSafe(
         const cancelledChild =
           cause instanceof ChildWorkflowFailedError &&
           cause.childTerminalStatus === "cancelled";
-        if (onFailure !== undefined && !cancelledChild) {
+        // A SuccessTerminalizationError means the unit's WORK succeeded but
+        // landing its terminal failed; it must NOT route (that would fire the
+        // handler on a success) and NOT retry. It falls through to the bare
+        // failure below, so the run fails loudly via the verdict rather than
+        // inverting a success into a routed failure.
+        if (
+          onFailure !== undefined &&
+          !cancelledChild &&
+          !(cause instanceof SuccessTerminalizationError)
+        ) {
           await pruneAroundRoute(
             definition,
             env,
@@ -1555,35 +1564,45 @@ async function runStep(
           kind: result.suspend.kind,
         };
       }
-      const outputRef = (await env.blobs.recordOutput(step.id, attempt, output))
-        .ref;
-      // A unit carrying onFailure routes on BOTH outcomes: on success the
-      // handler branch must be pruned, or the scheduler would offer the
-      // failure handler off its `after: [unit]` once the unit is terminal.
-      // Prune while the unit is still in-flight -- before the StepCompleted
-      // below -- so no sibling settling can schedule the handler mid-prune.
-      if (step.onFailure !== undefined) {
-        await pruneAroundRoute(
-          definition,
-          env,
-          runId,
-          step.id,
-          step.onFailure,
-          "completed",
-          abort,
-        );
+      // Wrap the success terminalization -- recording the output, pruning the
+      // handler branch, and committing StepCompleted -- so a durable-store
+      // failure here is distinguishable from an invocation failure in the
+      // catch below. The step's work already succeeded, so it must not be
+      // routed or retried; the catch lands a bare failure instead.
+      try {
+        const outputRef = (
+          await env.blobs.recordOutput(step.id, attempt, output)
+        ).ref;
+        // A unit carrying onFailure routes on BOTH outcomes: on success the
+        // handler branch must be pruned, or the scheduler would offer the
+        // failure handler off its `after: [unit]` once the unit is terminal.
+        // Prune while the unit is still in-flight -- before the StepCompleted
+        // below -- so no sibling settling can schedule the handler mid-prune.
+        if (step.onFailure !== undefined) {
+          await pruneAroundRoute(
+            definition,
+            env,
+            runId,
+            step.id,
+            step.onFailure,
+            "completed",
+            abort,
+          );
+        }
+        let after = await reloadState(env, runId);
+        const completed: WorkflowEvent = {
+          kind: "StepCompleted",
+          seq: after.lastSeq + 1,
+          at: env.clock().toISOString(),
+          stepId: step.id,
+          attempt,
+          output: { ref: outputRef },
+        };
+        after = await commit(env, runId, completed);
+        void after;
+      } catch (termCause) {
+        throw new SuccessTerminalizationError(termCause);
       }
-      let after = await reloadState(env, runId);
-      const completed: WorkflowEvent = {
-        kind: "StepCompleted",
-        seq: after.lastSeq + 1,
-        at: env.clock().toISOString(),
-        stepId: step.id,
-        attempt,
-        output: { ref: outputRef },
-      };
-      after = await commit(env, runId, completed);
-      void after;
       return output;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -1604,6 +1623,25 @@ async function runStep(
           stepId: step.id,
         };
         after = await commit(env, runId, propagated);
+        void after;
+        throw cause;
+      }
+      if (cause instanceof SuccessTerminalizationError) {
+        // The step's work succeeded but landing its terminal failed. Do not
+        // route and do not retry -- both would act on a step that already did
+        // its work (a retry would re-invoke the agent, an at-most-once
+        // violation). Land a bare failure so the run fails loudly via the
+        // verdict; a resume re-drives under the at-most-once contract.
+        const failed: WorkflowEvent = {
+          kind: "StepFailed",
+          seq: after.lastSeq + 1,
+          at: env.clock().toISOString(),
+          stepId: step.id,
+          attempt,
+          error: { message },
+          retriesExhausted: true,
+        };
+        after = await commit(env, runId, failed);
         void after;
         throw cause;
       }
@@ -1805,21 +1843,29 @@ async function runAction(
       authzContext: { stepId: primitive.id, attempt: 1, runId },
       signal: actionAbort.signal,
     });
-    // Mirror runStep's success prune: a unit carrying onFailure routes on
-    // both outcomes, so on success prune the handler branch before the
-    // terminal lands, while the unit is still in-flight.
-    if (primitive.onFailure !== undefined) {
-      await pruneAroundRoute(
-        definition,
-        env,
-        runId,
-        primitive.id,
-        primitive.onFailure,
-        "completed",
-        abort,
-      );
+    // Wrap the success terminalization so a durable-store failure while
+    // pruning the handler branch or committing StepCompleted is distinguishable
+    // from an invocation failure in runPrimitiveSafe -- the action's work
+    // already succeeded, so it must land a bare failure, not route or retry.
+    try {
+      // Mirror runStep's success prune: a unit carrying onFailure routes on
+      // both outcomes, so on success prune the handler branch before the
+      // terminal lands, while the unit is still in-flight.
+      if (primitive.onFailure !== undefined) {
+        await pruneAroundRoute(
+          definition,
+          env,
+          runId,
+          primitive.id,
+          primitive.onFailure,
+          "completed",
+          abort,
+        );
+      }
+      await emitStepCompletedWithValue(env, runId, primitive.id, result.output);
+    } catch (termCause) {
+      throw new SuccessTerminalizationError(termCause);
     }
-    await emitStepCompletedWithValue(env, runId, primitive.id, result.output);
     return result.output;
   } finally {
     abort.removeEventListener("abort", onOuter);
@@ -4819,22 +4865,30 @@ async function runChildWorkflow(
       child.terminalStatus,
     );
   }
-  // Mirror runStep's success prune: a unit carrying onFailure routes on both
-  // outcomes, so on success prune the handler branch before the terminal
-  // lands, while the unit is still in-flight.
-  if (primitive.onFailure !== undefined) {
-    await pruneAroundRoute(
-      parent,
-      env,
-      parentRunId,
-      primitive.id,
-      primitive.onFailure,
-      "completed",
-      abort,
-    );
-  }
   const output = { childRunId, terminalStatus: child.terminalStatus };
-  await emitStepCompletedWithValue(env, parentRunId, primitive.id, output);
+  // Wrap the success terminalization so a durable-store failure while pruning
+  // the handler branch or committing StepCompleted is distinguishable from a
+  // child failure in runPrimitiveSafe -- the child already completed, so it
+  // must land a bare failure, not route or retry.
+  try {
+    // Mirror runStep's success prune: a unit carrying onFailure routes on both
+    // outcomes, so on success prune the handler branch before the terminal
+    // lands, while the unit is still in-flight.
+    if (primitive.onFailure !== undefined) {
+      await pruneAroundRoute(
+        parent,
+        env,
+        parentRunId,
+        primitive.id,
+        primitive.onFailure,
+        "completed",
+        abort,
+      );
+    }
+    await emitStepCompletedWithValue(env, parentRunId, primitive.id, output);
+  } catch (termCause) {
+    throw new SuccessTerminalizationError(termCause);
+  }
   return output;
 }
 
@@ -4852,6 +4906,19 @@ class ChildWorkflowFailedError extends Error {
     super(message);
     this.name = "ChildWorkflowFailedError";
     this.childTerminalStatus = childTerminalStatus;
+  }
+}
+
+// A unit's work succeeded but landing its terminal -- pruning the handler
+// branch or committing StepCompleted -- threw (e.g. a transient durable-store
+// failure). Distinct from an invocation failure so the runner catches land a
+// bare failure rather than routing to the onFailure handler or retrying: the
+// work is already done, so a route would invert a success into a fired handler
+// and a retry would re-invoke it.
+class SuccessTerminalizationError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "SuccessTerminalizationError";
   }
 }
 
