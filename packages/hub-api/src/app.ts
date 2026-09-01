@@ -116,7 +116,8 @@ export type MountHubRoutesDeps = {
   workflowDispatchService?: WorkflowDispatchService;
   eventCollectors: EventCollectorRegistry;
   /**
-   * Encrypts credential secrets at rest on the credential/oauth write paths.
+   * Encrypts credential secrets at rest on the credential/oauth write paths
+   * and decrypts tenant-owned credential bindings on workflow deploy.
    * Optional: when omitted, a noop cipher is used and a warning is logged.
    * Production supplies a real cipher; tests that do not exercise credential
    * secrets can omit it.
@@ -500,7 +501,8 @@ export type CreateAppOpts = {
   workflowDispatchService?: WorkflowDispatchService;
   eventCollectors: EventCollectorRegistry;
   /**
-   * Encrypts credential secrets at rest on the credential/oauth write paths.
+   * Encrypts credential secrets at rest on the credential/oauth write paths
+   * and decrypts tenant-owned credential bindings on workflow deploy.
    * Optional: when omitted, a noop cipher is used and a warning is logged.
    * Production supplies a real cipher; tests that do not exercise credential
    * secrets can omit it.
