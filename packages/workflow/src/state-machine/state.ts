@@ -23,6 +23,8 @@ export type RunPhase =
   | "failed"
   | "cancelled";
 
+export type TerminalRunPhase = "completed" | "failed" | "cancelled";
+
 export type StepPhase =
   | "in-flight"
   | "awaiting-signal"
@@ -132,6 +134,27 @@ export function emptyState(runId: RunId): RunState {
 
 export function isTerminalRunPhase(phase: RunPhase): boolean {
   return phase === "completed" || phase === "failed" || phase === "cancelled";
+}
+
+export function decideTerminalRunFlip(phase: RunPhase): TerminalRunPhase {
+  switch (phase) {
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "pending":
+    case "running":
+    case "cancelling":
+      throw new Error(`decideTerminalRunFlip: non-terminal run phase ${phase}`);
+    default: {
+      const unexpected: never = phase;
+      throw new Error(
+        `decideTerminalRunFlip: unexpected run phase ${String(unexpected)}`,
+      );
+    }
+  }
 }
 
 export function isTerminalStepPhase(phase: StepPhase): boolean {

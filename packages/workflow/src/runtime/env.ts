@@ -15,7 +15,7 @@ import type {
   WorkflowAuthorizeFn,
 } from "../authorize-context";
 import type { Primitive } from "../definition/index";
-import type { WorkflowEvent } from "../state-machine/index";
+import type { TerminalRunPhase, WorkflowEvent } from "../state-machine/index";
 import type { DrainController } from "./drain";
 
 /**
@@ -647,7 +647,7 @@ export interface WorkflowRun {
 
 export interface RunResult {
   runId: string;
-  terminalStatus: "completed" | "failed" | "cancelled";
+  terminalStatus: TerminalRunPhase;
   /** Captured outputs of every step that reached `completed`. */
   outputs: Record<string, unknown>;
   /** The full event log as committed. */

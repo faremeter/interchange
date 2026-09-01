@@ -69,6 +69,7 @@ import { loopBodyRunId, scopedStepId } from "./step-scope";
 import { inlineBodyRef } from "../ontrigger-bodies";
 import {
   controlParkKindOf,
+  decideTerminalRunFlip,
   isTerminalRunPhase,
   resumeFromLog,
   TransitionError,
@@ -862,12 +863,7 @@ async function executeRunBody(
   }
 
   const events = await env.repoStore.read(runId);
-  const terminalStatus =
-    state.phase === "completed"
-      ? "completed"
-      : state.phase === "failed"
-        ? "failed"
-        : "cancelled";
+  const terminalStatus = decideTerminalRunFlip(state.phase);
   return {
     runId,
     terminalStatus,
@@ -884,8 +880,9 @@ async function executeRunBody(
  * `RunStarted` (which would throw `terminal-phase`).
  *
  * The shape matches the live terminal path at the tail of
- * `executeRunBody` byte-for-byte: `terminalStatus` derived from the
- * (already terminal) `state.phase`, `events` read from the durable log
+ * `executeRunBody`: `terminalStatus` derived from the (already terminal)
+ * `state.phase` through the shared `decideTerminalRunFlip` helper,
+ * `events` read from the durable log
  * (so it carries the terminal event `emitTerminalEvent` and the child
  * entry point walk for), and `outputs` hydrated from the log's
  * `StepCompleted` refs (the live path threads in-process `stepOutputs`,
@@ -903,12 +900,7 @@ async function buildResultFromLog(
     if (event.kind !== "StepCompleted") continue;
     outputs[event.stepId] = await env.blobs.resolveRef(event.output.ref);
   }
-  const terminalStatus =
-    state.phase === "completed"
-      ? "completed"
-      : state.phase === "failed"
-        ? "failed"
-        : "cancelled";
+  const terminalStatus = decideTerminalRunFlip(state.phase);
   return { runId, terminalStatus, outputs, events };
 }
 
