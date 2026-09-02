@@ -276,8 +276,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: receiverAddress,
         approvals: buildApprovals(receiverAddress, []),
-        config: buildConfig(RECEIVER_ID, receiverAddress),
-        sources: { [RECEIVER_STEP_ID]: [inferenceSource()] },
+        config: buildConfig(RECEIVER_ID, receiverAddress, "sk-mock-receiver"),
+        sources: { [RECEIVER_STEP_ID]: [inferenceSource("sk-mock-receiver")] },
       });
 
       // Bring up a second sidecar and wait for it to register.
@@ -335,8 +335,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: senderAddress,
         approvals: buildApprovals(senderAddress, [`tool:${MAIL_TOOL_NAME}`]),
-        config: buildConfig(SENDER_ID, senderAddress),
-        sources: { [SENDER_STEP_ID]: [inferenceSource()] },
+        config: buildConfig(SENDER_ID, senderAddress, "sk-mock-sender"),
+        sources: { [SENDER_STEP_ID]: [inferenceSource("sk-mock-sender")] },
       });
 
       // Wait for sidecar 1 (the receiver) to reconnect so the receiver is
@@ -385,17 +385,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(terminal.type).toBe("RunCompleted");
     });
 
-    function inferenceSource(): InferenceSource {
+    // The sender and receiver are sibling tenants (neither is the other's
+    // ancestor), so each must own its OWN inference credential: a credential id
+    // is a global primary key, and the seed helper's onConflictDoNothing would
+    // otherwise leave a single id owned by whichever tenant seeded it first,
+    // unresolvable by the other.
+    function inferenceSource(credentialId: string): InferenceSource {
       return {
         id: "anthropic:mock-model",
         provider: "anthropic",
         baseURL: `http://localhost:${String(env.inference.server.port)}`,
-        apiKey: "sk-mock",
+        credentialId,
         model: "mock-model",
       };
     }
 
-    function buildConfig(anchorRunId: string, address: string): HarnessConfig {
+    function buildConfig(
+      anchorRunId: string,
+      address: string,
+      credentialId: string,
+    ): HarnessConfig {
       return {
         sessionId: SESSION_ID,
         agentId: `${anchorRunId}`,
@@ -405,7 +414,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         systemPrompt: "Fallback prompt (overridden per step by the definition)",
         tools: [],
         grants: [],
-        sources: [inferenceSource()],
+        sources: [inferenceSource(credentialId)],
         defaultSource: "anthropic:mock-model",
       };
     }

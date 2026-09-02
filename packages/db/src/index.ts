@@ -73,7 +73,9 @@ export {
   resolveCredentialById,
   resolveCredentialRequirement,
   resolveTenantOwnedCredentialById,
+  resolveInferenceMaterials,
   AmbiguousCredentialError,
+  CredentialUnauthorizedError,
   buildCredentialDelivery,
 } from "./credential-resolution";
 export type {

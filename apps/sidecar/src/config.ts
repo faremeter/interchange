@@ -9,8 +9,28 @@
 // re-reading env, so the boundary stays at the boot edge.
 
 import { AdapterManifest } from "@intx/inference";
+import { hexDecode } from "@intx/types";
 
 const DEFAULT_CACHE_MAX_BYTES = 10 * 1024 * 1024 * 1024;
+
+// The operator key the sidecar seals its at-rest credential material under
+// (inference-source apiKeys, and the tool credential material store). A
+// SEPARATE key from the hub's `CREDENTIAL_ENCRYPTION_KEY`: the sidecar seals a
+// local store on a host it does not control as tightly, so a sidecar
+// disk-plus-key compromise must not also decrypt the hub's credential
+// database, and the two keys rotate independently. Required at boot: a missing
+// key fails loudly here rather than letting the sidecar run and persist secrets
+// it cannot protect. 32 bytes, hex -- e.g. `openssl rand -hex 32`, the same
+// shape as the hub's key.
+export function readCredentialEncryptionKey(): Uint8Array {
+  const raw = process.env["SIDECAR_CREDENTIAL_ENCRYPTION_KEY"];
+  if (raw === undefined || raw.trim() === "") {
+    throw new Error(
+      "SIDECAR_CREDENTIAL_ENCRYPTION_KEY environment variable is required",
+    );
+  }
+  return hexDecode(raw);
+}
 
 export function readCacheMaxBytes(): number {
   const raw = process.env["SIDECAR_CACHE_MAX_BYTES"];

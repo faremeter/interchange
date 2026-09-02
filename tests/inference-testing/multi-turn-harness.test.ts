@@ -46,7 +46,7 @@ const ANTHROPIC_SOURCE: InferenceSource = {
   id: "anthropic:claude-test",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "test",
+  credentialId: "test",
   model: "claude-test",
 };
 
@@ -54,7 +54,7 @@ const OPENAI_SOURCE: InferenceSource = {
   id: "openai:gpt-test",
   provider: "openai",
   baseURL: "https://api.openai.com/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "gpt-test",
 };
 
@@ -128,6 +128,7 @@ async function collectInferenceManual(
     source,
     nextSeq,
     deps: harness.deps,
+    readMaterial: () => ({ secret: "test-secret" }),
   })) {
     events.push(ev);
   }

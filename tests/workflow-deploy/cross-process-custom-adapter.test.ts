@@ -159,7 +159,7 @@ async function deployCustomProviderWorkflow(opts: {
     id: sourceId,
     provider: opts.provider,
     baseURL: `http://localhost:${env.inference.server.port}`,
-    apiKey: "sk-mock",
+    credentialId: "sk-mock",
     model: "mock-model",
   };
 

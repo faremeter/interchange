@@ -52,7 +52,7 @@ describe("pickStepInferenceSource (agent step)", () => {
           id: "src-default",
           provider: "openai",
           baseURL: "https://api.example/openai",
-          apiKey: "secret",
+          credentialId: "secret",
           model: "default-model",
         },
       ],
@@ -85,7 +85,7 @@ describe("pickStepInferenceSource (agent step)", () => {
           id: "src-default",
           provider: "openai",
           baseURL: "https://api.example/openai",
-          apiKey: "secret",
+          credentialId: "secret",
           model: "default-model",
         },
       ],
@@ -113,7 +113,7 @@ describe("pickStepInferenceSource (agent step)", () => {
       id: "src-default",
       provider: "openai",
       baseURL: "https://api.example/openai",
-      apiKey: "secret",
+      credentialId: "secret",
       model: "default-model",
     });
   });
@@ -125,14 +125,14 @@ describe("pickStepInferenceSource (agent step)", () => {
           id: "src-preferred",
           provider: "anthropic",
           baseURL: "https://api.example/anthropic",
-          apiKey: "secret-a",
+          credentialId: "secret-a",
           model: "preferred-model",
         },
         {
           id: "src-other",
           provider: "openai",
           baseURL: "https://api.example/openai",
-          apiKey: "secret-b",
+          credentialId: "secret-b",
           model: "other-model",
         },
       ],
@@ -158,7 +158,7 @@ describe("pickStepInferenceSource (agent step)", () => {
       id: "src-preferred",
       provider: "anthropic",
       baseURL: "https://api.example/anthropic",
-      apiKey: "secret-a",
+      credentialId: "secret-a",
       model: "preferred-model",
     });
   });
@@ -169,7 +169,7 @@ describe("isSourceApproved", () => {
     id: "src-a",
     provider: "anthropic",
     baseURL: "https://api.example/anthropic",
-    apiKey: "secret",
+    credentialId: "secret",
     model: "claude",
   };
 

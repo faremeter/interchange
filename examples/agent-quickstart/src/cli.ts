@@ -25,6 +25,7 @@ import { mkdirSync } from "node:fs";
 import {
   createAgent,
   createDefaultDirectorRegistry,
+  createStaticCredentialResolver,
   defineAgent,
   type BaseEnv,
 } from "@intx/agent";
@@ -55,8 +56,9 @@ export async function main(
     return 1;
   }
 
-  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
-  if (source === null) return 1;
+  const resolved = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (resolved === null) return 1;
+  const { source, material } = resolved;
 
   const contextDir = opts.contextDir ?? defaultContextDir(EXAMPLE_NAME);
   mkdirSync(contextDir, { recursive: true });
@@ -80,6 +82,7 @@ export async function main(
     audit: noopAuditStore(),
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
+    readCurrentMaterial: createStaticCredentialResolver(material),
     ...optional("deps", opts.deps),
   };
 

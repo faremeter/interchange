@@ -119,7 +119,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:full-demo",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-full-demo",
+  credentialId: "sk-full-demo",
   model: "claude-full-demo",
 };
 
@@ -910,6 +910,7 @@ describe("dispatch orchestrator with real agents", () => {
           workdir: join(dir, "workspace"),
           audit: noopAuditStore(),
           directors: createDefaultDirectorRegistry(),
+          readCurrentMaterial: () => ({ secret: "test-secret" }),
           deps: harness.deps,
         };
       },

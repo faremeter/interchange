@@ -76,8 +76,9 @@ export async function main(
     return 1;
   }
 
-  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
-  if (source === null) return 1;
+  const resolved = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (resolved === null) return 1;
+  const { source, material } = resolved;
 
   const noisy = createNoisyTool(opts.payloadChars ?? DEFAULT_PAYLOAD_CHARS);
 
@@ -88,6 +89,7 @@ export async function main(
     tools: [noisy],
     sources: [source],
     defaultSource: source.id,
+    material,
   });
   try {
     const result = await agent.send(prompt);

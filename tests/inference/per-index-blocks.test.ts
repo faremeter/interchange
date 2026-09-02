@@ -41,7 +41,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:claude-test",
   provider: "anthropic",
   baseURL: "https://test.invalid/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "claude-test",
 };
 
@@ -87,6 +87,7 @@ async function runWithChunks(chunks: Uint8Array[]): Promise<InferenceEvent[]> {
   let seq = 0;
   return drain(
     runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         {
           role: "user",
@@ -465,7 +466,7 @@ describe("runInference — OpenAI tool_call slot/blockIndex resolution", () => {
       id: "openai:gpt-test",
       provider: "openai",
       baseURL: "https://test.invalid/v1",
-      apiKey: "test",
+      credentialId: "test",
       model: "gpt-test",
     };
 
@@ -487,6 +488,7 @@ describe("runInference — OpenAI tool_call slot/blockIndex resolution", () => {
     let seq = 0;
     const events = await drain(
       runInference({
+        readMaterial: () => ({ secret: "test-secret" }),
         turns: [
           {
             role: "user",

@@ -31,7 +31,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test-send-flow",
+  credentialId: "sk-test-send-flow",
   model: "claude-3-5-sonnet",
 };
 
@@ -61,6 +61,11 @@ async function envFor(
     audit: noopAuditStore(),
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
+    // Identity resolver: the mock adapter injects the returned secret verbatim,
+    // and the rotation test asserts x-api-key equals the source's credentialId.
+    // Returning the credentialId as the secret satisfies that and covers every
+    // credentialId a setSource swap installs.
+    readCurrentMaterial: (credentialId) => ({ secret: credentialId }),
     deps: harness.deps,
     ...extras,
   };
@@ -207,7 +212,7 @@ describe("@intx/agent send-flow integration", () => {
         id: SOURCE.id,
         provider: "anthropic",
         baseURL: "https://api.anthropic.com",
-        apiKey: "sk-rotated",
+        credentialId: "sk-rotated",
         model: SOURCE.model,
       });
 
@@ -249,7 +254,7 @@ describe("@intx/agent send-flow integration", () => {
         id: `anthropic:${NEW_MODEL}`,
         provider: "anthropic",
         baseURL: "https://api.anthropic.com",
-        apiKey: SOURCE.apiKey,
+        credentialId: SOURCE.credentialId,
         model: NEW_MODEL,
       });
 

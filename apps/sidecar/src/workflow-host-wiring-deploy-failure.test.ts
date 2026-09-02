@@ -18,7 +18,11 @@ import { dirname, join as pathJoin } from "node:path";
 
 import { describe, test, expect } from "bun:test";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
+import {
+  createEd25519Crypto,
+  createNoopCredentialCipher,
+  generateKeyPair,
+} from "@intx/crypto";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import type { WorkflowDefinition } from "@intx/workflow";
@@ -135,6 +139,7 @@ describe("deploy-failure registry leak", () => {
         typeof createSidecarDeployRouter
       >[0]["repoStore"],
       signingKeySeed: new Uint8Array(32),
+      credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
       registerDeployment: ({ runId, agentAddress }) => {
@@ -215,6 +220,7 @@ describe("deploy-failure registry leak", () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
       repoStore: repoStoreStub as RepoStore,
       signingKeySeed: new Uint8Array(32),
+      credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
       registerDeployment: ({ runId, agentAddress }) => {
@@ -277,7 +283,7 @@ describe("deploy-failure registry leak", () => {
               id: "primary",
               provider: "anthropic",
               baseURL: "https://api.anthropic.com",
-              apiKey: "sk-x",
+              credentialId: "sk-x",
               model: "claude-3-5",
             },
           ],
@@ -370,6 +376,7 @@ describe("deploy-failure registry leak", () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
       repoStore: repoStoreStub as RepoStore,
       signingKeySeed: new Uint8Array(32),
+      credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
       registerDeployment: ({ runId, agentAddress }) => {
@@ -428,7 +435,7 @@ describe("deploy-failure registry leak", () => {
               id: "primary",
               provider: "anthropic",
               baseURL: "https://api.anthropic.com",
-              apiKey: "sk-x",
+              credentialId: "sk-x",
               model: "claude-3-5",
             },
           ],

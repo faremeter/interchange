@@ -53,7 +53,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
+import {
+  createEd25519Crypto,
+  createNoopCredentialCipher,
+  generateKeyPair,
+} from "@intx/crypto";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -378,6 +382,7 @@ async function buildRouter(args: {
     transport: args.transport,
     repoStore,
     signingKeySeed: signingKeyPair.privateKey,
+    credentialCipher: createNoopCredentialCipher(),
     createAgentCrypto: createEd25519Crypto,
     assertSourceBuildable: () => undefined,
     registerDeployment: () => undefined,
@@ -427,7 +432,7 @@ function singleStepFrame(
             id: "step-1",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
-            apiKey: "sk-step-1",
+            credentialId: "sk-step-1",
             model: "claude-3-5",
           },
         ],

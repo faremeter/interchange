@@ -235,6 +235,11 @@ const sidecarEnv: Record<string, string> = {
   SIDECAR_ID: "dev-sidecar-1",
   SIDECAR_TOKEN: "dev-token",
   SIDECAR_DATA_DIR: resolve(ROOT, "tmp/sidecar-data"),
+  // A fixed dev key so the sidecar boots with a real at-rest cipher over the
+  // throwaway `tmp/sidecar-data` store. Override via `.env.sidecar` for a
+  // stable key across resets. Never a production key.
+  SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
+    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
   ...sidecarFileEnv,
 };
 

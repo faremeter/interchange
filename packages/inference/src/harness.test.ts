@@ -24,7 +24,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:claude-3-5-sonnet-20240620",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "test",
+  credentialId: "test",
   model: "claude-3-5-sonnet-20240620",
 };
 
@@ -99,6 +99,7 @@ describe("runInference — Dependencies parameter", () => {
           source: SOURCE,
           nextSeq: () => ++seq,
           deps,
+          readMaterial: () => ({ secret: "test-secret" }),
         }),
       );
     } finally {
@@ -142,6 +143,7 @@ describe("runInference — Dependencies parameter", () => {
           source: SOURCE,
           nextSeq: () => ++seq,
           deps,
+          readMaterial: () => ({ secret: "test-secret" }),
         }),
       );
     } finally {
@@ -291,7 +293,7 @@ describe("runInference — source.defaults merge precedence", () => {
     id: "openai:gpt-test",
     provider: "openai",
     baseURL: "https://api.openai.test/v1",
-    apiKey: "test",
+    credentialId: "test",
     model: "gpt-test",
   };
 
@@ -326,6 +328,7 @@ describe("runInference — source.defaults merge precedence", () => {
       runInference({
         turns: [userTurn("hi")],
         source: opts.source,
+        readMaterial: () => ({ secret: "test-secret" }),
         ...(opts.perCallMaxTokens !== undefined
           ? { inferenceOptions: { maxTokens: opts.perCallMaxTokens } }
           : {}),
@@ -410,7 +413,7 @@ describe("runInference — providerOptions merge precedence", () => {
       id: `${providerName}:test-model`,
       provider: providerName,
       baseURL: "https://test.invalid",
-      apiKey: "test",
+      credentialId: "test",
       model: "test-model",
       ...(opts.sourceProviderOptions !== undefined
         ? { defaults: { providerOptions: opts.sourceProviderOptions } }
@@ -544,6 +547,7 @@ describe("runInference — source-identity stamping", () => {
         source: SOURCE,
         nextSeq: () => ++seq,
         deps,
+        readMaterial: () => ({ secret: "test-secret" }),
       }),
     );
 
@@ -561,14 +565,14 @@ describe("runInference — source-identity stamping", () => {
       id: "anthropic:claude-A",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
-      apiKey: "test",
+      credentialId: "test",
       model: "claude-A",
     };
     const sourceB: InferenceSource = {
       id: "openai:gpt-B",
       provider: "openai",
       baseURL: "https://api.openai.test/v1",
-      apiKey: "test",
+      credentialId: "test",
       model: "gpt-B",
     };
     const deps: Dependencies = {
@@ -590,6 +594,7 @@ describe("runInference — source-identity stamping", () => {
         source: sourceA,
         nextSeq: () => ++seq,
         deps,
+        readMaterial: () => ({ secret: "test-secret" }),
       }),
     );
     const doneA = eventsA.find((e) => e.type === "inference.done");
@@ -607,6 +612,7 @@ describe("runInference — source-identity stamping", () => {
         source: sourceB,
         nextSeq: () => ++seq,
         deps,
+        readMaterial: () => ({ secret: "test-secret" }),
       }),
     );
     const doneB = eventsB.find((e) => e.type === "inference.done");
@@ -628,7 +634,7 @@ describe("runInference — source-identity stamping", () => {
       id: "anthropic:claude-pre",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
-      apiKey: "test",
+      credentialId: "test",
       model: "claude-pre",
     };
 
@@ -643,7 +649,7 @@ describe("runInference — source-identity stamping", () => {
         activeSource.id = "openai:gpt-post";
         activeSource.provider = "openai";
         activeSource.baseURL = "https://api.openai.test/v1";
-        activeSource.apiKey = "test-post";
+        activeSource.credentialId = "test-post";
         activeSource.model = "gpt-post";
         return Promise.resolve(
           new Response("", {
@@ -663,6 +669,7 @@ describe("runInference — source-identity stamping", () => {
         source: activeSource,
         nextSeq: () => ++seq,
         deps,
+        readMaterial: () => ({ secret: "test-secret" }),
       }),
     );
 
@@ -751,7 +758,7 @@ describe("runInference — non-streaming JSON responses", () => {
     id: "test-json:model-x",
     provider: "test-json",
     baseURL: "https://example.test",
-    apiKey: "test",
+    credentialId: "test",
     model: "model-x",
   };
 

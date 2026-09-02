@@ -51,6 +51,7 @@ import {
   installAndApproveWorkflowDefinition,
   type RepoId,
 } from "@intx/hub-sessions";
+import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowRun as workflowRunTable,
@@ -78,6 +79,7 @@ import {
   fireMailTrigger,
   listRunIds,
   readWorkflowRunEvents,
+  seedInferenceCredentials,
   startDeployFlowEnv,
   waitFor,
   waitForFirstRunId,
@@ -133,9 +135,8 @@ const bodyDeploymentMailAddress = deriveRunAddress({
 // closure. They must match, or the body's sources.json ENOENTs at runtime.
 const BODY_REF = `${BODY_WORKFLOW_ID}__${BODY_SECTION_ID}`;
 // The section's body child run id is `<sectionId>__<index>`; index 0 is the
-// first fired event, index 1 the second (used by the tamper sub-case).
+// first fired event.
 const BODY_CHILD_RUN_ID_FIRST = `${BODY_SECTION_ID}__0`;
-const BODY_CHILD_RUN_ID_SECOND = `${BODY_SECTION_ID}__1`;
 
 // The self-contained entry the fixture package ships as its
 // `interchange.workflow`. A single toolless agent step triggered by the
@@ -168,7 +169,7 @@ export const workflow = defineWorkflow({
 // The onTrigger-container entry the second fixture ships. A single section
 // subscribed to the deployment's mail address; its inline body is a one-step
 // tool-less agent, so a fired event spawns a body child that runs inference from
-// the staged per-body sources.json.
+// its env-delivered per-body sources.
 const bodyWorkflowEntrySource = `
 import { defineWorkflow, onTrigger, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
@@ -516,7 +517,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       id: "anthropic:mock-model",
       provider: "anthropic",
       baseURL: `http://localhost:${String(env.inference.server.port)}`,
-      apiKey: "sk-mock",
+      credentialId: "sk-mock",
       model: "mock-model",
     };
     const config: HarnessConfig = {
@@ -532,6 +533,12 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       defaultSource: "anthropic:mock-model",
     };
 
+    await seedInferenceCredentials(
+      h.db,
+      TENANT_ID,
+      { [STEP_ID]: [inferenceSource] },
+      config,
+    );
     const deployResult = await deployCodeSourcedWorkflow({
       approved,
       source,
@@ -543,6 +550,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       tenantId: TENANT_ID,
       anchorRunId: DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
+      credentialCipher: createNoopCredentialCipher(),
     });
     expect(deployResult.publicKey.length).toBeGreaterThan(0);
 
@@ -618,7 +626,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     expect(terminal.type).toBe("RunCompleted");
   }, 90_000);
 
-  test("deploys an onTrigger body by source-ref and runs it from the staged per-body sources", async () => {
+  test("deploys an onTrigger body by source-ref and runs it from the record-carried per-body sources", async () => {
     // The container is the top-level run; body children are `<sectionId>__<n>`.
     const findBodyContainerRunId = async (
       repoId: RepoId,
@@ -699,7 +707,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       id: "anthropic:mock-model",
       provider: "anthropic",
       baseURL: `http://localhost:${String(env.inference.server.port)}`,
-      apiKey: "sk-mock",
+      credentialId: "sk-mock",
       model: "mock-model",
     };
     const config: HarnessConfig = {
@@ -715,6 +723,12 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       defaultSource: "anthropic:mock-model",
     };
 
+    await seedInferenceCredentials(
+      h.db,
+      TENANT_ID,
+      { [BODY_SECTION_ID]: [inferenceSource] },
+      config,
+    );
     const deployResult = await deployCodeSourcedWorkflow({
       approved,
       source,
@@ -726,6 +740,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       tenantId: TENANT_ID,
       anchorRunId: BODY_DEPLOYMENT_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
+      credentialCipher: createNoopCredentialCipher(),
     });
     expect(deployResult.publicKey.length).toBeGreaterThan(0);
 
@@ -746,36 +761,13 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       mailAddress: bodyDeploymentMailAddress,
     });
 
-    // (a) The hub pinned the body's per-step sources and the sidecar staged them
-    // under the SHARED body ref -- inlineBodyRef(frozen projection.id,
-    // sectionId). Staging under the FROZEN inert id is the id-equivalence proof
-    // at the staging layer; the run child below reads under the id it re-derives
-    // from the re-evaluated closure, and the body only runs if the two match.
-    const bodySourcesPath = path.join(
-      env.sidecar.dataDir,
-      "assets",
-      "workflow",
-      BODY_REF,
-      "sources.json",
-    );
-    await waitFor(
-      async () => {
-        try {
-          await fs.access(bodySourcesPath);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
-    );
-    const stagedSources: unknown = JSON.parse(
-      await fs.readFile(bodySourcesPath, "utf8"),
-    );
-    // The body step's pinned chain is the operator-approved source, keyed by the
-    // body's own step id.
-    expect(stagedSources).toEqual({ [BODY_STEP_ID]: [inferenceSource] });
-
+    // (a) The hub pinned the body's per-step sources under the SHARED body ref
+    // (inlineBodyRef(frozen projection.id, sectionId)). The sidecar now seals
+    // those into the run record and delivers the plaintext to the run child
+    // through the spawn env; it no longer stages a plaintext sources.json. The
+    // id-equivalence proof moves entirely to the runtime layer below: the body
+    // resolves its sources by the ref it re-derives from the re-evaluated
+    // closure and only runs if that matches the ref the hub pinned under.
     await waitFor(
       () =>
         env.hub.router
@@ -783,9 +775,24 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
           .includes(bodyDeploymentMailAddress),
       { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
     );
+    // The retired staging path writes no plaintext file to disk.
+    const legacyBodySourcesPath = path.join(
+      env.sidecar.dataDir,
+      "assets",
+      "workflow",
+      BODY_REF,
+      "sources.json",
+    );
+    let legacyFileExists = true;
+    try {
+      await fs.access(legacyBodySourcesPath);
+    } catch {
+      legacyFileExists = false;
+    }
+    expect(legacyFileExists).toBe(false);
 
     // (b) Fire the section trigger; it spawns the body child, whose agent step
-    // resolves inference from the staged sources.json and runs for real.
+    // resolves inference from its env-delivered sources and runs for real.
     const inferenceBefore = env.inference.requests.length;
     await fireMailTrigger(env, bodyDeploymentMailAddress, {
       messageId: `<${BODY_DEPLOYMENT_ID}-a@integration.interchange>`,
@@ -819,8 +826,8 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
 
     // The container recorded the body child completed; the body child's own
     // agent step completed (ran inference), not failed. Body-runs-e2e AND
-    // id-equivalence: the body could only read its sources.json and run if the
-    // runtime ref matched the frozen ref the hub staged under.
+    // id-equivalence: the body could only resolve its env-delivered sources and
+    // run if the runtime ref matched the frozen ref the hub pinned under.
     const containerEvents = await readWorkflowRunEvents(
       env,
       BODY_DEPLOYMENT_ID,
@@ -850,54 +857,11 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     // The body's inference call actually reached the mock provider.
     expect(env.inference.requests.length).toBeGreaterThan(inferenceBefore);
 
-    // (c) Fails-closed on missing sources: remove the staged sources.json and
-    // fire a second event. The new body child (section__1) cannot resolve its
-    // inference sources off disk, so readChildStepInferenceSources throws during
-    // env build -- BEFORE any inference. The failure surfaces on the CONTAINER
-    // run as the section step failing (the body child records no run of its
-    // own), so the section settles StepFailed -> RunFailed rather than the body
-    // running unpinned inference.
-    await fs.rm(bodySourcesPath);
-    const inferenceBeforeTamper = env.inference.requests.length;
-    await fireMailTrigger(env, bodyDeploymentMailAddress, {
-      messageId: `<${BODY_DEPLOYMENT_ID}-b@integration.interchange>`,
-      content: "run the onTrigger body with sources removed",
-    });
-
-    await waitFor(
-      async () => {
-        const events = await readWorkflowRunEvents(
-          env,
-          BODY_DEPLOYMENT_ID,
-          containerRunId,
-        );
-        return events.some(
-          (e) => e.type === "StepFailed" || e.type === "RunFailed",
-        );
-      },
-      { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
-    );
-    const tamperEvents = await readWorkflowRunEvents(
-      env,
-      BODY_DEPLOYMENT_ID,
-      containerRunId,
-    );
-    // The failure is SPECIFICALLY the missing per-body sources.json -- a
-    // fail-closed on tamper, not a fallback to unpinned inference.
-    const stepFailed = tamperEvents.find((e) => e.type === "StepFailed");
-    if (stepFailed === undefined) {
-      throw new Error(
-        `expected a StepFailed on the fail-closed path; container events: ${tamperEvents.map((e) => e.type).join(", ")}\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    expect(JSON.stringify(stepFailed.body)).toContain(
-      "failed to read child inference sources",
-    );
-    // The second body child never completed successfully.
-    expect(
-      findChildCompleted(tamperEvents, BODY_CHILD_RUN_ID_SECOND),
-    ).toBeUndefined();
-    // It failed BEFORE reaching inference: the mock provider saw no new request.
-    expect(env.inference.requests.length).toBe(inferenceBeforeTamper);
+    // Fail-closed on body sources that cannot be resolved -- a corrupt or
+    // wrong-key sealed record whose bodySources will not decrypt -- is covered at
+    // the record boundary by the workflow-run-record store tests (a decrypt
+    // failure soft-skips the whole run). It is no longer reachable by removing a
+    // per-body sources.json here: the file is retired, so this e2e asserts only
+    // the happy path and the file's absence above.
   }, 180_000);
 });

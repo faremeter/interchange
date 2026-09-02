@@ -69,7 +69,11 @@ import {
 import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
 import type { CredentialCipher } from "@intx/types";
 import type { WireGrantRule } from "@intx/types/grant-wire";
-import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
+import {
+  createEd25519Crypto,
+  createNoopCredentialCipher,
+  generateKeyPair,
+} from "@intx/crypto";
 import {
   buildInertProjectionStepSources,
   deriveRunAddress,
@@ -84,6 +88,7 @@ import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources
 import type { ApprovalSet } from "@intx/workflow-deploy";
 import type { WorkflowDefinition } from "@intx/workflow";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import { credential, provider } from "@intx/db/schema";
 import { stopServerBounded } from "@intx/test-harness/bun-server";
 import type { TestDb } from "@intx/test-harness/db-harness";
 
@@ -925,6 +930,11 @@ export async function startSidecarSubprocess(opts: {
     SIDECAR_ID,
     SIDECAR_TOKEN: TOKEN,
     SIDECAR_DATA_DIR: dataDir,
+    // A fixed test key so the spawned sidecar boots with a REAL cipher and
+    // every deployed e2e exercises the at-rest credential sealing, rather than
+    // a noop that would let a plaintext-sealing regression pass green.
+    SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
+      "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
     ...(opts.extraEnv ?? {}),
   };
 
@@ -1316,6 +1326,63 @@ export type DeployWorkflowSourceForTestHandle = DeployWorkflowHandle & {
  * tenant/principal/definition asset in its own `beforeAll`, matching the e2e
  * pattern; this helper does not own the DB.
  */
+// A single tool-provider row per tenant that the seeded inference credentials
+// reference; `credential.providerId` needs a real provider row.
+const TEST_INFERENCE_PROVIDER_PREFIX = "prov-test-inference-";
+
+/**
+ * Seed a tenant-owned credential for each distinct inference-source
+ * `credentialId` referenced by the deploy (top-level `sources` and the deploy
+ * `config`'s pool, which the hub also pins body sources from). The unified
+ * pre-register deploy resolves each `credentialId` to material through the
+ * credential table; a fixture source that references an unseeded id would fail
+ * the deploy closed. The mock inference server ignores the secret, so a stable
+ * per-id placeholder suffices. Idempotent (`onConflictDoNothing`) so a test that
+ * deploys repeatedly does not double-insert.
+ */
+export async function seedInferenceCredentials(
+  db: TestDb["db"],
+  tenantId: string,
+  sources: Record<string, InferenceSource[]>,
+  config: HarnessConfig,
+): Promise<void> {
+  const credentialIds = new Set<string>();
+  for (const chain of Object.values(sources)) {
+    for (const source of chain) credentialIds.add(source.credentialId);
+  }
+  for (const source of config.sources) credentialIds.add(source.credentialId);
+  if (credentialIds.size === 0) return;
+
+  const providerId = `${TEST_INFERENCE_PROVIDER_PREFIX}${tenantId}`;
+  await db
+    .insert(provider)
+    .values({
+      id: providerId,
+      tenantId,
+      name: "test-inference-provider",
+      plugin: "anthropic",
+      // Material resolution pins each credential's origin to its provider's
+      // API base URL and fails closed on a null one, so seed a concrete origin.
+      apiBaseUrl: "https://api.anthropic.com",
+    })
+    .onConflictDoNothing();
+  for (const credentialId of credentialIds) {
+    await db
+      .insert(credential)
+      .values({
+        id: credentialId,
+        tenantId,
+        providerId,
+        name: credentialId,
+        type: "api_key",
+        secret: `${credentialId}-secret`,
+        status: "active",
+        principalId: null,
+      })
+      .onConflictDoNothing();
+  }
+}
+
 export async function deployWorkflowSourceForTest(
   env: DeployFlowEnv,
   opts: DeployWorkflowSourceForTestOpts,
@@ -1452,6 +1519,12 @@ export async function deployWorkflowSourceForTest(
       operatorApprovals: new Set(approved.approval.approvedGrants),
     });
 
+  // Pre-register: every inference source references a registered credential by
+  // id. Seed a tenant-owned credential per referenced credentialId so the deploy
+  // resolves them into the unified material cell (the mock inference server
+  // ignores the secret value). Idempotent across a test's repeated deploys.
+  await seedInferenceCredentials(opts.db, opts.tenantId, sources, opts.config);
+
   const deployResult = await deployCodeSourcedWorkflow({
     approved,
     source,
@@ -1464,9 +1537,10 @@ export async function deployWorkflowSourceForTest(
     tenantId: opts.tenantId,
     anchorRunId: opts.anchorRunId,
     deploymentDomain,
-    ...(opts.credentialCipher !== undefined
-      ? { credentialCipher: opts.credentialCipher }
-      : {}),
+    // The deploy resolves each pinned source's credentialId to material; the
+    // seeded secrets are plaintext, so default to the noop cipher unless a test
+    // supplies its own.
+    credentialCipher: opts.credentialCipher ?? createNoopCredentialCipher(),
   });
 
   const workflowRunRepoId: RepoId = {

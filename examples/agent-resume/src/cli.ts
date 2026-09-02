@@ -51,8 +51,9 @@ export async function main(
     return 1;
   }
 
-  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
-  if (source === null) return 1;
+  const resolved = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (resolved === null) return 1;
+  const { source, material } = resolved;
 
   const agent = await openExampleAgent(opts, {
     exampleName: EXAMPLE_NAME,
@@ -60,6 +61,7 @@ export async function main(
     tools: [],
     sources: [source],
     defaultSource: source.id,
+    material,
   });
   try {
     // history() reads straight off the store; on the first run it's

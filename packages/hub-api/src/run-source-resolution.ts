@@ -13,9 +13,18 @@ import type {
   ProviderPreference,
 } from "@intx/types";
 import type { InferenceSource } from "@intx/types/runtime";
+import type { CredentialMaterialEntry } from "@intx/types/sidecar";
 
 export type DefinitionSourceResolution =
-  | { ok: true; sources: InferenceSource[]; defaultSource: string }
+  | {
+      ok: true;
+      sources: InferenceSource[];
+      // The credential material backing the resolved chain, deduped by
+      // `credentialId`. Forwarded to the deploy so it reaches the unified
+      // credential-material cell alongside any tool material.
+      materials: CredentialMaterialEntry[];
+      defaultSource: string;
+    }
   | { ok: false; message: string };
 
 /**
@@ -78,6 +87,7 @@ export async function resolveDefinitionSources(args: {
   return {
     ok: true,
     sources: resolution.sources,
+    materials: resolution.materials,
     defaultSource: headSource.id,
   };
 }

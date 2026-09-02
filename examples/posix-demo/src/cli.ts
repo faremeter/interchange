@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   createDefaultDirectorRegistry,
+  createStaticCredentialResolver,
   defineAgent,
   defineTool,
 } from "@intx/agent";
@@ -47,7 +48,10 @@ const ANTHROPIC_DEFAULTS = {
   model: "claude-sonnet-5",
 };
 
-function readAgentSource(prefix: string): InferenceSource {
+function readAgentSource(prefix: string): {
+  source: InferenceSource;
+  material: Record<string, string>;
+} {
   const env = (key: string) => process.env[`${prefix}_${key}`];
 
   const provider = env("PROVIDER") ?? "openai-compatible";
@@ -81,17 +85,22 @@ function readAgentSource(prefix: string): InferenceSource {
     process.exit(1);
   }
 
+  const credentialId = `${prefix.toLowerCase()}-key`;
   return {
-    id: `${provider}:${model}`,
-    provider,
-    baseURL,
-    apiKey,
-    model,
+    source: {
+      id: `${provider}:${model}`,
+      provider,
+      baseURL,
+      credentialId,
+      model,
+    },
+    material: { [credentialId]: apiKey },
   };
 }
 
-const alphaSource = readAgentSource("ALPHA");
-const betaSource = readAgentSource("BETA");
+const { source: alphaSource, material: alphaMaterial } =
+  readAgentSource("ALPHA");
+const { source: betaSource, material: betaMaterial } = readAgentSource("BETA");
 
 const DEMO_SEED =
   process.env["DEMO_SEED"] ??
@@ -353,6 +362,7 @@ const alphaEnv: MailEnv & PosixToolEnv = {
   audit: noopAuditStore(),
   authorize: permissiveAuthorize(),
   directors: createDefaultDirectorRegistry(),
+  readCurrentMaterial: createStaticCredentialResolver(alphaMaterial),
   transport: transportAlpha,
   address: ALPHA_ADDRESS,
 };
@@ -366,6 +376,7 @@ const betaEnv: MailEnv & PosixToolEnv = {
   audit: noopAuditStore(),
   authorize: permissiveAuthorize(),
   directors: createDefaultDirectorRegistry(),
+  readCurrentMaterial: createStaticCredentialResolver(betaMaterial),
   transport: transportBeta,
   address: BETA_ADDRESS,
 };

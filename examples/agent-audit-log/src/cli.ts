@@ -31,8 +31,9 @@ export async function main(
     return 1;
   }
 
-  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
-  if (source === null) return 1;
+  const resolved = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (resolved === null) return 1;
+  const { source, material } = resolved;
 
   const contextDir = opts.contextDir ?? defaultContextDir(EXAMPLE_NAME);
 
@@ -44,6 +45,7 @@ export async function main(
       tools: [],
       sources: [source],
       defaultSource: source.id,
+      material,
     },
   );
   try {

@@ -54,7 +54,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:claude-haiku-4-5-20251001",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "test",
+  credentialId: "test",
   model: "claude-haiku-4-5-20251001",
 };
 
@@ -127,6 +127,7 @@ describe("multi-turn integration: function-calling-with-thinking-streaming", () 
     let seq = 0;
     const events = await drain(
       runInference({
+        readMaterial: () => ({ secret: "test-secret" }),
         turns: [
           {
             role: "user",

@@ -160,7 +160,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             id: "mof_a",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
-            apiKey: "sk-anthropic",
+            credentialId: "cred_a",
             model: "opus",
             capabilities: [],
           },
@@ -211,8 +211,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
-        // The delivered apiKey is the decrypted plaintext, not the stored blob.
-        expect(result.sources[0]?.apiKey).toBe("sk-real");
+        // The delivered secret is the decrypted plaintext, not the stored blob.
+        expect(result.materials[0]?.secret).toBe("sk-real");
       });
 
       test("fails closed when a stored secret is not a ciphertext", async () => {

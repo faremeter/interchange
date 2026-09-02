@@ -36,7 +36,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test",
+  credentialId: "sk-test",
   model: "claude-3-5-sonnet",
 };
 
@@ -63,6 +63,7 @@ function baseEnv(workdir: string): BaseEnv {
   return {
     sources: [SOURCE],
     defaultSource: SOURCE.id,
+    readCurrentMaterial: (credentialId) => ({ secret: credentialId }),
     storage: stubContextStore(),
     workdir,
     audit: noopAuditStore(),
@@ -423,7 +424,7 @@ describe("createAgent send() on reactor suspend", () => {
     id: "anthropic:suspend-test",
     provider: "anthropic",
     baseURL: "http://localhost:1",
-    apiKey: "test-key",
+    credentialId: "test-key",
     model: "claude-test",
   };
 
@@ -435,6 +436,7 @@ describe("createAgent send() on reactor suspend", () => {
     return {
       sources: [SUSPEND_SOURCE],
       defaultSource: SUSPEND_SOURCE.id,
+      readCurrentMaterial: (credentialId) => ({ secret: credentialId }),
       storage,
       workdir,
       audit: noopAuditStore(),
@@ -528,6 +530,7 @@ describe("createAgent send() on reactor suspend", () => {
     const env: BaseEnv = {
       sources: [SUSPEND_SOURCE],
       defaultSource: SUSPEND_SOURCE.id,
+      readCurrentMaterial: (credentialId) => ({ secret: credentialId }),
       storage,
       workdir: workDir,
       audit: noopAuditStore(),

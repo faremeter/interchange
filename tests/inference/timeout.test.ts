@@ -42,7 +42,7 @@ const SOURCE: InferenceSource = {
   id: "openai:test-model",
   provider: "openai",
   baseURL: "https://test.invalid/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "test-model",
 };
 
@@ -103,6 +103,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       let seq = 0;
       const consumer = startConsumer(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: {
@@ -157,6 +158,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       let seq = 0;
       const consumer = startConsumer(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: {
@@ -197,6 +199,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       let seq = 0;
       const consumer = startConsumer(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: {
@@ -236,6 +239,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       let seq = 0;
       const consumer = startConsumer(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           nextSeq: () => seq++,
@@ -272,6 +276,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
       let seq = 0;
       const consumer = startConsumer(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: {
@@ -334,6 +339,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
         let seq = 0;
         const consumer = startConsumer(
           runInference({
+            readMaterial: () => ({ secret: "test-secret" }),
             turns: makeTurns(),
             source: SOURCE,
             inferenceOptions: {
@@ -367,6 +373,7 @@ describe("runInference — per-call timeouts (virtual clock)", () => {
         let seq = 0;
         const consumer = startConsumer(
           runInference({
+            readMaterial: () => ({ secret: "test-secret" }),
             turns: makeTurns(),
             source: SOURCE,
             inferenceOptions: {
@@ -415,6 +422,7 @@ describe("runInference — buffered JSON read timeout/abort (virtual clock)", ()
       let seq = 0;
       const consumer = startConsumer(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: {
@@ -444,6 +452,7 @@ describe("runInference — buffered JSON read timeout/abort (virtual clock)", ()
       let seq = 0;
       const consumer = startConsumer(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           signal: controller.signal,

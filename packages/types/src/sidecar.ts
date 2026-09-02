@@ -481,12 +481,13 @@ export const AgentDeployWorkflow = type({
   "approvedWireHash?": "string > 0",
   // Extracted trigger bodies -- onTrigger sections and childWorkflow children,
   // lifted transitively. Each entry carries the body's inert definition, its own
-  // per-step inference-source pins, and its approved wire hash. The sidecar
-  // stages each body's `sources.json` so a body child -- in-process, its env
-  // lost across a restart -- resolves inference durably; the body definition
-  // itself is resolved in-memory from the parent's re-verified closure.
-  // Optional: only a deploy that carries an inline onTrigger section or
-  // childWorkflow child populates it.
+  // per-step inference-source pins, and its approved wire hash. The sidecar seals
+  // each body's sources into the per-run record and delivers the plaintext to the
+  // run child through the spawn env, so a body child -- in-process, its env lost
+  // across a restart -- resolves inference durably without holding the cipher
+  // key; the body definition itself is resolved in-memory from the parent's
+  // re-verified closure. Optional: only a deploy that carries an inline onTrigger
+  // section or childWorkflow child populates it.
   "referencedDefinitions?": WorkflowProjectionWithSources.array(),
   // Initial credential material for the deployment's tools, decrypted hub-side
   // and delivered on the deploy frame so it is resident before any step runs

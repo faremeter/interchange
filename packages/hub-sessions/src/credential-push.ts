@@ -2,8 +2,10 @@
 // the catalog and pushing the update to its sidecar.
 //
 // Used after a credential secret rotation (a model provider's credential
-// changes the resolved source's apiKey) and after a catalog edit in a tenant
-// or its subtree.
+// changes the resolved source's secret) and after a catalog edit in a tenant
+// or its subtree. An inference source references its credential by id only, so
+// the rotated secret rides a `credentials.update` (the unified credential-
+// material cell), pushed before the `sources.update` that references it.
 
 import { eq, and, inArray, isNull, isNotNull } from "drizzle-orm";
 import { getLogger } from "@intx/log";
@@ -11,6 +13,7 @@ import { workflowRun } from "@intx/db/schema";
 import { resolveInstanceModelSources, getDescendantTenants } from "@intx/db";
 import type { DB } from "@intx/db";
 import type { CredentialCipher } from "@intx/types";
+import type { CredentialDelivery } from "@intx/types/sidecar";
 
 import type { SidecarRouter } from "./ws/sidecar-handler";
 
@@ -28,7 +31,10 @@ const log = getLogger(["hub", "credentials"]);
  */
 export async function pushInstanceSourceUpdate(
   db: DB["db"],
-  sidecarRouter: Pick<SidecarRouter, "sendSourcesUpdate">,
+  sidecarRouter: Pick<
+    SidecarRouter,
+    "sendSourcesUpdate" | "sendCredentialsUpdate"
+  >,
   instance: {
     address: string;
     definitionId: string;
@@ -46,6 +52,18 @@ export async function pushInstanceSourceUpdate(
   if (!resolution.ok) return;
   const [head] = resolution.sources;
   if (head === undefined) return;
+  // Push the credential material before the source list. A source references
+  // its credential by id, so the cell must hold the (possibly rotated) secret
+  // before the source list that points at it lands. Inference sources carry no
+  // binding descriptor. A failure here propagates and aborts the source push --
+  // never a stale secret paired with a fresh source list.
+  if (resolution.materials.length > 0) {
+    const delivery: CredentialDelivery = {
+      bindings: [],
+      materials: resolution.materials,
+    };
+    await sidecarRouter.sendCredentialsUpdate(instance.address, delivery);
+  }
   await sidecarRouter.sendSourcesUpdate(
     instance.address,
     resolution.sources,

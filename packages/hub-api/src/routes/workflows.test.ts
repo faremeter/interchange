@@ -988,7 +988,7 @@ function sourceDeployBody(
         id: "src",
         provider: "anthropic",
         baseURL: "https://api.example",
-        apiKey: "secret",
+        credentialId: "secret",
         model: "m",
       },
     ],
@@ -1043,7 +1043,7 @@ describe("POST /workflows/deployments", () => {
         id: "src",
         provider: "anthropic",
         baseURL: "https://api.example",
-        apiKey: "secret",
+        credentialId: "secret",
         model: "m",
       },
     ]);

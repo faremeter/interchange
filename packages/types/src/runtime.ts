@@ -2420,7 +2420,11 @@ export const InferenceSource = type({
   id: "string",
   provider: "string",
   baseURL: "string",
-  apiKey: "string",
+  // Reference into the run's credential-material cell. The provider's secret
+  // (formerly an inline `apiKey`) is resolved from that cell by `credentialId`
+  // at call time, so the source config carries no secret and the child never
+  // holds the key inline. The same cell backs tool credentials.
+  credentialId: "string",
   model: "string",
   "defaults?": InferenceSourceDefaults,
   "capabilities?": "string[]",
@@ -2447,7 +2451,7 @@ export function applyInferenceSourceFields(
   active.id = next.id;
   active.provider = next.provider;
   active.baseURL = next.baseURL;
-  active.apiKey = next.apiKey;
+  active.credentialId = next.credentialId;
   active.model = next.model;
   if (next.defaults !== undefined) {
     active.defaults = next.defaults;
@@ -2473,7 +2477,7 @@ export function applyInferenceSourceFields(
     id: true,
     provider: true,
     baseURL: true,
-    apiKey: true,
+    credentialId: true,
     model: true,
     defaults: true,
     capabilities: true,

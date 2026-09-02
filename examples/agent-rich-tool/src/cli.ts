@@ -104,8 +104,9 @@ export async function main(
     return 1;
   }
 
-  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
-  if (source === null) return 1;
+  const resolved = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (resolved === null) return 1;
+  const { source, material } = resolved;
 
   const approvalTool = createApprovalTool(
     opts.correlationIdFor !== undefined
@@ -120,6 +121,7 @@ export async function main(
     tools: [approvalTool],
     sources: [source],
     defaultSource: source.id,
+    material,
   });
 
   const timeoutMs = opts.correlationTimeoutMs ?? DEFAULT_CORRELATION_TIMEOUT_MS;

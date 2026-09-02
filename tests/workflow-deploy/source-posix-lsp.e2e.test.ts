@@ -50,6 +50,7 @@ import {
   installAndApproveWorkflowDefinition,
   type RepoId,
 } from "@intx/hub-sessions";
+import { createNoopCredentialCipher } from "@intx/crypto";
 import { tenant as tenantTable } from "@intx/db/schema";
 import { loadFrozenGrantSnapshot } from "@intx/db";
 import type { GrantEffect, GrantWalkSnapshot } from "@intx/types";
@@ -71,6 +72,7 @@ import {
   SESSION_ID,
   fireMailTrigger,
   readWorkflowRunEvents,
+  seedInferenceCredentials,
   startDeployFlowEnv,
   waitFor,
   waitForFirstRunId,
@@ -537,7 +539,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "anthropic:mock-model",
         provider: "anthropic",
         baseURL: `http://localhost:${String(env.inference.server.port)}`,
-        apiKey: "sk-mock",
+        credentialId: "sk-mock",
         model: "mock-model",
       };
       const config: HarnessConfig = {
@@ -553,6 +555,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         defaultSource: "anthropic:mock-model",
       };
 
+      await seedInferenceCredentials(
+        h.db,
+        TENANT_ID,
+        { [STEP_ID]: [inferenceSource] },
+        config,
+      );
       await deployCodeSourcedWorkflow({
         approved,
         source,
@@ -565,6 +573,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT_ID,
         anchorRunId: DEPLOYMENT_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
+        credentialCipher: createNoopCredentialCipher(),
       });
 
       const workflowRunRepoId: RepoId = {

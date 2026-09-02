@@ -868,7 +868,7 @@ const JSON_SOURCE: InferenceSource = {
   id: "anthropic:claude-test",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "test",
+  credentialId: "test",
   model: "claude-test",
 };
 
@@ -907,6 +907,7 @@ async function driveTurn(
     source: JSON_SOURCE,
     nextSeq: () => ++seq,
     deps,
+    readMaterial: () => ({ secret: "test-secret" }),
   })) {
     events.push(ev);
   }

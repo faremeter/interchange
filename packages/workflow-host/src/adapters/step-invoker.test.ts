@@ -39,7 +39,7 @@ const STUB_SOURCE: InferenceSource = {
   id: "anthropic:stub",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-stub",
+  credentialId: "sk-stub",
   model: "stub-model",
 };
 

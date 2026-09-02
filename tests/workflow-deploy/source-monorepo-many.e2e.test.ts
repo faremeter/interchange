@@ -43,6 +43,7 @@ import {
   installAndApproveWorkflowDefinition,
   type RepoId,
 } from "@intx/hub-sessions";
+import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   tenant as tenantTable,
   workflowDefinition as workflowDefinitionTable,
@@ -67,6 +68,7 @@ import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
 import {
   SESSION_ID,
   fireMailTrigger,
+  seedInferenceCredentials,
   startDeployFlowEnv,
   waitFor,
   waitForFirstRunId,
@@ -349,7 +351,7 @@ async function deployAndRun(spec: {
     id: "anthropic:mock-model",
     provider: "anthropic",
     baseURL: `http://localhost:${String(env.inference.server.port)}`,
-    apiKey: "sk-mock",
+    credentialId: "sk-mock",
     model: "mock-model",
   };
   const config: HarnessConfig = {
@@ -365,6 +367,12 @@ async function deployAndRun(spec: {
     defaultSource: "anthropic:mock-model",
   };
 
+  await seedInferenceCredentials(
+    h.db,
+    TENANT_ID,
+    { [spec.stepId]: [inferenceSource] },
+    config,
+  );
   await deployCodeSourcedWorkflow({
     approved: spec.approved,
     source,
@@ -377,6 +385,7 @@ async function deployAndRun(spec: {
     tenantId: TENANT_ID,
     anchorRunId: spec.anchorRunId,
     deploymentDomain: DEPLOYMENT_DOMAIN,
+    credentialCipher: createNoopCredentialCipher(),
   });
 
   const workflowRunRepoId: RepoId = {

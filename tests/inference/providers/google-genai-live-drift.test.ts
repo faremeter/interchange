@@ -52,7 +52,7 @@ describe("Google GenAI adapter: live drift", () => {
         id: "google-genai:gemini-2.5-flash",
         provider: "google-genai",
         baseURL: "https://generativelanguage.googleapis.com",
-        apiKey,
+        credentialId: "google-genai-live",
         model: "gemini-2.5-flash",
       };
 
@@ -84,6 +84,7 @@ describe("Google GenAI adapter: live drift", () => {
         source,
         nextSeq: () => seq++,
         deps,
+        readMaterial: () => ({ secret: apiKey }),
         // Disable thinking to keep the response shape minimal and
         // the round-trip latency low. The drift test is a shape
         // check, not a quality check.

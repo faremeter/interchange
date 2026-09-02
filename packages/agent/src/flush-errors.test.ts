@@ -39,7 +39,7 @@ const UNREACHABLE_SOURCE: InferenceSource = {
   id: "anthropic:test-error",
   provider: "anthropic",
   baseURL: "http://localhost:1",
-  apiKey: "test-key",
+  credentialId: "test-key",
   model: "claude-test",
 };
 
@@ -124,6 +124,7 @@ async function buildAgentEnv(opts: {
   return {
     sources: [UNREACHABLE_SOURCE],
     defaultSource: UNREACHABLE_SOURCE.id,
+    readCurrentMaterial: (credentialId) => ({ secret: credentialId }),
     storage,
     workdir: opts.workdir,
     audit: opts.audit,

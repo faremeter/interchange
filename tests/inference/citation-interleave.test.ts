@@ -44,7 +44,7 @@ const ANTHROPIC_SOURCE: InferenceSource = {
   id: "anthropic:claude-test",
   provider: "anthropic",
   baseURL: "https://test.invalid/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "claude-test",
 };
 
@@ -94,6 +94,7 @@ async function runWithChunks(
   let seq = 0;
   return drain(
     runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         {
           role: "user",
@@ -309,7 +310,7 @@ describe("runInference — citation interleaving", () => {
       id: `${providerName}:test-model`,
       provider: providerName,
       baseURL: "https://test.invalid",
-      apiKey: "test",
+      credentialId: "test",
       model: "test-model",
     };
 
@@ -400,7 +401,7 @@ describe("runInference — citation interleaving", () => {
       id: `${providerName}:test-model`,
       provider: providerName,
       baseURL: "https://test.invalid",
-      apiKey: "test",
+      credentialId: "test",
       model: "test-model",
     };
 

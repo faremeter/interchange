@@ -3480,7 +3480,7 @@ describe("createWorkflowSupervisor", () => {
             id: "primary",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
-            apiKey: "sk-x",
+            credentialId: "sk-x",
             model: "claude-test",
           },
         ],
@@ -3574,7 +3574,7 @@ describe("createWorkflowSupervisor", () => {
         id: "primary",
         provider: "anthropic",
         baseURL: "https://api.anthropic.com",
-        apiKey: "sk-primary",
+        credentialId: "sk-primary",
         model: "claude-test",
       },
     ];

@@ -12,7 +12,7 @@ const S_ANTHROPIC: InferenceSource = {
   id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-anthropic-1",
+  credentialId: "sk-anthropic-1",
   model: "claude-3-5-sonnet",
 };
 
@@ -20,7 +20,7 @@ const S_OPENAI: InferenceSource = {
   id: "openai:gpt-5.5",
   provider: "openai",
   baseURL: "https://api.openai.com",
-  apiKey: "sk-openai-1",
+  credentialId: "sk-openai-1",
   model: "gpt-5.5",
 };
 
@@ -42,7 +42,7 @@ describe("createSourceRegistry", () => {
     });
     expect(reg.active.provider).toBe("openai");
     expect(reg.active.model).toBe("gpt-5.5");
-    expect(reg.active.apiKey).toBe("sk-openai-1");
+    expect(reg.active.credentialId).toBe("sk-openai-1");
   });
 
   test("rejects an empty sources[] array", () => {
@@ -65,7 +65,7 @@ describe("createSourceRegistry", () => {
       id: "anthropic:none",
       provider: "anthropic",
       baseURL: "u",
-      apiKey: "k",
+      credentialId: "k",
     });
     expect(() =>
       createSourceRegistry({
@@ -78,7 +78,7 @@ describe("createSourceRegistry", () => {
   test("rejects sources[] with duplicate ids", () => {
     expect(() =>
       createSourceRegistry({
-        sources: [S_ANTHROPIC, { ...S_ANTHROPIC, apiKey: "sk-other" }],
+        sources: [S_ANTHROPIC, { ...S_ANTHROPIC, credentialId: "sk-other" }],
         defaultSource: S_ANTHROPIC.id,
       }),
     ).toThrow(InvalidInferenceSourceError);
@@ -104,7 +104,7 @@ describe("createSourceRegistry", () => {
       id: "anthropic:claude-3-5-haiku",
       provider: "anthropic",
       baseURL: "https://proxy.example.com",
-      apiKey: "sk-new",
+      credentialId: "sk-new",
       model: "claude-3-5-haiku",
     });
 
@@ -112,7 +112,7 @@ describe("createSourceRegistry", () => {
     expect(reg.active.id).toBe("anthropic:claude-3-5-haiku");
     expect(reg.active.provider).toBe("anthropic");
     expect(reg.active.baseURL).toBe("https://proxy.example.com");
-    expect(reg.active.apiKey).toBe("sk-new");
+    expect(reg.active.credentialId).toBe("sk-new");
     expect(reg.active.model).toBe("claude-3-5-haiku");
   });
 
@@ -166,10 +166,10 @@ describe("createSourceRegistry", () => {
     reg.setSource({
       ...S_ANTHROPIC,
       baseURL: "https://other.example.com",
-      apiKey: "sk-other",
+      credentialId: "sk-other",
     });
 
-    expect(inputs[0]?.apiKey).toBe("sk-anthropic-1");
+    expect(inputs[0]?.credentialId).toBe("sk-anthropic-1");
     expect(inputs[0]?.baseURL).toBe("https://api.anthropic.com");
   });
 
@@ -185,7 +185,7 @@ describe("createSourceRegistry", () => {
     expect(reg.active).toBe(reference);
     expect(reg.active.id).toBe("openai:gpt-5.5");
     expect(reg.active.provider).toBe("openai");
-    expect(reg.active.apiKey).toBe("sk-openai-1");
+    expect(reg.active.credentialId).toBe("sk-openai-1");
   });
 
   test("setSources throws when the new default matches no source", () => {
@@ -219,7 +219,7 @@ describe("createSourceRegistry", () => {
     expect(reg.failOverToNextSource()).toBe(true);
     expect(reg.active).toBe(reference); // mutated in place
     expect(reg.active.id).toBe(S_OPENAI.id);
-    expect(reg.active.apiKey).toBe(S_OPENAI.apiKey);
+    expect(reg.active.credentialId).toBe(S_OPENAI.credentialId);
 
     // Already at the last source: no further failover target.
     expect(reg.failOverToNextSource()).toBe(false);
@@ -275,13 +275,13 @@ describe("createSourceRegistry", () => {
       id: "anthropic:claude-3-5-haiku",
       provider: "anthropic",
       baseURL: "https://proxy.example.com",
-      apiKey: "sk-hot",
+      credentialId: "sk-hot",
       model: "claude-3-5-haiku",
     });
 
     // The per-cycle reset must not discard the deliberate hot-swap.
     reg.resetToPreferredSource();
     expect(reg.active.id).toBe("anthropic:claude-3-5-haiku");
-    expect(reg.active.apiKey).toBe("sk-hot");
+    expect(reg.active.credentialId).toBe("sk-hot");
   });
 });

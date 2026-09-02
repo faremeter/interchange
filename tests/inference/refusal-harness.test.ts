@@ -37,7 +37,7 @@ const SOURCE: InferenceSource = {
   id: "openai:test-model",
   provider: "openai",
   baseURL: "https://test.invalid/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "test-model",
 };
 
@@ -83,6 +83,7 @@ async function runWithChunks(chunks: Uint8Array[]): Promise<InferenceEvent[]> {
   let seq = 0;
   return drain(
     runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         {
           role: "user",

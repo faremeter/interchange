@@ -236,13 +236,14 @@ function createTestReactor(
       id: "anthropic:test-model",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
-      apiKey: "test",
+      credentialId: "test",
       model: "test-model",
     },
     toolRunner: overrides.toolRunner ?? noopToolRunner(),
     contextStore: overrides.contextStore ?? makeContextStore(),
     onEvent,
     deps: overrides.deps ?? createDefaultDependencies(),
+    readMaterial: () => ({ secret: "test-secret" }),
     shutdownTimeoutMs: overrides.shutdownTimeoutMs ?? 100,
     ...(overrides.correlationValidator !== undefined
       ? { correlationValidator: overrides.correlationValidator }
@@ -429,7 +430,7 @@ const ANTHROPIC_SOURCE = {
   id: "anthropic:test-model",
   provider: "anthropic" as const,
   baseURL: "https://api.anthropic.com",
-  apiKey: "test",
+  credentialId: "test",
   model: "test-model",
 };
 
@@ -437,7 +438,7 @@ const OPENAI_SOURCE = {
   id: "openai:test-model",
   provider: "openai" as const,
   baseURL: "https://api.openai.com/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "test-model",
 };
 

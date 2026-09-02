@@ -218,7 +218,7 @@ async function deployAndRunMap(opts: {
     id: "anthropic:mock-model",
     provider: "anthropic",
     baseURL: `http://localhost:${env.inference.server.port}`,
-    apiKey: "sk-mock",
+    credentialId: "sk-mock",
     model: "mock-model",
   };
 

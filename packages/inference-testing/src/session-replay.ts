@@ -26,6 +26,7 @@ import type {
 
 import { runInference, type Dependencies } from "@intx/inference";
 import { createDefaultDependencies } from "@intx/inference/providers";
+import type { CredentialMaterialResolver } from "@intx/types";
 
 import { UnmatchedFetchError } from "./errors";
 import { setupHarness } from "./harness";
@@ -39,6 +40,14 @@ import {
   type InvariantViolation,
 } from "./invariants";
 import { isDelayedEnvelope } from "./tool-handler";
+
+// Fail-open credential resolver for the replay harness. Replay serves captured
+// bytes from a stubbed fetch and never sends the injected secret anywhere, so a
+// request that emits a credential sentinel just needs SOME material rather than
+// the production fail-closed throw.
+const DEFAULT_TEST_READ_MATERIAL: CredentialMaterialResolver = () => ({
+  secret: "inference-test-secret",
+});
 
 /**
  * Discriminates the specific shape of the contract violation. Used by
@@ -515,7 +524,7 @@ export async function createReplayHarness(
     id: opts.sourceId ?? `${manifest.source.provider}:${manifest.source.model}`,
     provider: manifest.source.provider,
     baseURL: manifest.source.baseURL,
-    apiKey: opts.apiKey ?? "session-replay-stub",
+    credentialId: opts.apiKey ?? "session-replay-stub",
     model: manifest.source.model,
     ...(manifest.source.quirks !== undefined
       ? { quirks: manifest.source.quirks }
@@ -910,7 +919,7 @@ export async function replayResponsesForParsing(
     id: `${manifest.source.provider}:${manifest.source.model}`,
     provider: manifest.source.provider,
     baseURL: manifest.source.baseURL,
-    apiKey: "session-replay-stub",
+    credentialId: "session-replay-stub",
     model: manifest.source.model,
     ...(manifest.source.quirks !== undefined
       ? { quirks: manifest.source.quirks }
@@ -961,6 +970,7 @@ export async function replayResponsesForParsing(
       source,
       nextSeq: () => ++seq,
       deps,
+      readMaterial: DEFAULT_TEST_READ_MATERIAL,
       inferenceOptions: { retryPolicy: () => ({ kind: "abort" }) },
     })) {
       events.push(event);

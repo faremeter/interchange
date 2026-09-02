@@ -47,6 +47,8 @@ import {
   type ReactorEmittedEvent,
 } from "@intx/inference";
 import { createDefaultDependencies } from "@intx/inference/providers";
+
+import { createUnconfiguredCredentialResolver } from "./credential-resolver";
 import { getLogger } from "@intx/log";
 import { createInboundMessage } from "@intx/mime";
 import type { ErrorRecord } from "@intx/types/audit";
@@ -689,6 +691,8 @@ export async function createAgent<EnvReq extends BaseEnv>(
       source: sourceRegistry.active,
       failOverToNextSource: () => sourceRegistry.failOverToNextSource(),
       resetToPreferredSource: () => sourceRegistry.resetToPreferredSource(),
+      readMaterial:
+        env.readCurrentMaterial ?? createUnconfiguredCredentialResolver(),
       toolRunner: resolvedTools.runner,
       contextStore,
       onEvent: handleEvent,

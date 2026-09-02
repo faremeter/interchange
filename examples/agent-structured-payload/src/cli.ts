@@ -137,8 +137,9 @@ export async function main(
   const offering = opts.offering ?? parseArgs(argv, stderr);
   if (offering === undefined) return 1;
 
-  const source = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
-  if (source === null) return 1;
+  const resolved = resolveAgentSource(opts, env, EXAMPLE_NAME, stderr);
+  if (resolved === null) return 1;
+  const { source, material } = resolved;
 
   const message = buildOfferingRequest(offering);
 
@@ -149,6 +150,7 @@ export async function main(
     tools: [],
     sources: [source],
     defaultSource: source.id,
+    material,
   });
 
   const timeoutMs = opts.receivedTimeoutMs ?? DEFAULT_RECEIVED_TIMEOUT_MS;

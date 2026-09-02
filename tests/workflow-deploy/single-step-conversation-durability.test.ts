@@ -101,7 +101,7 @@ const STUB_SOURCE: InferenceSource = {
   id: "anthropic:stub",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-stub",
+  credentialId: "sk-stub",
   model: "stub-model",
 };
 
@@ -620,6 +620,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
           workdir: path.join(localDataDir, "workdir", channelId),
           audit: store.storage,
           directors: createDefaultDirectorRegistry(),
+          readCurrentMaterial: () => ({ secret: "test-secret" }),
         };
       };
 

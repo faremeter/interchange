@@ -58,7 +58,7 @@ const SOURCE: InferenceSource = {
   id: STEP_ID,
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-keying",
+  credentialId: "sk-keying",
   model: "claude-keying",
 };
 
@@ -212,7 +212,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       id: "failover",
       provider: "openai",
       baseURL: "https://api.openai.com",
-      apiKey: "sk-failover",
+      credentialId: "sk-failover",
       model: "gpt-failover",
     };
     const chain = [SOURCE, failoverSource];
@@ -249,7 +249,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
       id: "rotated",
       provider: "openai",
       baseURL: "https://api.openai.com",
-      apiKey: "sk-rotated",
+      credentialId: "sk-rotated",
       model: "gpt-rotated",
     };
     sourcesRef.current = { [STEP_ID]: [rotated] };

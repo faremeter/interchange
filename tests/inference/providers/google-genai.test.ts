@@ -1733,7 +1733,7 @@ describe("Google GenAI adapter: parseResponse safety_rating", () => {
       id: "google-genai:gemini-2.5-flash",
       provider: "google-genai",
       baseURL: "https://generativelanguage.googleapis.com",
-      apiKey: "test-key",
+      credentialId: "test-key",
       model: "gemini-2.5-flash",
     };
     const inertScheduler: Scheduler = {
@@ -1745,6 +1745,7 @@ describe("Google GenAI adapter: parseResponse safety_rating", () => {
     let seq = 0;
     const events: InferenceEvent[] = [];
     for await (const ev of runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         {
           role: "user",
@@ -1850,7 +1851,7 @@ describe("Google GenAI adapter: harness round trip", () => {
     id: "google-genai:gemini-2.5-flash",
     provider: "google-genai",
     baseURL: "https://generativelanguage.googleapis.com",
-    apiKey: "test-key",
+    credentialId: "test-key",
     model: "gemini-2.5-flash",
   };
 
@@ -1893,6 +1894,7 @@ describe("Google GenAI adapter: harness round trip", () => {
     let seq = 0;
     const events: InferenceEvent[] = [];
     for await (const ev of runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         {
           role: "user",
@@ -2995,7 +2997,7 @@ describe("Google GenAI adapter: harness round trip with thinking + tool_call", (
     id: "google-genai:gemini-2.5-flash",
     provider: "google-genai",
     baseURL: "https://generativelanguage.googleapis.com",
-    apiKey: "test-key",
+    credentialId: "test-key",
     model: "gemini-2.5-flash",
   };
 
@@ -3038,6 +3040,7 @@ describe("Google GenAI adapter: harness round trip with thinking + tool_call", (
     let seq = 0;
     const events: InferenceEvent[] = [];
     for await (const ev of runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         {
           role: "user",
@@ -3399,7 +3402,7 @@ describe("Google GenAI adapter: harness round trip with image output", () => {
     id: "google-genai:gemini-2.5-flash-image",
     provider: "google-genai",
     baseURL: "https://generativelanguage.googleapis.com",
-    apiKey: "test-key",
+    credentialId: "test-key",
     model: "gemini-2.5-flash-image",
   };
 
@@ -3441,6 +3444,7 @@ describe("Google GenAI adapter: harness round trip with image output", () => {
     let seq = 0;
     const events: InferenceEvent[] = [];
     for await (const ev of runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         {
           role: "user",
@@ -3763,7 +3767,7 @@ describe("Google GenAI adapter: harness round trip with grounding", () => {
     id: "google-genai:gemini-2.5-flash",
     provider: "google-genai",
     baseURL: "https://generativelanguage.googleapis.com",
-    apiKey: "test-key",
+    credentialId: "test-key",
     model: "gemini-2.5-flash",
   };
 
@@ -3798,6 +3802,7 @@ describe("Google GenAI adapter: harness round trip with grounding", () => {
     let seq = 0;
     const events: InferenceEvent[] = [];
     for await (const ev of runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         {
           role: "user",
@@ -4204,7 +4209,7 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
     id: "google-genai:gemini-2.5-flash",
     provider: "google-genai",
     baseURL: "https://generativelanguage.googleapis.com",
-    apiKey: "test-key",
+    credentialId: "test-key",
     model: "gemini-2.5-flash",
   };
 
@@ -4239,6 +4244,7 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
     let seq = 0;
     const events: InferenceEvent[] = [];
     for await (const ev of runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         {
           role: "user",
@@ -4428,6 +4434,7 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
     let seq = 0;
     const events: InferenceEvent[] = [];
     for await (const ev of runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         {
           role: "user",
@@ -4439,7 +4446,7 @@ describe("Google GenAI adapter: harness round trip with code execution", () => {
         id: "synthetic-code-exec:test",
         provider: "synthetic-code-exec",
         baseURL: "https://example.invalid",
-        apiKey: "test",
+        credentialId: "test",
         model: "test",
       },
       nextSeq: () => seq++,
@@ -4563,7 +4570,7 @@ describe("createGoogleGenAIAdapter — parseJSONResponse (non-streaming)", () =>
     id: "google-genai:gemini-test",
     provider: "google-genai",
     baseURL: "https://generativelanguage.googleapis.com",
-    apiKey: "test",
+    credentialId: "test",
     model: "gemini-test",
   };
 
@@ -4599,6 +4606,7 @@ describe("createGoogleGenAIAdapter — parseJSONResponse (non-streaming)", () =>
     let seq = 0;
     const events: InferenceEvent[] = [];
     for await (const ev of runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
       ],
@@ -4835,7 +4843,7 @@ describe("createGoogleGenAIAdapter — streaming vs non-streaming parity", () =>
     id: "google-genai:gemini-test",
     provider: "google-genai",
     baseURL: "https://generativelanguage.googleapis.com",
-    apiKey: "test",
+    credentialId: "test",
     model: "gemini-test",
   };
   const inertScheduler: Scheduler = {
@@ -4862,6 +4870,7 @@ describe("createGoogleGenAIAdapter — streaming vs non-streaming parity", () =>
     let seq = 0;
     const events: InferenceEvent[] = [];
     for await (const ev of runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: [
         { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
       ],

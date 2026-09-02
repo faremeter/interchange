@@ -1414,7 +1414,7 @@ const JSON_SOURCE: InferenceSource = {
   id: "openai:test-model",
   provider: "openai",
   baseURL: "https://test.invalid/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "test-model",
 };
 
@@ -1441,6 +1441,7 @@ async function driveTurn(
   let seq = 0;
   const events: InferenceEvent[] = [];
   for await (const ev of runInference({
+    readMaterial: () => ({ secret: "test-secret" }),
     turns: [
       { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
     ],

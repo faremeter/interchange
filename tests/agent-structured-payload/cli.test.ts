@@ -20,7 +20,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test-structured-payload",
+  credentialId: "sk-test-structured-payload",
   model: "claude-3-5-sonnet",
 };
 

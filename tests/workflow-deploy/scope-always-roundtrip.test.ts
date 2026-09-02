@@ -595,7 +595,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "anthropic:mock-model",
         provider: "anthropic",
         baseURL: `http://localhost:${String(inferencePort)}`,
-        apiKey: "sk-mock",
+        credentialId: "sk-mock",
         model: "mock-model",
       };
 

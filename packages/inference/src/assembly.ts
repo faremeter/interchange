@@ -9,6 +9,7 @@
 // directly so the wiring stays consistent across composition points.
 
 import { getLogger } from "@intx/log";
+import type { CredentialMaterialResolver } from "@intx/types";
 import {
   createBlobReader,
   type BlobReader,
@@ -66,6 +67,12 @@ export type ReactorAssemblyConfig = {
   failOverToNextSource?: () => boolean;
   /** Reset `source` to the most-preferred source, in place. */
   resetToPreferredSource?: () => void;
+  /**
+   * Resolves the active source's credential secret by `credentialId` from the
+   * run's credential cell at send time. Threaded verbatim to the reactor;
+   * optional, defaulted fail-closed by the harness when omitted.
+   */
+  readMaterial?: CredentialMaterialResolver;
   toolRunner: ToolRunner;
   contextStore: ContextStore;
   onEvent: (event: ReactorEmittedEvent) => void;
@@ -126,6 +133,7 @@ export function createReactorAssembly(
     source,
     failOverToNextSource,
     resetToPreferredSource,
+    readMaterial,
     toolRunner,
     contextStore,
     onEvent,
@@ -241,6 +249,7 @@ export function createReactorAssembly(
     source,
     ...(failOverToNextSource !== undefined ? { failOverToNextSource } : {}),
     ...(resetToPreferredSource !== undefined ? { resetToPreferredSource } : {}),
+    ...(readMaterial !== undefined ? { readMaterial } : {}),
     toolRunner,
     contextStore,
     onEvent: composedOnEvent,

@@ -122,7 +122,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       expect(res.ok).toBe(true);
       if (!res.ok) return;
-      expect(res.sources.map((s) => s.apiKey)).toEqual([SECRET]);
+      expect(res.materials.map((m) => m.secret)).toEqual([SECRET]);
       const [head] = res.sources;
       if (head === undefined) throw new Error("expected a source");
       expect(res.defaultSource).toBe(head.id);

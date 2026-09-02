@@ -15,6 +15,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { CredentialMaterialResolver } from "@intx/types";
 import type { InferenceEvent, InferenceSource } from "@intx/types/runtime";
 
 import {
@@ -39,9 +40,16 @@ const ANTHROPIC_SOURCE: InferenceSource = {
   id: "anthropic:claude-test",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "session-replay-stub",
+  credentialId: "session-replay-stub",
   model: "claude-test",
 };
+
+// The fetch override returns synthetic wire bytes, so the injected credential
+// never reaches a real endpoint. The resolver only has to satisfy the sentinel
+// substitution the adapter's built request headers request.
+const readMaterial: CredentialMaterialResolver = () => ({
+  secret: "session-replay-stub",
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -108,6 +116,7 @@ async function recordToolRoundtrip(): Promise<void> {
   for await (const ev of harness.runInference({
     turns: [userTurn("What is the weather in SF?")],
     source: ANTHROPIC_SOURCE,
+    readMaterial,
     nextSeq: () => ++seq,
   })) {
     turn1Events.push(ev);
@@ -139,6 +148,7 @@ async function recordToolRoundtrip(): Promise<void> {
       },
     ],
     source: ANTHROPIC_SOURCE,
+    readMaterial,
     nextSeq: () => ++seq,
   })) {
     // drain
@@ -257,6 +267,7 @@ async function recordMultiToolMultiTurn(): Promise<void> {
   for await (const ev of harness.runInference({
     turns: [userTurn("Weather in SF and the time in UTC?")],
     source: ANTHROPIC_SOURCE,
+    readMaterial,
     nextSeq: () => ++seq,
   })) {
     t1Events.push(ev);
@@ -299,6 +310,7 @@ async function recordMultiToolMultiTurn(): Promise<void> {
       },
     ],
     source: ANTHROPIC_SOURCE,
+    readMaterial,
     nextSeq: () => ++seq,
   })) {
     t2Events.push(ev);
@@ -343,6 +355,7 @@ async function recordMultiToolMultiTurn(): Promise<void> {
       userTurn("What about NYC?"),
     ],
     source: ANTHROPIC_SOURCE,
+    readMaterial,
     nextSeq: () => ++seq,
   })) {
     t3Events.push(ev);
@@ -406,6 +419,7 @@ async function recordMultiToolMultiTurn(): Promise<void> {
       },
     ],
     source: ANTHROPIC_SOURCE,
+    readMaterial,
     nextSeq: () => ++seq,
   })) {
     // drain
