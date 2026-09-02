@@ -409,7 +409,7 @@ export type SidecarRouterConfig = {
    * unverified frame claim. Return null to reject the handshake. */
   authenticateSidecar: SidecarAuthenticator;
   /** Revalidate durable identity at registration and routing boundaries. */
-  validateSidecarIdentity?: (
+  validateSidecarIdentity: (
     identity: SidecarAuthIdentity,
     use: "registration" | "readiness" | "routing",
   ) => Promise<boolean>;
@@ -457,7 +457,7 @@ export function createSidecarRouter(
     probeTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
     hubPublicKey: hubPublicKeyHex,
     authenticateSidecar,
-    validateSidecarIdentity = async () => true,
+    validateSidecarIdentity,
     disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,

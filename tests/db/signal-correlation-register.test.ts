@@ -233,6 +233,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       return createSidecarRouter({
         authenticateSidecar: acceptAnySidecar,
+        validateSidecarIdentity: async () => true,
         lookups,
       });
     }

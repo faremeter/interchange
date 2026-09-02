@@ -192,6 +192,7 @@ function startTestServer(): TestEnv {
   const deploymentKeys = new Map<string, string>();
   const router = createSidecarRouter({
     authenticateSidecar: acceptAnySidecar,
+    validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
   });

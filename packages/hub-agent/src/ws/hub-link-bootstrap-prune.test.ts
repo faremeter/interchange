@@ -194,6 +194,7 @@ function startTestServer(): TestEnv {
   };
   const router = createSidecarRouter({
     authenticateSidecar: acceptAnySidecar,
+    validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
     lookups: {

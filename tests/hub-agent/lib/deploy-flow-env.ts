@@ -693,6 +693,7 @@ export async function startHub(
       if (token === SECOND_TOKEN) return secondaryIdentity;
       return null;
     },
+    validateSidecarIdentity: async () => true,
     lookups: {
       // Answer a reconnecting sidecar's ownership challenge for a deployment
       // address with the Ed25519 key that address acked at deploy time.

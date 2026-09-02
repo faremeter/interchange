@@ -299,6 +299,7 @@ function startTestServer(): TestEnv {
 
   const router = createSidecarRouter({
     authenticateSidecar: acceptAnySidecar,
+    validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
   });
@@ -659,6 +660,7 @@ describe("sidecar↔hub integration", () => {
     // Stand up a hub router with an odd-length hex key to trigger hexDecode.
     const badRouter = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,
       hubPublicKey: "abc", // odd length — hexDecode should throw
     });
@@ -737,6 +739,7 @@ describe("sidecar↔hub integration", () => {
 
     const deployHubRouter = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,
       hubPublicKey: hubPublicKeyHex,
     });
@@ -1450,6 +1453,7 @@ describe("sidecar↔hub integration", () => {
     } = { transferIds: [] };
     const wfrRouter = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,
       hubPublicKey: "a".repeat(64),
       lookups: {

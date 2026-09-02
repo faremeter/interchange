@@ -96,6 +96,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         sidecarRouter: createSidecarRouter({
           authenticateSidecar: acceptAnySidecar,
+          validateSidecarIdentity: async () => true,
         }),
         sessionService: mockSessionService(),
         eventCollectors: createEventCollectorRegistry({ db: h.db }),
