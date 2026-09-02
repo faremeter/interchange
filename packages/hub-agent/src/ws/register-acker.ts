@@ -33,7 +33,7 @@ export type RegisterAckerConfig = {
   sendFrame: (frame: SignalCorrelationRegisterFrame) => void;
   /**
    * True only when the link is OPEN. The acker abandons a pending retry the
-   * moment the link is not open: re-sending onto a fresh, not-yet-challenged
+   * moment the link is not open: re-sending onto a fresh, not-yet-registered
    * socket would land "unrouted", and the reconnect re-emit re-registers the
    * whole parked set anyway.
    */
@@ -68,7 +68,7 @@ export interface RegisterAcker {
    * Abandon every pending retry without re-sending or re-acking. Called on link
    * close and on the reconnect open edge, symmetric with the ping timer and the
    * pack sender's `cancelAll`, so no timer leaks and no retry fires onto a dead
-   * or not-yet-challenged socket.
+   * or not-yet-registered socket.
    */
   cancelAll(): void;
 }

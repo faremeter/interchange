@@ -988,17 +988,17 @@ export interface SidecarDeployRouter extends DeployRouter {
    * currently hosts a live supervisor for -- the set of addresses this
    * sidecar can route mail to. The boot edge announces these to the hub on
    * (re)connect so the hub re-registers them for routing: they are hub-minted
-   * and carry no per-address key, so unlike single-agent sessions they are
-   * not re-established by the challenge flow, and without this announcement
-   * the hub drops their route on a WS reconnect. Reflects `deploy`/`undeploy`
+   * and carry no per-address key; the allocation-authenticated announcement is
+   * what re-establishes their routes after a WS reconnect. Reflects
+   * `deploy`/`undeploy`
    * and boot-time restore live, so a caller re-reads it per connect.
    */
   activeAddresses(): string[];
   /**
    * Trigger B: re-register every correlation the deployment at `address` is
    * currently parked on, by asking its live supervisor to re-emit them to the
-   * hub. The boot edge calls this per address the hub link re-routes on a
-   * reconnect challenge (`onWorkflowAddressesRoutable`), so a register frame
+   * hub. The boot edge calls this per address the hub link re-routes on an
+   * authenticated reconnect (`onWorkflowAddressesRoutable`), so a register frame
    * the hub dropped from its bounded send queue during the outage is recovered.
    * The address-dispatch wrapper around the supervisor's own no-arg
    * `reEmitParkedCorrelations`; fire-and-forget (the driver is best-effort and
@@ -1831,18 +1831,11 @@ export function createSidecarDeployRouter(deps: {
       );
       agentTransportRegistered = true;
 
-      // The public key the deploy ack surfaces to the hub is the deployment
-      // address's own Ed25519 key -- the one `loadOrGenerateKey` minted above,
-      // which `AgentKeyStore.signChallenge(spec.agentAddress)` also signs
-      // reconnect challenges with. EVERY deployment acks it, single- and
-      // multi-step alike, so the hub can verify the reconnect ownership
-      // challenge for both: a single-step head records it into
-      // `agent_instance.publicKey`; a workflow-derived deployment records it on
-      // its `workflow_deployment` row. A multi-step deployment previously acked
-      // the supervisor principal key -- which the hub discarded and which does
-      // NOT match what `signChallenge` signs with -- so its address could be
-      // re-claimed on reconnect without proof; carrying the deployment key
-      // closes that.
+      // The deploy ack surfaces the deployment address's Ed25519 public key --
+      // the key `loadOrGenerateKey` minted above and the workflow uses for
+      // signed content provenance. Every deployment acks it, single- and
+      // multi-step alike, so the Hub can publish the same identity. Reconnect
+      // ownership is established separately by the allocation credential.
       const deploymentPublicKey = hexEncode(keyPair.publicKey);
       if (spec.definition.stepOrder.length === 1) {
         // A single-step workflow stages its deploy tree at the head (the

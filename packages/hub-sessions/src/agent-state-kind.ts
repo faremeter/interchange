@@ -91,10 +91,9 @@ export const agentStateAuthorize: AuthorizeFn = (
   action,
 ) => {
   if (principal.kind === "hub") {
-    // Full access at this kind. Hub-side reads (getDeployRef,
-    // createDeployPack) and writes (writeDeployTree) all flow through
-    // here, so changing this branch tightens behavior in non-obvious
-    // places.
+    // Full access at this kind. Hub-side reads (createDeployPack) and writes
+    // (writeDeployTree) all flow through here, so changing this branch tightens
+    // behavior in non-obvious places.
     return { allowed: true };
   }
 

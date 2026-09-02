@@ -48,7 +48,6 @@ export const ReconnectFrame = type({
   sidecarId: "string",
   token: "string",
   agentAddresses: "string[]",
-  "deployRefs?": "Record<string, string>",
 });
 export type ReconnectFrame = typeof ReconnectFrame.infer;
 

@@ -228,7 +228,7 @@ const DEFAULT_RECONNECT_DELAY_MS = 3_000;
  * when the link cycles on the reconnect `open` handler. A push that fails with
  * this is a dropped connection, not a receiver-side rejection, so the
  * workflow-run push path must not fast-retry it (see `runWithBootstrap`); the
- * pushing store's post-challenge re-drive owns reconnect recovery.
+ * pushing store's post-reconnect re-drive owns reconnect recovery.
  */
 const CONNECTION_LOST_REASON = "Connection lost";
 
@@ -492,9 +492,8 @@ export type HubLinkConfig = {
   sessions: SessionManager;
   /**
    * Key custody and per-frame crypto. HubLink calls into the store for
-   * challenge signing, deploy-commit verification, hub-key recording,
-   * and per-agent forgetting; it does not maintain its own copy of
-   * those tables.
+   * deploy-commit verification, hub-key recording, and per-agent forgetting;
+   * it does not maintain its own copy of those tables.
    */
   keyStore: AgentKeyStore;
   /**
@@ -1346,10 +1345,10 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       } catch (first) {
         // A disconnect that cancelled the transfer (`cancelAll` on the
         // link's reconnect `open`) is NOT the initRepo bootstrap race: the
-        // link just cycled, and re-sending on the fresh, not-yet-challenged
+        // link just cycled, and re-sending on the fresh, not-yet-registered
         // connection would ship to a hub that has dropped this address's
         // route (the frames land "unrouted"). Reconnect recovery is owned by
-        // the pushing store's post-challenge re-drive, not by this
+        // the pushing store's post-reconnect re-drive, not by this
         // fast-retry, so re-throw and let the caller latch the failure. Only
         // the genuine bootstrap race -- a receiver reject against an
         // uninitialised hub repo -- retries here.
@@ -1568,8 +1567,8 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       packSender.cancelAll(CONNECTION_LOST_REASON);
       // Abandon register retries armed against the prior connection. Any still
       // parked correlation is re-registered by the reconnect re-emit once the
-      // challenge below re-routes the addresses, so a stale retry firing onto
-      // this fresh, not-yet-challenged socket would only land unrouted.
+      // handshake below re-routes the addresses, so a stale retry firing onto
+      // this fresh, not-yet-registered socket would only land unrouted.
       registerAcker.cancelAll();
 
       // The first handshake is the sidecar's complete hosted-address
@@ -1586,37 +1585,12 @@ export function createHubLink(config: HubLinkConfig): HubLink {
           agentAddresses: [],
         });
       } else {
-        // The active-address inventory includes both workflow-derived and
-        // plain run addresses. The Hub skips deploy-ref freshness for
-        // workflow-derived addresses; the rest still require their refs to
-        // avoid an unnecessary full deploy-pack catch-up.
-        void (async () => {
-          try {
-            const deployRefs: Record<string, string> = {};
-            for (const address of restoredAddresses) {
-              const ref = await sessions.getDeployRef(address);
-              if (ref !== null) {
-                deployRefs[address] = ref;
-              }
-            }
-            completeHandshake(connection, {
-              type: "reconnect",
-              sidecarId,
-              token,
-              agentAddresses: restoredAddresses,
-              ...(Object.keys(deployRefs).length > 0 ? { deployRefs } : {}),
-            });
-          } catch (err) {
-            // A failed ref read leaves the Hub unable to determine whether a
-            // plain agent needs catch-up. Retry the whole connection instead
-            // of sending a partial inventory. The attempt fence prevents a
-            // late failure from closing a newer socket.
-            if (ws !== connection) return;
-            const msg = err instanceof Error ? err.message : String(err);
-            logger.error`Deployment re-announce failed, closing connection: ${msg}`;
-            connection.close();
-          }
-        })();
+        completeHandshake(connection, {
+          type: "reconnect",
+          sidecarId,
+          token,
+          agentAddresses: restoredAddresses,
+        });
       }
     });
 
@@ -1666,11 +1640,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       // fire onto a closed socket.
       registerAcker.cancelAll();
       // The hub dropped every route this link held. Block workflow-run pushes
-      // for the deployments it hosts until the reconnect challenge re-routes
-      // them, so the coalescing pusher does not re-ship onto the fresh,
-      // not-yet-challenged connection (which the hub drops as "unrouted").
-      // `onWorkflowAddressesRoutable`, fired when the challenge passes, lifts
-      // the block and re-drives.
+      // for the deployments it hosts until the authenticated reconnect
+      // re-routes them, so the coalescing pusher does not re-ship onto the
+      // fresh, not-yet-registered connection (which the hub drops as
+      // "unrouted"). `onWorkflowAddressesRoutable`, fired after the reconnect
+      // frame is sent, lifts the block and re-drives.
       if (onWorkflowAddressesUnroutable !== undefined) {
         const hosted = getWorkflowAddresses();
         if (hosted.length > 0) {

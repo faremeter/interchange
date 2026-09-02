@@ -447,11 +447,11 @@ const orchestrator = createSidecarOrchestrator({
     }
     return sidecarDeployRouter.activeAddresses();
   },
-  // When the hub-link re-answers a reconnect challenge for a deployment
-  // address, re-drive any workflow-run pack the disconnect cancelled. The
-  // link fires this AFTER sending the challenge.response, so the hub routes
-  // the address before it sees the re-shipped pack (both frame families
-  // queue on the hub's per-connection chain). This is the liveness half of
+  // When the hub-link re-announces a deployment address in an authenticated
+  // reconnect, re-drive any workflow-run pack the disconnect cancelled. The
+  // link fires this AFTER sending the reconnect frame, so the hub routes the
+  // address before it sees the re-shipped pack (both frame families queue on
+  // the hub's per-connection chain). This is the liveness half of
   // reconnect recovery: without it, a synchronous single-step run whose only
   // pack was interrupted mid-transfer never re-ships, because it has no later
   // local write to re-arm the coalescing loop.
@@ -474,11 +474,11 @@ const orchestrator = createSidecarOrchestrator({
       //   - The hub-side co-write's `registerSignalCorrelation` throws only when
       //     the deployment has no `status = "deployed"` row. That row is written
       //     at DEPLOY time and persists across the outage -- the reconnect
-      //     challenge re-routes the address in the hub's in-memory index but
-      //     writes no DB status, so the lookup already resolves. (The frame
-      //     also lands after the address is wire-routable: the link fires this
-      //     after `challenge.response`, and both frames queue on the hub's
-      //     per-connection chain -- see the pack re-ship note above.)
+      //     re-routes the address in the hub's in-memory index but writes no DB
+      //     status, so the lookup already resolves. (The frame also lands after
+      //     the address is wire-routable: the link fires this after the
+      //     reconnect frame, and both frames queue on the hub's per-connection
+      //     chain -- see the pack re-ship note above.)
       //   - A sidecar restart re-emits the parked set twice (child
       //     re-establishment fires Trigger A too), but the co-write dedups on
       //     the `correlationId` PK/unique constraints via `onConflictDoNothing`,
@@ -490,8 +490,8 @@ const orchestrator = createSidecarOrchestrator({
     }
   },
   // On disconnect, block the deployment addresses' workflow-run pushes until
-  // the reconnect challenge above re-routes them. Without the block, the
-  // coalescing pusher re-ships onto the fresh, not-yet-challenged connection
+  // the authenticated reconnect above re-routes them. Without the block, the
+  // coalescing pusher re-ships onto the fresh, not-yet-registered connection
   // and the hub drops the frames as "unrouted".
   onWorkflowAddressesUnroutable: (addresses) => {
     for (const address of addresses) {

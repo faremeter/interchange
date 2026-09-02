@@ -178,10 +178,10 @@ export type SidecarOrchestratorConfig = {
    */
   getWorkflowAddresses?: () => string[];
   /**
-   * Invoked with the workflow-substrate addresses the link just answered a
-   * reconnect challenge for. Forwarded to the hub link, which fires it once
-   * per challenge so the workflow-run pack pusher can re-drive a push a
-   * disconnect cancelled -- gated on the address becoming routable again.
+   * Invoked with the workflow-substrate addresses the link just announced in
+   * an authenticated reconnect. Forwarded to the hub link so the workflow-run
+   * pack pusher can re-drive a push a disconnect cancelled -- gated on the
+   * address becoming routable again.
    * Production wires this to the boot-edge pack-pushing store's
    * "address routable" notifier; omitted, the link fires nothing.
    */
@@ -189,7 +189,7 @@ export type SidecarOrchestratorConfig = {
   /**
    * Invoked on WS disconnect with the workflow-substrate addresses the link
    * hosts, so the workflow-run pack pusher blocks their pushes until the
-   * reconnect challenge re-routes them. Paired with
+   * authenticated reconnect re-routes them. Paired with
    * `onWorkflowAddressesRoutable`. Production wires this to the boot-edge
    * pack-pushing store's block notifier; omitted, the link fires nothing.
    */
