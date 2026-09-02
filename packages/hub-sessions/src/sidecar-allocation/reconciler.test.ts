@@ -82,6 +82,7 @@ function deps(args: {
   store: AllocationStore;
   provisioner?: SidecarProvisioner;
   fences?: [string, number][];
+  retired?: [string, number][];
   ready?: boolean;
   waitError?: Error;
   onReady?: (row: SidecarAllocation) => Promise<void>;
@@ -96,6 +97,9 @@ function deps(args: {
     router: {
       fenceAllocation(id, generation) {
         args.fences?.push([id, generation]);
+      },
+      retireAllocation({ allocationId, generation }) {
+        args.retired?.push([allocationId, generation]);
       },
       isAllocatedSidecarReady: async () => args.ready ?? true,
       waitForAllocatedSidecar: async () => {
@@ -280,6 +284,7 @@ describe("createSidecarAllocationReconciler", () => {
     let failed:
       | Parameters<AllocationStore["failWithoutInfrastructure"]>[0]
       | undefined;
+    const retired: [string, number][] = [];
     const store = fakeStore({
       claimNextReconcilable: async () => {
         if (claimed) return null;
@@ -303,7 +308,7 @@ describe("createSidecarAllocationReconciler", () => {
       },
     });
     const reconciler = createSidecarAllocationReconciler(
-      deps({ store, provisioner }),
+      deps({ store, provisioner, retired }),
     );
 
     expect(await reconciler.reconcileUntilIdle()).toBe(1);
@@ -316,6 +321,37 @@ describe("createSidecarAllocationReconciler", () => {
       expectedLeaseId: "lease-1",
       now: NOW,
     });
+    expect(retired).toEqual([["alloc-1", 1]]);
+  });
+
+  test("retires a fence after releasing destroyed capacity", async () => {
+    const releasing = allocation({
+      status: "releasing",
+      generation: 2,
+      sidecarId: "sc-old",
+      reconciliationLeaseId: "lease-1",
+    });
+    const released = allocation({
+      ...releasing,
+      status: "released",
+    });
+    let claimed = false;
+    const retired: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return releasing;
+      },
+      markReleased: async () => released,
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({ store, retired }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(retired).toEqual([["alloc-1", 2]]);
   });
 
   test("backs off before replacing a retryable ensure rejection", async () => {

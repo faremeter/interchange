@@ -44,7 +44,10 @@ export type SidecarAllocationReconcilerDeps = {
   readonly plugins: SidecarPluginRegistry;
   readonly router: Pick<
     SidecarAllocationRouter,
-    "fenceAllocation" | "isAllocatedSidecarReady" | "waitForAllocatedSidecar"
+    | "fenceAllocation"
+    | "isAllocatedSidecarReady"
+    | "retireAllocation"
+    | "waitForAllocatedSidecar"
   >;
   readonly hubWebSocketUrl: string;
   /** Idempotently restores and deploys one connected allocation generation. */
@@ -325,7 +328,7 @@ export function createSidecarAllocationReconciler({
     }
     if (result.kind === "rejected") {
       if (!result.retryable) {
-        await allocationStore.failWithoutInfrastructure({
+        const failed = await allocationStore.failWithoutInfrastructure({
           allocationId: allocation.id,
           expectedStatus: "provisioning",
           expectedGeneration: allocation.generation,
@@ -334,6 +337,12 @@ export function createSidecarAllocationReconciler({
           expectedLeaseId: leaseId,
           now: now(),
         });
+        if (failed !== null) {
+          router.retireAllocation({
+            allocationId: failed.id,
+            generation: failed.generation,
+          });
+        }
         return;
       }
       await replaceAfterFailure(
@@ -470,7 +479,7 @@ export function createSidecarAllocationReconciler({
     const provisioner = provisionerFor(allocation);
     if (provisioner === null) {
       if (allocation.status === "pending") {
-        await allocationStore.failWithoutInfrastructure({
+        const failed = await allocationStore.failWithoutInfrastructure({
           allocationId: allocation.id,
           expectedStatus: "pending",
           expectedGeneration: allocation.generation,
@@ -479,6 +488,12 @@ export function createSidecarAllocationReconciler({
           expectedLeaseId: leaseId,
           now: now(),
         });
+        if (failed !== null) {
+          router.retireAllocation({
+            allocationId: failed.id,
+            generation: failed.generation,
+          });
+        }
       } else {
         await allocationStore.scheduleRetry({
           allocationId: allocation.id,
@@ -515,15 +530,22 @@ export function createSidecarAllocationReconciler({
         if (!(await destroyCurrent(allocation, leaseId, provisioner))) return;
         await bindAndEnsure(allocation, leaseId, provisioner, true);
         return;
-      case "releasing":
+      case "releasing": {
         if (!(await destroyCurrent(allocation, leaseId, provisioner))) return;
-        await allocationStore.markReleased({
+        const released = await allocationStore.markReleased({
           allocationId: allocation.id,
           generation: allocation.generation,
           expectedLeaseId: leaseId,
           now: now(),
         });
+        if (released !== null) {
+          router.retireAllocation({
+            allocationId: released.id,
+            generation: released.generation,
+          });
+        }
         return;
+      }
       default: {
         const exhaustive: never = allocation.status;
         throw new Error(

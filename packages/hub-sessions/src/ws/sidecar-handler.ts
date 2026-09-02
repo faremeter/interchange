@@ -305,6 +305,11 @@ export type AllocatedSidecarTarget = {
 export type SidecarAllocationRouter = {
   /** Advance the in-memory trust boundary before provisioning a generation. */
   fenceAllocation(allocationId: string, generation: number): void;
+  /**
+   * Remove an exact generation's fence after its durable owner becomes
+   * terminal. Durable identity validation rejects later stale reconnects.
+   */
+  retireAllocation(target: AllocatedSidecarTarget): void;
   /** Resolve once the exact authenticated allocation generation is connected. */
   waitForAllocatedSidecar(
     target: AllocatedSidecarTarget,
@@ -2035,6 +2040,25 @@ export function createSidecarRouter(
     if (waiters.size === 0) allocationWaiters.delete(allocationId);
   }
 
+  function retireAllocation(target: AllocatedSidecarTarget): void {
+    if (allocationFences.get(target.allocationId) !== target.generation) return;
+
+    disconnectAllocation(target);
+    allocationFences.delete(target.allocationId);
+
+    const waiters = allocationWaiters.get(target.allocationId);
+    if (waiters === undefined) return;
+    allocationWaiters.delete(target.allocationId);
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(
+        new Error(
+          `Allocation ${target.allocationId} generation ${String(target.generation)} retired`,
+        ),
+      );
+    }
+  }
+
   async function getProvisionedConnection(
     target: AllocatedSidecarTarget,
     use: "readiness" | "routing",
@@ -2969,6 +2993,7 @@ export function createSidecarRouter(
     sendPackToAllocation,
     sendWorkflowRunPackToAllocation,
     fenceAllocation,
+    retireAllocation,
     waitForAllocatedSidecar,
     isAllocatedSidecarReady,
     isAllocatedWorkflowActive,

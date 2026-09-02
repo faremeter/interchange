@@ -116,6 +116,7 @@ export type WorkflowAllocationServiceDeps = {
     | "disconnectAllocation"
     | "fenceAllocation"
     | "isAllocatedWorkflowActive"
+    | "retireAllocation"
     | "sendProbeToAllocation"
     | "waitForAllocatedSidecar"
   >;
@@ -293,8 +294,20 @@ export function createWorkflowAllocationService({
         generation: releasing.generation,
       });
     }
-    await probeStore.transition(releasing.id, ["releasing"], finalStatus, {
-      now: now(),
+    const completed = await probeStore.transition(
+      releasing.id,
+      ["releasing"],
+      finalStatus,
+      { now: now() },
+    );
+    if (completed === null) {
+      throw new Error(
+        `Workflow probe ${releasing.id} changed before cleanup completed`,
+      );
+    }
+    allocationRouter.retireAllocation({
+      allocationId: releasing.id,
+      generation: releasing.generation,
     });
   }
 

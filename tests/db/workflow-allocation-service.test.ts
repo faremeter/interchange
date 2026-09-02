@@ -244,6 +244,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialCipher: CIPHER,
         allocationRouter: {
           fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
@@ -326,6 +327,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialCipher: CIPHER,
         allocationRouter: {
           fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
@@ -488,6 +490,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialCipher: CIPHER,
         allocationRouter: {
           fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
@@ -522,6 +525,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const anchorRunId = "run-probe-cleanup-retry";
       const ensureCalls: unknown[] = [];
       const destroyCalls: unknown[] = [];
+      const retireCalls: unknown[] = [];
       let destroyAttempts = 0;
       const probeProvisioner: SidecarProvisioner = {
         id: "retry-cleanup-probe",
@@ -562,6 +566,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialCipher: CIPHER,
         allocationRouter: {
           fenceAllocation: () => undefined,
+          retireAllocation: (target) => retireCalls.push(target),
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
@@ -579,6 +584,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       expect(ensureCalls).toHaveLength(1);
       expect(destroyCalls).toHaveLength(1);
+      expect(retireCalls).toHaveLength(0);
       expect(
         await h.db.query.workflowProbe.findFirst({
           where: eq(workflowProbe.id, "sal-probe-cleanup-retry"),
@@ -591,6 +597,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await service.reconcileReleasingProbes();
 
       expect(destroyCalls).toHaveLength(2);
+      expect(retireCalls).toEqual([
+        { allocationId: "sal-probe-cleanup-retry", generation: 0 },
+      ]);
       expect(
         await h.db.query.workflowProbe.findFirst({
           where: eq(workflowProbe.id, "sal-probe-cleanup-retry"),
@@ -652,6 +661,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialCipher: CIPHER,
         allocationRouter: {
           fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
@@ -727,6 +737,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialCipher: CIPHER,
         allocationRouter: {
           fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
@@ -801,6 +812,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ],
         allocationRouter: {
           fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
@@ -858,6 +870,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ],
           allocationRouter: {
             fenceAllocation: () => undefined,
+            retireAllocation: () => undefined,
             waitForAllocatedSidecar: async () => undefined,
             sendProbeToAllocation: async () => probeResult(),
             isAllocatedWorkflowActive: async () => false,
