@@ -632,7 +632,7 @@ export type WorkflowRunPackPushingRepoStore = RepoStore & {
   /**
    * Re-drive any workflow-run push for `agentAddress` that a disconnect
    * cancelled. Called when the hub-link observes the deployment address
-   * become routable again after a reconnect challenge. For each slot bound
+   * become routable again after an authenticated reconnect. For each slot bound
    * to `agentAddress` whose last push attempt failed (its `lastError` is
    * latched), it re-arms the coalescing loop so a fresh `createPack` re-ships
    * the un-acked commits -- the liveness path a synchronous single-step run
@@ -641,17 +641,17 @@ export type WorkflowRunPackPushingRepoStore = RepoStore & {
    * A re-ship that fails again re-latches without self-retrying, so a
    * genuinely unrecoverable failure still surfaces loudly on the next local
    * write rather than spinning. It is gated on the address being routable
-   * again (the caller only fires post-challenge) so the re-ship cannot race
+   * again (the caller only fires post-reconnect) so the re-ship cannot race
    * ahead of the hub re-routing the address.
    */
   notifyAddressRoutable: (agentAddress: string) => void;
   /**
    * Block workflow-run pushes for `agentAddress` until the next
    * `notifyAddressRoutable`. Called when the hub-link observes its WS drop:
-   * the address's hub route is gone until the reconnect challenge re-proves
-   * ownership, so a push shipped in the interim is dropped by the hub as
+   * the address's hub route is gone until the authenticated reconnect restores
+   * it, so a push shipped in the interim is dropped by the hub as
    * "unrouted". Holding the push at the block -- rather than shipping and
-   * failing -- is what lets the reconnect re-ship wait for the challenge.
+   * failing -- is what lets the reconnect re-ship wait for route restoration.
    */
   markAddressUnroutable: (agentAddress: string) => void;
 };
@@ -676,14 +676,14 @@ export function createWorkflowRunPackPushingRepoStore(
   }
 
   // Addresses whose hub route was dropped and has not been re-established by a
-  // reconnect challenge. Absent means routable -- the steady state, and the
+  // authenticated reconnect. Absent means routable -- the steady state, and the
   // first-connect state (a deployment routes via its `agent.deploy`, not a
-  // challenge, so it is never blocked before its first push). An address is
+  // reconnect, so it is never blocked before its first push). An address is
   // added on `markAddressUnroutable` (WS disconnect) and removed on
-  // `notifyAddressRoutable` (challenge passed). A push for a blocked address
+  // `notifyAddressRoutable` (reconnect sent). A push for a blocked address
   // is held: the coalescing loop pauses with `dirty` still set rather than
   // shipping to a hub that has not yet re-routed the address -- which is what
-  // makes the reconnect re-ship wait for the challenge instead of racing
+  // makes the reconnect re-ship wait for route restoration instead of racing
   // ahead of it and being dropped as "unrouted".
   const blockedAddresses = new Set<string>();
 
@@ -696,7 +696,7 @@ export function createWorkflowRunPackPushingRepoStore(
   function startLoop(slot: Slot, repoId: RepoId, ref: string): void {
     if (slot.inFlight !== null) return;
     // Hold the push while the address is not routable (dropped, awaiting the
-    // reconnect challenge). Leave `dirty` set and start no loop: the loop
+    // authenticated reconnect). Leave `dirty` set and start no loop: the loop
     // resumes when `notifyAddressRoutable` clears the block and re-arms it.
     // Shipping now would race ahead of the hub re-routing the address, and
     // the frames would be dropped as "unrouted".
@@ -705,7 +705,7 @@ export function createWorkflowRunPackPushingRepoStore(
       while (slot.dirty) {
         // Re-check routability each iteration: a disconnect mid-drain must
         // pause the loop rather than push into a severed link. Leave `dirty`
-        // set so the post-challenge resume re-ships.
+        // set so the post-reconnect resume re-ships.
         if (blockedAddresses.has(slot.agentAddress)) break;
         slot.dirty = false;
         try {
@@ -767,15 +767,15 @@ export function createWorkflowRunPackPushingRepoStore(
 
   function markAddressUnroutable(agentAddress: string): void {
     // The hub route for this address just dropped (WS disconnect). Block its
-    // pushes until the reconnect challenge re-routes it. A push already
+    // pushes until the authenticated reconnect re-routes it. A push already
     // in-flight when the link dropped rejects through `packSender.cancelAll`
     // and latches its error; the block stops the coalescing loop from
-    // immediately re-shipping on the fresh (not-yet-challenged) connection.
+    // immediately re-shipping on the fresh (not-yet-registered) connection.
     blockedAddresses.add(agentAddress);
   }
 
   function notifyAddressRoutable(agentAddress: string): void {
-    // The reconnect challenge re-routed this address on the hub. Clear the
+    // The authenticated reconnect re-routed this address on the hub. Clear the
     // block and re-drive so a push the disconnect cancelled -- or one held
     // while the block was up -- ships now. This is the liveness path a
     // synchronous single-step run lacks: with all its events in one batch it

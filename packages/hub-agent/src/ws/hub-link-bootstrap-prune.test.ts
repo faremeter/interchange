@@ -110,7 +110,6 @@ function createMockSessionManager(): SessionManager & {
         ref: "refs/heads/main",
       }),
     deleteAgentDir: () => Promise.resolve(),
-    getDeployRef: (_agentAddress: string) => Promise.resolve(null),
     getSessionId: (_agentAddress: string) => undefined,
   } satisfies SessionManager & {
     provisioned: HarnessConfig[];

@@ -4,11 +4,8 @@
 // produce flow. Key custody lives in AgentKeyStore alongside this
 // store; both share the directory-layout helpers in agent-paths.
 
-import fs from "node:fs";
 import fsp from "node:fs/promises";
-import git from "isomorphic-git";
 import { getLogger } from "@intx/log";
-import { hasCode } from "@intx/types";
 import {
   initAgentRepo,
   applyPack,
@@ -42,7 +39,6 @@ export type AgentRepoStore = {
   createStatePack(
     address: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
-  getDeployRef(address: string): Promise<string | null>;
   remove(address: string): Promise<void>;
 };
 
@@ -82,18 +78,6 @@ export function createAgentRepoStore(config: {
     return { pack, commitSha, ref };
   }
 
-  async function getDeployRef(address: string): Promise<string | null> {
-    const dir = getAgentDir(address);
-    try {
-      return await git.resolveRef({ fs, dir, ref: "refs/heads/deploy" });
-    } catch (err: unknown) {
-      if (hasCode(err) && err.code === "NotFoundError") {
-        return null;
-      }
-      throw err;
-    }
-  }
-
   async function remove(address: string): Promise<void> {
     await fsp.rm(getAgentDir(address), { recursive: true });
     logger.info`Deleted agent directory for ${address}`;
@@ -104,7 +88,6 @@ export function createAgentRepoStore(config: {
     initRepo,
     applyDeployPack: applyDeployPackImpl,
     createStatePack,
-    getDeployRef,
     remove,
   };
 }

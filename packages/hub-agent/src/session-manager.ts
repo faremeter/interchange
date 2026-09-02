@@ -6,8 +6,8 @@
 // on the workflow-run substrate. What remains here is the thin
 // serialization layer over the agent repo store that the deploy path
 // and the hub-link still call: deploy/asset-pack applies, state-pack
-// reads, deploy-ref reads, and directory teardown, each run
-// one-at-a-time per agent so a teardown never races an in-flight git op.
+// reads, and directory teardown, each run one-at-a-time per agent so a
+// teardown never races an in-flight git op.
 
 import path from "node:path";
 
@@ -54,7 +54,6 @@ export type SessionManager = {
     agentAddress: string,
   ): Promise<{ pack: Uint8Array; commitSha: string; ref: string }>;
   deleteAgentDir(agentAddress: string): Promise<void>;
-  getDeployRef(agentAddress: string): Promise<string | null>;
   /**
    * Session addresses this manager hosts. The in-process session runtime
    * is retired, so this is always empty; the hub-link ships it in the
@@ -75,16 +74,16 @@ export function createSessionManager(
   const { repoStore } = config;
 
   // Per-agent promise chain that serializes the operations against an agent's
-  // on-disk directory -- state-pack and deploy-ref reads and deploy/asset-pack
-  // applies all run one-at-a-time per agent. The chain exists for teardown:
+  // on-disk directory -- state-pack reads and deploy/asset-pack applies all run
+  // one-at-a-time per agent. The chain exists for teardown:
   // drainRepoOps awaits it before deleting the directory, so an operation that
   // was valid when it started never runs against a path that has since
   // vanished underneath it. Serializing additionally avoids corruption for the
-  // members that share the agent's `.git/` object store (state-pack and
-  // deploy-ref reads, deploy-pack applies), which isogit, lacking a
-  // cross-process lock, would otherwise let interleave. Asset-pack applies are
-  // on the chain only for the teardown reason -- they materialize into a
-  // workspace subtree, not the agent repo's object store.
+  // members that share the agent's `.git/` object store (state-pack reads and
+  // deploy-pack applies), which isogit, lacking a cross-process lock, would
+  // otherwise let interleave. Asset-pack applies are on the chain only for the
+  // teardown reason -- they materialize into a workspace subtree, not the agent
+  // repo's object store.
   const repoOpQueues = new Map<string, Promise<void>>();
 
   function runRepoOp<T>(
@@ -183,17 +182,12 @@ export function createSessionManager(
     await repoStore.remove(agentAddress);
   }
 
-  async function getDeployRef(agentAddress: string): Promise<string | null> {
-    return runRepoOp(agentAddress, () => repoStore.getDeployRef(agentAddress));
-  }
-
   return {
     initRepo: (address: string) => repoStore.initRepo(address),
     applyDeployPack,
     applyAssetPack,
     createStatePack,
     deleteAgentDir,
-    getDeployRef,
     getAddresses: () => [],
     getSessionId: () => undefined,
   };

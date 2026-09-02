@@ -999,9 +999,8 @@ export function createSidecarRouter(
       }
       case "reconnect": {
         const agentAddresses = frame.agentAddresses;
-        const deployRefs = frame.deployRefs ?? {};
         return authenticateHandshake(ws, frame, (identity) =>
-          handleReconnect(ws, identity, agentAddresses, deployRefs),
+          handleReconnect(ws, identity, agentAddresses),
         );
       }
       case "agent.deploy.ack":
@@ -1303,7 +1302,6 @@ export function createSidecarRouter(
     ws: WsHandle,
     identity: SidecarAuthIdentity,
     agentAddresses: string[],
-    _deployRefs: Record<string, string> = {},
   ): Promise<void> {
     await handleAllocatedRegister(ws, identity, agentAddresses);
   }

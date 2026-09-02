@@ -36,7 +36,6 @@ function makeStubRepoStore(opts: {
     initRepo: unused("initRepo"),
     applyDeployPack: unused("applyDeployPack"),
     createStatePack: opts.createStatePack,
-    getDeployRef: unused("getDeployRef"),
     remove: opts.remove,
   };
 }

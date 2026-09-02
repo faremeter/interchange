@@ -216,9 +216,6 @@ function createRepoStoreStub(): {
       getSigningPublicKey() {
         return new Uint8Array(32);
       },
-      async getDeployRef() {
-        return null;
-      },
       repoStore: unusedRepoStore(),
     },
   };

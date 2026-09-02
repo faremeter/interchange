@@ -229,7 +229,6 @@ describe("SidecarRouter allocation routing", () => {
       sidecarId: identity.sidecarId,
       token: "token",
       agentAddresses: [identity.workflowRunAddress],
-      deployRefs: {},
     });
     router.handleMessage(second, reconnect);
     await tick();

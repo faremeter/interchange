@@ -107,9 +107,6 @@ export type AgentRepoStore = {
     commitSha: string,
   ): Promise<NewlyTerminalRun[]>;
 
-  /** Resolve the current deploy ref SHA, or null if no deploy exists. */
-  getDeployRef(agentId: string): Promise<string | null>;
-
   /** Raw 32-byte Ed25519 public key used to sign deploy commits. */
   getSigningPublicKey(): Uint8Array;
 
@@ -276,10 +273,6 @@ export function createAgentRepoStore(config: {
         commitSha,
         expectedOldSha,
       );
-    },
-
-    async getDeployRef(agentId) {
-      return store.resolveRef(hub, repoId(agentId), AGENT_STATE_DEPLOY_REF);
     },
 
     getSigningPublicKey() {
