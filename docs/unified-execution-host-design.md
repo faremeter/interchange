@@ -1336,15 +1336,21 @@ on function-valued tool factories.)
 **Per-step inference sources.** Each child agent step pins its inference source at
 parent deploy through the operator-approval gate (`pickStepInferenceSource`),
 exactly as a top-level or onTrigger-body step does. The pins ride the
-`referencedDefinitions` wire field and stage to
-`assets/workflow/<childBodyRef>/sources.json` via `materializeWorkflowSources`,
-where `<childBodyRef>` is the deploy-minted `${workflowId}__${stepId}` handle. The
-child invoker reads them by that ref (`readChildStepInferenceSources`). The inert
+`referencedDefinitions` wire field, keyed by the deploy-minted
+`${workflowId}__${stepId}` handle. The sidecar seals every body's pins into the
+per-run record's `bodySources` (the same AES-GCM cipher and version envelope the
+top-level `sources` use, namespaced by definition id in the AAD), so a body's
+credential material is encrypted at rest in exactly one place. On each run-child
+spawn the sidecar decrypts the record and delivers the plaintext body sources
+through the spawn env (`WORKFLOW_BODY_SOURCES`), which the child looks up by ref
+(`resolveBodyStepSources`); the run child never holds the cipher key. The inert
 body enumerator (`enumerateInertBodies`) is generalized to lift both onTrigger
 sections and childWorkflow children transitively, so a single recursive walk
-stages every body's sources under a ref that matches the runtime's per-rung
-rewrite; the wire field, staging loop, and per-step approval-gate integration are
-shared with the onTrigger-body path.
+records every body's sources under a ref that matches the runtime's per-rung
+rewrite; the wire field and per-step approval-gate integration are shared with the
+onTrigger-body path. A deployment restored from a record written before body
+sources moved into it (its `bodySources` absent) falls back to the legacy
+plaintext `assets/workflow/<childBodyRef>/sources.json` for the missing bodies.
 
 **Per-step tools.** Unlike the onTrigger-body path (which runs toolless), a
 `childWorkflow` step runs real tools — through the same **source-tools** arm the
