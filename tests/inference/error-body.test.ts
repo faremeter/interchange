@@ -27,7 +27,7 @@ const SOURCE: InferenceSource = {
   id: "openai:test-model",
   provider: "openai",
   baseURL: "https://test.invalid/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "test-model",
 };
 
@@ -65,6 +65,7 @@ async function runAgainstFetch(
   let seq = 0;
   const events = await drain(
     runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: makeTurns(),
       source: SOURCE,
       // These tests verify how the harness extracts `error.message`

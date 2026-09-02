@@ -132,7 +132,10 @@ import {
   type StepToolCacheConfig,
   type StepToolMaterialization,
 } from "./step-agent-tools";
-import type { CredentialMaterialCell } from "./step-credential-capabilities";
+import {
+  createInferenceCredentialResolver,
+  type CredentialMaterialCell,
+} from "./step-credential-capabilities";
 import { readRunGrants, runGrantsPath } from "./run-grants";
 import {
   collectDeclaredResources,
@@ -177,6 +180,7 @@ export const SIDECAR_SUBSTRATE_CONFIG_KEYS = [
   "SIDECAR_ID",
   "SIDECAR_TOKEN",
   "STEP_INFERENCE_SOURCES",
+  "WORKFLOW_BODY_SOURCES",
   "SIDECAR_CACHE_MAX_BYTES",
   "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
   "SIDECAR_ADAPTER_MANIFEST",
@@ -192,6 +196,12 @@ const SubstrateConfig = type({
   SIDECAR_ID: "string > 0",
   SIDECAR_TOKEN: "string > 0",
   STEP_INFERENCE_SOURCES: "string > 0",
+  // JSON `{ [definitionId]: { [stepId]: InferenceSource[] } }` of every spawned
+  // body's plaintext inference sources, decrypted sidecar-side from the run
+  // record. Always serialized by the deploy router (at least "{}" when the
+  // deployment spawns no bodies), so a missing key child-side is a serialization
+  // bug and must fail loud here.
+  WORKFLOW_BODY_SOURCES: "string > 0",
   // Per-step tool-loader caps. The supervisor threads the boot edge's
   // resolved `SIDECAR_CACHE_MAX_BYTES` / `SIDECAR_REGISTRY_MAX_TARBALL_BYTES`
   // through `substrateEnv` so the child's per-step tool materialization is
@@ -265,6 +275,41 @@ function parseStepInferenceSources(raw: string): StepInferenceSourceTable {
   if (validated instanceof type.errors) {
     throw new Error(
       `sidecar workflow-child substrate config: STEP_INFERENCE_SOURCES failed validation: ${validated.summary}`,
+    );
+  }
+  return validated;
+}
+
+/**
+ * Every spawned body's per-step inference-source table, keyed by the body's
+ * definition id. Parsed from the `WORKFLOW_BODY_SOURCES` env entry the deploy
+ * router serializes from the run record's decrypted body sources. Empty when the
+ * deployment spawns no bodies.
+ */
+const BodyInferenceSources = type({
+  "[string]": StepInferenceSourceTable,
+});
+type BodyInferenceSources = typeof BodyInferenceSources.infer;
+
+/**
+ * Parse and validate the JSON-encoded `WORKFLOW_BODY_SOURCES` entry. Mirrors
+ * `parseStepInferenceSources`: a malformed payload is rejected at the boundary
+ * rather than deep in a body spawn.
+ */
+function parseBodyInferenceSources(raw: string): BodyInferenceSources {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(
+      `sidecar workflow-child substrate config: WORKFLOW_BODY_SOURCES is not valid JSON: ${reason}`,
+    );
+  }
+  const validated = BodyInferenceSources(parsed);
+  if (validated instanceof type.errors) {
+    throw new Error(
+      `sidecar workflow-child substrate config: WORKFLOW_BODY_SOURCES failed validation: ${validated.summary}`,
     );
   }
   return validated;
@@ -1158,13 +1203,26 @@ export function createSidecarStepBuildEnv(
     // snapshot. Omitted for a toolless build, which carries no
     // `credentialContext` and assembles no credentials.
     if (credentialContext !== undefined) {
-      attachStepCredentialWiring(env, {
-        materialCell: credentialContext.materialCell,
-        resolveGrants: () =>
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolveStepGrants returns unknown[] at the run-child boundary; the sidecar owns the GrantRule grammar
-          credentialContext.resolveStepGrants(stepId) as readonly GrantRule[],
-        providers: credentialContext.providers,
-      });
+      // Inference resolves its source's secret from the SAME live cell tool
+      // credentials resolve from, by `credentialId`, so the step's sources carry
+      // no inline key and the child never holds the cipher key. The reader is set
+      // whenever a context is present -- a toolless onTrigger body carries a
+      // context for the reader alone.
+      env.readCurrentMaterial = createInferenceCredentialResolver(
+        credentialContext.materialCell,
+      );
+      // Attach the tool `credentials` capability only for a tool-bearing build. A
+      // toolless body has no tool grants and assembles no capability, so it skips
+      // the wiring while still reading the run's live material for inference.
+      if (deps.toolless !== true) {
+        attachStepCredentialWiring(env, {
+          materialCell: credentialContext.materialCell,
+          resolveGrants: () =>
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolveStepGrants returns unknown[] at the run-child boundary; the sidecar owns the GrantRule grammar
+            credentialContext.resolveStepGrants(stepId) as readonly GrantRule[],
+          providers: credentialContext.providers,
+        });
+      }
     }
     return env;
   };
@@ -1175,7 +1233,7 @@ export function createSidecarStepBuildEnv(
  * workflow-runtime `StepInvoker` with the child's credentials-backed
  * `authorize` (the seam that resolves each tool call against the run's
  * grants), the child's own per-step inference `sourcesRef` (built fresh per
- * spawn from the child's on-disk `sources.json`, disjoint from the top-level's
+ * spawn from the env-delivered body sources, disjoint from the top-level's
  * mutable table), and the parent run's `onEvent` funnel (so the child's live
  * inference events reach the hub timeline). Same shape as
  * `SidecarBodyStepInvoker`; the two differ only in whether the build env is
@@ -1186,6 +1244,7 @@ export type SidecarChildStepInvoker = (
   authorize: WorkflowAuthorizeFn,
   sourcesRef: SourcesSnapshotRef,
   onEvent: (event: InferenceEvent) => void,
+  credentialContext?: SidecarStepCredentialContext,
 ) => Promise<StepInvokeResult>;
 
 /**
@@ -1203,6 +1262,7 @@ export type SidecarBodyStepInvoker = (
   authorize: WorkflowAuthorizeFn,
   sourcesRef: SourcesSnapshotRef,
   onEvent: (event: InferenceEvent) => void,
+  credentialContext?: SidecarStepCredentialContext,
 ) => Promise<StepInvokeResult>;
 
 /**
@@ -1272,11 +1332,18 @@ interface SidecarRunChildDeps {
    */
   bodyInvokeStep?: SidecarBodyStepInvoker;
   /**
-   * Sidecar data dir, used to read a child's or body's on-disk
-   * `assets/workflow/<childRef>/sources.json` and build its per-step inference
-   * `sourcesRef`. Required for both the terminal childWorkflow path and the
-   * body path -- both run real agents that resolve inference from a staged
-   * `sources.json`.
+   * Every spawned body's plaintext inference-source table, keyed by definition
+   * id, decrypted sidecar-side from the run record and delivered through the
+   * spawn env. Each body path resolves its own table from here by definition id,
+   * so the child never holds the sidecar cipher key. A body whose id is absent --
+   * a deployment restored from a legacy record written before body sources moved
+   * into the record -- falls back to the on-disk `dataDir` file.
+   */
+  bodySources: BodyInferenceSources;
+  /**
+   * Sidecar data dir. The legacy fallback for a body absent from `bodySources`
+   * reads its `assets/workflow/<childRef>/sources.json`; the terminal
+   * childWorkflow / body paths resolve per-step storage under it. Required.
    */
   dataDir?: string;
   /**
@@ -1287,6 +1354,14 @@ interface SidecarRunChildDeps {
    * steps use.
    */
   evaluateGrants: GrantEvaluator;
+  /**
+   * Sidecar-static credential provider registry, shared with the top level.
+   * The child's tool-bearing build combines it with the run's live material
+   * cell and the child's capped grants to assemble each bundle's consumer
+   * `credentials` capability; the toolless body build carries it too so its
+   * inference reader resolves against the same material.
+   */
+  credentialProviders: CredentialProviderRegistry;
   /** Director registry the child runtime uses; defaults to the canonical built-ins. */
   directors?: DirectorRegistry;
   /**
@@ -1416,6 +1491,7 @@ export function createSidecarRunChild(
       maxChildSpawnDepth,
     },
     onEvent,
+    credentialMaterial,
   ) => {
     const {
       env,
@@ -1432,6 +1508,9 @@ export function createSidecarRunChild(
       childRunId,
       parentRunId,
       onEvent,
+      ...(credentialMaterial !== undefined
+        ? { materialCell: credentialMaterial }
+        : {}),
     });
     try {
       // Thread this rung's depth/ceiling into the child run so its own
@@ -1532,6 +1611,7 @@ export function createSidecarSpawnSuspendableChild(
       resumeFromEvents,
     },
     onEvent,
+    credentialMaterial,
   ) => {
     const {
       env: baseEnv,
@@ -1555,6 +1635,12 @@ export function createSidecarSpawnSuspendableChild(
       // grandchildren, built via the internal `createSidecarRunChild(deps)`
       // above, run through the tool-bearing `deps.invokeStep`.
       onEvent,
+      // The run's live credential-material cell so the body's inference resolves
+      // its source secret against the parent's current delivery; a grandchild
+      // spawned from the body inherits it through the recursive spawnChild.
+      ...(credentialMaterial !== undefined
+        ? { materialCell: credentialMaterial }
+        : {}),
       ...(deps.bodyInvokeStep !== undefined
         ? { bodyStepInvoker: deps.bodyInvokeStep }
         : {}),
@@ -1686,6 +1772,15 @@ async function buildChildRunEnv(args: {
    * a missing sink is a wiring defect, not a silent drop.
    */
   onEvent: (event: InferenceEvent) => void;
+  /**
+   * The parent run's live credential-material cell. Threaded so the child's
+   * inference resolves its source secret by `credentialId` against the run's
+   * current delivery -- reached live through the shared reference on a rotation.
+   * Absent when a non-sidecar executor carries no credential material, in which
+   * case no credential context is assembled and the child's inference reader
+   * stays unset.
+   */
+  materialCell?: CredentialMaterialCell;
 }): Promise<{
   env: WorkflowRuntimeEnv;
   signalChannel: ReturnType<typeof createWorkflowHostSignalChannel>;
@@ -1703,6 +1798,7 @@ async function buildChildRunEnv(args: {
     parentRunId,
     bodyStepInvoker,
     onEvent,
+    materialCell,
   } = args;
   // A rung may itself embed a child (grandchild recursion) as an inline
   // `childWorkflow`. Lift each to an internal `{ ref }` and run the rewritten
@@ -1815,30 +1911,22 @@ async function buildChildRunEnv(args: {
   );
   const drain = createNoopDrainController(rewrittenDefinition);
   // Both the terminal childWorkflow path and the onTrigger BODY path run a real
-  // agent that resolves inference against its OWN per-step `sources.json`
-  // (staged beside the body definition at deploy, keyed by the rewritten ref)
-  // and funnels live events to the parent run's channel. So `dataDir` and
-  // `onEvent` are required for both; a missing one is a wiring defect, not a
-  // silent drop. The file is guaranteed present (deploy materializes it), so a
-  // missing/broken read fails loud rather than silently degrading inference.
-  if (deps.dataDir === undefined) {
-    throw new Error(
-      "sidecar child: deps.dataDir is missing; the child's sources.json cannot be resolved",
-    );
-  }
+  // agent that resolves inference against its OWN per-step source table, keyed by
+  // the rewritten ref, and funnels live events to the parent run's channel. So
+  // `onEvent` is required for both; a missing one is a wiring defect, not a
+  // silent drop.
   if (onEvent === undefined) {
     throw new Error(
       "sidecar child: onEvent is missing; child inference events would be silently dropped from the hub stream",
     );
   }
   const childOnEvent = onEvent;
-  // Read fresh per spawn into a `sourcesRef` disjoint from the top-level's
-  // mutable table, so a top-level source rotation never leaks into a child.
+  // Resolve fresh per spawn into a `sourcesRef` disjoint from the top-level's
+  // mutable table, so a top-level source rotation never leaks into a child. The
+  // sources are delivered plaintext through the spawn env (`deps.bodySources`),
+  // decrypted sidecar-side, so the child never holds the cipher key.
   const sourcesRef: SourcesSnapshotRef = {
-    current: await readChildStepInferenceSources(
-      deps.dataDir,
-      rewrittenDefinition.id,
-    ),
+    current: await resolveBodyStepSources(deps, rewrittenDefinition.id),
   };
   // Recursive `spawnChild`: a grandchild embedded inline in this rung is
   // resolved from the in-memory map lifted above and flows back into this same
@@ -1851,19 +1939,68 @@ async function buildChildRunEnv(args: {
     runChild,
   });
   const spawnChild: WorkflowRuntimeEnv["spawnChild"] = (spawnInput) =>
-    spawnHost(spawnInput, childOnEvent);
+    spawnHost(spawnInput, childOnEvent, materialCell);
+  // Assemble the per-step credential context from the run's live material cell
+  // (threaded in from the parent) when one is present, so the child's inference
+  // resolves its source secret by `credentialId` against the parent's current
+  // delivery. The childWorkflow path is tool-bearing, so its context resolves
+  // the child's capped grants (mirroring the top level's snapshot lookup) and
+  // carries the sidecar-static providers for the tool `credentials` capability.
+  // The toolless BODY path needs the inference reader only: its build env sets
+  // the reader but attaches no tool wiring (gated on `toolless`), so its grants
+  // resolver is never read. Absent when no material was threaded (a non-sidecar
+  // executor), which leaves the child's inference reader unset.
+  const childCredentialContext: SidecarStepCredentialContext | undefined =
+    materialCell === undefined
+      ? undefined
+      : {
+          materialCell,
+          resolveStepGrants: (stepId) => {
+            const entry = credentialsSnapshot.steps.find(
+              (step) => step.stepId === baseStepId(stepId),
+            );
+            if (entry === undefined) {
+              throw new Error(
+                `sidecar child credential wiring: credentials snapshot has no entry for step ${baseStepId(stepId)}`,
+              );
+            }
+            return entry.grants;
+          },
+          providers: deps.credentialProviders,
+        };
+  const bodyCredentialContext: SidecarStepCredentialContext | undefined =
+    materialCell === undefined
+      ? undefined
+      : {
+          materialCell,
+          resolveStepGrants: () => [],
+          providers: deps.credentialProviders,
+        };
   // Per-step invocation seam. The runtime body invokes `env.invokeStep` with
   // the request alone; the wrapper forwards the child's credentials-backed
   // authorize (so each tool call gates against the inherited grants), the run's
-  // `sourcesRef`, and the event funnel. The childWorkflow path runs a real
+  // `sourcesRef`, the event funnel, and the credential context (so the step's
+  // inference reads the run's live material). The childWorkflow path runs a real
   // tool-bearing agent (`deps.invokeStep`, the source-tools arm); the onTrigger
   // BODY path runs a toolless agent (`bodyStepInvoker`). Both read the same
   // `sourcesRef`.
   let invokeStep: WorkflowRuntimeEnv["invokeStep"] = (req) =>
-    deps.invokeStep(req, authorize, sourcesRef, childOnEvent);
+    deps.invokeStep(
+      req,
+      authorize,
+      sourcesRef,
+      childOnEvent,
+      childCredentialContext,
+    );
   if (bodyStepInvoker !== undefined) {
     invokeStep = (req) =>
-      bodyStepInvoker(req, authorize, sourcesRef, childOnEvent);
+      bodyStepInvoker(
+        req,
+        authorize,
+        sourcesRef,
+        childOnEvent,
+        bodyCredentialContext,
+      );
   }
   const env: WorkflowRuntimeEnv = {
     repoStore,
@@ -1948,15 +2085,42 @@ async function buildChildRunEnv(args: {
 }
 
 /**
- * Read a spawned child's per-step inference-source pins from
- * `${dataDir}/assets/workflow/<childRef>/sources.json`, staged beside the child
- * definition at deploy time. Serves both spawn seams: a childWorkflow fan-out
- * child and an onTrigger body child. Parsed and validated through the same
- * `parseStepInferenceSources` boundary the top-level `STEP_INFERENCE_SOURCES`
- * env entry uses. A child's sources file is guaranteed present (the deploy
- * router materializes it for every referenced definition), so a missing or
- * malformed file is a defect and surfaces loudly rather than degrading to empty
- * pins.
+ * Resolve a spawned body's per-step inference sources by definition id. The
+ * primary path is sidecar-mediated: the sources arrive plaintext in
+ * `deps.bodySources`, decrypted sidecar-side from the sealed run record, so the
+ * child holds no cipher key.
+ *
+ * LEGACY FALLBACK: a body whose id is absent from the delivered set -- a
+ * deployment restored from a record written before body sources moved into the
+ * record -- reads its on-disk plaintext `sources.json`. That file predates the
+ * change and is plaintext, so the fallback constructs no cipher and the child
+ * stays key-free. Removable once no restorable record predates the
+ * record-carried body sources (after the reconnect re-push has re-persisted
+ * every live deployment).
+ */
+async function resolveBodyStepSources(
+  deps: SidecarRunChildDeps,
+  definitionId: string,
+): Promise<StepInferenceSourceTable> {
+  const delivered = deps.bodySources[definitionId];
+  if (delivered !== undefined) {
+    return delivered;
+  }
+  if (deps.dataDir === undefined) {
+    throw new Error(
+      `sidecar child: body ${definitionId} is absent from the delivered sources and deps.dataDir is missing, so its legacy on-disk sources cannot be read`,
+    );
+  }
+  return readChildStepInferenceSources(deps.dataDir, definitionId);
+}
+
+/**
+ * Legacy fallback reader (see `resolveBodyStepSources`): a spawned body's
+ * plaintext per-step pins from `${dataDir}/assets/workflow/<childRef>/sources.json`,
+ * staged by a pre-record deploy. Parsed through the same
+ * `parseStepInferenceSources` boundary the top-level `STEP_INFERENCE_SOURCES` env
+ * entry uses. Only reached for a body the delivered set does not carry, so a
+ * missing or malformed file is a defect and surfaces loudly.
  */
 async function readChildStepInferenceSources(
   dataDir: string,
@@ -2267,20 +2431,25 @@ export function createSidecarSubstrateFactory(
     // tool-bearing: it runs a real agent through `createWorkflowStepInvoker`,
     // resolving inference against the child's own per-step `sourcesRef` (staged
     // at deploy, read fresh per spawn) and funnelling live events to the parent
-    // run's channel. The child runs credential-free this revision (no
-    // `credentialContext`): a tool that declares a credential consumer fails
-    // closed and loud at its own `resolve("credentials")`, never silently.
-    // Wired as `childRunDeps.invokeStep`, so it also covers a body's own
-    // childWorkflow grandchildren.
+    // run's channel. `buildChildRunEnv` threads in the run's `credentialContext`
+    // (the live material cell, the child's capped grants, the sidecar-static
+    // providers), so the tool-bearing build attaches each bundle's `credentials`
+    // capability and the step's inference resolves its source secret against the
+    // run's live material. Absent when no material was threaded, in which case a
+    // tool that declares a credential consumer fails closed and loud at its own
+    // `resolve("credentials")`, never silently. Wired as `childRunDeps.invokeStep`,
+    // so it also covers a body's own childWorkflow grandchildren.
     const childInvokeStep: SidecarChildStepInvoker = (
       req,
       authorize,
       sourcesRef,
       onEvent,
+      credentialContext,
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
-        buildEnv: (buildReq) => coldChildBuildStepEnv(buildReq, sourcesRef),
+        buildEnv: (buildReq) =>
+          coldChildBuildStepEnv(buildReq, sourcesRef, credentialContext),
         agentFactory: stepAgentFactory,
         sourcesRef,
         onEvent,
@@ -2329,10 +2498,16 @@ export function createSidecarSubstrateFactory(
       authorize,
       sourcesRef,
       onEvent,
+      credentialContext,
     ) =>
       createWorkflowStepInvoker({
         workflowAuthorize: authorize,
-        buildEnv: (buildReq) => coldBodyBuildStepEnv(buildReq, sourcesRef),
+        // A body is guaranteed toolless, so the cold build env attaches no tool
+        // credential wiring; it still sets the inference reader from the context's
+        // live material cell so the body's inference resolves its source secret
+        // against the run's current delivery.
+        buildEnv: (buildReq) =>
+          coldBodyBuildStepEnv(buildReq, sourcesRef, credentialContext),
         agentFactory: stepAgentFactory,
         sourcesRef,
         onEvent,
@@ -2524,8 +2699,15 @@ export function createSidecarSubstrateFactory(
       // The onTrigger body path runs real agent steps; the childWorkflow path
       // (and a body's childWorkflow grandchildren) stay on `invokeStep`.
       bodyInvokeStep,
+      // Plaintext body sources decrypted sidecar-side from the run record; each
+      // body path resolves its own table from here by definition id.
+      bodySources: parseBodyInferenceSources(validated.WORKFLOW_BODY_SOURCES),
       dataDir: validated.SIDECAR_DATA_DIR,
       evaluateGrants: evaluateGrantsAdapter,
+      // Shared with the top level's `buildStepEnv`: the child's tool-bearing
+      // build combines it with the run's live material and capped grants; the
+      // toolless body build carries it for its inference reader.
+      credentialProviders,
       // The shared closure the child re-walks to cap its inherited grants at
       // its declared capabilities. Source-ref only, so always present here.
       closurePackageDir: env.spawn.closurePackageDir,

@@ -1762,7 +1762,7 @@ describe("sources-updated payload validation", () => {
     id: "primary",
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
-    apiKey: "sk-x",
+    credentialId: "sk-x",
     model: "claude-3-5",
   };
 
@@ -1835,10 +1835,11 @@ describe("sources-updated payload validation", () => {
   });
 
   test("rejects a source element missing a required field", () => {
-    const { apiKey: _apiKey, ...sourceWithoutApiKey } = source;
+    const { credentialId: _credentialId, ...sourceWithoutCredentialId } =
+      source;
     const payload = {
       type: "sources-updated",
-      data: { sources: [sourceWithoutApiKey], defaultSource: "primary" },
+      data: { sources: [sourceWithoutCredentialId], defaultSource: "primary" },
     };
     const validated = ControlPayload(payload);
     expect(validated instanceof type.errors).toBe(true);

@@ -274,15 +274,22 @@ export const ControlPayload = type(
     data: SourcesUpdatedData,
   })
   .or({
-    // Refreshed credential material for the deployment's tools. The child
-    // replaces its in-memory material cell wholesale on receive; a revoked
-    // credential arrives by omission (its material entry is absent) so the
-    // swap evicts it. Carried inline like the grants and sources snapshots --
-    // single-producer supervisor, single-consumer child. The secret rides
-    // this frame and the in-memory cell only; it is never persisted.
+    // Refreshed credential material for the deployment's inference sources and
+    // tools. The child MERGES this into its in-memory cell (see
+    // `mergeCredentialDelivery`): `delivery.materials` upsert by credentialId
+    // and `delivery.bindings` upsert by (consumer, handle); `revoke` names
+    // credentialIds to drop, and dropping one drops every binding referencing
+    // it. Merge rather than wholesale-replace because the cell has several
+    // independently-scoped producers (the deploy frame, an inference rotation,
+    // a tool-grant push), each carrying only its own slice -- a swap would let
+    // one evict another's credentials. Revocation is therefore explicit, never
+    // by omission. Carried inline like the grants and sources snapshots. The
+    // secret rides this frame and the in-memory cell only; it is never
+    // persisted.
     type: "'credentials-updated'",
     data: {
       delivery: CredentialDelivery,
+      "revoke?": "string[]",
     },
   })
   .or({

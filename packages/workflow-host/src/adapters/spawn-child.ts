@@ -69,6 +69,8 @@ import type {
   WorkflowEvent,
 } from "@intx/workflow";
 
+import type { CredentialMaterialRef } from "../child/run-child";
+
 /**
  * The terminal-status shape the runtime body expects back from a
  * spawn. Mirrored from `SpawnChildWorkflow`'s return type so the
@@ -91,6 +93,13 @@ export type ChildTerminalStatus = "completed" | "failed" | "cancelled";
  * steps emit inference events up the same channel (mirroring
  * {@link RunSuspendableChild}), and the spawn `depth` / ceiling so the
  * child run's own spawns keep counting against the tree-wide bound.
+ *
+ * The callback also receives the parent run's live credential-material cell
+ * (the same reference the top-level step invoker reads live), so the child's
+ * inference resolves its source secret by `credentialId` against the run's
+ * current delivery -- a rotation the parent applies reaches the child through
+ * the shared reference. A non-sidecar executor that carries no credential
+ * material omits it.
  */
 export type RunChildWorkflow = (
   input: {
@@ -105,6 +114,7 @@ export type RunChildWorkflow = (
     maxChildSpawnDepth: number;
   },
   onEvent: (event: InferenceEvent) => void,
+  credentialMaterial?: CredentialMaterialRef,
 ) => Promise<{ terminalStatus: ChildTerminalStatus }>;
 
 /**
@@ -127,11 +137,14 @@ export type RunChildWorkflow = (
  * carries the narrow `SpawnChildWorkflow` (no event slot); the caller wraps this
  * with its run's `onEvent`, mirroring {@link HostSpawnSuspendableChild}. The
  * sink is a call argument (not closed over at construction) because the resolver
- * is selected once per deployment while `onEvent` is built per run.
+ * is selected once per deployment while `onEvent` is built per run. The run's
+ * live credential-material cell rides the same seam, so the child's inference
+ * reads the parent's current credential delivery.
  */
 export type HostSpawnChild = (
   input: Parameters<SpawnChildWorkflow>[0],
   onEvent: (event: InferenceEvent) => void,
+  credentialMaterial?: CredentialMaterialRef,
 ) => ReturnType<SpawnChildWorkflow>;
 
 export function createInMemorySpawnChild(opts: {
@@ -150,6 +163,7 @@ export function createInMemorySpawnChild(opts: {
       maxChildSpawnDepth,
     },
     onEvent,
+    credentialMaterial,
   ) => {
     if (signal.aborted) {
       throw abortError(signal);
@@ -187,6 +201,7 @@ export function createInMemorySpawnChild(opts: {
         maxChildSpawnDepth,
       },
       onEvent,
+      credentialMaterial,
     );
     return { terminalStatus: result.terminalStatus };
   };
@@ -223,6 +238,13 @@ export type RunSuspendableChild = (
    * runtime commits its events under `runs/<childRunId>/events/` regardless.
    */
   onEvent: (event: InferenceEvent) => void,
+  /**
+   * The parent run's live credential-material cell. Threaded so the body's
+   * inference resolves its source secret by `credentialId` against the run's
+   * current delivery, reached live through the shared reference on a rotation.
+   * A non-sidecar executor that carries no credential material omits it.
+   */
+  credentialMaterial?: CredentialMaterialRef,
 ) => Promise<SuspendableChildHandle>;
 
 /**
@@ -231,11 +253,14 @@ export type RunSuspendableChild = (
  * calls the narrow `SpawnSuspendableChild` (no event slot); the host binding
  * wired into the runtime env closes over the run's funnel and forwards it here,
  * mirroring how `ChildStepInvoker` widens the runtime `StepInvoker` with
- * `onEvent`. The runtime contract in `@intx/workflow` stays untouched.
+ * `onEvent`. The runtime contract in `@intx/workflow` stays untouched. The
+ * run's live credential-material cell rides the same seam, so the body's
+ * inference reads the parent's current credential delivery.
  */
 export type HostSpawnSuspendableChild = (
   input: Parameters<SpawnSuspendableChild>[0],
   onEvent: (event: InferenceEvent) => void,
+  credentialMaterial?: CredentialMaterialRef,
 ) => ReturnType<SpawnSuspendableChild>;
 
 /**
@@ -268,6 +293,7 @@ export function createInMemorySpawnSuspendableChild(opts: {
       resumeFromEvents,
     },
     onEvent,
+    credentialMaterial,
   ) => {
     if (signal.aborted) {
       throw abortError(signal);
@@ -300,6 +326,7 @@ export function createInMemorySpawnSuspendableChild(opts: {
         ...(resumeFromEvents !== undefined ? { resumeFromEvents } : {}),
       },
       onEvent,
+      credentialMaterial,
     );
   };
 }

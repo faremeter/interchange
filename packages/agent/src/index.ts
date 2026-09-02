@@ -50,6 +50,10 @@ export {
   type DirectorRef,
   type DirectorRegistry,
 } from "./director-types";
+export {
+  createStaticCredentialResolver,
+  createUnconfiguredCredentialResolver,
+} from "./credential-resolver";
 export { validateNamespacedId } from "./namespace";
 export { CanonicalizationError, canonicalizeForHash } from "./canonicalize";
 export {

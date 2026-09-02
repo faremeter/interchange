@@ -19,6 +19,7 @@ import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { generateId } from "@intx/hub-common";
 import { deriveRunAddress } from "@intx/workflow-deploy";
+import { createNoopCredentialCipher } from "@intx/crypto";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AssetService } from "./asset-service";
 import type { Principal, RepoId, RepoStore } from "./repo-store";
@@ -1267,7 +1268,7 @@ describe("sendMultiStepDeployFrame", () => {
           id: "src-only",
           provider: "anthropic",
           baseURL: "https://api.example/anthropic",
-          apiKey: "secret-only",
+          credentialId: "secret-only",
           model: "mock-model",
         },
       ],
@@ -1382,7 +1383,7 @@ describe("deployCodeSourcedWorkflow", () => {
         id: "src-only",
         provider: "anthropic",
         baseURL: "https://api.example/anthropic",
-        apiKey: "secret-only",
+        credentialId: "secret-only",
         model: "mock-model",
       },
     ],
@@ -1425,6 +1426,34 @@ describe("deployCodeSourcedWorkflow", () => {
     query: {
       workflowDefinition: {
         findFirst: () => Promise.resolve({ id: "def-composed" }),
+      },
+      // The migrated deploy resolves each pinned source's credentialId to
+      // tenant-owned material. Every source in these frame-shape tests (top
+      // level and inline body) references the single credential "secret-only",
+      // so the mock answers with one tenant-owned row (principalId null) in the
+      // deploy tenant's own chain, backed by a provider with an API origin. The
+      // noop cipher passes the plaintext secret through unchanged.
+      credential: {
+        findFirst: () =>
+          Promise.resolve({
+            id: "secret-only",
+            tenantId: TENANT,
+            principalId: null,
+            providerId: "prov-test",
+            secret: "secret-only-plaintext",
+          }),
+      },
+      tenant: {
+        findFirst: () => Promise.resolve({ parentId: null }),
+      },
+      provider: {
+        findFirst: () =>
+          Promise.resolve({
+            id: "prov-test",
+            name: "prov-test",
+            plugin: "anthropic",
+            apiBaseUrl: "https://api.example/anthropic",
+          }),
       },
     },
     insert: () => ({
@@ -1477,6 +1506,7 @@ describe("deployCodeSourcedWorkflow", () => {
       tenantId: TENANT,
       anchorRunId: ANCHOR_RUN_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
+      credentialCipher: createNoopCredentialCipher(),
     });
 
     const sent = sentWorkflows[0];
@@ -1819,6 +1849,7 @@ describe("deployCodeSourcedWorkflow", () => {
       tenantId: TENANT,
       anchorRunId: ANCHOR_RUN_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
+      credentialCipher: createNoopCredentialCipher(),
     });
 
     const sent = sentWorkflows[0];
@@ -1918,6 +1949,7 @@ describe("deployCodeSourcedWorkflow", () => {
       tenantId: TENANT,
       anchorRunId: ANCHOR_RUN_ID,
       deploymentDomain: DEPLOYMENT_DOMAIN,
+      credentialCipher: createNoopCredentialCipher(),
     });
 
     const sent = sentWorkflows[0];

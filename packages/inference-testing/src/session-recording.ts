@@ -24,6 +24,7 @@ import {
 } from "@intx/inference";
 import { detectResponseKind } from "@intx/types/content-type";
 import { createBuiltinRegistry } from "@intx/inference/providers";
+import type { CredentialMaterialResolver } from "@intx/types";
 import type { InferenceEvent } from "@intx/types/runtime";
 
 import {
@@ -31,6 +32,15 @@ import {
   type CaptureManifest,
 } from "@intx/inference-discovery/catalog";
 import { isDelayedEnvelope, type ToolHandler } from "./tool-handler";
+
+// Fail-open credential resolver for the recording harness. The fetch override
+// returns synthetic bytes and never sends the injected secret anywhere, so a
+// request that emits a credential sentinel just needs SOME material rather than
+// the production fail-closed throw. A caller that supplies its own
+// `readMaterial` takes precedence.
+const DEFAULT_TEST_READ_MATERIAL: CredentialMaterialResolver = () => ({
+  secret: "inference-test-secret",
+});
 
 /**
  * The recording harness's fetch override has the same signature as the
@@ -510,7 +520,11 @@ export function createRecordingHarness(
     opts: Omit<InferenceHarnessOptions, "deps">,
   ): AsyncIterable<InferenceEvent> => {
     async function* iterate(): AsyncGenerator<InferenceEvent> {
-      const inner = runInference({ ...opts, deps });
+      const inner = runInference({
+        ...opts,
+        deps,
+        readMaterial: opts.readMaterial ?? DEFAULT_TEST_READ_MATERIAL,
+      });
       for await (const event of inner) {
         if (event.type === "inference.tool_call.end") {
           const { name, arguments: args } = event.data;

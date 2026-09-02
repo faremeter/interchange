@@ -5,7 +5,11 @@ import path from "node:path";
 
 import { type } from "arktype";
 
-import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
+import {
+  createEd25519Crypto,
+  createNoopCredentialCipher,
+  generateKeyPair,
+} from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -255,6 +259,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
+      credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
       registerDeployment: () => undefined,
@@ -511,7 +516,7 @@ function makeInferenceSource(id: string): InferenceSourceFixture {
     id,
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
-    apiKey: `sk-${id}`,
+    credentialId: `sk-${id}`,
     model: "claude-3-5",
   };
 }
@@ -840,6 +845,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
+      credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: opts.assertSourceBuildable ?? (() => undefined),
       registerDeployment: opts.registerDeployment ?? (() => undefined),
@@ -2284,7 +2290,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         closure: { schemaVersion: "1", topLevel: [], entries: [] },
       },
     };
-    await writeWorkflowRunRecord(dataDir, anchorRunId, record);
+    await writeWorkflowRunRecord(
+      dataDir,
+      anchorRunId,
+      record,
+      createNoopCredentialCipher(),
+    );
 
     const spawner = makeReadyDrivingSpawner(9500);
     const freshTransport = createInMemoryTransport();
@@ -2392,7 +2403,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         closure: { schemaVersion: "1", topLevel: [], entries: [] },
       },
     };
-    await writeWorkflowRunRecord(dataDir, deploymentId, record);
+    await writeWorkflowRunRecord(
+      dataDir,
+      deploymentId,
+      record,
+      createNoopCredentialCipher(),
+    );
 
     // The source-ref restore arm reconstructs the definition from the
     // re-materialized closure, NOT from the on-disk inert workflow.json. Write a
@@ -2706,7 +2722,12 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         closure: { schemaVersion: "1", topLevel: [], entries: [] },
       },
     };
-    await writeWorkflowRunRecord(dataDir, wrongDir, record);
+    await writeWorkflowRunRecord(
+      dataDir,
+      wrongDir,
+      record,
+      createNoopCredentialCipher(),
+    );
 
     const spawner = makeReadyDrivingSpawner(9800);
     const freshTransport = createInMemoryTransport();
@@ -3189,9 +3210,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // writer.
     let gate: Promise<void> | null = null;
     let release: () => void = () => undefined;
-    const persist: typeof writeWorkflowRunRecord = async (d, id, rec) => {
+    const persist: typeof writeWorkflowRunRecord = async (
+      d,
+      id,
+      rec,
+      cipher,
+    ) => {
       if (gate !== null) await gate;
-      await writeWorkflowRunRecord(d, id, rec);
+      await writeWorkflowRunRecord(d, id, rec, cipher);
     };
 
     const { router } = await buildMultistepFixture({
@@ -3237,7 +3263,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // durable record converges on the rotated sources.
     release();
     await rotatePromise;
-    const scanned = await scanWorkflowRunRecords(dataDir);
+    const scanned = await scanWorkflowRunRecords(
+      dataDir,
+      createNoopCredentialCipher(),
+    );
     const record = scanned.find((s) => s.runId === deriveDeploymentId(addr));
     expect(record?.record.sources).toEqual({ "step-1": [rotated] });
   });
@@ -3255,12 +3284,17 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     let gate: Promise<void> | null = null;
     let release: () => void = () => undefined;
-    const persist: typeof writeWorkflowRunRecord = async (d, id, rec) => {
+    const persist: typeof writeWorkflowRunRecord = async (
+      d,
+      id,
+      rec,
+      cipher,
+    ) => {
       if (gate !== null) {
         await gate;
         throw new Error("rotation persist boom");
       }
-      await writeWorkflowRunRecord(d, id, rec);
+      await writeWorkflowRunRecord(d, id, rec, cipher);
     };
 
     const { router } = await buildMultistepFixture({

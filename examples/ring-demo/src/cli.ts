@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildDefaultDirectorRef,
   createDefaultDirectorRegistry,
+  createStaticCredentialResolver,
   defineAgent,
   defineTool,
 } from "@intx/agent";
@@ -38,7 +39,10 @@ const ANTHROPIC_DEFAULTS = {
   model: "claude-sonnet-5",
 };
 
-function readSource(): InferenceSource {
+function readSource(): {
+  source: InferenceSource;
+  material: Record<string, string>;
+} {
   const provider = process.env["RING_PROVIDER"] ?? "openai-compatible";
 
   const baseURL =
@@ -70,16 +74,20 @@ function readSource(): InferenceSource {
     process.exit(1);
   }
 
+  const credentialId = `${provider}-key`;
   return {
-    id: `${provider}:${model}`,
-    provider,
-    baseURL,
-    apiKey,
-    model,
+    source: {
+      id: `${provider}:${model}`,
+      provider,
+      baseURL,
+      credentialId,
+      model,
+    },
+    material: { [credentialId]: apiKey },
   };
 }
 
-const source = readSource();
+const { source, material } = readSource();
 
 log.info("Provider: {provider} / {model}", {
   provider: source.provider,
@@ -405,6 +413,7 @@ for (const [i, name] of AGENT_NAMES.entries()) {
     audit: noopAuditStore(),
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
+    readCurrentMaterial: createStaticCredentialResolver(material),
     transport,
     address: agentAddress(name),
   };

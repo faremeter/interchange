@@ -15,14 +15,14 @@ const PRIMARY: InferenceSource = {
   id: "anthropic:primary-cheap",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test-primary",
+  credentialId: "sk-test-primary",
   model: "primary-cheap",
 };
 const FALLBACK: InferenceSource = {
   id: "anthropic:fallback-cheap",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test-fallback",
+  credentialId: "sk-test-fallback",
   model: "fallback-cheap",
 };
 

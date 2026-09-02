@@ -48,7 +48,7 @@ const SOURCE: InferenceSource = {
   id: "openai:test-model",
   provider: "openai",
   baseURL: "https://test.invalid/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "test-model",
 };
 
@@ -113,6 +113,7 @@ describe("runInference — default retry policy", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           nextSeq: () => seq++,
@@ -162,6 +163,7 @@ describe("runInference — default retry policy", () => {
         let seq = 0;
         const eventsP = collect(
           runInference({
+            readMaterial: () => ({ secret: "test-secret" }),
             turns: makeTurns(),
             source: SOURCE,
             nextSeq: () => seq++,
@@ -193,6 +195,7 @@ describe("runInference — default retry policy", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           nextSeq: () => seq++,
@@ -214,6 +217,7 @@ describe("runInference — default retry policy", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           signal: controller.signal,
@@ -243,6 +247,7 @@ describe("runInference — custom retry policy", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: { retryPolicy: policy },
@@ -288,6 +293,7 @@ describe("runInference — custom retry policy", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: { retryPolicy: policy },
@@ -330,6 +336,7 @@ describe("runInference — custom retry policy", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: { retryPolicy: policy },
@@ -387,6 +394,7 @@ describe("runInference — quota_exhausted handling", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           nextSeq: () => seq++,
@@ -427,6 +435,7 @@ describe("runInference — quota_exhausted handling", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           nextSeq: () => seq++,
@@ -451,6 +460,7 @@ describe("runInference — inference.retry event payload", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           nextSeq: () => seq++,
@@ -482,6 +492,7 @@ describe("runInference — policy failure handling", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: { retryPolicy: policy },
@@ -510,6 +521,7 @@ describe("runInference — policy failure handling", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: { retryPolicy: policy },
@@ -539,6 +551,7 @@ describe("runInference — policy failure handling", () => {
         let seq = 0;
         const eventsP = collect(
           runInference({
+            readMaterial: () => ({ secret: "test-secret" }),
             turns: makeTurns(),
             source: SOURCE,
             inferenceOptions: { retryPolicy: policy },
@@ -585,6 +598,7 @@ describe("runInference — policy failure handling", () => {
       let nextSeq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: { retryPolicy: policy },
@@ -631,6 +645,7 @@ describe("runInference — retry delay scheduling", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: { retryPolicy: policy },
@@ -684,6 +699,7 @@ describe("runInference — retry delay scheduling", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           signal: controller.signal,
@@ -734,6 +750,7 @@ describe("runInference — retry delay scheduling", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           signal: controller.signal,
@@ -770,6 +787,7 @@ describe("runInference — retry delay scheduling", () => {
       let seq = 0;
       const eventsP = collect(
         runInference({
+          readMaterial: () => ({ secret: "test-secret" }),
           turns: makeTurns(),
           source: SOURCE,
           inferenceOptions: { retryPolicy: policy },

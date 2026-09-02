@@ -68,7 +68,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:event-threading",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-event-threading",
+  credentialId: "sk-event-threading",
   model: "claude-event-threading",
 };
 
@@ -198,6 +198,7 @@ describe("single-step event threading", () => {
           workdir: stepWorkdir,
           audit: noopAuditStore(),
           directors: createDefaultDirectorRegistry(),
+          readCurrentMaterial: () => ({ secret: "test-secret" }),
           deps: harness.deps,
         };
       },
@@ -261,6 +262,7 @@ describe("single-step event threading", () => {
           workdir: stepWorkdir,
           audit: noopAuditStore(),
           directors: createDefaultDirectorRegistry(),
+          readCurrentMaterial: () => ({ secret: "test-secret" }),
           deps: harness.deps,
         };
       },

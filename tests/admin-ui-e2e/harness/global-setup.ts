@@ -647,6 +647,10 @@ async function globalSetup(): Promise<() => Promise<void>> {
         SIDECAR_ID,
         SIDECAR_TOKEN,
         SIDECAR_DATA_DIR: sidecarDataDir,
+        // A fixed test key so the spawned sidecar boots with a real at-rest
+        // cipher; the e2e data dir is throwaway.
+        SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
+          "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
       },
       REPO_ROOT,
     );

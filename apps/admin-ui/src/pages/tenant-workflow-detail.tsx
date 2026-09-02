@@ -95,7 +95,7 @@ export function TenantWorkflowDetailPage() {
     id: "",
     provider: "",
     baseURL: "",
-    apiKey: "",
+    credentialId: "",
     model: "",
   });
 
@@ -134,7 +134,7 @@ export function TenantWorkflowDetailPage() {
         id: "",
         provider: "",
         baseURL: "",
-        apiKey: "",
+        credentialId: "",
         model: "",
       });
       setLaunchDefinition(initialLaunchDefinition);
@@ -487,15 +487,17 @@ export function TenantWorkflowDetailPage() {
               />
             </div>
             <div className="grid gap-1 sm:col-span-2">
-              <Label htmlFor="source-api-key" className="text-xs">
-                API Key
+              <Label htmlFor="source-credential-id" className="text-xs">
+                Credential ID
               </Label>
               <Input
-                id="source-api-key"
-                type="password"
-                value={launchSource.apiKey}
+                id="source-credential-id"
+                value={launchSource.credentialId}
                 onChange={(e) =>
-                  setLaunchSource((s) => ({ ...s, apiKey: e.target.value }))
+                  setLaunchSource((s) => ({
+                    ...s,
+                    credentialId: e.target.value,
+                  }))
                 }
                 className="h-8 text-xs"
               />

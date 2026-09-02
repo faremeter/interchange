@@ -16,6 +16,7 @@ import { mkdirSync } from "node:fs";
 import {
   createAgent,
   createDefaultDirectorRegistry,
+  createStaticCredentialResolver,
   createToolRunner,
   defineAgent,
   defineTool,
@@ -38,14 +39,15 @@ import { defaultContextDir } from "./paths";
  * Resolve a single inference source from `opts.sourceOverride` or the
  * surrounding env, writing the help text to `stderr` and returning
  * `null` when neither is present. Callers map `null` to a non-zero
- * exit code.
+ * exit code. The returned `material` carries the resolved credential
+ * secret keyed by `credentialId`, ready to hand to `openExampleAgent`.
  */
 export function resolveAgentSource(
   opts: SingleSourceMainOptions,
   env: NodeJS.ProcessEnv,
   exampleName: string,
   stderr: (chunk: string) => void,
-): InferenceSource | null {
+): { source: InferenceSource; material: Record<string, string> } | null {
   const resolved = resolveSource({
     env,
     exampleName,
@@ -57,7 +59,7 @@ export function resolveAgentSource(
     stderr(resolved.help);
     return null;
   }
-  return resolved.source;
+  return { source: resolved.source, material: resolved.material };
 }
 
 /**
@@ -75,6 +77,12 @@ export type OpenExampleAgentSpec = {
   tools: readonly AgentTool[];
   sources: readonly InferenceSource[];
   defaultSource: string;
+  /**
+   * Credential secrets keyed by `credentialId`, backing the entries in
+   * `sources`. The helper installs a static `readCurrentMaterial` resolver
+   * over this map so a source's key reaches the request at inference time.
+   */
+  material: Record<string, string>;
 };
 
 /**
@@ -147,6 +155,7 @@ export async function openExampleAgent<T extends CommonMainOptions>(
     audit: storage,
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
+    readCurrentMaterial: createStaticCredentialResolver(spec.material),
     ...(opts.deps !== undefined ? { deps: opts.deps } : {}),
   };
 

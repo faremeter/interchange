@@ -1540,7 +1540,7 @@ describe("runWorkflowChild", () => {
             id: "primary",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
-            apiKey: "sk-x",
+            credentialId: "sk-x",
             model: "claude-test",
           },
         ],
@@ -1605,7 +1605,7 @@ describe("runWorkflowChild", () => {
             id: "primary",
             provider: "anthropic",
             baseURL: "https://api.anthropic.com",
-            apiKey: "sk-x",
+            credentialId: "sk-x",
             model: "claude-test",
           },
         ],
@@ -1798,7 +1798,7 @@ const STUB_SOURCE: InferenceSource = {
   id: "anthropic:stub",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-stub",
+  credentialId: "sk-stub",
   model: "stub-model",
 };
 
@@ -2376,7 +2376,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         id: "rotated",
         provider: "openai",
         baseURL: "https://api.openai.com",
-        apiKey: "sk-rotated",
+        credentialId: "sk-rotated",
         model: "gpt-rotated",
       },
     ];

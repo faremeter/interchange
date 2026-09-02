@@ -30,7 +30,11 @@ import {
   type HostCredentialCapability,
   type ResolvedCredentialBinding,
 } from "@intx/harness";
-import type { CredentialMaterialSource } from "@intx/types";
+import type {
+  CredentialMaterial,
+  CredentialMaterialResolver,
+  CredentialMaterialSource,
+} from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import type { CredentialDelivery } from "@intx/types/sidecar";
 
@@ -207,6 +211,38 @@ function makeReadCurrentMaterial(args: {
     if (material.providerKey !== providerKey || material.origin !== origin) {
       throw new Error(
         `credential ${credentialId} changed provider/origin under an already-shaped handle (${providerKey}@${origin} -> ${material.providerKey}@${material.origin}); a shaped handle cannot follow that change`,
+      );
+    }
+    return { secret: material.secret };
+  };
+}
+
+/**
+ * A generic inference credential resolver over the live cell: resolves a
+ * credential's current secret by `credentialId`, failing closed when the cell is
+ * empty or the credential is absent (a re-push dropped it -- rotated away or
+ * revoked). Unlike `makeReadCurrentMaterial` it is keyed by `credentialId` at
+ * call time -- an inference source's forward-only failover chain carries a
+ * distinct credential per entry -- and pins no provider/origin: an inference
+ * request authenticates to the source's own `baseURL` (resolved separately),
+ * so there is no shaped handle to protect against origin drift.
+ */
+export function createInferenceCredentialResolver(
+  cell: CredentialMaterialCell,
+): CredentialMaterialResolver {
+  return (credentialId: string): CredentialMaterial => {
+    const delivery = cell.current;
+    if (delivery === null) {
+      throw new Error(
+        `inference credential material for ${credentialId} is not available: the delivery cell is empty`,
+      );
+    }
+    const material = delivery.materials.find(
+      (entry) => entry.credentialId === credentialId,
+    );
+    if (material === undefined) {
+      throw new Error(
+        `inference credential material for ${credentialId} is no longer delivered: a re-push dropped it (rotated away or revoked)`,
       );
     }
     return { secret: material.secret };

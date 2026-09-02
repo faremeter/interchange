@@ -19,14 +19,14 @@ const PRIMARY_SOURCE: InferenceSource = {
   id: "anthropic:primary-model",
   provider: "anthropic",
   baseURL: "https://primary.example",
-  apiKey: "sk-primary",
+  credentialId: "sk-primary",
   model: "primary-model",
 };
 const FALLBACK_SOURCE: InferenceSource = {
   id: "anthropic:fallback-model",
   provider: "anthropic",
   baseURL: "https://fallback.example",
-  apiKey: "sk-fallback",
+  credentialId: "sk-fallback",
   model: "fallback-model",
 };
 
@@ -53,7 +53,7 @@ describe("routeSource", () => {
     });
     expect(r.tier).toBe("smart");
     expect(r.model).toBe("s");
-    expect(r.source.apiKey).toBe(PRIMARY_SOURCE.apiKey);
+    expect(r.source.credentialId).toBe(PRIMARY_SOURCE.credentialId);
     expect(r.source.model).toBe("s");
     expect(r.source.id).toBe(`${PRIMARY_SOURCE.provider}:s`);
   });

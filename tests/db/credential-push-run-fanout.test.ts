@@ -36,12 +36,16 @@ import {
 
 type Pushed = { address: string; sources: InferenceSource[]; default: string };
 
-// A SidecarRouter that records the source pushes it receives. Only
-// sendSourcesUpdate is exercised by this path; the rest of the surface is
-// unused.
+// A SidecarRouter that records the source pushes it receives. The push path
+// exercises sendCredentialsUpdate (material) then sendSourcesUpdate; the rest of
+// the surface is unused.
 function recordingRouter(pushed: Pushed[]): SidecarRouter {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only sendSourcesUpdate is exercised by the push path
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only the credentials + sources push methods are exercised by the push path
   return {
+    // The push delivers the credential material before the source list, so the
+    // recorder must accept the credentials frame; this suite only asserts on the
+    // source push, so the credentials handler is a no-op.
+    sendCredentialsUpdate: () => Promise.resolve(),
     sendSourcesUpdate: (
       address: string,
       sources: InferenceSource[],
@@ -141,7 +145,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(pushed).toHaveLength(1);
       expect(pushed[0]?.address).toBe("run1@tnt.test");
       expect(pushed[0]?.default).toBe("mof_a");
-      expect(pushed[0]?.sources.map((s) => s.apiKey)).toEqual(["sk-anthropic"]);
+      expect(pushed[0]?.sources.map((s) => s.credentialId)).toEqual(["cred_a"]);
     });
 
     test("skips the terminal, address-less, and deployment-anchored runs", async () => {

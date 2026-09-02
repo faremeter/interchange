@@ -53,7 +53,7 @@ function makeSource(): InferenceSource {
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
     model: "claude-3-5-sonnet",
-    apiKey: "sk-test",
+    credentialId: "sk-test",
   };
 }
 

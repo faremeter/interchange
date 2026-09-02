@@ -40,7 +40,7 @@ const expectedSources = [
     id: "anthropic:claude-sonnet-5",
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
-    apiKey: "sk-secret",
+    credentialId: "sk-secret",
     model: "claude-sonnet-5",
   },
 ];

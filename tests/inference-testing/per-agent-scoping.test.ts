@@ -34,7 +34,7 @@ const SOURCE: InferenceSource = {
   id: "openai:test",
   provider: "openai",
   baseURL: "https://example/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "test",
 };
 

@@ -16,6 +16,7 @@ import { mkdirSync } from "node:fs";
 import {
   createAgent,
   createDefaultDirectorRegistry,
+  createStaticCredentialResolver,
   defineAgent,
   defineTool,
   type Agent,
@@ -71,10 +72,20 @@ export async function createCodingAgent(
   opts: CodingAgentOptions,
 ): Promise<CodingAgent> {
   // Resolve the inference source before building any tool resource, so a
-  // missing apiKey fails before there is anything to tear down.
+  // missing credential fails before there is anything to tear down.
+  const credentialId = "anthropic-env";
   let source: InferenceSource;
+  // The credential secret backing `source`, keyed by `credentialId`. For a
+  // test-supplied override the secret is a placeholder (its mock adapter never
+  // sends it), but the override's `credentialId` is carried so resolution does
+  // not fail closed.
+  let material: Record<string, string>;
   if (opts.sourceOverride !== undefined) {
     source = opts.sourceOverride;
+    material = {
+      [opts.sourceOverride.credentialId]:
+        `${opts.sourceOverride.credentialId}-secret`,
+    };
   } else {
     if (opts.apiKey === undefined) {
       throw new Error(
@@ -86,9 +97,10 @@ export async function createCodingAgent(
       id: `anthropic:${model}`,
       provider: "anthropic",
       baseURL: DEFAULT_ANTHROPIC_BASE_URL,
-      apiKey: opts.apiKey,
+      credentialId,
       model,
     };
+    material = { [credentialId]: opts.apiKey };
   }
 
   mkdirSync(opts.contextDir, { recursive: true });
@@ -137,6 +149,7 @@ export async function createCodingAgent(
     audit: noopAuditStore(),
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
+    readCurrentMaterial: createStaticCredentialResolver(material),
     ...(opts.deps !== undefined ? { deps: opts.deps } : {}),
   };
 

@@ -288,7 +288,7 @@ function makeConfig(anchorRunId: string, address: string): HarnessConfig {
         id: "anthropic:mock-model",
         provider: "anthropic",
         baseURL: `http://localhost:${env.inference.server.port}`,
-        apiKey: "sk-mock",
+        credentialId: "sk-mock",
         model: "mock-model",
       },
     ],
@@ -317,7 +317,7 @@ async function deployParent(opts: {
     id: "anthropic:mock-model",
     provider: "anthropic",
     baseURL: `http://localhost:${env.inference.server.port}`,
-    apiKey: "sk-mock",
+    credentialId: "sk-mock",
     model: "mock-model",
   };
   const sources: Record<string, InferenceSource[]> = {};
@@ -813,7 +813,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "anthropic:mock-model",
         provider: "anthropic",
         baseURL: `http://localhost:${env.inference.server.port}`,
-        apiKey: "sk-mock",
+        credentialId: "sk-mock",
         model: "mock-model",
       };
 

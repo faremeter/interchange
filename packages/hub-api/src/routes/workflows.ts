@@ -12,7 +12,11 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import { WorkflowRunDispatchPayloadConflictError, type DB } from "@intx/db";
+import {
+  CredentialUnauthorizedError,
+  WorkflowRunDispatchPayloadConflictError,
+  type DB,
+} from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
   correlationIdFromSignalName,
@@ -418,6 +422,11 @@ export function createWorkflowRoutes({
           );
         }
       } else {
+        // The inline inference sources reference their credentials by id; the
+        // deploy composition resolves and decrypts each credential's material
+        // itself (tool bindings + top-level + inline body sources), under the
+        // tenant-ownership authority, and fails closed on any it cannot use. This
+        // route only forwards the source chain.
         const config: HarnessConfig = {
           sessionId,
           agentId: deriveRunAgentId({ runId: anchorRunId }),
@@ -450,6 +459,19 @@ export function createWorkflowRoutes({
           if (err instanceof WorkflowDefinitionInvalidError) {
             return c.json(
               { error: { code: "invalid_workflow", message: err.message } },
+              409,
+            );
+          }
+          // An inline source references a credential the tenant cannot use: a
+          // client configuration error, not a sidecar-reachability failure.
+          if (err instanceof CredentialUnauthorizedError) {
+            return c.json(
+              {
+                error: {
+                  code: "credential_unauthorized",
+                  message: `Inference source references credential ${err.credentialId}, which is not a tenant-owned credential this tenant can use`,
+                },
+              },
               409,
             );
           }

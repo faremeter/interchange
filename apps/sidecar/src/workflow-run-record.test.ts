@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { type } from "arktype";
+import { createEnvKeyCredentialCipher } from "@intx/crypto";
+import type { CredentialDelivery } from "@intx/types/sidecar";
 
 import {
   WorkflowRunRecord,
@@ -11,6 +13,14 @@ import {
   deleteWorkflowRunRecord,
   scanWorkflowRunRecords,
 } from "./workflow-run-record";
+
+// Real ciphers (not a noop) so the tests exercise actual seal/unseal. A second
+// cipher under a different key drives the decrypt-failure path (a rotated
+// sidecar key).
+const CIPHER = createEnvKeyCredentialCipher(new Uint8Array(32).fill(1));
+const OTHER_KEY_CIPHER = createEnvKeyCredentialCipher(
+  new Uint8Array(32).fill(2),
+);
 
 async function makeDataDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "wdr-"));
@@ -29,8 +39,38 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
+/** Read the raw on-disk record (still sealed) and validate its schema shape. */
+async function readRawRecord(
+  dataDir: string,
+  anchorRunId: string,
+): Promise<WorkflowRunRecord> {
+  const raw = await fs.readFile(recordPath(dataDir, anchorRunId), "utf8");
+  const parsed = WorkflowRunRecord(JSON.parse(raw));
+  if (parsed instanceof type.errors) {
+    throw new Error(`record failed validation: ${parsed.summary}`);
+  }
+  return parsed;
+}
+
+/** Build a credential-material cell (no tool bindings) from id -> secret. */
+function deliveryOf(materials: Record<string, string>): CredentialDelivery {
+  return {
+    bindings: [],
+    materials: Object.entries(materials).map(([credentialId, secret]) => ({
+      credentialId,
+      providerKey: "anthropic",
+      origin: "https://api.example/anthropic",
+      secret,
+    })),
+  };
+}
+
+// Fixtures are the unified format: `sources`/`bodySources` are non-secret config
+// carrying a `credentialId` per source, and every secret lives in `credentials`
+// (the material cell), sealed to ciphertext on disk by `writeWorkflowRunRecord`
+// and unsealed on read by `scanWorkflowRunRecords`.
 const SINGLE_STEP: WorkflowRunRecord = {
-  version: 1,
+  version: 2,
   agentAddress: "run_abc123@tenant.example",
   definitionId: "wf_abc123",
   sources: {
@@ -39,11 +79,12 @@ const SINGLE_STEP: WorkflowRunRecord = {
         id: "anthropic:mock",
         provider: "anthropic",
         baseURL: "https://api.example/anthropic",
-        apiKey: "sk-x",
+        credentialId: "cred-x",
         model: "claude-mock",
       },
     ],
   },
+  credentials: deliveryOf({ "cred-x": "sk-x" }),
   sessionId: "ses_1",
   hubPublicKey: "deadbeef",
   // Source-ref is the only lineage: every record carries the pin + approved
@@ -63,7 +104,7 @@ const SINGLE_STEP: WorkflowRunRecord = {
 // A multi-step deployment records no head hub key and may carry no session
 // id -- both optional fields absent.
 const MULTI_STEP: WorkflowRunRecord = {
-  version: 1,
+  version: 2,
   agentAddress: "run_xyz@tenant.example",
   definitionId: "wf_xyz",
   sources: {
@@ -72,7 +113,7 @@ const MULTI_STEP: WorkflowRunRecord = {
         id: "anthropic:mock",
         provider: "anthropic",
         baseURL: "https://api.example/anthropic",
-        apiKey: "sk-y",
+        credentialId: "cred-y",
         model: "claude-mock",
       },
     ],
@@ -81,11 +122,12 @@ const MULTI_STEP: WorkflowRunRecord = {
         id: "openai:mock",
         provider: "openai",
         baseURL: "https://api.example/openai",
-        apiKey: "sk-z",
+        credentialId: "cred-z",
         model: "gpt-mock",
       },
     ],
   },
+  credentials: deliveryOf({ "cred-y": "sk-y", "cred-z": "sk-z" }),
   approvedWireHash: "e".repeat(64),
   lineage: "source-ref",
   sourceRef: {
@@ -102,7 +144,7 @@ const MULTI_STEP: WorkflowRunRecord = {
 // a sourceRef pin (source + closure) + approvedWireHash for lineage
 // "source-ref".
 const SOURCE_REF: WorkflowRunRecord = {
-  version: 1,
+  version: 2,
   agentAddress: "ins_dep_src@tenant.example",
   definitionId: "wf_src",
   sources: {
@@ -111,11 +153,12 @@ const SOURCE_REF: WorkflowRunRecord = {
         id: "anthropic:mock",
         provider: "anthropic",
         baseURL: "https://api.example/anthropic",
-        apiKey: "sk-s",
+        credentialId: "cred-s",
         model: "claude-mock",
       },
     ],
   },
+  credentials: deliveryOf({ "cred-s": "sk-s" }),
   approvedWireHash: "c".repeat(64),
   lineage: "source-ref",
   sourceRef: {
@@ -130,18 +173,187 @@ const SOURCE_REF: WorkflowRunRecord = {
   },
 };
 
+// A deployment that spawns bodies (an onTrigger section and a childWorkflow
+// child): the top-level `sources` plus a `bodySources` table keyed by each
+// body's definition id, and one `credentials` cell backing every source's
+// `credentialId` -- top-level and per-body alike.
+const WITH_BODIES: WorkflowRunRecord = {
+  version: 2,
+  agentAddress: "ins_dep_bodies@tenant.example",
+  definitionId: "wf_bodies",
+  sources: {
+    "step-1": [
+      {
+        id: "anthropic:mock",
+        provider: "anthropic",
+        baseURL: "https://api.example/anthropic",
+        credentialId: "cred-top",
+        model: "claude-mock",
+      },
+    ],
+  },
+  bodySources: {
+    "wf_bodies:onTrigger:0": {
+      "body-step": [
+        {
+          id: "anthropic:mock",
+          provider: "anthropic",
+          baseURL: "https://api.example/anthropic",
+          credentialId: "cred-body-a",
+          model: "claude-mock",
+        },
+      ],
+    },
+    "wf_bodies:child:handler": {
+      plan: [
+        {
+          id: "openai:mock",
+          provider: "openai",
+          baseURL: "https://api.example/openai",
+          credentialId: "cred-body-b",
+          model: "gpt-mock",
+        },
+      ],
+    },
+  },
+  credentials: deliveryOf({
+    "cred-top": "sk-top",
+    "cred-body-a": "sk-body-a",
+    "cred-body-b": "sk-body-b",
+  }),
+  approvedWireHash: "f".repeat(64),
+  lineage: "source-ref",
+  sourceRef: {
+    source: { kind: "registry", registry: "npm" },
+    closure: {
+      schemaVersion: "1",
+      topLevel: [{ name: "@x/wf", version: "1.0.0" }],
+      entries: [],
+    },
+  },
+};
+
 describe("workflow run record store", () => {
-  test("round-trips a source-ref record (source + closure + approvedWireHash)", async () => {
+  test("seal/unseal round-trips a source-ref record through disk", async () => {
     const dataDir = await makeDataDir();
     const anchorRunId = "src-tenant-example";
-    await writeWorkflowRunRecord(dataDir, anchorRunId, SOURCE_REF);
+    await writeWorkflowRunRecord(dataDir, anchorRunId, SOURCE_REF, CIPHER);
 
-    const raw = await fs.readFile(recordPath(dataDir, anchorRunId), "utf8");
-    const parsed = WorkflowRunRecord(JSON.parse(raw));
-    if (parsed instanceof type.errors) {
-      throw new Error(`record failed validation: ${parsed.summary}`);
+    // The scan unseals the credential cell, so the restored record matches the
+    // original.
+    const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
+    expect(scanned.map((s) => s.record)).toEqual([SOURCE_REF]);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
+  test("seals each credential secret at rest and unseals it on scan", async () => {
+    const dataDir = await makeDataDir();
+    const anchorRunId = "abc123-tenant-example";
+    await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP, CIPHER);
+
+    // The record embeds credential secrets (sealed) plus the deployment's
+    // identity, so it must not be group/world readable on a shared host.
+    const stat = await fs.stat(recordPath(dataDir, anchorRunId));
+    expect(stat.mode & 0o077).toBe(0);
+
+    // On disk the record is version 2 and each material's secret is ciphertext
+    // -- NOT the plaintext the caller handed in. The source config carries only
+    // the non-secret `credentialId`.
+    const onDisk = await readRawRecord(dataDir, anchorRunId);
+    expect(onDisk.version).toBe(2);
+    expect(onDisk.sources["step-1"]?.[0]?.credentialId).toBe("cred-x");
+    const sealedSecret = onDisk.credentials?.materials[0]?.secret;
+    expect(typeof sealedSecret).toBe("string");
+    expect(sealedSecret).not.toBe("sk-x");
+
+    // The scan unseals it back to the plaintext for the restored run.
+    const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
+    expect(scanned[0]?.record.credentials?.materials[0]?.secret).toBe("sk-x");
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
+  test("seals every credential in the cell, top-level and per-body alike", async () => {
+    const dataDir = await makeDataDir();
+    const anchorRunId = "bodies-tenant-example";
+    await writeWorkflowRunRecord(dataDir, anchorRunId, WITH_BODIES, CIPHER);
+
+    // On disk every material secret is ciphertext, distinct from its plaintext,
+    // and the AAD is namespaced by credential id so two materials never seal to
+    // the same ciphertext even were their plaintext to match.
+    const onDisk = await readRawRecord(dataDir, anchorRunId);
+    const sealed = new Map(
+      (onDisk.credentials?.materials ?? []).map((m) => [
+        m.credentialId,
+        m.secret,
+      ]),
+    );
+    expect(sealed.get("cred-top")).not.toBe("sk-top");
+    expect(sealed.get("cred-body-a")).not.toBe("sk-body-a");
+    expect(sealed.get("cred-body-b")).not.toBe("sk-body-b");
+    expect(new Set(sealed.values()).size).toBe(3);
+
+    // The scan unseals the whole cell back to the plaintext the caller handed in.
+    const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
+    expect(scanned).toEqual([{ runId: anchorRunId, record: WITH_BODIES }]);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
+  test("soft-skips a credential decrypt failure, dropping the whole run", async () => {
+    const dataDir = await makeDataDir();
+    const anchorRunId = "bodies-corrupt-example";
+    await writeWorkflowRunRecord(dataDir, anchorRunId, WITH_BODIES, CIPHER);
+
+    // Corrupt ONE material's sealed secret in place under the correct key. The
+    // other materials are intact, so this isolates a single-credential decrypt
+    // failure: the whole run is dropped rather than half-restored.
+    const onDisk = await readRawRecord(dataDir, anchorRunId);
+    const material = onDisk.credentials?.materials[0];
+    if (material === undefined) {
+      throw new Error("fixture is missing a material to corrupt");
     }
-    expect(parsed).toEqual(SOURCE_REF);
+    material.secret = "not-a-valid-ciphertext";
+    await fs.writeFile(
+      recordPath(dataDir, anchorRunId),
+      JSON.stringify(onDisk, null, 2),
+      "utf8",
+    );
+
+    const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
+    expect(scanned).toEqual([]);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
+  test("round-trips a record with the optional fields absent (multi-step)", async () => {
+    const dataDir = await makeDataDir();
+    const anchorRunId = "run_xyz-tenant-example";
+    await writeWorkflowRunRecord(dataDir, anchorRunId, MULTI_STEP, CIPHER);
+
+    const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
+    const restored = scanned[0]?.record;
+    expect(restored).toEqual(MULTI_STEP);
+    expect(restored !== undefined && "hubPublicKey" in restored).toBe(false);
+    expect(restored !== undefined && "sessionId" in restored).toBe(false);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+
+  test("round-trips a record that binds no credentials", async () => {
+    const dataDir = await makeDataDir();
+    const anchorRunId = "no-creds-1";
+    // A deployment whose sources need no secret carries no `credentials` cell;
+    // the write seals nothing and the scan unseals nothing.
+    const { credentials: _omit, ...noCreds } = SOURCE_REF;
+    void _omit;
+    await writeWorkflowRunRecord(dataDir, anchorRunId, noCreds, CIPHER);
+
+    const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
+    const restored = scanned[0]?.record;
+    expect(restored).toEqual(noCreds);
+    expect(restored !== undefined && "credentials" in restored).toBe(false);
 
     await fs.rm(dataDir, { recursive: true, force: true });
   });
@@ -158,7 +370,7 @@ describe("workflow run record store", () => {
       WorkflowRunRecord(r) instanceof type.errors;
 
     const base = {
-      version: 1,
+      version: 2,
       agentAddress: "ins_dep_bad@tenant.example",
       definitionId: "wf_bad",
       sources: SOURCE_REF.sources,
@@ -187,43 +399,6 @@ describe("workflow run record store", () => {
     expect(rejects({ ...base, sourceRef, approvedWireHash })).toBe(false);
   });
 
-  test("round-trips a schema-valid record through disk (single-step)", async () => {
-    const dataDir = await makeDataDir();
-    const anchorRunId = "abc123-tenant-example";
-    await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP);
-
-    // The record embeds source apiKeys, so it must not be group/world
-    // readable on a shared host.
-    const stat = await fs.stat(recordPath(dataDir, anchorRunId));
-    expect(stat.mode & 0o077).toBe(0);
-
-    const raw = await fs.readFile(recordPath(dataDir, anchorRunId), "utf8");
-    const parsed = WorkflowRunRecord(JSON.parse(raw));
-    if (parsed instanceof type.errors) {
-      throw new Error(`record failed validation: ${parsed.summary}`);
-    }
-    expect(parsed).toEqual(SINGLE_STEP);
-
-    await fs.rm(dataDir, { recursive: true, force: true });
-  });
-
-  test("round-trips a record with the optional fields absent (multi-step)", async () => {
-    const dataDir = await makeDataDir();
-    const anchorRunId = "run_xyz-tenant-example";
-    await writeWorkflowRunRecord(dataDir, anchorRunId, MULTI_STEP);
-
-    const raw = await fs.readFile(recordPath(dataDir, anchorRunId), "utf8");
-    const parsed = WorkflowRunRecord(JSON.parse(raw));
-    if (parsed instanceof type.errors) {
-      throw new Error(`record failed validation: ${parsed.summary}`);
-    }
-    expect(parsed).toEqual(MULTI_STEP);
-    expect("hubPublicKey" in parsed).toBe(false);
-    expect("sessionId" in parsed).toBe(false);
-
-    await fs.rm(dataDir, { recursive: true, force: true });
-  });
-
   test("overwriting a record leaves the new one and no temp orphan", async () => {
     const dataDir = await makeDataDir();
     const anchorRunId = "rotated-1";
@@ -231,13 +406,13 @@ describe("workflow run record store", () => {
     // A source rotation overwrites the existing record in place. The
     // atomic write must replace it cleanly, leaving only the record and
     // no `.tmp` staging file behind.
-    await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP);
-    await writeWorkflowRunRecord(dataDir, anchorRunId, MULTI_STEP);
+    await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP, CIPHER);
+    await writeWorkflowRunRecord(dataDir, anchorRunId, MULTI_STEP, CIPHER);
 
     const dir = path.join(dataDir, "workflow-runs", anchorRunId);
     expect(await fs.readdir(dir)).toEqual(["deployment.json"]);
 
-    const scanned = await scanWorkflowRunRecords(dataDir);
+    const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
     expect(scanned.map((s) => s.record)).toEqual([MULTI_STEP]);
 
     await fs.rm(dataDir, { recursive: true, force: true });
@@ -250,7 +425,7 @@ describe("workflow run record store", () => {
     // No-op when the record was never written.
     await deleteWorkflowRunRecord(dataDir, anchorRunId);
 
-    await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP);
+    await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP, CIPHER);
     expect(await fileExists(recordPath(dataDir, anchorRunId))).toBe(true);
 
     await deleteWorkflowRunRecord(dataDir, anchorRunId);
@@ -265,16 +440,16 @@ describe("scanWorkflowRunRecords", () => {
     const dataDir = await makeDataDir();
     // First boot: nothing has been deployed, so `workflow-runs/` does not
     // exist. That is the legitimate empty case, not an error.
-    expect(await scanWorkflowRunRecords(dataDir)).toEqual([]);
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([]);
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 
   test("returns every schema-valid record keyed by its directory name", async () => {
     const dataDir = await makeDataDir();
-    await writeWorkflowRunRecord(dataDir, "dep-a", SINGLE_STEP);
-    await writeWorkflowRunRecord(dataDir, "dep-b", MULTI_STEP);
+    await writeWorkflowRunRecord(dataDir, "dep-a", SINGLE_STEP, CIPHER);
+    await writeWorkflowRunRecord(dataDir, "dep-b", MULTI_STEP, CIPHER);
 
-    const scanned = await scanWorkflowRunRecords(dataDir);
+    const scanned = await scanWorkflowRunRecords(dataDir, CIPHER);
     const byId = new Map(scanned.map((s) => [s.runId, s.record]));
     expect(byId.size).toBe(2);
     expect(byId.get("dep-a")).toEqual(SINGLE_STEP);
@@ -283,32 +458,35 @@ describe("scanWorkflowRunRecords", () => {
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 
-  test("soft-fails a corrupt or schema-invalid record while returning the valid ones", async () => {
+  test("soft-skips a record sealed under a different key", async () => {
     const dataDir = await makeDataDir();
-    await writeWorkflowRunRecord(dataDir, "dep-valid", SINGLE_STEP);
+    // A record whose credential cell was sealed under one key cannot be
+    // unsealed under a rotated/wrong key: the whole run is dropped as
+    // corruption, not half-restored.
+    await writeWorkflowRunRecord(dataDir, "wrong-key", SINGLE_STEP, CIPHER);
+    expect(await scanWorkflowRunRecords(dataDir, OTHER_KEY_CIPHER)).toEqual([]);
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
 
-    // A directory whose record is not valid JSON.
-    const corruptDir = path.join(dataDir, "workflow-runs", "dep-corrupt");
-    await fs.mkdir(corruptDir, { recursive: true });
-    await fs.writeFile(path.join(corruptDir, "deployment.json"), "{ not json");
+  test("soft-skips a record whose JSON is corrupt", async () => {
+    const dataDir = await makeDataDir();
+    const dir = path.join(dataDir, "workflow-runs", "dep-corrupt");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "deployment.json"), "{ not json", "utf8");
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([]);
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
 
-    // A directory whose record parses but fails the schema (missing fields).
-    const invalidDir = path.join(dataDir, "workflow-runs", "dep-invalid");
-    await fs.mkdir(invalidDir, { recursive: true });
+  test("soft-skips a record that fails schema validation", async () => {
+    const dataDir = await makeDataDir();
+    const dir = path.join(dataDir, "workflow-runs", "dep-invalid");
+    await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
-      path.join(invalidDir, "deployment.json"),
-      JSON.stringify({ version: 1 }),
+      path.join(dir, "deployment.json"),
+      JSON.stringify({ version: 2 }),
+      "utf8",
     );
-
-    // A bare run directory with no record at all.
-    await fs.mkdir(path.join(dataDir, "workflow-runs", "dep-empty"), {
-      recursive: true,
-    });
-
-    const scanned = await scanWorkflowRunRecords(dataDir);
-    expect(scanned.map((s) => s.runId)).toEqual(["dep-valid"]);
-    expect(scanned[0]?.record).toEqual(SINGLE_STEP);
-
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([]);
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 });

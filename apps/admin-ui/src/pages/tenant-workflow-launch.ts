@@ -40,7 +40,10 @@ export type LaunchInferenceSource = {
   id: string;
   provider: string;
   baseURL: string;
-  apiKey: string;
+  // A registered credential the tenant owns. The launch form selects one rather
+  // than accepting a typed key: every source references a credential by id, so
+  // the deploy carries no inline secret (the hub resolves the material).
+  credentialId: string;
   model: string;
 };
 
@@ -61,7 +64,7 @@ export function buildDeployInput(
         id: source.id.trim(),
         provider: source.provider.trim(),
         baseURL: source.baseURL.trim(),
-        apiKey: source.apiKey,
+        credentialId: source.credentialId.trim(),
         model: source.model.trim(),
       },
     ],
@@ -130,7 +133,7 @@ export function launchReady(
     source.id.trim() !== "" &&
     source.provider.trim() !== "" &&
     source.baseURL.trim() !== "" &&
-    source.apiKey !== "" &&
+    source.credentialId.trim() !== "" &&
     source.model.trim() !== ""
   );
 }

@@ -133,7 +133,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:per-level-pipeline",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-per-level-pipeline",
+  credentialId: "sk-per-level-pipeline",
   model: "claude-per-level-pipeline",
 };
 
@@ -888,6 +888,7 @@ describe("per-level pipeline with real agents", () => {
           workdir: join(dir, "workspace"),
           audit: noopAuditStore(),
           directors: createDefaultDirectorRegistry(),
+          readCurrentMaterial: () => ({ secret: "test-secret" }),
           deps: harness.deps,
         };
       },

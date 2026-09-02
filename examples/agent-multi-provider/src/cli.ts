@@ -55,7 +55,7 @@ function resolveRole(
   role: "primary" | "fallback",
   override: InferenceSource | undefined,
   stderr: (chunk: string) => void,
-): InferenceSource | null {
+): { source: InferenceSource; material: Record<string, string> } | null {
   const resolved = resolveSource({
     env,
     exampleName: `${EXAMPLE_NAME} (${role})`,
@@ -65,7 +65,7 @@ function resolveRole(
     stderr(resolved.help);
     return null;
   }
-  return resolved.source;
+  return { source: resolved.source, material: resolved.material };
 }
 
 export async function main(
@@ -80,15 +80,34 @@ export async function main(
     return 1;
   }
 
-  const primary = resolveRole(env, "primary", opts.primaryOverride, stderr);
-  if (primary === null) return 1;
+  const primaryResolved = resolveRole(
+    env,
+    "primary",
+    opts.primaryOverride,
+    stderr,
+  );
+  if (primaryResolved === null) return 1;
 
   // The fallback uses the same env var by default — production
   // callers point it at a different provider/key. The integration
   // test passes `fallbackOverride` explicitly so the swap path is
   // exercised regardless of env state.
-  const fallback = resolveRole(env, "fallback", opts.fallbackOverride, stderr);
-  if (fallback === null) return 1;
+  const fallbackResolved = resolveRole(
+    env,
+    "fallback",
+    opts.fallbackOverride,
+    stderr,
+  );
+  if (fallbackResolved === null) return 1;
+
+  const primary = primaryResolved.source;
+  const fallback = fallbackResolved.source;
+  // Both roles reference their credential by id; merge the two material maps so
+  // the agent's resolver can serve either source's key.
+  const material = {
+    ...primaryResolved.material,
+    ...fallbackResolved.material,
+  };
 
   const models = opts.models ?? {
     cheap: DEFAULT_CHEAP_MODEL,
@@ -115,6 +134,7 @@ export async function main(
     tools: [],
     sources: [primary, fallback],
     defaultSource: primary.id,
+    material,
   });
   try {
     for (const prompt of argv) {

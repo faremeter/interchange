@@ -328,7 +328,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sources: [
           {
             id: OFFERING_ID,
-            apiKey: CREDENTIAL_SECRET,
+            credentialId: CREDENTIAL_ID,
             model: "opus",
           },
         ],
@@ -584,7 +584,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           principalId: PRINCIPAL_ID,
           defaultSource: OFFERING_ID,
           sources: [
-            { id: OFFERING_ID, apiKey: CREDENTIAL_SECRET, model: "opus" },
+            { id: OFFERING_ID, credentialId: CREDENTIAL_ID, model: "opus" },
           ],
         });
 

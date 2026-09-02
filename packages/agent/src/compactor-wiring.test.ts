@@ -50,7 +50,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:compactor-test",
   provider: "anthropic",
   baseURL: "http://localhost:1",
-  apiKey: "test-key",
+  credentialId: "test-key",
   model: "claude-test",
 };
 
@@ -168,6 +168,7 @@ async function buildEnv(opts: {
   return {
     sources: [SOURCE],
     defaultSource: SOURCE.id,
+    readCurrentMaterial: (credentialId) => ({ secret: credentialId }),
     storage,
     workdir: opts.workdir,
     audit: noopAuditStore(),

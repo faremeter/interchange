@@ -146,6 +146,7 @@ import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
 import type { ChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
 import type { MailboxWatchRegistry } from "./mailbox-watch-registry";
 import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
+import { mergeCredentialDelivery } from "./credential-cell";
 
 const logger = getLogger(["workflow-host", "child"]);
 
@@ -169,10 +170,12 @@ export type CredentialsSnapshotRef = {
 
 /**
  * The deployment's decrypted credential material and per-handle descriptors,
- * held through a mutable reference and swapped wholesale on a rotation push (a
- * revoked credential arrives by omission, so the swap evicts it). The secret
- * lives ONLY here -- read at tool-invoke time through the gated capability --
- * and is never copied into a snapshot, event, or state.
+ * held through a mutable reference. A `credentials-updated` frame MERGES into
+ * this cell (materials by credentialId, bindings by (consumer, handle); an
+ * explicit `revoke` list drops entries) rather than replacing it wholesale,
+ * because the cell has several independently-scoped producers. The secret lives
+ * ONLY here -- read at tool-invoke time through the gated capability -- and is
+ * never copied into a snapshot, event, or state.
  */
 export type CredentialMaterialRef = {
   current: CredentialDelivery | null;
@@ -1276,12 +1279,20 @@ async function handleControlPayload(
       return false;
     }
     case "credentials-updated": {
-      // Replace the in-memory credential material wholesale. A revoked
-      // credential arrives by omission -- its material entry is absent from
-      // the delivery -- so the swap evicts it. Atomic whole-object assignment,
-      // so a concurrent reader never observes a torn cell. The secret stays on
-      // this ref only; nothing here copies it into a snapshot, event, or state.
-      ctx.credentialMaterialRef.current = payload.data.delivery;
+      // Merge the delivery into the live cell (see `mergeCredentialDelivery`):
+      // materials upsert by credentialId, bindings by (consumer, handle), and
+      // `revoke` drops named credentialIds plus any binding referencing them.
+      // Merge rather than wholesale-replace because the cell has several
+      // independently-scoped producers, so a swap would evict another
+      // producer's credentials. The result is assigned in one atomic
+      // whole-object swap, so a concurrent reader never observes a torn cell.
+      // The secret stays on this ref only; nothing here copies it into a
+      // snapshot, event, or state.
+      ctx.credentialMaterialRef.current = mergeCredentialDelivery(
+        ctx.credentialMaterialRef.current,
+        payload.data.delivery,
+        payload.data.revoke,
+      );
       return false;
     }
     case "signal.deliver": {
@@ -1688,17 +1699,30 @@ function buildRuntimeEnv(args: {
   // funnel -- the same closure `invokeStep` forwards -- so a body's live
   // inference events ride the parent run's event channel to the hub stream
   // (and inherit its loud-on-failure logging), while the runtime env keeps the
-  // narrow contract with no event slot.
+  // narrow contract with no event slot. The run's live credential-material cell
+  // rides the same seam so the body's inference resolves its source secret
+  // against the parent's current delivery, reached live on a rotation.
   const hostSuspendable = args.suspendableChildHost;
   const spawnSuspendableChild: SpawnSuspendableChild | undefined =
     hostSuspendable === undefined
       ? undefined
-      : (spawnInput) => hostSuspendable(spawnInput, args.onEvent);
+      : (spawnInput) =>
+          hostSuspendable(
+            spawnInput,
+            args.onEvent,
+            args.credentialWiring.materialRef,
+          );
   // Same adaptation for the terminal childWorkflow seam: inject THIS run's event
-  // funnel so a child's live inference events ride the parent run's channel,
-  // while the runtime env keeps the narrow `SpawnChildWorkflow` (no event slot).
+  // funnel so a child's live inference events ride the parent run's channel, and
+  // the live credential-material cell so the child's inference resolves its
+  // source secret against the parent's current delivery, while the runtime env
+  // keeps the narrow `SpawnChildWorkflow` (no event slot).
   const spawnChild: SpawnChildWorkflow = (spawnInput) =>
-    args.spawnChild(spawnInput, args.onEvent);
+    args.spawnChild(
+      spawnInput,
+      args.onEvent,
+      args.credentialWiring.materialRef,
+    );
   const env: WorkflowRuntimeEnv = {
     repoStore: args.runtimeRepoStore,
     scheduler: args.bindings.scheduler,

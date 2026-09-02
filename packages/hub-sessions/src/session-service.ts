@@ -11,6 +11,7 @@ import {
 import {
   buildCredentialDelivery,
   listAssetsForTenant,
+  resolveInferenceMaterials,
   type DB,
 } from "@intx/db";
 import {
@@ -20,7 +21,10 @@ import {
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { base64Encode, hexEncode } from "@intx/types";
-import type { CredentialDelivery } from "@intx/types/sidecar";
+import type {
+  CredentialDelivery,
+  CredentialMaterialEntry,
+} from "@intx/types/sidecar";
 import type { CredentialCipher } from "@intx/types";
 import { generateId } from "@intx/hub-common";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
@@ -477,8 +481,8 @@ export type SourceRefDeployFrameArgs = DeployFrameCommonArgs & {
    * The projection's inline onTrigger section bodies, each already in inert wire
    * form with its per-step inference sources pinned and its own wire hash --
    * built by `deployCodeSourcedWorkflow` from the frozen projection. The sidecar
-   * stages each body's `sources.json` (and re-verify hash). Absent when the
-   * projection has no inline onTrigger body.
+   * seals each body's sources into the run record and re-verifies against its
+   * wire hash. Absent when the projection has no inline onTrigger body.
    */
   referencedDefinitions?: readonly WorkflowProjectionWithSources[];
   /**
@@ -579,9 +583,10 @@ type DeployCodeSourcedCommonArgs = DeployFrameCommonArgs & {
   anchorRunId: string;
   deploymentDomain: string;
   /**
-   * Credential cipher, REQUIRED only when the definition carries credential
-   * bindings (resolution fails closed without it); omit for a binding-free
-   * deployment.
+   * Credential cipher, REQUIRED whenever the definition carries credential
+   * bindings OR any pinned inference source (top-level or inline body) references
+   * a credential; resolution fails closed without it. Omit only for a deploy with
+   * neither.
    */
   credentialCipher?: CredentialCipher;
   /**
@@ -628,8 +633,16 @@ function isAssetDeployArgs(
  * closure, so the child re-verify over the inert projection matches the gate's
  * freeze.
  *
- * Credential MATERIAL for the definition's tenant-owned bindings is resolved
- * here (`buildCredentialDelivery`) and delivered to the child on the frame.
+ * Credential MATERIAL rides ONE `CredentialDelivery` delivered to the child on
+ * the frame, unioned from three rails and deduped by credentialId: tool bindings
+ * (grant-scoped, resolved here via `buildCredentialDelivery`); every top-level
+ * inference source; and every inline body step's inference source. Both inference
+ * rails are resolved HERE from the DB under the tenant-ownership authority
+ * (`resolveInferenceMaterials`), so the deploy is self-contained -- no caller
+ * pre-supplies material, and a spawned body child finds its secret in the cell.
+ * The merge is a post-authz union of already-cleared material (tool material is
+ * grant-scoped, inference material is tenant-ownership-scoped), never a shared
+ * authz check.
  * Credential GRANT enforcement is a SEPARATE layer: the `credential:{id}` /
  * `use` grant the runtime gate checks is minted per-run by run-grant
  * materialization into `runs/<runId>/grants.json`, not carried on this frame --
@@ -802,6 +815,68 @@ async function prepareSourceRefDeploy(
       }),
     );
 
+  // Assemble the ONE credential delivery. Its `materials` cover three rails, each
+  // authorized upstream on its own terms, deduped by credentialId into one cell:
+  //   - tool bindings, grant-scoped through `buildCredentialDelivery` above;
+  //   - EVERY top-level inference source (`args.sources`), tenant-owned;
+  //   - EVERY inline body step's inference source (onTrigger/childWorkflow bodies
+  //     pinned above), tenant-owned.
+  // The inference rails are resolved HERE from the DB under the tenant-ownership
+  // authority, so this deploy is self-contained: a direct deploy (a test) that
+  // seeds the credentials in the DB -- rather than pre-supplying material -- still
+  // fills the cell, and a spawned body finds its secret rather than failing closed
+  // at resolve time. Precedence on a shared credentialId is tool material first
+  // (grant-scoped), then the inference material (tenant-ownership-scoped): the
+  // first material for an id wins. Inference sources carry NO binding descriptor
+  // -- they reference their credential by id directly.
+  const materials = new Map<string, CredentialMaterialEntry>();
+  for (const material of credentials?.materials ?? []) {
+    materials.set(material.credentialId, material);
+  }
+  const inferenceCredentialIds = new Set<string>();
+  for (const stepSources of Object.values(args.sources)) {
+    for (const source of stepSources) {
+      inferenceCredentialIds.add(source.credentialId);
+    }
+  }
+  for (const body of referencedDefinitions) {
+    for (const stepSources of Object.values(body.sources)) {
+      for (const source of stepSources) {
+        inferenceCredentialIds.add(source.credentialId);
+      }
+    }
+  }
+  if (inferenceCredentialIds.size > 0) {
+    if (args.credentialCipher === undefined) {
+      throw new Error(
+        "deployCodeSourcedWorkflow: pinned inference sources reference credentials " +
+          "but no credentialCipher was supplied to resolve them",
+      );
+    }
+    const inferenceMaterials = await resolveInferenceMaterials(
+      args.db,
+      args.tenantId,
+      inferenceCredentialIds,
+      args.credentialCipher,
+    );
+    for (const material of inferenceMaterials) {
+      if (!materials.has(material.credentialId)) {
+        materials.set(material.credentialId, material);
+      }
+    }
+  }
+  // A delivery with tool bindings always carries their material, so an empty map
+  // means no rail contributed anything -- send no delivery. (Tool bindings never
+  // produce a descriptor without a material, so bindings-without-materials cannot
+  // occur.)
+  const credentialDelivery: CredentialDelivery | undefined =
+    materials.size > 0
+      ? {
+          bindings: credentials?.bindings ?? [],
+          materials: [...materials.values()],
+        }
+      : undefined;
+
   // An asset-sourced pin's `kind:"asset"` closure entries read from source
   // assets the sidecar cannot fetch itself; deliver them inline on the frame so
   // the sidecar checks them out into its durable per-deployment source store. A
@@ -824,7 +899,9 @@ async function prepareSourceRefDeploy(
     sources: args.sources,
     approvedWireHash: approval.approvedWireHash,
     sourceRef: { source: args.source, closure },
-    ...(credentials !== undefined ? { credentials } : {}),
+    ...(credentialDelivery !== undefined
+      ? { credentials: credentialDelivery }
+      : {}),
     ...(referencedDefinitions.length > 0 ? { referencedDefinitions } : {}),
     ...(assets.length > 0 ? { assets } : {}),
   };

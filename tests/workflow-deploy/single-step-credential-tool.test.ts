@@ -280,7 +280,7 @@ const inferenceSource: InferenceSource = {
   id: "anthropic:mock-model",
   provider: "anthropic",
   baseURL: "",
-  apiKey: "sk-mock",
+  credentialId: "sk-mock",
   model: "mock-model",
 };
 

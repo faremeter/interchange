@@ -24,6 +24,10 @@ import path from "node:path";
 import { generateKeyPair } from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
 import { defineAgent } from "@intx/agent";
+import {
+  builtinCredentialProviders,
+  createCredentialProviderRegistry,
+} from "@intx/harness";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import {
@@ -122,7 +126,7 @@ async function stageSources(ref: string): Promise<void> {
           id: "anthropic:m",
           provider: "anthropic",
           baseURL: "http://localhost:1",
-          apiKey: "sk-x",
+          credentialId: "sk-x",
           model: "m",
         },
       ],
@@ -262,6 +266,10 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
       invokeStep: noopInvoker,
       evaluateGrants: evaluateGrantsAdapter,
       dataDir: sourcesDataDir,
+      bodySources: {},
+      credentialProviders: createCredentialProviderRegistry(
+        builtinCredentialProviders(),
+      ),
     });
 
     // Run the top of the chain at depth 0 with the ceiling lowered to 2.

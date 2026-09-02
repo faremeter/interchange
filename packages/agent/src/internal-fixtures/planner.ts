@@ -16,7 +16,7 @@ export const PLANNER_SOURCE: InferenceSource = {
   id: "anthropic:claude-opus-4-6",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test-planner",
+  credentialId: "sk-test-planner",
   model: "claude-opus-4-6",
 };
 

@@ -17,6 +17,13 @@ import type { InferenceSource } from "@intx/types/runtime";
 export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5";
 
+/**
+ * The credential id the env-resolved source references. A source carries no
+ * inline secret; the resolved key rides `ResolveSourceResult.material` under
+ * this id so the caller can build a `readCurrentMaterial` resolver.
+ */
+export const ANTHROPIC_ENV_CREDENTIAL_ID = "anthropic-env";
+
 export type ResolveSourceOpts = {
   /**
    * The process env (typically `process.env`). Accepted as a parameter
@@ -45,6 +52,14 @@ export type ResolveSourceResult =
   | {
       ok: true;
       source: InferenceSource;
+      /**
+       * The credential material backing `source`, keyed by `credentialId`. The
+       * caller builds a `readCurrentMaterial` resolver from this so the real
+       * key reaches the request at inference time. For a `sourceOverride` the
+       * secret is a placeholder (tests drive mock adapters), but the override's
+       * `credentialId` is still carried so resolution does not fail closed.
+       */
+      material: Record<string, string>;
     }
   | { ok: false; help: string };
 
@@ -60,7 +75,17 @@ export type ResolveSourceResult =
  */
 export function resolveSource(opts: ResolveSourceOpts): ResolveSourceResult {
   if (opts.sourceOverride !== undefined) {
-    return { ok: true, source: opts.sourceOverride };
+    // The override's credential secret is never used (tests drive mock
+    // adapters), but the resolver must still carry the override's
+    // `credentialId` so a request that resolves it does not fail closed.
+    return {
+      ok: true,
+      source: opts.sourceOverride,
+      material: {
+        [opts.sourceOverride.credentialId]:
+          `${opts.sourceOverride.credentialId}-secret`,
+      },
+    };
   }
 
   const apiKey = opts.env["ANTHROPIC_API_KEY"];
@@ -75,9 +100,10 @@ export function resolveSource(opts: ResolveSourceOpts): ResolveSourceResult {
       id: `anthropic:${model}`,
       provider: "anthropic",
       baseURL: DEFAULT_ANTHROPIC_BASE_URL,
-      apiKey,
+      credentialId: ANTHROPIC_ENV_CREDENTIAL_ID,
       model,
     },
+    material: { [ANTHROPIC_ENV_CREDENTIAL_ID]: apiKey },
   };
 }
 

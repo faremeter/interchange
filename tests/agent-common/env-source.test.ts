@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  ANTHROPIC_ENV_CREDENTIAL_ID,
   DEFAULT_ANTHROPIC_BASE_URL,
   DEFAULT_ANTHROPIC_MODEL,
   resolveSource,
@@ -17,7 +18,7 @@ const STUB_SOURCE: InferenceSource = {
   id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test-override",
+  credentialId: "sk-test-override",
   model: "claude-3-5-sonnet",
 };
 
@@ -44,9 +45,12 @@ describe("resolveSource", () => {
       id: `anthropic:${DEFAULT_ANTHROPIC_MODEL}`,
       provider: "anthropic",
       baseURL: DEFAULT_ANTHROPIC_BASE_URL,
-      apiKey: "sk-real",
+      credentialId: ANTHROPIC_ENV_CREDENTIAL_ID,
       model: DEFAULT_ANTHROPIC_MODEL,
     });
+    // The source carries no secret; the key rides `material` under the
+    // source's credentialId so the caller can build a resolver.
+    expect(r.material).toEqual({ [ANTHROPIC_ENV_CREDENTIAL_ID]: "sk-real" });
   });
 
   test("honors an explicit model override when env is used", () => {

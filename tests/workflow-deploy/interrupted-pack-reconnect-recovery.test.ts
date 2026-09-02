@@ -138,7 +138,7 @@ async function deploySingleStepWorkflow(
     id: "anthropic:mock-model",
     provider: "anthropic",
     baseURL: `http://localhost:${String(env.inference.server.port)}`,
-    apiKey: "sk-mock",
+    credentialId: "sk-mock",
     model: "mock-model",
   };
   const config: HarnessConfig = {

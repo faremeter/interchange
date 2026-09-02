@@ -27,7 +27,7 @@ const SOURCE: InferenceSource = {
   id: "openai:test-model",
   provider: "openai",
   baseURL: "https://test.invalid/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "test-model",
 };
 
@@ -98,6 +98,7 @@ describe("runInference — timer cancellation on non-streaming exit paths", () =
     let seq = 0;
     const events = await drain(
       runInference({
+        readMaterial: () => ({ secret: "test-secret" }),
         turns: makeTurns(),
         source: SOURCE,
         inferenceOptions: ABORT_ONLY_POLICY,
@@ -126,6 +127,7 @@ describe("runInference — timer cancellation on non-streaming exit paths", () =
     let seq = 0;
     const events = await drain(
       runInference({
+        readMaterial: () => ({ secret: "test-secret" }),
         turns: makeTurns(),
         source: SOURCE,
         inferenceOptions: ABORT_ONLY_POLICY,
@@ -194,6 +196,7 @@ describe("runInference — timer cancellation on consumer abandonment", () => {
       // block (category `aborted`), which the abort-only retry
       // policy then surfaces.
       for await (const _ev of runInference({
+        readMaterial: () => ({ secret: "test-secret" }),
         turns: makeTurns(),
         source: SOURCE,
         signal: controller.signal,
@@ -284,6 +287,7 @@ describe("runInference — caller-signal listener accounting", () => {
     let seq = 0;
     await drain(
       runInference({
+        readMaterial: () => ({ secret: "test-secret" }),
         turns: makeTurns(),
         source: SOURCE,
         nextSeq: () => seq++,

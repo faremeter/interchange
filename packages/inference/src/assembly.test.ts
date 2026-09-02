@@ -179,7 +179,7 @@ function source(): InferenceSource {
     id: "anthropic:test-model",
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
-    apiKey: "test",
+    credentialId: "test",
     model: "test-model",
   };
 }

@@ -5,8 +5,8 @@
 // logic that would benefit a future alternative-sidecar
 // implementation lives inside `@intx/workflow-host`, not here.
 
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join as pathJoin } from "node:path";
+import { rm, stat } from "node:fs/promises";
+import { join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type } from "arktype";
@@ -49,7 +49,7 @@ import {
   type SuspensionRegistration,
   type WorkflowSupervisor,
 } from "@intx/workflow-host";
-import { hexEncode, type SignalKind } from "@intx/types";
+import { hexEncode, type CredentialCipher, type SignalKind } from "@intx/types";
 import {
   parseInferenceEvent,
   type ApprovalSnapshot,
@@ -819,6 +819,47 @@ export type SidecarWorkflowSupervisor = {
 export const STEP_INFERENCE_SOURCES_ENV_KEY = "STEP_INFERENCE_SOURCES";
 
 /**
+ * Spawn-env key carrying every spawned body's per-step inference-source pins as
+ * a JSON `{ [definitionId]: { [stepId]: InferenceSource[] } }` map. The sidecar
+ * decrypts the sealed body sources from the run record and serializes the
+ * plaintext here so the run child resolves a body's sources without holding the
+ * sidecar's cipher key. Mirrors `STEP_INFERENCE_SOURCES` for the top level.
+ */
+export const WORKFLOW_BODY_SOURCES_ENV_KEY = "WORKFLOW_BODY_SOURCES";
+
+/**
+ * A single env value cannot exceed the OS argument-string ceiling
+ * (`MAX_ARG_STRLEN`, 128 KiB on Linux); an over-long value makes the child
+ * `execve` fail opaquely at spawn. `WORKFLOW_BODY_SOURCES` sums over every body
+ * at every depth, so the deploy path validates the serialized size against this
+ * bound and rejects an over-large deployment loudly at deploy time rather than
+ * letting a much-later spawn fail. Held below the ceiling with headroom for the
+ * rest of the env block.
+ */
+const WORKFLOW_BODY_SOURCES_MAX_BYTES = 96 * 1024;
+
+/**
+ * Build the record's `bodySources` map from the deploy frame's referenced body
+ * definitions (the flat set of onTrigger sections and childWorkflow children,
+ * each already source-pinned by the hub). `undefined` when the deployment
+ * references no bodies, so the record omits the field.
+ */
+function buildBodySourcesMap(
+  referenced: NonNullable<
+    AgentDeployFrame["workflow"]
+  >["referencedDefinitions"],
+): WorkflowRunRecord["bodySources"] {
+  if (referenced === undefined || referenced.length === 0) {
+    return undefined;
+  }
+  const map: NonNullable<WorkflowRunRecord["bodySources"]> = {};
+  for (const ref of referenced) {
+    map[ref.definition.id] = ref.sources;
+  }
+  return map;
+}
+
+/**
  * Validate the wire-projected workflow definition at the deploy-router
  * boundary. The arktype `AgentDeployFrame` validator enforces the
  * wire shape (`id` is non-empty, `stepOrder` is `string[]`, `steps`
@@ -972,6 +1013,13 @@ export function createSidecarDeployRouter(deps: {
   transport: HubTransport;
   repoStore: RepoStore;
   signingKeySeed: Uint8Array;
+  /**
+   * The sidecar cipher that seals credential material at rest. Used to seal
+   * each run record's inference-source apiKeys on persist and unseal them on
+   * the boot scan, so the durable record carries ciphertext rather than
+   * plaintext secrets.
+   */
+  credentialCipher: CredentialCipher;
   /**
    * Per-agent crypto factory. Receives the agent's raw key pair and
    * returns a `CryptoProvider` bound to it (production wires
@@ -1387,61 +1435,29 @@ export function createSidecarDeployRouter(deps: {
   }
 
   /**
-   * Materialize an extracted onTrigger body's per-step inference-source pins to
-   * `${dataDir}/assets/workflow/<bodyRef>/sources.json`. A body child runs
-   * in-process with no process env and loses its env across a restart, so its
-   * sources must be durable on disk; the body invoker reads this file to build
-   * the body's inference-source resolver (INTR-310). The body DEFINITION is not
-   * staged: source-ref is the only lineage, so the run child resolves each body
-   * in-memory from the parent's re-verified closure. Idempotent
-   * content-compare write.
+   * Remove the legacy `${dataDir}/assets/workflow/<bodyRef>/` staging a
+   * pre-sealed-record deploy wrote for a body (a world-readable plaintext
+   * `sources.json`, INTR-310). Body sources now ride sealed in the run record and
+   * reach the child through the spawn env, so the staging is retired; a redeploy
+   * of an address that predates the change reaches here and reclaims its orphaned
+   * file. A never-staged body is a no-op (`force`).
    */
-  async function materializeWorkflowSources(
+  async function sweepLegacyBodySources(
     sidecarDataDir: string | undefined,
     definitionId: string,
-    sources: NonNullable<AgentDeployFrame["workflow"]>["sources"],
   ): Promise<void> {
     if (typeof sidecarDataDir !== "string" || sidecarDataDir.length === 0) {
       throw new Error(
-        "sidecar deploy router: SIDECAR_DATA_DIR must be present in the multi-step substrate env; the workflow-process child resolves the workflow-asset repo dir against this data dir",
+        "sidecar deploy router: SIDECAR_DATA_DIR must be present in the multi-step substrate env; the legacy body-source staging is reclaimed against this data dir",
       );
     }
-    const sourcesAssetPath = pathJoin(
+    const bodyAssetDir = pathJoin(
       sidecarDataDir,
       "assets",
       "workflow",
       definitionId,
-      "sources.json",
     );
-    const sourcesAssetBytes = JSON.stringify(sources, null, 2);
-    try {
-      await mkdir(dirname(sourcesAssetPath), { recursive: true });
-      // Idempotent: only rewrite when the on-disk content differs. Treats a
-      // missing file as different.
-      let existing: string | null = null;
-      try {
-        existing = await readFile(sourcesAssetPath, "utf8");
-      } catch (cause) {
-        if (
-          !(
-            cause instanceof Error &&
-            "code" in cause &&
-            (cause as { code: unknown }).code === "ENOENT"
-          )
-        ) {
-          throw cause;
-        }
-      }
-      if (existing !== sourcesAssetBytes) {
-        await writeFile(sourcesAssetPath, sourcesAssetBytes, "utf8");
-      }
-    } catch (cause) {
-      const reason = cause instanceof Error ? cause.message : String(cause);
-      throw new Error(
-        `sidecar deploy router: failed to materialize sources.json at ${sourcesAssetPath}: ${reason}`,
-        { cause },
-      );
-    }
+    await rm(bodyAssetDir, { recursive: true, force: true });
   }
 
   /**
@@ -1461,6 +1477,22 @@ export function createSidecarDeployRouter(deps: {
      */
     definition: WorkflowProjectionDefinition;
     sources: NonNullable<AgentDeployFrame["workflow"]>["sources"];
+    /**
+     * Per spawned-body inference-source pins, keyed by the body's definition id
+     * (the flat set of onTrigger sections and childWorkflow children). Persisted
+     * in the record and delivered to the run child as plaintext through the spawn
+     * env, so the child resolves a body's sources without holding the sidecar's
+     * cipher key. `undefined` when the deployment spawns no bodies.
+     */
+    bodySources: WorkflowRunRecord["bodySources"];
+    /**
+     * The run's unified credential-material cell (inference + tool secrets, plus
+     * tool bindings). Persisted sealed in the record and delivered to the child
+     * on the pre-trigger barrier; the child resolves both its inference sources
+     * and its tools from it by `credentialId`. `undefined` when the deployment
+     * binds no credentials and its sources need none.
+     */
+    credentials: CredentialDelivery | undefined;
     /**
      * The hub-approved wire hash the deploy frame carried
      * (`AgentDeployWorkflow.approvedWireHash`). The child's `DEFINITION_HASH`
@@ -1518,10 +1550,16 @@ export function createSidecarDeployRouter(deps: {
       );
     }
     return {
-      version: 1 as const,
+      version: 2 as const,
       agentAddress: spec.agentAddress,
       definitionId: spec.definition.id,
       sources,
+      ...(spec.bodySources !== undefined
+        ? { bodySources: spec.bodySources }
+        : {}),
+      ...(spec.credentials !== undefined
+        ? { credentials: spec.credentials }
+        : {}),
       ...(spec.sessionId !== undefined ? { sessionId: spec.sessionId } : {}),
       ...(spec.hubPublicKey !== undefined
         ? { hubPublicKey: spec.hubPublicKey }
@@ -1605,14 +1643,12 @@ export function createSidecarDeployRouter(deps: {
    */
   async function spawnWorkflowRun(
     spec: WorkflowDeploySpec,
-    // Decrypted credential material from the deploy frame, delivered to the
-    // child on the pre-trigger barrier. Threaded as a separate arg rather than
-    // on `spec` so it never reaches the on-disk run record (the sidecar
-    // holds no cipher; a persisted credential would be plaintext at rest). The
-    // boot-restore path passes none -- a restored in-flight deployment gets its
-    // material from the hub's reconnect re-push, not off disk.
-    credentialDelivery?: CredentialDelivery,
   ): Promise<DeployRouterResult> {
+    // The run's credential material rides on `spec.credentials`: the sidecar now
+    // holds a cipher and seals it into the record, so both the live deploy and
+    // the boot-restore path carry it here (restore unseals it from the record),
+    // and it is delivered to the child on the pre-trigger barrier.
+    const credentialDelivery = spec.credentials;
     // Fail loud if this address already has a live supervisor. Both single-
     // and multi-step now register on the transport, so both carry the
     // `transport.register` duplicate-throw backstop; this `has()` check is the
@@ -1677,6 +1713,20 @@ export function createSidecarDeployRouter(deps: {
       // validator requires. The boot edge's `multistepSubstrateEnv` carries
       // the boot-edge constants; the two workflow-run identity keys are
       // derived per-deploy here.
+      // Spawned bodies' plaintext inference sources, serialized once for the
+      // deployment's lifetime (bodies do not live-rotate, unlike the top-level
+      // sources below). The child looks each body up by definition id and never
+      // holds the sidecar's cipher key. Guarded against the OS argument-string
+      // ceiling here, at deploy, so an over-large deployment fails loudly rather
+      // than at a later child `execve`.
+      const bodySourcesEnv = JSON.stringify(spec.bodySources ?? {});
+      const bodySourcesBytes = Buffer.byteLength(bodySourcesEnv, "utf8");
+      if (bodySourcesBytes > WORKFLOW_BODY_SOURCES_MAX_BYTES) {
+        throw new Error(
+          `sidecar deploy router: serialized ${WORKFLOW_BODY_SOURCES_ENV_KEY} is ${String(bodySourcesBytes)} bytes, over the ${String(WORKFLOW_BODY_SOURCES_MAX_BYTES)}-byte spawn-env limit; the deployment has too many spawned-body sources to deliver through the child env`,
+        );
+      }
+
       const substrateEnv: Record<string, string> = {
         ...multistepSubstrateEnv,
         WORKFLOW_RUN_REPO_ID: runId,
@@ -1688,6 +1738,7 @@ export function createSidecarDeployRouter(deps: {
         // carried on the frozen substrate env because the value is fixed for the
         // deployment's lifetime.
         CLOSURE_PACKAGE_DIR: spec.closurePackageDir,
+        [WORKFLOW_BODY_SOURCES_ENV_KEY]: bodySourcesEnv,
       };
       // Live-rotatable per-step inference sources. Seeded from the deploy
       // spec, then revised in place by the single-step sources-rotation
@@ -1976,6 +2027,7 @@ export function createSidecarDeployRouter(deps: {
                   stepStateDataDir,
                   runId,
                   buildWorkflowRunRecord(spec, rotated),
+                  deps.credentialCipher,
                 );
               } catch (cause) {
                 // Restoring unconditionally is safe because rotations for one
@@ -2249,6 +2301,10 @@ export function createSidecarDeployRouter(deps: {
         agentAddress: frame.agentAddress,
         definition: effectiveDefinition,
         sources: projection.sources,
+        bodySources: buildBodySourcesMap(projection.referencedDefinitions),
+        // The hub's unified credential-material cell (inference + tool secrets);
+        // persisted sealed in the record and delivered on the barrier.
+        credentials: projection.credentials,
         approvedWireHash: projection.approvedWireHash,
         sessionId: frame.config.sessionId,
         hubPublicKey:
@@ -2268,21 +2324,22 @@ export function createSidecarDeployRouter(deps: {
       // record the boot scan re-drives (an idempotent re-spawn; the child's
       // in-flight-run discovery resumes any run). A soft-failed deploy deletes
       // it below, so only a crash-interrupted deploy leaves one.
-      await persistWorkflowRunRecord(dataDir, runId, record);
+      await persistWorkflowRunRecord(
+        dataDir,
+        runId,
+        record,
+        deps.credentialCipher,
+      );
 
-      // Materialize each extracted trigger body's per-step inference sources
-      // (onTrigger sections and childWorkflow children alike) to
-      // `assets/workflow/<bodyRef>/sources.json`. The body DEFINITION is not
-      // staged: the run child resolves each body in-memory from the parent's
-      // re-verified closure and hard-fails rather than reading a body definition
-      // off disk. The sources ride on disk (not through env) because the body
-      // child is in-process and loses its env across a restart.
+      // Sweep any legacy plaintext body-source file this deployment's bodies
+      // left behind. Body sources now ride sealed in the run record and reach
+      // the child through the spawn env, so the `assets/workflow/<bodyRef>/`
+      // staging is retired. A deployment first seen on this build never wrote
+      // one (the rm is a no-op); a redeploy across the upgrade -- or the reconnect
+      // re-push -- reaches here with its old world-readable plaintext file still
+      // on disk and removes it now that the record carries the sealed copy.
       for (const referenced of projection.referencedDefinitions ?? []) {
-        await materializeWorkflowSources(
-          dataDir,
-          referenced.definition.id,
-          referenced.sources,
-        );
+        await sweepLegacyBodySources(dataDir, referenced.definition.id);
       }
 
       // Grants bridge: the spawned child does not see the frame; it reads
@@ -2300,7 +2357,7 @@ export function createSidecarDeployRouter(deps: {
       });
 
       // Hand off to the shared spawn core.
-      return await spawnWorkflowRun(spec, projection.credentials);
+      return await spawnWorkflowRun(spec);
     } catch (cause) {
       // Soft failure (this process survived, the deploy threw): drop the
       // record and release the slug so the failed deploy is neither restored
@@ -2439,7 +2496,10 @@ export function createSidecarDeployRouter(deps: {
         return;
       }
 
-      const scanned = await scanWorkflowRunRecords(dataDir);
+      const scanned = await scanWorkflowRunRecords(
+        dataDir,
+        deps.credentialCipher,
+      );
       // Restore serially, not in parallel: deterministic boot-log ordering,
       // one isolable warning per failed record, and no concurrent
       // child-spawn / transport-register storm. Restore runs before
@@ -2516,6 +2576,16 @@ export function createSidecarDeployRouter(deps: {
             agentAddress: record.agentAddress,
             definition,
             sources: record.sources,
+            // The record's unsealed body sources, re-delivered to the run child
+            // through the spawn env. `undefined` for a legacy record written
+            // before body sources were persisted here; the child then falls back
+            // to that deployment's on-disk plaintext file for the missing bodies.
+            bodySources: record.bodySources,
+            // The record's credential-material cell, unsealed by the boot scan
+            // and re-delivered to the child on the pre-trigger barrier so an
+            // offline restart restores both inference and tool credentials
+            // without the hub. `undefined` when the deployment bound none.
+            credentials: record.credentials,
             // The hub-approved wire hash the original deploy persisted, so the
             // restore re-spawn carries the same `DEFINITION_HASH` rather than a
             // recompute. Always present -- the record schema requires it.

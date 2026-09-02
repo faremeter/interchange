@@ -23,6 +23,10 @@ import path from "node:path";
 import { generateKeyPair } from "@intx/crypto";
 import type { KeyPair } from "@intx/types/runtime";
 import { defineAgent } from "@intx/agent";
+import {
+  builtinCredentialProviders,
+  createCredentialProviderRegistry,
+} from "@intx/harness";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import {
@@ -94,7 +98,7 @@ async function stageChildSources(defId: string): Promise<void> {
           id: "anthropic:m",
           provider: "anthropic",
           baseURL: "http://localhost:1",
-          apiKey: "sk-x",
+          credentialId: "sk-x",
           model: "m",
         },
       ],
@@ -247,6 +251,10 @@ function makeRunChild(
     invokeStep,
     evaluateGrants: evaluateGrantsAdapter,
     dataDir: childSourcesDataDir,
+    bodySources: {},
+    credentialProviders: createCredentialProviderRegistry(
+      builtinCredentialProviders(),
+    ),
   });
 }
 

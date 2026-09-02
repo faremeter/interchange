@@ -36,7 +36,7 @@ function validSource(
     id: "anthropic:claude-sonnet-5",
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
-    apiKey: "sk-secret",
+    credentialId: "sk-secret",
     model: "claude-sonnet-5",
     ...overrides,
   };
@@ -56,7 +56,7 @@ describe("buildDeployInput", () => {
           id: "anthropic:claude-sonnet-5",
           provider: "anthropic",
           baseURL: "https://api.anthropic.com",
-          apiKey: "sk-secret",
+          credentialId: "sk-secret",
           model: "claude-sonnet-5",
         },
       ],
@@ -111,7 +111,7 @@ describe("buildDeployInput", () => {
     }
   });
 
-  test("trims definition and source fields but preserves the raw api key", () => {
+  test("trims definition and source fields including the credential id", () => {
     const input = buildDeployInput(
       fullDefinition({
         kind: "asset-source",
@@ -120,12 +120,12 @@ describe("buildDeployInput", () => {
         commitSha: "  abc123  ",
         packageName: "  @acme/flow  ",
       }),
-      validSource({ id: "  src-1  ", apiKey: "  sk-secret  " }),
+      validSource({ id: "  src-1  ", credentialId: "  cred-1  " }),
     );
     expect(input.entry).toBe("./workflow.mjs");
     expect(input.defaultSource).toBe("src-1");
     expect(input.sources[0]?.id).toBe("src-1");
-    expect(input.sources[0]?.apiKey).toBe("  sk-secret  ");
+    expect(input.sources[0]?.credentialId).toBe("cred-1");
     expect(input.source).toEqual({
       kind: "asset",
       assetId: "asset_1",
@@ -231,7 +231,7 @@ describe("launchReady", () => {
     expect(launchReady(def, validSource({ id: "" }))).toBe(false);
     expect(launchReady(def, validSource({ provider: "  " }))).toBe(false);
     expect(launchReady(def, validSource({ baseURL: "" }))).toBe(false);
-    expect(launchReady(def, validSource({ apiKey: "" }))).toBe(false);
+    expect(launchReady(def, validSource({ credentialId: "" }))).toBe(false);
     expect(launchReady(def, validSource({ model: "  " }))).toBe(false);
   });
 

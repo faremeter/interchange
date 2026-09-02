@@ -24,7 +24,7 @@ export const MAIL_SOURCE: InferenceSource = {
   id: "anthropic:claude-opus-4-6",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test-mail",
+  credentialId: "sk-test-mail",
   model: "claude-opus-4-6",
 };
 

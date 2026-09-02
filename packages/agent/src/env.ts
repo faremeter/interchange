@@ -13,6 +13,7 @@
 // tests and examples ship from `@intx/agent/testing`.
 
 import type { AuthzCallResult, Dependencies } from "@intx/inference";
+import type { CredentialMaterialResolver } from "@intx/types";
 import type {
   AuditStore,
   Compactor,
@@ -133,6 +134,19 @@ export interface BaseEnv {
    * Optional; do not require this field on the production path.
    */
   deps?: Dependencies;
+
+  /**
+   * Resolves an inference source's credential secret by `credentialId` from the
+   * run's credential-material cell at send time -- the same cell tool
+   * credentials resolve from, so the source config carries no inline secret.
+   *
+   * Optional at this boundary only to spare callers whose inference never
+   * resolves a credential (a mock adapter that emits no credential sentinel).
+   * `createAgent` fills a fail-closed default that throws if an inference call
+   * actually needs a secret; a caller that does real credentialed inference (the
+   * sidecar step env, an example, a test with a real adapter) MUST supply one.
+   */
+  readCurrentMaterial?: CredentialMaterialResolver;
 
   /**
    * Optional deterministic session id. Production callers omit and let

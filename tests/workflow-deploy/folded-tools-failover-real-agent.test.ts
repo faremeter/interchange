@@ -166,14 +166,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "anthropic:dead-head",
         provider: "anthropic",
         baseURL: `http://localhost:${deadHead.port}`,
-        apiKey: "sk-dead",
+        credentialId: "sk-dead",
         model: "mock-model",
       };
       const healthySource: InferenceSource = {
         id: "anthropic:mock-model",
         provider: "anthropic",
         baseURL: `http://localhost:${env.inference.server.port}`,
-        apiKey: "sk-mock",
+        credentialId: "sk-mock",
         model: "mock-model",
       };
 
@@ -313,7 +313,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "anthropic:dead-head",
         provider: "anthropic",
         baseURL: `http://localhost:${deadHead.port}`,
-        apiKey: "sk-dead",
+        credentialId: "sk-dead",
         model: "mock-model",
       };
 

@@ -101,7 +101,7 @@ describe("AgentDeployFrame", () => {
         id: "src_default",
         provider: "openai",
         baseURL: "https://api.openai.test",
-        apiKey: "sk-test",
+        credentialId: "sk-test",
         model: "gpt-test",
       },
     ],
@@ -120,7 +120,7 @@ describe("AgentDeployFrame", () => {
     id: "src_step",
     provider: "openai",
     baseURL: "https://api.openai.test",
-    apiKey: "sk-step",
+    credentialId: "sk-step",
     model: "gpt-step",
   };
 
@@ -188,7 +188,7 @@ describe("SourcesUpdateFrame", () => {
     id: "src_a",
     provider: "openai",
     baseURL: "https://api.openai.test",
-    apiKey: "sk-a",
+    credentialId: "sk-a",
     model: "gpt-a",
   };
   const base = {

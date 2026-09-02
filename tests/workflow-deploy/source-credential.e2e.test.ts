@@ -47,6 +47,7 @@ import {
 import {
   SESSION_ID,
   fireMailTrigger,
+  seedInferenceCredentials,
   startDeployFlowEnv,
   waitFor,
   waitForFirstRunId,
@@ -297,7 +298,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "anthropic:mock-model",
         provider: "anthropic",
         baseURL: `http://localhost:${String(env.inference.server.port)}`,
-        apiKey: "sk-mock",
+        credentialId: "sk-mock",
         model: "mock-model",
       };
       const config: HarnessConfig = {
@@ -315,6 +316,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Deploy with a credential cipher: the binding is resolved from the DB and
       // decrypted through it. A no-op cipher passes the seeded material verbatim.
+      await seedInferenceCredentials(
+        h.db,
+        TENANT_ID,
+        { [STEP_ID]: [inferenceSource] },
+        config,
+      );
       await deployCodeSourcedWorkflow({
         approved,
         source,

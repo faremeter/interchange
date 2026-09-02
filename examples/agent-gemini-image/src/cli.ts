@@ -61,11 +61,12 @@ export async function main(
 
   const outputDir = opts.outputDir ?? process.cwd();
 
+  const credentialId = "google-genai-env";
   const source: InferenceSource = {
     id: "google-genai:gemini-2.5-flash-image",
     provider: "google-genai",
     baseURL: "https://generativelanguage.googleapis.com",
-    apiKey,
+    credentialId,
     model: "gemini-2.5-flash-image",
   };
 
@@ -93,6 +94,9 @@ export async function main(
     source,
     nextSeq: () => seq++,
     deps,
+    // The source references its credential by id; the resolver hands the
+    // harness the env-supplied key to inject into the built request headers.
+    readMaterial: () => ({ secret: apiKey }),
     inferenceOptions: {
       responseModalities: ["text", "image"],
     },

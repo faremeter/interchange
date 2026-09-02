@@ -739,7 +739,7 @@ describe("createMultistepSourcesRouter", () => {
     id: "primary",
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
-    apiKey: "sk-x",
+    credentialId: "sk-x",
     model: "claude-test",
   };
   const frame = {

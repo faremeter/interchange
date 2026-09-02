@@ -12,6 +12,7 @@
 // of the @intx public surface.
 
 export {
+  ANTHROPIC_ENV_CREDENTIAL_ID,
   DEFAULT_ANTHROPIC_BASE_URL,
   DEFAULT_ANTHROPIC_MODEL,
   resolveSource,

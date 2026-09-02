@@ -49,7 +49,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:claude-test",
   provider: "anthropic",
   baseURL: "https://test.invalid/v1",
-  apiKey: "test",
+  credentialId: "test",
   model: "claude-test",
 };
 
@@ -115,6 +115,7 @@ describe("runInference — Anthropic redacted_thinking round-trip", () => {
     let seq = 0;
     const events = await drain(
       runInference({
+        readMaterial: () => ({ secret: "test-secret" }),
         turns,
         source: SOURCE,
         nextSeq: () => seq++,
@@ -177,6 +178,7 @@ describe("runInference — Anthropic redacted_thinking round-trip", () => {
     let seq = 0;
     const events = await drain(
       runInference({
+        readMaterial: () => ({ secret: "test-secret" }),
         turns: [
           {
             role: "user",

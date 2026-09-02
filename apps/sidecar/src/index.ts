@@ -4,6 +4,7 @@ import { setup } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import {
   createEd25519Crypto,
+  createEnvKeyCredentialCipher,
   generateKeyPair,
   signEd25519,
   verifySSHSignature,
@@ -18,6 +19,7 @@ import { loadAdapterRegistry } from "@intx/inference/providers";
 import {
   readAdapterManifest,
   readCacheMaxBytes,
+  readCredentialEncryptionKey,
   readRegistryMaxTarballBytes,
 } from "./config";
 import { createDefaultHarnessBuilder } from "./default-harness";
@@ -60,6 +62,14 @@ function requireEnv(name: string): string {
 }
 
 const dataDir = requireEnv("SIDECAR_DATA_DIR");
+
+// The sidecar seals its at-rest credential material (run-record apiKeys, and
+// the tool credential store) under this operator key. Constructed at the boot
+// edge so a missing or malformed key fails loudly here rather than when the
+// first record is persisted.
+const credentialCipher = createEnvKeyCredentialCipher(
+  readCredentialEncryptionKey(),
+);
 
 // Resolve cache configuration at the boot edge so the workflow-child's
 // per-apply loader receives a concrete path and cap through its spawn
@@ -500,6 +510,7 @@ const orchestrator = createSidecarOrchestrator({
       transport,
       repoStore: wrappedRepoStore,
       signingKeySeed: sidecarSigningKey.privateKey,
+      credentialCipher,
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: buildHarness.canBuildSource,
       registerDeployment: ({ runId, agentAddress }) => {

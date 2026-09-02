@@ -142,7 +142,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
-        expect(result.sources.map((s) => s.apiKey)).toEqual([SECRET]);
+        expect(result.materials.map((m) => m.secret)).toEqual([SECRET]);
       });
 
       test("rotation re-resolution emits the inherited secret by ownership", async () => {
@@ -158,7 +158,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
         expect(result.ok).toBe(true);
         if (!result.ok) return;
-        expect(result.sources.map((s) => s.apiKey)).toEqual([SECRET]);
+        expect(result.materials.map((m) => m.secret)).toEqual([SECRET]);
       });
 
       test("a definition with no creator still launches a tenant-owned source", async () => {

@@ -52,7 +52,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test-harness",
+  credentialId: "sk-test-harness",
   model: "claude-3-5-sonnet",
 };
 
@@ -182,6 +182,10 @@ function mailEnv(opts: {
     audit: noopAuditStore(),
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
+    // Identity resolver: the mock adapter never sends the injected secret, so
+    // returning the credentialId as its own secret resolves any source these
+    // tests install (including the outbound env that overrides `sources`).
+    readCurrentMaterial: (credentialId) => ({ secret: credentialId }),
     transport: opts.transport,
     address: AGENT_ADDRESS,
   };
@@ -351,7 +355,7 @@ describe("createHarness outbound pipeline", () => {
           id: "anthropic:claude-3-5-sonnet",
           provider: "anthropic",
           baseURL: "https://api.anthropic.com",
-          apiKey: "sk-test-harness-outbound",
+          credentialId: "sk-test-harness-outbound",
           model: "claude-3-5-sonnet",
         },
       ],

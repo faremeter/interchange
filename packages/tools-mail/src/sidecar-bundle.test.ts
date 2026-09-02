@@ -46,7 +46,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:mock-model",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test",
+  credentialId: "sk-test",
   model: "mock-model",
 };
 

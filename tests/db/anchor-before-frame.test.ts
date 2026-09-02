@@ -34,7 +34,7 @@ import { type } from "arktype";
 import { eq } from "drizzle-orm";
 
 import { defineAgent } from "@intx/agent";
-import { generateKeyPair } from "@intx/crypto";
+import { createNoopCredentialCipher, generateKeyPair } from "@intx/crypto";
 import { workflowDefinition, workflowRun } from "@intx/db/schema";
 import {
   createAgentRepoStore,
@@ -64,6 +64,8 @@ import {
   deriveWorkflowRunRepoId,
 } from "@intx/workflow-deploy";
 
+import { seedInferenceCredentials } from "../hub-agent/lib/deploy-flow-env";
+
 const TENANT_ID = "tnt_anchor_before_frame";
 const DEFINITION_ID = "def_anchor_before_frame";
 const DEPLOYMENT_DOMAIN = "workflow.interchange";
@@ -80,7 +82,7 @@ const INFERENCE_SOURCE: InferenceSource = {
   id: "src-only",
   provider: "anthropic",
   baseURL: "https://api.example/anthropic",
-  apiKey: "secret-only",
+  credentialId: "secret-only",
   model: "mock-model",
 };
 const SOURCES = { only: [INFERENCE_SOURCE] };
@@ -213,6 +215,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     async function deployWith(router: SidecarRouter): Promise<void> {
       const { approval, projection, closure } = await makeApproveBundle();
+      await seedInferenceCredentials(h.db, TENANT_ID, SOURCES, CONFIG);
       await deployCodeSourcedWorkflow({
         sidecarRouter: router,
         agentAddress: DEPLOY_ADDRESS,
@@ -224,6 +227,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT_ID,
         anchorRunId: ANCHOR_RUN_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
+        credentialCipher: createNoopCredentialCipher(),
       });
     }
 
@@ -289,6 +293,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       } as unknown as SidecarRouter;
 
+      await seedInferenceCredentials(h.db, TENANT_ID, SOURCES, CONFIG);
       await deployCodeSourcedWorkflow({
         sidecarRouter: router,
         agentAddress: DEPLOY_ADDRESS,
@@ -300,6 +305,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT_ID,
         anchorRunId: ANCHOR_RUN_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
+        credentialCipher: createNoopCredentialCipher(),
       });
 
       // Fails on the old emit-then-insert order: at probe time the anchor row

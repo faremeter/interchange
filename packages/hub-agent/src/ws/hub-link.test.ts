@@ -166,7 +166,7 @@ const TEST_CONFIG: HarnessConfig = {
       id: "anthropic:claude-sonnet-5",
       provider: "anthropic",
       baseURL: "https://api.anthropic.com",
-      apiKey: "sk-test",
+      credentialId: "sk-test",
       model: "claude-sonnet-5",
     },
   ],
@@ -1139,7 +1139,7 @@ describe("sidecar↔hub integration", () => {
     id: "primary",
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
-    apiKey: "sk-rotation",
+    credentialId: "sk-rotation",
     model: "claude-rotation",
   };
 

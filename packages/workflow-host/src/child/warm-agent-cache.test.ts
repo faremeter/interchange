@@ -13,7 +13,7 @@ function makeSource(id: string): InferenceSource {
     id,
     provider: "anthropic",
     baseURL: "https://api.anthropic.com",
-    apiKey: `sk-${id}`,
+    credentialId: `sk-${id}`,
     model: "claude-test",
   };
 }

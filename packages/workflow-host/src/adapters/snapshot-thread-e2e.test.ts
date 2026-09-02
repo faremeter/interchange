@@ -118,7 +118,7 @@ const SOURCE = {
   id: "anthropic:e2e",
   provider: "anthropic",
   baseURL: "http://localhost:1",
-  apiKey: "test-key",
+  credentialId: "test-key",
   model: "claude-test",
 };
 

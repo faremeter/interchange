@@ -13,7 +13,7 @@ const ANTHROPIC_SOURCE: InferenceSource = {
   id: "anthropic:claude-test",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "test",
+  credentialId: "test",
   model: "claude-test",
 };
 
@@ -472,6 +472,7 @@ describe("harness.runInference auto-dispatch", () => {
           source: ANTHROPIC_SOURCE,
           nextSeq: () => ++seq,
           deps: harness.deps,
+          readMaterial: () => ({ secret: "test-secret" }),
         })) {
           // Intentionally swallow events; we only care that the handler
           // does NOT auto-fire on this path.

@@ -79,7 +79,7 @@ async function runAgainst(
     id: `${provider}:test-model`,
     provider,
     baseURL: "https://test.invalid/v1",
-    apiKey: "test",
+    credentialId: "test",
     model: "test-model",
   };
   const deps: Dependencies = {
@@ -90,6 +90,7 @@ async function runAgainst(
   let seq = 0;
   const events = await drain(
     runInference({
+      readMaterial: () => ({ secret: "test-secret" }),
       turns: makeTurns(),
       source,
       nextSeq: () => seq++,

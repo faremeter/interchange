@@ -42,6 +42,7 @@ import type {
 
 import { getLogger } from "@intx/log";
 import { ApprovalDecision, signalKindToGateType } from "@intx/types";
+import type { CredentialMaterialResolver } from "@intx/types";
 import { canonicalJsonStringify } from "@intx/types/wire-definition-hash";
 import { type } from "arktype";
 import { runInference } from "./harness";
@@ -78,19 +79,19 @@ function buildHarnessOpts(
   options: InferenceOptions | undefined,
   signal: AbortSignal,
   nextSeq: () => number,
+  readMaterial: CredentialMaterialResolver | undefined,
   deps: Dependencies,
 ): InferenceHarnessOptions {
-  if (options !== undefined) {
-    return {
-      turns,
-      source,
-      inferenceOptions: options,
-      signal,
-      nextSeq,
-      deps,
-    };
-  }
-  return { turns, source, signal, nextSeq, deps };
+  // exactOptionalPropertyTypes is on: only set the optional keys when defined.
+  return {
+    turns,
+    source,
+    ...(options !== undefined ? { inferenceOptions: options } : {}),
+    signal,
+    nextSeq,
+    ...(readMaterial !== undefined ? { readMaterial } : {}),
+    deps,
+  };
 }
 
 export type ReactorEmittedEvent =
@@ -113,6 +114,13 @@ export type ReactorConfig = {
   failOverToNextSource?: () => boolean;
   /** Reset `source` to the most-preferred source, in place. */
   resetToPreferredSource?: () => void;
+  /**
+   * Resolves the active source's credential secret by `credentialId` from the
+   * run's credential cell at send time. Read live per attempt, so a failover to
+   * a source with a different `credentialId` resolves that source's credential.
+   * Optional: the harness installs a fail-closed default when it is omitted.
+   */
+  readMaterial?: CredentialMaterialResolver;
   toolRunner: ToolRunner;
   contextStore: ContextStore;
   correlationValidator?: CorrelationValidator;
@@ -716,6 +724,7 @@ export function createReactor(config: ReactorConfig): Reactor {
           options,
           signal,
           nextSeq,
+          config.readMaterial,
           deps,
         );
 

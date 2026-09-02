@@ -1,10 +1,11 @@
 import type { InferenceSource } from "@intx/types/runtime";
+import type { CredentialMaterialResolver } from "@intx/types";
 
 // Sentinel placeholder strings adapters use in their built request
 // headers to declare which credential the harness should fill at send
 // time. The harness scans every header value and replaces exact-match
-// sentinels with material derived from `InferenceSource.apiKey`. Adapters
-// never see the API key.
+// sentinels with the secret resolved from the source's `credentialId`
+// against the run's credential cell. Adapters never see the API key.
 //
 // Each new provider adds a new header name + sentinel choice in its
 // `buildRequest`; the harness needs no per-provider knowledge. The
@@ -46,13 +47,23 @@ export const BEARER_CREDENTIAL_SENTINEL = "<inject:bearer-credential>";
 export function injectCredentials(
   headers: Record<string, string>,
   source: InferenceSource,
+  readMaterial: CredentialMaterialResolver,
 ): Record<string, string> {
+  // Resolve the source's secret lazily and once: only when a header actually
+  // carries a sentinel, so a request with no credential sentinel never touches
+  // the cell, and the fail-closed read (revoked/absent credential) surfaces only
+  // when the secret is genuinely needed.
+  let cachedSecret: string | undefined;
+  const secret = (): string => {
+    cachedSecret ??= readMaterial(source.credentialId).secret;
+    return cachedSecret;
+  };
   const result: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
     if (value === CREDENTIAL_SENTINEL) {
-      result[name] = source.apiKey;
+      result[name] = secret();
     } else if (value === BEARER_CREDENTIAL_SENTINEL) {
-      result[name] = `Bearer ${source.apiKey}`;
+      result[name] = `Bearer ${secret()}`;
     } else {
       result[name] = value;
     }

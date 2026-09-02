@@ -2466,6 +2466,25 @@ export function createWorkflowSupervisor(
         });
       }
 
+      // Deliver the run's credential material to the child on EVERY spawn, not
+      // only through the per-trigger `onRunStart` barrier. A restored run resumes
+      // from its parked state without a fresh `trigger.fire` (a signal wakes it),
+      // so the barrier would never re-deliver the cell and the resumed run's
+      // inference would fail closed. Seeding the live cell here at spawn lets an
+      // offline restart resolve each source's credential from the persisted
+      // (unsealed) delivery without waiting on a hub reconnect. Unlike the grants
+      // push above this is NOT suppressed when `onRunStart` is wired: the barrier
+      // fires per trigger, but a resume has no trigger, so the spawn push is the
+      // only credential source on the resume path. Idempotent (a whole-cell swap)
+      // with the barrier's own push on a fresh run. Absent when the deployment
+      // binds no credentials.
+      if (bindings.credentialDelivery !== undefined) {
+        await wired.wiring.controlSender.send({
+          type: "credentials-updated",
+          data: { delivery: bindings.credentialDelivery },
+        });
+      }
+
       // Transition to running. The dispatch loop (started below)
       // picks up any pre-ready buffered mail through the FIFO inbox
       // queue rather than through an in-memory buffer; arrival order

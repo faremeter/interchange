@@ -20,6 +20,10 @@ import path from "node:path";
 import { generateKeyPair } from "@intx/crypto";
 import type { ApprovalSnapshot, KeyPair } from "@intx/types/runtime";
 import { defineAgent } from "@intx/agent";
+import {
+  builtinCredentialProviders,
+  createCredentialProviderRegistry,
+} from "@intx/harness";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
 import {
@@ -93,7 +97,7 @@ beforeAll(async () => {
           id: "anthropic:m",
           provider: "anthropic",
           baseURL: "http://localhost:1",
-          apiKey: "sk-x",
+          credentialId: "sk-x",
           model: "m",
         },
       ],
@@ -209,6 +213,10 @@ function sharedDeps(substrate: ReturnType<typeof createRepoStore>) {
     invokeStep: parkForever,
     evaluateGrants: evaluateGrantsAdapter,
     dataDir: bodySourcesDataDir,
+    bodySources: {},
+    credentialProviders: createCredentialProviderRegistry(
+      builtinCredentialProviders(),
+    ),
   };
 }
 

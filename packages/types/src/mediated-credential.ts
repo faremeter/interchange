@@ -33,6 +33,21 @@ export interface CredentialMaterial {
  */
 export type CredentialMaterialSource = () => CredentialMaterial;
 
+/**
+ * Resolves the current material for a credential BY id from the run's credential
+ * cell. Inference uses this to fill a request's credential from
+ * `InferenceSource.credentialId` at send time -- the same cell tool credentials
+ * resolve from, so neither rail holds an inline secret. Keyed by `credentialId`
+ * (not bound to one, unlike `CredentialMaterialSource`) because a source's
+ * forward-only failover chain carries a distinct credential per entry. Reads
+ * live, so a rotation of the cell is picked up on the next call; fails closed
+ * when the credential is absent (revoked or never delivered). This is the single
+ * seam a future mode swaps to keep the raw secret out of the child entirely.
+ */
+export type CredentialMaterialResolver = (
+  credentialId: string,
+) => CredentialMaterial;
+
 /** What a provider plugin is given to shape a mediated credential. */
 export interface CredentialShapeContext {
   /**

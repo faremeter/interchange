@@ -19,6 +19,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { CredentialMaterialResolver } from "@intx/types";
 import type {
   ConversationTurn,
   InferenceEvent,
@@ -139,20 +140,27 @@ export async function recordLiveSession(
   });
   harness.onTool("weather", (args) => weatherResult(args));
 
+  const credentialId = `${opts.brand}-live`;
   const source: InferenceSource = {
     id: `${opts.brand}:${opts.model}`,
     provider: adapterProvider,
     baseURL: opts.baseURL,
-    apiKey: opts.apiKey,
+    credentialId,
     model: opts.model,
     ...(opts.quirks !== undefined ? { quirks: opts.quirks } : {}),
   };
+  // Live recording drives the real endpoint, so the resolver hands the harness
+  // the environment-supplied key to inject into the built request headers.
+  const readMaterial: CredentialMaterialResolver = () => ({
+    secret: opts.apiKey,
+  });
 
   let seq = 0;
   const turn1Events: InferenceEvent[] = [];
   for await (const ev of harness.runInference({
     turns: [userTurn(LIVE_TOOL_PROMPT)],
     source,
+    readMaterial,
     inferenceOptions: INFERENCE_OPTIONS,
     nextSeq: () => ++seq,
   })) {
@@ -183,6 +191,7 @@ export async function recordLiveSession(
   for await (const _ev of harness.runInference({
     turns: [userTurn(LIVE_TOOL_PROMPT), turn1Done.data.turn, toolResultTurn],
     source,
+    readMaterial,
     inferenceOptions: INFERENCE_OPTIONS,
     nextSeq: () => ++seq,
   })) {

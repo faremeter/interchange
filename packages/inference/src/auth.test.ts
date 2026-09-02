@@ -1,13 +1,14 @@
 // Credential-sentinel substitution. Adapters declare which credential
 // shape they want by placing one of the exported sentinel strings as
 // the header value; `injectCredentials` walks the header map and
-// rewrites exact-match values with material derived from
-// `InferenceSource.apiKey`. The harness uses this in place of the
+// rewrites exact-match values with the secret the resolver returns for
+// the source's `credentialId`. The harness uses this in place of the
 // previous per-header hardcoded branches so adding a new provider
 // requires no harness change.
 
 import { describe, expect, test } from "bun:test";
 
+import type { CredentialMaterialResolver } from "@intx/types";
 import type { InferenceSource } from "@intx/types/runtime";
 
 import {
@@ -20,9 +21,15 @@ const SOURCE: InferenceSource = {
   id: "test:model",
   provider: "test",
   baseURL: "https://test.invalid",
-  apiKey: "sk-test-secret",
+  credentialId: "sk-test-secret",
   model: "test-model",
 };
+
+// Resolves the source's `credentialId` to its secret. SOURCE.credentialId
+// is the secret literal the assertions expect in the rewritten headers.
+const readMaterial: CredentialMaterialResolver = (credentialId) => ({
+  secret: credentialId,
+});
 
 describe("injectCredentials", () => {
   test("replaces CREDENTIAL_SENTINEL with apiKey verbatim", () => {
@@ -32,6 +39,7 @@ describe("injectCredentials", () => {
         "content-type": "application/json",
       },
       SOURCE,
+      readMaterial,
     );
     expect(out["x-api-key"]).toBe("sk-test-secret");
     expect(out["content-type"]).toBe("application/json");
@@ -44,6 +52,7 @@ describe("injectCredentials", () => {
         "content-type": "application/json",
       },
       SOURCE,
+      readMaterial,
     );
     expect(out["authorization"]).toBe("Bearer sk-test-secret");
     expect(out["content-type"]).toBe("application/json");
@@ -57,6 +66,7 @@ describe("injectCredentials", () => {
         "user-agent": "test",
       },
       SOURCE,
+      readMaterial,
     );
     expect(out["content-type"]).toBe("application/json");
     expect(out["anthropic-version"]).toBe("2023-06-01");
@@ -71,6 +81,7 @@ describe("injectCredentials", () => {
     const out = injectCredentials(
       { "x-goog-api-key": CREDENTIAL_SENTINEL },
       SOURCE,
+      readMaterial,
     );
     expect(out["x-goog-api-key"]).toBe("sk-test-secret");
   });
@@ -81,7 +92,11 @@ describe("injectCredentials", () => {
     // Partial replacement would be surprising and no legitimate
     // adapter constructs composite values around the sentinel.
     const wrapped = `prefix ${CREDENTIAL_SENTINEL} suffix`;
-    const out = injectCredentials({ "x-weird-header": wrapped }, SOURCE);
+    const out = injectCredentials(
+      { "x-weird-header": wrapped },
+      SOURCE,
+      readMaterial,
+    );
     expect(out["x-weird-header"]).toBe(wrapped);
   });
 
@@ -89,7 +104,7 @@ describe("injectCredentials", () => {
     const input: Record<string, string> = {
       "x-api-key": CREDENTIAL_SENTINEL,
     };
-    const out = injectCredentials(input, SOURCE);
+    const out = injectCredentials(input, SOURCE, readMaterial);
     expect(input["x-api-key"]).toBe(CREDENTIAL_SENTINEL);
     expect(out["x-api-key"]).toBe("sk-test-secret");
     expect(out).not.toBe(input);
@@ -106,12 +121,13 @@ describe("injectCredentials", () => {
         authorization: BEARER_CREDENTIAL_SENTINEL,
       },
       SOURCE,
+      readMaterial,
     );
     expect(out["x-api-key"]).toBe("sk-test-secret");
     expect(out["authorization"]).toBe("Bearer sk-test-secret");
   });
 
   test("empty headers in, empty headers out", () => {
-    expect(injectCredentials({}, SOURCE)).toEqual({});
+    expect(injectCredentials({}, SOURCE, readMaterial)).toEqual({});
   });
 });

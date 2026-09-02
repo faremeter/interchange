@@ -64,7 +64,7 @@ describe("TenantWorkflowDetailPage launch form", () => {
     expect(html).toContain("Provider");
     expect(html).toContain("Model");
     expect(html).toContain("Base URL");
-    expect(html).toContain("API Key");
+    expect(html).toContain("Credential ID");
   });
 
   test("disables the launch button before the form is filled", () => {
