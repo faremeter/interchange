@@ -12,6 +12,7 @@ import {
   awaitSignal,
   childWorkflow,
   defineWorkflow,
+  escalation,
   gate,
   hashDefinition,
   loop,
@@ -1728,5 +1729,245 @@ describe("hashDefinition", () => {
       ],
     });
     expect(hashDefinition(withGrants)).not.toEqual(hashDefinition(base));
+  });
+});
+
+describe("onFailure straddler validation", () => {
+  // unit(onFailure:handler), handler(after:[unit]), plus a straddler `j` wired
+  // into both the unit and the handler.
+  function wf(straddler: Primitive): () => WorkflowDefinition {
+    return () =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "handler" }),
+          handler: step({ agent: makeAgent("h"), after: ["unit"] }),
+          j: straddler,
+        },
+      });
+  }
+
+  const child = (): WorkflowDefinition =>
+    defineWorkflow({
+      id: "child",
+      trigger: { type: "manual" },
+      steps: { inner: step({ agent: makeAgent("i") }) },
+    });
+
+  test("rejects a diamond straddler with a deep read", () => {
+    expect(
+      wf(
+        step({
+          agent: makeAgent("j"),
+          after: ["unit", "handler"],
+          input: { from: "steps.unit.output.result.value" },
+        }),
+      ),
+    ).toThrow(/narrowed steps.unit.output/);
+  });
+
+  test("rejects a diamond straddler with an indexed read", () => {
+    expect(
+      wf(
+        step({
+          agent: makeAgent("j"),
+          after: ["unit", "handler"],
+          input: { from: "steps.unit.output[0]" },
+        }),
+      ),
+    ).toThrow(/narrowed steps.unit.output/);
+  });
+
+  test("rejects a diamond straddler with a project-narrowed whole read", () => {
+    expect(
+      wf(
+        step({
+          agent: makeAgent("j"),
+          after: ["unit", "handler"],
+          input: {
+            project: { from: "steps.unit.output" },
+            fields: ["result"],
+          },
+        }),
+      ),
+    ).toThrow(/narrowed steps.unit.output/);
+  });
+
+  test("rejects an action straddler reading the unit output", () => {
+    expect(
+      wf(
+        action({
+          handler: "do",
+          after: ["unit", "handler"],
+          input: { from: "steps.unit.output" },
+        }),
+      ),
+    ).toThrow(/only an agent step can read the failure sentinel/);
+  });
+
+  test("rejects a childWorkflow straddler reading the unit output", () => {
+    expect(
+      wf(
+        childWorkflow({
+          definition: child(),
+          after: ["unit", "handler"],
+          input: { from: "steps.unit.output" },
+        }),
+      ),
+    ).toThrow(/only an agent step can read the failure sentinel/);
+  });
+
+  test("rejects an escalation straddler reading the unit output", () => {
+    expect(
+      wf(
+        escalation({
+          to: "ops",
+          data: { from: "steps.unit.output.error.detail" },
+          after: ["unit", "handler"],
+        }),
+      ),
+    ).toThrow(/only an agent step can read the failure sentinel/);
+  });
+
+  test("rejects a transitive diamond straddler with a deep read", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "handler" }),
+          handler: step({ agent: makeAgent("h"), after: ["unit"] }),
+          m: step({ agent: makeAgent("m"), after: ["unit"] }),
+          j: step({
+            agent: makeAgent("j"),
+            after: ["m", "handler"],
+            input: { from: "steps.unit.output.result" },
+          }),
+        },
+      }),
+    ).toThrow(/narrowed steps.unit.output/);
+  });
+
+  test("rejects a handler that depends on a direct normal dependent", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "handler" }),
+          n: step({ agent: makeAgent("n"), after: ["unit"] }),
+          handler: step({ agent: makeAgent("h"), after: ["unit", "n"] }),
+        },
+      }),
+    ).toThrow(/handler must depend only on unit/);
+  });
+
+  test("rejects a handler that depends on a transitive normal dependent", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "handler" }),
+          m: step({ agent: makeAgent("m"), after: ["unit"] }),
+          n: step({ agent: makeAgent("n"), after: ["m"] }),
+          handler: step({ agent: makeAgent("h"), after: ["unit", "n"] }),
+        },
+      }),
+    ).toThrow(/handler must depend only on unit/);
+  });
+
+  test("accepts a diamond straddler with a whole read", () => {
+    expect(
+      wf(
+        step({
+          agent: makeAgent("j"),
+          after: ["unit", "handler"],
+          input: { from: "steps.unit.output" },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("accepts a whole read as a merge operand", () => {
+    expect(
+      wf(
+        step({
+          agent: makeAgent("j"),
+          after: ["unit", "handler"],
+          input: {
+            merge: [{ from: "steps.unit.output" }, { from: "trigger.payload" }],
+          },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test("accepts a pure-handler-side deep read of the sentinel", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "handler" }),
+          handler: step({ agent: makeAgent("h"), after: ["unit"] }),
+          g: step({
+            agent: makeAgent("g"),
+            after: ["handler"],
+            input: { from: "steps.unit.output.error.message" },
+          }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts a handler that itself deep-reads the sentinel", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "handler" }),
+          handler: step({
+            agent: makeAgent("h"),
+            after: ["unit"],
+            input: { from: "steps.unit.output.error.message" },
+          }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts a normal dependent deep read not reachable from the handler", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          unit: step({ agent: makeAgent("u"), onFailure: "handler" }),
+          handler: step({ agent: makeAgent("h"), after: ["unit"] }),
+          n: step({
+            agent: makeAgent("n"),
+            after: ["unit"],
+            input: { from: "steps.unit.output.result" },
+          }),
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts a handler that depends on a unit-independent node", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: {
+          w0: step({ agent: makeAgent("w0") }),
+          unit: step({ agent: makeAgent("u"), onFailure: "handler" }),
+          handler: step({ agent: makeAgent("h"), after: ["unit", "w0"] }),
+        },
+      }),
+    ).not.toThrow();
   });
 });
