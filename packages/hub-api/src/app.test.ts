@@ -32,6 +32,7 @@ const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
 });
 const sidecarRouter = createSidecarRouter({
   authenticateSidecar: acceptAnySidecar,
+  validateSidecarIdentity: async () => true,
 });
 const sessionService: SessionService = {
   stageWorkflowStep(_params) {

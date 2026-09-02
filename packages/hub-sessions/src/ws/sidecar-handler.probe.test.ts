@@ -130,6 +130,7 @@ describe("SidecarRouter workflow probe", () => {
   test("probe-scoped capacity cannot register workflow addresses", async () => {
     const router = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
     });
     const ws = createMockWs();
     router.fenceAllocation("allocation-sc-1", 1);
@@ -151,6 +152,7 @@ describe("SidecarRouter workflow probe", () => {
   test("probe-scoped capacity cannot use non-probe protocols", async () => {
     const router = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
     });
     const ws = await registerBareSidecar(router, "sc-1");
 
@@ -170,6 +172,7 @@ describe("SidecarRouter workflow probe", () => {
   test("happy path resolves with the sidecar's inert probe result", async () => {
     const router = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
     });
     const ws = await registerBareSidecar(router, "sc-1");
 
@@ -218,6 +221,7 @@ describe("SidecarRouter workflow probe", () => {
   test("a workflow.probe.error reply rejects the probe with its error", async () => {
     const router = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
     });
     const ws = await registerBareSidecar(router, "sc-1");
 
@@ -240,6 +244,7 @@ describe("SidecarRouter workflow probe", () => {
   test("no reply rejects the probe after probeTimeoutMs", async () => {
     const router = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
       probeTimeoutMs: 20,
     });
     await registerBareSidecar(router, "sc-1");
@@ -252,6 +257,7 @@ describe("SidecarRouter workflow probe", () => {
   test("disconnect sweeps the in-flight probe and rejects it", async () => {
     const router = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
     });
     const ws = await registerBareSidecar(router, "sc-1");
 
@@ -267,6 +273,7 @@ describe("SidecarRouter workflow probe", () => {
   test("an empty connection registry throws immediately", async () => {
     const router = createSidecarRouter({
       authenticateSidecar: acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
     });
 
     router.fenceAllocation("allocation-sc-1", 1);

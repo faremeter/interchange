@@ -46,6 +46,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
   test("rejects invalid and throwing authenticators", async () => {
     const invalid = createSidecarRouter({
       authenticateSidecar: async () => null,
+      validateSidecarIdentity: async () => true,
     });
     const invalidWs = createMockWs();
     invalid.handleOpen(invalidWs);
@@ -64,6 +65,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
       authenticateSidecar: async () => {
         throw new Error("auth unavailable");
       },
+      validateSidecarIdentity: async () => true,
     });
     const throwingWs = createMockWs();
     throwing.handleOpen(throwingWs);

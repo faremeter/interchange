@@ -58,6 +58,7 @@ function startTestServer(): {
 } {
   const router = createSidecarRouter({
     authenticateSidecar: acceptAnySidecar,
+    validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
     probeTimeoutMs: 5000,
   });
