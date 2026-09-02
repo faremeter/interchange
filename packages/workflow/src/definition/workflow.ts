@@ -820,6 +820,35 @@ function makeReachability(
 }
 
 /**
+ * The transitive closure of `starts` following `after`-edges forward: every
+ * step that (transitively) depends on a start. This is the liveness set the
+ * runtime's branch prune spares -- the same graph the onFailure straddler
+ * guard reasons over, so both share this function rather than drift. Follows
+ * `after` edges ONLY, not gate/loop/onFailure routing edges.
+ */
+export function downstreamClosure(
+  steps: Record<string, Primitive>,
+  starts: readonly string[],
+): Set<string> {
+  const visited = new Set<string>();
+  const queue: string[] = starts.filter((id) => id in steps);
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (id === undefined) break;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    for (const [otherId, primitive] of Object.entries(steps)) {
+      const after = primitive.after;
+      if (after === undefined) continue;
+      if (after.includes(id) && !visited.has(otherId)) {
+        queue.push(otherId);
+      }
+    }
+  }
+  return visited;
+}
+
+/**
  * Produce a deterministic content-addressed hash of a workflow
  * definition. The hash drives the workflow-run record (`RunStarted`
  * carries this value) and the deploy substrate's content-addressing.

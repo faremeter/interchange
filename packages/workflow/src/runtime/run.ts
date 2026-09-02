@@ -27,6 +27,7 @@ import type {
   WorkflowDefinition,
 } from "../definition/index";
 import {
+  downstreamClosure,
   hashDefinition,
   RUN_ID_PATTERN,
   stepTriggerBudget,
@@ -3825,7 +3826,7 @@ function collectBranchClosure(
   selected: readonly string[],
 ): readonly string[] {
   const selectedSet = new Set(selected);
-  const reachableFromSelected = downstreamClosure(definition, selected);
+  const reachableFromSelected = downstreamClosure(definition.steps, selected);
   const skip = new Set<string>();
   const queue: string[] = notSelected.filter((id) => id in definition.steps);
   while (queue.length > 0) {
@@ -3849,28 +3850,6 @@ function collectBranchClosure(
     }
   }
   return [...skip];
-}
-
-function downstreamClosure(
-  definition: WorkflowDefinition,
-  starts: readonly string[],
-): Set<string> {
-  const visited = new Set<string>();
-  const queue: string[] = starts.filter((id) => id in definition.steps);
-  while (queue.length > 0) {
-    const id = queue.shift();
-    if (id === undefined) break;
-    if (visited.has(id)) continue;
-    visited.add(id);
-    for (const [otherId, primitive] of Object.entries(definition.steps)) {
-      const after = primitive.after;
-      if (after === undefined) continue;
-      if (after.includes(id) && !visited.has(otherId)) {
-        queue.push(otherId);
-      }
-    }
-  }
-  return visited;
 }
 
 /**
