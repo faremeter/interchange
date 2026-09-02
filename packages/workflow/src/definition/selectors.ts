@@ -81,3 +81,42 @@ export function walkSelectors(
     }
   }
 }
+
+export type PathSegment =
+  | { kind: "key"; key: string }
+  | { kind: "index"; index: number };
+
+/**
+ * Tokenize a `FromSelector` path into key/index segments, the single grammar
+ * the DSL uses. The runtime resolver walks these segments; definition-time
+ * validators reuse the same tokenizer so their judgment about a path's shape
+ * (e.g. whether it is a whole-object read) matches what the resolver does.
+ */
+export function splitPath(path: string): readonly PathSegment[] {
+  const out: PathSegment[] = [];
+  const parts = path.split(".");
+  for (const part of parts) {
+    if (part === "") {
+      throw new Error(`empty path segment in ${path}`);
+    }
+    // Detect inline index syntax: foo[2] -> "foo" then "[2]"
+    const match = /^([^[\]]+)((?:\[\d+\])*)$/.exec(part);
+    if (!match) {
+      throw new Error(`invalid path segment ${part} in ${path}`);
+    }
+    const keyPart = match[1];
+    const indexPart = match[2];
+    if (keyPart === undefined) {
+      throw new Error(`invalid path segment ${part} in ${path}`);
+    }
+    out.push({ kind: "key", key: keyPart });
+    if (indexPart !== undefined && indexPart !== "") {
+      for (const idxMatch of indexPart.matchAll(/\[(\d+)\]/g)) {
+        const raw = idxMatch[1];
+        if (raw === undefined) continue;
+        out.push({ kind: "index", index: Number(raw) });
+      }
+    }
+  }
+  return out;
+}

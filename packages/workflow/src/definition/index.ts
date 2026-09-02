@@ -64,6 +64,7 @@ export type {
 
 export {
   defineWorkflow,
+  downstreamClosure,
   hashDefinition,
   STEP_ID_PATTERN,
   RUN_ID_PATTERN,
