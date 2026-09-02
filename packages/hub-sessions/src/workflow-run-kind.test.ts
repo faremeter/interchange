@@ -2919,6 +2919,57 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     }
   });
 
+  test("readWorkflowRunLifecycle wraps an unreadable latest event", async () => {
+    // A validated write cannot store a corrupt event, so seed a valid live run
+    // and then corrupt its latest event on disk -- the storage-corruption case
+    // the reader must surface as `workflow_run_event_unreadable` rather than
+    // misclassify.
+    const { store, repoId, principal } =
+      await makeClaimCheckStore("cc-corrupt-fs-");
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: {
+        [`${WORKFLOW_RUN_RUNS_PREFIX}/corrupt/events/0.json`]:
+          runStartedBody("corrupt"),
+      },
+      message: "seed a valid live run",
+    });
+    const eventPath = path.join(
+      store.getRepoDir(repoId),
+      WORKFLOW_RUN_RUNS_PREFIX,
+      "corrupt",
+      "events",
+      "0.json",
+    );
+    await fs.promises.writeFile(eventPath, "not valid json{");
+
+    await expect(
+      readWorkflowRunLifecycle(store, repoId, "corrupt"),
+    ).rejects.toThrow(/workflow_run_event_unreadable/);
+  });
+
+  test("readCommittedWorkflowRunLifecycle wraps an unreadable latest event", async () => {
+    // The committed reader reads git objects, so inject the corruption through
+    // a reads stub whose latest blob will not parse.
+    const reads = {
+      async treeOid() {
+        return null;
+      },
+      async listDir(dirPath: string) {
+        if (dirPath === "runs/corrupt/events") {
+          return [{ name: "0.json", oid: "corrupt", type: "blob" as const }];
+        }
+        return [];
+      },
+      async readBlobByOid(_oid: string) {
+        return new TextEncoder().encode("not valid json{");
+      },
+    };
+
+    await expect(
+      readCommittedWorkflowRunLifecycle(reads, "corrupt"),
+    ).rejects.toThrow(/workflow_run_event_unreadable/);
+  });
+
   test("a CancelRequested-without-finalizer run is still owned (its message stays suppressed)", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore(
       "cc-owned-cancelling-",
