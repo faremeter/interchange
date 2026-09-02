@@ -2970,6 +2970,24 @@ describe("claim-check API — resume-owned processing entries survive replay", (
     ).rejects.toThrow(/workflow_run_event_unreadable/);
   });
 
+  test("readWorkflowRunLifecycle surfaces a non-ENOENT events-directory read error", async () => {
+    // An absent events directory (ENOENT) classifies as absent, but a
+    // non-ENOENT read error must surface rather than be swallowed as absent.
+    // Seed the per-event `events` path as a file so readdir fails with ENOTDIR.
+    const { store, repoId } = await makeClaimCheckStore("cc-enotdir-");
+    const runDir = path.join(
+      store.getRepoDir(repoId),
+      WORKFLOW_RUN_RUNS_PREFIX,
+      "notdir",
+    );
+    await fs.promises.mkdir(runDir, { recursive: true });
+    await fs.promises.writeFile(path.join(runDir, "events"), "not a directory");
+
+    await expect(
+      readWorkflowRunLifecycle(store, repoId, "notdir"),
+    ).rejects.toThrow();
+  });
+
   test("a CancelRequested-without-finalizer run is still owned (its message stays suppressed)", async () => {
     const { store, repoId, principal } = await makeClaimCheckStore(
       "cc-owned-cancelling-",
