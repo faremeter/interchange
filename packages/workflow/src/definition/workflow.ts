@@ -19,6 +19,13 @@ import {
   type StateSchema,
   type StepPrimitive,
 } from "./primitives";
+import {
+  isFromSelector,
+  isMergeSelector,
+  isProjectSelector,
+  splitPath,
+  type Selector,
+} from "./selectors";
 import type { Trigger } from "./triggers";
 
 export interface WorkflowDefinition {
@@ -318,9 +325,137 @@ function validateSteps(steps: Record<string, Primitive>): void {
   // Runs after validateAcyclic so the dependency graph is known acyclic and
   // the reachability walk terminates.
   validateConcurrentAwaitSignalNames(steps);
+  // Runs after validateAcyclic so its closure computations reason over an
+  // acyclic graph, and after validateAfterRefs so every onFailure handler is
+  // known to exist and to `after`-depend on its unit.
+  validateOnFailureStraddlers(steps);
   validateLoopBody(steps);
   validateOnTriggerBody(steps);
   validateChildWorkflowBody(steps);
+}
+
+/**
+ * The `FromSelector` references into `steps.<unitId>.output`, each tagged with
+ * whether it is a whole-object read and whether it sits under a narrowing
+ * `ProjectSelector`. Tokenized with the shared `splitPath`, so a bracket index
+ * (`steps.U.output[0]`) is correctly seen as a deeper read, not a whole one.
+ */
+function unitOutputRefs(
+  selector: Selector,
+  unitId: string,
+): { whole: boolean; underProject: boolean }[] {
+  const refs: { whole: boolean; underProject: boolean }[] = [];
+  const walk = (s: Selector, underProject: boolean): void => {
+    if (isFromSelector(s)) {
+      const [a, b, c] = splitPath(s.from);
+      if (
+        a?.kind === "key" &&
+        a.key === "steps" &&
+        b?.kind === "key" &&
+        b.key === unitId &&
+        c?.kind === "key" &&
+        c.key === "output"
+      ) {
+        refs.push({ whole: splitPath(s.from).length === 3, underProject });
+      }
+    } else if (isProjectSelector(s)) {
+      walk(s.project, true);
+    } else if (isMergeSelector(s)) {
+      for (const inner of s.merge) walk(inner, underProject);
+    }
+    // A LiteralSelector carries no path.
+  };
+  walk(selector, false);
+  return refs;
+}
+
+/**
+ * The selector a straddler evaluates against step outputs: an invocation
+ * unit's `input`, a gate's `when`, or an escalation's `data`. loop/map
+ * straddlers read outputs through other selector fields (`over`, `while`,
+ * `carry`); those are not inspected here -- a residual noted in the
+ * sentinel-guard contract, where the runtime still fails loud on a bad read.
+ */
+function straddlerOutputSelector(p: Primitive): Selector | undefined {
+  if (p.kind === "step" || p.kind === "action" || p.kind === "childWorkflow") {
+    return p.input;
+  }
+  if (p.kind === "gate") return p.when;
+  if (p.kind === "escalation") return p.data;
+  return undefined;
+}
+
+/**
+ * Enforce the onFailure sentinel-guard contract. When a unit U with handler H
+ * fails, U's normal after-dependents are pruned EXCEPT nodes reachable from H,
+ * so a "straddler" -- live on both the failure path (reachable from H) and the
+ * normal path (reachable from a normal dependent) -- reads U's own output,
+ * which on failure is the sentinel `{ failed, stepId, error: { message } }`,
+ * not U's success shape. A selector throws at the first missing segment, so a
+ * straddler reading a deep, indexed, or project-narrowed path into U's success
+ * shape breaks at runtime on the failure path. Only an agent `step` selecting
+ * the WHOLE `steps.<U>.output` (to branch on `.failed` in its body) is safe; an
+ * action/childWorkflow straddler, or any narrowed read, is rejected. The
+ * handler itself must depend only on U and on U-independent nodes -- never on a
+ * normal-side dependent the route prunes, whose skip sentinel it would read.
+ */
+function validateOnFailureStraddlers(steps: Record<string, Primitive>): void {
+  for (const [unitId, primitive] of Object.entries(steps)) {
+    const onFailure =
+      primitive.kind === "step" ||
+      primitive.kind === "action" ||
+      primitive.kind === "childWorkflow"
+        ? primitive.onFailure
+        : undefined;
+    if (onFailure === undefined) continue;
+    const handlerId = onFailure;
+
+    const unitDownstream = downstreamClosure(steps, [unitId]);
+    for (const dep of steps[handlerId]?.after ?? []) {
+      if (dep !== unitId && unitDownstream.has(dep)) {
+        throw new Error(
+          `${primitive.kind} ${unitId} onFailure handler ${handlerId} also ` +
+            `depends on ${dep}, which the failure route prunes; the handler ` +
+            `must depend only on ${unitId}`,
+        );
+      }
+    }
+
+    const failureLive = downstreamClosure(steps, [handlerId]);
+    const normalDependents = Object.entries(steps)
+      .filter(
+        ([id, p]) => id !== handlerId && (p.after?.includes(unitId) ?? false),
+      )
+      .map(([id]) => id);
+    const normalLive = downstreamClosure(steps, normalDependents);
+    for (const straddlerId of failureLive) {
+      if (!normalLive.has(straddlerId)) continue;
+      const straddler = steps[straddlerId];
+      if (straddler === undefined) continue;
+      const selector = straddlerOutputSelector(straddler);
+      if (selector === undefined) continue;
+      const refs = unitOutputRefs(selector, unitId);
+      if (refs.length === 0) continue;
+      if (straddler.kind !== "step") {
+        throw new Error(
+          `${straddler.kind} ${straddlerId} straddles onFailure unit ` +
+            `${unitId} and its handler ${handlerId} and reads ` +
+            `steps.${unitId}.output; only an agent step can read the failure ` +
+            `sentinel and branch on it`,
+        );
+      }
+      for (const ref of refs) {
+        if (!ref.whole || ref.underProject) {
+          throw new Error(
+            `step ${straddlerId} straddles onFailure unit ${unitId} and its ` +
+              `handler ${handlerId} but reads a narrowed steps.${unitId}` +
+              `.output; a straddler must select the whole output and branch ` +
+              `on .failed`,
+          );
+        }
+      }
+    }
+  }
 }
 
 /**
