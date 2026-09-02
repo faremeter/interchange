@@ -122,6 +122,26 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     ]);
   });
 
+  test("retires terminal allocation fences and rejects their waiters", async () => {
+    const router = createAllocatedRouter();
+    router.fenceAllocation(TEST_TARGET.allocationId, 2);
+    const waiting = router.waitForAllocatedSidecar(
+      { allocationId: TEST_TARGET.allocationId, generation: 2 },
+      500,
+    );
+    await tick();
+
+    router.retireAllocation({
+      allocationId: TEST_TARGET.allocationId,
+      generation: 2,
+    });
+
+    await expect(waiting).rejects.toThrow(/retired/);
+    expect(() =>
+      router.fenceAllocation(TEST_TARGET.allocationId, 1),
+    ).not.toThrow();
+  });
+
   test("tracks connector state only for an address owned by the allocation", async () => {
     const changed: unknown[] = [];
     const router = createAllocatedRouter();

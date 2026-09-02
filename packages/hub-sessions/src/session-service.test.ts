@@ -171,6 +171,11 @@ function createMockAllocationRouter(
     fenceAllocation() {
       throw new Error("mock allocation fence is not used by session service");
     },
+    retireAllocation() {
+      throw new Error(
+        "mock allocation retirement is not used by session service",
+      );
+    },
     waitForAllocatedSidecar: async () => undefined,
     isAllocatedSidecarReady: async () => true,
     isAllocatedWorkflowActive: async () => false,
