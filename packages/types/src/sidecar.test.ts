@@ -6,12 +6,33 @@ import {
   CredentialsUpdateFrame,
   DeployApplyErrorCategory,
   HubFrame,
+  MailOutboundFrame,
   PackRejectFrame,
   PackRejectReason,
   SidecarFrame,
   SignalCorrelationRegisterFrame,
   SourcesUpdateFrame,
 } from "./sidecar";
+
+describe("MailOutboundFrame sender ownership claim", () => {
+  const frame = {
+    type: "mail.outbound",
+    senderAddress: "run_sender@example.test",
+    rawMessage: "bWFpbA==",
+    recipients: ["recipient@example.test"],
+  };
+
+  test("accepts a frame with a sender address", () => {
+    expect(MailOutboundFrame(frame) instanceof type.errors).toBe(false);
+    expect(SidecarFrame(frame) instanceof type.errors).toBe(false);
+  });
+
+  test("rejects a frame with no sender address", () => {
+    const { senderAddress: _, ...missingSender } = frame;
+    expect(MailOutboundFrame(missingSender) instanceof type.errors).toBe(true);
+    expect(SidecarFrame(missingSender) instanceof type.errors).toBe(true);
+  });
+});
 
 describe("DeployApplyErrorCategory", () => {
   const allCategories = [

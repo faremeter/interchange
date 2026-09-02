@@ -308,6 +308,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       ws,
       JSON.stringify({
         type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -355,6 +356,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       ws,
       JSON.stringify({
         type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -380,6 +382,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       ws,
       JSON.stringify({
         type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),

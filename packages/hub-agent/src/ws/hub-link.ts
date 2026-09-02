@@ -819,16 +819,19 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   }
 
   // Wire the transport's remote send handler to push mail.outbound frames
-  // for routing. These carry only the raw message and recipients — the hub
-  // routes them to the destination sidecar.
-  transport.setRemoteSendHandler(async (rawMessage, recipients) => {
-    const encoded = base64Encode(rawMessage);
-    send({
-      type: "mail.outbound",
-      rawMessage: encoded,
-      recipients,
-    });
-  });
+  // for routing. The sender comes from the transport's registered-address
+  // check so the hub can bind the claim to this authenticated connection.
+  transport.setRemoteSendHandler(
+    async (rawMessage, recipients, senderAddress) => {
+      const encoded = base64Encode(rawMessage);
+      send({
+        type: "mail.outbound",
+        rawMessage: encoded,
+        recipients,
+        senderAddress,
+      });
+    },
+  );
 
   // Forward every send to the hub for audit and event emission. Local-only
   // sends are marked delivered: true so the hub does not re-route them.

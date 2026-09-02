@@ -250,7 +250,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     ]);
   });
 
-  test("forwards agent events to matching subscribers and supports unsubscribe", async () => {
+  test("forwards owned agent events and drops unowned claims", async () => {
     const emitted: unknown[] = [];
     const subscribed: unknown[] = [];
     const router = createAllocatedRouter();
@@ -273,6 +273,14 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     };
 
     router.handleMessage(ws, JSON.stringify(frame));
+    await tick();
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        ...frame,
+        agentAddress: "other@tenant.example",
+      }),
+    );
     await tick();
     unsubscribe();
     router.handleMessage(ws, JSON.stringify(frame));

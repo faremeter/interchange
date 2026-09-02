@@ -455,6 +455,7 @@ describe("sidecar↔hub integration", () => {
       transport,
       sessions,
       ...withTestDeployBindings(),
+      getWorkflowAddresses: () => ["agent-1@test.interchange"],
     });
 
     client.connect();
@@ -504,6 +505,7 @@ describe("sidecar↔hub integration", () => {
       transport,
       sessions,
       ...withTestDeployBindings(),
+      getWorkflowAddresses: () => ["sender@test.interchange"],
     });
 
     client.connect();

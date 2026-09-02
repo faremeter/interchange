@@ -25,12 +25,13 @@ const CONVERSATION_TYPES = new Set([
 
 /**
  * Callback for delivering messages to recipients not registered on this
- * transport. The federation layer provides this to forward messages to
- * the hub for remote routing.
+ * transport. The federation layer provides this to forward messages and the
+ * transport-validated sender address to the hub for remote routing.
  */
 export type RemoteSendHandler = (
   rawMessage: Uint8Array,
   recipients: string[],
+  senderAddress: string,
 ) => Promise<void>;
 
 /**
@@ -252,7 +253,7 @@ export async function executeSend(
 
   // Forward to remote recipients via federation hook.
   if (remoteRecipients.length > 0 && onRemoteSend !== undefined) {
-    await onRemoteSend(rawBytes, remoteRecipients);
+    await onRemoteSend(rawBytes, remoteRecipients, senderAddress);
   }
 
   if (onMessageSent !== undefined) {

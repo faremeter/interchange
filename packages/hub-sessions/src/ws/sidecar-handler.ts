@@ -1016,11 +1016,17 @@ export function createSidecarRouter(
       case "ping":
         handlePing(ws);
         return;
-      case "mail.outbound":
+      case "mail.outbound": {
+        const conn = connections.get(ws);
+        if (conn === undefined) return;
+        if (!connOwnsAddress(conn, frame.senderAddress)) {
+          logger.warn`Dropping mail.outbound from ${frame.senderAddress}: not registered to this sidecar`;
+          return;
+        }
         if (frame.delivered !== true) {
           return handleMailOutbound(frame.rawMessage, frame.recipients);
         }
-        if (lookups.persistMail && frame.senderAddress) {
+        if (lookups.persistMail) {
           return handleMailPersist(
             lookups.persistMail,
             frame.rawMessage,
@@ -1028,13 +1034,16 @@ export function createSidecarRouter(
             frame.recipients,
           );
         }
-        if (!frame.senderAddress) {
-          logger.warn`Dropping delivered mail.outbound frame with no senderAddress`;
-        } else {
-          logger.warn`Dropping delivered mail.outbound frame: no persistMail lookup configured`;
-        }
+        logger.warn`Dropping delivered mail.outbound frame: no persistMail lookup configured`;
         return;
-      case "agent.event":
+      }
+      case "agent.event": {
+        const conn = connections.get(ws);
+        if (conn === undefined) return;
+        if (!connOwnsAddress(conn, frame.agentAddress)) {
+          logger.warn`Dropping agent.event for ${frame.agentAddress}: not registered to this sidecar`;
+          return;
+        }
         events.emit("agent.event", {
           agentAddress: frame.agentAddress,
           sessionId: frame.sessionId,
@@ -1042,6 +1051,7 @@ export function createSidecarRouter(
         });
         dispatchToSubscribers(frame.agentAddress, frame.event);
         return;
+      }
       case "connector.state.changed":
         // Gate the cache write on the sending sidecar actually owning
         // the named agent. A misbehaving sidecar that knows another

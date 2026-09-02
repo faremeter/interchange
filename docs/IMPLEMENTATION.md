@@ -314,6 +314,8 @@ The allocation token is a bearer secret: possession is sufficient to authenticat
 
 A probe-scoped WebSocket may register no addresses and can receive only the allocation-bound probe operation. An allocated WebSocket may register only the anchor's deployment address. Probe, deploy, mail, and signal sends resolve the exact `(allocationId, generation)` and revalidate its database identity before routing. A generation advance closes the prior socket and rejects its waiters.
 
+Sidecar-originated `mail.outbound` and `agent.event` frames carry an agent address that must belong to the authenticated connection. The Hub drops an unowned claim before routing or persisting mail, emitting an event, or notifying subscribers. Routed mail carries the sender address validated by the sidecar's scoped transport rather than deriving authority from the MIME `From` header.
+
 Workflow-run pack ingestion applies the fence in the reverse direction. The wire layer derives pack ownership from the authenticated socket, requires the repository id to equal the slug derived from its owned deployment address, and passes that source to the Hub lookup. Immediately before advancing the Git ref, the lookup revalidates the running anchor and the current accepted allocation generation. Terminal events are projected into SQL only when their run row belongs to that anchor.
 
 ### Replacement and replay
