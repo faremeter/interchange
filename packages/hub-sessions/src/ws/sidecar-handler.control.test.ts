@@ -206,6 +206,7 @@ describe("SidecarRouter allocated outbound mail", () => {
       ws,
       JSON.stringify({
         type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
         rawMessage: "bWFpbA==",
         recipients: ["external@example.test"],
       }),
@@ -269,5 +270,58 @@ describe("SidecarRouter allocated outbound mail", () => {
       expect.objectContaining({ id: "mail-out", raw: expect.any(Uint8Array) }),
       expect.objectContaining({ id: "mail-in", raw: expect.any(Uint8Array) }),
     ]);
+  });
+
+  test("drops routed mail from an address the sidecar does not own", async () => {
+    const undelivered: unknown[] = [];
+    const router = createAllocatedRouter();
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: "other@tenant.example",
+        rawMessage: "bWFpbA==",
+        recipients: ["external@example.test"],
+      }),
+    );
+    await tick();
+
+    expect(undelivered).toEqual([]);
+  });
+
+  test("does not persist delivered mail for an unowned sender", async () => {
+    let persisted = false;
+    const router = createAllocatedRouter({
+      lookups: {
+        async persistMail() {
+          persisted = true;
+          return [];
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        delivered: true,
+        senderAddress: "other@tenant.example",
+        rawMessage: "cGVyc2lzdGVk",
+        recipients: ["user@example.test"],
+      }),
+    );
+    await tick();
+
+    expect(persisted).toBe(false);
   });
 });

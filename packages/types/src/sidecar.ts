@@ -87,7 +87,7 @@ export const MailOutboundFrame = type({
   type: "'mail.outbound'",
   rawMessage: "string",
   recipients: "string[]",
-  "senderAddress?": "string",
+  senderAddress: "string",
   "sessionId?": "string",
   "messageId?": "string",
   "to?": "string[]",

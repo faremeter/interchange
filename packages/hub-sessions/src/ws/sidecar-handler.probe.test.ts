@@ -160,6 +160,7 @@ describe("SidecarRouter workflow probe", () => {
       ws,
       JSON.stringify({
         type: "mail.outbound",
+        senderAddress: "probe@example.test",
         rawMessage: "From: probe@example.test\r\n\r\nnope",
         recipients: ["outside@example.test"],
       }),

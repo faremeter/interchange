@@ -33,5 +33,7 @@ await alphaMail.send({
 
 Install a `RemoteSendHandler` via `transport.setRemoteSendHandler`
 to forward outbound mail for addresses the transport does not host
-locally, and add one or more `MessageSentHandler`s via
-`transport.addMessageSentHandler` for post-send observability.
+locally. The handler receives the raw message, remote recipients, and
+the sender address already validated by the scoped transport. Add one or
+more `MessageSentHandler`s via `transport.addMessageSentHandler` for
+post-send observability.

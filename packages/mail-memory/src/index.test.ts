@@ -124,6 +124,29 @@ describe("send and watch", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(count).toBe(1);
   });
+
+  test("remote delivery carries the registered sender address", async () => {
+    const { transport, alphaTransport } = await createTestTransport();
+    const deliveries: { senderAddress: string; recipients: string[] }[] = [];
+    transport.setRemoteSendHandler(
+      async (_rawMessage, recipients, senderAddress) => {
+        deliveries.push({ senderAddress, recipients });
+      },
+    );
+
+    await alphaTransport.send({
+      to: "remote@example.test",
+      type: "conversation.message",
+      content: "hello",
+    });
+
+    expect(deliveries).toEqual([
+      {
+        senderAddress: "alpha@test.interchange",
+        recipients: ["remote@example.test"],
+      },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
