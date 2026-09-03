@@ -13,7 +13,7 @@ import { setup, getLogger } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import { createIsogitStore } from "@intx/storage-isogit/node";
-import { createPosixTools } from "@intx/tools-posix";
+import { posix, type PosixToolEnv } from "@intx/tools-posix/sidecar-bundle";
 import { createMailTools } from "@intx/tools-mail";
 import {
   createHarness,
@@ -164,32 +164,38 @@ const [storageAlpha, storageBeta] = await Promise.all([
 // Tools
 // ---------------------------------------------------------------------------
 
-// Keep per-package references so the shutdown path can dispose each
-// runner. Each per-agent createMailTools() is constructed against
-// that agent's transport; the harness wraps it as a defineTool bundle
-// factory via defineMailTools().
+// Keep per-package references so the shutdown path can dispose each mail
+// runner. Each per-agent createMailTools() is constructed against that
+// agent's transport; the harness wraps it as a defineTool bundle factory
+// via defineMailTools().
 const toolsAlphaMail = createMailTools({
   capabilities: createHarnessRuntimeCapabilities({
     transport: transportAlpha,
   }),
 });
-const toolsAlphaPosix = createPosixTools({ cwd: process.cwd() });
 
 const toolsBetaMail = createMailTools({
   capabilities: createHarnessRuntimeCapabilities({
     transport: transportBeta,
   }),
 });
-const toolsBetaPosix = createPosixTools({ cwd: process.cwd() });
 
-function posixFactoryFor(posixTools: typeof toolsAlphaPosix) {
-  return defineTool({
-    id: "@interchange-demo/posix-demo/posix",
-    definitions: posixTools.definitions.map((def) => ({ name: def.name })),
-    factory: () => ({
-      definitions: posixTools.definitions,
-      run: (call, signal) => posixTools.run(call, signal),
-    }),
+// The posix tools flow their working directory through env-DI: each
+// agent's factory reads env.toolCwd (both point at process.cwd() here,
+// distinct from the per-agent workdir lock boundary). Bundle lifetimes
+// are caller-owned, so the wrapper captures each bundle's disposer for
+// the shutdown path.
+const posixDisposers: (() => Promise<void>)[] = [];
+function posixFactory() {
+  return defineTool<PosixToolEnv>({
+    id: posix.id,
+    requires: posix.requires,
+    definitions: posix.definitions,
+    factory: (env) => {
+      const bundle = posix(env);
+      if (bundle.dispose !== undefined) posixDisposers.push(bundle.dispose);
+      return bundle;
+    },
   });
 }
 
@@ -321,7 +327,7 @@ const BETA_SYSTEM_PROMPT =
 const alphaDef = defineAgent({
   id: ALPHA_ADDRESS,
   systemPrompt: ALPHA_SYSTEM_PROMPT,
-  tools: [mailFactoryFor(toolsAlphaMail), posixFactoryFor(toolsAlphaPosix)],
+  tools: [mailFactoryFor(toolsAlphaMail), posixFactory()],
   capabilities: [],
   inference: {
     sources: [{ provider: alphaSource.provider, model: alphaSource.model }],
@@ -331,18 +337,19 @@ const alphaDef = defineAgent({
 const betaDef = defineAgent({
   id: BETA_ADDRESS,
   systemPrompt: BETA_SYSTEM_PROMPT,
-  tools: [mailFactoryFor(toolsBetaMail), posixFactoryFor(toolsBetaPosix)],
+  tools: [mailFactoryFor(toolsBetaMail), posixFactory()],
   capabilities: [],
   inference: {
     sources: [{ provider: betaSource.provider, model: betaSource.model }],
   },
 });
 
-const alphaEnv: MailEnv = {
+const alphaEnv: MailEnv & PosixToolEnv = {
   sources: [alphaSource],
   defaultSource: alphaSource.id,
   storage: storageAlpha,
   workdir: alphaDir,
+  toolCwd: process.cwd(),
   audit: noopAuditStore(),
   authorize: permissiveAuthorize(),
   directors: createDefaultDirectorRegistry(),
@@ -350,11 +357,12 @@ const alphaEnv: MailEnv = {
   address: ALPHA_ADDRESS,
 };
 
-const betaEnv: MailEnv = {
+const betaEnv: MailEnv & PosixToolEnv = {
   sources: [betaSource],
   defaultSource: betaSource.id,
   storage: storageBeta,
   workdir: betaDir,
+  toolCwd: process.cwd(),
   audit: noopAuditStore(),
   authorize: permissiveAuthorize(),
   directors: createDefaultDirectorRegistry(),
@@ -405,20 +413,18 @@ function shutdown(signal: string): void {
   stopAlphaLogger();
   stopBetaLogger();
   clearTimeout(safetyTimer);
-  // Each per-agent tool runner owns its own resources (LSP child
-  // processes via the posix tool runner's plugins, future per-package
-  // teardown via the mail tool runner). Dispose them so the demo exits
-  // cleanly. createHarness does not aggregate dispose -- the demo
-  // built the per-package runners and is responsible for disposing
-  // them after the harness closes.
+  // The demo owns the tool runners' lifetimes; createHarness does not
+  // aggregate dispose. Mail runners are built eagerly and disposed
+  // directly. Posix bundles are built inside their env-DI factories, so
+  // each factory captured its disposer at construction; dispose those
+  // after the harnesses close.
   void (async () => {
     await harnessAlpha.close();
     await harnessBeta.close();
     await Promise.all([
       toolsAlphaMail.dispose(),
-      toolsAlphaPosix.dispose(),
       toolsBetaMail.dispose(),
-      toolsBetaPosix.dispose(),
+      ...posixDisposers.map((dispose) => dispose()),
     ]);
   })();
 }
