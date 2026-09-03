@@ -18,6 +18,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -292,10 +293,7 @@ export function createGrantRoutes({
       });
 
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Grant not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Grant not found");
       }
 
       return c.json(formatGrant(row));
@@ -345,10 +343,7 @@ export function createGrantRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "Grant not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Grant not found");
       }
 
       return c.json(formatGrant(updated));
@@ -383,10 +378,7 @@ export function createGrantRoutes({
         .returning();
 
       if (deleted.length === 0) {
-        return c.json(
-          { error: { code: "not_found", message: "Grant not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Grant not found");
       }
 
       return c.body(null, 204);
@@ -445,10 +437,7 @@ export function createEvaluateRoutes({
       });
 
       if (!principalRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Principal not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Principal not found");
       }
 
       const result = await authorize(

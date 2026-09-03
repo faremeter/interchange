@@ -20,6 +20,7 @@ import {
 import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -137,14 +138,10 @@ export function createModelCatalogRoutes({
         ),
       });
       if (existing) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "A model with this canonical name already exists",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "A model with this canonical name already exists",
         );
       }
 
@@ -202,10 +199,7 @@ export function createModelCatalogRoutes({
         where: and(eq(model.id, modelId), eq(model.tenantId, tenantCtx.id)),
       });
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Model not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Model not found");
       }
       return c.json(formatModel(row));
     },
@@ -252,10 +246,7 @@ export function createModelCatalogRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "Model not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Model not found");
       }
 
       void pushSourceUpdatesSubtree(
@@ -294,10 +285,7 @@ export function createModelCatalogRoutes({
         .where(and(eq(model.id, modelId), eq(model.tenantId, tenantCtx.id)))
         .returning();
       if (deleted.length === 0) {
-        return c.json(
-          { error: { code: "not_found", message: "Model not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Model not found");
       }
       void pushSourceUpdatesSubtree(
         db,

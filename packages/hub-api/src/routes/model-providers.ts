@@ -19,6 +19,7 @@ import {
 import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -165,15 +166,10 @@ export function createModelProviderRoutes({
       const hasCredential = credentialId !== null;
       const hasWallet = walletId !== null;
       if (hasCredential === hasWallet) {
-        return c.json(
-          {
-            error: {
-              code: "invalid_request",
-              message:
-                "Exactly one of credentialId or walletId must be provided",
-            },
-          },
-          400,
+        return errorResponse(
+          c,
+          "invalid_request",
+          "Exactly one of credentialId or walletId must be provided",
         );
       }
 
@@ -194,15 +190,10 @@ export function createModelProviderRoutes({
           credentialId,
         );
         if (cred === null) {
-          return c.json(
-            {
-              error: {
-                code: "not_found",
-                message:
-                  "Credential not found in this tenant, or not a tenant-owned credential (a catalog provider requires a tenant-owned credential)",
-              },
-            },
-            404,
+          return errorResponse(
+            c,
+            "not_found",
+            "Credential not found in this tenant, or not a tenant-owned credential (a catalog provider requires a tenant-owned credential)",
           );
         }
       }
@@ -214,14 +205,10 @@ export function createModelProviderRoutes({
         ),
       });
       if (existing) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "Provider name already exists in this tenant",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "Provider name already exists in this tenant",
         );
       }
 
@@ -278,10 +265,7 @@ export function createModelProviderRoutes({
         ),
       });
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
       return c.json(formatModelProvider(row));
     },
@@ -331,14 +315,10 @@ export function createModelProviderRoutes({
           ),
         });
         if (clash) {
-          return c.json(
-            {
-              error: {
-                code: "conflict",
-                message: "Provider name already exists in this tenant",
-              },
-            },
-            409,
+          return errorResponse(
+            c,
+            "conflict",
+            "Provider name already exists in this tenant",
           );
         }
       }
@@ -360,10 +340,7 @@ export function createModelProviderRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
 
       void pushSourceUpdatesSubtree(
@@ -407,10 +384,7 @@ export function createModelProviderRoutes({
         )
         .returning();
       if (deleted.length === 0) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
       void pushSourceUpdatesSubtree(
         db,

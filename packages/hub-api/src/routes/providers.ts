@@ -14,6 +14,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -168,14 +169,10 @@ export function createProviderRoutes({
         ),
       });
       if (existing) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "Provider name already exists in this tenant",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "Provider name already exists in this tenant",
         );
       }
 
@@ -234,18 +231,12 @@ export function createProviderRoutes({
       });
 
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
 
       const chain = await getAncestorChain(db, tenantCtx.id);
       if (!chain.includes(row.tenantId)) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
 
       return c.json(formatProvider(row));
@@ -302,10 +293,7 @@ export function createProviderRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
 
       return c.json(formatProvider(updated));
@@ -341,10 +329,7 @@ export function createProviderRoutes({
         .returning();
 
       if (deleted.length === 0) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
 
       return c.body(null, 204);

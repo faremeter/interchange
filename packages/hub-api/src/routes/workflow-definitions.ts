@@ -18,6 +18,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { ts } from "../format";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
@@ -144,10 +145,7 @@ export function createWorkflowDefinitionRoutes({
         ),
       });
       if (definition === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Definition not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Definition not found");
       }
 
       const { limit, cursor } = parsePageParams({
@@ -235,17 +233,9 @@ export function createWorkflowDefinitionRoutes({
 
       if (!result.ok) {
         if (result.reason === "definition_not_found") {
-          return c.json(
-            { error: { code: "not_found", message: "Definition not found" } },
-            404,
-          );
+          return errorResponse(c, "not_found", "Definition not found");
         }
-        return c.json(
-          {
-            error: { code: "bad_request", message: "Target version not found" },
-          },
-          400,
-        );
+        return errorResponse(c, "bad_request", "Target version not found");
       }
 
       const def = result.definition;
