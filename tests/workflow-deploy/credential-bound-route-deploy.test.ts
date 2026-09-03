@@ -218,11 +218,17 @@ async function deployBindingThroughRoute(opts: {
   });
   const { source } = await seedBindingSource(opts.assetId);
 
+  // The source references the same tenant-owned, sealed credential the tool
+  // binding resolves. Post-unification a source names a credential by id, not an
+  // inline key; the deploy resolves and decrypts it under the app cipher. The
+  // positive case supplies the matching key, so this resolves; the negative
+  // cases fail closed on the BINDING first (resolved before the source), so the
+  // source is never reached and those assertions stay binding-driven.
   const inferenceSource: InferenceSource = {
     id: "anthropic:mock-model",
     provider: "anthropic",
     baseURL: `http://localhost:${String(env.inference.server.port)}`,
-    apiKey: "sk-mock",
+    credentialId: CREDENTIAL_ID,
     model: "mock-model",
   };
 
