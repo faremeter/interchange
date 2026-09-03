@@ -10,7 +10,9 @@ export const principal = pgTable(
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
-    kind: text("kind", { enum: ["user", "agent", "workflow"] }).notNull(),
+    kind: text("kind", {
+      enum: ["user", "agent", "workflow", "host"],
+    }).notNull(),
     refId: text("ref_id").notNull(),
     status: text("status", {
       enum: ["active", "suspended", "invited", "deactivated"],
@@ -22,9 +24,10 @@ export const principal = pgTable(
 );
 
 // refId is polymorphic on kind: the auth user for kind='user', and either a
-// workflow_run or a workflow_definition for kind='workflow'. A `kind='agent'`
-// principal is a legacy survivor of the fold -- its refId named an
-// `agent_instance` row, a table now dropped, so it dangles and is inert.
+// workflow_run for kind='workflow', and a stable externally managed execution
+// host id for kind='host'. A `kind='agent'` principal is a legacy survivor of
+// the fold -- its refId named an `agent_instance` row, a table now dropped, so
+// it dangles and is inert.
 // Postgres can't express a conditional FK across those targets, so there is no
 // FK constraint here and the application layer enforces referential integrity.
 export { user };

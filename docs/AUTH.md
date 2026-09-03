@@ -2,7 +2,7 @@
 
 ## Overview
 
-Interchange uses a unified principal model where users and workflow runs share the same authorization system. Authentication establishes global identity. Authorization is tenant-scoped and evaluated through capability grants attached to principals.
+Interchange uses a unified principal model where users, workflow runs, and execution hosts share the same authorization system. Authentication establishes identity. Authorization is tenant-scoped and evaluated through capability grants attached to principals.
 
 ## Authentication
 
@@ -25,16 +25,16 @@ A user can belong to many tenants. Tenant context is always encoded in the URL p
 
 ## Principals
 
-A principal represents an identity within a tenant. It is the universal join between an entity (user or workflow run) and a tenant. A principal does not grant authorization by itself -- it establishes that an entity exists in a tenant and tracks their membership status.
+A principal represents an identity within a tenant. It is the universal join between an entity (user, workflow run, or execution host) and a tenant. A principal does not grant authorization by itself -- it establishes that an entity exists in a tenant and tracks its status.
 
-A user in three tenants has three principal rows. A workflow run in a tenant has one principal row. Every authorization question starts by resolving the principal.
+A user or host represented in three tenants has three principal rows. A workflow run in a tenant has one principal row. Every authorization question starts by resolving the principal.
 
 ```
 principal
   id              text PK        -- prn_...
   tenant_id       text FK -> tenant
-  kind            text NOT NULL  -- 'user' | 'agent' | 'workflow'
-  ref_id          text NOT NULL  -- user.id, or a workflow_run (run_...) or workflow_definition (wfd_...) id
+  kind            text NOT NULL  -- 'user' | 'agent' | 'workflow' | 'host'
+  ref_id          text NOT NULL  -- user.id, workflow_run.id, legacy agent id, or stable host id
   status          text NOT NULL  -- 'active' | 'suspended' | 'invited' | 'deactivated'
   created_at      timestamptz
   updated_at      timestamptz
@@ -86,7 +86,7 @@ Workflow-run requests follow the same flow. The principal is resolved by `(run_i
 
 ## Roles
 
-Roles are named bundles of capability grants scoped to a tenant. Both users and workflow runs can be assigned roles.
+Roles are named bundles of capability grants scoped to a tenant. Users, workflow runs, and hosts can be assigned roles.
 
 ```
 role

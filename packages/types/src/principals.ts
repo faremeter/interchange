@@ -1,6 +1,6 @@
 import { type } from "arktype";
 
-export const principalKinds = ["user", "agent", "workflow"] as const;
+export const principalKinds = ["user", "agent", "workflow", "host"] as const;
 export type PrincipalKind = (typeof principalKinds)[number];
 
 export const principalStatuses = [
@@ -27,15 +27,15 @@ export const PrincipalResponse = type({
   id: "string",
   tenantId: "string",
   kind: Kind.describe(
-    "Whether this principal represents a `user` (a human account), an `agent`, or a `workflow` (a workflow run).",
+    "Whether this principal represents a `user` (a human account), an `agent`, a `workflow` run or definition, or an execution `host`.",
   ),
   refId: type("string").describe(
-    "Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, an agent-instance id when `kind` is `agent`, or a workflow run (`run_...`) or workflow definition (`wfd_...`) id when `kind` is `workflow`. Unique per tenant and kind.",
+    "Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, an agent-instance id when `kind` is `agent`, a workflow run (`run_...`) or workflow definition (`wfd_...`) id when `kind` is `workflow`, or a stable host id when `kind` is `host`. Unique per tenant and kind.",
   ),
   displayName: "string",
   "email?": "string",
   status: Status.describe(
-    "Account state of the principal: `active`, `suspended`, `invited` (membership pending acceptance), or `deactivated`.",
+    "Principal state: `active`, `suspended`, `invited` (user membership pending acceptance), or `deactivated`.",
   ),
   roles: type({
     id: "string",

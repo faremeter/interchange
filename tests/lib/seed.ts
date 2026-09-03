@@ -100,7 +100,7 @@ export async function seedAsset(db: Db, a: SeedAsset): Promise<void> {
 export type SeedPrincipal = {
   id: string;
   tenantId: string;
-  kind?: "user" | "agent" | "workflow";
+  kind?: "user" | "agent" | "workflow" | "host";
   refId?: string;
   status?: "active" | "suspended" | "invited" | "deactivated";
 };

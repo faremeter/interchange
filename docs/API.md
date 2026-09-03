@@ -285,9 +285,9 @@ Revoke federation trust
 ### GET /api/tenants/:tenantId/principals
 List principals in the tenant
 
-Lists all principals (users, agents, and workflow runs) in the tenant. Filterable by kind and status.
+Lists all principals (users, agents, workflow runs, and execution hosts) in the tenant. Filterable by kind and status.
 
-Query: kind?: user|agent|workflow, status?: active|suspended|invited|deactivated, cursor?, limit?
+Query: kind?: user|agent|workflow|host, status?: active|suspended|invited|deactivated, cursor?, limit?
 
 200: unknown -- List of principals
 
@@ -1488,12 +1488,12 @@ Source: packages/types/src/catalog.ts
 **thinkingTokenPrice**: Cost per thinking token as a decimal string in the row's `currency`, or null if this provider does not charge for it.
 
 ### PrincipalResponse
-`{ createdAt: string, displayName: string, id: string, kind: "agent" | "user" | "workflow", refId: string, roles: { id: string, name: string }[], status: "active" | "deactivated" | "invited" | "suspended", tenantId: string, updatedAt: string, email?: string }`
+`{ createdAt: string, displayName: string, id: string, kind: "agent" | "host" | "user" | "workflow", refId: string, roles: { id: string, name: string }[], status: "active" | "deactivated" | "invited" | "suspended", tenantId: string, updatedAt: string, email?: string }`
 Source: packages/types/src/principals.ts
 
-**kind**: Whether this principal represents a `user` (a human account), an `agent`, or a `workflow` (a workflow run).
-**refId**: Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, an agent-instance id when `kind` is `agent`, or a workflow run (`run_...`) or workflow definition (`wfd_...`) id when `kind` is `workflow`. Unique per tenant and kind.
-**status**: Account state of the principal: `active`, `suspended`, `invited` (membership pending acceptance), or `deactivated`.
+**kind**: Whether this principal represents a `user` (a human account), an `agent`, a `workflow` run or definition, or an execution `host`.
+**refId**: Identifier of the underlying entity this principal stands for: the auth user id when `kind` is `user`, an agent-instance id when `kind` is `agent`, a workflow run (`run_...`) or workflow definition (`wfd_...`) id when `kind` is `workflow`, or a stable host id when `kind` is `host`. Unique per tenant and kind.
+**status**: Principal state: `active`, `suspended`, `invited` (user membership pending acceptance), or `deactivated`.
 
 ### ProviderResponse
 `{ createdAt: string, id: string, name: string, plugin: string, tenantId: string, updatedAt: string, apiBaseUrl?: string | null, authorizationUrl?: string | null, metadata?: { [string]: unknown } | null, scopes?: string[] | null, tokenUrl?: string | null, userInfoUrl?: string | null }`

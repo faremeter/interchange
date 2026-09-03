@@ -156,6 +156,11 @@ describe("parsePrincipalRow", () => {
     const parsed = parsePrincipalRow(makePrincipalRow({ kind: "workflow" }));
     expect(parsed.kind).toBe("workflow");
   });
+
+  test("accepts a host principal", () => {
+    const parsed = parsePrincipalRow(makePrincipalRow({ kind: "host" }));
+    expect(parsed.kind).toBe("host");
+  });
 });
 
 type ModelProviderRow = typeof modelProvider.$inferSelect;

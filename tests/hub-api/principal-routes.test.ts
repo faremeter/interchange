@@ -41,6 +41,8 @@ const ASSET_ID = "ast_wf";
 const DEPLOYMENT_ID = "run_wf";
 const RUN_ID = "run_wf_child";
 const WORKFLOW_PRINCIPAL_ID = "prn_workflow";
+const HOST_ID = "host_browser_tab";
+const HOST_PRINCIPAL_ID = "prn_host";
 const DEPLOYMENT_ADDRESS = "run_wf@principals.test";
 
 function createMockGetSession(userId: string): GetSession {
@@ -165,6 +167,12 @@ async function setup() {
     kind: "workflow",
     refId: RUN_ID,
   });
+  await seedPrincipal(h.db, {
+    id: HOST_PRINCIPAL_ID,
+    tenantId: TENANT_ID,
+    kind: "host",
+    refId: HOST_ID,
+  });
   // The deployment's anchor run carries the routing address the display name
   // resolves to; its id is the deployment id and the child run below self-joins
   // to it on that id. It is inserted first so the child run's deployment_id FK
@@ -221,6 +229,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(row["kind"]).toBe("workflow");
       expect(row["refId"]).toBe(RUN_ID);
       expect(row["displayName"]).toBe(`Workflow (${DEPLOYMENT_ADDRESS})`);
+    });
+
+    test("filters host principals and uses their stable host id as the label", async () => {
+      const app = await setup();
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/principals?kind=host`,
+      );
+      expect(res.status).toBe(200);
+
+      const body: unknown = await res.json();
+      if (!isObject(body)) throw new Error("expected object body");
+      const data = body["data"];
+      if (!Array.isArray(data)) throw new Error("expected data array");
+      expect(data).toHaveLength(1);
+
+      const row = data[0];
+      if (!isObject(row)) throw new Error("expected principal row");
+      expect(row["kind"]).toBe("host");
+      expect(row["refId"]).toBe(HOST_ID);
+      expect(row["displayName"]).toBe(HOST_ID);
     });
   },
 );

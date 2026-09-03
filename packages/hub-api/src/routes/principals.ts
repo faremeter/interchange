@@ -113,12 +113,15 @@ export function createPrincipalRoutes({
       tags: ["Principals"],
       summary: "List principals in the tenant",
       description:
-        "Lists all principals (users, agents, and workflow runs) in the tenant. Filterable by kind and status.",
+        "Lists all principals (users, agents, workflow runs, and execution hosts) in the tenant. Filterable by kind and status.",
       parameters: [
         {
           name: "kind",
           in: "query",
-          schema: { type: "string", enum: ["user", "agent", "workflow"] },
+          schema: {
+            type: "string",
+            enum: ["user", "agent", "workflow", "host"],
+          },
         },
         {
           name: "status",
@@ -151,7 +154,12 @@ export function createPrincipalRoutes({
       });
 
       const conditions = [eq(principal.tenantId, tenantCtx.id)];
-      if (kind === "user" || kind === "agent" || kind === "workflow") {
+      if (
+        kind === "user" ||
+        kind === "agent" ||
+        kind === "workflow" ||
+        kind === "host"
+      ) {
         conditions.push(eq(principal.kind, kind));
       }
       if (
