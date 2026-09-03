@@ -45,6 +45,11 @@ import {
   type SidecarLookups,
   type SidecarMailPersistedRow,
 } from "./sidecar-events";
+import {
+  PendingTracker,
+  type PendingEntry,
+  type WsHandle,
+} from "./pending-tracker";
 
 const logger = getLogger(["hub", "ws", "sidecar"]);
 
@@ -126,14 +131,6 @@ function connCanPushRepo(
 function ownedAddresses(conn: SidecarConnection): Set<string> {
   return new Set([...conn.agentAddresses, ...conn.workflowAddresses]);
 }
-
-type PendingRequest = {
-  requestId: string;
-  ws: WsHandle;
-  resolve(): void;
-  reject(error: string): void;
-  timer: ReturnType<typeof setTimeout>;
-};
 
 export type SendPackOptions = {
   /**
@@ -437,11 +434,10 @@ export type SidecarRouterConfig = {
   lookups?: SidecarLookups;
 };
 
-// Minimal handle so the router doesn't depend on a specific WebSocket impl.
-export type WsHandle = {
-  send(data: string): void;
-  close(): void;
-};
+// Re-exported so existing consumers keep importing the handle type from the
+// router module; the definition now lives in `pending-tracker.ts`, which also
+// operates on it.
+export type { WsHandle };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 // A probe fetches a workflow's dependency closure from a registry and
@@ -494,17 +490,13 @@ export function createSidecarRouter(
   const allocationWaiters = new Map<string, Set<AllocationWaiter>>();
   // agentAddress → ws handle (routing table)
   const addressIndex = new Map<string, WsHandle>();
-  // requestId → pending promise
-  const pending = new Map<string, PendingRequest>();
+  // requestId → pending promise (resolved by session.ack, rejected by
+  // session.error). `PendingTracker` owns the register/timeout/settle/sweep
+  // lifecycle shared by all five pending round-trips below; each entry's
+  // resolve/reject closures carry the per-round-trip cleanup.
+  const pendingRequests = new PendingTracker<string>();
   // agentAddress → pending deploy promise (matched by agent.deploy.ack/agent.error)
-  type PendingDeploy = {
-    agentAddress: string;
-    ws: WsHandle;
-    resolve(publicKey: string): void;
-    reject(error: string): void;
-    timer: ReturnType<typeof setTimeout>;
-  };
-  const pendingDeploys = new Map<string, PendingDeploy>();
+  const pendingDeploys = new PendingTracker<string, string>();
   // agentAddress → queued frames for disconnected agents awaiting reconnect
   type DisconnectedAgent = {
     queue: HubFrame[];
@@ -565,43 +557,24 @@ export function createSidecarRouter(
   // close.
   const messageChains = new Map<WsHandle, Promise<void>>();
 
-  // transferId → pending pack transfer (resolved by repo.pack.ack, rejected by repo.pack.reject)
-  type PendingPack = {
-    transferId: string;
-    ws: WsHandle;
-    agentAddress: string;
-    repoId: RepoId;
-    resolve(): void;
-    reject(error: string): void;
-    timer: ReturnType<typeof setTimeout>;
-  };
-  const pendingPacks = new Map<string, PendingPack>();
+  // transferId → pending pack transfer (resolved by repo.pack.ack, rejected
+  // by repo.pack.reject). The entry carries the send-site agentAddress and
+  // repoId so an ack/reject is honored only when it comes from the
+  // connection that owns the transfer for the same repo.
+  type PackTransferMeta = { agentAddress: string; repoId: RepoId };
+  const pendingPacks = new PendingTracker<string, void, PackTransferMeta>();
   let packCounter = 0;
 
   // agentAddress → pending undeploy (resolved by agent.undeploy.ack)
-  type PendingUndeploy = {
-    agentAddress: string;
-    ws: WsHandle;
-    resolve(): void;
-    reject(error: string): void;
-    timer: ReturnType<typeof setTimeout>;
-  };
-  const pendingUndeploys = new Map<string, PendingUndeploy>();
+  const pendingUndeploys = new PendingTracker<string>();
 
   // requestId → pending workflow probe (resolved by workflow.probe.result,
-  // rejected by workflow.probe.error). Result-carrying, unlike `pending`
-  // (which resolves void): a probe returns the sidecar's inert projection +
-  // grant set + wire hash. Keyed on requestId alone -- the probe runs in the
-  // sidecar's pre-deploy state and enters no address map, so `handleClose`'s
-  // ws-keyed sweep is its ONLY disconnect cleanup.
-  type PendingProbe = {
-    requestId: string;
-    ws: WsHandle;
-    resolve(result: WorkflowProbeResult): void;
-    reject(error: string): void;
-    timer: ReturnType<typeof setTimeout>;
-  };
-  const pendingProbes = new Map<string, PendingProbe>();
+  // rejected by workflow.probe.error). Result-carrying, unlike the other
+  // trackers (which resolve void): a probe returns the sidecar's inert
+  // projection + grant set + wire hash. Keyed on requestId alone -- the
+  // probe runs in the sidecar's pre-deploy state and enters no address map,
+  // so `handleClose`'s ws-keyed sweep is its ONLY disconnect cleanup.
+  const pendingProbes = new PendingTracker<string, WorkflowProbeResult>();
 
   // Receives agent-state packs pushed from sidecars. The wire frames
   // (`repo.pack.push` / `repo.pack.done`) are shared with the
@@ -1097,10 +1070,10 @@ export function createSidecarRouter(
       case "signal.correlation.register":
         return handleSignalCorrelationRegister(ws, frame);
       case "session.ack":
-        resolvePending(frame.requestId);
+        pendingRequests.resolve(frame.requestId);
         return;
       case "session.error":
-        rejectPending(frame.requestId, frame.error);
+        pendingRequests.reject(frame.requestId, frame.error);
         return;
       case "repo.pack.ack":
         resolvePackPending(ws, frame);
@@ -1606,50 +1579,30 @@ export function createSidecarRouter(
     // Drop the per-ws serialization chain; no more frames will queue on it.
     messageChains.delete(ws);
 
-    // Reject any in-flight requests that were sent to this sidecar.
-    for (const [requestId, req] of pending) {
-      if (req.ws !== ws) continue;
-      clearTimeout(req.timer);
-      pending.delete(requestId);
-      req.reject(`Sidecar ${conn.sidecarId} disconnected`);
-    }
-
+    // Reject any in-flight requests that were sent to this sidecar. Each
+    // entry's reject closure runs its own per-site cleanup (the deploy and
+    // undeploy closures roll routing back), exactly as a frame-error
+    // rejection would.
+    pendingRequests.rejectAllForWs(
+      ws,
+      `Sidecar ${conn.sidecarId} disconnected`,
+    );
     // Reject every deploy issued on this socket, including allocated
     // workflow deployments stored in `workflowAddresses` rather than
     // `agentAddresses`.
-    for (const [agentAddress, req] of pendingDeploys) {
-      if (req.ws !== ws) continue;
-      clearTimeout(req.timer);
-      pendingDeploys.delete(agentAddress);
-      req.reject(`Sidecar ${conn.sidecarId} disconnected`);
-    }
-
+    pendingDeploys.rejectAllForWs(ws, `Sidecar ${conn.sidecarId} disconnected`);
     // Reject any in-flight pack transfers for this sidecar.
-    for (const [transferId, pack] of pendingPacks) {
-      if (pack.ws !== ws) continue;
-      clearTimeout(pack.timer);
-      pendingPacks.delete(transferId);
-      pack.reject(`Sidecar ${conn.sidecarId} disconnected`);
-    }
-
+    pendingPacks.rejectAllForWs(ws, `Sidecar ${conn.sidecarId} disconnected`);
     // Reject any in-flight undeploys for this sidecar.
-    for (const [addr, req] of pendingUndeploys) {
-      if (req.ws !== ws) continue;
-      clearTimeout(req.timer);
-      pendingUndeploys.delete(addr);
-      req.reject(`Sidecar ${conn.sidecarId} disconnected`);
-    }
-
+    pendingUndeploys.rejectAllForWs(
+      ws,
+      `Sidecar ${conn.sidecarId} disconnected`,
+    );
     // Reject any in-flight probes sent to this sidecar. A probe never enters
     // the address maps, so this ws-keyed sweep is its ONLY disconnect cleanup:
     // without it a probe whose sidecar drops mid-flight would hang until its
     // own timeout instead of failing fast on the disconnect.
-    for (const [requestId, probe] of pendingProbes) {
-      if (probe.ws !== ws) continue;
-      clearTimeout(probe.timer);
-      pendingProbes.delete(requestId);
-      probe.reject(`Sidecar ${conn.sidecarId} disconnected`);
-    }
+    pendingProbes.rejectAllForWs(ws, `Sidecar ${conn.sidecarId} disconnected`);
 
     // Cancel any in-flight inbound pack transfers from this sidecar
     // across both receivers. The two receivers track their own in-
@@ -1701,55 +1654,34 @@ export function createSidecarRouter(
     const frame = buildFrame(requestId);
 
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(requestId);
-        reject(
-          new Error(
-            `Request ${requestId} timed out after ${requestTimeoutMs}ms`,
-          ),
-        );
-      }, requestTimeoutMs);
-
-      pending.set(requestId, {
+      pendingRequests.register(
         requestId,
         ws,
-        resolve,
-        reject(error: string) {
-          reject(new Error(error));
+        {
+          timeoutMs: requestTimeoutMs,
+          timeoutMessage: `Request ${requestId} timed out after ${requestTimeoutMs}ms`,
+          resolve,
+          reject(error: string) {
+            reject(new Error(error));
+          },
         },
-        timer,
-      });
+        undefined,
+      );
 
       conn.send(frame);
     });
   }
 
-  function resolvePending(requestId: string): void {
-    const req = pending.get(requestId);
-    if (req === undefined) return;
-    clearTimeout(req.timer);
-    pending.delete(requestId);
-    req.resolve();
-  }
-
-  function rejectPending(requestId: string, error: string): void {
-    const req = pending.get(requestId);
-    if (req === undefined) return;
-    clearTimeout(req.timer);
-    pending.delete(requestId);
-    req.reject(error);
-  }
-
   function packResponseMatches(
-    entry: PendingPack,
+    entry: PendingEntry<string, void, PackTransferMeta>,
     ws: WsHandle,
     frame: PackAckFrame | PackRejectFrame,
   ): boolean {
     return (
       entry.ws === ws &&
-      entry.agentAddress === frame.agentAddress &&
-      entry.repoId.kind === frame.repoId.kind &&
-      entry.repoId.id === frame.repoId.id
+      entry.meta.agentAddress === frame.agentAddress &&
+      entry.meta.repoId.kind === frame.repoId.kind &&
+      entry.meta.repoId.id === frame.repoId.id
     );
   }
 
@@ -1760,9 +1692,7 @@ export function createSidecarRouter(
       logger.warn`Ignoring repo.pack.ack for transfer ${frame.transferId} from a connection that does not own the pending transfer`;
       return;
     }
-    clearTimeout(entry.timer);
-    pendingPacks.delete(frame.transferId);
-    entry.resolve();
+    pendingPacks.resolve(frame.transferId);
   }
 
   function rejectPackPending(ws: WsHandle, frame: PackRejectFrame): void {
@@ -1772,14 +1702,17 @@ export function createSidecarRouter(
       logger.warn`Ignoring repo.pack.reject for transfer ${frame.transferId} from a connection that does not own the pending transfer`;
       return;
     }
-    clearTimeout(entry.timer);
-    pendingPacks.delete(frame.transferId);
     // Surface the receiver's specific cause when it carried one, so the awaiting
-    // push sees "corrupt: <detail>" rather than only the coarse reason.
-    entry.reject(
-      frame.detail !== undefined
-        ? `${frame.reason}: ${frame.detail}`
-        : frame.reason,
+    // push sees "corrupt: <detail>" rather than only the coarse reason. The
+    // "Pack rejected:" prefix is applied here rather than in the entry's
+    // reject closure because a TIMEOUT rejection must not carry it.
+    pendingPacks.reject(
+      frame.transferId,
+      `Pack rejected: ${
+        frame.detail !== undefined
+          ? `${frame.reason}: ${frame.detail}`
+          : frame.reason
+      }`,
     );
   }
 
@@ -1790,9 +1723,7 @@ export function createSidecarRouter(
       return;
     }
     if (req.ws !== ws) return;
-    clearTimeout(req.timer);
-    pendingUndeploys.delete(agentAddress);
-    req.resolve();
+    pendingUndeploys.resolve(agentAddress);
   }
 
   function rejectUndeployPending(
@@ -1803,9 +1734,7 @@ export function createSidecarRouter(
     const req = pendingUndeploys.get(agentAddress);
     if (req === undefined) return;
     if (req.ws !== ws) return;
-    clearTimeout(req.timer);
-    pendingUndeploys.delete(agentAddress);
-    req.reject(error);
+    pendingUndeploys.reject(agentAddress, error);
   }
 
   function resolveProbe(
@@ -1815,17 +1744,13 @@ export function createSidecarRouter(
   ): void {
     const req = pendingProbes.get(requestId);
     if (req === undefined || req.ws !== ws) return;
-    clearTimeout(req.timer);
-    pendingProbes.delete(requestId);
-    req.resolve(result);
+    pendingProbes.resolve(requestId, result);
   }
 
   function rejectProbe(ws: WsHandle, requestId: string, error: string): void {
     const req = pendingProbes.get(requestId);
     if (req === undefined || req.ws !== ws) return;
-    clearTimeout(req.timer);
-    pendingProbes.delete(requestId);
-    req.reject(error);
+    pendingProbes.reject(requestId, error);
   }
 
   // Routing rule: pick the receiver dedicated to the repoId.kind the
@@ -2257,26 +2182,19 @@ export function createSidecarRouter(
     // Register pending entry before sending frames so that a synchronous
     // repo.pack.ack (e.g. in tests or loopback transports) resolves correctly.
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingPacks.delete(transferId);
-        reject(
-          new Error(
-            `Pack transfer ${transferId} timed out after ${PACK_TIMEOUT_MS}ms`,
-          ),
-        );
-      }, PACK_TIMEOUT_MS);
-
-      pendingPacks.set(transferId, {
+      pendingPacks.register(
         transferId,
         ws,
-        agentAddress,
-        repoId,
-        resolve,
-        reject(error: string) {
-          reject(new Error(`Pack rejected: ${error}`));
+        {
+          timeoutMs: PACK_TIMEOUT_MS,
+          timeoutMessage: `Pack transfer ${transferId} timed out after ${PACK_TIMEOUT_MS}ms`,
+          resolve,
+          reject(error: string) {
+            reject(new Error(error));
+          },
         },
-        timer,
-      });
+        { agentAddress, repoId },
+      );
 
       // Send chunks
       for (const chunk of chunkPack(pack)) {
@@ -2486,28 +2404,14 @@ export function createSidecarRouter(
             : {}),
         });
       } catch (err) {
-        rejectDeployPending(
-          req,
+        pendingDeploys.reject(
+          frame.agentAddress,
           `Failed to store public key: ${err instanceof Error ? err.message : String(err)}`,
         );
         return;
       }
     }
-    resolveDeployPending(req, frame.publicKey);
-  }
-
-  function resolveDeployPending(req: PendingDeploy, publicKey: string): void {
-    if (pendingDeploys.get(req.agentAddress) !== req) return;
-    clearTimeout(req.timer);
-    pendingDeploys.delete(req.agentAddress);
-    req.resolve(publicKey);
-  }
-
-  function rejectDeployPending(req: PendingDeploy, error: string): void {
-    if (pendingDeploys.get(req.agentAddress) !== req) return;
-    clearTimeout(req.timer);
-    pendingDeploys.delete(req.agentAddress);
-    req.reject(error);
+    pendingDeploys.resolve(frame.agentAddress, frame.publicKey);
   }
 
   function rejectDeployPendingFromFrame(
@@ -2517,7 +2421,9 @@ export function createSidecarRouter(
   ): void {
     const req = pendingDeploys.get(agentAddress);
     if (req === undefined || req.ws !== ws) return;
-    rejectDeployPending(req, error);
+    // Settle by key, not by the `req` object: a key lookup observes the
+    // CURRENT entry, so a stale handle cannot settle a replaced round-trip.
+    pendingDeploys.reject(agentAddress, error);
   }
 
   function sendAgentDeployOnConnection(
@@ -2549,35 +2455,27 @@ export function createSidecarRouter(
     addressIndex.set(agentAddress, ws);
 
     return new Promise<{ publicKey: string }>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingDeploys.delete(agentAddress);
-        if (addressIndex.get(agentAddress) === ws) {
-          addressSet.delete(agentAddress);
-          addressIndex.delete(agentAddress);
-        }
-        reject(
-          deployFrameFailure(
-            `Deploy of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
-            true,
-          ),
-        );
-      }, requestTimeoutMs);
-
-      pendingDeploys.set(agentAddress, {
+      // Timeout and frame-error rejections share this closure, so the routing
+      // rollback and the `frameSent: true` tag live in one place.
+      pendingDeploys.register(
         agentAddress,
         ws,
-        resolve(publicKey) {
-          resolve({ publicKey });
+        {
+          timeoutMs: requestTimeoutMs,
+          timeoutMessage: `Deploy of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
+          resolve(publicKey) {
+            resolve({ publicKey });
+          },
+          reject(error: string) {
+            if (addressIndex.get(agentAddress) === ws) {
+              addressSet.delete(agentAddress);
+              addressIndex.delete(agentAddress);
+            }
+            reject(deployFrameFailure(error, true));
+          },
         },
-        reject(error: string) {
-          if (addressIndex.get(agentAddress) === ws) {
-            addressSet.delete(agentAddress);
-            addressIndex.delete(agentAddress);
-          }
-          reject(deployFrameFailure(error, true));
-        },
-        timer,
-      });
+        undefined,
+      );
 
       try {
         conn.send({
@@ -2590,9 +2488,11 @@ export function createSidecarRouter(
         });
       } catch (err) {
         // A synchronous send failure means the frame never reached the wire.
-        // Tear down the pending entry and timer we just registered, and reject
-        // as not-sent so a caller may safely roll back what it staged.
-        clearTimeout(timer);
+        // Drop the pending entry (and its armed timer) and reject as not-sent
+        // so a caller may safely roll back what it staged. The drop bypasses
+        // the entry's reject closure: this failure must report
+        // `frameSent: false`, and the timer must not fire later and
+        // double-reject.
         pendingDeploys.delete(agentAddress);
         if (addressIndex.get(agentAddress) === ws) {
           addressSet.delete(agentAddress);
@@ -2664,29 +2564,25 @@ export function createSidecarRouter(
 
     const hubKey = hubPublicKeyHex;
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingDeploys.delete(agentAddress);
-        reject(
-          new Error(
-            `Step provision of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
-          ),
-        );
-      }, requestTimeoutMs);
       // The sidecar's `agent.deploy.ack` resolves this through
-      // `resolveDeployPending` -> `req.resolve()`. The per-step address is
-      // workflow-derived and records no hub-side key, so the ack's public
-      // key is not needed and this resolves void.
-      pendingDeploys.set(agentAddress, {
+      // `pendingDeploys.resolve`. The per-step address is workflow-derived
+      // and records no hub-side key, so the ack's public key is not needed
+      // and this resolves void.
+      pendingDeploys.register(
         agentAddress,
         ws,
-        resolve(_publicKey) {
-          resolve();
+        {
+          timeoutMs: requestTimeoutMs,
+          timeoutMessage: `Step provision of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
+          resolve(_publicKey) {
+            resolve();
+          },
+          reject(error: string) {
+            reject(new Error(error));
+          },
         },
-        reject(error: string) {
-          reject(new Error(error));
-        },
-        timer,
-      });
+        undefined,
+      );
 
       conn.send({
         type: "agent.deploy",
@@ -2721,22 +2617,19 @@ export function createSidecarRouter(
     const requestId = nextRequestId();
 
     return new Promise<WorkflowProbeResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingProbes.delete(requestId);
-        reject(
-          new Error(`Probe ${requestId} timed out after ${probeTimeoutMs}ms`),
-        );
-      }, probeTimeoutMs);
-
-      pendingProbes.set(requestId, {
+      pendingProbes.register(
         requestId,
         ws,
-        resolve,
-        reject(error: string) {
-          reject(new Error(error));
+        {
+          timeoutMs: probeTimeoutMs,
+          timeoutMessage: `Probe ${requestId} timed out after ${probeTimeoutMs}ms`,
+          resolve,
+          reject(error: string) {
+            reject(new Error(error));
+          },
         },
-        timer,
-      });
+        undefined,
+      );
 
       conn.send({
         type: "workflow.probe.request",
@@ -2787,29 +2680,25 @@ export function createSidecarRouter(
     }
 
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pendingUndeploys.delete(agentAddress);
-        removeAgentAddress(ws, agentAddress);
-        reject(
-          new Error(
-            `Undeploy of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
-          ),
-        );
-      }, requestTimeoutMs);
-
-      pendingUndeploys.set(agentAddress, {
+      // Timeout, ack, and error rejection share one closure so the routing
+      // teardown runs exactly once no matter how the round-trip settles.
+      pendingUndeploys.register(
         agentAddress,
         ws,
-        resolve() {
-          removeAgentAddress(ws, agentAddress);
-          resolve();
+        {
+          timeoutMs: requestTimeoutMs,
+          timeoutMessage: `Undeploy of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
+          resolve() {
+            removeAgentAddress(ws, agentAddress);
+            resolve();
+          },
+          reject(error: string) {
+            removeAgentAddress(ws, agentAddress);
+            reject(new Error(error));
+          },
         },
-        reject(error: string) {
-          removeAgentAddress(ws, agentAddress);
-          reject(new Error(error));
-        },
-        timer,
-      });
+        undefined,
+      );
 
       conn.send({
         type: "agent.undeploy",
