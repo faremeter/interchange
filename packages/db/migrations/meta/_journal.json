@@ -687,6 +687,13 @@
       "when": 1788967084066,
       "tag": "0098_lush_rumiko_fujikawa",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1788967084067,
+      "tag": "0099_spotty_husk",
+      "breakpoints": true
     }
   ]
 }

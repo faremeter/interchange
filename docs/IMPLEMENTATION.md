@@ -337,6 +337,17 @@ ensures a new `sidecarId` within that same generation. Delayed work for the
 destroyed identity remains rejected while the replacement is allowed to claim
 the released host.
 
+The host-capacity provisioner returns acceptance only after the exact current
+host session acknowledges `host.assignment`. It then marks the claim assigned;
+the runtime still has to connect separately with the delivered allocation token
+before allocation readiness. A missing connection, send failure, or lost
+acknowledgement is uncertain and throws into normal allocation replacement.
+
+Release mirrors that handshake. The claim first becomes `releasing`, which
+keeps both the host and allocation reserved. Only an exact `host.release.ack`
+allows it to become `destroyed` and frees the host for another allocation. A
+disconnect or expired host lease never frees assigned capacity by itself.
+
 ### Allocation state and generation fence
 
 An allocation moves through `pending → provisioning → allocated`. An uncertain provision outcome moves it through `replacing` before another generation is created. A structured ensure rejection certifies that no infrastructure exists for that generation; a non-retryable rejection terminally fails the allocation and its active runs, while a retryable rejection advances the fence and backs off before replacement. Provisioners throw when they cannot determine whether an ensure request took effect. After an allocated worker is lost, explicitly enabled recovery also uses `replacing`; otherwise the active runs are failed and the allocation uses `releasing → released`. `failed` is reserved for a terminal case where the Hub knows no infrastructure exists. One allocation is permitted per anchor, and an active sidecar id can belong to only one allocation.

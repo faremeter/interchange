@@ -174,7 +174,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toMatchObject({ status: "assigned" });
     });
 
-    test("allows a replacement sidecar after the old identity is destroyed", async () => {
+    test("keeps destroyed assignments terminal after a replacement claims the host", async () => {
       const store = createExecutionHostAssignmentStore(h.db);
       await store.claim({
         allocationId: "allocation-1",
@@ -186,10 +186,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
         now: NOW,
       });
       expect(
-        await store.destroy({
+        await store.beginRelease({
           allocationId: "allocation-1",
           generation: 2,
           sidecarId: "sidecar-1",
+          candidate,
+          now: NOW,
+        }),
+      ).toMatchObject({ status: "releasing", destroyedGeneration: 2 });
+      expect(
+        await store.markDestroyed({
+          allocationId: "allocation-1",
+          generation: 1,
+          destroyedGeneration: 2,
+          sidecarId: "sidecar-1",
+          hostId: HOST_ID,
+          hostSessionId: candidate.sessionId,
+          hostSessionGeneration: candidate.sessionGeneration,
           now: NOW,
         }),
       ).toMatchObject({ status: "destroyed", destroyedGeneration: 2 });
@@ -214,6 +227,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
           now: NOW,
         }),
       ).toMatchObject({ status: "claiming", sidecarId: "sidecar-2" });
+      expect(
+        await store.beginRelease({
+          allocationId: "allocation-1",
+          generation: 3,
+          sidecarId: "sidecar-1",
+          candidate,
+          now: NOW,
+        }),
+      ).toMatchObject({ status: "destroyed", destroyedGeneration: 2 });
+      expect(await store.findBySidecarId("sidecar-1")).toMatchObject({
+        status: "destroyed",
+      });
+      expect(await store.findBySidecarId("sidecar-2")).toMatchObject({
+        status: "claiming",
+        generation: 2,
+      });
       expect(
         await store.claim({
           allocationId: "allocation-1",

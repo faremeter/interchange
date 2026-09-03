@@ -170,3 +170,22 @@ atomically. The Hub still fixes the provisioner binding before `ensure()`;
 availability checks performed by a chooser are advisory, and a rejected
 `ensure()` follows the normal retry or terminal-failure lifecycle rather than
 selecting another provisioner.
+
+Hub compositions can register host-backed provisioners without exposing host
+connections to the plugin:
+
+```ts
+await createHubServer({
+  hostCapacityProvisioners: [
+    {
+      id: "ios-host",
+      bindingFingerprint: "ios-host:v1",
+      capabilities: [{ capability: "runtime:ios-jsc-v1", state: "available" }],
+    },
+  ],
+});
+```
+
+Each configured provisioner advertises its operator-defined outer guarantees.
+Its private broker then checks the selected live host's current declarations
+against the persisted placement policy before claiming it.

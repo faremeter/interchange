@@ -86,8 +86,10 @@ export {
 export {
   chooseFirstSidecarProvisioner,
   createSidecarPluginRegistry,
+  createHostCapacityProvisioner,
   createSidecarAllocationReconciler,
   type CreateSidecarPluginRegistryOpts,
+  type CreateHostCapacityProvisionerOpts,
   type DestroySidecarRequest,
   type DestroySidecarResult,
   type EnsureSidecarRequest,

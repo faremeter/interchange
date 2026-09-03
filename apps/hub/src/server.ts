@@ -1,5 +1,6 @@
 import {
   createDB,
+  createExecutionHostAssignmentStore,
   createExecutionHostSessionStore,
   createGrantStore,
   createPrincipalKeyStore,
@@ -19,6 +20,7 @@ import {
   createAssetService,
   createEventCollectorRegistry,
   createExecutionHostControlRouter,
+  createHostCapacityProvisioner,
   createHubSessionLookups,
   createHubSessionOrchestrator,
   createSessionService,
@@ -33,6 +35,7 @@ import {
   type SidecarLookups,
   type SidecarProvisioner,
   type SidecarProvisionerChooser,
+  type CreateHostCapacityProvisionerOpts,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { generateKeyPair } from "@intx/crypto";
@@ -45,6 +48,11 @@ export type CreateHubServerOpts = {
   readonly sidecarProvisioners?: readonly SidecarProvisioner[];
   /** Selects among matching deployment provisioners. Defaults to the first. */
   readonly sidecarProvisionerChooser?: SidecarProvisionerChooser;
+  /** Host-backed provisioners built over the Hub's enrolled host registry. */
+  readonly hostCapacityProvisioners?: readonly Omit<
+    CreateHostCapacityProvisionerOpts,
+    "router" | "assignments"
+  >[];
   /** Provisioners eligible to evaluate workflow source code. */
   readonly probeSidecarProvisioners?: readonly SidecarProvisioner[];
   /** Selects among matching probe provisioners. Defaults to the first. */
@@ -55,6 +63,7 @@ export type CreateHubServerOpts = {
 export async function createHubServer({
   sidecarProvisioners = [],
   sidecarProvisionerChooser,
+  hostCapacityProvisioners = [],
   probeSidecarProvisioners = [],
   probeSidecarProvisionerChooser,
   probeSidecarCapabilityRules = [],
@@ -322,8 +331,20 @@ export async function createHubServer({
     },
   });
 
+  const executionHostRouter = createExecutionHostControlRouter({
+    store: createExecutionHostSessionStore(db),
+    hubInstanceId: crypto.randomUUID(),
+  });
+  const executionHostAssignments = createExecutionHostAssignmentStore(db);
+  const managedHostProvisioners = hostCapacityProvisioners.map((config) =>
+    createHostCapacityProvisioner({
+      ...config,
+      router: executionHostRouter,
+      assignments: executionHostAssignments,
+    }),
+  );
   const sidecarPlugins = createSidecarPluginRegistry({
-    provisioners: sidecarProvisioners,
+    provisioners: [...managedHostProvisioners, ...sidecarProvisioners],
     ...(sidecarProvisionerChooser !== undefined
       ? { chooser: sidecarProvisionerChooser }
       : {}),
@@ -428,11 +449,6 @@ export async function createHubServer({
   // Start after module initialization so the websocket endpoint can accept a
   // newly provisioned sidecar while reconciliation waits for its connection.
   scheduleAllocationReconciliation(0);
-
-  const executionHostRouter = createExecutionHostControlRouter({
-    store: createExecutionHostSessionStore(db),
-    hubInstanceId: crypto.randomUUID(),
-  });
 
   const app = createApp({
     getSession: async (headers) => {

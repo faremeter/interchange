@@ -14,6 +14,7 @@ import {
 export type ExecutionHostAssignmentStatus =
   | "claiming"
   | "assigned"
+  | "releasing"
   | "destroyed";
 
 export type ExecutionHostAssignment = {
@@ -63,8 +64,14 @@ export type DestroyExecutionHostAssignmentArgs = {
   readonly allocationId: string;
   readonly generation: number;
   readonly sidecarId: string;
+  readonly candidate: ExecutionHostClaimCandidate;
   readonly now?: Date;
 };
+
+export type CompleteExecutionHostReleaseArgs =
+  SettleExecutionHostAssignmentArgs & {
+    readonly destroyedGeneration: number;
+  };
 
 function parseAssignment(
   row: typeof executionHostAssignment.$inferSelect,
@@ -169,14 +176,22 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
 
       const active = await tx.query.executionHostAssignment.findFirst({
         where: and(
-          inArray(executionHostAssignment.status, ["claiming", "assigned"]),
+          inArray(executionHostAssignment.status, [
+            "claiming",
+            "assigned",
+            "releasing",
+          ]),
           eq(executionHostAssignment.allocationId, args.allocationId),
         ),
       });
       if (active !== undefined) return null;
       const hostActive = await tx.query.executionHostAssignment.findFirst({
         where: and(
-          inArray(executionHostAssignment.status, ["claiming", "assigned"]),
+          inArray(executionHostAssignment.status, [
+            "claiming",
+            "assigned",
+            "releasing",
+          ]),
           eq(executionHostAssignment.hostId, session.hostId),
         ),
       });
@@ -225,7 +240,7 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
     return updated === undefined ? null : parseAssignment(updated);
   }
 
-  async function destroy(
+  async function beginRelease(
     args: DestroyExecutionHostAssignmentArgs,
   ): Promise<ExecutionHostAssignment | null> {
     return db.transaction(async (tx) => {
@@ -243,23 +258,70 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
       if (assignment === undefined) return null;
       if (args.generation < assignment.generation) return null;
       if (
-        assignment.status === "destroyed" &&
-        (assignment.destroyedGeneration ?? assignment.generation) >=
-          args.generation
+        assignment.destroyedGeneration !== null &&
+        args.generation < assignment.destroyedGeneration
       ) {
+        return null;
+      }
+      if (assignment.status === "destroyed") {
         return parseAssignment(assignment);
+      }
+      const session = await tx.query.executionHostSession.findFirst({
+        where: and(
+          eq(executionHostSession.hostId, assignment.hostId),
+          eq(executionHostSession.sessionId, args.candidate.sessionId),
+          eq(executionHostSession.generation, args.candidate.sessionGeneration),
+          eq(executionHostSession.hubInstanceId, args.candidate.hubInstanceId),
+          gt(executionHostSession.leaseExpiresAt, args.now ?? new Date()),
+        ),
+      });
+      if (
+        session === undefined ||
+        assignment.hostId !== args.candidate.hostId
+      ) {
+        return null;
       }
       const [updated] = await tx
         .update(executionHostAssignment)
         .set({
-          status: "destroyed",
+          status: "releasing",
           destroyedGeneration: args.generation,
+          hostSessionId: session.sessionId,
+          hostSessionGeneration: session.generation,
           updatedAt: args.now ?? new Date(),
         })
         .where(eq(executionHostAssignment.sidecarId, args.sidecarId))
         .returning();
       return updated === undefined ? null : parseAssignment(updated);
     });
+  }
+
+  async function markDestroyed(
+    args: CompleteExecutionHostReleaseArgs,
+  ): Promise<ExecutionHostAssignment | null> {
+    const [updated] = await db
+      .update(executionHostAssignment)
+      .set({ status: "destroyed", updatedAt: args.now ?? new Date() })
+      .where(
+        and(
+          eq(executionHostAssignment.allocationId, args.allocationId),
+          eq(executionHostAssignment.generation, args.generation),
+          eq(executionHostAssignment.sidecarId, args.sidecarId),
+          eq(executionHostAssignment.hostId, args.hostId),
+          eq(executionHostAssignment.hostSessionId, args.hostSessionId),
+          eq(
+            executionHostAssignment.hostSessionGeneration,
+            args.hostSessionGeneration,
+          ),
+          eq(executionHostAssignment.status, "releasing"),
+          eq(
+            executionHostAssignment.destroyedGeneration,
+            args.destroyedGeneration,
+          ),
+        ),
+      )
+      .returning();
+    return updated === undefined ? null : parseAssignment(updated);
   }
 
   async function findBySidecarId(
@@ -271,7 +333,13 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
     return row === undefined ? null : parseAssignment(row);
   }
 
-  return { claim, destroy, findBySidecarId, markAssigned };
+  return {
+    beginRelease,
+    claim,
+    findBySidecarId,
+    markAssigned,
+    markDestroyed,
+  };
 }
 
 export type ExecutionHostAssignmentStore = ReturnType<

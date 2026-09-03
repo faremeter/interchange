@@ -28,3 +28,7 @@ export {
   type SidecarAllocationReconciler,
   type SidecarAllocationReconcilerDeps,
 } from "./reconciler";
+export {
+  createHostCapacityProvisioner,
+  type CreateHostCapacityProvisionerOpts,
+} from "./host-capacity-provisioner";

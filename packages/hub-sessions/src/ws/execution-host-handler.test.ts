@@ -71,9 +71,10 @@ function createStore() {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  const deadline = performance.now() + 1_000;
+  while (performance.now() < deadline) {
     if (predicate()) return;
-    await Bun.sleep(0);
+    await Bun.sleep(5);
   }
   throw new Error("Timed out waiting for execution host router");
 }
@@ -96,6 +97,49 @@ function register(
 }
 
 describe("createExecutionHostControlRouter", () => {
+  test.each(["socket", "database"])(
+    "drains pending operations when disconnect encounters a %s failure",
+    async (failure) => {
+      const { expired, store } = createStore();
+      const router = createExecutionHostControlRouter({
+        store,
+        hubInstanceId: "hub-1",
+        createSessionId: () => "session-1",
+      });
+      const ws = createWs();
+      register(router, ws);
+      await waitFor(() => ws.sent.length === 1);
+      const session = router.getConnectedSession("host-1");
+      if (session === null) throw new Error("expected registered host session");
+
+      if (failure === "socket") {
+        ws.close = () => {
+          throw new Error("Socket close failed");
+        };
+      } else {
+        const expire = store.expire;
+        store.expire = async (args) => {
+          await expire(args);
+          throw new Error("Database unavailable");
+        };
+      }
+      const released = router
+        .sendRelease(session, {
+          allocationId: "allocation-1",
+          generation: 2,
+          sidecarId: "sidecar-1",
+        })
+        .catch((cause: unknown) => cause);
+
+      expect(() => router.handleClose(ws)).not.toThrow();
+      expect(await released).toMatchObject({
+        message: "Execution host connection closed",
+      });
+      expect(router.getConnectedSession("host-1")).toBeNull();
+      expect(expired).toEqual([{ sessionId: "session-1", generation: 1 }]);
+    },
+  );
+
   test("derives host identity from the token-backed store", async () => {
     const { store } = createStore();
     const router = createExecutionHostControlRouter({
@@ -161,5 +205,112 @@ describe("createExecutionHostControlRouter", () => {
     await waitFor(() => ws.closed);
 
     expect(router.getConnectedSession("host-1")).toBeNull();
+  });
+
+  test("settles assignment and release requests only from the current connection", async () => {
+    const { store } = createStore();
+    const router = createExecutionHostControlRouter({
+      store,
+      hubInstanceId: "hub-1",
+      createSessionId: () => "session-1",
+    });
+    const ws = createWs();
+    register(router, ws);
+    await waitFor(() => ws.sent.length === 1);
+    const session = router.getConnectedSession("host-1");
+    if (session === null) throw new Error("expected connected host");
+
+    const assigned = router.sendAssignment(
+      session,
+      {
+        allocationId: "allocation-1",
+        generation: 1,
+        tenantId: "tenant-1",
+        anchorRunId: "run-1",
+        sidecarId: "sidecar-1",
+        sidecarToken: "sidecar-token",
+        hubWebSocketUrl: "wss://hub.example/api/sidecars/ws",
+      },
+      100,
+    );
+    await waitFor(() => ws.sent.length === 2);
+    expect(JSON.parse(ws.sent[1] ?? "null")).toMatchObject({
+      type: "host.assignment",
+      allocationId: "allocation-1",
+      sidecarId: "sidecar-1",
+    });
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "host.assignment.ack",
+        allocationId: "allocation-1",
+        generation: 1,
+        sidecarId: "sidecar-1",
+      }),
+    );
+    await assigned;
+
+    const released = router.sendRelease(
+      session,
+      { allocationId: "allocation-1", generation: 2, sidecarId: "sidecar-1" },
+      100,
+    );
+    await waitFor(() => ws.sent.length === 3);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "host.release.ack",
+        allocationId: "allocation-1",
+        generation: 2,
+        sidecarId: "sidecar-1",
+      }),
+    );
+    await released;
+  });
+
+  test("does not accept an acknowledgement from a replaced socket", async () => {
+    const { store } = createStore();
+    let sessionCounter = 0;
+    const router = createExecutionHostControlRouter({
+      store,
+      hubInstanceId: "hub-1",
+      createSessionId: () => {
+        sessionCounter += 1;
+        return `session-${String(sessionCounter)}`;
+      },
+    });
+    const oldSocket = createWs();
+    const currentSocket = createWs();
+    register(router, oldSocket);
+    await waitFor(() => oldSocket.sent.length === 1);
+    register(router, currentSocket);
+    await waitFor(() => currentSocket.sent.length === 1);
+    const session = router.getConnectedSession("host-1");
+    if (session === null) throw new Error("expected current host session");
+
+    const assigned = router.sendAssignment(
+      session,
+      {
+        allocationId: "allocation-1",
+        generation: 1,
+        tenantId: "tenant-1",
+        anchorRunId: "run-1",
+        sidecarId: "sidecar-1",
+        sidecarToken: "sidecar-token",
+        hubWebSocketUrl: "wss://hub.example/api/sidecars/ws",
+      },
+      10,
+    );
+    router.handleMessage(
+      oldSocket,
+      JSON.stringify({
+        type: "host.assignment.ack",
+        allocationId: "allocation-1",
+        generation: 1,
+        sidecarId: "sidecar-1",
+      }),
+    );
+
+    await expect(assigned).rejects.toThrow(/acknowledgement timed out/);
   });
 });

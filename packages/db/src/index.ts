@@ -100,6 +100,7 @@ export {
 export {
   createExecutionHostAssignmentStore,
   type ClaimExecutionHostArgs,
+  type CompleteExecutionHostReleaseArgs,
   type DestroyExecutionHostAssignmentArgs,
   type ExecutionHostAssignment,
   type ExecutionHostAssignmentStatus,

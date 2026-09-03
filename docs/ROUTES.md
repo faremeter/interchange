@@ -189,6 +189,11 @@ host-scoped bearer credential can register capabilities and renew the current
 host session lease, but cannot route workflow traffic. After provisioning, the
 runtime connects independently with its allocation-scoped sidecar credential.
 
+The Hub sends `host.assignment` with allocation-scoped runtime credentials and
+waits for `host.assignment.ack` before the provisioner accepts the operation.
+Cleanup sends `host.release` and retains the capacity claim until the exact
+current host session returns `host.release.ack`.
+
 ### SSE Event Stream
 
 The current implementation uses Server-Sent Events at `GET .../api/tenants/:tenantId/workflows/runs/:runId/events`. Client-to-server messages use the REST `POST .../mail` endpoint.

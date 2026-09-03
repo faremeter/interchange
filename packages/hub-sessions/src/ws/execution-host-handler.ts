@@ -3,7 +3,12 @@ import { type } from "arktype";
 import { sha256 } from "@intx/crypto";
 import type { ExecutionHostSession, ExecutionHostSessionStore } from "@intx/db";
 import { getLogger } from "@intx/log";
-import { ExecutionHostFrame } from "@intx/types";
+import {
+  ExecutionHostFrame,
+  type ExecutionHostAssignmentFrame,
+  type ExecutionHostHubFrame,
+  type ExecutionHostReleaseFrame,
+} from "@intx/types";
 
 import type { WsHandle } from "./sidecar-handler";
 
@@ -17,11 +22,30 @@ type HostConnection = {
   leaseTimer?: ReturnType<typeof setTimeout>;
 };
 
+type PendingHostOperation = {
+  readonly connection: HostConnection;
+  readonly promise: Promise<undefined>;
+  readonly resolve: (value: undefined) => void;
+  readonly reject: (cause: unknown) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+};
+
 export type ExecutionHostControlRouter = {
   handleOpen(ws: WsHandle): void;
   handleMessage(ws: WsHandle, data: string): void;
   handleClose(ws: WsHandle): void;
   getConnectedSession(hostId: string): ExecutionHostSession | null;
+  listConnectedSessions(): readonly ExecutionHostSession[];
+  sendAssignment(
+    session: ExecutionHostSession,
+    frame: Omit<ExecutionHostAssignmentFrame, "type">,
+    timeoutMs?: number,
+  ): Promise<void>;
+  sendRelease(
+    session: ExecutionHostSession,
+    frame: Omit<ExecutionHostReleaseFrame, "type">,
+    timeoutMs?: number,
+  ): Promise<void>;
 };
 
 export type CreateExecutionHostControlRouterOpts = {
@@ -33,6 +57,7 @@ export type CreateExecutionHostControlRouterOpts = {
 };
 
 const DEFAULT_LEASE_DURATION_MS = 45_000;
+const DEFAULT_OPERATION_TIMEOUT_MS = 30_000;
 
 export function createExecutionHostControlRouter({
   store,
@@ -50,6 +75,7 @@ export function createExecutionHostControlRouter({
 
   const connections = new Map<WsHandle, HostConnection>();
   const connectionsByHost = new Map<string, HostConnection>();
+  const pendingOperations = new Map<string, PendingHostOperation>();
 
   function handleOpen(ws: WsHandle): void {
     connections.set(ws, { ws, closed: false, queue: Promise.resolve() });
@@ -73,8 +99,8 @@ export function createExecutionHostControlRouter({
     let raw: unknown;
     try {
       raw = JSON.parse(data);
-    } catch {
-      throw new Error("Execution host sent invalid JSON");
+    } catch (cause) {
+      throw new Error("Execution host sent invalid JSON", { cause });
     }
     const frame = ExecutionHostFrame(raw);
     if (frame instanceof type.errors) {
@@ -89,10 +115,14 @@ export function createExecutionHostControlRouter({
       return;
     }
 
-    if (frame.type !== "ping") {
+    if (frame.type === "ping") {
+      await refresh(connection);
+      return;
+    }
+    if (frame.type === "host.register") {
       throw new Error("Execution host cannot register twice on one connection");
     }
-    await refresh(connection);
+    settleOperation(connection, frame);
   }
 
   async function register(
@@ -175,9 +205,83 @@ export function createExecutionHostControlRouter({
     connection.leaseTimer.unref?.();
   }
 
-  function send(connection: HostConnection, frame: unknown): void {
+  function send(
+    connection: HostConnection,
+    frame: ExecutionHostHubFrame,
+  ): void {
     if (connection.closed) return;
     connection.ws.send(JSON.stringify(frame));
+  }
+
+  function operationKey(
+    kind: "assignment" | "release",
+    frame: { allocationId: string; generation: number; sidecarId: string },
+  ): string {
+    return `${kind}:${frame.allocationId}:${String(frame.generation)}:${frame.sidecarId}`;
+  }
+
+  function settleOperation(
+    connection: HostConnection,
+    frame: Extract<
+      typeof ExecutionHostFrame.infer,
+      { type: "host.assignment.ack" | "host.release.ack" }
+    >,
+  ): void {
+    const key = operationKey(
+      frame.type === "host.assignment.ack" ? "assignment" : "release",
+      frame,
+    );
+    const pending = pendingOperations.get(key);
+    if (pending === undefined || pending.connection !== connection) return;
+    clearTimeout(pending.timer);
+    pendingOperations.delete(key);
+    pending.resolve(undefined);
+  }
+
+  function requestOperation(
+    session: ExecutionHostSession,
+    frame: ExecutionHostAssignmentFrame | ExecutionHostReleaseFrame,
+    timeoutMs: number,
+  ): Promise<void> {
+    const connection = connectionsByHost.get(session.hostId);
+    if (
+      connection === undefined ||
+      connection.closed ||
+      connection.session?.sessionId !== session.sessionId ||
+      connection.session.generation !== session.generation
+    ) {
+      return Promise.reject(
+        new Error("Execution host session is not connected"),
+      );
+    }
+    const kind = frame.type === "host.assignment" ? "assignment" : "release";
+    const key = operationKey(kind, frame);
+    const existing = pendingOperations.get(key);
+    if (existing !== undefined) return existing.promise;
+    const deferred = Promise.withResolvers<undefined>();
+    const timer = setTimeout(() => {
+      pendingOperations.delete(key);
+      deferred.reject(
+        new Error(`Execution host ${kind} acknowledgement timed out`),
+      );
+    }, timeoutMs);
+    timer.unref?.();
+    const pending: PendingHostOperation = {
+      connection,
+      promise: deferred.promise,
+      resolve: deferred.resolve,
+      reject: deferred.reject,
+      timer,
+    };
+    pendingOperations.set(key, pending);
+    try {
+      send(connection, frame);
+    } catch (cause) {
+      clearTimeout(timer);
+      pendingOperations.delete(key);
+      deferred.reject(cause);
+    }
+    return pending.promise;
   }
 
   function closeConnection(connection: HostConnection): void {
@@ -194,15 +298,29 @@ export function createExecutionHostControlRouter({
     ) {
       connectionsByHost.delete(session.hostId);
     }
-    connection.ws.close();
+    try {
+      connection.ws.close();
+    } catch (cause) {
+      logger.warn`Failed to close execution host socket: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
     if (session !== undefined) {
-      void store.expire({
-        hostId: session.hostId,
-        sessionId: session.sessionId,
-        generation: session.generation,
-        hubInstanceId,
-        now: now(),
-      });
+      for (const [key, pending] of pendingOperations) {
+        if (pending.connection !== connection) continue;
+        clearTimeout(pending.timer);
+        pendingOperations.delete(key);
+        pending.reject(new Error("Execution host connection closed"));
+      }
+      void store
+        .expire({
+          hostId: session.hostId,
+          sessionId: session.sessionId,
+          generation: session.generation,
+          hubInstanceId,
+          now: now(),
+        })
+        .catch((cause: unknown) => {
+          logger.warn`Failed to expire execution host ${session.hostId} session ${session.sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`;
+        });
     }
   }
 
@@ -216,5 +334,43 @@ export function createExecutionHostControlRouter({
     return connection?.session ?? null;
   }
 
-  return { getConnectedSession, handleClose, handleMessage, handleOpen };
+  function listConnectedSessions(): readonly ExecutionHostSession[] {
+    return [...connectionsByHost.values()].flatMap((connection) =>
+      connection.session === undefined ? [] : [connection.session],
+    );
+  }
+
+  function sendAssignment(
+    session: ExecutionHostSession,
+    frame: Omit<ExecutionHostAssignmentFrame, "type">,
+    timeoutMs = DEFAULT_OPERATION_TIMEOUT_MS,
+  ): Promise<void> {
+    return requestOperation(
+      session,
+      { ...frame, type: "host.assignment" },
+      timeoutMs,
+    );
+  }
+
+  function sendRelease(
+    session: ExecutionHostSession,
+    frame: Omit<ExecutionHostReleaseFrame, "type">,
+    timeoutMs = DEFAULT_OPERATION_TIMEOUT_MS,
+  ): Promise<void> {
+    return requestOperation(
+      session,
+      { ...frame, type: "host.release" },
+      timeoutMs,
+    );
+  }
+
+  return {
+    getConnectedSession,
+    handleClose,
+    handleMessage,
+    handleOpen,
+    listConnectedSessions,
+    sendAssignment,
+    sendRelease,
+  };
 }

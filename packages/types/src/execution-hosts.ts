@@ -41,9 +41,29 @@ export type ExecutionHostRegisterFrame =
 export const ExecutionHostPingFrame = type({ type: "'ping'" });
 export type ExecutionHostPingFrame = typeof ExecutionHostPingFrame.infer;
 
+export const ExecutionHostAssignmentAckFrame = type({
+  type: "'host.assignment.ack'",
+  allocationId: "string",
+  generation: "number.integer >= 0",
+  sidecarId: "string",
+});
+export type ExecutionHostAssignmentAckFrame =
+  typeof ExecutionHostAssignmentAckFrame.infer;
+
+export const ExecutionHostReleaseAckFrame = type({
+  type: "'host.release.ack'",
+  allocationId: "string",
+  generation: "number.integer >= 0",
+  sidecarId: "string",
+});
+export type ExecutionHostReleaseAckFrame =
+  typeof ExecutionHostReleaseAckFrame.infer;
+
 export const ExecutionHostFrame = ExecutionHostRegisterFrame.or(
   ExecutionHostPingFrame,
-);
+)
+  .or(ExecutionHostAssignmentAckFrame)
+  .or(ExecutionHostReleaseAckFrame);
 export type ExecutionHostFrame = typeof ExecutionHostFrame.infer;
 
 export const ExecutionHostRegisteredFrame = type({
@@ -60,7 +80,30 @@ export type ExecutionHostRegisteredFrame =
 export const ExecutionHostPongFrame = type({ type: "'pong'" });
 export type ExecutionHostPongFrame = typeof ExecutionHostPongFrame.infer;
 
+export const ExecutionHostAssignmentFrame = type({
+  type: "'host.assignment'",
+  allocationId: "string",
+  generation: "number.integer >= 0",
+  tenantId: "string",
+  anchorRunId: "string",
+  sidecarId: "string",
+  sidecarToken: "string",
+  hubWebSocketUrl: "string",
+});
+export type ExecutionHostAssignmentFrame =
+  typeof ExecutionHostAssignmentFrame.infer;
+
+export const ExecutionHostReleaseFrame = type({
+  type: "'host.release'",
+  allocationId: "string",
+  generation: "number.integer >= 0",
+  sidecarId: "string",
+});
+export type ExecutionHostReleaseFrame = typeof ExecutionHostReleaseFrame.infer;
+
 export const ExecutionHostHubFrame = ExecutionHostRegisteredFrame.or(
   ExecutionHostPongFrame,
-);
+)
+  .or(ExecutionHostAssignmentFrame)
+  .or(ExecutionHostReleaseFrame);
 export type ExecutionHostHubFrame = typeof ExecutionHostHubFrame.infer;
