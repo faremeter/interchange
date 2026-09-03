@@ -1098,14 +1098,16 @@ export function createSidecarStepBuildEnv(
     // ["capabilities", "address"]`) resolves `mail.transport` from it.
     const capabilities = createHarnessRuntimeCapabilities({ transport });
 
-    // The step env carries `transport`, `address`, and the assembled
-    // `capabilities` beyond `BaseEnv`. `capabilities` is what the mail bundle
+    // The step env carries `toolCwd`, `transport`, `address`, and the
+    // assembled `capabilities` beyond `BaseEnv`. `toolCwd` is the working
+    // tree the posix tools operate on; `capabilities` is what the mail bundle
     // reads; `transport` remains a raw env surface for tool packages that
     // read it directly. `address` is observability-only. These widen the
     // returned `StepEnvBase` structurally, which the buildEnv return type
     // (`StepEnvBase`) accepts (a wider object is assignable to the narrower
     // type).
     const env: StepEnvBase & {
+      toolCwd: string;
       transport: MessageTransport;
       address: string;
       capabilities: RuntimeCapabilities;
@@ -1118,6 +1120,10 @@ export function createSidecarStepBuildEnv(
       defaultSource: activeSource.id,
       storage,
       workdir,
+      // The per-step workspace is both the lock boundary and the tree the
+      // filesystem tools operate on; a deployed step gets a throwaway
+      // scratch dir, so the two coincide.
+      toolCwd: workdir,
       audit: storage,
       directors: createDefaultDirectorRegistry(),
       // Resolve inference adapters through the child's boot-built

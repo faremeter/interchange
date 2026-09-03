@@ -82,6 +82,12 @@ export interface BaseEnv {
    * `workdir` values pointing at the same on-disk storage directory
    * will silently corrupt each other -- the invariant is the caller's
    * to maintain.
+   *
+   * This is the lock and storage boundary, not the working tree the
+   * filesystem tools operate on. A tool that needs a working directory
+   * (e.g. `@intx/tools-posix`) reads that from its own env-DI key
+   * declared through `defineTool({ requires })`, which the caller may
+   * point at a directory distinct from `workdir`.
    */
   workdir: string;
 
