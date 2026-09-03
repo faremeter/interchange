@@ -1,0 +1,2 @@
+ALTER TABLE "execution_host_assignment" ADD CONSTRAINT "execution_host_assignment_status_check" CHECK ("execution_host_assignment"."status" in ('claiming', 'assigned', 'destroyed'));--> statement-breakpoint
+ALTER TABLE "execution_host_assignment" ADD CONSTRAINT "execution_host_assignment_destroyed_generation_check" CHECK ("execution_host_assignment"."destroyed_generation" is null or "execution_host_assignment"."destroyed_generation" >= "execution_host_assignment"."generation");

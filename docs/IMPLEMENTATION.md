@@ -324,6 +324,19 @@ it is an active host in the deployment tenant owned by the requesting principal;
 otherwise it returns the same not-found response as an unknown host. Replacement
 provisioning reuses the stored policy and target.
 
+Host-capacity claims are durable rows keyed by the allocation's generated
+`sidecarId`. At most one active claim may exist for an allocation or host. A
+claim records the exact host session id and session generation that received
+the assignment; acknowledgement must match all of those fields before the row
+becomes assigned.
+
+Destruction tombstones the exact sidecar identity rather than fencing only by
+allocation generation. This distinction is required because replacement first
+destroys the old `sidecarId` after advancing the allocation generation and then
+ensures a new `sidecarId` within that same generation. Delayed work for the
+destroyed identity remains rejected while the replacement is allowed to claim
+the released host.
+
 ### Allocation state and generation fence
 
 An allocation moves through `pending → provisioning → allocated`. An uncertain provision outcome moves it through `replacing` before another generation is created. A structured ensure rejection certifies that no infrastructure exists for that generation; a non-retryable rejection terminally fails the allocation and its active runs, while a retryable rejection advances the fence and backs off before replacement. Provisioners throw when they cannot determine whether an ensure request took effect. After an allocated worker is lost, explicitly enabled recovery also uses `replacing`; otherwise the active runs are failed and the allocation uses `releasing → released`. `failed` is reserved for a terminal case where the Hub knows no infrastructure exists. One allocation is permitted per anchor, and an active sidecar id can belong to only one allocation.

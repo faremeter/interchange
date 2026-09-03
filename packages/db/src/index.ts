@@ -98,6 +98,16 @@ export {
   type RefreshExecutionHostSessionArgs,
 } from "./execution-host-session-store";
 export {
+  createExecutionHostAssignmentStore,
+  type ClaimExecutionHostArgs,
+  type DestroyExecutionHostAssignmentArgs,
+  type ExecutionHostAssignment,
+  type ExecutionHostAssignmentStatus,
+  type ExecutionHostAssignmentStore,
+  type ExecutionHostClaimCandidate,
+  type SettleExecutionHostAssignmentArgs,
+} from "./execution-host-assignment-store";
+export {
   createWorkflowDefinitionStore,
   loadFrozenGrantSnapshot,
   resolveDefinitionIdForAsset,
