@@ -24,12 +24,17 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+import {
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 
 const TENANT_ID = "tnt-dispatch";
 const DEFINITION_ID = "wfd-dispatch";
 const ANCHOR_RUN_ID = "dep-dispatch";
 const SENDER_ADDRESS = "principal-dispatch@tnt-dispatch.example";
+const PLACEMENT_PRINCIPAL_ID = "prn-dispatch-placement";
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "workflowRunDispatchStore (real DB)",
@@ -47,6 +52,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     beforeEach(async () => {
       await h.reset();
       await seedTenants(h.db, [{ id: TENANT_ID }]);
+      await seedPrincipal(h.db, {
+        id: PLACEMENT_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        kind: "user",
+        refId: "user-dispatch-placement",
+        status: "active",
+      });
       await h.db.insert(workflowDefinition).values({
         id: DEFINITION_ID,
         tenantId: TENANT_ID,
@@ -70,6 +82,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "allocation-ack",
         anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
+        placementPrincipalId: PLACEMENT_PRINCIPAL_ID,
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",

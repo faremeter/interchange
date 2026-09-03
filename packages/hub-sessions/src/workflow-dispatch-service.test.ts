@@ -47,6 +47,7 @@ function allocation(
     id: "allocation-1",
     anchorRunId: "deployment-1",
     tenantId: "tenant-1",
+    placementPrincipalId: "principal-1",
     provisionerId: "test",
     provisionerApiVersion: 1,
     provisionerBindingFingerprint: "test:v1",

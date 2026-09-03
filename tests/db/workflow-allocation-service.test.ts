@@ -284,6 +284,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).findByAnchorRunId("run-probe-adopted");
       expect(allocation).toMatchObject({
         id: "sal-probe-adopted",
+        placementPrincipalId: PRINCIPAL_ID,
         status: "allocated",
         ensureAcceptedGeneration: 0,
         sidecarId: "sc-probe-adopted",
@@ -774,6 +775,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ),
       ).toMatchObject({
         id: "sal-workflow-pending",
+        placementPrincipalId: PRINCIPAL_ID,
         status: "pending",
         provisionerId: "ios-worker",
       });

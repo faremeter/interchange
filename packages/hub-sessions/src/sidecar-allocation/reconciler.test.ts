@@ -19,6 +19,7 @@ function allocation(
     id: "alloc-1",
     anchorRunId: "run-anchor",
     tenantId: "tenant-1",
+    placementPrincipalId: "principal-1",
     provisionerId: "test",
     provisionerApiVersion: 1,
     provisionerBindingFingerprint: "test:v1",

@@ -15,9 +15,14 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+import {
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 
 const TENANT_ID = "tnt-sidecar-auth";
+const PLACEMENT_PRINCIPAL_ID = "prn-sidecar-auth";
 
 // The mock-DB unit test proves the authenticator's control flow, but it
 // never exercises the real `bytea` lookup: the token hash is written to
@@ -44,6 +49,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     beforeEach(async () => {
       await h.reset();
       await seedTenants(h.db, [{ id: TENANT_ID }]);
+      await seedPrincipal(h.db, {
+        id: PLACEMENT_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        kind: "user",
+        refId: "user-sidecar-auth",
+        status: "active",
+      });
     });
 
     // Seed a sidecar identity the same way provisioning does: store the
@@ -81,6 +93,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           id: `allocation-${opts.id}`,
           anchorRunId,
           tenantId: TENANT_ID,
+          placementPrincipalId: PLACEMENT_PRINCIPAL_ID,
           provisionerId: "test",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "test:v1",

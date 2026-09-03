@@ -26,11 +26,16 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+import {
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 import type { KeyPair } from "@intx/types/runtime";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 const TENANT_ID = "tnt-pack-fence";
+const PLACEMENT_PRINCIPAL_ID = "prn-pack-fence";
 const ANCHOR_RUN_ID = "dep-pack-fence";
 const ANCHOR_ADDRESS = "run_pack_fence@tenant.example";
 const ALLOCATION_ID = "alloc-pack-fence";
@@ -56,6 +61,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     beforeEach(async () => {
       await h.reset();
       await seedTenants(h.db, [{ id: TENANT_ID }]);
+      await seedPrincipal(h.db, {
+        id: PLACEMENT_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        kind: "user",
+        refId: "user-pack-fence",
+        status: "active",
+      });
       await seedWorkflowRun(h.db, {
         id: ANCHOR_RUN_ID,
         anchorRunId: ANCHOR_RUN_ID,
@@ -66,6 +78,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: ALLOCATION_ID,
         anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
+        placementPrincipalId: PLACEMENT_PRINCIPAL_ID,
         provisionerId: "test-provisioner",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test-provisioner:pack-fence",

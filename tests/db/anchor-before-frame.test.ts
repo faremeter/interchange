@@ -53,7 +53,11 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+import {
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 import type {
   HarnessConfig,
   InferenceSource,
@@ -83,6 +87,7 @@ const WORKFLOW_RUN_REF = "refs/heads/events";
 const ACKED_PUBLIC_KEY = "ed25519-anchor-before-frame-pubkey";
 const ALLOC_ID = "alloc-anchor-test";
 const ALLOC_GENERATION = 1;
+const PLACEMENT_PRINCIPAL_ID = "prn-anchor-placement";
 
 const INFERENCE_SOURCE: InferenceSource = {
   id: "src-only",
@@ -174,6 +179,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     beforeEach(async () => {
       await h.reset();
       await seedTenants(h.db, [{ id: TENANT_ID }]);
+      await seedPrincipal(h.db, {
+        id: PLACEMENT_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        kind: "user",
+        refId: "user-anchor-placement",
+        status: "active",
+      });
       // The persisted-definition guard and the anchor row's FK both need this.
       await h.db.insert(workflowDefinition).values({
         id: DEFINITION_ID,
@@ -230,6 +242,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: ALLOC_ID,
         anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
+        placementPrincipalId: PLACEMENT_PRINCIPAL_ID,
         provisionerId: "provisioner-anchor-test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "fp-anchor-test",

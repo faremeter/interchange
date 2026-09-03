@@ -47,6 +47,7 @@ const TENANT = "tnt";
 const ASSET = "ast";
 const DEPLOYMENT = "dep";
 const DEPLOYMENT_ADDRESS = "run_dep@tnt.example";
+const PLACEMENT_PRINCIPAL = "prn-placement";
 const DEPLOYMENT_REPO_ID = deriveWorkflowRunRepoId(DEPLOYMENT_ADDRESS);
 const WFR_REF = "refs/heads/events";
 
@@ -104,6 +105,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
     beforeEach(async () => {
       await h.reset();
       await seedTenants(h.db, [{ id: TENANT }]);
+      await seedPrincipal(h.db, {
+        id: PLACEMENT_PRINCIPAL,
+        tenantId: TENANT,
+        kind: "user",
+        refId: "user-placement",
+        status: "active",
+      });
       await seedAsset(h.db, {
         id: ASSET,
         tenantId: TENANT,
@@ -120,6 +128,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "allocation-terminal-flip",
         anchorRunId: DEPLOYMENT,
         tenantId: TENANT,
+        placementPrincipalId: PLACEMENT_PRINCIPAL,
         provisionerId: "test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test:v1",

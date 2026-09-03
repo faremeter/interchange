@@ -38,6 +38,7 @@ export type SidecarAllocation = {
   readonly id: string;
   readonly anchorRunId: string;
   readonly tenantId: string;
+  readonly placementPrincipalId: string;
   readonly provisionerId: string;
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
@@ -62,6 +63,7 @@ export type CreatePendingSidecarAllocationArgs = {
   readonly id: string;
   readonly anchorRunId: string;
   readonly tenantId: string;
+  readonly placementPrincipalId: string;
   readonly provisionerId: string;
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
@@ -216,6 +218,7 @@ function parseSidecarAllocationRow(
     id: row.id,
     anchorRunId: row.anchorRunId,
     tenantId: row.tenantId,
+    placementPrincipalId: row.placementPrincipalId,
     provisionerId: row.provisionerId,
     provisionerApiVersion: SidecarProvisionerApiVersion.assert(
       row.provisionerApiVersion,
@@ -396,6 +399,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           id: args.id,
           anchorRunId: args.anchorRunId,
           tenantId: args.tenantId,
+          placementPrincipalId: args.placementPrincipalId,
           provisionerId: args.provisionerId,
           provisionerApiVersion: args.provisionerApiVersion,
           provisionerBindingFingerprint: args.provisionerBindingFingerprint,
@@ -425,6 +429,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           id: args.id,
           anchorRunId: args.anchorRunId,
           tenantId: args.tenantId,
+          placementPrincipalId: args.placementPrincipalId,
           provisionerId: args.provisionerId,
           provisionerApiVersion: args.provisionerApiVersion,
           provisionerBindingFingerprint: args.provisionerBindingFingerprint,

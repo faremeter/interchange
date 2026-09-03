@@ -11,6 +11,7 @@ import {
 
 import type { SidecarAllocationStatus } from "@intx/types";
 
+import { principal } from "./principals";
 import { sidecar } from "./sidecar";
 import { tenant } from "./tenants";
 import { workflowRun } from "./workflow-run";
@@ -25,6 +26,9 @@ export const sidecarAllocation = pgTable(
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "restrict" }),
+    placementPrincipalId: text("placement_principal_id")
+      .notNull()
+      .references(() => principal.id, { onDelete: "restrict" }),
     provisionerId: text("provisioner_id").notNull(),
     provisionerApiVersion: integer("provisioner_api_version")
       .$type<1>()
