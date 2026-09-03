@@ -93,6 +93,7 @@ export {
   type SidecarPluginRegistry,
   type SidecarProvisioner,
   type SidecarProvisionerChooser,
+  type SidecarProvisionerSelectionContext,
   type SidecarAllocationReconciler,
   type SidecarAllocationReconcilerDeps,
 } from "./sidecar-allocation";

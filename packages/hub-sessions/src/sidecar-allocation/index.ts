@@ -4,6 +4,7 @@ export {
   type CreateSidecarPluginRegistryOpts,
   type SidecarPluginRegistry,
   type SidecarProvisionerChooser,
+  type SidecarProvisionerSelectionContext,
   type SidecarProvisionerSelection,
 } from "./plugin-registry";
 export {

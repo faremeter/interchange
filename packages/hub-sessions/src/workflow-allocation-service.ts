@@ -493,9 +493,13 @@ export function createWorkflowAllocationService({
     }
     const probeProvisioner = selectProvisioner(
       await probePlugins.selectProvisioner({
-        tenantPolicies,
-        probeRules: configuredProbeCapabilityRules,
-        workflowRules: [],
+        tenantId: args.tenantId,
+        placementPrincipalId: args.placementPrincipalId,
+        capabilityPolicy: {
+          tenantPolicies,
+          probeRules: configuredProbeCapabilityRules,
+          workflowRules: [],
+        },
       }),
     );
     const probeId = createAllocationId();
@@ -617,9 +621,13 @@ export function createWorkflowAllocationService({
       });
       const deploymentProvisioner = selectProvisioner(
         await deploymentPlugins.selectProvisioner({
-          tenantPolicies,
-          workflowRules:
-            approved.projection.sidecarPlacement?.capabilities ?? [],
+          tenantId: args.tenantId,
+          placementPrincipalId: args.placementPrincipalId,
+          capabilityPolicy: {
+            tenantPolicies,
+            workflowRules:
+              approved.projection.sidecarPlacement?.capabilities ?? [],
+          },
         }),
       );
       const adoptProbe =

@@ -19,16 +19,23 @@ export type SidecarProvisionerSelection =
       >;
     };
 
+export type SidecarProvisionerSelectionContext = {
+  readonly tenantId: string;
+  readonly placementPrincipalId: string;
+  readonly capabilityPolicy: EffectiveSidecarCapabilityPolicy;
+};
+
 /** Selects one provisioner from the capability-matched candidates. */
 export type SidecarProvisionerChooser = (
   candidates: readonly SidecarProvisioner[],
+  context: SidecarProvisionerSelectionContext,
 ) => SidecarProvisioner | Promise<SidecarProvisioner>;
 
 export type SidecarPluginRegistry = {
   /** Missing plugins return null so reconciliation can stop fail-closed. */
   getProvisioner(id: string): SidecarProvisioner | null;
   selectProvisioner(
-    policy: EffectiveSidecarCapabilityPolicy,
+    context: SidecarProvisionerSelectionContext,
   ): Promise<SidecarProvisionerSelection>;
 };
 
@@ -83,13 +90,13 @@ export function createSidecarPluginRegistry({
     getProvisioner(id) {
       return provisionersById.get(id) ?? null;
     },
-    async selectProvisioner(policy) {
+    async selectProvisioner(context) {
       const mismatches: Record<string, readonly SidecarCapabilityMismatch[]> =
         {};
       const candidates: SidecarProvisioner[] = [];
       for (const provisioner of provisionersById.values()) {
         const match = matchSidecarCapabilityPolicy(
-          policy,
+          context.capabilityPolicy,
           provisioner.capabilities,
         );
         if (match.ok) {
@@ -101,7 +108,7 @@ export function createSidecarPluginRegistry({
       if (candidates.length === 0) {
         return { ok: false, reason: "no_match", mismatches };
       }
-      const provisioner = await chooser(candidates);
+      const provisioner = await chooser(candidates, context);
       if (!candidates.includes(provisioner)) {
         throw new Error(
           "Sidecar provisioner chooser returned a provisioner outside the matching candidates",
