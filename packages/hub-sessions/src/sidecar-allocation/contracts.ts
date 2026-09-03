@@ -1,6 +1,9 @@
 import { type } from "arktype";
 
-import type { SidecarCapabilityDeclaration } from "@intx/types";
+import type {
+  SidecarCapabilityDeclaration,
+  SidecarProvisioningPolicy,
+} from "@intx/types";
 
 export type EnsureSidecarRequest = {
   readonly allocationId: string;
@@ -8,6 +11,8 @@ export type EnsureSidecarRequest = {
   readonly tenantId: string;
   /** Authenticated tenant principal whose request owns placement. */
   readonly placementPrincipalId: string;
+  readonly targetHostPrincipalId?: string;
+  readonly placementPolicy: SidecarProvisioningPolicy;
   readonly anchorRunId: string;
   readonly sidecarId: string;
   readonly token: string;

@@ -83,6 +83,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: ANCHOR_RUN_ID,
         tenantId: TENANT_ID,
         placementPrincipalId: PLACEMENT_PRINCIPAL_ID,
+        placementPolicy: { tenantPolicies: [], workflowRules: [] },
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",

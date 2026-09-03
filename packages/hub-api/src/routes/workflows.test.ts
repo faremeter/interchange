@@ -20,6 +20,7 @@ import type { GrantWalkSnapshot, SidecarAllocationStatus } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
   asset as assetTable,
+  executionHost as executionHostTable,
   grant as grantTable,
   principal as principalTable,
   sidecarAllocation as sidecarAllocationTable,
@@ -294,6 +295,7 @@ type MockDBOpts = {
   // definition's version row. `null` models the "not yet approved" state
   // (fail-closed); `undefined` returns no version row (also fail-closed).
   grantSnapshot?: GrantWalkSnapshot | null;
+  targetHostExists?: boolean;
 };
 
 function createMockDB(opts: MockDBOpts) {
@@ -328,6 +330,9 @@ function createMockDB(opts: MockDBOpts) {
       // plain case with the bare id, both keyed on the deployment.
       let joined = false;
       const selectedRows = (locked: boolean) => {
+        if (table === executionHostTable) {
+          return opts.targetHostExists === true ? [{ id: "host-target" }] : [];
+        }
         if (table === sidecarAllocationTable) {
           const status = opts.allocationStatus ?? "allocated";
           return opts.allocationId === undefined
@@ -1107,6 +1112,67 @@ describe("POST /workflows/deployments", () => {
     expect(prepared).toHaveLength(1);
     expect(prepared[0]?.sourceOfferingIds).toEqual(["ofr_primary"]);
     expect(prepared[0]?.defaultSourceOfferingId).toBe("ofr_primary");
+  });
+
+  test("passes an owned active host target into deployment preparation", async () => {
+    const prepared: Parameters<
+      WorkflowAllocationService["prepareProvisionedDeployment"]
+    >[0][] = [];
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      db: {
+        assetRow: workflowAssetRow,
+        deploymentRow,
+        targetHostExists: true,
+      },
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async (args) => {
+          prepared.push(args);
+          return {
+            anchorRunId: DEPLOYMENT_ID,
+            deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
+            allocationId: "sal-test",
+            status: "pending",
+          };
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(
+        `${base()}/deployments`,
+        sourceDeployBody({ targetHostPrincipalId: "prn_host_target" }),
+      ),
+    );
+
+    expect(res.status).toBe(201);
+    expect(prepared[0]?.targetHostPrincipalId).toBe("prn_host_target");
+  });
+
+  test("hides a host target not owned by the requesting principal", async () => {
+    let prepareCalled = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          prepareCalled = true;
+          throw new Error("unowned host must not reach preparation");
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(
+        `${base()}/deployments`,
+        sourceDeployBody({ targetHostPrincipalId: "prn_host_other" }),
+      ),
+    );
+
+    expect(res.status).toBe(404);
+    expect(await errorCode(res)).toBe("host_not_found");
+    expect(prepareCalled).toBe(false);
   });
 
   test("reports provisioner selection failures as conflicts", async () => {

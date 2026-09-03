@@ -48,6 +48,7 @@ import {
 
 const TENANT_ID = "tnt-workflow-probe";
 const PRINCIPAL_ID = "prn-workflow-probe";
+const TARGET_HOST_PRINCIPAL_ID = "prn-workflow-probe-host";
 const ASSET_ID = "ast-workflow-probe";
 const DEFINITION_ID = "wfd-workflow-probe";
 const OFFERING_ID = "mof-workflow-probe";
@@ -104,6 +105,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: PRINCIPAL_ID,
         tenantId: TENANT_ID,
         kind: "user",
+      });
+      await seedPrincipal(h.db, {
+        id: TARGET_HOST_PRINCIPAL_ID,
+        tenantId: TENANT_ID,
+        kind: "host",
+        refId: "hst-workflow-probe",
       });
       await seedAsset(h.db, {
         id: ASSET_ID,
@@ -200,7 +207,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
     }
 
-    function prepareArgs(anchorRunId: string) {
+    function prepareArgs(anchorRunId: string, targetHost = false) {
       return {
         tenantId: TENANT_ID,
         anchorRunId,
@@ -210,6 +217,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         definitionAssetId: ASSET_ID,
         sessionId: `ses-${anchorRunId}`,
         placementPrincipalId: PRINCIPAL_ID,
+        ...(targetHost
+          ? { targetHostPrincipalId: TARGET_HOST_PRINCIPAL_ID }
+          : {}),
         sourceAuthorityPrincipalId: PRINCIPAL_ID,
         sourceOfferingIds: [OFFERING_ID],
         defaultSourceOfferingId: OFFERING_ID,
@@ -266,6 +276,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(ensureCalls).toHaveLength(1);
       expect(ensureCalls[0]).toMatchObject({
         placementPrincipalId: PRINCIPAL_ID,
+        placementPolicy: {
+          tenantPolicies: [],
+          probeRules: [],
+          workflowRules: [],
+        },
       });
       expect(destroyCalls).toHaveLength(0);
       expect(disconnectCalls).toEqual([
@@ -302,6 +317,60 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toMatchObject({
         sourceOfferingIds: [OFFERING_ID],
         frozenApprovalBundle: { source: SOURCE },
+      });
+    });
+
+    test("does not adopt probe capacity for an exact host target", async () => {
+      const ensureCalls: unknown[] = [];
+      const destroyCalls: unknown[] = [];
+      const provisioner = makeProvisioner({
+        id: "targeted-host",
+        ensureCalls,
+        destroyCalls,
+      });
+      const allocationIds = ["sal-targeted-probe", "sal-targeted-deployment"];
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([provisioner]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: (params) => freeze(params),
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("targeted allocation is not ready");
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          disconnectAllocation: () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        createAllocationId: () => {
+          const id = allocationIds.shift();
+          if (id === undefined) throw new Error("unexpected allocation id");
+          return id;
+        },
+        createSidecarId: () => "sc-targeted-probe",
+        createToken: () => "targeted-probe-token",
+      });
+
+      const prepared = await service.prepareProvisionedDeployment(
+        prepareArgs("run-targeted-host", true),
+      );
+
+      expect(prepared.allocationId).toBe("sal-targeted-deployment");
+      expect(ensureCalls).toHaveLength(1);
+      expect(destroyCalls).toHaveLength(1);
+      expect(
+        await createSidecarAllocationStore(h.db).findByAnchorRunId(
+          "run-targeted-host",
+        ),
+      ).toMatchObject({
+        status: "pending",
+        targetHostPrincipalId: TARGET_HOST_PRINCIPAL_ID,
       });
     });
 
@@ -759,7 +828,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const prepared = await service.prepareProvisionedDeployment(
-        prepareArgs("run-probe-released"),
+        prepareArgs("run-probe-released", true),
       );
 
       expect(prepared.allocationId).toBe("sal-workflow-pending");
@@ -779,6 +848,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toMatchObject({
         id: "sal-workflow-pending",
         placementPrincipalId: PRINCIPAL_ID,
+        targetHostPrincipalId: TARGET_HOST_PRINCIPAL_ID,
+        placementPolicy: {
+          tenantPolicies: [],
+          workflowRules: [{ capability: "platform:ios", effect: "require" }],
+        },
         status: "pending",
         provisionerId: "ios-worker",
       });

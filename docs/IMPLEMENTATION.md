@@ -317,6 +317,13 @@ For probes, the probe id remains the opaque allocation owner used by the existin
 
 The launch spec deliberately stores catalog offering ids rather than resolved provider secrets. Every initial deployment or replacement resolves those offerings again under the original authority, so rotated or revoked credentials take effect during recovery and no raw provider credential becomes recovery state.
 
+The sidecar allocation separately stores the authenticated placement principal,
+an optional exact host-principal target, and the effective capability policy
+used to select the provisioner. The HTTP route accepts an exact target only when
+it is an active host in the deployment tenant owned by the requesting principal;
+otherwise it returns the same not-found response as an unknown host. Replacement
+provisioning reuses the stored policy and target.
+
 ### Allocation state and generation fence
 
 An allocation moves through `pending → provisioning → allocated`. An uncertain provision outcome moves it through `replacing` before another generation is created. A structured ensure rejection certifies that no infrastructure exists for that generation; a non-retryable rejection terminally fails the allocation and its active runs, while a retryable rejection advances the fence and backs off before replacement. Provisioners throw when they cannot determine whether an ensure request took effect. After an allocated worker is lost, explicitly enabled recovery also uses `replacing`; otherwise the active runs are failed and the allocation uses `releasing → released`. `failed` is reserved for a terminal case where the Hub knows no infrastructure exists. One allocation is permitted per anchor, and an active sidecar id can belong to only one allocation.

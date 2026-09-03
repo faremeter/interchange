@@ -89,6 +89,7 @@ describe("deployWorkflow", () => {
       entry: "./workflow.mjs",
       sourceOfferingIds,
       defaultSourceOfferingId: "ofr_1",
+      targetHostPrincipalId: "prn_host_1",
     });
 
     expect(calls).toHaveLength(1);
@@ -100,6 +101,7 @@ describe("deployWorkflow", () => {
         entry: "./workflow.mjs",
         sourceOfferingIds,
         defaultSourceOfferingId: "ofr_1",
+        targetHostPrincipalId: "prn_host_1",
       },
     });
     expect(result).toEqual(deployment);

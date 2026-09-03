@@ -312,6 +312,10 @@ export function createSidecarAllocationReconciler({
             generation: allocation.generation,
             tenantId: allocation.tenantId,
             placementPrincipalId: allocation.placementPrincipalId,
+            ...(allocation.targetHostPrincipalId !== undefined
+              ? { targetHostPrincipalId: allocation.targetHostPrincipalId }
+              : {}),
+            placementPolicy: allocation.placementPolicy,
             anchorRunId: allocation.anchorRunId,
             sidecarId,
             token,

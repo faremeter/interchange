@@ -29,6 +29,7 @@ function createRequest(
     generation,
     tenantId: "tnt_test",
     placementPrincipalId: "prn_test",
+    placementPolicy: { tenantPolicies: [], workflowRules: [] },
     anchorRunId: "run_test",
     sidecarId,
     token: `token_${String(generation)}`,

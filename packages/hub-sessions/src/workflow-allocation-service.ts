@@ -34,6 +34,7 @@ import type { DeployContent } from "./agent-repo";
 import {
   DestroySidecarResult,
   EnsureSidecarResult,
+  type EffectiveSidecarCapabilityPolicy,
   type SidecarCapabilityMismatch,
   type SidecarPluginRegistry,
   type SidecarProvisioner,
@@ -79,6 +80,7 @@ export type PrepareProvisionedWorkflowDeploymentArgs = {
   readonly definitionAssetId: string;
   readonly sessionId: string;
   readonly placementPrincipalId: string;
+  readonly targetHostPrincipalId?: string;
   readonly sourceAuthorityPrincipalId: string;
   readonly sourceOfferingIds: readonly string[];
   readonly defaultSourceOfferingId: string;
@@ -330,8 +332,16 @@ export function createWorkflowAllocationService({
     provisioner: SidecarProvisioner;
     probe: WorkflowProbe;
     adoptProbe: boolean;
+    placementPolicy: EffectiveSidecarCapabilityPolicy;
   }): Promise<PreparedProvisionedWorkflowDeployment> {
-    const { request, approved, provisioner, probe, adoptProbe } = args;
+    const {
+      request,
+      approved,
+      provisioner,
+      probe,
+      adoptProbe,
+      placementPolicy,
+    } = args;
     const probeSidecarId = probe.sidecarId;
     if (adoptProbe && probeSidecarId === null) {
       throw new Error(`Workflow probe ${probe.id} has no sidecar to adopt`);
@@ -399,6 +409,10 @@ export function createWorkflowAllocationService({
             anchorRunId: request.anchorRunId,
             tenantId: request.tenantId,
             placementPrincipalId: request.placementPrincipalId,
+            ...(request.targetHostPrincipalId !== undefined
+              ? { targetHostPrincipalId: request.targetHostPrincipalId }
+              : {}),
+            placementPolicy,
             provisionerId: provisioner.id,
             provisionerApiVersion: provisioner.apiVersion,
             provisionerBindingFingerprint: provisioner.bindingFingerprint,
@@ -428,6 +442,10 @@ export function createWorkflowAllocationService({
             anchorRunId: request.anchorRunId,
             tenantId: request.tenantId,
             placementPrincipalId: request.placementPrincipalId,
+            ...(request.targetHostPrincipalId !== undefined
+              ? { targetHostPrincipalId: request.targetHostPrincipalId }
+              : {}),
+            placementPolicy,
             provisionerId: provisioner.id,
             provisionerApiVersion: provisioner.apiVersion,
             provisionerBindingFingerprint: provisioner.bindingFingerprint,
@@ -493,15 +511,19 @@ export function createWorkflowAllocationService({
         `Default offering ${args.defaultSourceOfferingId} was not resolved for deployment ${args.anchorRunId}`,
       );
     }
+    const probePlacementPolicy: EffectiveSidecarCapabilityPolicy = {
+      tenantPolicies: tenantPolicies.map((policy) => ({
+        tenantId: policy.tenantId,
+        rules: [...policy.rules],
+      })),
+      probeRules: [...configuredProbeCapabilityRules],
+      workflowRules: [],
+    };
     const probeProvisioner = selectProvisioner(
       await probePlugins.selectProvisioner({
         tenantId: args.tenantId,
         placementPrincipalId: args.placementPrincipalId,
-        capabilityPolicy: {
-          tenantPolicies,
-          probeRules: configuredProbeCapabilityRules,
-          workflowRules: [],
-        },
+        capabilityPolicy: probePlacementPolicy,
       }),
     );
     const probeId = createAllocationId();
@@ -544,6 +566,7 @@ export function createWorkflowAllocationService({
           generation: probe.generation,
           tenantId: probe.tenantId,
           placementPrincipalId: args.placementPrincipalId,
+          placementPolicy: probePlacementPolicy,
           // The provisioner contract treats this as an opaque owner id. A
           // probe has no workflow run, so its own id is the honest owner.
           anchorRunId: probe.id,
@@ -622,18 +645,27 @@ export function createWorkflowAllocationService({
         config,
         operatorApprovals: approved.approval.approvedGrants,
       });
+      const deploymentPlacementPolicy: EffectiveSidecarCapabilityPolicy = {
+        tenantPolicies: tenantPolicies.map((policy) => ({
+          tenantId: policy.tenantId,
+          rules: [...policy.rules],
+        })),
+        workflowRules: [
+          ...(approved.projection.sidecarPlacement?.capabilities ?? []),
+        ],
+      };
       const deploymentProvisioner = selectProvisioner(
         await deploymentPlugins.selectProvisioner({
           tenantId: args.tenantId,
           placementPrincipalId: args.placementPrincipalId,
-          capabilityPolicy: {
-            tenantPolicies,
-            workflowRules:
-              approved.projection.sidecarPlacement?.capabilities ?? [],
-          },
+          ...(args.targetHostPrincipalId !== undefined
+            ? { targetHostPrincipalId: args.targetHostPrincipalId }
+            : {}),
+          capabilityPolicy: deploymentPlacementPolicy,
         }),
       );
       const adoptProbe =
+        args.targetHostPrincipalId === undefined &&
         deploymentProvisioner.id === probeProvisioner.id &&
         deploymentProvisioner.apiVersion === probeProvisioner.apiVersion &&
         deploymentProvisioner.bindingFingerprint ===
@@ -647,6 +679,7 @@ export function createWorkflowAllocationService({
         provisioner: deploymentProvisioner,
         probe,
         adoptProbe,
+        placementPolicy: deploymentPlacementPolicy,
       });
     } catch (error) {
       try {

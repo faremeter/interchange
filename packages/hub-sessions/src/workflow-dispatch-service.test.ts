@@ -48,6 +48,7 @@ function allocation(
     anchorRunId: "deployment-1",
     tenantId: "tenant-1",
     placementPrincipalId: "principal-1",
+    placementPolicy: { tenantPolicies: [], workflowRules: [] },
     provisionerId: "test",
     provisionerApiVersion: 1,
     provisionerBindingFingerprint: "test:v1",

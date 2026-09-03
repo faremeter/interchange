@@ -7,7 +7,9 @@ import { type } from "arktype";
 
 import {
   asset,
+  executionHost,
   isLiveWorkflowRunStatus,
+  principal as principalTable,
   sidecarAllocation,
   workflowDefinition,
   workflowRun,
@@ -84,6 +86,7 @@ const DeployWorkflow = type({
   entry: "string > 0",
   sourceOfferingIds: SourceOfferingIds,
   defaultSourceOfferingId: "string > 0",
+  "targetHostPrincipalId?": "string > 0",
   "pin?": "string > 0",
 });
 
@@ -298,6 +301,37 @@ export function createWorkflowRoutes({
         return errorResponse(c, "not_found", "Workflow asset not found");
       }
 
+      if (body.targetHostPrincipalId !== undefined) {
+        const [targetHost] = await db
+          .select({ id: executionHost.id })
+          .from(executionHost)
+          .innerJoin(
+            principalTable,
+            eq(principalTable.id, executionHost.principalId),
+          )
+          .where(
+            and(
+              eq(executionHost.tenantId, tenant.id),
+              eq(executionHost.principalId, body.targetHostPrincipalId),
+              eq(executionHost.ownerPrincipalId, c.get("principal").id),
+              eq(principalTable.kind, "host"),
+              eq(principalTable.status, "active"),
+            ),
+          )
+          .limit(1);
+        if (targetHost === undefined) {
+          return c.json(
+            {
+              error: {
+                code: "host_not_found",
+                message: "Execution host not found",
+              },
+            },
+            404,
+          );
+        }
+      }
+
       if (workflowAllocationService === undefined) {
         return errorResponse(
           c,
@@ -323,6 +357,9 @@ export function createWorkflowRoutes({
             definitionAssetId: assetRow.id,
             sessionId,
             placementPrincipalId: c.get("principal").id,
+            ...(body.targetHostPrincipalId !== undefined
+              ? { targetHostPrincipalId: body.targetHostPrincipalId }
+              : {}),
             sourceAuthorityPrincipalId: c.get("principal").id,
             sourceOfferingIds: body.sourceOfferingIds,
             defaultSourceOfferingId: body.defaultSourceOfferingId,

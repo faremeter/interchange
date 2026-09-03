@@ -3,14 +3,10 @@ import {
   type ParsedSidecarCapabilitySelector,
   type SidecarCapabilityDeclaration,
   type SidecarCapabilityRule,
-  type TenantSidecarCapabilityPolicy,
+  type SidecarProvisioningPolicy,
 } from "@intx/types";
 
-export type EffectiveSidecarCapabilityPolicy = {
-  readonly tenantPolicies: readonly TenantSidecarCapabilityPolicy[];
-  readonly probeRules?: readonly SidecarCapabilityRule[];
-  readonly workflowRules: readonly SidecarCapabilityRule[];
-};
+export type EffectiveSidecarCapabilityPolicy = SidecarProvisioningPolicy;
 
 export type SidecarCapabilityMismatch = {
   readonly capability: string;

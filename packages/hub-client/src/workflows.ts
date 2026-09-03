@@ -47,6 +47,8 @@ export type DeployWorkflowInput = {
   sourceOfferingIds: string[];
   /** The default catalog offering id; normally the head of the chain. */
   defaultSourceOfferingId: string;
+  /** Exact enrolled execution host to target, when affinity is required. */
+  targetHostPrincipalId?: string;
   /**
    * A `name@range` pin selecting the definition package. Required for the
    * `registry` and asset-`tarball` source variants; omitted for asset-`source`,
@@ -93,6 +95,7 @@ export async function deployWorkflow(
     entry: string;
     sourceOfferingIds: string[];
     defaultSourceOfferingId: string;
+    targetHostPrincipalId?: string;
     pin?: string;
   } = {
     source: input.source,
@@ -100,6 +103,9 @@ export async function deployWorkflow(
     sourceOfferingIds: input.sourceOfferingIds,
     defaultSourceOfferingId: input.defaultSourceOfferingId,
   };
+  if (input.targetHostPrincipalId !== undefined) {
+    body.targetHostPrincipalId = input.targetHostPrincipalId;
+  }
   if (input.pin !== undefined) {
     body.pin = input.pin;
   }

@@ -3,6 +3,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -29,6 +30,11 @@ export const sidecarAllocation = pgTable(
     placementPrincipalId: text("placement_principal_id")
       .notNull()
       .references(() => principal.id, { onDelete: "restrict" }),
+    targetHostPrincipalId: text("target_host_principal_id").references(
+      () => principal.id,
+      { onDelete: "restrict" },
+    ),
+    placementPolicy: jsonb("placement_policy").notNull(),
     provisionerId: text("provisioner_id").notNull(),
     provisionerApiVersion: integer("provisioner_api_version")
       .$type<1>()

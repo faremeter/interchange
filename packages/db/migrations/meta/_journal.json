@@ -666,6 +666,13 @@
       "when": 1788967084063,
       "tag": "0095_glorious_blue_blade",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1788967084064,
+      "tag": "0096_supreme_norman_osborn",
+      "breakpoints": true
     }
   ]
 }

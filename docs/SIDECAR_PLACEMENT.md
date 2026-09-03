@@ -155,6 +155,15 @@ registry without making volatile provider state part of the Hub contract.
 
 The same placement principal is persisted on the selected allocation and passed
 to every `ensure()` call, including replacement generations after Hub restart.
+A deployment may also target an exact active host principal owned by that
+placement principal. The target is optional; without one, a host-backed
+provisioner may choose any compatible host in the owner's pool.
+
+The Hub snapshots the effective tenant and workflow capability policy onto the
+allocation. Every replacement receives that deploy-time policy rather than
+re-reading mutable tenant configuration, so a retry cannot silently change the
+guarantees under which the provisioner binding was selected.
+
 A provisioner backed by pre-existing capacity owns the registration and
 capability declarations for that capacity and must claim one matching slot
 atomically. The Hub still fixes the provisioner binding before `ensure()`;

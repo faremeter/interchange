@@ -2,7 +2,9 @@ import { type } from "arktype";
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 
 import {
+  SidecarProvisioningPolicy,
   sidecarAllocationStatuses,
+  type SidecarProvisioningPolicy as SidecarProvisioningPolicyShape,
   type SidecarAllocationStatus,
 } from "@intx/types";
 
@@ -39,6 +41,8 @@ export type SidecarAllocation = {
   readonly anchorRunId: string;
   readonly tenantId: string;
   readonly placementPrincipalId: string;
+  readonly targetHostPrincipalId?: string;
+  readonly placementPolicy: SidecarProvisioningPolicyShape;
   readonly provisionerId: string;
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
@@ -64,6 +68,8 @@ export type CreatePendingSidecarAllocationArgs = {
   readonly anchorRunId: string;
   readonly tenantId: string;
   readonly placementPrincipalId: string;
+  readonly targetHostPrincipalId?: string;
+  readonly placementPolicy: SidecarProvisioningPolicyShape;
   readonly provisionerId: string;
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
@@ -219,6 +225,10 @@ function parseSidecarAllocationRow(
     anchorRunId: row.anchorRunId,
     tenantId: row.tenantId,
     placementPrincipalId: row.placementPrincipalId,
+    ...(row.targetHostPrincipalId !== null
+      ? { targetHostPrincipalId: row.targetHostPrincipalId }
+      : {}),
+    placementPolicy: SidecarProvisioningPolicy.assert(row.placementPolicy),
     provisionerId: row.provisionerId,
     provisionerApiVersion: SidecarProvisionerApiVersion.assert(
       row.provisionerApiVersion,
@@ -400,6 +410,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
           anchorRunId: args.anchorRunId,
           tenantId: args.tenantId,
           placementPrincipalId: args.placementPrincipalId,
+          ...(args.targetHostPrincipalId !== undefined
+            ? { targetHostPrincipalId: args.targetHostPrincipalId }
+            : {}),
+          placementPolicy: args.placementPolicy,
           provisionerId: args.provisionerId,
           provisionerApiVersion: args.provisionerApiVersion,
           provisionerBindingFingerprint: args.provisionerBindingFingerprint,
@@ -430,6 +444,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
           anchorRunId: args.anchorRunId,
           tenantId: args.tenantId,
           placementPrincipalId: args.placementPrincipalId,
+          ...(args.targetHostPrincipalId !== undefined
+            ? { targetHostPrincipalId: args.targetHostPrincipalId }
+            : {}),
+          placementPolicy: args.placementPolicy,
           provisionerId: args.provisionerId,
           provisionerApiVersion: args.provisionerApiVersion,
           provisionerBindingFingerprint: args.provisionerBindingFingerprint,

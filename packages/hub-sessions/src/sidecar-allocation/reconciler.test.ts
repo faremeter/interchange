@@ -20,6 +20,7 @@ function allocation(
     anchorRunId: "run-anchor",
     tenantId: "tenant-1",
     placementPrincipalId: "principal-1",
+    placementPolicy: { tenantPolicies: [], workflowRules: [] },
     provisionerId: "test",
     provisionerApiVersion: 1,
     provisionerBindingFingerprint: "test:v1",
@@ -119,8 +120,15 @@ function deps(args: {
 
 describe("createSidecarAllocationReconciler", () => {
   test("persists identity and fence before ensuring infrastructure", async () => {
-    const pending = allocation();
+    const pending = allocation({
+      targetHostPrincipalId: "principal-host-1",
+      placementPolicy: {
+        tenantPolicies: [],
+        workflowRules: [{ capability: "runtime:browser", effect: "require" }],
+      },
+    });
     const provisioning = allocation({
+      ...pending,
       status: "provisioning",
       generation: 1,
       sidecarId: "sc-new",
@@ -137,6 +145,8 @@ describe("createSidecarAllocationReconciler", () => {
     let storedHash: Uint8Array | undefined;
     let ensureToken: string | undefined;
     let placementPrincipalId: string | undefined;
+    let targetHostPrincipalId: string | undefined;
+    let placementPolicy: unknown;
     const store = fakeStore({
       claimNextReconcilable: async () => {
         if (claimed) return null;
@@ -156,6 +166,8 @@ describe("createSidecarAllocationReconciler", () => {
         calls.push("ensure");
         ensureToken = request.token;
         placementPrincipalId = request.placementPrincipalId;
+        targetHostPrincipalId = request.targetHostPrincipalId;
+        placementPolicy = request.placementPolicy;
         return { kind: "accepted", externalRef: "vm-1" };
       },
     });
@@ -173,6 +185,11 @@ describe("createSidecarAllocationReconciler", () => {
     ]);
     expect(ensureToken).toBe("token-new");
     expect(placementPrincipalId).toBe("principal-1");
+    expect(targetHostPrincipalId).toBe("principal-host-1");
+    expect(placementPolicy).toEqual({
+      tenantPolicies: [],
+      workflowRules: [{ capability: "runtime:browser", effect: "require" }],
+    });
     expect(hexEncode(storedHash ?? new Uint8Array())).toBe(
       hexEncode(await sha256("token-new")),
     );

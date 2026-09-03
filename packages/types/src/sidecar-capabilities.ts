@@ -55,7 +55,16 @@ export const SidecarCapabilityPolicy = type({
 }).onUndeclaredKey("reject");
 export type SidecarCapabilityPolicy = typeof SidecarCapabilityPolicy.infer;
 
-export type TenantSidecarCapabilityPolicy = {
-  readonly tenantId: string;
-  readonly rules: readonly SidecarCapabilityRule[];
-};
+export const TenantSidecarCapabilityPolicy = type({
+  tenantId: "string",
+  rules: SidecarCapabilityRule.array(),
+});
+export type TenantSidecarCapabilityPolicy =
+  typeof TenantSidecarCapabilityPolicy.infer;
+
+export const SidecarProvisioningPolicy = type({
+  tenantPolicies: TenantSidecarCapabilityPolicy.array(),
+  "probeRules?": SidecarCapabilityRule.array(),
+  workflowRules: SidecarCapabilityRule.array(),
+});
+export type SidecarProvisioningPolicy = typeof SidecarProvisioningPolicy.infer;

@@ -94,6 +94,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           anchorRunId,
           tenantId: TENANT_ID,
           placementPrincipalId: PLACEMENT_PRINCIPAL_ID,
+          placementPolicy: { tenantPolicies: [], workflowRules: [] },
           provisionerId: "test",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "test:v1",
