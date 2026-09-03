@@ -19,6 +19,7 @@ import {
   sidecarAllocation as sidecarAllocationTable,
   workflowDefinition as workflowDefinitionTable,
   workflowRun as workflowRunTable,
+  type WorkflowRunCredentialRefs,
 } from "@intx/db/schema";
 import { base64Encode, hexEncode } from "@intx/types";
 import type {
@@ -920,15 +921,36 @@ async function prepareSourceRefDeploy(
  * INSERT between prepare and emit, so it drives `prepareSourceRefDeploy` and
  * `sendMultiStepDeployFrame` directly.
  */
+// The non-secret projection of a delivery, persisted on the anchor run so the
+// reconnect resync can re-resolve current materials. Secrets never land here.
+function credentialRefsFromDelivery(
+  delivery: CredentialDelivery,
+): WorkflowRunCredentialRefs {
+  return {
+    credentialIds: delivery.materials.map((material) => material.credentialId),
+    bindings: delivery.bindings,
+  };
+}
+
 async function emitSourceRefDeployFrame(
   args: DeployCodeSourcedWorkflowArgs & {
     allocationTarget?: AllocatedSidecarTarget;
     sidecarAllocationRouter?: SidecarAllocationRouter;
   },
-): Promise<{ publicKey: string; definitionId: string }> {
+): Promise<{
+  publicKey: string;
+  definitionId: string;
+  credentialRefs?: WorkflowRunCredentialRefs;
+}> {
   const { definitionId, sendArgs } = await prepareSourceRefDeploy(args);
   const result = await sendMultiStepDeployFrame(sendArgs);
-  return { publicKey: result.publicKey, definitionId };
+  return {
+    publicKey: result.publicKey,
+    definitionId,
+    ...(sendArgs.credentials !== undefined
+      ? { credentialRefs: credentialRefsFromDelivery(sendArgs.credentials) }
+      : {}),
+  };
 }
 
 /**
@@ -984,6 +1006,11 @@ export async function deployCodeSourcedWorkflow(
       publicKey: null,
       status: "deployed",
       createdAt: new Date(),
+      // Persist the non-secret shape of the delivery so the reconnect resync
+      // can re-resolve current materials for these ids. Secrets never land here.
+      ...(sendArgs.credentials !== undefined
+        ? { credentialRefs: credentialRefsFromDelivery(sendArgs.credentials) }
+        : {}),
     });
   } catch (cause) {
     throw new SessionLaunchError("start", cause, false);
@@ -1701,6 +1728,7 @@ export function createSessionService(
     anchorRunId: string;
     allocationTarget: AllocatedSidecarTarget;
     publicKey: string;
+    credentialRefs?: WorkflowRunCredentialRefs;
   }): Promise<void> {
     if (db === undefined) {
       throw new Error(
@@ -1737,7 +1765,12 @@ export function createSessionService(
         }
         const [anchor] = await tx
           .update(workflowRunTable)
-          .set({ publicKey: args.publicKey })
+          .set({
+            publicKey: args.publicKey,
+            ...(args.credentialRefs !== undefined
+              ? { credentialRefs: args.credentialRefs }
+              : {}),
+          })
           .where(
             and(
               eq(workflowRunTable.id, args.anchorRunId),
@@ -1823,7 +1856,11 @@ export function createSessionService(
     // Branch on the source discriminant so the emit args match the asset/registry
     // arms: an asset arm carries the rebuilt attachment resolver (asserted
     // non-null to satisfy the union), a registry arm carries none.
-    let result: { publicKey: string; definitionId: string };
+    let result: {
+      publicKey: string;
+      definitionId: string;
+      credentialRefs?: WorkflowRunCredentialRefs;
+    };
     if (source.kind === "asset") {
       if (resolveAttachment === null) {
         throw new Error(
@@ -1844,6 +1881,9 @@ export function createSessionService(
       anchorRunId: params.anchorRunId,
       allocationTarget: params.allocationTarget,
       publicKey: result.publicKey,
+      ...(result.credentialRefs !== undefined
+        ? { credentialRefs: result.credentialRefs }
+        : {}),
     });
 
     return {

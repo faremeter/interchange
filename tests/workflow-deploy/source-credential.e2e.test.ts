@@ -25,7 +25,12 @@ import {
   installAndApproveWorkflowDefinition,
   type RepoId,
 } from "@intx/hub-sessions";
-import { tenant as tenantTable } from "@intx/db/schema";
+import { eq } from "drizzle-orm";
+
+import {
+  tenant as tenantTable,
+  workflowRun as workflowRunTable,
+} from "@intx/db/schema";
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import { createNoopCredentialCipher } from "@intx/crypto";
@@ -379,6 +384,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       }
       expect(terminal.type).toBe("RunCompleted");
+
+      // The deploy persists the non-secret credential-refs projection on the
+      // anchor run, so the reconnect resync can re-resolve current materials.
+      const [anchor] = await h.db
+        .select({ credentialRefs: workflowRunTable.credentialRefs })
+        .from(workflowRunTable)
+        .where(eq(workflowRunTable.id, DEPLOYMENT_ID));
+      expect(anchor?.credentialRefs?.credentialIds).toContain(CREDENTIAL_ID);
+      expect(anchor?.credentialRefs?.bindings.length).toBeGreaterThanOrEqual(1);
+      // No secret is ever persisted in the refs: the seeded secret must not
+      // appear anywhere in the serialized projection.
+      expect(JSON.stringify(anchor?.credentialRefs)).not.toContain(
+        `${CREDENTIAL_ID}-secret`,
+      );
     }, 180_000);
   },
 );

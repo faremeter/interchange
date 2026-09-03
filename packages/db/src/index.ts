@@ -74,6 +74,7 @@ export {
   resolveCredentialRequirement,
   resolveTenantOwnedCredentialById,
   resolveInferenceMaterials,
+  reresolveCurrentMaterials,
   AmbiguousCredentialError,
   CredentialUnauthorizedError,
   buildCredentialDelivery,

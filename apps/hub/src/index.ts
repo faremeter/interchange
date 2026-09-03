@@ -24,7 +24,9 @@ import {
   createSidecarCredentialResolver,
   createWorkflowAllocationService,
   createWorkflowDispatchService,
+  pushCredentialReconcile,
   WORKSPACE_BUILTINS_REGISTRY,
+  type SidecarLookups,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { generateKeyPair } from "@intx/crypto";
@@ -185,7 +187,7 @@ const assetService = createAssetService({
 // the same authorization an externally-triggered run gets. Threaded into
 // the sidecar router as a lookup its `mail.outbound` handler invokes for
 // each workflow-deployment recipient.
-const lookups = {
+const lookups: SidecarLookups = {
   ...createHubSessionLookups({ db, agentRepoStore }),
   materializeMailTriggeredRunGrants: createMailTriggeredRunGrantsMaterializer({
     db,
@@ -206,6 +208,18 @@ const sidecarRouter = createSidecarRouter({
   lookups,
   ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
 });
+
+// Wire the reconnect credential resync now that the router exists (the lookup
+// calls back into it). The handler reads `lookups.resyncCredentials` lazily on
+// each reconnect, so assigning it after construction is in time.
+lookups.resyncCredentials = (agentAddress) => {
+  void pushCredentialReconcile(
+    db,
+    sidecarRouter,
+    agentAddress,
+    credentialCipher,
+  );
+};
 
 const eventCollectors = createEventCollectorRegistry({
   db,

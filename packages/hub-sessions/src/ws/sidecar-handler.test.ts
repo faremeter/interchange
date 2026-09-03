@@ -940,6 +940,32 @@ describe("SidecarRouter", () => {
       expect(r.routeMail(WF_ADDR, "dGVzdA==")).toBe(true);
     });
 
+    test("a reconnected workflow address triggers the credential resync", async () => {
+      // The reconnect closes the offline credential window: once the run
+      // address is routable again, the ready-loop fires the credential resync
+      // for it. It fires only AFTER the challenge is answered, not on the bare
+      // reconnect frame.
+      const kp = await generateKeyPair();
+      const resynced: string[] = [];
+      const r = createTestRouter({
+        requestTimeoutMs: 5000,
+        hubPublicKey: TEST_HUB_KEY,
+        lookups: {
+          lookupPublicKey: async (addr) =>
+            addr === WF_ADDR ? hexEncode(kp.publicKey) : null,
+          resyncCredentials: (addr) => resynced.push(addr),
+        },
+      });
+      const ws = createMockWs();
+      await reconnect(r, ws);
+      expect(resynced).toEqual([]);
+
+      await respondToChallenge(r, ws, kp.privateKey);
+
+      expect(r.getRoutableAddresses()).toContain(WF_ADDR);
+      expect(resynced).toEqual([WF_ADDR]);
+    });
+
     test("rejects a workflow address signed with the wrong key (no hijack)", async () => {
       const kp = await generateKeyPair();
       const wrongKp = await generateKeyPair();

@@ -8,6 +8,7 @@
 // assertions actually depend on.
 
 import type { DB } from "@intx/db";
+import type { WorkflowRunCredentialRefs } from "@intx/db/schema";
 import type { GrantWalkSnapshot } from "@intx/types";
 import {
   asset,
@@ -287,6 +288,7 @@ export type SeedWorkflowRun = {
   address?: string | null;
   publicKey?: string | null;
   status?: "deployed" | "running" | "completed" | "failed" | "cancelled";
+  credentialRefs?: WorkflowRunCredentialRefs | null;
   createdAt?: Date;
   endedAt?: Date | null;
 };
@@ -318,6 +320,9 @@ export async function seedWorkflowRun(
     address: r.address ?? null,
     publicKey: r.publicKey ?? null,
     status: r.status ?? "running",
+    ...(r.credentialRefs !== undefined
+      ? { credentialRefs: r.credentialRefs }
+      : {}),
     ...(r.createdAt !== undefined ? { createdAt: r.createdAt } : {}),
     ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {}),
   });
