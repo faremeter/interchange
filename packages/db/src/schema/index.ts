@@ -25,3 +25,4 @@ export * from "./workflow-run-dispatch";
 export * from "./workflow-run-launch-spec";
 export * from "./workflow-run-execution";
 export * from "./workflow-probe";
+export * from "./execution-host";

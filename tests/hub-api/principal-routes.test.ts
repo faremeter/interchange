@@ -8,6 +8,8 @@ import {
 } from "bun:test";
 
 import { createInMemoryGrantStore } from "@intx/authz";
+import { sha256 } from "@intx/crypto";
+import { executionHost } from "@intx/db/schema";
 import { createApp, type GetSession } from "@intx/hub-api";
 import {
   createSidecarEmitter,
@@ -144,7 +146,7 @@ beforeEach(async () => {
   await h.reset();
 });
 
-async function setup() {
+async function setup(extraGrants: GrantRule[] = []) {
   await seedTenants(h.db, [{ id: TENANT_ID }]);
   await seedPrincipal(h.db, {
     id: ACTOR_PRINCIPAL_ID,
@@ -173,6 +175,14 @@ async function setup() {
     kind: "host",
     refId: HOST_ID,
   });
+  await h.db.insert(executionHost).values({
+    id: HOST_ID,
+    tenantId: TENANT_ID,
+    principalId: HOST_PRINCIPAL_ID,
+    ownerPrincipalId: ACTOR_PRINCIPAL_ID,
+    displayName: "Browser tab",
+    tokenHashSha256: await sha256("host-token"),
+  });
   // The deployment's anchor run carries the routing address the display name
   // resolves to; its id is the deployment id and the child run below self-joins
   // to it on that id. It is inserted first so the child run's deployment_id FK
@@ -194,7 +204,10 @@ async function setup() {
     getSession: createMockGetSession(ACTOR_USER_ID),
     authHandler: () => new Response("", { status: 404 }),
     db: h.db,
-    grantStore: createInMemoryGrantStore([readPrincipalsGrant()]),
+    grantStore: createInMemoryGrantStore([
+      readPrincipalsGrant(),
+      ...extraGrants,
+    ]),
     sidecarRouter: createMockSidecarRouter(),
     sessionService: createMockSessionService(),
     eventCollectors: createMockEventCollectors(),
@@ -207,6 +220,38 @@ async function setup() {
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "DELETE /api/tenants/:tenantId/principals/:principalId",
+  () => {
+    test("returns a conflict when the principal owns an execution host", async () => {
+      const app = await setup([
+        {
+          ...readPrincipalsGrant(),
+          id: "grant-actor-principal-manage",
+          action: "manage",
+        },
+      ]);
+      const response = await app.request(
+        `/api/tenants/${TENANT_ID}/principals/${ACTOR_PRINCIPAL_ID}`,
+        { method: "DELETE" },
+      );
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: {
+          code: "conflict",
+          message: "Principal is still referenced by another resource",
+        },
+      });
+      expect(
+        await h.db.query.principal.findFirst({
+          where: (row, { eq }) => eq(row.id, ACTOR_PRINCIPAL_ID),
+        }),
+      ).toBeDefined();
+    });
+  },
+);
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "GET /api/tenants/:tenantId/principals",
@@ -231,7 +276,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(row["displayName"]).toBe(`Workflow (${DEPLOYMENT_ADDRESS})`);
     });
 
-    test("filters host principals and uses their stable host id as the label", async () => {
+    test("filters host principals and resolves their display name", async () => {
       const app = await setup();
       const res = await app.request(
         `/api/tenants/${TENANT_ID}/principals?kind=host`,
@@ -248,7 +293,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (!isObject(row)) throw new Error("expected principal row");
       expect(row["kind"]).toBe("host");
       expect(row["refId"]).toBe(HOST_ID);
-      expect(row["displayName"]).toBe(HOST_ID);
+      expect(row["displayName"]).toBe("Browser tab");
     });
   },
 );

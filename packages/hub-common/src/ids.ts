@@ -28,6 +28,7 @@ const PREFIXES = {
   signal: "sig_",
   workflowDefinition: "wfd_",
   workflowDefinitionVersion: "wdv_",
+  executionHost: "hst_",
 } as const;
 
 type IDKind = keyof typeof PREFIXES;
@@ -83,3 +84,4 @@ export async function deriveRunPrincipalId(
  */
 export const PAT_PREFIX = "itx_pat_";
 export const SVC_PREFIX = "itx_svc_";
+export const HOST_TOKEN_PREFIX = "intx_host_";

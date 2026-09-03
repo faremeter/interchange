@@ -26,6 +26,10 @@ export {
   resolveWorkflowPrincipalLabels,
 } from "./routes/workflow-principal-name";
 export {
+  createExecutionHostRoutes,
+  type CreateExecutionHostRoutesDeps,
+} from "./routes/execution-hosts";
+export {
   createMailTriggeredRunGrantsMaterializer,
   setRunToolGrantEffect,
   type MailTriggeredRunGrantsDeps,

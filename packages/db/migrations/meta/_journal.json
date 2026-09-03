@@ -652,6 +652,13 @@
       "when": 1788967084061,
       "tag": "0093_busy_chronomancer",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1788967084062,
+      "tag": "0094_mighty_talkback",
+      "breakpoints": true
     }
   ]
 }

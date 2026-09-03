@@ -21,6 +21,7 @@
 | GET | /api/tenants/:tenantId/principals/:principalId | Get principal details |
 | PATCH | /api/tenants/:tenantId/principals/:principalId | Update principal status |
 | DELETE | /api/tenants/:tenantId/principals/:principalId | Remove principal from tenant |
+| POST | /api/tenants/:tenantId/hosts | Enroll an execution host |
 | POST | /api/tenants/:tenantId/members/invite | Invite a user to the tenant |
 | GET | /api/tenants/:tenantId/roles | List roles in the tenant |
 | POST | /api/tenants/:tenantId/roles | Create a custom role |
@@ -316,6 +317,7 @@ Removes a principal from the tenant.
 
 204: (no content) -- Principal removed
 403: ErrorResponse -- Insufficient grants
+409: ErrorResponse -- Principal is still referenced by another resource
 
 ### POST /api/tenants/:tenantId/members/invite
 Invite a user to the tenant
@@ -326,6 +328,19 @@ Body: InviteMember
 
 201: PrincipalResponse -- Invitation sent
 400: ErrorResponse -- Validation error
+
+## Execution Hosts
+
+### POST /api/tenants/:tenantId/hosts
+Enroll an execution host
+
+Creates a tenant-scoped host principal and returns its connection secret exactly once.
+
+Body: CreateExecutionHost
+
+201: ExecutionHostEnrollmentResponse -- Execution host enrolled
+400: unknown -- Invalid execution host enrollment request
+403: ErrorResponse -- Insufficient grants
 
 ## Roles
 
@@ -1290,6 +1305,10 @@ Source: packages/types/src/credentials.ts
 **metadata**: Free-form provider- or integration-specific data attached to the credential. Not interpreted by the hub.
 **scopes**: Permissions granted to this credential by the provider (for example OAuth scopes). Informational on the credential record; the provider is the authority on what the secret can actually do.
 
+### CreateExecutionHost
+`{ displayName: string >= 1 }`
+Source: packages/types/src/execution-hosts.ts
+
 ### CreateFederationTrust
 `{ direction: "bilateral" | "inbound" | "outbound", targetTenantId: string }`
 Source: packages/types/src/tenants.ts
@@ -1398,6 +1417,10 @@ Source: packages/types/src/grants.ts
 
 **effect**: The resolved outcome for the query: the effect of the winning grant, or `deny` when no grant matched (authorization fails closed).
 **matchingGrants**: Every grant that matched the requested resource and action, including the one that won. Useful for debugging why a request was allowed, denied, or required approval.
+
+### ExecutionHostEnrollmentResponse
+`{ host: { createdAt: string, displayName: string, id: string, ownerPrincipalId: string, principalId: string, tenantId: string, updatedAt: string }, secret: string }`
+Source: packages/types/src/execution-hosts.ts
 
 ### FederationTrust
 `{ createdAt: string, direction: "bilateral" | "inbound" | "outbound", tenantDomain: string, tenantId: string, tenantName: string }`

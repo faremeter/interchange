@@ -38,6 +38,7 @@ import { createMeRoutes } from "./routes/me";
 import { createTenantRoutes } from "./routes/tenants";
 import { createTenantFederationRoutes } from "./routes/tenant-federation";
 import { createPrincipalRoutes, createInviteRoutes } from "./routes/principals";
+import { createExecutionHostRoutes } from "./routes/execution-hosts";
 import { createRoleRoutes, createRoleAssignRoutes } from "./routes/roles";
 import { createGrantRoutes, createEvaluateRoutes } from "./routes/grants";
 import { createRunRoutes } from "./routes/runs";
@@ -286,6 +287,10 @@ export function mountHubRoutes(
   app.route(
     "/api/tenants/:tenantId/principals",
     createPrincipalRoutes({ db, requireGrant }),
+  );
+  app.route(
+    "/api/tenants/:tenantId/hosts",
+    createExecutionHostRoutes({ db, principalKeyStore, requireGrant }),
   );
   app.route(
     "/api/tenants/:tenantId/members/invite",

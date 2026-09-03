@@ -16,6 +16,7 @@ import {
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
 import { ts } from "../format";
+import { isReferencedRowViolation } from "../pg-errors";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
@@ -62,6 +63,9 @@ async function resolveIdentities(
   const workflowRefIds = principals
     .filter((p) => p.kind === "workflow")
     .map((p) => p.refId);
+  const hostRefIds = principals
+    .filter((p) => p.kind === "host")
+    .map((p) => p.refId);
 
   if (userRefIds.length > 0) {
     const users = await db.query.user.findMany({
@@ -76,6 +80,15 @@ async function resolveIdentities(
     const wfNames = await resolveWorkflowPrincipalLabels(db, workflowRefIds);
     for (const [refId, displayName] of wfNames) {
       identities.set(refId, { displayName });
+    }
+  }
+
+  if (hostRefIds.length > 0) {
+    const hosts = await db.query.executionHost.findMany({
+      where: (host, { inArray }) => inArray(host.id, hostRefIds),
+    });
+    for (const host of hosts) {
+      identities.set(host.id, { displayName: host.displayName });
     }
   }
 
@@ -337,6 +350,12 @@ export function createPrincipalRoutes({
         204: {
           description: "Principal removed",
         },
+        409: {
+          description: "Principal is still referenced by another resource",
+          content: {
+            "application/json": { schema: resolver(ErrorResponse) },
+          },
+        },
         403: {
           description: "Insufficient grants",
           content: {
@@ -349,17 +368,28 @@ export function createPrincipalRoutes({
       const tenantCtx = c.get("tenant");
       const principalId = c.req.param("principalId");
 
-      const deleted = await db
-        .delete(principal)
-        .where(
-          and(
-            eq(principal.id, principalId),
-            eq(principal.tenantId, tenantCtx.id),
-          ),
-        )
-        .returning();
+      let outcome: "not_found" | "deleted";
+      try {
+        const deleted = await db
+          .delete(principal)
+          .where(
+            and(
+              eq(principal.id, principalId),
+              eq(principal.tenantId, tenantCtx.id),
+            ),
+          )
+          .returning();
+        outcome = deleted.length === 0 ? "not_found" : "deleted";
+      } catch (cause) {
+        if (!isReferencedRowViolation(cause)) throw cause;
+        return errorResponse(
+          c,
+          "conflict",
+          "Principal is still referenced by another resource",
+        );
+      }
 
-      if (deleted.length === 0) {
+      if (outcome === "not_found") {
         return errorResponse(c, "not_found", "Principal not found");
       }
 

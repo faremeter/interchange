@@ -3,6 +3,7 @@ export {
   deriveRunPrincipalId,
   PAT_PREFIX,
   SVC_PREFIX,
+  HOST_TOKEN_PREFIX,
 } from "./ids";
 export { glob } from "./glob";
 export {
