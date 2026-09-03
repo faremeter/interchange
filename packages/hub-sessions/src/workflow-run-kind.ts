@@ -166,9 +166,8 @@ import fs from "node:fs";
 import git from "isomorphic-git";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
-import { glob, repoActionToGrantVerb } from "@intx/hub-common";
 import {
-  UserPrincipal,
+  authorizeUserPrincipal,
   type AuthorizeFn,
   type CommittedReads,
   type KindHandler,
@@ -2953,63 +2952,13 @@ export const workflowRunAuthorize: AuthorizeFn = (
   }
 
   if (principal.kind === "user") {
-    // The route layer has already pre-resolved the grant verdict and
-    // attached it as `authz`. The substrate does NOT re-query the
-    // grant store here; it (a) checks the bearer-token's claims
-    // bound the requested (ref, action) and have not expired, and
-    // (b) sanity-checks that the pre-resolved verdict targets this
-    // exact resource and grant verb. Both gates must pass before the
-    // verdict's `effect` is honoured.
-    const parsed = UserPrincipal(principal);
-    if (parsed instanceof type.errors) {
-      return {
-        allowed: false,
-        reason: `user principal is malformed: ${parsed.summary}`,
-      };
-    }
-    if (!parsed.tokenClaims.actions.includes(action)) {
-      return {
-        allowed: false,
-        reason: `token does not grant action ${action}`,
-      };
-    }
-    // `ref === "*"` is the substrate's sentinel for the bulk read
-    // performed by `listRefs`. Per-ref filtering is the advertise-refs
-    // layer's responsibility, so the bulk read is gated on action and
-    // expiry alone.
-    if (ref !== "*" && !glob.match(parsed.tokenClaims.refPattern, ref)) {
-      return {
-        allowed: false,
-        reason: `token refPattern ${parsed.tokenClaims.refPattern} does not match ${ref}`,
-      };
-    }
-    if (Date.now() >= parsed.tokenClaims.expiresAt) {
-      return {
-        allowed: false,
-        reason: `token expired at ${parsed.tokenClaims.expiresAt}`,
-      };
-    }
-    const expectedResource = `workflow-run:${repoId.id}`;
-    if (parsed.authz.resource !== expectedResource) {
-      return {
-        allowed: false,
-        reason: `authz verdict resource ${parsed.authz.resource} does not match ${expectedResource}`,
-      };
-    }
-    const expectedGrantVerb = repoActionToGrantVerb(action);
-    if (parsed.authz.grantVerb !== expectedGrantVerb) {
-      return {
-        allowed: false,
-        reason: `authz verdict grantVerb ${parsed.authz.grantVerb} does not match ${expectedGrantVerb}`,
-      };
-    }
-    if (parsed.authz.effect === "allow") {
-      return { allowed: true };
-    }
-    return {
-      allowed: false,
-      reason: `authz verdict denied for ${expectedResource} ${expectedGrantVerb}`,
-    };
+    return authorizeUserPrincipal({
+      principal,
+      repoId,
+      ref,
+      action,
+      resourcePrefix: "workflow-run",
+    });
   }
 
   // Fail closed on any kind not handled above. The tenant-level
