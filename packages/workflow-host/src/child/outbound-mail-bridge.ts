@@ -42,6 +42,8 @@ import type {
   OutboundMessagePayload,
 } from "../ipc/control-channel";
 
+import { createPendingRequestCore } from "./pending-request";
+
 const logger = getLogger(["workflow-host", "child", "outbound-mail-bridge"]);
 
 /**
@@ -74,34 +76,30 @@ export interface CreateChildOutboundMailBridgeOpts {
   allocateRequestId?: () => string;
 }
 
-type PendingEntry = {
-  resolve: (value: SendReceipt) => void;
-  reject: (err: Error) => void;
-};
-
 /**
  * Construct the child-side outbound-mail bridge. Pending sends live in
- * a map keyed by `requestId`; the bridge resolves the awaiter when the
- * supervisor's matching `outbound.result` lands.
+ * the shared pending-request core keyed by `requestId`; the bridge
+ * resolves the awaiter when the supervisor's matching `outbound.result`
+ * lands.
  */
 export function createChildOutboundMailBridge(
   opts: CreateChildOutboundMailBridgeOpts,
 ): ChildOutboundMailBridge {
-  const pending = new Map<string, PendingEntry>();
-  const allocate = opts.allocateRequestId ?? defaultRequestIdAllocator();
+  const pending = createPendingRequestCore<SendReceipt, undefined>({
+    label: "workflow-child outbound mail",
+    allocatorPrefix: "om",
+    allocateRequestId: opts.allocateRequestId,
+  });
 
   return {
     get pendingCount() {
-      return pending.size;
+      return pending.pendingCount;
     },
     async submit(
       senderAddress: string,
       message: OutboundMessage,
     ): Promise<SendReceipt> {
-      const requestId = allocate();
-      const resultPromise = new Promise<SendReceipt>((resolve, reject) => {
-        pending.set(requestId, { resolve, reject });
-      });
+      const { requestId, promise } = pending.register(undefined);
       try {
         await opts.upstreamSender.send({
           type: "outbound.message",
@@ -112,22 +110,17 @@ export function createChildOutboundMailBridge(
           },
         });
       } catch (cause) {
-        pending.delete(requestId);
-        const reason = cause instanceof Error ? cause.message : String(cause);
-        throw new Error(
-          `workflow-child outbound mail: upstream send failed for requestId ${requestId}: ${reason}`,
-          { cause },
-        );
+        pending.discard(requestId);
+        throw pending.sendFailedError(requestId, cause);
       }
-      return resultPromise;
+      return promise;
     },
     handleResult(data) {
-      const entry = pending.get(data.requestId);
+      const entry = pending.settle(data.requestId);
       if (entry === undefined) {
         logger.warn`outbound.result landed with no pending entry; requestId=${data.requestId} dropped`;
         return;
       }
-      pending.delete(data.requestId);
       if (data.result.ok) {
         entry.resolve({
           messageId: data.result.messageId,
@@ -135,21 +128,10 @@ export function createChildOutboundMailBridge(
         });
         return;
       }
-      entry.reject(
-        new Error(
-          `workflow-child outbound mail (requestId=${data.requestId}) rejected by supervisor: ${data.result.reason}`,
-        ),
-      );
+      entry.reject(pending.rejectedError(data.requestId, data.result.reason));
     },
     cancelAll(reason: string) {
-      for (const [requestId, entry] of pending) {
-        entry.reject(
-          new Error(
-            `workflow-child outbound mail (requestId=${requestId}) cancelled: ${reason}`,
-          ),
-        );
-      }
-      pending.clear();
+      pending.cancelAll(reason);
     },
   };
 }
@@ -183,21 +165,8 @@ function projectOutboundMessage(
     payload.attachments = message.attachments.map((a) => ({
       name: a.name,
       contentType: a.contentType,
-      dataBase64: bytesToBase64(a.data),
+      dataBase64: base64Encode(a.data),
     }));
   }
   return payload;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  return base64Encode(bytes);
-}
-
-function defaultRequestIdAllocator(): () => string {
-  let counter = 0;
-  return () => {
-    counter += 1;
-    const rand = Math.random().toString(36).slice(2, 10);
-    return `om-${String(counter)}-${rand}`;
-  };
 }
