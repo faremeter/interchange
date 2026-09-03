@@ -15,6 +15,7 @@ import type {
 } from "@intx/hub-sessions/substrate";
 import {
   classifyTerminalEvent,
+  parseEventSeq,
   WORKFLOW_RUN_EVENTS_FILE,
   encodeCombinedEventLog,
 } from "@intx/hub-sessions/substrate";
@@ -23,7 +24,6 @@ import { SUPERVISOR_PRINCIPAL_KIND } from "./cancel-signing";
 
 const RUNS_PREFIX = "runs";
 const EVENTS_DIR = "events";
-const EVENT_FILENAME_RE = /^(0|[1-9][0-9]*)\.json$/;
 
 export type CompactRunEventsOpts = {
   /** Substrate handle the supervisor writes through. */
@@ -77,9 +77,9 @@ export async function compactRunEvents(
   }
   const seqs: number[] = [];
   for (const name of filenames) {
-    const match = EVENT_FILENAME_RE.exec(name);
-    if (match === null || match[1] === undefined) continue;
-    seqs.push(Number.parseInt(match[1], 10));
+    const seq = parseEventSeq(name);
+    if (seq === null) continue;
+    seqs.push(seq);
   }
   if (seqs.length === 0) return { compacted: false };
   const lastRaw = await fs.readFile(
@@ -120,13 +120,13 @@ export async function compactRunEvents(
         const entries: { seq: number; bytes: Uint8Array }[] = [];
         for (const [filepath, bytes] of existing) {
           const name = filepath.slice(prefix.length);
-          const match = EVENT_FILENAME_RE.exec(name);
-          if (match === null || match[1] === undefined) {
+          const seq = parseEventSeq(name);
+          if (seq === null) {
             throw new Error(
               `supervisor run-event-compaction: unexpected non-event file ${filepath} under run ${opts.runId}; refusing to compact`,
             );
           }
-          entries.push({ seq: Number.parseInt(match[1], 10), bytes });
+          entries.push({ seq, bytes });
         }
         if (entries.length === 0) return {};
         entries.sort((a, b) => a.seq - b.seq);

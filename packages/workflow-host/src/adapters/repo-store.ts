@@ -35,6 +35,7 @@ import type {
   RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions/substrate";
 import {
+  parseEventSeq,
   subscribeKind,
   WORKFLOW_RUN_EVENTS_FILE,
   splitCombinedEventLog,
@@ -52,8 +53,6 @@ type SubscribeOpts = Parameters<RepoStore["subscribe"]>[1];
 
 const RUNS_PREFIX = "runs";
 const EVENTS_DIR = "events";
-
-const EVENT_FILENAME_RE = /^(0|[1-9][0-9]*)\.json$/;
 
 /**
  * On-disk envelope shape committed under
@@ -232,11 +231,8 @@ async function readAllEventsForRun(
   const eventBlobs = await reads.listDir(`${runDir}/${EVENTS_DIR}`);
   for (const child of eventBlobs) {
     if (child.type !== "blob") continue;
-    const match = EVENT_FILENAME_RE.exec(child.name);
-    if (match === null) continue;
-    const seqStr = match[1];
-    if (seqStr === undefined) continue;
-    const seqFromName = Number.parseInt(seqStr, 10);
+    const seqFromName = parseEventSeq(child.name);
+    if (seqFromName === null) continue;
     const raw = decoder.decode(await reads.readBlobByOid(child.oid));
     const source = `${opts.repoId.id}/${runId}/${EVENTS_DIR}/${child.name}`;
     const entry = parseEventEnvelope(raw, source);
@@ -372,11 +368,8 @@ async function appendBatchEvents(
           let priorLastSeq = 0;
           for (const filepath of existing.keys()) {
             const name = filepath.slice(prefix.length);
-            const match = EVENT_FILENAME_RE.exec(name);
-            if (match === null) continue;
-            const seqStr = match[1];
-            if (seqStr === undefined) continue;
-            const seq = Number.parseInt(seqStr, 10);
+            const seq = parseEventSeq(name);
+            if (seq === null) continue;
             if (seq > priorLastSeq) priorLastSeq = seq;
           }
           const files: Record<string, string | Uint8Array> = {};

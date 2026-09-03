@@ -26,6 +26,7 @@
 
 import { type } from "arktype";
 
+import { parseEventSeq } from "@intx/hub-sessions/substrate";
 import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
@@ -105,8 +106,6 @@ export type CommitCancelRequestedResult = {
   signature: SignedPayload;
 };
 
-const EVENT_FILENAME_RE = /^(0|[1-9][0-9]*)\.json$/;
-
 const OnDiskEnvelope = type({
   seq: "number >= 0",
   type: "string",
@@ -165,11 +164,8 @@ export async function commitCancelRequested(
         let maxSeq = -1;
         for (const filepath of existing.keys()) {
           const name = filepath.slice(prefix.length);
-          const match = EVENT_FILENAME_RE.exec(name);
-          if (match === null) continue;
-          const seqStr = match[1];
-          if (seqStr === undefined) continue;
-          const seq = Number.parseInt(seqStr, 10);
+          const seq = parseEventSeq(name);
+          if (seq === null) continue;
           if (seq > maxSeq) maxSeq = seq;
         }
         const nextSeq = maxSeq + 1;
