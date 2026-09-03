@@ -59,31 +59,6 @@ export function createHubSessionLookups(
   const workflowRunDispatchStore = createWorkflowRunDispatchStore(db);
 
   return {
-    async lookupPublicKey(agentAddress) {
-      // Every routable address names one workflow run, whose key lives on its
-      // single self-anchored workflow_run row, keyed by address. Read the key
-      // off that row, gated on a live run (born "deployed", "running" after its
-      // first trigger) so a decommissioned deployment's key can no longer
-      // satisfy a challenge. The "deployed" arm is load-bearing: the reconnect
-      // ownership challenge fires in the deploy->first-trigger window, so a
-      // "running"-only gate would fail every such challenge closed. A missing
-      // row or a null publicKey (live but not yet acked) returns null so the
-      // reconnect challenge fails closed and the address stays unrouted rather
-      // than routing without ownership proof.
-      const row = await db
-        .select({ publicKey: workflowRun.publicKey })
-        .from(workflowRun)
-        .where(
-          and(
-            eq(workflowRun.address, agentAddress),
-            inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0]);
-      return row?.publicKey ?? null;
-    },
-
     async lookupDeployRef() {
       // A workflow run is a supervised workflow-process pinned forever like a
       // native deployment: it keeps its deploy-time definition and never

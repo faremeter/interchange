@@ -440,9 +440,9 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
   test("markAddressUnroutable holds a push until notifyAddressRoutable resumes it", async () => {
     // The reconnect ordering contract. A WS disconnect blocks the address:
     // a write that lands while blocked schedules no wire push, because a
-    // push shipped on the fresh, not-yet-challenged connection is dropped by
-    // the hub as "unrouted". The reconnect challenge lifts the block and the
-    // held push ships then -- after the hub has re-routed the address.
+    // push shipped on the fresh, not-yet-registered connection is dropped by
+    // the hub as "unrouted". The reconnect route announcement lifts the block,
+    // and the held push ships after the hub has re-routed the address.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     registry.record("dep-blocked", "agent-blocked@example.com");
@@ -484,7 +484,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     // in-flight transfer) and latches its error. There is no later local
     // write to re-arm the coalescing loop, so without the routable-again
     // re-drive the run would strand forever. notifyAddressRoutable re-ships
-    // the un-acked commits once the challenge re-routes the address.
+    // the un-acked commits once reconnect registration re-routes the address.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     registry.record("dep-cancelled", "agent-cancelled@example.com");

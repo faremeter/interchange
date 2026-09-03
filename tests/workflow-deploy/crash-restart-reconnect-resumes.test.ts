@@ -29,7 +29,7 @@
 // real workflow-process child, mock inference. The crash is a genuine kill
 // of the sidecar subprocess; the restart is a fresh sidecar against the
 // dead process's SIDECAR_DATA_DIR, so survival rides the production
-// boot-time restore path and the real reconnect ownership challenge.
+// boot-time restore path and allocation-authenticated reconnect.
 
 import fs from "node:fs";
 

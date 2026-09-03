@@ -49,9 +49,6 @@ function stubKeyStore(): Parameters<
       // exercises.
       return { keyPair: await generateKeyPair(), isNew: false };
     },
-    signChallenge() {
-      return null;
-    },
     recordHubKey() {
       /* no-op */
     },
@@ -330,9 +327,6 @@ describe("deploy-failure registry leak", () => {
     const keyStore = {
       async loadOrGenerateKey() {
         return { keyPair: await generateKeyPair(), isNew: false };
-      },
-      signChallenge() {
-        return null;
       },
       recordHubKey(address: string) {
         recordedHubKeys.push(address);

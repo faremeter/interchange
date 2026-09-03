@@ -1,8 +1,8 @@
 // Hex codec for byte strings.
 //
-// Used across the codebase for Ed25519 key serialization, challenge
-// nonces, and signatures on the wire. Centralizing here keeps the
-// encoding stable and the error wording consistent.
+// Used across the codebase for Ed25519 key and signature serialization on the
+// wire. Centralizing here keeps the encoding stable and the error wording
+// consistent.
 
 export function hexEncode(bytes: Uint8Array): string {
   return Array.from(bytes)

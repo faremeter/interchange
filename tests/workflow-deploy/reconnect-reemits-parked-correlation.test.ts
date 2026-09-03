@@ -8,7 +8,7 @@
 // rows at the hub (the `signal.correlation.register` frame the suspend emitted
 // never co-wrote them) followed by their APPEARANCE after the hub link
 // reconnects. The recovery is the sidecar's Trigger B: on the reconnect
-// ownership challenge the hub-link fires `onWorkflowAddressesRoutable`, which
+// route announcement the hub-link fires `onWorkflowAddressesRoutable`, which
 // calls `reEmitParkedCorrelations(address)`, which asks the deployment's live
 // supervisor to re-query its child's durably-parked approval correlations and
 // re-emit each through the suspension sink -> a fresh
@@ -55,8 +55,8 @@
 // migrated Postgres schema (`@intx/test-harness`), bridged by wiring the fixture
 // hub's `registerSignalCorrelation` lookup to the real DB co-write. The drop is
 // a genuine server-side WebSocket close; the recovery is the sidecar's real
-// `hub-link` reconnect passing the hub's ownership challenge and the supervisor
-// re-emitting the parked correlation.
+// allocation-authenticated `hub-link` reconnect and the supervisor re-emitting
+// the parked correlation.
 //
 // Single-test file. The `deploy-flow-env` (real sidecar subprocess + its
 // on-disk warm step-state) is `beforeAll`-scoped, while the DB resets per test.
@@ -128,8 +128,8 @@ import { singleStepMailToolEntry } from "./fixtures/single-step-mail-tool";
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 // A top-level `run_<hex>` deploy run identity (not a per-step derived
 // address), matching the reconnect-survival fixtures. The
-// reconnect ownership challenge re-routes it and fires
-// `onWorkflowAddressesRoutable`, which is what drives Trigger B.
+// reconnect route announcement fires `onWorkflowAddressesRoutable`, which is
+// what drives Trigger B.
 const INSTANCE_LOCAL = "run_dep0ec0ffee0ec0ffee0ec0ffee0ec0f";
 const DEPLOYMENT_ID = INSTANCE_LOCAL;
 const STEP_ID = "step1";
@@ -413,7 +413,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       hasRun = true;
 
       // The deployment mail address is a run address: it names the single
-      // self-anchored run that Trigger B re-challenges on reconnect.
+      // self-anchored run that Trigger B re-announces on reconnect.
       expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
       // Seed the tenancy the co-write resolves against: a tenant, the workflow
@@ -499,7 +499,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Wait for the deployment to ack its key so the sidecar's hub link is
       // fully live and the address is routable before firing the trigger and
-      // before the drop below has a challenged address to re-route. The
+      // before the drop below has an established route to restore. The
       // source-ref frame round-trips through the real sidecar subprocess, so
       // routability is asynchronous; wait for it rather than asserting it
       // synchronously.
@@ -598,8 +598,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // hub-side state a suspend that emitted its register while the hub was
       // down would leave: a child parked on a correlation with no rows at the
       // hub. Deleting while disconnected guarantees no concurrent re-emit can
-      // race the delete (the address is unrouted, so any queued register frame
-      // is dropped by the hub's ownership gate until the challenge re-routes it).
+      // race the delete because Trigger B does not run until reconnect restores
+      // the address's route.
       await h.db
         .delete(approval)
         .where(eq(approval.anchorRunId, DEPLOYMENT_ID));
@@ -620,12 +620,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // ---- reconnect: Trigger B re-emits the parked correlation ----
       //
-      // The sidecar reconnects and re-proves ownership of the deployment
-      // address. Passing the challenge fires the hub-link's
+      // The sidecar reconnects and re-announces the deployment address. Sending
+      // the allocation-authenticated reconnect frame fires the hub-link's
       // `onWorkflowAddressesRoutable`, which calls `reEmitParkedCorrelations`:
       // the supervisor re-queries the child's still-parked approval correlation
-      // and re-emits its register, which now reaches the routed hub and
-      // co-writes the rows again.
+      // and re-emits its register, which now reaches the routed hub and co-writes
+      // the rows again.
       const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
         timeoutMs: 30_000,
       });

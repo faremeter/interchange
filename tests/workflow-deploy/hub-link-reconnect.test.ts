@@ -3,22 +3,21 @@
 // Exercises the three helpers `deploy-flow-env` grew for the
 // reconnect-survival acceptance work -- `settleThenDrop`,
 // `waitForReconnect`, and (via `settleThenDrop`) `dropHubLink` -- plus the
-// `lookupPublicKey`/`liveHandles` wiring that makes a dropped sidecar link
-// reconnect instead of looping on a closed socket.
+// `liveHandles` wiring that lets the harness force a dropped sidecar link.
 //
 // Shape: deploy a single-step workflow, drive one mail trigger to
 // `RunCompleted`, settle the pack-push pipeline and drop the hub link,
-// wait for the deployment address to become routable again (the reconnect
-// ownership challenge passing), then fire a second mail trigger and assert
-// it also reaches `RunCompleted`. A deployed workflow survives the
+// wait for the allocation-authenticated reconnect to make the deployment
+// address routable again, then fire a second mail trigger and assert it also
+// reaches `RunCompleted`. A deployed workflow survives the
 // reconnect: the second run only exists because the sidecar re-established
 // the link and re-entered routing.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, a real workflow-process child, and a test inference
 // provider. The drop is a genuine server-side WebSocket close; the
-// reconnect is the sidecar's real `hub-link` reconnect path passing the
-// hub's ownership challenge.
+// reconnect is the sidecar's real `hub-link` path passing durable identity
+// revalidation and the current allocation-generation fence.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

@@ -2,15 +2,14 @@
 //
 // Persists key pairs as raw 32-byte binary files on disk and produces
 // them on demand. The cryptographic primitives (keypair generation,
-// challenge signing, deploy-commit verification) are host-supplied so
-// the package does not pin a particular crypto backend.
+// deploy-commit verification) are host-supplied so the package does
+// not pin a particular crypto backend.
 //
 // In addition to the on-disk persistence, the store keeps an in-memory
 // cache of the keypair and the paired hub public key for every agent
 // that has been loaded or recorded during the process lifetime. The
 // cache backs the per-frame crypto operations the wire layer needs:
-// signChallenge for challenge response frames and verifyDeployCommit
-// for incoming deploy packs.
+// verifyDeployCommit for incoming deploy packs.
 
 import fsp from "node:fs/promises";
 import { hasCode, hexDecode } from "@intx/types";
@@ -21,14 +20,6 @@ import { keysDir, privateKeyPath, publicKeyPath } from "./agent-paths";
 export type AgentKeyStoreDeps = {
   dataDir: string;
   generateKeyPair: () => Promise<KeyPair>;
-  /**
-   * Sign `payload` with the supplied raw Ed25519 private key. Returns
-   * the raw 64-byte detached signature. Used by signChallenge.
-   */
-  signEd25519: (
-    privateKey: Uint8Array,
-    payload: Uint8Array,
-  ) => Promise<Uint8Array>;
   /**
    * Verify an SSH signature block against the supplied public key.
    * Used by verifyDeployCommit.
@@ -43,26 +34,12 @@ export type AgentKeyStoreDeps = {
 export type AgentKeyStore = {
   /**
    * Load the existing keypair for an agent, or mint and persist a new
-   * one. The keypair is also cached in memory so subsequent
-   * signChallenge calls do not touch disk. The `isNew` flag is true
+   * one. The keypair is also cached in memory. The `isNew` flag is true
    * when the keypair was just generated.
    */
   loadOrGenerateKey(
     address: string,
   ): Promise<{ keyPair: KeyPair; isNew: boolean }>;
-  /**
-   * Sign the challenge payload with the agent's private key. On a cache
-   * miss the durable on-disk key is reloaded, so an address whose cache
-   * was wiped by forgetAgent (e.g. a challenge.failed during the deploy
-   * window) can still answer a later challenge instead of being stranded
-   * until process restart. Returns null only when no key is persisted for
-   * the address — the caller (HubLink) treats that as "skip this
-   * challenge."
-   */
-  signChallenge(
-    address: string,
-    payload: Uint8Array,
-  ): Promise<Uint8Array | null>;
   /**
    * Record the hub public key the agent has been paired with. Cached in
    * memory only; the deploy path re-records it on every deploy, so it
@@ -80,14 +57,13 @@ export type AgentKeyStore = {
     signature: string,
   ): Promise<boolean>;
   /**
-   * Drop the in-memory caches for an agent. Called on undeploy and on
-   * challenge.failed.
+   * Drop the in-memory caches for an agent. Called on undeploy.
    */
   forgetAgent(address: string): void;
 };
 
 export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
-  const { dataDir, generateKeyPair, signEd25519, verifySSHSig } = deps;
+  const { dataDir, generateKeyPair, verifySSHSig } = deps;
 
   const agentKeys = new Map<string, KeyPair>();
   const hubKeys = new Map<string, Uint8Array>();
@@ -140,15 +116,6 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
     return { keyPair, isNew: true };
   }
 
-  async function signChallenge(
-    address: string,
-    payload: Uint8Array,
-  ): Promise<Uint8Array | null> {
-    const keyPair = agentKeys.get(address) ?? (await loadKeyFromDisk(address));
-    if (keyPair === null || keyPair === undefined) return null;
-    return signEd25519(keyPair.privateKey, payload);
-  }
-
   function recordHubKey(address: string, hexHubPublicKey: string): void {
     hubKeys.set(address, hexDecode(hexHubPublicKey));
   }
@@ -174,7 +141,6 @@ export function createAgentKeyStore(deps: AgentKeyStoreDeps): AgentKeyStore {
 
   return {
     loadOrGenerateKey,
-    signChallenge,
     recordHubKey,
     verifyDeployCommit,
     forgetAgent,

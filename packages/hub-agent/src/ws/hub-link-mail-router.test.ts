@@ -21,13 +21,13 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { base64Encode, hexEncode } from "@intx/types";
+import { base64Encode } from "@intx/types";
 import type {
   HarnessConfig,
   InboundMessage,
   KeyPair,
 } from "@intx/types/runtime";
-import { generateKeyPair, signEd25519, verifySSHSignature } from "@intx/crypto";
+import { generateKeyPair, verifySSHSignature } from "@intx/crypto";
 import { hexDecode } from "@intx/types";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
@@ -47,11 +47,6 @@ function createTestKeyStore(): AgentKeyStore & {
       const existing = agentKeys.get(address);
       if (existing !== undefined) return { keyPair: existing, isNew: false };
       throw new Error(`No key registered for ${address} in test store`);
-    },
-    async signChallenge(address, payload) {
-      const kp = agentKeys.get(address);
-      if (kp === undefined) return null;
-      return await signEd25519(kp.privateKey, payload);
     },
     recordHubKey(address, hexHubPublicKey) {
       hubKeys.set(address, hexDecode(hexHubPublicKey));
@@ -161,8 +156,6 @@ const VALID_MESSAGE = new TextEncoder().encode(
 type TestEnv = {
   server: ReturnType<typeof Bun.serve>;
   router: ReturnType<typeof createSidecarRouter>;
-  // address -> hex-encoded Ed25519 public key used by the test key store.
-  deploymentKeys: Map<string, string>;
 };
 
 const identities = new Map<
@@ -188,7 +181,6 @@ const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) =>
   ensureIdentity(sidecarId);
 
 function startTestServer(): TestEnv {
-  const deploymentKeys = new Map<string, string>();
   const router = createSidecarRouter({
     authenticateSidecar: acceptAnySidecar,
     validateSidecarIdentity: async () => true,
@@ -249,7 +241,7 @@ function startTestServer(): TestEnv {
     port: 0,
   });
 
-  return { server, router, deploymentKeys };
+  return { server, router };
 }
 
 const env = startTestServer();
@@ -259,11 +251,10 @@ afterAll(async () => {
 });
 
 /**
- * Wire a workflow deployment for the challenged reconnect path: mint a
- * keypair, register it in the sidecar keyStore (so `signChallenge` answers the
- * hub nonce) and in the hub's `deploymentKeys` lookup (so the hub challenges
- * and verifies). The deployment address then routes once the reconnect
- * challenge round-trips.
+ * Wire a workflow deployment for the reconnect path: mint a keypair and
+ * register it in the sidecar keyStore so the deploy path picks up the
+ * pinned key. The deployment address then routes once the hub
+ * re-registers it on (re)connect.
  */
 async function provisionDeploymentKey(
   keyStore: ReturnType<typeof createTestKeyStore>,
@@ -271,7 +262,6 @@ async function provisionDeploymentKey(
 ): Promise<void> {
   const kp = await generateKeyPair();
   keyStore.registerKey(address, kp);
-  env.deploymentKeys.set(address, hexEncode(kp.publicKey));
 }
 
 describe("hub-link mail.inbound throwing router", () => {

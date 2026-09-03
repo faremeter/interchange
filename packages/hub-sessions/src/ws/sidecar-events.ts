@@ -80,9 +80,9 @@ export type SidecarEventMap = {
   };
 
   /** Notification. Emitted once when a sidecar's connection closes,
-   * carrying every address the connection owned -- challenged session
-   * addresses and hub-minted workflow-substrate deployment addresses
-   * alike -- so lifecycle teardown covers both. */
+   * carrying every address the connection owned -- session addresses
+   * and hub-minted workflow-substrate deployment addresses alike --
+   * so lifecycle teardown covers both. */
   "sidecar.disconnect": {
     ownedAddresses: string[];
     /** Present only when the closing socket was the current allocated owner. */
@@ -239,11 +239,6 @@ export function createSidecarEmitter(): SidecarEventEmitter {
 }
 
 export type SidecarLookups = {
-  /** Returns the hex-encoded Ed25519 public key stored for the address,
-   * or `null` if the address is unknown. Used during the reconnect
-   * challenge to verify the sidecar's signature. */
-  lookupPublicKey?: (agentAddress: string) => Promise<string | null>;
-
   /** Returns the hub's current deploy ref for the address, or `null` if
    * no deploy state is tracked. The wire layer compares this against
    * the sidecar's reported ref during reconnect and emits

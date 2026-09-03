@@ -924,9 +924,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
 
     const multiDataDir = await createTempBaseDir("sidecar-multi-data-");
-    // The deployment address's own key -- what `loadOrGenerateKey` mints and
-    // `signChallenge` signs reconnect challenges with. Pin it so the ack
-    // assertion below is deterministic.
+    // The deployment address's own key -- what `loadOrGenerateKey` mints.
+    // Pin it so the ack assertion below is deterministic.
     const deploymentKeyPair = await generateKeyPair();
     const { router } = await buildMultistepFixture({
       spawner,
@@ -1002,10 +1001,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     const result = await deployPromise;
     // Every deployment -- single- or multi-step -- acks the deployment
-    // address's own public key, the one `signChallenge` signs reconnect
-    // challenges with, so the hub can verify ownership on reconnect. A
-    // multi-step deployment previously acked the supervisor principal key,
-    // which the hub discarded. The hex is a 64-character lowercase string.
+    // address's own public key, so the hub can verify ownership on
+    // reconnect. A multi-step deployment previously acked the supervisor
+    // principal key, which the hub discarded. The hex is a 64-character
+    // lowercase string.
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
     expect(result.publicKey).toBe(hexEncode(deploymentKeyPair.publicKey));
 
@@ -2926,11 +2925,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a single-step deploy acks the agent key, not the supervisor key", async () => {
-    // The single-step head IS an agent identity: it signs its own reconnect
-    // challenges with the agent key, and the hub records the ack's key into
-    // agent_instance.publicKey and verifies the challenge against it. So the
-    // ack must surface the AGENT key, not the supervisor principal key --
-    // otherwise a rerouted instance's reconnect signature never matches.
+    // The single-step head is the deployed agent identity, so the ack must
+    // surface the agent key rather than the supervisor principal key.
     const headKeyPair = await generateKeyPair();
     const spawner = makeReadyDrivingSpawner(10300);
     const { router, keyPair: fixtureKeyPair } = await buildMultistepFixture({

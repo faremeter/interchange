@@ -417,8 +417,8 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     const ctx = await deployEdgeWorkflow(env, CONNECTED_WINDOW_DEPLOYMENT_ID);
 
     // Keep the deployment stably routable for a beat so the drop lands well
-    // clear of the deploy window (a drop racing the key-ack would fail the
-    // reconnect challenge for reasons unrelated to mail retention).
+    // clear of the deploy window, so setup races do not confound the mail
+    // retention behavior.
     const settleStart = Date.now();
     let stableSince = Date.now();
     while (Date.now() - stableSince < 1_000) {

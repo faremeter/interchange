@@ -355,9 +355,8 @@ describe("createHubSessionOrchestrator", () => {
         publicKey: "deadbeef",
       });
       // A workflow-derived deployment address has no agent_instance row; its
-      // key is persisted on the deployment's anchor workflow_run row (keyed by
-      // address) so the reconnect challenge can verify it off the same row the
-      // key lookup reads.
+      // key is persisted on the deployment's anchor workflow_run row, keyed by
+      // address.
       expect(harness.updates).toHaveLength(1);
       expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
       expect(harness.updates[0]?.table).toBe("workflow_run");
