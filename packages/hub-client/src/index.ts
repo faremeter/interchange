@@ -7,6 +7,7 @@ export {
 } from "./transforms";
 export { WorkflowRunEvent, WorkflowRunEvents } from "./validators";
 export { createRunSession, type RunSession } from "./session";
+export { enrollExecutionHost } from "./execution-hosts";
 export {
   listWorkflowDeployments,
   deployWorkflow,
