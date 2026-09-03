@@ -78,6 +78,7 @@ export type PrepareProvisionedWorkflowDeploymentArgs = {
   readonly pin?: string;
   readonly definitionAssetId: string;
   readonly sessionId: string;
+  readonly placementPrincipalId: string;
   readonly sourceAuthorityPrincipalId: string;
   readonly sourceOfferingIds: readonly string[];
   readonly defaultSourceOfferingId: string;

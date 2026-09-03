@@ -322,6 +322,7 @@ export function createWorkflowRoutes({
             ...(body.pin !== undefined ? { pin: body.pin } : {}),
             definitionAssetId: assetRow.id,
             sessionId,
+            placementPrincipalId: c.get("principal").id,
             sourceAuthorityPrincipalId: c.get("principal").id,
             sourceOfferingIds: body.sourceOfferingIds,
             defaultSourceOfferingId: body.defaultSourceOfferingId,

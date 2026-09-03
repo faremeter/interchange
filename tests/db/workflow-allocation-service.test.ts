@@ -209,6 +209,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         entry: "./workflow.mjs",
         definitionAssetId: ASSET_ID,
         sessionId: `ses-${anchorRunId}`,
+        placementPrincipalId: PRINCIPAL_ID,
         sourceAuthorityPrincipalId: PRINCIPAL_ID,
         sourceOfferingIds: [OFFERING_ID],
         defaultSourceOfferingId: OFFERING_ID,
