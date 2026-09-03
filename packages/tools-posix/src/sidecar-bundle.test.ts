@@ -14,12 +14,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createDefaultDirectorRegistry, type BaseEnv } from "@intx/agent";
+import { createDefaultDirectorRegistry } from "@intx/agent";
 import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import type { InferenceSource } from "@intx/types/runtime";
 
-import { posix } from "./sidecar-bundle";
+import { posix, type PosixToolEnv } from "./sidecar-bundle";
 import { TOOL_NAMES } from "./registry";
 
 const SOURCE: InferenceSource = {
@@ -31,7 +31,7 @@ const SOURCE: InferenceSource = {
 };
 
 let tmpDir: string;
-let env: BaseEnv;
+let env: PosixToolEnv;
 
 beforeAll(async () => {
   tmpDir = await mkdtemp(join(tmpdir(), "tools-posix-sidecar-bundle-test-"));
@@ -41,6 +41,7 @@ beforeAll(async () => {
     defaultSource: SOURCE.id,
     storage,
     workdir: tmpDir,
+    toolCwd: tmpDir,
     audit: noopAuditStore(),
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
