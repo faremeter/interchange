@@ -158,6 +158,7 @@ export type MountHubRoutesDeps = {
   signalCorrelationStore?: SignalCorrelationStore;
   readRunLifecycles?: ReadRunLifecycles;
   sidecarWsHandler?: Handler<AppEnv>;
+  executionHostWsHandler?: Handler<AppEnv>;
   /**
    * The asset REST endpoint and smart-HTTP route group mount under
    * `/api/tenants/:tenantId/assets` when both are supplied. Tests
@@ -202,6 +203,7 @@ export function mountHubRoutes(
     workflowDispatchService,
     eventCollectors,
     sidecarWsHandler,
+    executionHostWsHandler,
     assetService,
     repoStore,
     readRunLifecycles,
@@ -526,6 +528,9 @@ export function mountHubRoutes(
   if (sidecarWsHandler) {
     app.get("/api/sidecars/ws", sidecarWsHandler);
   }
+  if (executionHostWsHandler) {
+    app.get("/api/hosts/ws", executionHostWsHandler);
+  }
 }
 
 export type CreateAppOpts = {
@@ -556,6 +561,7 @@ export type CreateAppOpts = {
   signalCorrelationStore?: SignalCorrelationStore;
   readRunLifecycles?: ReadRunLifecycles;
   sidecarWsHandler?: Handler<AppEnv>;
+  executionHostWsHandler?: Handler<AppEnv>;
   assetService: AssetService | null;
   repoStore: RepoStore | null;
   /**
@@ -582,6 +588,7 @@ export function createApp({
   signalCorrelationStore,
   readRunLifecycles,
   sidecarWsHandler,
+  executionHostWsHandler,
   assetService,
   repoStore,
   maxTarballBytes,
@@ -620,6 +627,7 @@ export function createApp({
     ...(signalCorrelationStore ? { signalCorrelationStore } : {}),
     ...(readRunLifecycles ? { readRunLifecycles } : {}),
     ...(sidecarWsHandler ? { sidecarWsHandler } : {}),
+    ...(executionHostWsHandler ? { executionHostWsHandler } : {}),
   });
 
   app.get(

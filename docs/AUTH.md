@@ -12,6 +12,12 @@ Supported auth methods:
 
 - Email and password
 - Google OAuth
+- Execution-host bearer credentials, accepted only by the host control socket
+
+Execution-host enrollment returns its bearer credential once and stores only a
+SHA-256 digest. The credential resolves to one active `host` principal and does
+not authenticate ordinary tenant API requests or the allocation-scoped sidecar
+runtime socket.
 
 ## Tenant Context
 

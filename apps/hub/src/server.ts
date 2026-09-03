@@ -1,5 +1,6 @@
 import {
   createDB,
+  createExecutionHostSessionStore,
   createGrantStore,
   createPrincipalKeyStore,
   createSidecarAllocationStore,
@@ -17,6 +18,7 @@ import {
   createAgentRepoStore,
   createAssetService,
   createEventCollectorRegistry,
+  createExecutionHostControlRouter,
   createHubSessionLookups,
   createHubSessionOrchestrator,
   createSessionService,
@@ -427,6 +429,11 @@ export async function createHubServer({
   // newly provisioned sidecar while reconciliation waits for its connection.
   scheduleAllocationReconciliation(0);
 
+  const executionHostRouter = createExecutionHostControlRouter({
+    store: createExecutionHostSessionStore(db),
+    hubInstanceId: crypto.randomUUID(),
+  });
+
   const app = createApp({
     getSession: async (headers) => {
       const result = await auth.api.getSession({ headers });
@@ -465,6 +472,30 @@ export async function createHubServer({
         },
         onClose(_evt, _ws) {
           sidecarRouter.handleClose(handle);
+        },
+      };
+    }),
+    executionHostWsHandler: upgradeWebSocket((_c) => {
+      let handle: WsHandle;
+      return {
+        onOpen(_evt, ws) {
+          handle = {
+            send(data: string) {
+              ws.send(data);
+            },
+            close() {
+              ws.close();
+            },
+          };
+          executionHostRouter.handleOpen(handle);
+        },
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") {
+            executionHostRouter.handleMessage(handle, evt.data);
+          }
+        },
+        onClose(_evt, _ws) {
+          executionHostRouter.handleClose(handle);
         },
       };
     }),

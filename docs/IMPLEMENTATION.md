@@ -292,6 +292,21 @@ Debug streams require explicit authorization — not all clients are permitted t
 
 The placement design describes capability-based provisioner selection. This section describes how the Hub preserves the selected binding across a sidecar or infrastructure failure while retaining main's anchor-run workflow model.
 
+### Execution host control sessions
+
+An enrolled execution host has a tenant-scoped `host` principal and a bearer
+credential whose plaintext is returned once. The host uses that credential only
+on `/api/hosts/ws`; it does not grant access to tenant HTTP routes or sidecar
+runtime routing.
+
+The first control frame replaces the host's complete capability declaration and
+advances a durable session generation. The Hub stores the session id, generation,
+Hub instance id, capabilities, and lease deadline. Every heartbeat and close is
+conditioned on that exact tuple, so an old socket cannot extend or expire a newer
+connection. The in-memory router also requires the exact local socket before it
+considers the host connected; a future database lease left by a Hub crash is not
+proof of live capacity.
+
 ### Probe preparation
 
 `workflow_probe` owns only the probe operation: source, entry, optional pin, status, raw result, failure, and the temporary provisioner binding needed to clean up remote capacity. It does not store catalog offerings, session/domain data, deploy content, or a workflow launch specification.

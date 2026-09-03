@@ -79,6 +79,11 @@ export {
   pushCredentialReconcile,
 } from "./credential-push";
 export {
+  createExecutionHostControlRouter,
+  type CreateExecutionHostControlRouterOpts,
+  type ExecutionHostControlRouter,
+} from "./ws/execution-host-handler";
+export {
   chooseFirstSidecarProvisioner,
   createSidecarPluginRegistry,
   createSidecarAllocationReconciler,

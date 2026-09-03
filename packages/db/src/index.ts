@@ -90,6 +90,14 @@ export {
   type WorkflowProbeStore,
 } from "./workflow-probe-store";
 export {
+  createExecutionHostSessionStore,
+  type BeginExecutionHostSessionArgs,
+  type ExecutionHostSession,
+  type ExecutionHostSessionStore,
+  type ExpireExecutionHostSessionArgs,
+  type RefreshExecutionHostSessionArgs,
+} from "./execution-host-session-store";
+export {
   createWorkflowDefinitionStore,
   loadFrozenGrantSnapshot,
   resolveDefinitionIdForAsset,

@@ -184,6 +184,11 @@ This "fire-and-forget via REST, stream via channel" pattern matches the architec
 
 The agent channel is a real-time overlay for interactive use cases. It is not fully expressible in the OpenAPI spec, so the protocol details are documented here.
 
+Execution hosts use a separate control WebSocket at `/api/hosts/ws`. Its
+host-scoped bearer credential can register capabilities and renew the current
+host session lease, but cannot route workflow traffic. After provisioning, the
+runtime connects independently with its allocation-scoped sidecar credential.
+
 ### SSE Event Stream
 
 The current implementation uses Server-Sent Events at `GET .../api/tenants/:tenantId/workflows/runs/:runId/events`. Client-to-server messages use the REST `POST .../mail` endpoint.
