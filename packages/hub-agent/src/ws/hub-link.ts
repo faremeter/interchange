@@ -673,6 +673,30 @@ export type HubLink = {
   }) => Promise<void>;
 };
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * The hub-sidecar WebSocket carries `agent.deploy` frames whose payload holds
+ * decrypted inference API keys and credential material. Over cleartext `ws://`
+ * to a non-loopback host those secrets cross the network unencrypted, so the
+ * operator must be told to deploy behind TLS (`wss://`).
+ *
+ * Returns the warning message when `hubURL` is cleartext `ws:` against a
+ * non-loopback host, or `null` when no warning is warranted. `null` means
+ * strictly "parsed successfully, transport is acceptable" -- a malformed
+ * `hubURL` throws from `new URL` rather than being reported as no-warning.
+ * `new URL` normalizes the host (lowercase, canonical IPv4, bracketed IPv6),
+ * so the set matches the common loopback spellings without variant handling.
+ * Other `127.0.0.0/8` addresses fall through to the warning; over-warning on a
+ * local address is safe, whereas missing a remote one is not.
+ */
+export function cleartextTransportWarning(hubURL: string): string | null {
+  const { protocol, hostname } = new URL(hubURL);
+  if (protocol !== "ws:") return null;
+  if (LOOPBACK_HOSTS.has(hostname)) return null;
+  return `Hub URL ${hubURL} uses cleartext ws://; deploy credentials cross the network unencrypted. Use wss:// with TLS for any non-loopback hub.`;
+}
+
 export function createHubLink(config: HubLinkConfig): HubLink {
   const {
     hubURL,
@@ -699,6 +723,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     registerAckMaxAttempts = DEFAULT_REGISTER_ACK_MAX_ATTEMPTS,
     scheduleReconnect = defaultScheduleReconnect,
   } = config;
+
+  const cleartextWarning = cleartextTransportWarning(hubURL);
+  if (cleartextWarning !== null) {
+    logger.warn`${cleartextWarning}`;
+  }
 
   let ws: WebSocket | null = null;
   let closed = false;
