@@ -315,5 +315,41 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).toBeNull();
     });
+
+    test("rejects acknowledgements after the host session is replaced", async () => {
+      const store = createExecutionHostAssignmentStore(h.db);
+      await store.claim({
+        allocationId: "allocation-1",
+        generation: 1,
+        sidecarId: "sidecar-1",
+        tenantId: TENANT_ID,
+        placementPrincipalId: OWNER_PRINCIPAL_ID,
+        candidate,
+        now: NOW,
+      });
+      await h.db
+        .update(executionHostSession)
+        .set({
+          sessionId: "host-session-2",
+          generation: 2,
+          leaseExpiresAt: new Date(NOW.getTime() + 120_000),
+        })
+        .where(eq(executionHostSession.hostId, HOST_ID));
+
+      expect(
+        await store.markAssigned({
+          allocationId: "allocation-1",
+          generation: 1,
+          sidecarId: "sidecar-1",
+          hostId: HOST_ID,
+          hostSessionId: candidate.sessionId,
+          hostSessionGeneration: candidate.sessionGeneration,
+          now: NOW,
+        }),
+      ).toBeNull();
+      expect((await store.findBySidecarId("sidecar-1"))?.status).toBe(
+        "claiming",
+      );
+    });
   },
 );

@@ -219,25 +219,37 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
   async function markAssigned(
     args: SettleExecutionHostAssignmentArgs,
   ): Promise<ExecutionHostAssignment | null> {
-    const [updated] = await db
-      .update(executionHostAssignment)
-      .set({ status: "assigned", updatedAt: args.now ?? new Date() })
-      .where(
-        and(
-          eq(executionHostAssignment.allocationId, args.allocationId),
-          eq(executionHostAssignment.generation, args.generation),
-          eq(executionHostAssignment.sidecarId, args.sidecarId),
-          eq(executionHostAssignment.hostId, args.hostId),
-          eq(executionHostAssignment.hostSessionId, args.hostSessionId),
-          eq(
-            executionHostAssignment.hostSessionGeneration,
-            args.hostSessionGeneration,
-          ),
-          eq(executionHostAssignment.status, "claiming"),
+    return db.transaction(async (tx) => {
+      const now = args.now ?? new Date();
+      const current = await tx.query.executionHostSession.findFirst({
+        where: and(
+          eq(executionHostSession.hostId, args.hostId),
+          eq(executionHostSession.sessionId, args.hostSessionId),
+          eq(executionHostSession.generation, args.hostSessionGeneration),
+          gt(executionHostSession.leaseExpiresAt, now),
         ),
-      )
-      .returning();
-    return updated === undefined ? null : parseAssignment(updated);
+      });
+      if (current === undefined) return null;
+      const [updated] = await tx
+        .update(executionHostAssignment)
+        .set({ status: "assigned", updatedAt: now })
+        .where(
+          and(
+            eq(executionHostAssignment.allocationId, args.allocationId),
+            eq(executionHostAssignment.generation, args.generation),
+            eq(executionHostAssignment.sidecarId, args.sidecarId),
+            eq(executionHostAssignment.hostId, args.hostId),
+            eq(executionHostAssignment.hostSessionId, args.hostSessionId),
+            eq(
+              executionHostAssignment.hostSessionGeneration,
+              args.hostSessionGeneration,
+            ),
+            eq(executionHostAssignment.status, "claiming"),
+          ),
+        )
+        .returning();
+      return updated === undefined ? null : parseAssignment(updated);
+    });
   }
 
   async function beginRelease(
@@ -299,29 +311,41 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
   async function markDestroyed(
     args: CompleteExecutionHostReleaseArgs,
   ): Promise<ExecutionHostAssignment | null> {
-    const [updated] = await db
-      .update(executionHostAssignment)
-      .set({ status: "destroyed", updatedAt: args.now ?? new Date() })
-      .where(
-        and(
-          eq(executionHostAssignment.allocationId, args.allocationId),
-          eq(executionHostAssignment.generation, args.generation),
-          eq(executionHostAssignment.sidecarId, args.sidecarId),
-          eq(executionHostAssignment.hostId, args.hostId),
-          eq(executionHostAssignment.hostSessionId, args.hostSessionId),
-          eq(
-            executionHostAssignment.hostSessionGeneration,
-            args.hostSessionGeneration,
-          ),
-          eq(executionHostAssignment.status, "releasing"),
-          eq(
-            executionHostAssignment.destroyedGeneration,
-            args.destroyedGeneration,
-          ),
+    return db.transaction(async (tx) => {
+      const now = args.now ?? new Date();
+      const current = await tx.query.executionHostSession.findFirst({
+        where: and(
+          eq(executionHostSession.hostId, args.hostId),
+          eq(executionHostSession.sessionId, args.hostSessionId),
+          eq(executionHostSession.generation, args.hostSessionGeneration),
+          gt(executionHostSession.leaseExpiresAt, now),
         ),
-      )
-      .returning();
-    return updated === undefined ? null : parseAssignment(updated);
+      });
+      if (current === undefined) return null;
+      const [updated] = await tx
+        .update(executionHostAssignment)
+        .set({ status: "destroyed", updatedAt: now })
+        .where(
+          and(
+            eq(executionHostAssignment.allocationId, args.allocationId),
+            eq(executionHostAssignment.generation, args.generation),
+            eq(executionHostAssignment.sidecarId, args.sidecarId),
+            eq(executionHostAssignment.hostId, args.hostId),
+            eq(executionHostAssignment.hostSessionId, args.hostSessionId),
+            eq(
+              executionHostAssignment.hostSessionGeneration,
+              args.hostSessionGeneration,
+            ),
+            eq(executionHostAssignment.status, "releasing"),
+            eq(
+              executionHostAssignment.destroyedGeneration,
+              args.destroyedGeneration,
+            ),
+          ),
+        )
+        .returning();
+      return updated === undefined ? null : parseAssignment(updated);
+    });
   }
 
   async function findBySidecarId(
