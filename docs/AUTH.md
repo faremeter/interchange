@@ -35,6 +35,11 @@ A principal represents an identity within a tenant. It is the universal join bet
 
 A user or host represented in three tenants has three principal rows. A workflow run in a tenant has one principal row. Every authorization question starts by resolving the principal.
 
+An execution host is usable by its owner. Another principal may use it when an
+allow grant authorizes `host:{hostId}` / `use`; deny and ask decisions remain
+fail-closed. Provisioners receive only the requesting placement principal and a
+Hub-owned claim service, so they do not evaluate or receive the caller's grants.
+
 ```
 principal
   id              text PK        -- prn_...

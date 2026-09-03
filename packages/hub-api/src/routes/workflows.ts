@@ -19,7 +19,7 @@ import {
   type DB,
   type PrincipalKeyStore,
 } from "@intx/db";
-import type { GrantStore } from "@intx/types/authz";
+import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import {
   correlationIdFromSignalName,
   deriveWorkflowRunId,
@@ -47,6 +47,7 @@ import {
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
+import { canUseExecutionHost } from "../execution-host-access";
 import { idResource, type RequireGrant } from "../middleware/grant";
 import {
   lockDispatchableAllocation,
@@ -86,7 +87,9 @@ const DeployWorkflow = type({
   entry: "string > 0",
   sourceOfferingIds: SourceOfferingIds,
   defaultSourceOfferingId: "string > 0",
-  "targetHostPrincipalId?": "string > 0",
+  "targetHostPrincipalId?": type("string > 0").describe(
+    "Principal id (prn_...) of the execution host to use. Host access grants use host:{hostId}, where hostId is the host resource id (hst_...), not this principal id.",
+  ),
   "pin?": "string > 0",
 });
 
@@ -197,6 +200,7 @@ export type CreateWorkflowRoutesDeps = {
   sidecarRouter: SidecarRouter;
   repoStore: RepoStore;
   grantStore: GrantStore;
+  conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
 };
 
@@ -208,6 +212,7 @@ export function createWorkflowRoutes({
   sidecarRouter,
   repoStore,
   grantStore,
+  conditionRegistry,
   requireGrant,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
@@ -253,7 +258,7 @@ export function createWorkflowRoutes({
           },
         },
         404: {
-          description: "Workflow asset not found",
+          description: "Workflow asset or target execution host not found",
           content: { "application/json": { schema: resolver(ErrorResponse) } },
         },
         409: {
@@ -303,7 +308,10 @@ export function createWorkflowRoutes({
 
       if (body.targetHostPrincipalId !== undefined) {
         const [targetHost] = await db
-          .select({ id: executionHost.id })
+          .select({
+            id: executionHost.id,
+            ownerPrincipalId: executionHost.ownerPrincipalId,
+          })
           .from(executionHost)
           .innerJoin(
             principalTable,
@@ -313,13 +321,23 @@ export function createWorkflowRoutes({
             and(
               eq(executionHost.tenantId, tenant.id),
               eq(executionHost.principalId, body.targetHostPrincipalId),
-              eq(executionHost.ownerPrincipalId, c.get("principal").id),
               eq(principalTable.kind, "host"),
               eq(principalTable.status, "active"),
             ),
           )
           .limit(1);
-        if (targetHost === undefined) {
+        const placementPrincipalId = c.get("principal").id;
+        const canUseTarget =
+          targetHost !== undefined &&
+          (await canUseExecutionHost({
+            grantStore,
+            conditionRegistry,
+            tenantId: tenant.id,
+            placementPrincipalId,
+            hostId: targetHost.id,
+            ownerPrincipalId: targetHost.ownerPrincipalId,
+          }));
+        if (!canUseTarget) {
           return c.json(
             {
               error: {

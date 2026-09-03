@@ -367,6 +367,7 @@ export function mountHubRoutes(
         sidecarRouter,
         repoStore,
         grantStore,
+        conditionRegistry,
         requireGrant,
       }),
     );
@@ -557,6 +558,7 @@ export type CreateAppOpts = {
    */
   principalKeyStore?: PrincipalKeyStore;
   grantStore?: GrantStore;
+  conditionRegistry?: ConditionRegistry;
   approvalStore?: ApprovalStore;
   signalCorrelationStore?: SignalCorrelationStore;
   readRunLifecycles?: ReadRunLifecycles;
@@ -584,6 +586,7 @@ export function createApp({
   credentialCipher,
   principalKeyStore,
   grantStore,
+  conditionRegistry,
   approvalStore,
   signalCorrelationStore,
   readRunLifecycles,
@@ -623,6 +626,7 @@ export function createApp({
     repoStore,
     maxTarballBytes,
     ...(grantStore ? { grantStore } : {}),
+    ...(conditionRegistry ? { conditionRegistry } : {}),
     ...(approvalStore ? { approvalStore } : {}),
     ...(signalCorrelationStore ? { signalCorrelationStore } : {}),
     ...(readRunLifecycles ? { readRunLifecycles } : {}),

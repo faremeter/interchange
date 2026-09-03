@@ -8,7 +8,7 @@ import {
 } from "bun:test";
 
 import { sha256 } from "@intx/crypto";
-import { sidecar, sidecarAllocation } from "@intx/db/schema";
+import { sidecar, sidecarAllocation, sidecarOperation } from "@intx/db/schema";
 import { createSidecarTokenAuthenticator } from "@intx/hub-sessions";
 import {
   createTestDb,
@@ -89,6 +89,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           address: workflowRunAddress,
           status: "deployed",
         });
+        await h.db
+          .insert(sidecarOperation)
+          .values({ id: `allocation-${opts.id}` });
         await h.db.insert(sidecarAllocation).values({
           id: `allocation-${opts.id}`,
           anchorRunId,

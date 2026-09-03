@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { expect, test } from "@playwright/test";
-import type { EnsureSidecarRequest } from "@intx/hub-sessions";
+import type {
+  EnsureSidecarRequest,
+  SidecarProvisionerContext,
+} from "@intx/hub-sessions";
 
 import {
   createLocalProcessSidecarProvisioner,
@@ -11,6 +14,12 @@ import {
 } from "./local-process-sidecar-provisioner";
 
 const tempDirs: string[] = [];
+const context: SidecarProvisionerContext = {
+  existingSidecars: {
+    claim: async () => null,
+    release: async () => null,
+  },
+};
 
 test.afterEach(async () => {
   await Promise.all(
@@ -73,11 +82,11 @@ test.describe("createLocalProcessSidecarProvisioner", () => {
   test("reuses the process for repeated ensure calls", async () => {
     const { local, spawned } = await createHarness();
 
-    expect(await local.provisioner.ensure(createRequest())).toEqual({
+    expect(await local.provisioner.ensure(createRequest(), context)).toEqual({
       kind: "accepted",
       externalRef: "1000",
     });
-    expect(await local.provisioner.ensure(createRequest())).toEqual({
+    expect(await local.provisioner.ensure(createRequest(), context)).toEqual({
       kind: "accepted",
       externalRef: "1000",
     });
@@ -89,19 +98,26 @@ test.describe("createLocalProcessSidecarProvisioner", () => {
   test("fences destroyed and stale generations", async () => {
     const { local } = await createHarness();
 
-    await local.provisioner.ensure(createRequest(1));
-    await local.provisioner.destroy({
-      allocationId: "sal_test",
-      generation: 1,
-      sidecarId: "sc_1",
-    });
+    await local.provisioner.ensure(createRequest(1), context);
+    await local.provisioner.destroy(
+      {
+        allocationId: "sal_test",
+        generation: 1,
+        sidecarId: "sc_1",
+      },
+      context,
+    );
 
-    expect(await local.provisioner.ensure(createRequest(1))).toMatchObject({
+    expect(
+      await local.provisioner.ensure(createRequest(1), context),
+    ).toMatchObject({
       kind: "rejected",
       code: "generation_destroyed",
       retryable: false,
     });
-    expect(await local.provisioner.ensure(createRequest(0))).toMatchObject({
+    expect(
+      await local.provisioner.ensure(createRequest(0), context),
+    ).toMatchObject({
       kind: "rejected",
       code: "stale_generation",
       retryable: false,
@@ -111,8 +127,8 @@ test.describe("createLocalProcessSidecarProvisioner", () => {
   test("stops the previous process before advancing generations", async () => {
     const { local, spawned, dataRoot } = await createHarness();
 
-    await local.provisioner.ensure(createRequest(0));
-    await local.provisioner.ensure(createRequest(1));
+    await local.provisioner.ensure(createRequest(0), context);
+    await local.provisioner.ensure(createRequest(1), context);
 
     expect(spawned).toHaveLength(2);
     expect(spawned[0]?.signals).toEqual(["SIGTERM"]);
@@ -125,35 +141,39 @@ test.describe("createLocalProcessSidecarProvisioner", () => {
   test("accepts a new identity after destroying the old identity at the replacement generation", async () => {
     const { local, spawned } = await createHarness();
 
-    await local.provisioner.ensure(createRequest(0, "sc_old"));
-    await local.provisioner.destroy({
-      allocationId: "sal_test",
-      generation: 1,
-      sidecarId: "sc_old",
-    });
+    await local.provisioner.ensure(createRequest(0, "sc_old"), context);
+    await local.provisioner.destroy(
+      {
+        allocationId: "sal_test",
+        generation: 1,
+        sidecarId: "sc_old",
+      },
+      context,
+    );
 
-    expect(await local.provisioner.ensure(createRequest(1, "sc_new"))).toEqual({
-      kind: "accepted",
-      externalRef: "1001",
-    });
     expect(
-      await local.provisioner.ensure(createRequest(1, "sc_old")),
+      await local.provisioner.ensure(createRequest(1, "sc_new"), context),
+    ).toEqual({ kind: "accepted", externalRef: "1001" });
+    expect(
+      await local.provisioner.ensure(createRequest(1, "sc_old"), context),
     ).toMatchObject({
       kind: "rejected",
       code: "sidecar_identity_conflict",
       retryable: false,
     });
 
-    await local.provisioner.destroy({
-      allocationId: "sal_test",
-      generation: 1,
-      sidecarId: "sc_old",
-    });
+    await local.provisioner.destroy(
+      {
+        allocationId: "sal_test",
+        generation: 1,
+        sidecarId: "sc_old",
+      },
+      context,
+    );
     expect(spawned[1]?.signals).toEqual([]);
-    expect(await local.provisioner.ensure(createRequest(1, "sc_new"))).toEqual({
-      kind: "accepted",
-      externalRef: "1001",
-    });
+    expect(
+      await local.provisioner.ensure(createRequest(1, "sc_new"), context),
+    ).toEqual({ kind: "accepted", externalRef: "1001" });
 
     await local.shutdown();
     expect(spawned[1]?.signals).toEqual(["SIGTERM"]);

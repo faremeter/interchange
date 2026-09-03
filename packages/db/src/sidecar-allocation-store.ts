@@ -16,6 +16,7 @@ import {
   principal,
   sidecar,
   sidecarAllocation,
+  sidecarOperation,
   workflowRun,
   workflowRunLaunchSpec,
 } from "./schema";
@@ -360,116 +361,131 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args: CreatePendingSidecarAllocationArgs,
       tx?: DBExecutor,
     ): Promise<SidecarAllocation> {
-      const executor = tx ?? db;
-      const [anchor] = await executor
-        .select({
-          tenantId: workflowRun.tenantId,
-          anchorRunId: workflowRun.anchorRunId,
-          status: workflowRun.status,
-        })
-        .from(workflowRun)
-        .where(eq(workflowRun.id, args.anchorRunId))
-        .limit(1);
-      if (anchor === undefined) {
-        throw new Error(
-          `sidecarAllocationStore.createPending: anchor run ${args.anchorRunId} does not exist`,
+      const create = async (executor: DBExecutor) => {
+        const [anchor] = await executor
+          .select({
+            tenantId: workflowRun.tenantId,
+            anchorRunId: workflowRun.anchorRunId,
+            status: workflowRun.status,
+          })
+          .from(workflowRun)
+          .where(eq(workflowRun.id, args.anchorRunId))
+          .limit(1);
+        if (anchor === undefined) {
+          throw new Error(
+            `sidecarAllocationStore.createPending: anchor run ${args.anchorRunId} does not exist`,
+          );
+        }
+        if (
+          anchor.tenantId !== args.tenantId ||
+          anchor.anchorRunId !== args.anchorRunId
+        ) {
+          throw new Error(
+            `sidecarAllocationStore.createPending: run ${args.anchorRunId} is not an anchor for tenant ${args.tenantId}`,
+          );
+        }
+        if (!isLiveWorkflowRunStatus(anchor.status)) {
+          throw new Error(
+            `sidecarAllocationStore.createPending: anchor run ${args.anchorRunId} is ${anchor.status}, expected a live run`,
+          );
+        }
+        const launchSpec = await executor.query.workflowRunLaunchSpec.findFirst(
+          {
+            columns: { anchorRunId: true },
+            where: eq(workflowRunLaunchSpec.anchorRunId, args.anchorRunId),
+          },
         );
-      }
-      if (
-        anchor.tenantId !== args.tenantId ||
-        anchor.anchorRunId !== args.anchorRunId
-      ) {
-        throw new Error(
-          `sidecarAllocationStore.createPending: run ${args.anchorRunId} is not an anchor for tenant ${args.tenantId}`,
-        );
-      }
-      if (!isLiveWorkflowRunStatus(anchor.status)) {
-        throw new Error(
-          `sidecarAllocationStore.createPending: anchor run ${args.anchorRunId} is ${anchor.status}, expected a live run`,
-        );
-      }
-      const launchSpec = await executor.query.workflowRunLaunchSpec.findFirst({
-        columns: { anchorRunId: true },
-        where: eq(workflowRunLaunchSpec.anchorRunId, args.anchorRunId),
-      });
-      if (launchSpec === undefined) {
-        throw new Error(
-          `sidecarAllocationStore.createPending: anchor run ${args.anchorRunId} has no launch specification`,
-        );
-      }
-      if (args.provisionerApiVersion !== 1) {
-        throw new Error(
-          "sidecarAllocationStore.createPending: unsupported API version",
-        );
-      }
-      const now = databaseTimestamp(args.now);
-      const [inserted] = await executor
-        .insert(sidecarAllocation)
-        .values({
+        if (launchSpec === undefined) {
+          throw new Error(
+            `sidecarAllocationStore.createPending: anchor run ${args.anchorRunId} has no launch specification`,
+          );
+        }
+        if (args.provisionerApiVersion !== 1) {
+          throw new Error(
+            "sidecarAllocationStore.createPending: unsupported API version",
+          );
+        }
+        const now = databaseTimestamp(args.now);
+        await executor.insert(sidecarOperation).values({
           id: args.id,
-          anchorRunId: args.anchorRunId,
-          tenantId: args.tenantId,
-          placementPrincipalId: args.placementPrincipalId,
-          ...(args.targetHostPrincipalId !== undefined
-            ? { targetHostPrincipalId: args.targetHostPrincipalId }
-            : {}),
-          placementPolicy: args.placementPolicy,
-          provisionerId: args.provisionerId,
-          provisionerApiVersion: args.provisionerApiVersion,
-          provisionerBindingFingerprint: args.provisionerBindingFingerprint,
-          status: "pending",
-          generation: 0,
-          nextAttemptAt: now,
           createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
-      if (inserted === undefined) {
-        throw new Error(
-          `sidecarAllocationStore.createPending: insert returned no row for ${args.id}`,
-        );
-      }
-      return parseSidecarAllocationRow(inserted);
+        });
+        const [inserted] = await executor
+          .insert(sidecarAllocation)
+          .values({
+            id: args.id,
+            anchorRunId: args.anchorRunId,
+            tenantId: args.tenantId,
+            placementPrincipalId: args.placementPrincipalId,
+            ...(args.targetHostPrincipalId !== undefined
+              ? { targetHostPrincipalId: args.targetHostPrincipalId }
+              : {}),
+            placementPolicy: args.placementPolicy,
+            provisionerId: args.provisionerId,
+            provisionerApiVersion: args.provisionerApiVersion,
+            provisionerBindingFingerprint: args.provisionerBindingFingerprint,
+            status: "pending",
+            generation: 0,
+            nextAttemptAt: now,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+        if (inserted === undefined) {
+          throw new Error(
+            `sidecarAllocationStore.createPending: insert returned no row for ${args.id}`,
+          );
+        }
+        return parseSidecarAllocationRow(inserted);
+      };
+      return tx === undefined ? db.transaction(create) : create(tx);
     },
 
     async createAdopted(
       args: CreateAdoptedSidecarAllocationArgs,
       tx?: DBExecutor,
     ): Promise<SidecarAllocation> {
-      const createdAt = databaseTimestamp(args.now);
-      const [inserted] = await (tx ?? db)
-        .insert(sidecarAllocation)
-        .values({
-          id: args.id,
-          anchorRunId: args.anchorRunId,
-          tenantId: args.tenantId,
-          placementPrincipalId: args.placementPrincipalId,
-          ...(args.targetHostPrincipalId !== undefined
-            ? { targetHostPrincipalId: args.targetHostPrincipalId }
-            : {}),
-          placementPolicy: args.placementPolicy,
-          provisionerId: args.provisionerId,
-          provisionerApiVersion: args.provisionerApiVersion,
-          provisionerBindingFingerprint: args.provisionerBindingFingerprint,
-          sidecarId: args.sidecarId,
-          status: "allocated",
-          generation: args.generation,
-          ensureAcceptedGeneration: args.generation,
-          ...(args.externalRef !== undefined
-            ? { externalRef: args.externalRef }
-            : {}),
-          connectDeadline: args.connectDeadline,
-          nextAttemptAt: createdAt,
-          createdAt,
-          updatedAt: createdAt,
-        })
-        .returning();
-      if (inserted === undefined) {
-        throw new Error(
-          `sidecarAllocationStore.createAdopted: insert returned no row for ${args.id}`,
-        );
-      }
-      return parseSidecarAllocationRow(inserted);
+      const create = async (executor: DBExecutor) => {
+        const createdAt = databaseTimestamp(args.now);
+        await executor
+          .insert(sidecarOperation)
+          .values({ id: args.id, createdAt })
+          .onConflictDoNothing({ target: sidecarOperation.id });
+        const [inserted] = await executor
+          .insert(sidecarAllocation)
+          .values({
+            id: args.id,
+            anchorRunId: args.anchorRunId,
+            tenantId: args.tenantId,
+            placementPrincipalId: args.placementPrincipalId,
+            ...(args.targetHostPrincipalId !== undefined
+              ? { targetHostPrincipalId: args.targetHostPrincipalId }
+              : {}),
+            placementPolicy: args.placementPolicy,
+            provisionerId: args.provisionerId,
+            provisionerApiVersion: args.provisionerApiVersion,
+            provisionerBindingFingerprint: args.provisionerBindingFingerprint,
+            sidecarId: args.sidecarId,
+            status: "allocated",
+            generation: args.generation,
+            ensureAcceptedGeneration: args.generation,
+            ...(args.externalRef !== undefined
+              ? { externalRef: args.externalRef }
+              : {}),
+            connectDeadline: args.connectDeadline,
+            nextAttemptAt: createdAt,
+            createdAt,
+            updatedAt: createdAt,
+          })
+          .returning();
+        if (inserted === undefined) {
+          throw new Error(
+            `sidecarAllocationStore.createAdopted: insert returned no row for ${args.id}`,
+          );
+        }
+        return parseSidecarAllocationRow(inserted);
+      };
+      return tx === undefined ? db.transaction(create) : create(tx);
     },
 
     async bindInitialSidecar(

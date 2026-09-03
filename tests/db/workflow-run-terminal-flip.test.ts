@@ -24,7 +24,12 @@ import {
   createWorkflowRunDispatchStore,
   createWorkflowRunStore,
 } from "@intx/db";
-import { principal, sidecarAllocation, workflowRun } from "@intx/db/schema";
+import {
+  principal,
+  sidecarAllocation,
+  sidecarOperation,
+  workflowRun,
+} from "@intx/db/schema";
 import {
   createAgentRepoStore,
   createHubSessionLookups,
@@ -124,6 +129,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT,
         address: DEPLOYMENT_ADDRESS,
       });
+      await h.db
+        .insert(sidecarOperation)
+        .values({ id: "allocation-terminal-flip" });
       await h.db.insert(sidecarAllocation).values({
         id: "allocation-terminal-flip",
         anchorRunId: DEPLOYMENT,

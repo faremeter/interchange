@@ -1,3 +1,5 @@
+import { type } from "arktype";
+
 import type {
   ExecutionHostAssignment,
   ExecutionHostAssignmentStore,
@@ -6,25 +8,35 @@ import type {
 } from "@intx/db";
 
 import type { ExecutionHostControlRouter } from "../ws/execution-host-handler";
+import { matchSidecarCapabilityPolicy } from "./capability-policy";
 import type {
+  ClaimExistingSidecarOpts,
   DestroySidecarRequest,
   DestroySidecarResult,
   EnsureSidecarRequest,
   EnsureSidecarResult,
-  SidecarProvisioner,
+  ExistingSidecarCapacity,
 } from "./contracts";
-import { matchSidecarCapabilityPolicy } from "./capability-policy";
 
-export type CreateHostCapacityProvisionerOpts = {
-  readonly id: string;
-  readonly bindingFingerprint: string;
-  readonly capabilities: SidecarProvisioner["capabilities"];
+export type ExistingSidecarHostAccessRequest = {
+  readonly tenantId: string;
+  readonly placementPrincipalId: string;
+  readonly hostId: string;
+  readonly hostPrincipalId: string;
+  readonly ownerPrincipalId: string;
+};
+
+export type CreateExistingSidecarCapacityOpts = {
   readonly router: ExecutionHostControlRouter;
   readonly assignments: ExecutionHostAssignmentStore;
+  readonly canUseHost?: (
+    request: ExistingSidecarHostAccessRequest,
+  ) => Promise<boolean>;
   readonly acknowledgementTimeoutMs?: number;
 };
 
 const DEFAULT_ACKNOWLEDGEMENT_TIMEOUT_MS = 30_000;
+const SelectedHostId = type("string | null");
 
 function candidate(session: ExecutionHostSession): ExecutionHostClaimCandidate {
   return {
@@ -48,40 +60,101 @@ function staleOperation(message: string) {
   };
 }
 
-export function createHostCapacityProvisioner({
-  id,
-  bindingFingerprint,
-  capabilities,
+// Deny cross-principal host use unless a policy callback allows it; owner use needs no callback.
+export function createExistingSidecarCapacity({
   router,
   assignments,
+  canUseHost = async () => false,
   acknowledgementTimeoutMs = DEFAULT_ACKNOWLEDGEMENT_TIMEOUT_MS,
-}: CreateHostCapacityProvisionerOpts): SidecarProvisioner {
+}: CreateExistingSidecarCapacityOpts): ExistingSidecarCapacity {
   if (acknowledgementTimeoutMs <= 0) {
     throw new Error("Host assignment acknowledgement timeout must be positive");
   }
 
-  async function claim(
+  async function canUse(
     request: EnsureSidecarRequest,
-  ): Promise<ExecutionHostAssignment | null> {
-    const sessions = router
-      .listConnectedSessions()
-      .filter(
-        (session) =>
-          session.tenantId === request.tenantId &&
-          session.ownerPrincipalId === request.placementPrincipalId &&
-          (request.targetHostPrincipalId === undefined ||
-            session.principalId === request.targetHostPrincipalId) &&
-          matchSidecarCapabilityPolicy(
-            request.placementPolicy,
-            session.capabilities,
-          ).ok,
-      )
-      // Claim in host-id order so concurrent reconcilers contend for the same host first.
-      .sort((left, right) => left.hostId.localeCompare(right.hostId));
+    session: ExecutionHostClaimCandidate,
+  ): Promise<boolean> {
+    return (
+      session.ownerPrincipalId === request.placementPrincipalId ||
+      (await canUseHost({
+        tenantId: request.tenantId,
+        placementPrincipalId: request.placementPrincipalId,
+        hostId: session.hostId,
+        hostPrincipalId: session.principalId,
+        ownerPrincipalId: session.ownerPrincipalId,
+      }))
+    );
+  }
 
-    for (const session of sessions) {
+  async function eligibleCandidates(
+    request: EnsureSidecarRequest,
+    hosts: readonly ExecutionHostClaimCandidate[],
+  ): Promise<ExecutionHostClaimCandidate[]> {
+    const connected = hosts.filter((host) => {
+      const current = router.getConnectedSession(host.hostId);
+      return (
+        current?.sessionId === host.sessionId &&
+        current.generation === host.sessionGeneration &&
+        current.hubInstanceId === host.hubInstanceId
+      );
+    });
+    const available = await assignments.listAvailableCandidates(connected);
+    const permitted = await Promise.all(
+      available
+        .filter(
+          (session) =>
+            session.tenantId === request.tenantId &&
+            (request.targetHostPrincipalId === undefined ||
+              session.principalId === request.targetHostPrincipalId) &&
+            matchSidecarCapabilityPolicy(
+              request.placementPolicy,
+              session.capabilities,
+            ).ok,
+        )
+        .map(async (host) => ((await canUse(request, host)) ? host : null)),
+    );
+    return permitted.filter((host) => host !== null);
+  }
+
+  async function findAndClaim(
+    request: EnsureSidecarRequest,
+    { chooseHost }: ClaimExistingSidecarOpts,
+  ): Promise<ExecutionHostAssignment | null> {
+    let candidates = await eligibleCandidates(
+      request,
+      router.listConnectedSessions().map(candidate),
+    );
+    while (candidates.length > 0) {
+      const hostId = SelectedHostId.assert(
+        await chooseHost(
+          candidates.map((host) => ({
+            hostId: host.hostId,
+            hostPrincipalId: host.principalId,
+            capabilities: host.capabilities.map((capability) => ({
+              ...capability,
+            })),
+          })),
+        ),
+      );
+      if (hostId === null) return null;
+      const selected = candidates.find((host) => host.hostId === hostId);
+      if (selected === undefined) {
+        throw new Error(
+          "Existing host chooser returned a host outside the offered candidates",
+        );
+      }
+
+      // A chooser can await external policy. Revalidate before reserving, and
+      // never retry an already-attempted host within this claim call.
+      const remaining = candidates.filter((host) => host.hostId !== hostId);
+      const [current] = await eligibleCandidates(request, [selected]);
+      if (current === undefined) {
+        candidates = await eligibleCandidates(request, remaining);
+        continue;
+      }
       const assignment = await assignments.claim({
-        allocationId: request.allocationId,
+        operationId: request.allocationId,
         generation: request.generation,
         sidecarId: request.sidecarId,
         tenantId: request.tenantId,
@@ -89,42 +162,47 @@ export function createHostCapacityProvisioner({
         ...(request.targetHostPrincipalId !== undefined
           ? { targetHostPrincipalId: request.targetHostPrincipalId }
           : {}),
-        candidate: candidate(session),
+        candidate: current,
       });
       if (assignment !== null) return assignment;
+      candidates = await eligibleCandidates(request, remaining);
     }
     return null;
   }
 
   // Stale ownership is terminal, but a lost session is transient: throw so reconciliation retries.
-  async function ensure(
+  async function claim(
     request: EnsureSidecarRequest,
-  ): Promise<EnsureSidecarResult> {
-    const previous = await assignments.findBySidecarId(request.sidecarId);
-    if (previous?.status === "assigned") {
-      return previous.allocationId === request.allocationId &&
-        previous.generation === request.generation
-        ? { kind: "accepted", externalRef: previous.hostId }
-        : staleOperation("Sidecar identity belongs to another host assignment");
-    }
-    if (previous?.status === "destroyed" || previous?.status === "releasing") {
-      return staleOperation("Sidecar identity has already been released");
-    }
-
-    const assignment = previous ?? (await claim(request));
+    opts: ClaimExistingSidecarOpts,
+  ): Promise<EnsureSidecarResult | null> {
+    const assignment =
+      (await assignments.findBySidecarId(request.sidecarId)) ??
+      (await findAndClaim(request, opts)) ??
+      (await assignments.findBySidecarId(request.sidecarId));
     if (assignment === null) {
-      return {
-        kind: "rejected",
-        code: "host_capacity_unavailable",
-        message: "No matching execution host is currently available",
-        retryable: true,
-      };
+      return request.targetHostPrincipalId === undefined
+        ? null
+        : {
+            kind: "rejected",
+            code: "target_host_unavailable",
+            message: "The requested execution host could not be claimed",
+            retryable: true,
+          };
     }
     if (
-      assignment.allocationId !== request.allocationId ||
+      assignment.operationId !== request.allocationId ||
       assignment.generation !== request.generation
     ) {
       return staleOperation("Sidecar identity belongs to another allocation");
+    }
+    if (
+      assignment.status === "destroyed" ||
+      assignment.status === "releasing"
+    ) {
+      return staleOperation("Sidecar identity has already been released");
+    }
+    if (assignment.status === "assigned") {
+      return { kind: "accepted", externalRef: assignment.hostId };
     }
 
     const session = router.getConnectedSession(assignment.hostId);
@@ -151,7 +229,7 @@ export function createHostCapacityProvisioner({
       acknowledgementTimeoutMs,
     );
     const assigned = await assignments.markAssigned({
-      allocationId: assignment.allocationId,
+      operationId: assignment.operationId,
       generation: assignment.generation,
       sidecarId: assignment.sidecarId,
       hostId: assignment.hostId,
@@ -166,12 +244,12 @@ export function createHostCapacityProvisioner({
     return { kind: "accepted", externalRef: assigned.hostId };
   }
 
-  async function destroy(
+  async function release(
     request: DestroySidecarRequest,
-  ): Promise<DestroySidecarResult> {
+  ): Promise<DestroySidecarResult | null> {
     const existing = await assignments.findBySidecarId(request.sidecarId);
-    if (existing === null) return { kind: "destroyed" };
-    if (existing.allocationId !== request.allocationId) {
+    if (existing === null) return null;
+    if (existing.operationId !== request.allocationId) {
       return staleOperation("Sidecar identity belongs to another allocation");
     }
     if (existing.status === "destroyed") return { kind: "destroyed" };
@@ -190,7 +268,7 @@ export function createHostCapacityProvisioner({
       );
     }
     const releasing = await assignments.beginRelease({
-      allocationId: request.allocationId,
+      operationId: request.allocationId,
       generation: request.generation,
       sidecarId: request.sidecarId,
       candidate: candidate(session),
@@ -212,7 +290,7 @@ export function createHostCapacityProvisioner({
       acknowledgementTimeoutMs,
     );
     const destroyed = await assignments.markDestroyed({
-      allocationId: releasing.allocationId,
+      operationId: releasing.operationId,
       generation: releasing.generation,
       destroyedGeneration: request.generation,
       sidecarId: releasing.sidecarId,
@@ -228,12 +306,5 @@ export function createHostCapacityProvisioner({
     return { kind: "destroyed" };
   }
 
-  return {
-    id,
-    apiVersion: 1,
-    bindingFingerprint,
-    capabilities,
-    ensure,
-    destroy,
-  };
+  return { claim, release };
 }

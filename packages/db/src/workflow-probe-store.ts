@@ -1,10 +1,16 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 
+import type { SidecarProvisioningPolicy } from "@intx/types";
 import type { WorkflowProbeResultFrame } from "@intx/types/sidecar";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import type { DB, DBExecutor } from "./client";
-import { sidecar, workflowProbe, type WorkflowProbeStatus } from "./schema";
+import {
+  sidecar,
+  sidecarOperation,
+  workflowProbe,
+  type WorkflowProbeStatus,
+} from "./schema";
 
 type DBHandle = DB["db"];
 type WorkflowProbeResult = Omit<WorkflowProbeResultFrame, "type" | "requestId">;
@@ -15,6 +21,8 @@ export type WorkflowProbe = WorkflowProbeRow;
 export type CreateWorkflowProbeArgs = {
   readonly id: string;
   readonly tenantId: string;
+  readonly placementPrincipalId: string;
+  readonly placementPolicy: SidecarProvisioningPolicy;
   readonly definitionAssetId: string;
   readonly source: WorkflowDefinitionSource;
   readonly entry: string;
@@ -49,27 +57,36 @@ export function createWorkflowProbeStore(db: DBHandle) {
       args: CreateWorkflowProbeArgs,
       tx?: DBExecutor,
     ): Promise<WorkflowProbe> {
-      const createdAt = timestamp(args.now);
-      const [created] = await (tx ?? db)
-        .insert(workflowProbe)
-        .values({
+      const create = async (executor: DBExecutor) => {
+        const createdAt = timestamp(args.now);
+        await executor.insert(sidecarOperation).values({
           id: args.id,
-          tenantId: args.tenantId,
-          definitionAssetId: args.definitionAssetId,
-          source: args.source,
-          entry: args.entry,
-          ...(args.pin !== undefined ? { pin: args.pin } : {}),
-          provisionerId: args.provisionerId,
-          provisionerApiVersion: args.provisionerApiVersion,
-          provisionerBindingFingerprint: args.provisionerBindingFingerprint,
           createdAt,
-          updatedAt: createdAt,
-        })
-        .returning();
-      if (created === undefined) {
-        throw new Error(`Failed to create workflow probe ${args.id}`);
-      }
-      return created;
+        });
+        const [created] = await executor
+          .insert(workflowProbe)
+          .values({
+            id: args.id,
+            tenantId: args.tenantId,
+            placementPrincipalId: args.placementPrincipalId,
+            placementPolicy: args.placementPolicy,
+            definitionAssetId: args.definitionAssetId,
+            source: args.source,
+            entry: args.entry,
+            ...(args.pin !== undefined ? { pin: args.pin } : {}),
+            provisionerId: args.provisionerId,
+            provisionerApiVersion: args.provisionerApiVersion,
+            provisionerBindingFingerprint: args.provisionerBindingFingerprint,
+            createdAt,
+            updatedAt: createdAt,
+          })
+          .returning();
+        if (created === undefined) {
+          throw new Error(`Failed to create workflow probe ${args.id}`);
+        }
+        return created;
+      };
+      return tx === undefined ? db.transaction(create) : create(tx);
     },
 
     async bindSidecar(

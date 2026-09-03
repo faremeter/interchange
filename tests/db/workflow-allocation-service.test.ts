@@ -14,6 +14,8 @@ import {
   createWorkflowRunLaunchSpecStore,
 } from "@intx/db";
 import {
+  executionHost,
+  executionHostAssignment,
   workflowDefinition,
   workflowProbe,
   workflowRun,
@@ -53,6 +55,10 @@ const ASSET_ID = "ast-workflow-probe";
 const DEFINITION_ID = "wfd-workflow-probe";
 const OFFERING_ID = "mof-workflow-probe";
 const CREDENTIAL_ID = "cred-workflow-probe";
+const existingSidecars = {
+  claim: async () => null,
+  release: async () => null,
+};
 const CREDENTIAL_SECRET = "probe-test-secret";
 const CIPHER = createEnvKeyCredentialCipher(new Uint8Array(32).fill(7));
 const SOURCE: WorkflowDefinitionSource = {
@@ -177,7 +183,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     function sharedPluginPools(provisioners: readonly SidecarProvisioner[]) {
       const plugins = createSidecarPluginRegistry({ provisioners });
-      return { deploymentPlugins: plugins, probePlugins: plugins };
+      return {
+        deploymentPlugins: plugins,
+        probePlugins: plugins,
+        existingSidecars,
+      };
     }
 
     async function freeze(
@@ -244,6 +254,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deploymentPlugins: createSidecarPluginRegistry({
           provisioners: [provisioner],
         }),
+        existingSidecars,
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
           deployPreparedCodeSourcedWorkflow: async (params) => ({
@@ -293,6 +304,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "succeeded",
         provisionerId: "sandbox",
         sidecarId: "sc-probe-adopted",
+        placementPrincipalId: PRINCIPAL_ID,
+        placementPolicy: {
+          tenantPolicies: [],
+          probeRules: [],
+          workflowRules: [],
+        },
       });
       expect(probe?.result).toEqual(probeResult());
       expect(probe === undefined || !("sourceOfferingIds" in probe)).toBe(true);
@@ -372,6 +389,87 @@ describe.skipIf(!harnessDbEnvAvailable())(
         status: "pending",
         targetHostPrincipalId: TARGET_HOST_PRINCIPAL_ID,
       });
+    });
+
+    test("does not adopt claimed probe capacity that misses the workflow policy", async () => {
+      await h.db.insert(executionHost).values({
+        id: "hst-probe-capacity",
+        tenantId: TENANT_ID,
+        principalId: TARGET_HOST_PRINCIPAL_ID,
+        ownerPrincipalId: PRINCIPAL_ID,
+        displayName: "Probe capacity",
+        tokenHashSha256: new Uint8Array([7, 8, 9]),
+      });
+      const ensureCalls: unknown[] = [];
+      const destroyCalls: unknown[] = [];
+      const provisioner: SidecarProvisioner = {
+        id: "heterogeneous-hosts",
+        apiVersion: 1,
+        bindingFingerprint: "heterogeneous-hosts:v1",
+        capabilities: [{ capability: "runtime:browser", state: "available" }],
+        async ensure(request) {
+          ensureCalls.push(request);
+          await h.db.insert(executionHostAssignment).values({
+            operationId: request.allocationId,
+            generation: request.generation,
+            sidecarId: request.sidecarId,
+            hostId: "hst-probe-capacity",
+            hostSessionId: "hsn-probe-capacity",
+            hostSessionGeneration: 1,
+            capabilities: [],
+            status: "assigned",
+          });
+          return { kind: "accepted", externalRef: "hst-probe-capacity" };
+        },
+        async destroy(request) {
+          destroyCalls.push(request);
+          return { kind: "destroyed" };
+        },
+      };
+      const allocationIds = ["sal-policy-probe", "sal-policy-deployment"];
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([provisioner]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: (params) =>
+            freeze(params, [
+              { capability: "runtime:browser", effect: "require" },
+            ]),
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("pending allocation is not ready");
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          disconnectAllocation: () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        createAllocationId: () => {
+          const id = allocationIds.shift();
+          if (id === undefined) throw new Error("unexpected allocation id");
+          return id;
+        },
+        createSidecarId: () => "sc-policy-probe",
+        createToken: () => "policy-probe-token",
+      });
+
+      const prepared = await service.prepareProvisionedDeployment(
+        prepareArgs("run-policy-deployment"),
+      );
+
+      expect(ensureCalls).toHaveLength(1);
+      expect(destroyCalls).toHaveLength(1);
+      expect(prepared.allocationId).toBe("sal-policy-deployment");
+      expect(
+        await createSidecarAllocationStore(h.db).findByAnchorRunId(
+          "run-policy-deployment",
+        ),
+      ).toMatchObject({ id: "sal-policy-deployment", status: "pending" });
     });
 
     test("commits the anchor before deploying a ready allocation", async () => {
@@ -708,6 +806,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await probeStore.create({
         id: "sal-startup-cleanup",
         tenantId: TENANT_ID,
+        placementPrincipalId: PRINCIPAL_ID,
+        placementPolicy: { tenantPolicies: [], workflowRules: [] },
         definitionAssetId: ASSET_ID,
         source: SOURCE,
         entry: "./workflow.mjs",
@@ -801,6 +901,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deploymentPlugins: createSidecarPluginRegistry({
           provisioners: [worker],
         }),
+        existingSidecars,
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) =>
             freeze(params, [{ capability: "platform:ios", effect: "require" }]),

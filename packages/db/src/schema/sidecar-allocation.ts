@@ -14,13 +14,16 @@ import type { SidecarAllocationStatus } from "@intx/types";
 
 import { principal } from "./principals";
 import { sidecar } from "./sidecar";
+import { sidecarOperation } from "./sidecar-operation";
 import { tenant } from "./tenants";
 import { workflowRun } from "./workflow-run";
 
 export const sidecarAllocation = pgTable(
   "sidecar_allocation",
   {
-    id: text("id").primaryKey(),
+    id: text("id")
+      .primaryKey()
+      .references(() => sidecarOperation.id, { onDelete: "cascade" }),
     anchorRunId: text("anchor_run_id")
       .notNull()
       .references(() => workflowRun.id, { onDelete: "cascade" }),

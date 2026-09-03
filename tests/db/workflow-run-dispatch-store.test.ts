@@ -15,6 +15,7 @@ import {
 import {
   sidecar,
   sidecarAllocation,
+  sidecarOperation,
   workflowDefinition,
   workflowRunDispatch,
 } from "@intx/db/schema";
@@ -78,6 +79,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tokenHashSha256: new Uint8Array([1, 2, 3]),
         status: "online",
       });
+      await h.db.insert(sidecarOperation).values({ id: "allocation-ack" });
       await h.db.insert(sidecarAllocation).values({
         id: "allocation-ack",
         anchorRunId: ANCHOR_RUN_ID,

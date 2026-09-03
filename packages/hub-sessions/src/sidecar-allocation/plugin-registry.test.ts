@@ -200,6 +200,27 @@ describe("createSidecarPluginRegistry", () => {
     ).toEqual({ ok: true, provisioner: ios });
   });
 
+  test("leaves exact host placement to matching provisioners", async () => {
+    const first = provisioner("first");
+    const second = provisioner("second");
+    const seen: (readonly SidecarProvisioner[])[] = [];
+    const registry = createSidecarPluginRegistry({
+      provisioners: [first, second],
+      chooser: (candidates) => {
+        seen.push(candidates);
+        return first;
+      },
+    });
+
+    expect(
+      await registry.selectProvisioner({
+        ...selectionContext(),
+        targetHostPrincipalId: "principal-host-1",
+      }),
+    ).toEqual({ ok: true, provisioner: first });
+    expect(seen).toEqual([[first, second]]);
+  });
+
   test("reports each provisioner's capability mismatches", async () => {
     const registry = createSidecarPluginRegistry({
       provisioners: [provisioner("containers")],

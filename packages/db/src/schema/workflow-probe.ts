@@ -9,11 +9,14 @@ import {
   timestamp,
 } from "drizzle-orm/pg-core";
 
+import type { SidecarProvisioningPolicy } from "@intx/types";
 import type { WorkflowProbeResultFrame } from "@intx/types/sidecar";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import { asset } from "./assets";
+import { principal } from "./principals";
 import { sidecar } from "./sidecar";
+import { sidecarOperation } from "./sidecar-operation";
 import { tenant } from "./tenants";
 
 type WorkflowProbeResult = Omit<WorkflowProbeResultFrame, "type" | "requestId">;
@@ -36,13 +39,21 @@ export type WorkflowProbeStatus =
 export const workflowProbe = pgTable(
   "workflow_probe",
   {
-    id: text("id").primaryKey(),
+    id: text("id")
+      .primaryKey()
+      .references(() => sidecarOperation.id, { onDelete: "cascade" }),
     tenantId: text("tenant_id")
       .notNull()
       .references(() => tenant.id, { onDelete: "restrict" }),
     definitionAssetId: text("definition_asset_id")
       .notNull()
       .references(() => asset.id, { onDelete: "restrict" }),
+    placementPrincipalId: text("placement_principal_id")
+      .references(() => principal.id, { onDelete: "restrict" })
+      .notNull(),
+    placementPolicy: jsonb("placement_policy")
+      .$type<SidecarProvisioningPolicy>()
+      .notNull(),
     source: jsonb("source").$type<WorkflowDefinitionSource>().notNull(),
     entry: text("entry").notNull(),
     pin: text("pin"),

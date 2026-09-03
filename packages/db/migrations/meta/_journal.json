@@ -694,6 +694,13 @@
       "when": 1788967084067,
       "tag": "0099_spotty_husk",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1788967084068,
+      "tag": "0100_sidecar_operation",
+      "breakpoints": true
     }
   ]
 }

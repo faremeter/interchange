@@ -15,7 +15,7 @@ import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 
 import { generateKeyPair } from "@intx/crypto";
-import { sidecarAllocation } from "@intx/db/schema";
+import { sidecarAllocation, sidecarOperation } from "@intx/db/schema";
 import {
   createAgentRepoStore,
   createHubSessionLookups,
@@ -74,6 +74,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: TENANT_ID,
         address: ANCHOR_ADDRESS,
       });
+      await h.db.insert(sidecarOperation).values({ id: ALLOCATION_ID });
       await h.db.insert(sidecarAllocation).values({
         id: ALLOCATION_ID,
         anchorRunId: ANCHOR_RUN_ID,

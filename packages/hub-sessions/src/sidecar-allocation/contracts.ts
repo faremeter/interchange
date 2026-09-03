@@ -63,6 +63,40 @@ export const DestroySidecarResult = type({
 }).or(SidecarOperationFailure);
 export type DestroySidecarResult = typeof DestroySidecarResult.infer;
 
+export type ExistingHostCandidate = {
+  readonly hostId: string;
+  readonly hostPrincipalId: string;
+  readonly capabilities: readonly SidecarCapabilityDeclaration[];
+};
+
+/** Returns an offered hostId, or null to decline existing capacity. */
+export type ExistingHostChooser = (
+  candidates: readonly ExistingHostCandidate[],
+) => string | null | Promise<string | null>;
+
+export type ClaimExistingSidecarOpts = {
+  /** May run again with remaining candidates after a reservation race. */
+  readonly chooseHost: ExistingHostChooser;
+};
+
+export interface ExistingSidecarCapacity {
+  /**
+   * Selects and claims eligible capacity, resuming an existing assignment on
+   * retries. Returns null when an untargeted request finds no capacity or the
+   * chooser declines; an unavailable exact target returns a rejection.
+   */
+  claim(
+    request: EnsureSidecarRequest,
+    opts: ClaimExistingSidecarOpts,
+  ): Promise<EnsureSidecarResult | null>;
+  /** Releases claimed capacity, or returns null when this sidecar was not claimed. */
+  release(request: DestroySidecarRequest): Promise<DestroySidecarResult | null>;
+}
+
+export type SidecarProvisionerContext = {
+  readonly existingSidecars: ExistingSidecarCapacity;
+};
+
 export interface SidecarProvisioner {
   readonly id: string;
   readonly apiVersion: 1;
@@ -73,13 +107,19 @@ export interface SidecarProvisioner {
    * Converges infrastructure for this generation. Implementations must be
    * idempotent and reject generations older than one they have observed.
    */
-  ensure(request: EnsureSidecarRequest): Promise<EnsureSidecarResult>;
+  ensure(
+    request: EnsureSidecarRequest,
+    context: SidecarProvisionerContext,
+  ): Promise<EnsureSidecarResult>;
   /**
    * Idempotently destroys the allocation and fences older ensure calls so a
    * delayed request cannot recreate infrastructure after destruction. It must
    * succeed without an externalRef; that value is only an optional optimization.
    */
-  destroy(request: DestroySidecarRequest): Promise<DestroySidecarResult>;
+  destroy(
+    request: DestroySidecarRequest,
+    context: SidecarProvisionerContext,
+  ): Promise<DestroySidecarResult>;
 }
 
 export type SidecarCredentialIdentity =

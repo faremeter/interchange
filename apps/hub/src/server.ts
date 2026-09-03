@@ -8,19 +8,21 @@ import {
   createWorkflowRunDispatchStore,
   resolveFrameSenderKey,
 } from "@intx/db";
+import { timeWindowEvaluator } from "@intx/authz";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
 import {
   createApp,
   createAuth,
+  canUseExecutionHost,
   createMailTriggeredRunGrantsMaterializer,
 } from "@intx/hub-api";
 import {
   createAgentRepoStore,
   createAssetService,
   createEventCollectorRegistry,
+  createExistingSidecarCapacity,
   createExecutionHostControlRouter,
-  createHostCapacityProvisioner,
   createHubSessionLookups,
   createHubSessionOrchestrator,
   createSessionService,
@@ -35,7 +37,6 @@ import {
   type SidecarLookups,
   type SidecarProvisioner,
   type SidecarProvisionerChooser,
-  type CreateHostCapacityProvisionerOpts,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { generateKeyPair } from "@intx/crypto";
@@ -48,11 +49,6 @@ export type CreateHubServerOpts = {
   readonly sidecarProvisioners?: readonly SidecarProvisioner[];
   /** Selects among matching deployment provisioners. Defaults to the first. */
   readonly sidecarProvisionerChooser?: SidecarProvisionerChooser;
-  /** Host-backed provisioners built over the Hub's enrolled host registry. */
-  readonly hostCapacityProvisioners?: readonly Omit<
-    CreateHostCapacityProvisionerOpts,
-    "router" | "assignments"
-  >[];
   /** Provisioners eligible to evaluate workflow source code. */
   readonly probeSidecarProvisioners?: readonly SidecarProvisioner[];
   /** Selects among matching probe provisioners. Defaults to the first. */
@@ -63,7 +59,6 @@ export type CreateHubServerOpts = {
 export async function createHubServer({
   sidecarProvisioners = [],
   sidecarProvisionerChooser,
-  hostCapacityProvisioners = [],
   probeSidecarProvisioners = [],
   probeSidecarProvisionerChooser,
   probeSidecarCapabilityRules = [],
@@ -244,13 +239,17 @@ export async function createHubServer({
   // the same authorization an externally-triggered run gets. Threaded into
   // the sidecar router as a lookup its `mail.outbound` handler invokes for
   // each workflow-deployment recipient.
+  const grantStore = createGrantStore(db);
+  const conditionRegistry = {
+    time_window: timeWindowEvaluator,
+  };
   const lookups: SidecarLookups = {
     ...createHubSessionLookups({ db, agentRepoStore }),
     materializeMailTriggeredRunGrants: createMailTriggeredRunGrantsMaterializer(
       {
         db,
         principalKeyStore,
-        grantStore: createGrantStore(db),
+        grantStore,
       },
     ),
     resolveSenderKey: (address) =>
@@ -336,15 +335,26 @@ export async function createHubServer({
     hubInstanceId: crypto.randomUUID(),
   });
   const executionHostAssignments = createExecutionHostAssignmentStore(db);
-  const managedHostProvisioners = hostCapacityProvisioners.map((config) =>
-    createHostCapacityProvisioner({
-      ...config,
-      router: executionHostRouter,
-      assignments: executionHostAssignments,
-    }),
-  );
+  const existingSidecars = createExistingSidecarCapacity({
+    router: executionHostRouter,
+    assignments: executionHostAssignments,
+    canUseHost: async ({
+      tenantId,
+      placementPrincipalId,
+      hostId,
+      ownerPrincipalId,
+    }) =>
+      canUseExecutionHost({
+        grantStore,
+        conditionRegistry,
+        tenantId,
+        placementPrincipalId,
+        hostId,
+        ownerPrincipalId,
+      }),
+  });
   const sidecarPlugins = createSidecarPluginRegistry({
-    provisioners: [...managedHostProvisioners, ...sidecarProvisioners],
+    provisioners: sidecarProvisioners,
     ...(sidecarProvisionerChooser !== undefined
       ? { chooser: sidecarProvisionerChooser }
       : {}),
@@ -362,6 +372,7 @@ export async function createHubServer({
     db,
     deploymentPlugins: sidecarPlugins,
     probePlugins: probeSidecarPlugins,
+    existingSidecars,
     preparedDeployer: sessionService,
     credentialCipher,
     probeCapabilityRules: probeSidecarCapabilityRules,
@@ -384,6 +395,8 @@ export async function createHubServer({
   const sidecarAllocationReconciler = createSidecarAllocationReconciler({
     allocationStore: sidecarAllocationStore,
     plugins: sidecarPlugins,
+    existingSidecars,
+    executionHostAssignments,
     router: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,
     onReady: async (allocation) => {
@@ -457,6 +470,8 @@ export async function createHubServer({
     },
     authHandler: (c) => auth.handler(c.req.raw),
     db,
+    grantStore,
+    conditionRegistry,
     sidecarRouter,
     sessionService,
     workflowAllocationService,

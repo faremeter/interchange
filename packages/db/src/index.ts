@@ -10,7 +10,11 @@ export {
   PG_FOREIGN_KEY_VIOLATION,
 } from "./pg-error";
 export type { DBConfig } from "./config";
-export { runMigrations, dropSchema } from "./migrate";
+export {
+  runMigrations,
+  dropSchema,
+  rewriteSchemaQualifiedReferences,
+} from "./migrate";
 export {
   rekeyCredentialSecrets,
   type RekeyReport,

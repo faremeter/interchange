@@ -17,11 +17,16 @@ export {
   DestroySidecarResult,
   EnsureSidecarResult,
   SidecarOperationFailure,
+  type ClaimExistingSidecarOpts,
   type DestroySidecarRequest,
+  type ExistingHostCandidate,
+  type ExistingHostChooser,
+  type ExistingSidecarCapacity,
   type EnsureSidecarRequest,
   type SidecarCredentialIdentity,
   type SidecarCredentialResolver,
   type SidecarProvisioner,
+  type SidecarProvisionerContext,
 } from "./contracts";
 export {
   createSidecarAllocationReconciler,
@@ -29,6 +34,7 @@ export {
   type SidecarAllocationReconcilerDeps,
 } from "./reconciler";
 export {
-  createHostCapacityProvisioner,
-  type CreateHostCapacityProvisionerOpts,
-} from "./host-capacity-provisioner";
+  createExistingSidecarCapacity,
+  type CreateExistingSidecarCapacityOpts,
+  type ExistingSidecarHostAccessRequest,
+} from "./existing-sidecar-capacity";

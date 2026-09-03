@@ -125,7 +125,8 @@ final selected provisioner.
 
 Probe and deployment provisioners are configured as separate lists. The same
 provisioner may appear in both lists, which permits the Hub to adopt matching
-probe capacity for the deployment.
+probe capacity for the deployment. Claimed host capacity is adopted only when
+that exact host's recorded capabilities also satisfy the final workflow policy.
 
 Capabilities describe guarantees, not vendors. A sandbox-backed provisioner
 can declare `isolation:workload` and a more specific mechanism such as
@@ -150,42 +151,70 @@ capacity, or both to implement another policy such as round-robin selection.
 The chooser also receives the tenant, the authenticated principal whose request
 owns placement, and the effective capability policy used to filter candidates.
 It does not receive user records, grants, credentials, or a snapshot of live
-sidecars. This lets a provisioner consult its own principal-scoped capacity
-registry without making volatile provider state part of the Hub contract.
+sidecars.
 
 The same placement principal is persisted on the selected allocation and passed
 to every `ensure()` call, including replacement generations after Hub restart.
 A deployment may also target an exact active host principal owned by that
-placement principal. The target is optional; without one, a host-backed
-provisioner may choose any compatible host in the owner's pool.
+placement principal or shared with it through a `host:{id}` / `use` grant. The
+target is optional. The request's `targetHostPrincipalId` is the host's
+principal id (`prn_...`). The grant resource uses the host record's `id`
+(`hst_...`): `host:hst_...` with action `use`.
 
 The Hub snapshots the effective tenant and workflow capability policy onto the
 allocation. Every replacement receives that deploy-time policy rather than
 re-reading mutable tenant configuration, so a retry cannot silently change the
 guarantees under which the provisioner binding was selected.
 
-A provisioner backed by pre-existing capacity owns the registration and
-capability declarations for that capacity and must claim one matching slot
-atomically. The Hub still fixes the provisioner binding before `ensure()`;
-availability checks performed by a chooser are advisory, and a rejected
-`ensure()` follows the normal retry or terminal-failure lifecycle rather than
-selecting another provisioner.
-
-Hub compositions can register host-backed provisioners without exposing host
-connections to the plugin:
+Every provisioner receives the same `existingSidecars` service with each
+`ensure()` and `destroy()` call. A provisioner may atomically claim matching
+capacity accessible to the placement principal and supply its own host
+selection policy. Untargeted requests may fall back to creating new capacity:
 
 ```ts
-await createHubServer({
-  hostCapacityProvisioners: [
-    {
-      id: "ios-host",
-      bindingFingerprint: "ios-host:v1",
-      capabilities: [{ capability: "runtime:ios-jsc-v1", state: "available" }],
+async ensure(request, { existingSidecars }) {
+  const existing = await existingSidecars.claim(request, {
+    chooseHost(candidates) {
+      const index = Math.floor(Math.random() * candidates.length);
+      return candidates[index]?.hostId ?? null;
     },
-  ],
-});
+  });
+  return existing ?? createNewCapacity(request);
+}
+
+async destroy(request, { existingSidecars }) {
+  const released = await existingSidecars.release(request);
+  return released ?? destroyCreatedCapacity(request);
+}
 ```
 
-Each configured provisioner advertises its operator-defined outer guarantees.
-Its private broker then checks the selected live host's current declarations
-against the persisted placement policy before claiming it.
+The Hub still fixes the provisioner binding before `ensure()`. Within `claim()`,
+the required `chooseHost` callback receives only eligible, unreserved hosts,
+represented by `hostId`, `hostPrincipalId`, and `capabilities`. The provisioner
+returns an offered host id or `null` to decline existing capacity. There is no
+Hub-defined host ordering. The callback may be asynchronous; grants,
+credentials, and control-session details remain inside the Hub.
+
+Candidate availability is advisory. The Hub rechecks access, capabilities,
+and the current session after selection, then attempts an atomic reservation.
+If the host became unavailable, it calls the chooser with the remaining
+eligible candidates. Each host is attempted at most once per claim call.
+When an untargeted request exhausts its candidates or the chooser declines,
+`claim()` returns `null`. An existing assignment is resumed without invoking
+the chooser again, and uncertain assignment acknowledgements throw into
+recovery instead of selecting another host.
+
+An exact `targetHostPrincipalId` restricts the offered candidates to that host.
+If it cannot be claimed, `claim()` returns a retryable rejection rather than
+`null`, preventing the fallback in the example above. Before accepting a
+targeted deployment's provisioning result, the Hub verifies an acknowledged
+assignment for the exact operation, generation, sidecar identity, and host
+principal. A provisioner that accepts other capacity is sent through the
+uncertain-provisioning cleanup path.
+
+The request's `allocationId` is an opaque `sidecar_operation` identity. The Hub
+resolves whether that operation currently belongs to a probe or deployment;
+provisioners do not receive or infer that distinction. When claimed probe
+capacity is eligible for adoption, the same operation identity continues into
+the deployment. The Hub rechecks the claimed host's recorded capabilities
+against the final workflow policy before adopting it.

@@ -309,9 +309,16 @@ proof of live capacity.
 
 ### Probe preparation
 
-`workflow_probe` owns only the probe operation: source, entry, optional pin, status, raw result, failure, and the temporary provisioner binding needed to clean up remote capacity. It does not store catalog offerings, session/domain data, deploy content, or a workflow launch specification.
+`sidecar_operation` is the stable, opaque provisioner lifecycle identity shared
+by probes and deployments. `workflow_probe` and `sidecar_allocation` remain
+separate records over that identity because their state machines and durable
+payloads differ. `workflow_probe` owns the probe source, entry, optional pin,
+placement principal and policy, status, raw result, failure, and temporary
+provisioner binding needed to clean up capacity. It does not store catalog
+offerings, session/domain data, deploy content, or a workflow launch
+specification.
 
-The deployment request stays open while the Hub matches tenant and Hub probe policy against its probe-provisioner list, passes every match plus the tenant, authenticated placement principal, and effective policy to the configured probe chooser, and asks the selected provisioner to start probe capacity. Once the exact authenticated generation returns `workflow.probe.result`, the Hub freezes that result, matches the final capability policy against its separate deployment-provisioner list, and passes those matches together with the same tenant and placement principal and the final policy to the deployment chooser. The default chooser selects the first match in registration order. If both choosers select the same binding, the Hub atomically creates the normal anchor run, frozen launch spec, and an allocated `sidecar_allocation` that adopts the connected capacity. Otherwise it destroys the probe capacity and creates a normal pending allocation for the selected binding. Only then does the deployment exist.
+The deployment request stays open while the Hub matches tenant and Hub probe policy against its probe-provisioner list, passes every match plus the tenant, authenticated placement principal, and effective policy to the configured probe chooser, and asks the selected provisioner to start probe capacity. Once the exact authenticated generation returns `workflow.probe.result`, the Hub freezes that result, matches the final capability policy against its separate deployment-provisioner list, and passes those matches together with the same tenant and placement principal and the final policy to the deployment chooser. The default chooser selects the first match in registration order. If both choosers select the same binding and any claimed host satisfies the final policy, the Hub atomically creates the normal anchor run, frozen launch spec, and an allocated `sidecar_allocation` that adopts the connected capacity. Otherwise it destroys the probe capacity and creates a normal pending allocation for the selected binding. Only then does the deployment exist.
 
 For probes, the probe id remains the opaque allocation owner used by the existing `ensure`/`destroy` lifecycle. Every `ensure` also receives the placement principal id so a provisioner can consult principal-scoped capacity it manages without receiving user data or a Hub snapshot of connected sidecars. `destroy` must identify capacity from `(allocationId, generation, sidecarId)` alone. The optional `externalRef` is persisted only after `ensure` returns, so a Hub crash after capacity creation can require cleanup without it. Startup cleanup moves every active probe left by an interrupted request to durable `releasing` state and attempts to destroy its capacity. A transient destroy failure does not block Hub startup; periodic reconciliation retries the cleanup row. The production Hub registers no infrastructure backend by default; the admin UI E2E harness injects a test-only `local-process` provisioner.
 
@@ -320,15 +327,25 @@ The launch spec deliberately stores catalog offering ids rather than resolved pr
 The sidecar allocation separately stores the authenticated placement principal,
 an optional exact host-principal target, and the effective capability policy
 used to select the provisioner. The HTTP route accepts an exact target only when
-it is an active host in the deployment tenant owned by the requesting principal;
-otherwise it returns the same not-found response as an unknown host. Replacement
-provisioning reuses the stored policy and target.
+it is an active host in the deployment tenant owned by the requesting principal
+or shared through a `host:{id}` / `use` grant; otherwise it returns the same
+not-found response as an unknown host. Replacement provisioning reuses the
+stored policy and target.
 
-Host-capacity claims are durable rows keyed by the allocation's generated
-`sidecarId`. At most one active claim may exist for an allocation or host. A
+An accepted ensure result for an exact host target must have an acknowledged
+host assignment matching the operation, generation, sidecar id, and target
+principal. The reconciler sends a mismatching result through replacement
+cleanup before any capacity can become ready.
+
+Host-capacity claims are durable rows keyed by the operation's generated
+`sidecarId` and reference the shared `sidecar_operation`. At most one active
+claim may exist for an operation or host. A
 claim records the exact host session id and session generation that received
-the assignment; acknowledgement must match all of those fields before the row
-becomes assigned.
+the assignment plus the host's capability declaration at claim time;
+acknowledgement must match all of those fields before the row becomes assigned.
+Probe adoption revalidates that exact capability declaration against the final
+workflow policy. A mismatch releases the probe capacity and provisions the
+deployment separately.
 
 Destruction tombstones the exact sidecar identity rather than fencing only by
 allocation generation. This distinction is required because replacement first
@@ -337,11 +354,19 @@ ensures a new `sidecarId` within that same generation. Delayed work for the
 destroyed identity remains rejected while the replacement is allowed to claim
 the released host.
 
-The host-capacity provisioner returns acceptance only after the exact current
-host session acknowledges `host.assignment`. It then marks the claim assigned;
-the runtime still has to connect separately with the delivered allocation token
-before allocation readiness. A missing connection, send failure, or lost
-acknowledgement is uncertain and throws into normal allocation replacement.
+Every provisioner operation receives the same existing-sidecar capacity
+service. The provisioner supplies a `chooseHost` callback to select among
+eligible, unreserved hosts using only their host ids, principal ids, and
+capabilities. The Hub revalidates a selection before atomically claiming it;
+a lost reservation race offers the remaining candidates again, with at most
+one attempt per host in a claim call. Existing assignments bypass selection
+on retries. Untargeted requests may decline or exhaust existing capacity and
+fall back to creating capacity; an unavailable exact target returns a retryable
+rejection. A successful claim is returned only after the exact
+current host session acknowledges `host.assignment`; the runtime still has to
+connect separately with the delivered allocation token before allocation
+readiness. A send failure or lost acknowledgement is uncertain and throws into
+normal allocation replacement.
 
 Release mirrors that handshake. The claim first becomes `releasing`, which
 keeps both the host and allocation reserved. Only an exact `host.release.ack`

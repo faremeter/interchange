@@ -30,6 +30,10 @@ export {
   type CreateExecutionHostRoutesDeps,
 } from "./routes/execution-hosts";
 export {
+  canUseExecutionHost,
+  type CanUseExecutionHostArgs,
+} from "./execution-host-access";
+export {
   createMailTriggeredRunGrantsMaterializer,
   setRunToolGrantEffect,
   type MailTriggeredRunGrantsDeps,

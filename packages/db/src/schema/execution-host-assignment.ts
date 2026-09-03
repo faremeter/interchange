@@ -3,15 +3,18 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
+import type { SidecarCapabilityDeclaration } from "@intx/types";
+
 import { executionHost } from "./execution-host";
 import { sidecar } from "./sidecar";
-import { sidecarAllocation } from "./sidecar-allocation";
+import { sidecarOperation } from "./sidecar-operation";
 
 export const executionHostAssignment = pgTable(
   "execution_host_assignment",
@@ -19,15 +22,18 @@ export const executionHostAssignment = pgTable(
     sidecarId: text("sidecar_id")
       .primaryKey()
       .references(() => sidecar.id, { onDelete: "restrict" }),
-    allocationId: text("allocation_id")
+    operationId: text("operation_id")
       .notNull()
-      .references(() => sidecarAllocation.id, { onDelete: "cascade" }),
+      .references(() => sidecarOperation.id, { onDelete: "cascade" }),
     generation: integer("generation").notNull(),
     hostId: text("host_id")
       .notNull()
       .references(() => executionHost.id, { onDelete: "restrict" }),
     hostSessionId: text("host_session_id").notNull(),
     hostSessionGeneration: integer("host_session_generation").notNull(),
+    capabilities: jsonb("capabilities")
+      .$type<SidecarCapabilityDeclaration[]>()
+      .notNull(),
     status: text("status", {
       enum: ["claiming", "assigned", "releasing", "destroyed"],
     }).notNull(),
@@ -39,10 +45,10 @@ export const executionHostAssignment = pgTable(
     uniqueIndex("execution_host_assignment_active_host_idx")
       .on(t.hostId)
       .where(sql`${t.status} in ('claiming', 'assigned', 'releasing')`),
-    uniqueIndex("execution_host_assignment_active_allocation_idx")
-      .on(t.allocationId)
+    uniqueIndex("execution_host_assignment_active_operation_idx")
+      .on(t.operationId)
       .where(sql`${t.status} in ('claiming', 'assigned', 'releasing')`),
-    index("execution_host_assignment_allocation_idx").on(t.allocationId),
+    index("execution_host_assignment_operation_idx").on(t.operationId),
     check(
       "execution_host_assignment_generation_check",
       sql`${t.generation} >= 0`,

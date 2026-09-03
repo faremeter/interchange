@@ -37,6 +37,7 @@ import { defineAgent } from "@intx/agent";
 import { createNoopCredentialCipher, generateKeyPair } from "@intx/crypto";
 import {
   sidecarAllocation,
+  sidecarOperation,
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
@@ -238,6 +239,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     async function seedAllocation(): Promise<void> {
+      await h.db.insert(sidecarOperation).values({ id: ALLOC_ID });
       await h.db.insert(sidecarAllocation).values({
         id: ALLOC_ID,
         anchorRunId: ANCHOR_RUN_ID,

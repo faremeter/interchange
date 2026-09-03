@@ -17,7 +17,7 @@ import {
   WorkflowDeploymentResponse,
 } from "@intx/types";
 import type { GrantWalkSnapshot, SidecarAllocationStatus } from "@intx/types";
-import type { GrantRule } from "@intx/types/authz";
+import type { ConditionRegistry, GrantRule } from "@intx/types/authz";
 import {
   asset as assetTable,
   executionHost as executionHostTable,
@@ -296,6 +296,7 @@ type MockDBOpts = {
   // (fail-closed); `undefined` returns no version row (also fail-closed).
   grantSnapshot?: GrantWalkSnapshot | null;
   targetHostExists?: boolean;
+  targetHostOwnerPrincipalId?: string;
 };
 
 function createMockDB(opts: MockDBOpts) {
@@ -331,7 +332,15 @@ function createMockDB(opts: MockDBOpts) {
       let joined = false;
       const selectedRows = (locked: boolean) => {
         if (table === executionHostTable) {
-          return opts.targetHostExists === true ? [{ id: "host-target" }] : [];
+          return opts.targetHostExists === true
+            ? [
+                {
+                  id: "host-target",
+                  ownerPrincipalId:
+                    opts.targetHostOwnerPrincipalId ?? PRINCIPAL_ID,
+                },
+              ]
+            : [];
         }
         if (table === sidecarAllocationTable) {
           const status = opts.allocationStatus ?? "allocated";
@@ -773,6 +782,7 @@ type TestAppOpts = {
   db?: MockDBOpts;
   grants?: GrantRule[];
   principalKeyStore?: PrincipalKeyStore;
+  conditionRegistry?: ConditionRegistry;
   signalCalls?: SignalCall[];
   routeMailCalls?: RouteMailCall[];
   routeMailResult?: boolean;
@@ -832,6 +842,9 @@ function createTestApp(opts: TestAppOpts = {}) {
     db,
     principalKeyStore: opts.principalKeyStore ?? createMockPrincipalKeyStore(),
     grantStore: createInMemoryGrantStore(opts.grants ?? [makeGrant()]),
+    ...(opts.conditionRegistry !== undefined
+      ? { conditionRegistry: opts.conditionRegistry }
+      : {}),
     sidecarRouter: createMockSidecarRouter(
       opts.signalCalls ?? [],
       opts.routeMailCalls ?? [],
@@ -1154,6 +1167,12 @@ describe("POST /workflows/deployments", () => {
     let prepareCalled = false;
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
+      db: {
+        assetRow: workflowAssetRow,
+        deploymentRow,
+        targetHostExists: true,
+        targetHostOwnerPrincipalId: "prn_other",
+      },
       workflowAllocationService: {
         prepareProvisionedDeployment: async () => {
           prepareCalled = true;
@@ -1174,6 +1193,99 @@ describe("POST /workflows/deployments", () => {
     expect(await errorCode(res)).toBe("host_not_found");
     expect(prepareCalled).toBe(false);
   });
+
+  test("accepts a host target shared with the requesting principal", async () => {
+    const prepared: Parameters<
+      WorkflowAllocationService["prepareProvisionedDeployment"]
+    >[0][] = [];
+    const app = createTestApp({
+      grants: [
+        makeGrant({ action: "create" }),
+        makeGrant({
+          id: "grant-host-use",
+          resource: "host:host-target",
+          action: "use",
+        }),
+      ],
+      db: {
+        assetRow: workflowAssetRow,
+        deploymentRow,
+        targetHostExists: true,
+        targetHostOwnerPrincipalId: "prn_other",
+      },
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async (args) => {
+          prepared.push(args);
+          return {
+            anchorRunId: DEPLOYMENT_ID,
+            deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
+            allocationId: "sal-test",
+            status: "pending",
+          };
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(
+        `${base()}/deployments`,
+        sourceDeployBody({ targetHostPrincipalId: "prn_host_target" }),
+      ),
+    );
+
+    expect(res.status).toBe(201);
+    expect(prepared[0]?.targetHostPrincipalId).toBe("prn_host_target");
+  });
+
+  test.each(["deny", "ask"] as const)(
+    "rejects a host target restricted by a conditioned %s",
+    async (effect) => {
+      let prepareCalled = false;
+      const app = createTestApp({
+        grants: [
+          makeGrant({ action: "create" }),
+          makeGrant({
+            id: "grant-host-use",
+            resource: "host:*",
+            action: "use",
+          }),
+          makeGrant({
+            id: "grant-host-restriction",
+            resource: "host:host-target",
+            action: "use",
+            effect,
+            conditions: { time_window: {} },
+          }),
+        ],
+        conditionRegistry: { time_window: () => true },
+        db: {
+          assetRow: workflowAssetRow,
+          deploymentRow,
+          targetHostExists: true,
+          targetHostOwnerPrincipalId: "prn_other",
+        },
+        workflowAllocationService: {
+          prepareProvisionedDeployment: async () => {
+            prepareCalled = true;
+            throw new Error("restricted host must not reach preparation");
+          },
+          deployReadyAllocation: async () => null,
+        },
+      });
+
+      const res = await app.fetch(
+        authedPost(
+          `${base()}/deployments`,
+          sourceDeployBody({ targetHostPrincipalId: "prn_host_target" }),
+        ),
+      );
+
+      expect(res.status).toBe(404);
+      expect(await errorCode(res)).toBe("host_not_found");
+      expect(prepareCalled).toBe(false);
+    },
+  );
 
   test("reports provisioner selection failures as conflicts", async () => {
     const app = createTestApp({

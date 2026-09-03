@@ -16,11 +16,14 @@ import {
   executionHost,
   sidecar,
   sidecarAllocation,
+  sidecarOperation,
   workflowDefinition,
 } from "@intx/db/schema";
+import { eq } from "drizzle-orm";
 import {
+  createExistingSidecarCapacity,
   createExecutionHostControlRouter,
-  createHostCapacityProvisioner,
+  type SidecarProvisioner,
   type WsHandle,
 } from "@intx/hub-sessions";
 import {
@@ -58,9 +61,10 @@ function createWs(): WsHandle & { sent: string[]; closed: boolean } {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  const deadline = performance.now() + 1_000;
+  while (performance.now() < deadline) {
     if (predicate()) return;
-    await Bun.sleep(1);
+    await Bun.sleep(5);
   }
   throw new Error("Timed out waiting for execution host provisioning");
 }
@@ -74,6 +78,28 @@ function frameOfType(ws: { sent: string[] }, type: string) {
         frame !== null &&
         Reflect.get(frame, "type") === type,
     );
+}
+
+function createReuseFirstProvisioner(): SidecarProvisioner {
+  return {
+    id: "browser-host",
+    apiVersion: 1,
+    bindingFingerprint: "browser-host:v1",
+    capabilities: [{ capability: "runtime:browser", state: "available" }],
+    async ensure(request, { existingSidecars }) {
+      return (
+        (await existingSidecars.claim(request, {
+          chooseHost: (candidates) => candidates[0]?.hostId ?? null,
+        })) ?? {
+          kind: "accepted",
+          externalRef: "created-capacity",
+        }
+      );
+    },
+    async destroy(request, { existingSidecars }) {
+      return (await existingSidecars.release(request)) ?? { kind: "destroyed" };
+    },
+  };
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -145,6 +171,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "sidecar-host-provisioning",
         tokenHashSha256: new Uint8Array([7, 8, 9]),
       });
+      await h.db
+        .insert(sidecarOperation)
+        .values({ id: "allocation-host-provisioning" });
       await h.db.insert(sidecarAllocation).values({
         id: "allocation-host-provisioning",
         anchorRunId: "run-host-provisioning",
@@ -183,30 +212,33 @@ describe.skipIf(!harnessDbEnvAvailable())(
           frameOfType(hostA, "host.registered") !== undefined &&
           frameOfType(hostB, "host.registered") !== undefined,
       );
-      const provisioner = createHostCapacityProvisioner({
-        id: "browser-host",
-        bindingFingerprint: "browser-host:v1",
-        capabilities: [{ capability: "runtime:browser", state: "available" }],
+      const existingSidecars = createExistingSidecarCapacity({
         router,
         assignments: createExecutionHostAssignmentStore(h.db),
         acknowledgementTimeoutMs: 500,
       });
+      const provisioner = createReuseFirstProvisioner();
 
-      const ensured = provisioner.ensure({
-        allocationId: "allocation-host-provisioning",
-        generation: 1,
-        tenantId: TENANT_ID,
-        placementPrincipalId: OWNER_A,
-        targetHostPrincipalId: HOST_PRINCIPAL_A,
-        placementPolicy: {
-          tenantPolicies: [],
-          workflowRules: [{ capability: "runtime:browser", effect: "require" }],
+      const ensured = provisioner.ensure(
+        {
+          allocationId: "allocation-host-provisioning",
+          generation: 1,
+          tenantId: TENANT_ID,
+          placementPrincipalId: OWNER_A,
+          targetHostPrincipalId: HOST_PRINCIPAL_A,
+          placementPolicy: {
+            tenantPolicies: [],
+            workflowRules: [
+              { capability: "runtime:browser", effect: "require" },
+            ],
+          },
+          anchorRunId: "run-host-provisioning",
+          sidecarId: "sidecar-host-provisioning",
+          token: "runtime-token",
+          hubWebSocketUrl: "wss://hub.example/api/sidecars/ws",
         },
-        anchorRunId: "run-host-provisioning",
-        sidecarId: "sidecar-host-provisioning",
-        token: "runtime-token",
-        hubWebSocketUrl: "wss://hub.example/api/sidecars/ws",
-      });
+        { existingSidecars },
+      );
       await waitFor(() => frameOfType(hostA, "host.assignment") !== undefined);
       expect(frameOfType(hostB, "host.assignment")).toBeUndefined();
       router.handleMessage(
@@ -220,11 +252,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(await ensured).toEqual({ kind: "accepted", externalRef: HOST_A });
 
-      const released = provisioner.destroy({
-        allocationId: "allocation-host-provisioning",
-        generation: 2,
-        sidecarId: "sidecar-host-provisioning",
-      });
+      const released = provisioner.destroy(
+        {
+          allocationId: "allocation-host-provisioning",
+          generation: 2,
+          sidecarId: "sidecar-host-provisioning",
+        },
+        { existingSidecars },
+      );
       await waitFor(() => frameOfType(hostA, "host.release") !== undefined);
       expect(frameOfType(hostB, "host.release")).toBeUndefined();
       router.handleMessage(
@@ -240,6 +275,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("does not assign another principal's connected host", async () => {
+      await h.db
+        .update(sidecarAllocation)
+        .set({ targetHostPrincipalId: null })
+        .where(eq(sidecarAllocation.id, "allocation-host-provisioning"));
       const router = createExecutionHostControlRouter({
         store: createExecutionHostSessionStore(h.db),
         hubInstanceId: "hub-test",
@@ -248,16 +287,62 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const hostB = createWs();
       register(router, hostB, HOST_B, TOKEN_B);
       await waitFor(() => frameOfType(hostB, "host.registered") !== undefined);
-      const provisioner = createHostCapacityProvisioner({
-        id: "browser-host",
-        bindingFingerprint: "browser-host:v1",
-        capabilities: [{ capability: "runtime:browser", state: "available" }],
+      const existingSidecars = createExistingSidecarCapacity({
         router,
         assignments: createExecutionHostAssignmentStore(h.db),
       });
+      const provisioner = createReuseFirstProvisioner();
 
       expect(
-        await provisioner.ensure({
+        await provisioner.ensure(
+          {
+            allocationId: "allocation-host-provisioning",
+            generation: 1,
+            tenantId: TENANT_ID,
+            placementPrincipalId: OWNER_A,
+            placementPolicy: {
+              tenantPolicies: [],
+              workflowRules: [
+                { capability: "runtime:browser", effect: "require" },
+              ],
+            },
+            anchorRunId: "run-host-provisioning",
+            sidecarId: "sidecar-host-provisioning",
+            token: "runtime-token",
+            hubWebSocketUrl: "wss://hub.example/api/sidecars/ws",
+          },
+          { existingSidecars },
+        ),
+      ).toEqual({
+        kind: "accepted",
+        externalRef: "created-capacity",
+      });
+      expect(frameOfType(hostB, "host.assignment")).toBeUndefined();
+    });
+
+    test("assigns a host shared with the placement principal", async () => {
+      await h.db
+        .update(sidecarAllocation)
+        .set({ targetHostPrincipalId: null })
+        .where(eq(sidecarAllocation.id, "allocation-host-provisioning"));
+      const router = createExecutionHostControlRouter({
+        store: createExecutionHostSessionStore(h.db),
+        hubInstanceId: "hub-test",
+        createSessionId: () => "host-session-b",
+      });
+      const hostB = createWs();
+      register(router, hostB, HOST_B, TOKEN_B);
+      await waitFor(() => frameOfType(hostB, "host.registered") !== undefined);
+      const existingSidecars = createExistingSidecarCapacity({
+        router,
+        assignments: createExecutionHostAssignmentStore(h.db),
+        canUseHost: async ({ hostId }) => hostId === HOST_B,
+        acknowledgementTimeoutMs: 500,
+      });
+      const provisioner = createReuseFirstProvisioner();
+
+      const ensured = provisioner.ensure(
+        {
           allocationId: "allocation-host-provisioning",
           generation: 1,
           tenantId: TENANT_ID,
@@ -272,13 +357,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sidecarId: "sidecar-host-provisioning",
           token: "runtime-token",
           hubWebSocketUrl: "wss://hub.example/api/sidecars/ws",
+        },
+        { existingSidecars },
+      );
+      await waitFor(() => frameOfType(hostB, "host.assignment") !== undefined);
+      router.handleMessage(
+        hostB,
+        JSON.stringify({
+          type: "host.assignment.ack",
+          allocationId: "allocation-host-provisioning",
+          generation: 1,
+          sidecarId: "sidecar-host-provisioning",
         }),
-      ).toMatchObject({
-        kind: "rejected",
-        code: "host_capacity_unavailable",
-        retryable: true,
-      });
-      expect(frameOfType(hostB, "host.assignment")).toBeUndefined();
+      );
+
+      expect(await ensured).toEqual({ kind: "accepted", externalRef: HOST_B });
     });
 
     function register(

@@ -2,6 +2,7 @@ import { type } from "arktype";
 
 import { sha256 } from "@intx/crypto";
 import {
+  createExecutionHostAssignmentStore,
   createSidecarAllocationStore,
   createWorkflowProbeStore,
   createWorkflowRunLaunchSpecStore,
@@ -34,7 +35,9 @@ import type { DeployContent } from "./agent-repo";
 import {
   DestroySidecarResult,
   EnsureSidecarResult,
+  matchSidecarCapabilityPolicy,
   type EffectiveSidecarCapabilityPolicy,
+  type ExistingSidecarCapacity,
   type SidecarCapabilityMismatch,
   type SidecarPluginRegistry,
   type SidecarProvisioner,
@@ -110,6 +113,7 @@ export type WorkflowAllocationServiceDeps = {
   readonly db: DB["db"];
   readonly deploymentPlugins: SidecarPluginRegistry;
   readonly probePlugins: SidecarPluginRegistry;
+  readonly existingSidecars: ExistingSidecarCapacity;
   readonly preparedDeployer: PreparedWorkflowDeployer;
   /** Decrypts tenant-owned credential bindings for provisioned deployments. */
   readonly credentialCipher: CredentialCipher;
@@ -204,6 +208,7 @@ export function createWorkflowAllocationService({
   db,
   deploymentPlugins,
   probePlugins,
+  existingSidecars,
   preparedDeployer,
   credentialCipher,
   probeCapabilityRules = [],
@@ -216,6 +221,7 @@ export function createWorkflowAllocationService({
   now = () => new Date(),
 }: WorkflowAllocationServiceDeps): WorkflowAllocationService {
   const allocationStore = createSidecarAllocationStore(db);
+  const executionHostAssignments = createExecutionHostAssignmentStore(db);
   const probeStore = createWorkflowProbeStore(db);
   const launchSpecStore = createWorkflowRunLaunchSpecStore(db);
   const validatedProbeCapabilityRules =
@@ -243,6 +249,23 @@ export function createWorkflowAllocationService({
       provisioner.bindingFingerprint === probe.provisionerBindingFingerprint
       ? provisioner
       : null;
+  }
+
+  async function canAdoptProbeCapacity(
+    probe: WorkflowProbe,
+    placementPolicy: EffectiveSidecarCapabilityPolicy,
+  ): Promise<boolean> {
+    if (probe.sidecarId === null) return false;
+    const assignment = await executionHostAssignments.findBySidecarId(
+      probe.sidecarId,
+    );
+    if (assignment === null) return true;
+    return (
+      assignment.operationId === probe.id &&
+      assignment.generation === probe.generation &&
+      assignment.status === "assigned" &&
+      matchSidecarCapabilityPolicy(placementPolicy, assignment.capabilities).ok
+    );
   }
 
   async function beginProbeRelease(
@@ -278,14 +301,17 @@ export function createWorkflowAllocationService({
         );
       }
       const destroyed = parseDestroyResult(
-        await provisioner.destroy({
-          allocationId: releasing.id,
-          generation: releasing.generation,
-          sidecarId: releasing.sidecarId,
-          ...(releasing.externalRef !== null
-            ? { externalRef: releasing.externalRef }
-            : {}),
-        }),
+        await provisioner.destroy(
+          {
+            allocationId: releasing.id,
+            generation: releasing.generation,
+            sidecarId: releasing.sidecarId,
+            ...(releasing.externalRef !== null
+              ? { externalRef: releasing.externalRef }
+              : {}),
+          },
+          { existingSidecars },
+        ),
       );
       if (destroyed.kind === "rejected") {
         throw new Error(
@@ -530,6 +556,8 @@ export function createWorkflowAllocationService({
     let probe = await probeStore.create({
       id: probeId,
       tenantId: args.tenantId,
+      placementPrincipalId: args.placementPrincipalId,
+      placementPolicy: probePlacementPolicy,
       definitionAssetId: args.definitionAssetId,
       source: args.source,
       entry: args.entry,
@@ -561,19 +589,22 @@ export function createWorkflowAllocationService({
       };
       allocationRouter.fenceAllocation(probe.id, probe.generation);
       const ensured = parseEnsureResult(
-        await probeProvisioner.ensure({
-          allocationId: probe.id,
-          generation: probe.generation,
-          tenantId: probe.tenantId,
-          placementPrincipalId: args.placementPrincipalId,
-          placementPolicy: probePlacementPolicy,
-          // The provisioner contract treats this as an opaque owner id. A
-          // probe has no workflow run, so its own id is the honest owner.
-          anchorRunId: probe.id,
-          sidecarId,
-          token,
-          hubWebSocketUrl,
-        }),
+        await probeProvisioner.ensure(
+          {
+            allocationId: probe.id,
+            generation: probe.generation,
+            tenantId: probe.tenantId,
+            placementPrincipalId: args.placementPrincipalId,
+            placementPolicy: probePlacementPolicy,
+            // The provisioner contract treats this as an opaque owner id. A
+            // probe has no workflow run, so its own id is the honest owner.
+            anchorRunId: probe.id,
+            sidecarId,
+            token,
+            hubWebSocketUrl,
+          },
+          { existingSidecars },
+        ),
       );
       if (ensured.kind === "rejected") {
         throw new WorkflowProvisioningError(ensured.code, ensured.message);
@@ -669,7 +700,8 @@ export function createWorkflowAllocationService({
         deploymentProvisioner.id === probeProvisioner.id &&
         deploymentProvisioner.apiVersion === probeProvisioner.apiVersion &&
         deploymentProvisioner.bindingFingerprint ===
-          probeProvisioner.bindingFingerprint;
+          probeProvisioner.bindingFingerprint &&
+        (await canAdoptProbeCapacity(probe, deploymentPlacementPolicy));
       if (!adoptProbe) {
         await releaseProbe(probe, "succeeded");
       }

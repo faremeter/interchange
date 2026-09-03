@@ -1,14 +1,16 @@
-import { and, eq, gt, inArray } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 
-import type { SidecarCapabilityDeclaration } from "@intx/types";
+import { SidecarCapabilityDeclaration } from "@intx/types";
 
-import type { DB } from "./client";
+import type { DB, DBExecutor } from "./client";
 import {
   executionHost,
   executionHostAssignment,
   executionHostSession,
   principal,
   sidecarAllocation,
+  sidecarOperation,
+  workflowProbe,
 } from "./schema";
 
 export type ExecutionHostAssignmentStatus =
@@ -18,12 +20,13 @@ export type ExecutionHostAssignmentStatus =
   | "destroyed";
 
 export type ExecutionHostAssignment = {
-  readonly allocationId: string;
+  readonly operationId: string;
   readonly generation: number;
   readonly sidecarId: string;
   readonly hostId: string;
   readonly hostSessionId: string;
   readonly hostSessionGeneration: number;
+  readonly capabilities: readonly SidecarCapabilityDeclaration[];
   readonly status: ExecutionHostAssignmentStatus;
   readonly destroyedGeneration?: number;
 };
@@ -40,7 +43,7 @@ export type ExecutionHostClaimCandidate = {
 };
 
 export type ClaimExecutionHostArgs = {
-  readonly allocationId: string;
+  readonly operationId: string;
   readonly generation: number;
   readonly sidecarId: string;
   readonly tenantId: string;
@@ -51,7 +54,7 @@ export type ClaimExecutionHostArgs = {
 };
 
 export type SettleExecutionHostAssignmentArgs = {
-  readonly allocationId: string;
+  readonly operationId: string;
   readonly generation: number;
   readonly sidecarId: string;
   readonly hostId: string;
@@ -61,7 +64,7 @@ export type SettleExecutionHostAssignmentArgs = {
 };
 
 export type DestroyExecutionHostAssignmentArgs = {
-  readonly allocationId: string;
+  readonly operationId: string;
   readonly generation: number;
   readonly sidecarId: string;
   readonly candidate: ExecutionHostClaimCandidate;
@@ -77,12 +80,13 @@ function parseAssignment(
   row: typeof executionHostAssignment.$inferSelect,
 ): ExecutionHostAssignment {
   return {
-    allocationId: row.allocationId,
+    operationId: row.operationId,
     generation: row.generation,
     sidecarId: row.sidecarId,
     hostId: row.hostId,
     hostSessionId: row.hostSessionId,
     hostSessionGeneration: row.hostSessionGeneration,
+    capabilities: SidecarCapabilityDeclaration.array().assert(row.capabilities),
     status: row.status,
     ...(row.destroyedGeneration !== null
       ? { destroyedGeneration: row.destroyedGeneration }
@@ -91,34 +95,168 @@ function parseAssignment(
 }
 
 export function createExecutionHostAssignmentStore(db: DB["db"]) {
+  async function listAvailableCandidates(
+    candidates: readonly ExecutionHostClaimCandidate[],
+    now = new Date(),
+  ): Promise<ExecutionHostClaimCandidate[]> {
+    if (candidates.length === 0) return [];
+    const offered = new Map(candidates.map((host) => [host.hostId, host]));
+    const rows = await db
+      .select({
+        hostId: executionHostSession.hostId,
+        principalId: executionHost.principalId,
+        ownerPrincipalId: executionHost.ownerPrincipalId,
+        tenantId: executionHost.tenantId,
+        sessionId: executionHostSession.sessionId,
+        sessionGeneration: executionHostSession.generation,
+        hubInstanceId: executionHostSession.hubInstanceId,
+        capabilities: executionHostSession.capabilities,
+      })
+      .from(executionHostSession)
+      .innerJoin(
+        executionHost,
+        eq(executionHost.id, executionHostSession.hostId),
+      )
+      .innerJoin(principal, eq(principal.id, executionHost.principalId))
+      .leftJoin(
+        executionHostAssignment,
+        and(
+          eq(executionHostAssignment.hostId, executionHostSession.hostId),
+          inArray(executionHostAssignment.status, [
+            "claiming",
+            "assigned",
+            "releasing",
+          ]),
+        ),
+      )
+      .where(
+        and(
+          inArray(executionHostSession.hostId, [...offered.keys()]),
+          eq(principal.status, "active"),
+          gt(executionHostSession.leaseExpiresAt, now),
+          isNull(executionHostAssignment.sidecarId),
+        ),
+      );
+
+    return rows.flatMap((row) => {
+      const host = offered.get(row.hostId);
+      if (
+        host?.sessionId !== row.sessionId ||
+        host.sessionGeneration !== row.sessionGeneration ||
+        host.hubInstanceId !== row.hubInstanceId
+      ) {
+        return [];
+      }
+      return [
+        {
+          ...row,
+          capabilities: SidecarCapabilityDeclaration.array().assert(
+            row.capabilities,
+          ),
+        },
+      ];
+    });
+  }
+
+  async function matchesTargetHost(args: {
+    operationId: string;
+    generation: number;
+    sidecarId: string;
+    hostPrincipalId: string;
+  }): Promise<boolean> {
+    const [assignment] = await db
+      .select({ sidecarId: executionHostAssignment.sidecarId })
+      .from(executionHostAssignment)
+      .innerJoin(
+        executionHost,
+        eq(executionHost.id, executionHostAssignment.hostId),
+      )
+      .where(
+        and(
+          eq(executionHostAssignment.operationId, args.operationId),
+          eq(executionHostAssignment.generation, args.generation),
+          eq(executionHostAssignment.sidecarId, args.sidecarId),
+          eq(executionHostAssignment.status, "assigned"),
+          eq(executionHost.principalId, args.hostPrincipalId),
+        ),
+      )
+      .limit(1);
+    return assignment !== undefined;
+  }
+
+  async function hasCurrentOwner(
+    tx: DBExecutor,
+    args: ClaimExecutionHostArgs,
+  ): Promise<boolean> {
+    const [operation] = await tx
+      .select({ id: sidecarOperation.id })
+      .from(sidecarOperation)
+      .where(eq(sidecarOperation.id, args.operationId))
+      .limit(1)
+      .for("update");
+    if (operation === undefined) return false;
+
+    const [allocation] = await tx
+      .select({
+        status: sidecarAllocation.status,
+        generation: sidecarAllocation.generation,
+        sidecarId: sidecarAllocation.sidecarId,
+        tenantId: sidecarAllocation.tenantId,
+        placementPrincipalId: sidecarAllocation.placementPrincipalId,
+        targetHostPrincipalId: sidecarAllocation.targetHostPrincipalId,
+      })
+      .from(sidecarAllocation)
+      .where(eq(sidecarAllocation.id, args.operationId))
+      .limit(1)
+      .for("update");
+    if (allocation !== undefined) {
+      return (
+        (allocation.status === "provisioning" ||
+          allocation.status === "allocated") &&
+        allocation.generation === args.generation &&
+        allocation.sidecarId === args.sidecarId &&
+        allocation.tenantId === args.tenantId &&
+        allocation.placementPrincipalId === args.placementPrincipalId &&
+        allocation.targetHostPrincipalId ===
+          (args.targetHostPrincipalId ?? null)
+      );
+    }
+
+    const [probe] = await tx
+      .select({
+        generation: workflowProbe.generation,
+        sidecarId: workflowProbe.sidecarId,
+        tenantId: workflowProbe.tenantId,
+        placementPrincipalId: workflowProbe.placementPrincipalId,
+        status: workflowProbe.status,
+      })
+      .from(workflowProbe)
+      .where(eq(workflowProbe.id, args.operationId))
+      .limit(1)
+      .for("update");
+    return (
+      probe !== undefined &&
+      (probe.status === "provisioning" || probe.status === "probing") &&
+      probe.generation === args.generation &&
+      probe.sidecarId === args.sidecarId &&
+      probe.tenantId === args.tenantId &&
+      probe.placementPrincipalId === args.placementPrincipalId &&
+      args.targetHostPrincipalId === undefined
+    );
+  }
+
   async function claim(
     args: ClaimExecutionHostArgs,
   ): Promise<ExecutionHostAssignment | null> {
     return db.transaction(async (tx) => {
-      const [allocation] = await tx
-        .select({
-          id: sidecarAllocation.id,
-          generation: sidecarAllocation.generation,
-          sidecarId: sidecarAllocation.sidecarId,
-        })
-        .from(sidecarAllocation)
-        .where(eq(sidecarAllocation.id, args.allocationId))
-        .limit(1)
-        .for("update");
-      if (
-        allocation === undefined ||
-        allocation.generation !== args.generation ||
-        allocation.sidecarId !== args.sidecarId
-      ) {
-        return null;
-      }
+      if (!(await hasCurrentOwner(tx, args))) return null;
 
       const exact = await tx.query.executionHostAssignment.findFirst({
         where: eq(executionHostAssignment.sidecarId, args.sidecarId),
       });
       if (exact !== undefined) {
         if (
-          exact.allocationId !== args.allocationId ||
+          exact.operationId !== args.operationId ||
           exact.generation !== args.generation ||
           exact.status === "destroyed"
         ) {
@@ -134,6 +272,7 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
           generation: executionHostSession.generation,
           hubInstanceId: executionHostSession.hubInstanceId,
           leaseExpiresAt: executionHostSession.leaseExpiresAt,
+          capabilities: executionHostSession.capabilities,
           principalId: executionHost.principalId,
           ownerPrincipalId: executionHost.ownerPrincipalId,
           tenantId: executionHost.tenantId,
@@ -166,7 +305,6 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
         session === undefined ||
         session.principalStatus !== "active" ||
         session.tenantId !== args.tenantId ||
-        session.ownerPrincipalId !== args.placementPrincipalId ||
         session.principalId !== args.candidate.principalId ||
         (args.targetHostPrincipalId !== undefined &&
           session.principalId !== args.targetHostPrincipalId)
@@ -181,7 +319,7 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
             "assigned",
             "releasing",
           ]),
-          eq(executionHostAssignment.allocationId, args.allocationId),
+          eq(executionHostAssignment.operationId, args.operationId),
         ),
       });
       if (active !== undefined) return null;
@@ -201,12 +339,15 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
       const [created] = await tx
         .insert(executionHostAssignment)
         .values({
-          allocationId: args.allocationId,
+          operationId: args.operationId,
           generation: args.generation,
           sidecarId: args.sidecarId,
           hostId: session.hostId,
           hostSessionId: session.sessionId,
           hostSessionGeneration: session.generation,
+          capabilities: SidecarCapabilityDeclaration.array().assert(
+            session.capabilities,
+          ),
           status: "claiming",
           createdAt: now,
           updatedAt: now,
@@ -240,7 +381,7 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
         .set({ status: "assigned", updatedAt: now })
         .where(
           and(
-            eq(executionHostAssignment.allocationId, args.allocationId),
+            eq(executionHostAssignment.operationId, args.operationId),
             eq(executionHostAssignment.generation, args.generation),
             eq(executionHostAssignment.sidecarId, args.sidecarId),
             eq(executionHostAssignment.hostId, args.hostId),
@@ -249,7 +390,7 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
               executionHostAssignment.hostSessionGeneration,
               args.hostSessionGeneration,
             ),
-            eq(executionHostAssignment.status, "claiming"),
+            inArray(executionHostAssignment.status, ["claiming", "assigned"]),
           ),
         )
         .returning();
@@ -266,7 +407,7 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
         .from(executionHostAssignment)
         .where(
           and(
-            eq(executionHostAssignment.allocationId, args.allocationId),
+            eq(executionHostAssignment.operationId, args.operationId),
             eq(executionHostAssignment.sidecarId, args.sidecarId),
           ),
         )
@@ -337,7 +478,7 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
         .set({ status: "destroyed", updatedAt: now })
         .where(
           and(
-            eq(executionHostAssignment.allocationId, args.allocationId),
+            eq(executionHostAssignment.operationId, args.operationId),
             eq(executionHostAssignment.generation, args.generation),
             eq(executionHostAssignment.sidecarId, args.sidecarId),
             eq(executionHostAssignment.hostId, args.hostId),
@@ -360,8 +501,9 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
 
   async function findBySidecarId(
     sidecarId: string,
+    executor: DBExecutor = db,
   ): Promise<ExecutionHostAssignment | null> {
-    const row = await db.query.executionHostAssignment.findFirst({
+    const row = await executor.query.executionHostAssignment.findFirst({
       where: eq(executionHostAssignment.sidecarId, sidecarId),
     });
     return row === undefined ? null : parseAssignment(row);
@@ -371,8 +513,10 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
     beginRelease,
     claim,
     findBySidecarId,
+    listAvailableCandidates,
     markAssigned,
     markDestroyed,
+    matchesTargetHost,
   };
 }
 

@@ -1,7 +1,11 @@
 import { type } from "arktype";
 
 import { sha256 } from "@intx/crypto";
-import type { SidecarAllocation, SidecarAllocationStore } from "@intx/db";
+import type {
+  ExecutionHostAssignmentStore,
+  SidecarAllocation,
+  SidecarAllocationStore,
+} from "@intx/db";
 import { getLogger } from "@intx/log";
 import { hexEncode } from "@intx/types";
 
@@ -13,6 +17,7 @@ import { SessionLaunchError } from "../session-service";
 import {
   DestroySidecarResult,
   EnsureSidecarResult,
+  type ExistingSidecarCapacity,
   type SidecarProvisioner,
 } from "./contracts";
 import type { SidecarPluginRegistry } from "./plugin-registry";
@@ -43,6 +48,11 @@ type AllocationStore = Pick<
 export type SidecarAllocationReconcilerDeps = {
   readonly allocationStore: AllocationStore;
   readonly plugins: SidecarPluginRegistry;
+  readonly existingSidecars: ExistingSidecarCapacity;
+  readonly executionHostAssignments: Pick<
+    ExecutionHostAssignmentStore,
+    "matchesTargetHost"
+  >;
   readonly router: Pick<
     SidecarAllocationRouter,
     | "fenceAllocation"
@@ -122,6 +132,8 @@ function parseDestroyResult(value: unknown): DestroySidecarResult {
 export function createSidecarAllocationReconciler({
   allocationStore,
   plugins,
+  existingSidecars,
+  executionHostAssignments,
   router,
   hubWebSocketUrl,
   onReady,
@@ -307,20 +319,23 @@ export function createSidecarAllocationReconciler({
     try {
       result = parseEnsureResult(
         await withLeaseHeartbeat(allocation, leaseId, () =>
-          provisioner.ensure({
-            allocationId: allocation.id,
-            generation: allocation.generation,
-            tenantId: allocation.tenantId,
-            placementPrincipalId: allocation.placementPrincipalId,
-            ...(allocation.targetHostPrincipalId !== undefined
-              ? { targetHostPrincipalId: allocation.targetHostPrincipalId }
-              : {}),
-            placementPolicy: allocation.placementPolicy,
-            anchorRunId: allocation.anchorRunId,
-            sidecarId,
-            token,
-            hubWebSocketUrl,
-          }),
+          provisioner.ensure(
+            {
+              allocationId: allocation.id,
+              generation: allocation.generation,
+              tenantId: allocation.tenantId,
+              placementPrincipalId: allocation.placementPrincipalId,
+              ...(allocation.targetHostPrincipalId !== undefined
+                ? { targetHostPrincipalId: allocation.targetHostPrincipalId }
+                : {}),
+              placementPolicy: allocation.placementPolicy,
+              anchorRunId: allocation.anchorRunId,
+              sidecarId,
+              token,
+              hubWebSocketUrl,
+            },
+            { existingSidecars },
+          ),
         ),
       );
     } catch (error) {
@@ -356,6 +371,24 @@ export function createSidecarAllocationReconciler({
         leaseId,
         result.code,
         result.message,
+      );
+      return;
+    }
+
+    if (
+      allocation.targetHostPrincipalId !== undefined &&
+      !(await executionHostAssignments.matchesTargetHost({
+        operationId: allocation.id,
+        generation: allocation.generation,
+        sidecarId,
+        hostPrincipalId: allocation.targetHostPrincipalId,
+      }))
+    ) {
+      await replaceAfterFailure(
+        allocation,
+        leaseId,
+        "target_host_mismatch",
+        "Provisioner accepted capacity outside the requested execution host assignment",
       );
       return;
     }
@@ -457,14 +490,17 @@ export function createSidecarAllocationReconciler({
     try {
       result = parseDestroyResult(
         await withLeaseHeartbeat(allocation, leaseId, () =>
-          provisioner.destroy({
-            allocationId: allocation.id,
-            generation: allocation.generation,
-            sidecarId,
-            ...(allocation.externalRef !== undefined
-              ? { externalRef: allocation.externalRef }
-              : {}),
-          }),
+          provisioner.destroy(
+            {
+              allocationId: allocation.id,
+              generation: allocation.generation,
+              sidecarId,
+              ...(allocation.externalRef !== undefined
+                ? { externalRef: allocation.externalRef }
+                : {}),
+            },
+            { existingSidecars },
+          ),
         ),
       );
     } catch (error) {

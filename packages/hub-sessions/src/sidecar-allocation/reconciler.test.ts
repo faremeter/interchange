@@ -11,6 +11,10 @@ import {
 } from "./reconciler";
 
 const NOW = new Date("2026-08-03T12:00:00.000Z");
+const existingSidecars = {
+  claim: async () => null,
+  release: async () => null,
+};
 
 function allocation(
   overrides: Partial<SidecarAllocation> = {},
@@ -93,6 +97,8 @@ function deps(args: {
   const provisioner = args.provisioner ?? testProvisioner();
   return {
     allocationStore: args.store,
+    existingSidecars,
+    executionHostAssignments: { matchesTargetHost: async () => true },
     plugins: {
       getProvisioner: (id) => (id === provisioner.id ? provisioner : null),
       selectProvisioner: async () => ({ ok: true, provisioner }),
@@ -147,6 +153,7 @@ describe("createSidecarAllocationReconciler", () => {
     let placementPrincipalId: string | undefined;
     let targetHostPrincipalId: string | undefined;
     let placementPolicy: unknown;
+    let receivedExistingSidecars: unknown;
     const store = fakeStore({
       claimNextReconcilable: async () => {
         if (claimed) return null;
@@ -162,12 +169,13 @@ describe("createSidecarAllocationReconciler", () => {
       markConnectionReady: async () => allocated,
     });
     const provisioner = testProvisioner({
-      async ensure(request) {
+      async ensure(request, context) {
         calls.push("ensure");
         ensureToken = request.token;
         placementPrincipalId = request.placementPrincipalId;
         targetHostPrincipalId = request.targetHostPrincipalId;
         placementPolicy = request.placementPolicy;
+        receivedExistingSidecars = context.existingSidecars;
         return { kind: "accepted", externalRef: "vm-1" };
       },
     });
@@ -190,6 +198,7 @@ describe("createSidecarAllocationReconciler", () => {
       tenantPolicies: [],
       workflowRules: [{ capability: "runtime:browser", effect: "require" }],
     });
+    expect(receivedExistingSidecars).toBe(existingSidecars);
     expect(hexEncode(storedHash ?? new Uint8Array())).toBe(
       hexEncode(await sha256("token-new")),
     );
@@ -240,6 +249,56 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(parked).toBe(true);
     expect(waited).toBe(false);
+  });
+
+  test("cleans up accepted capacity that does not match the exact host target", async () => {
+    const pending = allocation({ targetHostPrincipalId: "principal-phone" });
+    const provisioning = allocation({
+      ...pending,
+      status: "provisioning",
+      generation: 1,
+      sidecarId: "sc-new",
+      reconciliationLeaseId: "lease-1",
+    });
+    let replacement: unknown;
+    let targetCheck: unknown;
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => pending,
+      bindInitialSidecar: async () => provisioning,
+      beginReplacement: async (args) => {
+        replacement = args;
+        return allocation({
+          ...provisioning,
+          status: "replacing",
+          generation: 2,
+        });
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({ store, fences }),
+      executionHostAssignments: {
+        async matchesTargetHost(args) {
+          targetCheck = args;
+          return false;
+        },
+      },
+    });
+
+    await reconciler.reconcileNext();
+
+    expect(targetCheck).toEqual({
+      operationId: "alloc-1",
+      generation: 1,
+      sidecarId: "sc-new",
+      hostPrincipalId: "principal-phone",
+    });
+    expect(replacement).toMatchObject({
+      expectedStatus: "provisioning",
+      expectedGeneration: 1,
+      failureCode: "target_host_mismatch",
+    });
+    expect(fences).toContainEqual(["alloc-1", 2]);
   });
 
   test("initializes a worker that connects before ensure is accepted", async () => {
