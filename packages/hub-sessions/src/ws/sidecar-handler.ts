@@ -1796,6 +1796,22 @@ export function createSidecarRouter(
       redeliverPendingMail(addr, conn);
     }
 
+    // Reconcile a reconnecting deployment's credentials, closing the offline
+    // window: a credential revoked, deleted, or rotated while the sidecar was
+    // disconnected is applied to the child now. DISTINCT from the pinned-forever
+    // DEFINITION note below -- definitions are pinned, but credentials rotate
+    // and revoke, so a run address DOES enroll in a credential reconcile even
+    // though it is excluded from the deploy-ref catch-up. Fire-and-forget so
+    // reconnect completion is not blocked; the lookup no-ops for a run that
+    // persisted no credential refs.
+    const resyncCredentials = lookups.resyncCredentials;
+    if (resyncCredentials !== undefined) {
+      for (const addr of ready) {
+        if (!isRunAddress(addr)) continue;
+        resyncCredentials(addr);
+      }
+    }
+
     // Re-deploy agents whose deploy ref is stale or absent. Fire-and-forget
     // so reconnect completion is not blocked on pack transfer. The
     // wire layer owns the staleness comparison; the event fires only

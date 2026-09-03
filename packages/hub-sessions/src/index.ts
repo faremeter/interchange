@@ -77,6 +77,7 @@ export {
   pushSourceUpdates,
   pushSourceUpdatesSubtree,
   pushCredentialRevoke,
+  pushCredentialReconcile,
 } from "./credential-push";
 export {
   createSidecarPluginRegistry,

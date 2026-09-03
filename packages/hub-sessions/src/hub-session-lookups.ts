@@ -45,7 +45,12 @@ export type HubSessionLookupsDeps = {
 
 export function createHubSessionLookups(
   deps: HubSessionLookupsDeps,
-): Required<Omit<SidecarLookups, "materializeMailTriggeredRunGrants">> {
+): Required<
+  Omit<
+    SidecarLookups,
+    "materializeMailTriggeredRunGrants" | "resyncCredentials"
+  >
+> {
   const { db, agentRepoStore } = deps;
 
   const signalCorrelationStore = createSignalCorrelationStore(db);

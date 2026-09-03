@@ -14,6 +14,17 @@ import { sidecar } from "./sidecar";
 import { tenant } from "./tenants";
 import { workflowDefinition } from "./workflow-definitions";
 
+// The non-secret projection of a deployment's credential delivery, persisted on
+// its anchor run so the reconnect resync can re-resolve current materials.
+// `credentialIds` is every credential the delivery references (inference
+// sources have no binding; tool handles do). `bindings` is the tool binding
+// descriptors (handle -> credentialId, plus the consumer allowed to use it).
+// Never holds a secret.
+export type WorkflowRunCredentialRefs = {
+  credentialIds: string[];
+  bindings: { handle: string; credentialId: string; consumer: string }[];
+};
+
 // workflow_run is the per-run authorization subject: one row per run of a
 // workflow deployment. It gives "this approval belongs to a real run of this
 // deployment" a database referent, so approvals and signal correlations anchor
@@ -86,6 +97,14 @@ export const workflowRun = pgTable(
     }),
     kernelId: text("kernel_id"),
     modelPreferences: jsonb("model_preferences"),
+    // The non-secret shape of the credential delivery this deployment resolved
+    // at deploy: the credentialIds it references and the tool binding
+    // descriptors. Set on a deployment anchor run; null for runs that carry no
+    // credential delivery. Secrets are NEVER stored here -- only ids and
+    // descriptors -- so the reconnect resync can re-resolve each id's CURRENT
+    // material from the credential table (dropping a revoked or deleted id,
+    // picking up a rotated secret) and reconcile the reconnecting child.
+    credentialRefs: jsonb("credential_refs").$type<WorkflowRunCredentialRefs>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     // Nullable: a run has no end time until it reaches a terminal state.
     endedAt: timestamp("ended_at"),

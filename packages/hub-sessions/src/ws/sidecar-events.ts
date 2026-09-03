@@ -277,6 +277,15 @@ export type SidecarLookups = {
    * `deploy.ref.stale` only on mismatch. */
   lookupDeployRef?: (agentAddress: string) => Promise<string | null>;
 
+  /** Re-resolves a reconnecting deployment's current credential delivery and
+   * reconciles the child, so a credential revoked, deleted, or rotated while
+   * the sidecar was disconnected is applied on reconnect (closing the offline
+   * window). Keyed by the run address. Fire-and-forget: the wire layer does not
+   * await it and it never throws -- a failure is logged and dropped, like the
+   * best-effort source-update pushes. No-ops for a run that persisted no
+   * credential refs. */
+  resyncCredentials?: (agentAddress: string) => void;
+
   /** Persists a delivered outbound mail frame. Returns one row per
    * persisted record; the wire layer attaches `raw` to each row and
    * emits a `mail.persisted` event. */

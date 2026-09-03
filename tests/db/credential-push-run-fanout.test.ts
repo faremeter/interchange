@@ -7,10 +7,20 @@ import {
   test,
 } from "bun:test";
 
+import { eq } from "drizzle-orm";
+
 import { createNoopCredentialCipher } from "@intx/crypto";
-import { workflowDefinition } from "@intx/db/schema";
-import { pushSourceUpdates, type SidecarRouter } from "@intx/hub-sessions";
+import {
+  credential as credentialTable,
+  workflowDefinition,
+} from "@intx/db/schema";
+import {
+  pushCredentialReconcile,
+  pushSourceUpdates,
+  type SidecarRouter,
+} from "@intx/hub-sessions";
 import type { InferenceSource } from "@intx/types/runtime";
+import type { CredentialDelivery } from "@intx/types/sidecar";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -57,6 +67,28 @@ function recordingRouter(pushed: Pushed[]): SidecarRouter {
   } as unknown as SidecarRouter;
 }
 
+type Reconciled = {
+  address: string;
+  delivery: CredentialDelivery;
+  revoke: string[] | undefined;
+};
+
+// A SidecarRouter that records the reconcile pushes (delivery + revoke) it
+// receives over sendCredentialsUpdate.
+function reconcilingRouter(captured: Reconciled[]): SidecarRouter {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- only sendCredentialsUpdate is exercised by the reconcile path
+  return {
+    sendCredentialsUpdate: (
+      address: string,
+      delivery: CredentialDelivery,
+      revoke?: string[],
+    ) => {
+      captured.push({ address, delivery, revoke });
+      return Promise.resolve();
+    },
+  } as unknown as SidecarRouter;
+}
+
 describe.skipIf(!harnessDbEnvAvailable())(
   "credential source push run fan-out (real DB)",
   () => {
@@ -81,6 +113,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "prv_x",
         tenantId: "tnt_root",
         name: "prv-x",
+        // The reconcile re-resolves a credential's origin from its own provider,
+        // so the provider needs an API base URL. Harmless to the source-push
+        // tests, which resolve origin via the model offering.
+        apiBaseUrl: "https://api.anthropic.com",
       });
       await seedCredential(h.db, {
         id: "cred_a",
@@ -185,6 +221,93 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       expect(pushed).toHaveLength(0);
+    });
+
+    test("reconcile re-resolves a live credential and merges it (no revoke)", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "dep_1",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        anchorRunId: "dep_1",
+        address: "dep_1@tnt.test",
+        status: "running",
+        credentialRefs: { credentialIds: ["cred_a"], bindings: [] },
+      });
+
+      const captured: Reconciled[] = [];
+      await pushCredentialReconcile(
+        h.db,
+        reconcilingRouter(captured),
+        "dep_1@tnt.test",
+        createNoopCredentialCipher(),
+      );
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0]?.address).toBe("dep_1@tnt.test");
+      expect(
+        captured[0]?.delivery.materials.map((m) => m.credentialId),
+      ).toEqual(["cred_a"]);
+      // Live secret re-resolved (noop cipher passes the seed through).
+      expect(captured[0]?.delivery.materials[0]?.secret).toBe("sk-anthropic");
+      // Nothing dead, so no revoke.
+      expect(captured[0]?.revoke).toBeUndefined();
+    });
+
+    test("reconcile revokes a deleted or revoked deploy-time credential and drops its binding", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "dep_2",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        anchorRunId: "dep_2",
+        address: "dep_2@tnt.test",
+        status: "running",
+        credentialRefs: {
+          credentialIds: ["cred_a"],
+          bindings: [
+            { handle: "h", credentialId: "cred_a", consumer: "tool:@intx/x" },
+          ],
+        },
+      });
+      await h.db
+        .update(credentialTable)
+        .set({ status: "revoked" })
+        .where(eq(credentialTable.id, "cred_a"));
+
+      const captured: Reconciled[] = [];
+      await pushCredentialReconcile(
+        h.db,
+        reconcilingRouter(captured),
+        "dep_2@tnt.test",
+        createNoopCredentialCipher(),
+      );
+
+      expect(captured).toHaveLength(1);
+      // Merge: the survivors delivery is empty, and the dead id is named in
+      // revoke so the child drops its material and binding.
+      expect(captured[0]?.delivery.materials).toEqual([]);
+      expect(captured[0]?.delivery.bindings).toEqual([]);
+      expect(captured[0]?.revoke).toEqual(["cred_a"]);
+    });
+
+    test("reconcile is a no-op for a run that persisted no credential refs", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "dep_3",
+        tenantId: "tnt_root",
+        definitionId: "wfd_1",
+        anchorRunId: "dep_3",
+        address: "dep_3@tnt.test",
+        status: "running",
+      });
+
+      const captured: Reconciled[] = [];
+      await pushCredentialReconcile(
+        h.db,
+        reconcilingRouter(captured),
+        "dep_3@tnt.test",
+        createNoopCredentialCipher(),
+      );
+
+      expect(captured).toHaveLength(0);
     });
   },
 );

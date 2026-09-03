@@ -132,6 +132,62 @@ export async function resolveInferenceMaterials(
 }
 
 /**
+ * Re-resolve the CURRENT material for a set of already-authorized credentialIds,
+ * for the reconnect resync. Unlike `resolveInferenceMaterials`, a credential
+ * that no longer exists or is `revoked` is DROPPED (omitted) rather than
+ * throwing: the resync reflects credential lifecycle, so a dead id is simply
+ * absent from the reconciled delivery and the child evicts it.
+ *
+ * A credential that IS alive but whose material cannot be resolved (its provider
+ * vanished or has no API base URL) is NOT a lifecycle removal, so it throws --
+ * the caller aborts the whole reconcile rather than delivering a partial set
+ * paired with a spurious revoke. A rotated secret is picked up because the row's
+ * current secret is decrypted here.
+ *
+ * Ids are looked up by primary key (globally unique) and come from the
+ * deployment's own persisted delivery, so no re-authorization is performed --
+ * this reflects lifecycle only.
+ */
+export async function reresolveCurrentMaterials(
+  db: DB["db"],
+  credentialIds: Iterable<string>,
+  credentialCipher: CredentialCipher,
+): Promise<CredentialMaterialEntry[]> {
+  const materials = new Map<string, CredentialMaterialEntry>();
+  for (const credentialId of credentialIds) {
+    if (materials.has(credentialId)) continue;
+    const row = await db.query.credential.findFirst({
+      where: eq(credential.id, credentialId),
+    });
+    if (row === undefined) continue; // deleted -> drop
+    if (row.status === "revoked") continue; // revoked -> drop
+    const providerRow = await db.query.provider.findFirst({
+      where: eq(provider.id, row.providerId),
+    });
+    if (providerRow === undefined) {
+      throw new Error(
+        `credential ${credentialId} references provider ${row.providerId}, which does not exist`,
+      );
+    }
+    if (providerRow.apiBaseUrl === null || providerRow.apiBaseUrl === "") {
+      throw new Error(
+        `provider ${providerRow.name} backing credential ${credentialId} has no API base URL; cannot pin an origin for its material`,
+      );
+    }
+    materials.set(credentialId, {
+      credentialId: row.id,
+      providerKey: providerRow.plugin,
+      origin: providerRow.apiBaseUrl,
+      secret: await credentialCipher.decrypt(
+        row.secret,
+        credentialAad(row.id, "secret"),
+      ),
+    });
+  }
+  return [...materials.values()];
+}
+
+/**
  * Resolves a provider by name, walking up the tenant hierarchy.
  * Returns the first match (child shadows parent).
  */

@@ -304,6 +304,7 @@ function makeWorkflowRunRow(
     sidecarId: null,
     kernelId: null,
     modelPreferences: null,
+    credentialRefs: null,
     createdAt: now,
     endedAt: null,
     ...overrides,

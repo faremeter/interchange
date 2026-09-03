@@ -15,7 +15,11 @@
 import { eq, and, inArray, isNull, isNotNull } from "drizzle-orm";
 import { getLogger } from "@intx/log";
 import { workflowRun } from "@intx/db/schema";
-import { resolveInstanceModelSources, getDescendantTenants } from "@intx/db";
+import {
+  resolveInstanceModelSources,
+  getDescendantTenants,
+  reresolveCurrentMaterials,
+} from "@intx/db";
 import type { DB } from "@intx/db";
 import type { CredentialCipher } from "@intx/types";
 import type { CredentialDelivery } from "@intx/types/sidecar";
@@ -269,5 +273,73 @@ export async function pushCredentialRevoke(
     }
   } catch (err: unknown) {
     log.warn`Failed to push credential revoke: ${String(err)}`;
+  }
+}
+
+/**
+ * Reconcile a reconnecting deployment's credentials against its deploy-time set.
+ * Re-resolve the CURRENT material for every credentialId the deployment
+ * persisted at deploy (`workflow_run.credentialRefs`), then push a MERGE that
+ * upserts the survivors (picking up a same-id secret rotation) and REVOKES the
+ * deploy-time ids that no longer resolve (deleted or revoked while the sidecar
+ * was disconnected). Closes the OFFLINE revocation window (the online window is
+ * closed by `pushCredentialRevoke`).
+ *
+ * Merge, not wholesale-replace: `credentialRefs` is only the deploy-time id set,
+ * not the child's complete live set (a catalog re-point can deliver a new
+ * credential online), so a replace would evict online-added credentials. The
+ * merge upserts survivors and names the dead ids in `revoke`, leaving online
+ * credentials untouched. It does NOT handle an id-CHANGING rotation of a
+ * deploy-time source (the new id is not in `credentialRefs`); a later source
+ * push delivers that.
+ *
+ * No-op when the run persisted no credential refs (a folded run, or a
+ * deployment with no credentials). Fire-and-forget from the reconnect handler:
+ * it never rejects. A live-but-unresolvable credential (its provider vanished
+ * or has no API base URL) makes `reresolveCurrentMaterials` throw, which aborts
+ * the WHOLE reconcile (logged, not sent) so a partial set with a spurious
+ * revoke never lands. This is deliberately all-or-nothing: one misconfigured
+ * credential blocks this reconnect's revocation of the others too, trading
+ * revocation timeliness for never falsely evicting a live credential. The next
+ * reconnect (or an online revoke) retries.
+ */
+export async function pushCredentialReconcile(
+  db: DB["db"],
+  sidecarRouter: Pick<SidecarRouter, "sendCredentialsUpdate">,
+  agentAddress: string,
+  credentialCipher: CredentialCipher,
+): Promise<void> {
+  try {
+    const run = await db.query.workflowRun.findFirst({
+      where: eq(workflowRun.address, agentAddress),
+      columns: { credentialRefs: true },
+    });
+    if (run === undefined) return;
+    const refs = run.credentialRefs;
+    if (refs === null) return;
+
+    const materials = await reresolveCurrentMaterials(
+      db,
+      refs.credentialIds,
+      credentialCipher,
+    );
+    const resolvedIds = new Set(
+      materials.map((material) => material.credentialId),
+    );
+    // Deploy-time ids that no longer resolve: deleted or revoked while offline.
+    const revoke = refs.credentialIds.filter((id) => !resolvedIds.has(id));
+    // A binding whose credential dropped out of the re-resolution goes with it.
+    const bindings = refs.bindings.filter((binding) =>
+      resolvedIds.has(binding.credentialId),
+    );
+    const delivery: CredentialDelivery = { bindings, materials };
+
+    await sidecarRouter.sendCredentialsUpdate(
+      agentAddress,
+      delivery,
+      revoke.length > 0 ? revoke : undefined,
+    );
+  } catch (err: unknown) {
+    log.warn`Failed to reconcile credentials for ${agentAddress}: ${String(err)}`;
   }
 }
