@@ -681,6 +681,17 @@ describe("createMultistepCredentialsRouter", () => {
     expect(received[0]?.delivery).toEqual(delivery);
   });
 
+  test("a frame's revoke list threads through to the handler", async () => {
+    const router = createMultistepCredentialsRouter();
+    const received: { delivery: typeof delivery; revoke?: string[] }[] = [];
+    router.register("dep@integration.interchange", async (args) => {
+      received.push(args);
+    });
+    expect(await router.tryRoute({ ...frame, revoke: ["cred_1"] })).toBe(true);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.revoke).toEqual(["cred_1"]);
+  });
+
   test("registration is per-address; an unrelated address falls through", async () => {
     const router = createMultistepCredentialsRouter();
     router.register("dep-a@integration.interchange", async () => undefined);

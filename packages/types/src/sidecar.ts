@@ -594,16 +594,22 @@ export const SourcesUpdateFrame = type({
 export type SourcesUpdateFrame = typeof SourcesUpdateFrame.infer;
 
 /**
- * Push refreshed credential material to a running deployment (a rotation, or a
- * revocation delivered by omitting the revoked credential's material so the
- * child evicts it). Mirrors `SourcesUpdateFrame`: the sidecar routes it to the
- * deployment's supervisor, which forwards it to the child's in-memory cell.
+ * Push refreshed credential material to a running deployment. Mirrors
+ * `SourcesUpdateFrame`: the sidecar routes it to the deployment's supervisor,
+ * which forwards it to the child's in-memory cell. The child MERGES `delivery`
+ * (materials upsert by credentialId, bindings by consumer-and-handle) and drops
+ * each credentialId in `revoke` plus any binding referencing it. Removal is
+ * explicit through `revoke` -- omitting a material does not evict it, because
+ * the cell has several independently-scoped producers and a wholesale swap
+ * would let one evict another's credentials. A pure revocation carries an empty
+ * `delivery` and the revoked ids in `revoke`.
  */
 export const CredentialsUpdateFrame = type({
   type: "'credentials.update'",
   requestId: "string",
   agentAddress: "string",
   delivery: CredentialDelivery,
+  "revoke?": "string[]",
 });
 export type CredentialsUpdateFrame = typeof CredentialsUpdateFrame.infer;
 

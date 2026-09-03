@@ -5,6 +5,7 @@ import {
   AgentDeployFrame,
   CredentialsUpdateFrame,
   DeployApplyErrorCategory,
+  HubFrame,
   PackRejectFrame,
   PackRejectReason,
   SidecarFrame,
@@ -317,5 +318,57 @@ describe("SignalCorrelationRegisterFrame snapshot requirement", () => {
       true,
     );
     expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
+  });
+});
+
+describe("CredentialsUpdateFrame revoke", () => {
+  // `revoke` is the whole point of removal-capable rotation. It must survive
+  // the wire-frame validation the hub applies on send (the HubFrame union) and
+  // the sidecar applies on receive (CredentialsUpdateFrame). An arktype narrow
+  // that dropped it would silently defeat every revoke while every unit test
+  // above the wire still passed.
+  const pureRevoke = {
+    type: "credentials.update",
+    requestId: "req_1",
+    agentAddress: "dep@integration.interchange",
+    delivery: { bindings: [], materials: [] },
+    revoke: ["cred_x"],
+  };
+
+  test("the HubFrame union preserves a pure-revoke frame's revoke list", () => {
+    const out = HubFrame(pureRevoke);
+    if (out instanceof type.errors) {
+      throw new Error(`expected a valid HubFrame: ${out.summary}`);
+    }
+    if (out.type !== "credentials.update") {
+      throw new Error(`expected a credentials.update frame, got ${out.type}`);
+    }
+    expect(out.revoke).toEqual(["cred_x"]);
+  });
+
+  test("CredentialsUpdateFrame accepts an empty delivery paired with revoke", () => {
+    const out = CredentialsUpdateFrame(pureRevoke);
+    if (out instanceof type.errors) {
+      throw new Error(`expected a valid frame: ${out.summary}`);
+    }
+    expect(out.revoke).toEqual(["cred_x"]);
+  });
+
+  test("a frame with no revoke validates and omits the key", () => {
+    const out = CredentialsUpdateFrame({
+      type: "credentials.update",
+      requestId: "req_1",
+      agentAddress: "dep@integration.interchange",
+      delivery: { bindings: [], materials: [] },
+    });
+    if (out instanceof type.errors) {
+      throw new Error(`expected a valid frame: ${out.summary}`);
+    }
+    expect("revoke" in out).toBe(false);
+  });
+
+  test("a non-string revoke entry is rejected", () => {
+    const bad = { ...pureRevoke, revoke: [123] };
+    expect(CredentialsUpdateFrame(bad) instanceof type.errors).toBe(true);
   });
 });

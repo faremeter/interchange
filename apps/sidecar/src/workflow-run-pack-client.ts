@@ -494,6 +494,7 @@ export function createMultistepSourcesRouter(): MultistepSourcesRouter {
  */
 export type MultistepCredentialsHandler = (args: {
   delivery: CredentialDelivery;
+  revoke?: string[];
 }) => Promise<void>;
 
 /**
@@ -511,6 +512,7 @@ export type MultistepCredentialsRouter = {
     type: "credentials.update";
     agentAddress: string;
     delivery: CredentialDelivery;
+    revoke?: string[];
   }): Promise<boolean>;
 };
 
@@ -537,7 +539,10 @@ export function createMultistepCredentialsRouter(): MultistepCredentialsRouter {
       if (validated instanceof type.errors) {
         throw new Error(validated.summary);
       }
-      await handler({ delivery: frame.delivery });
+      await handler({
+        delivery: frame.delivery,
+        ...(frame.revoke !== undefined ? { revoke: frame.revoke } : {}),
+      });
       return true;
     },
   };

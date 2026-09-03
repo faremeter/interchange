@@ -2063,6 +2063,7 @@ export function createSidecarDeployRouter(deps: {
         async (args) => {
           await wired.supervisor.deliverCredentials({
             delivery: args.delivery,
+            ...(args.revoke !== undefined ? { revoke: args.revoke } : {}),
           });
         },
       );

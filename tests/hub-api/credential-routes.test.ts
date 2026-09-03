@@ -32,6 +32,7 @@ import {
   seedPrincipal,
   seedProvider,
   seedTenants,
+  seedWorkflowRun,
 } from "@intx/test-harness/seed";
 
 // These route tests exercise credential creation against a real migrated
@@ -97,6 +98,49 @@ function createMockSidecarRouter(): SidecarRouter {
   };
 }
 
+// A sidecar router that records `sendCredentialsUpdate` calls so a test can
+// observe the fire-and-forget revoke broadcast a route triggers.
+function capturingCredentialsRouter(): {
+  router: SidecarRouter;
+  calls: {
+    address: string;
+    revoke: string[] | undefined;
+    materialsCount: number;
+  }[];
+} {
+  const base = createMockSidecarRouter();
+  const calls: {
+    address: string;
+    revoke: string[] | undefined;
+    materialsCount: number;
+  }[] = [];
+  return {
+    calls,
+    router: {
+      ...base,
+      sendCredentialsUpdate: async (address, delivery, revoke) => {
+        calls.push({
+          address,
+          revoke,
+          materialsCount: delivery.materials.length,
+        });
+      },
+    },
+  };
+}
+
+// The revoke broadcast fires fire-and-forget from the route, so the response
+// returns before it runs; poll until it lands.
+async function waitUntil(pred: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error("timed out waiting for the async credential broadcast");
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 function createMockSessionService(): SessionService {
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
@@ -150,7 +194,7 @@ beforeEach(async () => {
   await h.reset();
 });
 
-async function setup() {
+async function setup(opts?: { sidecarRouter?: SidecarRouter }) {
   await seedTenants(h.db, [{ id: TENANT_ID }]);
   await seedPrincipal(h.db, {
     id: ACTOR_PRINCIPAL_ID,
@@ -176,7 +220,7 @@ async function setup() {
       createGrant("create"),
       createGrant("manage"),
     ]),
-    sidecarRouter: createMockSidecarRouter(),
+    sidecarRouter: opts?.sidecarRouter ?? createMockSidecarRouter(),
     sessionService: createMockSessionService(),
     eventCollectors: createMockEventCollectors(),
     // A real cipher, so the write-path encryption is exercised end to end.
@@ -707,6 +751,133 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error("expected a SQLSTATE on the caught error");
       }
       expect(["23001", "23503"]).toContain(code);
+    });
+  },
+);
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "credential revoke broadcast to running deployments",
+  () => {
+    async function createCredential(
+      app: Awaited<ReturnType<typeof setup>>,
+    ): Promise<string> {
+      const res = await app.request(`/api/tenants/${TENANT_ID}/credentials`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          providerId: PROVIDER_ID,
+          name: "revoke-me",
+          type: "api_key",
+          secret: "sk-revoke",
+        }),
+      });
+      expect(res.status).toBe(201);
+      const body: unknown = await res.json();
+      if (!isObject(body) || typeof body["id"] !== "string") {
+        throw new Error("expected a credential id");
+      }
+      return body["id"];
+    }
+
+    // One running instance run (anchorRunId null), one running deployment-anchor
+    // run (anchorRunId non-null -- the case the source-update push excludes),
+    // and one completed run. A revoke must reach the two running addresses and
+    // skip the completed run.
+    async function seedRuns(): Promise<void> {
+      await seedWorkflowRun(h.db, {
+        id: "run_instance",
+        tenantId: TENANT_ID,
+        address: "instance@test.interchange",
+        status: "running",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run_anchor",
+        tenantId: TENANT_ID,
+        anchorRunId: "run_instance",
+        address: "anchor@test.interchange",
+        status: "running",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run_done",
+        tenantId: TENANT_ID,
+        address: "done@test.interchange",
+        status: "completed",
+      });
+    }
+
+    test("DELETE broadcasts a flat revoke to every running run, anchor included, and skips a completed run", async () => {
+      const cap = capturingCredentialsRouter();
+      const app = await setup({ sidecarRouter: cap.router });
+      const credentialId = await createCredential(app);
+      await seedRuns();
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+        { method: "DELETE" },
+      );
+      expect(res.status).toBe(204);
+
+      await waitUntil(() => cap.calls.length >= 2);
+      // Give any erroneous extra broadcast (e.g. to the completed run) a tick.
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(cap.calls).toHaveLength(2);
+      expect(new Set(cap.calls.map((c) => c.address))).toEqual(
+        new Set(["instance@test.interchange", "anchor@test.interchange"]),
+      );
+      for (const call of cap.calls) {
+        // A pure revoke: empty delivery, the deleted id named in revoke.
+        expect(call.materialsCount).toBe(0);
+        expect(call.revoke).toEqual([credentialId]);
+      }
+    });
+
+    test("PATCH status:revoked broadcasts a flat revoke", async () => {
+      const cap = capturingCredentialsRouter();
+      const app = await setup({ sidecarRouter: cap.router });
+      const credentialId = await createCredential(app);
+      await seedRuns();
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ status: "revoked" }),
+        },
+      );
+      expect(res.status).toBe(200);
+
+      await waitUntil(() => cap.calls.length >= 2);
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(cap.calls).toHaveLength(2);
+      for (const call of cap.calls) {
+        expect(call.materialsCount).toBe(0);
+        expect(call.revoke).toEqual([credentialId]);
+      }
+    });
+
+    test("a PATCH that does not revoke sends no credential broadcast", async () => {
+      const cap = capturingCredentialsRouter();
+      const app = await setup({ sidecarRouter: cap.router });
+      const credentialId = await createCredential(app);
+      await seedRuns();
+
+      const res = await app.request(
+        `/api/tenants/${TENANT_ID}/credentials/${credentialId}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "renamed" }),
+        },
+      );
+      expect(res.status).toBe(200);
+
+      // No secret rotation and no revocation, so nothing is pushed. Give any
+      // stray async push a tick to appear before asserting none did.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(cap.calls).toHaveLength(0);
     });
   },
 );

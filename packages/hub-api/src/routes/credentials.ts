@@ -32,7 +32,11 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
-import { pushSourceUpdates, type SidecarRouter } from "@intx/hub-sessions";
+import {
+  pushCredentialRevoke,
+  pushSourceUpdates,
+  type SidecarRouter,
+} from "@intx/hub-sessions";
 
 function formatCredential(row: typeof credential.$inferSelect) {
   const parsed = parseCredentialRow(row);
@@ -437,13 +441,30 @@ export function createCredentialRoutes({
       }
 
       // If the secret was updated, push new inference sources to running
-      // instances.
-      if (body.secret !== undefined) {
+      // instances -- UNLESS the same request also revokes the credential. A
+      // revoke and a secret re-resolve target overlapping addresses with no
+      // ordering guarantee (both fire-and-forget), and the source re-resolve
+      // does not consult credential status, so it would re-deliver the rotated
+      // material and could re-populate the revoked secret in a live child's
+      // cell. The revoke wins.
+      if (body.secret !== undefined && body.status !== "revoked") {
         void pushSourceUpdates(
           db,
           sidecarRouter,
           updated.tenantId,
           credentialCipher,
+        );
+      }
+
+      // A deliberate revocation must evict the credential from any running
+      // deployment that holds it -- a re-resolve alone would leave the revoked
+      // secret in a live child's cell. Fire-and-forget, best effort.
+      if (body.status === "revoked") {
+        void pushCredentialRevoke(
+          db,
+          sidecarRouter,
+          updated.tenantId,
+          credentialId,
         );
       }
 
@@ -544,6 +565,11 @@ export function createCredentialRoutes({
           404,
         );
       }
+
+      // The credential row is gone; evict its material from any running
+      // deployment that still holds it so a live child cannot keep using it.
+      // Fire-and-forget, best effort.
+      void pushCredentialRevoke(db, sidecarRouter, tenantCtx.id, credentialId);
 
       return c.body(null, 204);
     },

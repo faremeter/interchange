@@ -73,7 +73,11 @@ export {
   type HubSessionOrchestratorDeps,
   type HubSessionRouterFacade,
 } from "./hub-session-orchestrator";
-export { pushSourceUpdates, pushSourceUpdatesSubtree } from "./credential-push";
+export {
+  pushSourceUpdates,
+  pushSourceUpdatesSubtree,
+  pushCredentialRevoke,
+} from "./credential-push";
 export {
   createSidecarPluginRegistry,
   createSidecarAllocationReconciler,

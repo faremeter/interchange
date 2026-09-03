@@ -350,6 +350,21 @@ function parseCredentialsUpdatedFrames(lines: readonly string[]) {
   });
 }
 
+// Like `parseCredentialsUpdatedFrames` but returns the whole frame data
+// (delivery plus the optional `revoke` list) so a test can assert removal.
+function parseCredentialsUpdatedData(lines: readonly string[]) {
+  return lines.flatMap((line) => {
+    if (!line.includes("credentials-updated")) return [];
+    const raw: unknown = JSON.parse(line);
+    const signed = SignedEnvelope(raw);
+    if (signed instanceof type.errors) return [];
+    const payload = ControlPayload(signed.envelope.payload);
+    if (payload instanceof type.errors) return [];
+    if (payload.type !== "credentials-updated") return [];
+    return [payload.data];
+  });
+}
+
 const CancelRequestedBlob = type({
   type: "string",
   seq: "number",
@@ -3709,11 +3724,13 @@ describe("createWorkflowSupervisor", () => {
         },
       ],
     };
-    await supervisor.deliverCredentials({ delivery });
+    await supervisor.deliverCredentials({ delivery, revoke: ["cred_gone"] });
 
-    const frames = parseCredentialsUpdatedFrames(supervisorToChild.flushed());
-    expect(frames).toHaveLength(1);
-    expect(frames[0]).toEqual(delivery);
+    const data = parseCredentialsUpdatedData(supervisorToChild.flushed());
+    expect(data).toHaveLength(1);
+    expect(data[0]?.delivery).toEqual(delivery);
+    // The revoke list rides the same frame so the child drops the named id.
+    expect(data[0]?.revoke).toEqual(["cred_gone"]);
 
     await supervisor.shutdown();
   });

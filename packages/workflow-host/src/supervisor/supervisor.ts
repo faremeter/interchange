@@ -421,11 +421,17 @@ export type DeliverSourcesOpts = {
 
 export type DeliverCredentialsOpts = {
   /**
-   * The refreshed credential material and per-handle descriptors. A revoked
-   * credential is delivered by omitting its material entry, so the child's
-   * wholesale swap evicts it.
+   * The refreshed credential material and per-handle descriptors. The child
+   * MERGES this into its cell (materials upsert by credentialId, bindings by
+   * consumer-and-handle); it does not evict by omission.
    */
   delivery: CredentialDelivery;
+  /**
+   * CredentialIds to drop from the child's cell (a deletion or a deliberate
+   * revocation). The child removes each id's material and any binding that
+   * references it. A pure revocation pairs an empty `delivery` with these ids.
+   */
+  revoke?: string[];
 };
 
 export type RecycleOpts = {
@@ -4178,7 +4184,10 @@ export function createWorkflowSupervisor(
     }
     await state.controlSender.send({
       type: "credentials-updated",
-      data: { delivery: opts.delivery },
+      data: {
+        delivery: opts.delivery,
+        ...(opts.revoke !== undefined ? { revoke: opts.revoke } : {}),
+      },
     });
   }
 

@@ -278,6 +278,7 @@ export type SidecarRouter = {
   sendCredentialsUpdate(
     agentAddress: string,
     delivery: CredentialDelivery,
+    revoke?: string[],
   ): Promise<void>;
   sendPack(
     agentAddress: string,
@@ -3557,12 +3558,14 @@ export function createSidecarRouter(
   async function sendCredentialsUpdate(
     agentAddress: string,
     delivery: CredentialDelivery,
+    revoke?: string[],
   ): Promise<void> {
     await sendRequest(agentAddress, (requestId) => ({
       type: "credentials.update",
       requestId,
       agentAddress,
       delivery,
+      ...(revoke !== undefined ? { revoke } : {}),
     }));
   }
 
