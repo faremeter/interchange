@@ -1197,7 +1197,7 @@ Both approaches support standard git workflows for managing agent versions.
 
 ## Agent Deployment: Git Pack Transport
 
-Deploy content travels from the hub to sidecars as git packfiles streamed over the existing WebSocket connection. State travels back from sidecars to the hub using the same mechanism. This avoids requiring sidecars to have network access to external git hosts and reuses the authenticated, encrypted channel already in place.
+Deploy content travels from the hub to sidecars as git packfiles streamed over the existing WebSocket connection. State travels back from sidecars to the hub using the same mechanism. This avoids requiring sidecars to have network access to external git hosts and reuses the authenticated WebSocket connection already in place. The protocol does not encrypt that connection; transport confidentiality depends on running it over TLS (`wss://`).
 
 ### Wire Frames
 
