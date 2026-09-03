@@ -114,7 +114,7 @@ async function fillInferenceSource(page: Page): Promise<void> {
   await page.locator("#source-provider").fill("anthropic");
   await page.locator("#source-model").fill("claude-sonnet-5");
   await page.locator("#source-base-url").fill("https://api.anthropic.com");
-  await page.locator("#source-api-key").fill("sk-secret");
+  await page.locator("#source-credential-id").fill("sk-secret");
 }
 
 test("deploys through the registry source picker with a pin", async ({

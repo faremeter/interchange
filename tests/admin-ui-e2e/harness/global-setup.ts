@@ -43,6 +43,10 @@ const SIDECAR_TOKEN = "e2e-sidecar-token";
 // the live deploy spec logs in as the same user and deploys the same asset.
 const WORKFLOW_ASSET_NAME = "approval-flow";
 const WORKFLOW_ENTRY = "./workflow.mjs";
+// The seeded, tenant-owned Acme credential the live deploy references. A
+// source-ref deploy resolves the source credential by id, so it must name a
+// real credential rather than an inline key.
+const SEED_CREDENTIAL_NAME = "Anthropic API Key";
 const SEED_LOGIN_EMAIL = "alice@example.com";
 const SEED_LOGIN_PASSWORD = "password123";
 const SEED_TENANT_SLUG = "acme";
@@ -353,6 +357,9 @@ const PrincipalsResponse = type({
 });
 const AssetsResponse = type({ id: "string", name: "string" }).array();
 const GitTokenResponse = type({ id: "string", secret: "string" });
+const CredentialsResponse = type({
+  data: type({ id: "string", name: "string" }).array(),
+});
 
 type CookieJar = string[];
 
@@ -462,6 +469,7 @@ async function discoverSeededWorkflow(hubURL: string): Promise<{
   tenantId: string;
   assetId: string;
   commitSha: string;
+  credentialId: string;
 }> {
   const signIn = await hubFetch(
     hubURL,
@@ -514,6 +522,27 @@ async function discoverSeededWorkflow(hubURL: string): Promise<{
     );
   }
 
+  // The source-ref deploy resolves the source credential by id, so discover the
+  // seeded tenant-owned credential. `owner=org` lists only tenant-owned
+  // (principalId IS NULL) credentials, which is what the deploy can resolve.
+  const credsRes = await hubFetch(
+    hubURL,
+    "GET",
+    `/api/tenants/${tenantId}/credentials?owner=org`,
+    undefined,
+    cookies,
+  );
+  const creds = CredentialsResponse(credsRes.data);
+  if (creds instanceof type.errors) {
+    throw new Error(`e2e discovery: invalid credentials: ${creds.summary}`);
+  }
+  const credential = creds.data.find((c) => c.name === SEED_CREDENTIAL_NAME);
+  if (credential === undefined) {
+    throw new Error(
+      `e2e discovery: seeded credential ${SEED_CREDENTIAL_NAME} not found`,
+    );
+  }
+
   const tokenExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
   const tokenRes = await hubFetch(
     hubURL,
@@ -543,7 +572,12 @@ async function discoverSeededWorkflow(hubURL: string): Promise<{
     tenantId,
     token.secret,
   );
-  return { tenantId, assetId: workflowAsset.id, commitSha };
+  return {
+    tenantId,
+    assetId: workflowAsset.id,
+    commitSha,
+    credentialId: credential.id,
+  };
 }
 
 async function globalSetup(): Promise<() => Promise<void>> {
@@ -674,6 +708,7 @@ async function globalSetup(): Promise<() => Promise<void>> {
     process.env["E2E_WORKFLOW_TENANT_ID"] = seeded.tenantId;
     process.env["E2E_WORKFLOW_ASSET_ID"] = seeded.assetId;
     process.env["E2E_WORKFLOW_COMMIT_SHA"] = seeded.commitSha;
+    process.env["E2E_WORKFLOW_CREDENTIAL_ID"] = seeded.credentialId;
     process.env["E2E_WORKFLOW_ENTRY"] = WORKFLOW_ENTRY;
     process.env["E2E_LOGIN_EMAIL"] = SEED_LOGIN_EMAIL;
     process.env["E2E_LOGIN_PASSWORD"] = SEED_LOGIN_PASSWORD;

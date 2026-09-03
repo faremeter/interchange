@@ -645,6 +645,11 @@ const { status: prv1Status, data: prv1Data } = await api(
   {
     name: "Anthropic",
     plugin: "anthropic",
+    // apiBaseUrl pins the credential's origin for source-ref deploys: the
+    // deploy resolves an inference source's credential and needs the backing
+    // provider's origin to seal its material. metadata.baseURL feeds the
+    // inference stack; apiBaseUrl is the credential-resolution column.
+    apiBaseUrl: "https://api.anthropic.com",
     metadata: {
       baseURL: "https://api.anthropic.com",
       defaultModel: "claude-sonnet-5",
@@ -688,6 +693,9 @@ const { status: prv4Status, data: prv4Data } = await api(
   {
     name: "OpenCode Go",
     plugin: "openai-compatible",
+    // apiBaseUrl pins the credential's origin for source-ref deploys (see the
+    // Anthropic provider above).
+    apiBaseUrl: "https://opencode.ai/zen/go/v1",
     metadata: {
       baseURL: "https://opencode.ai/zen/go/v1",
       defaultModel: "kimi-k2.7-code",
