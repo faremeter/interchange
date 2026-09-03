@@ -9,6 +9,7 @@ import {
 } from "@intx/types";
 
 import type { AppEnv } from "../context";
+import { errorResponse } from "../error-response";
 
 export function createObservabilityRoutes(): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -46,11 +47,7 @@ export function createObservabilityRoutes(): Hono<AppEnv> {
         },
       },
     }),
-    (c) =>
-      c.json(
-        { error: { code: "not_implemented", message: "Not implemented" } },
-        501,
-      ),
+    (c) => errorResponse(c, "not_implemented", "Not implemented"),
   );
 
   app.get(
@@ -75,11 +72,7 @@ export function createObservabilityRoutes(): Hono<AppEnv> {
         },
       },
     }),
-    (c) =>
-      c.json(
-        { error: { code: "not_implemented", message: "Not implemented" } },
-        501,
-      ),
+    (c) => errorResponse(c, "not_implemented", "Not implemented"),
   );
 
   app.get(
@@ -107,11 +100,7 @@ export function createObservabilityRoutes(): Hono<AppEnv> {
         },
       },
     }),
-    (c) =>
-      c.json(
-        { error: { code: "not_implemented", message: "Not implemented" } },
-        501,
-      ),
+    (c) => errorResponse(c, "not_implemented", "Not implemented"),
   );
 
   app.get(
@@ -135,11 +124,7 @@ export function createObservabilityRoutes(): Hono<AppEnv> {
         },
       },
     }),
-    (c) =>
-      c.json(
-        { error: { code: "not_implemented", message: "Not implemented" } },
-        501,
-      ),
+    (c) => errorResponse(c, "not_implemented", "Not implemented"),
   );
 
   return app;

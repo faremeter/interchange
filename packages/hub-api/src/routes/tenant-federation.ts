@@ -12,6 +12,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import {
@@ -127,15 +128,7 @@ export function createTenantFederationRoutes({
         where: eq(tenant.id, body.targetTenantId),
       });
       if (!target) {
-        return c.json(
-          {
-            error: {
-              code: "not_found",
-              message: "Target tenant not found",
-            },
-          },
-          404,
-        );
+        return errorResponse(c, "not_found", "Target tenant not found");
       }
 
       const existing = await db.query.federationTrust.findFirst({
@@ -145,14 +138,10 @@ export function createTenantFederationRoutes({
         ),
       });
       if (existing) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "Trust relationship already exists",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "Trust relationship already exists",
         );
       }
 
@@ -209,12 +198,7 @@ export function createTenantFederationRoutes({
         .returning();
 
       if (deleted.length === 0) {
-        return c.json(
-          {
-            error: { code: "not_found", message: "Trust not found" },
-          },
-          404,
-        );
+        return errorResponse(c, "not_found", "Trust not found");
       }
 
       return c.body(null, 204);

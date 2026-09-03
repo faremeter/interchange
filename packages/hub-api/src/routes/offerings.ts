@@ -14,6 +14,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -168,14 +169,10 @@ export function createOfferingRoutes({
       });
 
       if (!definitionRow) {
-        return c.json(
-          {
-            error: {
-              code: "not_found",
-              message: "Workflow definition not found in this tenant",
-            },
-          },
-          404,
+        return errorResponse(
+          c,
+          "not_found",
+          "Workflow definition not found in this tenant",
         );
       }
 
@@ -236,10 +233,7 @@ export function createOfferingRoutes({
       });
 
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Offering not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Offering not found");
       }
 
       const definitionRow = await db.query.workflowDefinition.findFirst({
@@ -293,10 +287,7 @@ export function createOfferingRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "Offering not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Offering not found");
       }
 
       const definitionRow = await db.query.workflowDefinition.findFirst({
@@ -339,10 +330,7 @@ export function createOfferingRoutes({
         .returning();
 
       if (deleted.length === 0) {
-        return c.json(
-          { error: { code: "not_found", message: "Offering not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Offering not found");
       }
 
       return c.body(null, 204);

@@ -5,17 +5,15 @@ import { tenant, principal } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { getLogger } from "@intx/log";
 
-import type { AppEnv, TenantEnv } from "../context";
+import { unauthorizedResponse, type AppEnv, type TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 
 const log = getLogger(["hub", "middleware", "tenant"]);
 
 export async function requireAuth(c: Context<AppEnv>, next: Next) {
   const user = c.get("user");
   if (!user) {
-    return c.json(
-      { error: { code: "unauthorized", message: "Authentication required" } },
-      401,
-    );
+    return unauthorizedResponse(c);
   }
   await next();
 }
@@ -32,18 +30,12 @@ export function createResolveTenant({
 
     const user = c.get("user");
     if (!user) {
-      return c.json(
-        { error: { code: "unauthorized", message: "Authentication required" } },
-        401,
-      );
+      return unauthorizedResponse(c);
     }
 
     const tenantId = c.req.param("tenantId");
     if (!tenantId) {
-      return c.json(
-        { error: { code: "bad_request", message: "Missing tenantId" } },
-        400,
-      );
+      return errorResponse(c, "bad_request", "Missing tenantId");
     }
 
     const tenantRow = await db.query.tenant.findFirst({
@@ -51,10 +43,7 @@ export function createResolveTenant({
     });
 
     if (!tenantRow) {
-      return c.json(
-        { error: { code: "not_found", message: "Tenant not found" } },
-        404,
-      );
+      return errorResponse(c, "not_found", "Tenant not found");
     }
 
     const principalRow = await db.query.principal.findFirst({
@@ -66,15 +55,7 @@ export function createResolveTenant({
     });
 
     if (!principalRow) {
-      return c.json(
-        {
-          error: {
-            code: "forbidden",
-            message: "Not a member of this tenant",
-          },
-        },
-        403,
-      );
+      return errorResponse(c, "forbidden", "Not a member of this tenant");
     }
 
     if (principalRow.status !== "active") {
@@ -82,14 +63,10 @@ export function createResolveTenant({
         principalId: principalRow.id,
         status: principalRow.status,
       });
-      return c.json(
-        {
-          error: {
-            code: "forbidden",
-            message: "Your membership in this tenant is not active",
-          },
-        },
-        403,
+      return errorResponse(
+        c,
+        "forbidden",
+        "Your membership in this tenant is not active",
       );
     }
 
