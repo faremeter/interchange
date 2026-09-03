@@ -311,6 +311,7 @@ export function createSidecarAllocationReconciler({
             allocationId: allocation.id,
             generation: allocation.generation,
             tenantId: allocation.tenantId,
+            placementPrincipalId: allocation.placementPrincipalId,
             anchorRunId: allocation.anchorRunId,
             sidecarId,
             token,

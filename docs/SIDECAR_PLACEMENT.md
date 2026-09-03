@@ -146,3 +146,18 @@ probing and freezing the workflow, it:
 The default chooser selects the first match in registration order. A Hub
 composition may provide an asynchronous chooser for probe capacity, deployment
 capacity, or both to implement another policy such as round-robin selection.
+
+The chooser also receives the tenant, the authenticated principal whose request
+owns placement, and the effective capability policy used to filter candidates.
+It does not receive user records, grants, credentials, or a snapshot of live
+sidecars. This lets a provisioner consult its own principal-scoped capacity
+registry without making volatile provider state part of the Hub contract.
+
+The same placement principal is persisted on the selected allocation and passed
+to every `ensure()` call, including replacement generations after Hub restart.
+A provisioner backed by pre-existing capacity owns the registration and
+capability declarations for that capacity and must claim one matching slot
+atomically. The Hub still fixes the provisioner binding before `ensure()`;
+availability checks performed by a chooser are advisory, and a rejected
+`ensure()` follows the normal retry or terminal-failure lifecycle rather than
+selecting another provisioner.

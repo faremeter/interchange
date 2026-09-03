@@ -21,7 +21,9 @@ export type SidecarProvisionerSelection =
 
 export type SidecarProvisionerSelectionContext = {
   readonly tenantId: string;
+  /** Authenticated tenant principal whose request owns placement. */
   readonly placementPrincipalId: string;
+  /** Policy already used to filter the candidate list. */
   readonly capabilityPolicy: EffectiveSidecarCapabilityPolicy;
 };
 

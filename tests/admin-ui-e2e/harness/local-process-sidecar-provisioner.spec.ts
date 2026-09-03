@@ -28,6 +28,7 @@ function createRequest(
     allocationId: "sal_test",
     generation,
     tenantId: "tnt_test",
+    placementPrincipalId: "prn_test",
     anchorRunId: "run_test",
     sidecarId,
     token: `token_${String(generation)}`,

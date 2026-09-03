@@ -136,6 +136,7 @@ describe("createSidecarAllocationReconciler", () => {
     let claimed = false;
     let storedHash: Uint8Array | undefined;
     let ensureToken: string | undefined;
+    let placementPrincipalId: string | undefined;
     const store = fakeStore({
       claimNextReconcilable: async () => {
         if (claimed) return null;
@@ -154,6 +155,7 @@ describe("createSidecarAllocationReconciler", () => {
       async ensure(request) {
         calls.push("ensure");
         ensureToken = request.token;
+        placementPrincipalId = request.placementPrincipalId;
         return { kind: "accepted", externalRef: "vm-1" };
       },
     });
@@ -170,6 +172,7 @@ describe("createSidecarAllocationReconciler", () => {
       ["alloc-1", 1],
     ]);
     expect(ensureToken).toBe("token-new");
+    expect(placementPrincipalId).toBe("principal-1");
     expect(hexEncode(storedHash ?? new Uint8Array())).toBe(
       hexEncode(await sha256("token-new")),
     );

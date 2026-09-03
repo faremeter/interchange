@@ -6,6 +6,8 @@ export type EnsureSidecarRequest = {
   readonly allocationId: string;
   readonly generation: number;
   readonly tenantId: string;
+  /** Authenticated tenant principal whose request owns placement. */
+  readonly placementPrincipalId: string;
   readonly anchorRunId: string;
   readonly sidecarId: string;
   readonly token: string;

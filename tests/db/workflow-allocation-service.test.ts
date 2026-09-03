@@ -264,6 +264,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       expect(prepared.allocationId).toBe("sal-probe-adopted");
       expect(ensureCalls).toHaveLength(1);
+      expect(ensureCalls[0]).toMatchObject({
+        placementPrincipalId: PRINCIPAL_ID,
+      });
       expect(destroyCalls).toHaveLength(0);
       expect(disconnectCalls).toEqual([
         { allocationId: "sal-probe-adopted", generation: 0 },

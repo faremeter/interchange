@@ -543,6 +543,7 @@ export function createWorkflowAllocationService({
           allocationId: probe.id,
           generation: probe.generation,
           tenantId: probe.tenantId,
+          placementPrincipalId: args.placementPrincipalId,
           // The provisioner contract treats this as an opaque owner id. A
           // probe has no workflow run, so its own id is the honest owner.
           anchorRunId: probe.id,
