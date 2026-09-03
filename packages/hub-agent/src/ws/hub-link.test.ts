@@ -17,6 +17,7 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import {
   answerMalformedRequestFrame,
   classifyAssetPackRejectReason,
+  cleartextTransportWarning,
   createHubLink,
   type DeployRouter,
   type ReconnectScheduler,
@@ -2413,5 +2414,43 @@ describe("classifyAssetPackRejectReason", () => {
     expect(classifyAssetPackRejectReason("signature_unsigned: ...")).toBe(
       "signature_invalid",
     );
+  });
+});
+
+describe("cleartextTransportWarning", () => {
+  test("warns on cleartext ws:// to a non-loopback host", () => {
+    expect(
+      cleartextTransportWarning("ws://hub.example.com/api/sidecars/ws"),
+    ).toContain("cleartext ws://");
+    expect(
+      cleartextTransportWarning("ws://10.0.0.5:3000/api/sidecars/ws"),
+    ).toContain("cleartext ws://");
+  });
+
+  test("normalizes the host, so an uppercase remote still warns", () => {
+    expect(
+      cleartextTransportWarning("ws://HUB.EXAMPLE.COM/api/sidecars/ws"),
+    ).toContain("cleartext ws://");
+  });
+
+  test("stays silent for cleartext ws:// to a loopback host", () => {
+    for (const url of [
+      "ws://localhost/api/sidecars/ws",
+      "ws://localhost:3000/api/sidecars/ws",
+      "ws://127.0.0.1:3000/api/sidecars/ws",
+      "ws://[::1]:3000/api/sidecars/ws",
+    ]) {
+      expect(cleartextTransportWarning(url)).toBeNull();
+    }
+  });
+
+  test("stays silent for wss:// regardless of host", () => {
+    expect(
+      cleartextTransportWarning("wss://hub.example.com/api/sidecars/ws"),
+    ).toBeNull();
+  });
+
+  test("throws on a malformed hub URL rather than reporting no warning", () => {
+    expect(() => cleartextTransportWarning("not a url")).toThrow();
   });
 });
