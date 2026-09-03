@@ -221,14 +221,19 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
   ): Promise<ExecutionHostAssignment | null> {
     return db.transaction(async (tx) => {
       const now = args.now ?? new Date();
-      const current = await tx.query.executionHostSession.findFirst({
-        where: and(
-          eq(executionHostSession.hostId, args.hostId),
-          eq(executionHostSession.sessionId, args.hostSessionId),
-          eq(executionHostSession.generation, args.hostSessionGeneration),
-          gt(executionHostSession.leaseExpiresAt, now),
-        ),
-      });
+      const [current] = await tx
+        .select({ hostId: executionHostSession.hostId })
+        .from(executionHostSession)
+        .where(
+          and(
+            eq(executionHostSession.hostId, args.hostId),
+            eq(executionHostSession.sessionId, args.hostSessionId),
+            eq(executionHostSession.generation, args.hostSessionGeneration),
+            gt(executionHostSession.leaseExpiresAt, now),
+          ),
+        )
+        .limit(1)
+        .for("update");
       if (current === undefined) return null;
       const [updated] = await tx
         .update(executionHostAssignment)
@@ -313,14 +318,19 @@ export function createExecutionHostAssignmentStore(db: DB["db"]) {
   ): Promise<ExecutionHostAssignment | null> {
     return db.transaction(async (tx) => {
       const now = args.now ?? new Date();
-      const current = await tx.query.executionHostSession.findFirst({
-        where: and(
-          eq(executionHostSession.hostId, args.hostId),
-          eq(executionHostSession.sessionId, args.hostSessionId),
-          eq(executionHostSession.generation, args.hostSessionGeneration),
-          gt(executionHostSession.leaseExpiresAt, now),
-        ),
-      });
+      const [current] = await tx
+        .select({ hostId: executionHostSession.hostId })
+        .from(executionHostSession)
+        .where(
+          and(
+            eq(executionHostSession.hostId, args.hostId),
+            eq(executionHostSession.sessionId, args.hostSessionId),
+            eq(executionHostSession.generation, args.hostSessionGeneration),
+            gt(executionHostSession.leaseExpiresAt, now),
+          ),
+        )
+        .limit(1)
+        .for("update");
       if (current === undefined) return null;
       const [updated] = await tx
         .update(executionHostAssignment)
