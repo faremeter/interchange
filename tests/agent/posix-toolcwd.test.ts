@@ -16,6 +16,7 @@ import {
   AgentEnvError,
   createAgent,
   createDefaultDirectorRegistry,
+  createStaticCredentialResolver,
   defineAgent,
   type Agent,
   type AgentDefinition,
@@ -31,7 +32,7 @@ const SOURCE: InferenceSource = {
   id: "anthropic:claude-3-5-sonnet",
   provider: "anthropic",
   baseURL: "https://api.anthropic.com",
-  apiKey: "sk-test-posix-toolcwd",
+  credentialId: "sk-test-posix-toolcwd",
   model: "claude-3-5-sonnet",
 };
 
@@ -62,6 +63,12 @@ async function envFor(
     audit: noopAuditStore(),
     authorize: permissiveAuthorize(),
     directors: createDefaultDirectorRegistry(),
+    // The mock adapter never sends the secret, but the inference path
+    // resolves the source's credential before dispatch, so a resolver
+    // must answer for SOURCE.credentialId or the call fails closed.
+    readCurrentMaterial: createStaticCredentialResolver({
+      [SOURCE.credentialId]: "sk-test-posix-toolcwd-secret",
+    }),
     deps: harness.deps,
   };
 }
