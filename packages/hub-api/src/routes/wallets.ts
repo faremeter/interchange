@@ -15,6 +15,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { isReferencedRowViolation } from "../pg-errors";
@@ -192,10 +193,7 @@ export function createWalletRoutes({
       });
 
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Wallet not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Wallet not found");
       }
 
       return c.json(formatWallet(row));
@@ -240,10 +238,7 @@ export function createWalletRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "Wallet not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Wallet not found");
       }
 
       return c.json(formatWallet(updated));
@@ -304,22 +299,15 @@ export function createWalletRoutes({
         if (!isReferencedRowViolation(err)) {
           throw err;
         }
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "Wallet is in use by a model provider",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "Wallet is in use by a model provider",
         );
       }
 
       if (outcome === "not_found") {
-        return c.json(
-          { error: { code: "not_found", message: "Wallet not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Wallet not found");
       }
 
       return c.body(null, 204);
@@ -365,10 +353,7 @@ export function createWalletRoutes({
       });
 
       if (!walletRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Wallet not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Wallet not found");
       }
 
       const runId = c.req.query("runId");

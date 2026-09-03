@@ -47,6 +47,7 @@ import type {
 import { advertiseUploadPack } from "../git-http/advertise-refs";
 import { handleUploadPack } from "../git-http/upload-pack";
 import { writePktLine, writeFlush } from "../git-http/pkt-line";
+import { errorResponse } from "../error-response";
 import {
   buildUserPrincipal,
   makeRefSource,
@@ -390,14 +391,10 @@ export function createAgentStateRunGitRoutes(
     if (service !== "git-upload-pack") {
       // The receive-pack case is handled by the deny middleware above;
       // anything else is a bad request.
-      return c.json(
-        {
-          error: {
-            code: "bad_request",
-            message: "info/refs requires service=git-upload-pack",
-          },
-        },
-        400,
+      return errorResponse(
+        c,
+        "bad_request",
+        "info/refs requires service=git-upload-pack",
       );
     }
     const r = await resolveSmartHttp(deps, c, "resolveRef");

@@ -12,6 +12,7 @@ import type { RepoAction } from "@intx/hub-sessions";
 import { base64Decode } from "@intx/types";
 
 import type { AppEnv, PrincipalRow, TenantRow } from "../context";
+import { errorResponse } from "../error-response";
 
 const log = getLogger(["hub", "git-token"]);
 
@@ -292,7 +293,7 @@ async function resolvePrincipal(
 
 function unauthorized(c: Context, message: string): Response {
   c.header(WWW_AUTHENTICATE_HEADER, WWW_AUTHENTICATE_VALUE);
-  return c.json({ error: { code: "unauthorized", message } }, 401);
+  return errorResponse(c, "unauthorized", message);
 }
 
 function forbidden(

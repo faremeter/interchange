@@ -60,6 +60,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { ts } from "../format";
 import type {
   GitTokenClaims,
@@ -314,14 +315,10 @@ export function createAssetRoutes({
       } else if (inheritedRaw === "false") {
         inherited = false;
       } else {
-        return c.json(
-          {
-            error: {
-              code: "bad_request",
-              message: `inherited must be "true" or "false", got ${JSON.stringify(inheritedRaw)}`,
-            },
-          },
-          400,
+        return errorResponse(
+          c,
+          "bad_request",
+          `inherited must be "true" or "false", got ${JSON.stringify(inheritedRaw)}`,
         );
       }
 
@@ -379,10 +376,7 @@ export function createAssetRoutes({
 
       const row = await resolveAssetById(db, tenantCtx.id, assetId);
       if (row === null) {
-        return c.json(
-          { error: { code: "not_found", message: "Asset not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Asset not found");
       }
 
       return c.json(formatAsset(row));
@@ -597,10 +591,7 @@ export function createAssetRoutes({
       const filename = c.req.param("filename");
       const filenameErr = validateTarballFilename(filename);
       if (filenameErr !== null) {
-        return c.json(
-          { error: { code: "bad_request", message: filenameErr } },
-          400,
-        );
+        return errorResponse(c, "bad_request", filenameErr);
       }
 
       const lookup = await resolveRegistryAsset(tenantCtx.id, assetId);
@@ -627,14 +618,10 @@ export function createAssetRoutes({
         // value (`1e308`). Insist on the digit-only shape so the
         // header is exactly what RFC 9110 says it is.
         if (!/^\d+$/.test(declaredLengthRaw)) {
-          return c.json(
-            {
-              error: {
-                code: "bad_request",
-                message: "Content-Length must be a non-negative integer",
-              },
-            },
-            400,
+          return errorResponse(
+            c,
+            "bad_request",
+            "Content-Length must be a non-negative integer",
           );
         }
         const declaredLength = Number(declaredLengthRaw);
@@ -642,28 +629,20 @@ export function createAssetRoutes({
           !Number.isFinite(declaredLength) ||
           declaredLength > maxTarballBytes
         ) {
-          return c.json(
-            {
-              error: {
-                code: "payload_too_large",
-                message: `tarball exceeds maximum size of ${String(maxTarballBytes)} bytes`,
-              },
-            },
-            413,
+          return errorResponse(
+            c,
+            "payload_too_large",
+            `tarball exceeds maximum size of ${String(maxTarballBytes)} bytes`,
           );
         }
       }
 
       const bytes = await readBodyWithLimit(c.req.raw, maxTarballBytes);
       if (bytes === null) {
-        return c.json(
-          {
-            error: {
-              code: "payload_too_large",
-              message: `tarball exceeds maximum size of ${String(maxTarballBytes)} bytes`,
-            },
-          },
-          413,
+        return errorResponse(
+          c,
+          "payload_too_large",
+          `tarball exceeds maximum size of ${String(maxTarballBytes)} bytes`,
         );
       }
       // Integrity is computed from the request bytes. The substrate
@@ -711,10 +690,7 @@ export function createAssetRoutes({
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.startsWith("path_violation:")) {
-          return c.json(
-            { error: { code: "path_violation", message: msg } },
-            400,
-          );
+          return errorResponse(c, "path_violation", msg);
         }
         throw err;
       }
@@ -818,10 +794,7 @@ export function createAssetRoutes({
       const filename = c.req.param("filename");
       const filenameErr = validateTarballFilename(filename);
       if (filenameErr !== null) {
-        return c.json(
-          { error: { code: "bad_request", message: filenameErr } },
-          400,
-        );
+        return errorResponse(c, "bad_request", filenameErr);
       }
 
       const lookup = await resolveRegistryAsset(tenantCtx.id, assetId);
@@ -868,14 +841,10 @@ export function createAssetRoutes({
         return c.json({ commit: commitSha });
       } catch (err) {
         if (err instanceof TarballNotFoundError) {
-          return c.json(
-            {
-              error: {
-                code: "not_found",
-                message: `tarball ${err.filename} not found in asset ${err.assetId}`,
-              },
-            },
-            404,
+          return errorResponse(
+            c,
+            "not_found",
+            `tarball ${err.filename} not found in asset ${err.assetId}`,
           );
         }
         throw err;
@@ -1075,15 +1044,10 @@ export function createAssetRoutes({
   smartHttp.get("/:kind/:nameDotGit/info/refs", async (c) => {
     const service = c.req.query("service");
     if (service !== "git-upload-pack" && service !== "git-receive-pack") {
-      return c.json(
-        {
-          error: {
-            code: "bad_request",
-            message:
-              "info/refs requires service=git-upload-pack or git-receive-pack",
-          },
-        },
-        400,
+      return errorResponse(
+        c,
+        "bad_request",
+        "info/refs requires service=git-upload-pack or git-receive-pack",
       );
     }
     // info/refs maps to the `resolveRef` RepoAction for the bearer
