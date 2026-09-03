@@ -31,7 +31,6 @@ import { type } from "arktype";
 
 import ssri from "ssri";
 
-import { authorize } from "@intx/authz";
 import { asset as assetTable } from "@intx/db/schema";
 import {
   listAssetsForTenant,
@@ -39,7 +38,6 @@ import {
   type AssetWithOrigin,
   type DB,
 } from "@intx/db";
-import { repoActionToGrantVerb } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import {
   AssetServiceError,
@@ -49,7 +47,6 @@ import {
   asTarballEntry,
   type AssetService,
   type Principal,
-  type RefEntry,
   type RepoId,
   type RepoStore,
   type UserPrincipal,
@@ -72,13 +69,15 @@ import { idResource, type RequireGrant } from "../middleware/grant";
 import {
   advertiseReceivePack,
   advertiseUploadPack,
-  type RefSource,
 } from "../git-http/advertise-refs";
-import {
-  handleUploadPack,
-  type UploadPackRepoStore,
-} from "../git-http/upload-pack";
+import { handleUploadPack } from "../git-http/upload-pack";
 import { handleReceivePack } from "../git-http/receive-pack";
+import {
+  buildUserPrincipal,
+  makeRefSource,
+  makeUploadPackStore,
+  resolveAuthzVerdict,
+} from "./git-user-principal";
 
 const log = getLogger(["hub", "assets"]);
 
@@ -158,7 +157,8 @@ function stripGitSuffix(raw: string): string | null {
   return raw.slice(0, -".git".length);
 }
 
-// Pre-resolved authz + UserPrincipal construction ------------------
+// User-principal construction helpers shared with the agent-state
+// smart-HTTP group live in ./git-user-principal.
 
 type AssetLookup = {
   id: string;
@@ -166,85 +166,6 @@ type AssetLookup = {
   kind: RepoKind;
   name: string;
 };
-
-function dateToNumber(d: Date): number {
-  return d.getTime();
-}
-
-async function resolveAuthzVerdict(args: {
-  grantStore: GrantStore;
-  conditionRegistry: ConditionRegistry;
-  principalId: string;
-  tenantId: string;
-  assetId: string;
-  action: RepoAction;
-}): Promise<UserPrincipal["authz"]> {
-  const resource = `asset:${args.assetId}`;
-  const grantVerb = repoActionToGrantVerb(args.action);
-  const verdict = await authorize(
-    args.grantStore,
-    args.principalId,
-    args.tenantId,
-    resource,
-    grantVerb,
-    args.conditionRegistry,
-  );
-  return {
-    effect: verdict.effect === "allow" ? "allow" : "deny",
-    resource,
-    grantVerb,
-  };
-}
-
-function buildUserPrincipal(args: {
-  principalId: string;
-  tenantId: string;
-  authz: UserPrincipal["authz"];
-  claims: GitTokenClaims;
-}): UserPrincipal {
-  return {
-    kind: "user",
-    principalId: args.principalId,
-    tenantId: args.tenantId,
-    authz: args.authz,
-    tokenClaims: {
-      refPattern: args.claims.refPattern,
-      actions: args.claims.actions,
-      expiresAt: dateToNumber(args.claims.expiresAt),
-    },
-  };
-}
-
-// Substrate adapters: bridge the substrate's RepoStore to the narrow
-// per-handler contracts that advertise-refs and upload-pack expose.
-
-function makeRefSource(
-  repoStore: RepoStore,
-  principal: UserPrincipal,
-): RefSource {
-  return {
-    async listRefs(_p, repoId): Promise<RefEntry[]> {
-      return repoStore.listRefs(principal, repoId);
-    },
-    async resolveHead(_p, repoId) {
-      return repoStore.resolveHead(principal, repoId);
-    },
-  };
-}
-
-function makeUploadPackStore(
-  repoStore: RepoStore,
-  principal: UserPrincipal,
-): UploadPackRepoStore {
-  return {
-    async listRefs(_p, repoId): Promise<RefEntry[]> {
-      return repoStore.listRefs(principal, repoId);
-    },
-    async getRepoDir(_p, repoId): Promise<string> {
-      return repoStore.getRepoDir(repoId);
-    },
-  };
-}
 
 // Routes ------------------------------------------------------------
 
@@ -1117,7 +1038,7 @@ export function createAssetRoutes({
       conditionRegistry,
       principalId: principalRow.id,
       tenantId,
-      assetId: resolvedAsset.asset.id,
+      resource: `asset:${resolvedAsset.asset.id}`,
       action,
     });
     if (authz.effect !== "allow") {
