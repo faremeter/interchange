@@ -27,13 +27,38 @@ function makeRepo(files: Record<string, string>): string {
   return root;
 }
 
-// A Makefile whose test/test-load recipes enumerate a directory and files
-// the way the real one does; tabs are literal so the parser sees real make
-// recipe syntax (a run of tab-prefixed lines under the target header).
+// A Makefile whose recipes enumerate a directory and files the way the real
+// one does; tabs are literal so the parser sees real make recipe syntax (a
+// run of tab-prefixed lines under the target header). This fixture drives the
+// generic parser tests (recipeLines, enumeratedPaths), which take explicit
+// target names, so its target names are illustrative rather than the real
+// ones.
 const MAKEFILE = [
   "test: FORCE",
   "\t$(BUN) test packages/ tests/covered-dir/",
   "\t$(BUN) test --timeout 120000 tests/wf/enumerated.test.ts tests/other/",
+  "",
+  "test-load: FORCE",
+  "\t$(BUN) test --timeout 300000 tests/wf/load.test.ts",
+  "",
+].join("\n");
+
+// checkTestEnumeration reads the module-level ENUMERATING_TARGETS, so its
+// fixture must use the real target names: the `test` aggregate carries no
+// recipe, and the enumerated passes live on test-unit/test-workflow/test-core
+// plus the standalone test-load. This enumerates the same paths as MAKEFILE so
+// the coverage assertions match.
+const SPLIT_MAKEFILE = [
+  "test: test-unit test-workflow test-core",
+  "",
+  "test-unit: FORCE",
+  "\t$(BUN) test packages/ tests/covered-dir/",
+  "",
+  "test-workflow: FORCE",
+  "\t$(BUN) test --timeout 120000 tests/wf/enumerated.test.ts tests/other/",
+  "",
+  "test-core: FORCE",
+  "\t$(BUN) test --timeout 120000 tests/core/",
   "",
   "test-load: FORCE",
   "\t$(BUN) test --timeout 300000 tests/wf/load.test.ts",
@@ -72,7 +97,7 @@ test("isCovered matches a file under an enumerated directory and an exact file",
 
 test("checkTestEnumeration flags an un-enumerated test file and passes covered ones", () => {
   const root = makeRepo({
-    Makefile: MAKEFILE,
+    Makefile: SPLIT_MAKEFILE,
     "packages/p/a.test.ts": "",
     "tests/covered-dir/x.test.ts": "",
     "tests/wf/enumerated.test.ts": "",
@@ -86,7 +111,7 @@ test("checkTestEnumeration flags an un-enumerated test file and passes covered o
 
 test("checkTestEnumeration skips node_modules and dist test files", () => {
   const root = makeRepo({
-    Makefile: MAKEFILE,
+    Makefile: SPLIT_MAKEFILE,
     "packages/p/node_modules/dep/x.test.ts": "",
     "packages/p/dist/built.test.ts": "",
   });

@@ -1,0 +1,104 @@
+name: CI setup
+description: >-
+  Shared CI setup: bun, dependencies, and the dev-default env files, plus the
+  optional Postgres role bootstrap and Playwright browser install. The
+  `services:` Postgres container and the PG* env cannot live in a composite
+  action, so they stay declared per job; everything else is factored here so
+  the parallel jobs cannot drift in their setup.
+
+inputs:
+  database:
+    description: >-
+      Create the two Postgres roles bin/db-reset assumes and run the
+      drop/create/migrate/grant choreography. Set for every job that touches
+      Postgres (the test passes and the e2e suite).
+    default: "false"
+  playwright:
+    description: >-
+      Install the Playwright Chromium browser. Set only for the browser e2e
+      job; the Postgres test passes run no browser suite and skip the apt
+      --with-deps install.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+    # bin/check-env requires core.hooksPath=.githooks. The hook never fires in
+    # CI (no commits happen); this only satisfies the gate.
+    - name: Configure git hooks path
+      shell: bash
+      run: git config core.hooksPath .githooks
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    # Cache the Playwright browser download, keyed on the resolved
+    # @playwright/test version that bun.lock pins. On a hit the install step
+    # below is a no-op; on a miss it re-downloads Chromium.
+    - name: Cache Playwright browsers
+      if: ${{ inputs.playwright == 'true' }}
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+    - name: Install Playwright Chromium
+      if: ${{ inputs.playwright == 'true' }}
+      shell: bash
+      run: bunx playwright install --with-deps chromium
+
+    # Copy the committed dev-default env files. Written unconditionally: the
+    # static job needs no database but vite/lint may still read a value, so
+    # every job runs with the same env in place. BETTER_AUTH_SECRET ships empty
+    # in the example, so set it in place (do not append -- a second line would
+    # leave the key defined twice and the hub tests read the empty one and
+    # hard-fail).
+    - name: Write env files
+      shell: bash
+      run: |
+        cp .env.example .env
+        cp .env.migrate.example .env.migrate
+        cp .env.hub.example .env.hub
+        secret=$(openssl rand -hex 32)
+        sed -i "s/^BETTER_AUTH_SECRET=.*/BETTER_AUTH_SECRET=${secret}/" .env.hub
+        cred_key=$(openssl rand -hex 32)
+        sed -i "s/^CREDENTIAL_ENCRYPTION_KEY=.*/CREDENTIAL_ENCRYPTION_KEY=${cred_key}/" .env.hub
+
+    # The DB/hub-api test harness skips only when the env files are absent, so a
+    # missing file would silently drop the entire DB layer while CI stays green.
+    # Fail loudly instead: the files must exist, BETTER_AUTH_SECRET and
+    # CREDENTIAL_ENCRYPTION_KEY must be non-empty (else the spawned hub
+    # hard-fails at boot), and Postgres must be reachable.
+    - name: Assert DB test env is wired
+      if: ${{ inputs.database == 'true' }}
+      shell: bash
+      run: |
+        test -f .env
+        test -f .env.migrate
+        test -f .env.hub
+        grep -q '^BETTER_AUTH_SECRET=.\+' .env.hub
+        grep -q '^CREDENTIAL_ENCRYPTION_KEY=.\+' .env.hub
+        pg_isready -h localhost -p 5432
+
+    # Pre-create the two roles db-reset assumes exist (deriving each password
+    # from its env file so the role and the file cannot drift), then run
+    # db-reset unchanged for the drop/create/migrate/grant choreography. The
+    # statements are fed over stdin so psql interpolates each password through
+    # its :'var' form, quoting it as a SQL literal regardless of contents;
+    # psql does not interpolate variables in a -c argument, only in stdin/-f
+    # input. The e2e suite provisions its own per-run database but authenticates
+    # as these roles and GRANTs to them, so it needs the roles to exist too.
+    - name: Bootstrap database
+      if: ${{ inputs.database == 'true' }}
+      shell: bash
+      run: |
+        migrate_pw=$(grep '^DB_PASSWORD=' .env.migrate | cut -d= -f2-)
+        hub_pw=$(grep '^DB_PASSWORD=' .env.hub | cut -d= -f2-)
+        psql -d postgres -v migrate_pw="$migrate_pw" -v hub_pw="$hub_pw" <<'SQL'
+        CREATE USER "interchange-migrate" WITH PASSWORD :'migrate_pw';
+        CREATE USER "interchange-hub" WITH PASSWORD :'hub_pw';
+        SQL
+        bin/db-reset

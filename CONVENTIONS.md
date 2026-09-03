@@ -711,9 +711,15 @@ Two locations are used for tests:
 
 - **Integration-shaped tests**: `tests/<package-name>/`. Tests that target a package's behavior but need the `@intx/inference-testing` harness, span multiple packages, or spawn real servers and subprocesses live here. Co-locating harness-driven tests in `packages/<name>/src/` would force the package to depend on `@intx/inference-testing`, creating a workspace dependency cycle (because the harness depends on the package). The `tests/` tree breaks that cycle. Tests spanning multiple packages live under `tests/<primary-target-package>/`; the "primary target" is whatever package's behavior the test is asserting, with the other packages as setup dependencies.
 
-Tests that are not parallel-safe (spawn servers, perform real `isomorphic-git` operations against `os.tmpdir()`, or otherwise need extended timeouts) run in a second pass after the fast unit suite. The split is enforced via the `test` target in the `Makefile`, which invokes `bun test` twice with explicit positional arguments: the first pass enumerates fast unit dirs at the default 5s timeout; the second pass enumerates the slow integration files with `--timeout 60000`. Bun's `[test].pathIgnorePatterns` field is documented but non-functional in bun 1.2.22; positive enumeration via positional args is the only mechanism that works.
+Tests that are not parallel-safe (spawn servers, perform real `isomorphic-git` operations against `os.tmpdir()`, or otherwise need extended timeouts) run in separate passes from the fast unit suite. The split is enforced by three `Makefile` targets, each a `bun test` invocation with explicit positional arguments; the `test` target is a prerequisite-only aggregate of all three, so `make test` and `make all` run them all:
 
-Especially slow tests (e.g. the FIFO mail load case) live in their own files and run via a dedicated `make test-load` target with an even longer timeout, so `make test` stays fast for routine iteration. The load target runs separately in CI.
+- `test-unit`: the fast unit dirs (whole `packages/`, `apps/`, `bin/`, and the harness-light `tests/` dirs) at the default 5s timeout.
+- `test-workflow`: the `tests/workflow-deploy/` integration files (real hub/sidecar processes and real agents) with `--timeout 120000`.
+- `test-core`: the `tests/inference/`, `tests/hub-api/`, and `tests/db/` suites with `--timeout 120000`.
+
+CI runs the three passes as separate parallel jobs (see `.github/workflows/ci.yml`), which is why they are distinct targets rather than one. Bun's `[test].pathIgnorePatterns` field is documented but non-functional in bun 1.2.22; positive enumeration via positional args is the only mechanism that works. Two guards keep the enumeration honest: `bin/check-test-enumeration.ts` fails `make lint` if any `*.test.ts` is not reachable from an enumerating target, and `bin/check-ci-test-jobs.ts` fails it if any enumerating pass is not run by a CI job or any job escapes the required "make all" gate.
+
+Especially slow tests (e.g. the FIFO mail load case) live in their own files and run via a dedicated `make test-load` target with an even longer timeout, so `make test` stays fast for routine iteration. The load target is run on demand, not by the PR CI graph.
 
 ---
 

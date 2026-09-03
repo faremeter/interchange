@@ -3,13 +3,13 @@
 
 // Test-enumeration completeness guard.
 //
-// The `make test` target enumerates its test paths POSITIVELY: it hands
-// `bun test` an explicit list of directories and files rather than
-// letting bun discover everything and filtering. It has to -- bun
-// 1.2.22's `[test].pathIgnorePatterns` is documented but non-functional,
-// so positive enumeration is the only mechanism that keeps the
-// parallel-unsafe integration tests out of the fast unit pass (see
-// CONVENTIONS.md's Testing section).
+// The `make test-unit`, `test-workflow`, and `test-core` passes enumerate
+// their test paths POSITIVELY: each hands `bun test` an explicit list of
+// directories and files rather than letting bun discover everything and
+// filtering. They have to -- bun 1.2.22's `[test].pathIgnorePatterns` is
+// documented but non-functional, so positive enumeration is the only
+// mechanism that keeps the parallel-unsafe integration tests out of the
+// fast unit pass (see CONVENTIONS.md's Testing section).
 //
 // The failure mode that buys is silent: a new `*.test.ts` that nobody
 // adds to the list is never run by `make all`, and can sit red
@@ -39,8 +39,19 @@ import { join } from "node:path";
 /** Source roots whose `*.test.ts` files must be enumerated. */
 const TEST_ROOTS = ["packages", "tests"] as const;
 
-/** Makefile targets whose recipes enumerate the test suite. */
-const ENUMERATING_TARGETS = ["test", "test-load"] as const;
+/**
+ * Makefile targets whose recipes enumerate the test suite. The `test`
+ * target is a prerequisite-only aggregate with no recipe of its own, so
+ * the enumerating recipes live on the three passes it depends on plus the
+ * standalone load target. `bin/check-ci-test-jobs.ts` reuses this list to
+ * assert every pass (except `test-load`) actually runs in CI.
+ */
+export const ENUMERATING_TARGETS = [
+  "test-unit",
+  "test-workflow",
+  "test-core",
+  "test-load",
+] as const;
 
 /**
  * The TAB-indented recipe lines of a Makefile target. A recipe is the run
