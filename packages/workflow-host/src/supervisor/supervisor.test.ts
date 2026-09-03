@@ -2175,6 +2175,88 @@ describe("createWorkflowSupervisor", () => {
     await wired.supervisor.shutdown();
   });
 
+  test("a mid-run revoke stays evicted across the pre-trigger barrier", async () => {
+    // The durability guarantee: an eviction delivered via deliverCredentials
+    // must not be undone by the barrier re-asserting the frozen deploy set. The
+    // supervisor mirrors the live delivery, so the barrier re-asserts the
+    // post-revoke set, not the deploy-time one.
+    const baseDir = await makeTempDir("supervisor-revoke-durable-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const onRunStart: WorkflowSupervisorBindings["onRunStart"] = async () =>
+      assembleCredentialsSnapshot({
+        repoStore: createStubRepoStore({ baseDir }),
+        principal: { kind: "supervisor" },
+        stepOrder: ["step-1"],
+        anchorRunId: "run_deployment-x",
+        deriveStepAddress: ({ runId, stepId }) =>
+          `${runId}-${stepId}@example.com`,
+      });
+    // The deploy delivery carries two credentials; cred_a also has a binding.
+    const delivery = {
+      bindings: [
+        { handle: "gh", credentialId: "cred_a", consumer: "tool:@acme/tools" },
+      ],
+      materials: [
+        {
+          credentialId: "cred_a",
+          providerKey: "http",
+          origin: "https://api.example.test",
+          secret: "sk-a",
+        },
+        {
+          credentialId: "cred_b",
+          providerKey: "http",
+          origin: "https://api.example.test",
+          secret: "sk-b",
+        },
+      ],
+    };
+
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart,
+      credentialDelivery: delivery,
+    });
+
+    // Revoke cred_a mid-run (as the online DELETE/revoke path does).
+    await wired.supervisor.deliverCredentials({
+      delivery: { bindings: [], materials: [] },
+      revoke: ["cred_a"],
+    });
+
+    // Fire a trigger: the pre-trigger barrier re-asserts the credential set.
+    wired.mailBus.deliver(
+      "run_deployment-x@example.com",
+      new TextEncoder().encode("revoke-durable-m1"),
+    );
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (
+        parseTriggerFireRunIds(wired.supervisorToChild.flushed()).length >= 1
+      ) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
+
+    // The barrier's re-assertion (the last credentials-updated frame) carries
+    // the post-revoke set: cred_a is gone (material AND its binding), cred_b
+    // survives. It does NOT re-add cred_a from the frozen deploy delivery.
+    const deliveries = parseCredentialsUpdatedFrames(
+      wired.supervisorToChild.flushed(),
+    );
+    const last = deliveries[deliveries.length - 1];
+    expect(last).toBeDefined();
+    expect(last?.materials.map((m) => m.credentialId)).toEqual(["cred_b"]);
+    expect(last?.bindings).toEqual([]);
+
+    await wired.supervisor.shutdown();
+  });
+
   test("a throwing onRunStart fails the run and never fires its trigger", async () => {
     const baseDir = await makeTempDir("supervisor-barrier-fail-");
     // No seedStepGrants: the sink throws regardless, standing in for any
@@ -3603,27 +3685,130 @@ describe("createWorkflowSupervisor", () => {
     await supervisor.shutdown();
   });
 
-  test("deliverCredentials() rejects when the supervisor is idle (no spawn has run)", async () => {
-    // Same phase-guard contract as deliverSources: a credential push landing
-    // against a supervisor that is not starting/running throws so the caller
-    // surfaces the race rather than writing into a dead child's pipe.
+  test("deliverCredentials() while not running advances the mirror without sending, so the next spawn seeds the post-revoke set", async () => {
+    // A revoke can arrive while the supervisor holds no live child (a crash-loop
+    // retry, a recycle transient, or before the first spawn). It must NOT throw
+    // or write into an absent child's pipe, but it MUST advance the mirror so
+    // the credential stays evicted when the child (re)spawns -- otherwise the
+    // frozen deploy delivery would resurrect it.
     const baseDir = await makeTempDir("supervisor-deliver-credentials-idle-");
-    const bindings = await buildBindings({
+    await seedStepGrants(
       baseDir,
-      spawner: () => {
-        throw new Error(
-          "spawner must not be invoked on the idle credentials path",
-        );
-      },
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+
+    const supervisorIpcKeyPair = await generateKeyPair();
+    const childIpcKeyPair = await generateKeyPair();
+    const supervisorToChild = createMemoryNdjsonStream();
+    const childToSupervisor = createMemoryNdjsonStream();
+    const eventChildToSupervisor = createMemoryFrameStream();
+    let resolveExit: ((code: number) => void) | undefined;
+    const exited = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+
+    let observedEnv: Record<string, string> | undefined;
+    const spawner: SubprocessSpawner = ({ env }) => {
+      observedEnv = env;
+      return {
+        pid: 4321,
+        controlWriter: supervisorToChild.writer,
+        controlReader: childToSupervisor.reader,
+        eventReader: eventChildToSupervisor.reader,
+        kill: () => {
+          childToSupervisor.close();
+          eventChildToSupervisor.close();
+          resolveExit?.(0);
+        },
+        exited,
+      };
+    };
+
+    const baseBindings = await buildBindings({
+      baseDir,
+      spawner,
       signSpy: () => ({ sig: new Uint8Array(64), principalKind: "supervisor" }),
       mailBus: createMockMailBus(),
     });
+    const bindings: WorkflowSupervisorBindings = {
+      ...baseBindings,
+      ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
+      // The deploy delivery: cred_a (with a binding) and cred_b.
+      credentialDelivery: {
+        bindings: [
+          { handle: "gh", credentialId: "cred_a", consumer: "tool:@acme/x" },
+        ],
+        materials: [
+          {
+            credentialId: "cred_a",
+            providerKey: "http",
+            origin: "https://api.example.test",
+            secret: "sk-a",
+          },
+          {
+            credentialId: "cred_b",
+            providerKey: "http",
+            origin: "https://api.example.test",
+            secret: "sk-b",
+          },
+        ],
+      },
+    };
     const supervisor = createWorkflowSupervisor(bindings);
-    await expect(
-      supervisor.deliverCredentials({
-        delivery: { bindings: [], materials: [] },
-      }),
-    ).rejects.toThrow(/deliverCredentials called in phase idle/);
+
+    // Revoke cred_a while the supervisor is idle (no child spawned yet). It must
+    // resolve without throwing and send nothing.
+    await supervisor.deliverCredentials({
+      delivery: { bindings: [], materials: [] },
+      revoke: ["cred_a"],
+    });
+    expect(observedEnv).toBeUndefined(); // no spawn
+    expect(parseCredentialsUpdatedFrames(supervisorToChild.flushed())).toEqual(
+      [],
+    ); // nothing sent
+
+    // Now spawn: the spawn re-assertion must carry the post-revoke mirror.
+    const spawnPromise = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-idle",
+      warmKeep: true,
+      onInferenceEvent: () => undefined,
+    });
+    while (observedEnv === undefined) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const channelId = observedEnv.IPC_CHANNEL_ID;
+    if (channelId === undefined) {
+      throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
+    }
+    const childSender = createControlChannelSender({
+      privateKeySeed: childIpcKeyPair.privateKey,
+      channelId,
+      writer: {
+        write(line: string) {
+          childToSupervisor.inject(line);
+        },
+      },
+    });
+    await childSender.send({
+      type: "ready",
+      data: {
+        childPid: 4321,
+        childPublicKey: Buffer.from(childIpcKeyPair.publicKey).toString("hex"),
+      },
+    });
+    await spawnPromise;
+
+    const deliveries = parseCredentialsUpdatedFrames(
+      supervisorToChild.flushed(),
+    );
+    const last = deliveries[deliveries.length - 1];
+    expect(last).toBeDefined();
+    expect(last?.materials.map((m) => m.credentialId)).toEqual(["cred_b"]);
+    expect(last?.bindings).toEqual([]);
+
+    await supervisor.shutdown();
   });
 
   test("deliverCredentials() sends a credentials-updated frame when running", async () => {
