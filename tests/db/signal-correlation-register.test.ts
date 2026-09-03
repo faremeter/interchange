@@ -144,10 +144,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.reset();
     });
 
-    // The deployment's anchor run: the row `lookupPublicKey` now reads the
-    // reconnect key off, keyed by the deployment address. A reconnect challenge
-    // against a workflow-derived address resolves its key here, so every test
-    // that reconnects needs one.
+    // Seed the deployment's anchor run, which the signal-correlation co-write
+    // resolves by deployment address as its tenancy and definition origin.
     async function seedAnchorRun(
       id: string,
       address: string,
@@ -163,8 +161,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     }
 
-    // Seed a live deployment whose address resolves to `publicKeyHex`, so the
-    // reconnect challenge that routes WF_ADDR onto the connection passes.
+    // Seed a live deployment whose anchor row resolves from WF_ADDR.
     async function seedDeployment(publicKeyHex: string): Promise<void> {
       await seedTenants(h.db, [{ id: TENANT }]);
       await seedAsset(h.db, {
@@ -177,8 +174,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // Bring WF_ADDR up as an owned workflow address on `ws` through the real
-    // challenged reconnect path, so the register handler's ownership gate lets
-    // the frame through.
+    // allocation-authenticated reconnect path, so the register handler's
+    // ownership gate lets the frame through.
     async function reconnectAndVerify(
       router: ReturnType<typeof createSidecarRouter>,
       ws: ReturnType<typeof createMockWs>,
@@ -201,8 +198,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     // Bring an arbitrary workflow address up as an owned route on `ws` through
-    // the same challenged reconnect path `reconnectAndVerify` uses, so a
-    // negative-path case can own a DIFFERENT address than the frame it delivers.
+    // the same allocation-authenticated reconnect path `reconnectAndVerify`
+    // uses, so a negative-path case can own a DIFFERENT address than the frame
+    // it delivers.
     async function reconnectAddress(
       router: ReturnType<typeof createSidecarRouter>,
       ws: ReturnType<typeof createMockWs>,

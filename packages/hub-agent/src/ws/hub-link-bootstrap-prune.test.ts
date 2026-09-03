@@ -28,7 +28,7 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { signEd25519, verifySSHSignature } from "@intx/crypto";
+import { verifySSHSignature } from "@intx/crypto";
 import type {
   HarnessConfig,
   InboundMessage,
@@ -53,11 +53,6 @@ function createTestKeyStore(): AgentKeyStore & {
       const existing = agentKeys.get(address);
       if (existing !== undefined) return { keyPair: existing, isNew: false };
       throw new Error(`No key registered for ${address} in test store`);
-    },
-    async signChallenge(address, payload) {
-      const kp = agentKeys.get(address);
-      if (kp === undefined) return null;
-      return await signEd25519(kp.privateKey, payload);
     },
     recordHubKey(address, hexHubPublicKey) {
       hubKeys.set(address, hexDecode(hexHubPublicKey));

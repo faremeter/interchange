@@ -42,7 +42,6 @@ const log = getLogger(["interchange", "hub-agent", "orchestrator"]);
 
 export type SidecarCryptoOps = {
   generateKeyPair(): Promise<KeyPair>;
-  signEd25519(privateKey: Uint8Array, payload: Uint8Array): Promise<Uint8Array>;
   verifySSHSig(
     payload: string,
     signature: string,
@@ -172,8 +171,8 @@ export type SidecarOrchestratorConfig = {
   /**
    * Returns the workflow-substrate deployment addresses this sidecar
    * currently hosts. Forwarded to the hub link, which announces them on
-   * every (re)connect so the hub re-registers them for routing without a
-   * challenge. Production wires this to the deploy router's
+   * every (re)connect so the hub re-registers them for routing.
+   * Production wires this to the deploy router's
    * `activeAddresses`; omitted, the link announces none.
    */
   getWorkflowAddresses?: () => string[];
@@ -242,7 +241,6 @@ export function createSidecarOrchestrator(
   const keyStore = createAgentKeyStore({
     dataDir,
     generateKeyPair: cryptoOps.generateKeyPair,
-    signEd25519: cryptoOps.signEd25519,
     verifySSHSig: cryptoOps.verifySSHSig,
   });
 

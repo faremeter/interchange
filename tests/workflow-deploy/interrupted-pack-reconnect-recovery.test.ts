@@ -5,14 +5,15 @@
 // refs/heads/main pack. The harness arms an arm-once interrupt on the hub: the
 // FIRST run-events pack is applied durably on the hub, then every live link is
 // dropped BEFORE the ack, so the sidecar's push rejects and latches "Connection
-// lost". The sidecar then reconnects and re-challenges its deployment address.
+// lost". The sidecar then reconnects and re-announces its deployment address.
 //
 // The contract this asserts: after the reconnect the run reaches RunCompleted
 // on its own -- WITHOUT any fresh mail trigger to re-drive it. The advance-on-ack
 // pack-tip cursor keeps the un-acked commits shippable (the data-integrity half);
 // this test covers the liveness half -- the sidecar must re-drive the cancelled
 // push once its address is routable again, and the re-ship must wait for the
-// challenge to re-route the address rather than racing ahead of it.
+// allocation-authenticated reconnect to re-route the address rather than racing
+// ahead of it.
 //
 // The settled-drop control is the regression guard: a drop AFTER the pack stream
 // goes quiet (no push mid-flight) must still reconnect and run a fresh trigger to
@@ -21,8 +22,8 @@
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, a real workflow-process child, and a test inference provider. The
 // drop is a genuine server-side WebSocket close mid-transfer; the recovery is
-// the sidecar's real hub-link reconnect path passing the hub's ownership
-// challenge and re-driving the latched push.
+// the sidecar's real hub-link reconnect path passing the allocation identity
+// checks and re-driving the latched push.
 
 import {
   afterAll,
@@ -275,7 +276,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
       );
 
-      // The sidecar reconnects and re-challenges its deployment address.
+      // The sidecar reconnects and re-announces its deployment address.
       const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
         timeoutMs: 30_000,
       });

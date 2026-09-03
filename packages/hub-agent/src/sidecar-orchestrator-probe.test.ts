@@ -22,7 +22,7 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { generateKeyPair, signEd25519, verifySSHSignature } from "@intx/crypto";
+import { generateKeyPair, verifySSHSignature } from "@intx/crypto";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
 
@@ -168,7 +168,6 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
       transport: createInMemoryTransport(),
       cryptoOps: {
         generateKeyPair,
-        signEd25519,
         verifySSHSig: verifySSHSignature,
       },
       createDeployRouter: () => ({

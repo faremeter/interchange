@@ -8,7 +8,7 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { generateKeyPair, signEd25519, verifySSHSignature } from "@intx/crypto";
+import { generateKeyPair, verifySSHSignature } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 
@@ -166,11 +166,11 @@ function withTestDeployBindings(): {
 import type { KeyPair } from "@intx/types/runtime";
 import { hexDecode } from "@intx/types";
 
-// In-memory AgentKeyStore for tests. Tests that exercise challenge
-// response or deploy-commit verification register keys via the public
-// AgentKeyStore methods (loadOrGenerateKey, recordHubKey); the stub
-// satisfies the interface and uses real @intx/crypto primitives so
-// signatures round-trip through the production verify path.
+// In-memory AgentKeyStore for tests. Tests that exercise deploy-commit
+// verification register keys via the public AgentKeyStore methods
+// (loadOrGenerateKey, recordHubKey); the stub satisfies the interface
+// and uses real @intx/crypto primitives so signatures round-trip
+// through the production verify path.
 function createTestKeyStore(): AgentKeyStore & {
   registerKey(address: string, kp: KeyPair): void;
 } {
@@ -184,11 +184,6 @@ function createTestKeyStore(): AgentKeyStore & {
       const existing = agentKeys.get(address);
       if (existing !== undefined) return { keyPair: existing, isNew: false };
       throw new Error(`No key registered for ${address} in test store`);
-    },
-    async signChallenge(address, payload) {
-      const kp = agentKeys.get(address);
-      if (kp === undefined) return null;
-      return await signEd25519(kp.privateKey, payload);
     },
     recordHubKey(address, hexHubPublicKey) {
       hubKeys.set(address, hexDecode(hexHubPublicKey));
@@ -286,14 +281,11 @@ type TestEnv = {
   router: ReturnType<typeof createSidecarRouter>;
   agentEvents: { addr: string; sid: string; event: unknown }[];
   outboundMail: { rawMessage: string; recipients: string[] }[];
-  // address -> hex-encoded Ed25519 public key used by the test key store.
-  deploymentKeys: Map<string, string>;
 };
 
 function startTestServer(): TestEnv {
   const agentEvents: TestEnv["agentEvents"] = [];
   const outboundMail: TestEnv["outboundMail"] = [];
-  const deploymentKeys = new Map<string, string>();
 
   const router = createSidecarRouter({
     authenticateSidecar: acceptAnySidecar,
@@ -347,7 +339,7 @@ function startTestServer(): TestEnv {
     port: 0,
   });
 
-  return { server, router, agentEvents, outboundMail, deploymentKeys };
+  return { server, router, agentEvents, outboundMail };
 }
 
 // ---------------------------------------------------------------------------
@@ -361,12 +353,11 @@ afterAll(async () => {
 });
 
 /**
- * Wire a workflow deployment for the challenged reconnect path: mint an
- * Ed25519 keypair, register it in the sidecar's keyStore (so `signChallenge`
- * can answer the hub's nonce) and in the hub's `deploymentKeys` lookup (so the
- * hub issues a challenge and verifies the signature). After this, the
- * deployment address named in `getWorkflowAddresses` routes once the
- * reconnect challenge round-trips -- the same proof a launched agent makes.
+ * Wire a workflow deployment for the reconnect path: mint an Ed25519
+ * keypair and register it in the sidecar's keyStore so the deploy path
+ * picks up the pinned key. After this, the deployment address named in
+ * `getWorkflowAddresses` routes once the hub re-registers it on
+ * (re)connect.
  */
 async function provisionDeploymentKey(
   keyStore: ReturnType<typeof createTestKeyStore>,
@@ -374,7 +365,6 @@ async function provisionDeploymentKey(
 ): Promise<void> {
   const kp = await generateKeyPair();
   keyStore.registerKey(address, kp);
-  env.deploymentKeys.set(address, hexEncode(kp.publicKey));
 }
 
 describe("sidecar↔hub integration", () => {
@@ -550,8 +540,9 @@ describe("sidecar↔hub integration", () => {
     });
 
     client.connect();
-    // Routability lags the connection: it lands only after the reconnect
-    // challenge round-trips, so wait on the routable address directly.
+    // Routability lags the connection: it lands only after the hub
+    // re-registers the announced addresses, so wait on the routable
+    // address directly.
     await waitFor(() =>
       env.router.getRoutableAddresses().includes(deploymentAddress),
     );

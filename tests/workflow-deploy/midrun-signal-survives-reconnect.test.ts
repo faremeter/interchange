@@ -22,8 +22,8 @@
 // subprocess, a real workflow-process child, and a test inference
 // provider. The interruption is a genuine server-side WebSocket close
 // while the run is parked at `SignalAwaited`; the resume rides the
-// sidecar's real `hub-link` reconnect path passing the hub's ownership
-// challenge, after which the injected signal reaches the still-parked run.
+// sidecar's real allocation-authenticated `hub-link` reconnect path, after
+// which the injected signal reaches the still-parked run.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

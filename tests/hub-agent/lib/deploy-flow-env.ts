@@ -695,14 +695,6 @@ export async function startHub(
     },
     validateSidecarIdentity: async () => true,
     lookups: {
-      // Answer a reconnecting sidecar's ownership challenge for a deployment
-      // address with the Ed25519 key that address acked at deploy time.
-      // Without this, `handleReconnect` hits its `lookupKey === undefined`
-      // guard and closes the socket every attempt, so the sidecar loops in a
-      // 3s reconnect cycle and never re-enters routing. Every deployment acks
-      // its own key (captured into `deployAcks` by the `agent.deploy.ack`
-      // listener below), and the sidecar re-signs the reconnect challenge
-      // with that same key, so a `deployAcks` lookup is the correct oracle.
       async receiveAgentStatePack(repoId, pack, ref, commitSha) {
         if (repoId.kind !== "agent-state") {
           throw new Error(
@@ -2082,9 +2074,8 @@ export async function waitForFirstRunId(
 // reconnect so a survival test can assert a deployed workflow keeps running
 // across the reconnect. The in-process hub is normally lossless with no way
 // to sever the link; `startHub` now captures every live server-side
-// `WsHandle` (`env.hub.liveHandles`) and answers the reconnect ownership
-// challenge (`lookups.lookupPublicKey` backed by `deployAcks`), which is
-// what makes a dropped link reconnect instead of looping on a closed socket.
+// `WsHandle` (`env.hub.liveHandles`). The reconnect revalidates the sidecar's
+// allocation identity and current generation before restoring its route.
 
 /**
  * Force-close every live server-side hub WebSocket, severing the sidecar's
@@ -2122,10 +2113,10 @@ export type WaitForReconnectOpts = {
 
 /**
  * Poll until `address` is routable on the hub again, then return the
- * elapsed milliseconds. A keyed deployment address can only re-enter the
- * hub's routing index by passing the reconnect ownership challenge (the
- * plain `register` path leaves a keyed address unrouted until challenged),
- * so "routable again" is a sound proxy for a completed challenge/response.
+ * elapsed milliseconds. A deployment address can only re-enter the hub's
+ * routing index after its reconnect passes durable identity revalidation and
+ * the current allocation-generation fence, so "routable again" is a sound
+ * proxy for completed reconnect registration.
  */
 export async function waitForReconnect(
   env: DeployFlowEnv,
