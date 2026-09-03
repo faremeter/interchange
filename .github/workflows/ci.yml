@@ -3,10 +3,11 @@ name: Continuous Integration
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-  # Push to main is a post-merge canary: it re-runs make all against the tip of
-  # main to catch a break that no PR check saw (e.g. two green PRs that conflict
-  # semantically once both land). It reports a broken main; it cannot prevent
-  # the commit landing — that guarantee is branch protection requiring this check.
+  # Push to main is a post-merge canary: it re-runs the full suite against the
+  # tip of main to catch a break that no PR check saw (e.g. two green PRs that
+  # conflict semantically once both land). It reports a broken main; it cannot
+  # prevent the commit landing -- that guarantee is branch protection requiring
+  # the "make all" check.
   push:
     branches: [main]
 
@@ -19,18 +20,40 @@ concurrency:
   # mid-flight commit would never be validated. Per-SHA grouping is what
   # guarantees every commit on main runs; cancel-in-progress only governs PR
   # supersession (it does not protect a pending run, so it cannot carry this).
+  # The group is workflow-run scoped, so a supersession cancels all jobs of the
+  # stale run together.
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
+# The single "make all" job used to run lint + build + both test passes + the
+# browser e2e serially, and crossed the 30-minute job timeout as the suite
+# grew. The work is split into parallel jobs below; the "make all" job at the
+# bottom is now an aggregation GATE (it never invokes `make all`) that keeps the
+# branch-protection required check named "make all" reporting green only when
+# every worker succeeds. bin/check-ci-test-jobs.ts (run by `make lint`) asserts
+# every enumerated test pass runs in a job and every job is in the gate's needs.
 jobs:
-  make-all:
-    name: make all
+  static:
+    name: static checks
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: ./.github/actions/setup
+      # No database: check-env gates only on bun + node_modules + hooksPath, and
+      # the env files (written by the setup action) satisfy anything vite or the
+      # lint sub-checks read. build-admin-ui also runs in the e2e job; the
+      # duplication is intentional and keeps the two jobs independent.
+      - name: Run lint, build, and admin-ui bundle
+        run: make lint build build-admin-ui
 
+  test-unit:
+    name: test unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:15
@@ -44,91 +67,138 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
     env:
       # bin/db-reset runs psql with -h/-p only (no -U), so its superuser identity
       # comes from libpq's PGUSER/PGPASSWORD here. Do not add -U to db-reset to
-      # "fix" this — that is what would break CI.
+      # "fix" this -- that is what would break CI.
       PGUSER: postgres
       PGPASSWORD: postgres
       PGHOST: localhost
       PGPORT: "5432"
-
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-
-      # bin/check-env requires core.hooksPath=.githooks. The hook never fires in
-      # CI (no commits happen); this only satisfies the gate.
-      - name: Configure git hooks path
-        run: git config core.hooksPath .githooks
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      # Cache the Playwright browser download, keyed on the resolved
-      # @playwright/test version that bun.lock pins. On a hit the install
-      # step below is a no-op; on a miss it re-downloads Chromium.
-      - name: Cache Playwright browsers
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: ./.github/actions/setup
         with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          database: "true"
+      - name: Run the unit test pass
+        run: make test-unit
 
-      - name: Install Playwright Chromium
-        run: bunx playwright install --with-deps chromium
+  test-workflow:
+    name: test workflow
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGPORT: "5432"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: ./.github/actions/setup
+        with:
+          database: "true"
+      - name: Run the workflow-deploy integration pass
+        run: make test-workflow
 
-      # Copy the committed dev-default env files. BETTER_AUTH_SECRET ships empty in
-      # the example, so set it in place (do not append — a second line would leave
-      # the key defined twice and the hub tests read the empty one and hard-fail).
-      - name: Write env files
+  test-core:
+    name: test core
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGPORT: "5432"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: ./.github/actions/setup
+        with:
+          database: "true"
+      - name: Run the inference, hub-api, and db integration pass
+        run: make test-core
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGPORT: "5432"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: ./.github/actions/setup
+        with:
+          database: "true"
+          playwright: "true"
+      # make test-e2e builds the admin-ui bundle itself, then runs the browser
+      # suite against the container Postgres (the provisioner's maintenance
+      # connection runs as the postgres superuser, so it can CREATE DATABASE
+      # per run and GRANT to the roles the setup action created).
+      - name: Run the admin-ui browser e2e suite
+        run: make test-e2e
+
+  # The required status check. Named "make all" to match branch protection's
+  # context (a job's context is its `name`). It runs no tests itself -- it gates
+  # on every worker so the required check is green only when all pass. `always()`
+  # forces it to report a conclusion even when a worker fails, so the required
+  # context never sticks pending and blocks the PR.
+  make-all:
+    name: make all
+    runs-on: ubuntu-latest
+    needs: [static, test-unit, test-workflow, test-core, e2e]
+    if: ${{ always() }}
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          cp .env.example .env
-          cp .env.migrate.example .env.migrate
-          cp .env.hub.example .env.hub
-          secret=$(openssl rand -hex 32)
-          sed -i "s/^BETTER_AUTH_SECRET=.*/BETTER_AUTH_SECRET=${secret}/" .env.hub
-          cred_key=$(openssl rand -hex 32)
-          sed -i "s/^CREDENTIAL_ENCRYPTION_KEY=.*/CREDENTIAL_ENCRYPTION_KEY=${cred_key}/" .env.hub
-
-      # The DB/hub-api test harness skips only when the env files are absent, so a
-      # missing file would silently drop the entire DB layer while CI stays green.
-      # Fail loudly instead: the files must exist, BETTER_AUTH_SECRET and
-      # CREDENTIAL_ENCRYPTION_KEY must be non-empty (else the spawned hub
-      # hard-fails at boot), and Postgres must be reachable.
-      - name: Assert DB test env is wired
-        run: |
-          test -f .env
-          test -f .env.migrate
-          test -f .env.hub
-          grep -q '^BETTER_AUTH_SECRET=.\+' .env.hub
-          grep -q '^CREDENTIAL_ENCRYPTION_KEY=.\+' .env.hub
-          pg_isready -h localhost -p 5432
-
-      # Pre-create the two roles db-reset assumes exist (deriving each password
-      # from its env file so the role and the file cannot drift), then run
-      # db-reset unchanged for the drop/create/migrate/grant choreography. The
-      # statements are fed over stdin so psql interpolates each password through
-      # its :'var' form, quoting it as a SQL literal regardless of contents;
-      # psql does not interpolate variables in a -c argument, only in stdin/-f
-      # input.
-      - name: Bootstrap database
-        run: |
-          migrate_pw=$(grep '^DB_PASSWORD=' .env.migrate | cut -d= -f2-)
-          hub_pw=$(grep '^DB_PASSWORD=' .env.hub | cut -d= -f2-)
-          psql -d postgres -v migrate_pw="$migrate_pw" -v hub_pw="$hub_pw" <<'SQL'
-          CREATE USER "interchange-migrate" WITH PASSWORD :'migrate_pw';
-          CREATE USER "interchange-hub" WITH PASSWORD :'hub_pw';
-          SQL
-          bin/db-reset
-
-      - name: Run make all
-        run: make all
-
-      # Browser-driven end-to-end suite. Reuses the container Postgres and
-      # the job-level PG* env: the provisioner's maintenance connection
-      # runs as the postgres superuser, so it can CREATE DATABASE per run.
-      # test-e2e-run skips the bundle build; `make all` above already built it.
-      - name: Run make test-e2e-run
-        run: make test-e2e-run
+          echo "upstream job results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "a required job did not succeed (result: $result)"
+              exit 1
+            fi
+          done
+          echo "all required jobs succeeded"
