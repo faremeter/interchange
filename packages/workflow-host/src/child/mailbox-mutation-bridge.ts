@@ -38,6 +38,8 @@ import type {
   ControlPayload,
 } from "../ipc/control-channel";
 
+import { createPendingRequestCore } from "./pending-request";
+
 const logger = getLogger(["workflow-host", "child", "mailbox-mutation-bridge"]);
 
 /**
@@ -99,33 +101,27 @@ export interface CreateChildMailboxMutationBridgeOpts {
   allocateRequestId?: () => string;
 }
 
-type PendingEntry = {
-  resolve: (value: MailboxMutationResult) => void;
-  reject: (err: Error) => void;
-};
-
 /**
  * Construct the child-side mailbox-mutation bridge. Pending mutations
- * live in a map keyed by `requestId`; the bridge resolves the awaiter
- * when the supervisor's matching `mailbox.mutate.response` lands.
+ * live in the shared pending-request core keyed by `requestId`; the
+ * bridge resolves the awaiter when the supervisor's matching
+ * `mailbox.mutate.response` lands.
  */
 export function createChildMailboxMutationBridge(
   opts: CreateChildMailboxMutationBridgeOpts,
 ): ChildMailboxMutationBridge {
-  const pending = new Map<string, PendingEntry>();
-  const allocate = opts.allocateRequestId ?? defaultRequestIdAllocator();
+  const pending = createPendingRequestCore<MailboxMutationResult, undefined>({
+    label: "workflow-child mailbox mutation",
+    allocatorPrefix: "mm",
+    allocateRequestId: opts.allocateRequestId,
+  });
 
   return {
     get pendingCount() {
-      return pending.size;
+      return pending.pendingCount;
     },
     async submit(mutation: MailboxMutation): Promise<MailboxMutationResult> {
-      const requestId = allocate();
-      const resultPromise = new Promise<MailboxMutationResult>(
-        (resolve, reject) => {
-          pending.set(requestId, { resolve, reject });
-        },
-      );
+      const { requestId, promise } = pending.register(undefined);
       const data =
         mutation.op === "expunge"
           ? {
@@ -148,22 +144,17 @@ export function createChildMailboxMutationBridge(
           data,
         });
       } catch (cause) {
-        pending.delete(requestId);
-        const reason = cause instanceof Error ? cause.message : String(cause);
-        throw new Error(
-          `workflow-child mailbox mutation: upstream send failed for requestId ${requestId}: ${reason}`,
-          { cause },
-        );
+        pending.discard(requestId);
+        throw pending.sendFailedError(requestId, cause);
       }
-      return resultPromise;
+      return promise;
     },
     handleResult(data) {
-      const entry = pending.get(data.requestId);
+      const entry = pending.settle(data.requestId);
       if (entry === undefined) {
         logger.warn`mailbox.mutate.response landed with no pending entry; requestId=${data.requestId} dropped`;
         return;
       }
-      pending.delete(data.requestId);
       if (data.result.ok) {
         const result: MailboxMutationResult = {};
         if (data.result.expungedUids !== undefined) {
@@ -172,30 +163,10 @@ export function createChildMailboxMutationBridge(
         entry.resolve(result);
         return;
       }
-      entry.reject(
-        new Error(
-          `workflow-child mailbox mutation (requestId=${data.requestId}) rejected by supervisor: ${data.result.reason}`,
-        ),
-      );
+      entry.reject(pending.rejectedError(data.requestId, data.result.reason));
     },
     cancelAll(reason: string) {
-      for (const [requestId, entry] of pending) {
-        entry.reject(
-          new Error(
-            `workflow-child mailbox mutation (requestId=${requestId}) cancelled: ${reason}`,
-          ),
-        );
-      }
-      pending.clear();
+      pending.cancelAll(reason);
     },
-  };
-}
-
-function defaultRequestIdAllocator(): () => string {
-  let counter = 0;
-  return () => {
-    counter += 1;
-    const rand = Math.random().toString(36).slice(2, 10);
-    return `mm-${String(counter)}-${rand}`;
   };
 }
