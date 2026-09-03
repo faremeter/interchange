@@ -14,6 +14,7 @@ const TENANT_ID = process.env["E2E_WORKFLOW_TENANT_ID"];
 const ASSET_ID = process.env["E2E_WORKFLOW_ASSET_ID"];
 const COMMIT_SHA = process.env["E2E_WORKFLOW_COMMIT_SHA"];
 const ENTRY = process.env["E2E_WORKFLOW_ENTRY"];
+const CREDENTIAL_ID = process.env["E2E_WORKFLOW_CREDENTIAL_ID"];
 const LOGIN_EMAIL = process.env["E2E_LOGIN_EMAIL"];
 const LOGIN_PASSWORD = process.env["E2E_LOGIN_PASSWORD"];
 
@@ -25,15 +26,20 @@ function required(name: string, value: string | undefined): string {
 }
 
 // The inference source the picker collects. A source-ref deploy freezes the
-// definition and provisions the run's routable address; it does not call the
-// provider, so these values only have to satisfy the form. A run (fired later)
-// would call the provider — out of scope for this deploy-established spec.
-async function fillInferenceSource(page: Page): Promise<void> {
+// definition, provisions the run's routable address, and resolves the source's
+// credential to seal its material — so the credential id must name a real,
+// tenant-owned seeded credential (the harness discovers it), not a placeholder.
+// The deploy does not call the provider; a run (fired later) would — out of
+// scope for this deploy-established spec.
+async function fillInferenceSource(
+  page: Page,
+  credentialId: string,
+): Promise<void> {
   await page.locator("#source-id").fill("anthropic:claude-sonnet-5");
   await page.locator("#source-provider").fill("anthropic");
   await page.locator("#source-model").fill("claude-sonnet-5");
   await page.locator("#source-base-url").fill("https://api.anthropic.com");
-  await page.locator("#source-api-key").fill("sk-e2e-live");
+  await page.locator("#source-credential-id").fill(credentialId);
 }
 
 // Read the tenant's deployments straight from the real hub (through the
@@ -84,6 +90,7 @@ test("deploys a seeded workflow source through the picker to a real sidecar", as
   const assetId = required("E2E_WORKFLOW_ASSET_ID", ASSET_ID);
   const commitSha = required("E2E_WORKFLOW_COMMIT_SHA", COMMIT_SHA);
   const entry = required("E2E_WORKFLOW_ENTRY", ENTRY);
+  const credentialId = required("E2E_WORKFLOW_CREDENTIAL_ID", CREDENTIAL_ID);
   const email = required("E2E_LOGIN_EMAIL", LOGIN_EMAIL);
   const password = required("E2E_LOGIN_PASSWORD", LOGIN_PASSWORD);
 
@@ -112,7 +119,7 @@ test("deploys a seeded workflow source through the picker to a real sidecar", as
   await expect(page.locator("#definition-asset-id")).toHaveValue(assetId);
   await page.locator("#definition-entry").fill(entry);
   await page.locator("#definition-commit").fill(commitSha);
-  await fillInferenceSource(page);
+  await fillInferenceSource(page, credentialId);
 
   await page.getByRole("button", { name: "Launch Workflow" }).click();
 
