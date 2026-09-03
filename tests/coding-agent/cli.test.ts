@@ -5,7 +5,13 @@
 // network call.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -75,6 +81,54 @@ describe("coding-agent CLI", () => {
     // The stream pump emits one line per reactor event; we should see
     // at least one event (`message.received`) before the cycle completes.
     expect(stderrBuf).toMatch(/\[message\.received\]/);
+  });
+
+  test("scopes posix tool writes to --cwd, not --context-dir", async () => {
+    // The model issues a write_file with a relative path. The coding agent
+    // flows the working directory through env-DI as toolCwd (the --cwd
+    // tree), distinct from workdir (the --context-dir isogit store), so a
+    // relative write resolves under --cwd and never touches --context-dir.
+    const editTree = join(workDir, "src");
+    const contextDir = join(workDir, "ctx");
+    mkdirSync(editTree, { recursive: true });
+
+    harness.scenario.replyOnce("anthropic", {
+      toolCalls: [
+        {
+          callId: "write-1",
+          name: "write_file",
+          argsJSON: JSON.stringify({
+            path: "sentinel.txt",
+            content: "scoped to toolCwd",
+          }),
+        },
+      ],
+    });
+    harness.scenario.replyOnce("anthropic", { text: "wrote the file" });
+
+    const runPromise = main(
+      ["--cwd", editTree, "--context-dir", contextDir, "write", "a", "file"],
+      { ANTHROPIC_API_KEY: "irrelevant" },
+      {
+        stdout: (s) => {
+          stdoutBuf += s;
+        },
+        stderr: (s) => {
+          stderrBuf += s;
+        },
+        sourceOverride: SOURCE,
+        deps: harness.deps,
+      },
+    );
+
+    await harness.run();
+    const code = await runPromise;
+
+    expect(code).toBe(0);
+    expect(readFileSync(join(editTree, "sentinel.txt"), "utf8")).toBe(
+      "scoped to toolCwd",
+    );
+    expect(existsSync(join(contextDir, "sentinel.txt"))).toBe(false);
   });
 
   test("missing ANTHROPIC_API_KEY (and no sourceOverride) returns exit code 1", async () => {
