@@ -38,6 +38,13 @@ export interface LSPStatus {
 }
 
 export interface LSPManager {
+  /**
+   * The working directory the manager roots its servers under. Every
+   * server's `root`/`spawn` receives this as `serverCtx.directory`, and
+   * `containsPath` gates file operations against it (together with an
+   * optional distinct `worktree`, when one is supplied).
+   */
+  readonly cwd: string;
   hasClients(file: string): Promise<boolean>;
   touchFile(file: string, mode?: "document" | "full"): Promise<void>;
   diagnostics(): Promise<Record<string, Diagnostic[]>>;
@@ -371,6 +378,7 @@ export function createLSPManager(opts: LSPManagerOptions): LSPManager {
   }
 
   return {
+    cwd: ctx.cwd,
     hasClients,
     touchFile,
     diagnostics,

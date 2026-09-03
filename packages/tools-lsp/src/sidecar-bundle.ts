@@ -10,6 +10,7 @@
 // `createPosixTools({ plugins })`.
 
 import { definePlugin } from "@intx/agent";
+import type { PosixToolEnv } from "@intx/tools-posix/sidecar-bundle";
 
 import { createLSPPlugin, LSP_TOOL_DEFINITION } from "./index";
 
@@ -37,6 +38,11 @@ export const lsp = definePlugin({
   // registers it under from `env.plugins` -- so the walked `tool:lsp` grant
   // matches the reactor's `tool:<call.name>` query. The tool is not
   // approval-gated, so it carries no `ask` mark.
+  requires: ["toolCwd"],
   definitions: [{ name: LSP_TOOL_DEFINITION.name }],
-  factory: (env) => createLSPPlugin({ cwd: env.workdir }),
+  // The env type is posix's: LSP contributes into posix's bundle via
+  // `env.plugins` and operates on the same working tree, so it reads the
+  // same `toolCwd` the posix tools scope to, not the lock-boundary
+  // `workdir`.
+  factory: (env: PosixToolEnv) => createLSPPlugin({ cwd: env.toolCwd }),
 });

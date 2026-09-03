@@ -13,13 +13,23 @@ export interface LSPPluginOptions {
   minSeverity?: number;
 }
 
-export function createLSPPlugin(opts: LSPPluginOptions): ToolPlugin {
+export interface LSPPlugin extends ToolPlugin {
+  /**
+   * The working directory the plugin's LSP roots its servers under,
+   * surfaced from the manager so a caller can confirm which tree the
+   * plugin is scoped to.
+   */
+  readonly cwd: string;
+}
+
+export function createLSPPlugin(opts: LSPPluginOptions): LSPPlugin {
   const lsp = createLSPManager({
     cwd: opts.cwd,
     ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
   });
 
   return {
+    cwd: lsp.cwd,
     tools: [
       {
         definition: LSP_TOOL_DEFINITION,
