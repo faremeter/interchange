@@ -698,6 +698,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const ensureCalls: unknown[] = [];
       const destroyCalls: unknown[] = [];
       const retireCalls: unknown[] = [];
+      const cleanupFinished = Promise.withResolvers<undefined>();
       let destroyAttempts = 0;
       const probeProvisioner: SidecarProvisioner = {
         id: "retry-cleanup-probe",
@@ -738,7 +739,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialCipher: CIPHER,
         allocationRouter: {
           fenceAllocation: () => undefined,
-          retireAllocation: (target) => retireCalls.push(target),
+          retireAllocation: (target) => {
+            retireCalls.push(target);
+            cleanupFinished.resolve(undefined);
+          },
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
@@ -767,6 +771,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         throw new Error("workflow probe cleanup reconciliation is unavailable");
       }
       await service.reconcileReleasingProbes();
+      await cleanupFinished.promise;
 
       expect(destroyCalls).toHaveLength(2);
       expect(retireCalls).toEqual([
@@ -782,9 +787,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBeNull();
     });
 
-    test("starts with failed probe cleanup pending for reconciliation", async () => {
+    test("cleans interrupted probes independently without duplicate work", async () => {
       const destroyCalls: unknown[] = [];
-      let destroyAttempts = 0;
+      const destroyStarted = Promise.withResolvers<undefined>();
+      const destroyCompleted = Promise.withResolvers<{
+        kind: "destroyed";
+      }>();
+      const firstCleanupFinished = Promise.withResolvers<undefined>();
+      const secondCleanupFinished = Promise.withResolvers<undefined>();
       const provisioner: SidecarProvisioner = {
         id: "startup-cleanup",
         apiVersion: 1,
@@ -795,9 +805,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         async destroy(request) {
           destroyCalls.push(request);
-          destroyAttempts += 1;
-          if (destroyAttempts === 1) {
-            throw new Error("startup cleanup unavailable");
+          if (request.allocationId === "sal-startup-cleanup") {
+            destroyStarted.resolve(undefined);
+            return destroyCompleted.promise;
           }
           return { kind: "destroyed" };
         },
@@ -820,6 +830,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sidecarId: "sc-startup-cleanup",
         tokenHashSha256: new Uint8Array(32).fill(9),
       });
+      await probeStore.create({
+        id: "sal-startup-cleanup-2",
+        tenantId: TENANT_ID,
+        placementPrincipalId: PRINCIPAL_ID,
+        placementPolicy: { tenantPolicies: [], workflowRules: [] },
+        definitionAssetId: ASSET_ID,
+        source: SOURCE,
+        entry: "./workflow.mjs",
+        provisionerId: provisioner.id,
+        provisionerApiVersion: provisioner.apiVersion,
+        provisionerBindingFingerprint: provisioner.bindingFingerprint,
+      });
+      await probeStore.bindSidecar({
+        probeId: "sal-startup-cleanup-2",
+        sidecarId: "sc-startup-cleanup-2",
+        tokenHashSha256: new Uint8Array(32).fill(8),
+      });
 
       const service = createWorkflowAllocationService({
         db: h.db,
@@ -835,7 +862,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialCipher: CIPHER,
         allocationRouter: {
           fenceAllocation: () => undefined,
-          retireAllocation: () => undefined,
+          retireAllocation: ({ allocationId }) => {
+            if (allocationId === "sal-startup-cleanup") {
+              firstCleanupFinished.resolve(undefined);
+            } else if (allocationId === "sal-startup-cleanup-2") {
+              secondCleanupFinished.resolve(undefined);
+            }
+          },
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
@@ -849,7 +882,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       await service.initialize();
 
-      expect(destroyCalls).toHaveLength(1);
+      expect(destroyCalls).toHaveLength(0);
       expect(
         await h.db.query.workflowProbe.findFirst({
           where: eq(workflowProbe.id, "sal-startup-cleanup"),
@@ -862,9 +895,37 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (service.reconcileReleasingProbes === undefined) {
         throw new Error("workflow probe cleanup reconciliation is unavailable");
       }
-      await service.reconcileReleasingProbes();
+      const reconciliation = service.reconcileReleasingProbes();
+      await Promise.all([
+        reconciliation,
+        destroyStarted.promise,
+        secondCleanupFinished.promise,
+      ]);
 
       expect(destroyCalls).toHaveLength(2);
+      expect(
+        await h.db.query.workflowProbe.findFirst({
+          where: eq(workflowProbe.id, "sal-startup-cleanup"),
+        }),
+      ).toMatchObject({
+        status: "releasing",
+        failureCode: "probe_interrupted",
+      });
+      expect(
+        await h.db.query.workflowProbe.findFirst({
+          where: eq(workflowProbe.id, "sal-startup-cleanup-2"),
+        }),
+      ).toMatchObject({
+        status: "failed",
+        failureCode: "probe_interrupted",
+      });
+
+      await service.reconcileReleasingProbes();
+      expect(destroyCalls).toHaveLength(2);
+
+      destroyCompleted.resolve({ kind: "destroyed" });
+      await firstCleanupFinished.promise;
+
       expect(
         await h.db.query.workflowProbe.findFirst({
           where: eq(workflowProbe.id, "sal-startup-cleanup"),

@@ -99,7 +99,9 @@ export type PreparedProvisionedWorkflowDeployment = {
 };
 
 export type WorkflowAllocationService = {
+  /** Marks interrupted probes for cleanup without performing provider I/O. */
   initialize?(): Promise<void>;
+  /** Starts independent provider cleanup for probes already marked releasing. */
   reconcileReleasingProbes?(): Promise<void>;
   prepareProvisionedDeployment(
     args: PrepareProvisionedWorkflowDeploymentArgs,
@@ -224,6 +226,7 @@ export function createWorkflowAllocationService({
   const executionHostAssignments = createExecutionHostAssignmentStore(db);
   const probeStore = createWorkflowProbeStore(db);
   const launchSpecStore = createWorkflowRunLaunchSpecStore(db);
+  const probeCleanups = new Map<string, Promise<void>>();
   const validatedProbeCapabilityRules =
     SidecarCapabilityRule.array()(probeCapabilityRules);
 
@@ -340,6 +343,27 @@ export function createWorkflowAllocationService({
     });
   }
 
+  function runProbeCleanup(
+    releasing: WorkflowProbe,
+    finalStatus: "succeeded" | "failed",
+  ): Promise<void> {
+    const existing = probeCleanups.get(releasing.id);
+    if (existing !== undefined) return existing;
+
+    const cleanup = finishProbeRelease(releasing, finalStatus);
+    probeCleanups.set(releasing.id, cleanup);
+    const forget = () => {
+      if (probeCleanups.get(releasing.id) === cleanup) {
+        probeCleanups.delete(releasing.id);
+      }
+    };
+    void cleanup.then(forget, (error: unknown) => {
+      forget();
+      logger.warn`Workflow probe ${releasing.id} cleanup remains pending: ${error instanceof Error ? error.message : String(error)}`;
+    });
+    return cleanup;
+  }
+
   async function releaseProbe(
     probe: WorkflowProbe,
     finalStatus: "succeeded" | "failed",
@@ -347,7 +371,7 @@ export function createWorkflowAllocationService({
   ): Promise<void> {
     const releasing = await beginProbeRelease(probe, failure);
     if (releasing === null) return;
-    await finishProbeRelease(releasing, finalStatus);
+    await runProbeCleanup(releasing, finalStatus);
   }
 
   async function createDeployment(args: {
@@ -835,28 +859,16 @@ export function createWorkflowAllocationService({
   }
 
   async function reconcileReleasingProbes(): Promise<void> {
-    const failures: unknown[] = [];
     for (const probe of await probeStore.listReleasing()) {
-      try {
-        await releaseProbe(probe, cleanupFinalStatus(probe));
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    if (failures.length > 0) {
-      throw new AggregateError(
-        failures,
-        "Failed to clean up releasing workflow probes",
-      );
+      void runProbeCleanup(probe, cleanupFinalStatus(probe));
     }
   }
 
   async function initialize(): Promise<void> {
     const failures: unknown[] = [];
     for (const probe of await probeStore.listActive()) {
-      let releasing: WorkflowProbe | null;
       try {
-        releasing = await beginProbeRelease(
+        await beginProbeRelease(
           probe,
           probe.status === "releasing"
             ? undefined
@@ -868,12 +880,6 @@ export function createWorkflowAllocationService({
       } catch (error) {
         failures.push(error);
         continue;
-      }
-      if (releasing === null) continue;
-      try {
-        await finishProbeRelease(releasing, cleanupFinalStatus(releasing));
-      } catch (error) {
-        logger.warn`Workflow probe ${releasing.id} cleanup remains pending after startup: ${error instanceof Error ? error.message : String(error)}`;
       }
     }
     if (failures.length > 0) {
