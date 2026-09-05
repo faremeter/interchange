@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { principal, principalRole, role, user } from "@intx/db/schema";
-import { parsePrincipalRow } from "@intx/db";
+import { createPrincipalStore, parsePrincipalRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   PrincipalResponse,
@@ -14,7 +14,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
-import { first, ts } from "../format";
+import { ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
@@ -381,6 +381,7 @@ export function createInviteRoutes({
   requireGrant,
 }: CreateInviteRoutesDeps): Hono<TenantEnv> {
   const inviteApp = new Hono<TenantEnv>();
+  const principalStore = createPrincipalStore(db);
 
   inviteApp.post(
     "/",
@@ -447,38 +448,42 @@ export function createInviteRoutes({
       }
 
       const now = new Date();
-      const principalId = generateId("principal");
 
-      const row = first(
-        await db
-          .insert(principal)
-          .values({
-            id: principalId,
+      const roleRow = body.roleId
+        ? await db.query.role.findFirst({
+            where: and(
+              eq(role.id, body.roleId),
+              eq(role.tenantId, tenantCtx.id),
+            ),
+          })
+        : undefined;
+
+      const row = await db.transaction(async (tx) => {
+        const invited = await principalStore.create(
+          {
+            id: generateId("principal"),
             tenantId: tenantCtx.id,
             kind: "user",
             refId: invitedUser.id,
             status: "invited",
             createdAt: now,
             updatedAt: now,
-          })
-          .returning(),
-      );
-
-      let roles: { id: string; name: string }[] = [];
-
-      if (body.roleId) {
-        const roleRow = await db.query.role.findFirst({
-          where: and(eq(role.id, body.roleId), eq(role.tenantId, tenantCtx.id)),
-        });
+          },
+          tx,
+        );
         if (roleRow) {
-          await db.insert(principalRole).values({
-            principalId,
+          await tx.insert(principalRole).values({
+            principalId: invited.id,
             roleId: roleRow.id,
             createdAt: now,
           });
-          roles = [{ id: roleRow.id, name: roleRow.name }];
         }
-      }
+        return invited;
+      });
+
+      const roles: { id: string; name: string }[] = roleRow
+        ? [{ id: roleRow.id, name: roleRow.name }]
+        : [];
 
       const identity: ResolvedIdentity = {
         displayName: invitedUser.name,

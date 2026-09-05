@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { tenant, principal, role, principalRole, grant } from "@intx/db/schema";
-import { parseTenantRow } from "@intx/db";
+import { createPrincipalStore, parseTenantRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   CreateTenant,
@@ -40,6 +40,7 @@ export function createTenantRoutes({
   db,
 }: CreateTenantRoutesDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  const principalStore = createPrincipalStore(db);
 
   app.post(
     "/",
@@ -94,124 +95,130 @@ export function createTenantRoutes({
 
       const now = new Date();
 
-      const tenantRow = first(
-        await db
-          .insert(tenant)
-          .values({
-            id: tenantId,
-            name: body.name,
-            slug: body.slug,
-            domain,
-            parentId: body.parentId ?? null,
+      const tenantRow = await db.transaction(async (tx) => {
+        const inserted = first(
+          await tx
+            .insert(tenant)
+            .values({
+              id: tenantId,
+              name: body.name,
+              slug: body.slug,
+              domain,
+              parentId: body.parentId ?? null,
+              createdAt: now,
+              updatedAt: now,
+            })
+            .returning(),
+        );
+
+        const roleIds: Record<string, string> = {};
+        for (const roleName of SYSTEM_ROLES) {
+          const roleId = generateId("role");
+          roleIds[roleName] = roleId;
+          await tx.insert(role).values({
+            id: roleId,
+            tenantId,
+            name: roleName,
+            description: `System ${roleName} role`,
+            isSystem: true,
             createdAt: now,
             updatedAt: now,
-          })
-          .returning(),
-      );
+          });
+        }
 
-      const roleIds: Record<string, string> = {};
-      for (const roleName of SYSTEM_ROLES) {
-        const roleId = generateId("role");
-        roleIds[roleName] = roleId;
-        await db.insert(role).values({
-          id: roleId,
+        const ownerRoleId = roleIds["owner"];
+        if (!ownerRoleId) throw new Error("Owner role was not created");
+
+        const ownerPrincipal = await principalStore.create(
+          {
+            id: generateId("principal"),
+            tenantId,
+            kind: "user",
+            refId: user.id,
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+          },
+          tx,
+        );
+
+        await tx.insert(principalRole).values({
+          principalId: ownerPrincipal.id,
+          roleId: ownerRoleId,
+          createdAt: now,
+        });
+
+        // Grant owner role full access
+        await tx.insert(grant).values({
+          id: generateId("grant"),
           tenantId,
-          name: roleName,
-          description: `System ${roleName} role`,
-          isSystem: true,
+          roleId: ownerRoleId,
+          resource: "*",
+          action: "*",
+          effect: "allow",
+          origin: "system",
           createdAt: now,
           updatedAt: now,
         });
-      }
 
-      const ownerRoleId = roleIds["owner"];
-      if (!ownerRoleId) throw new Error("Owner role was not created");
+        // Grant admin role broad management access
+        const adminRoleId = roleIds["admin"];
+        if (adminRoleId) {
+          await tx.insert(grant).values([
+            {
+              id: generateId("grant"),
+              tenantId,
+              roleId: adminRoleId,
+              resource: "*",
+              action: "read",
+              effect: "allow",
+              origin: "system",
+              createdAt: now,
+              updatedAt: now,
+            },
+            {
+              id: generateId("grant"),
+              tenantId,
+              roleId: adminRoleId,
+              resource: "*",
+              action: "create",
+              effect: "allow",
+              origin: "system",
+              createdAt: now,
+              updatedAt: now,
+            },
+            {
+              id: generateId("grant"),
+              tenantId,
+              roleId: adminRoleId,
+              resource: "*",
+              action: "manage",
+              effect: "allow",
+              origin: "system",
+              createdAt: now,
+              updatedAt: now,
+            },
+          ]);
+        }
 
-      const principalId = generateId("principal");
-      await db.insert(principal).values({
-        id: principalId,
-        tenantId,
-        kind: "user",
-        refId: user.id,
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
-      });
-
-      await db.insert(principalRole).values({
-        principalId,
-        roleId: ownerRoleId,
-        createdAt: now,
-      });
-
-      // Grant owner role full access
-      await db.insert(grant).values({
-        id: generateId("grant"),
-        tenantId,
-        roleId: ownerRoleId,
-        resource: "*",
-        action: "*",
-        effect: "allow",
-        origin: "system",
-        createdAt: now,
-        updatedAt: now,
-      });
-
-      // Grant admin role broad management access
-      const adminRoleId = roleIds["admin"];
-      if (adminRoleId) {
-        await db.insert(grant).values([
-          {
+        // Grant member role read-only access
+        const memberRoleId = roleIds["member"];
+        if (memberRoleId) {
+          await tx.insert(grant).values({
             id: generateId("grant"),
             tenantId,
-            roleId: adminRoleId,
+            roleId: memberRoleId,
             resource: "*",
             action: "read",
             effect: "allow",
             origin: "system",
             createdAt: now,
             updatedAt: now,
-          },
-          {
-            id: generateId("grant"),
-            tenantId,
-            roleId: adminRoleId,
-            resource: "*",
-            action: "create",
-            effect: "allow",
-            origin: "system",
-            createdAt: now,
-            updatedAt: now,
-          },
-          {
-            id: generateId("grant"),
-            tenantId,
-            roleId: adminRoleId,
-            resource: "*",
-            action: "manage",
-            effect: "allow",
-            origin: "system",
-            createdAt: now,
-            updatedAt: now,
-          },
-        ]);
-      }
+          });
+        }
 
-      // Grant member role read-only access
-      const memberRoleId = roleIds["member"];
-      if (memberRoleId) {
-        await db.insert(grant).values({
-          id: generateId("grant"),
-          tenantId,
-          roleId: memberRoleId,
-          resource: "*",
-          action: "read",
-          effect: "allow",
-          origin: "system",
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
+        return inserted;
+      });
 
       return c.json(formatTenant(tenantRow), 201);
     },

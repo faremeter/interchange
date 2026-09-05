@@ -27,7 +27,11 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { DB, DBExecutor } from "@intx/db";
-import { createWorkflowRunStore, loadFrozenGrantSnapshot } from "@intx/db";
+import {
+  createPrincipalStore,
+  createWorkflowRunStore,
+  loadFrozenGrantSnapshot,
+} from "@intx/db";
 import type { GrantStore, GrantRule } from "@intx/types/authz";
 import {
   isSidecarAllocationDispatchable,
@@ -480,6 +484,7 @@ export async function commitRunGrants(
   tx?: DBExecutor,
 ): Promise<RunGrantsFrame["stepGrants"]> {
   const workflowRunStore = createWorkflowRunStore(args.db);
+  const principalStore = createPrincipalStore(args.db);
   const commit = async (
     executor: DBExecutor,
   ): Promise<RunGrantsFrame["stepGrants"]> => {
@@ -490,9 +495,8 @@ export async function commitRunGrants(
     );
     if (existing !== null) return existing.stepGrants;
 
-    const [insertedPrincipal] = await executor
-      .insert(principalTable)
-      .values({
+    const insertedPrincipal = await principalStore.createIfAbsent(
+      {
         id: args.runPrincipalId,
         tenantId: args.tenantId,
         kind: "workflow",
@@ -500,16 +504,10 @@ export async function commitRunGrants(
         status: "active",
         createdAt: args.now,
         updatedAt: args.now,
-      })
-      .onConflictDoNothing({
-        target: [
-          principalTable.tenantId,
-          principalTable.kind,
-          principalTable.refId,
-        ],
-      })
-      .returning({ id: principalTable.id });
-    if (insertedPrincipal === undefined) {
+      },
+      executor,
+    );
+    if (insertedPrincipal === null) {
       const winner = await loadCommittedRunGrantsFromExecutor(
         executor,
         args.tenantId,
