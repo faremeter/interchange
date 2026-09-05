@@ -11,6 +11,7 @@ export {
   type RekeyReport,
 } from "./rekey-credential-secrets";
 export { createGrantStore } from "./grant-store";
+export { createPrincipalStore, type PrincipalStore } from "./principal-store";
 export {
   createApprovalStore,
   type ApprovalStore,
