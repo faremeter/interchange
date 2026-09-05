@@ -20,6 +20,7 @@ import {
 import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { isReferencedRowViolation } from "../pg-errors";
@@ -177,18 +178,12 @@ export function createCredentialRoutes({
         where: eq(provider.id, body.providerId),
       });
       if (!providerRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
 
       const chain = await getAncestorChain(db, tenantCtx.id);
       if (!chain.includes(providerRow.tenantId)) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
 
       const existing = await db.query.credential.findFirst({
@@ -198,14 +193,10 @@ export function createCredentialRoutes({
         ),
       });
       if (existing) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "Credential name already exists in this tenant",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "Credential name already exists in this tenant",
         );
       }
 
@@ -309,10 +300,7 @@ export function createCredentialRoutes({
       const row = await resolveCredentialByName(db, tenantCtx.id, name);
 
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Credential not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Credential not found");
       }
 
       return c.json(formatCredential(row));
@@ -351,18 +339,12 @@ export function createCredentialRoutes({
       });
 
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Credential not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Credential not found");
       }
 
       const chain = await getAncestorChain(db, tenantCtx.id);
       if (!chain.includes(row.tenantId)) {
-        return c.json(
-          { error: { code: "not_found", message: "Credential not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Credential not found");
       }
 
       return c.json(formatCredential(row));
@@ -434,10 +416,7 @@ export function createCredentialRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "Credential not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Credential not found");
       }
 
       // If the secret was updated, push new inference sources to running
@@ -548,22 +527,15 @@ export function createCredentialRoutes({
         if (!isReferencedRowViolation(err)) {
           throw err;
         }
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "Credential is in use by a model provider",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "Credential is in use by a model provider",
         );
       }
 
       if (outcome === "not_found") {
-        return c.json(
-          { error: { code: "not_found", message: "Credential not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Credential not found");
       }
 
       // The credential row is gone; evict its material from any running

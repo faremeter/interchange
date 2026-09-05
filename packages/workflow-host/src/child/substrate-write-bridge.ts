@@ -42,6 +42,8 @@ import type {
   ControlPayload,
 } from "../ipc/control-channel";
 
+import { createPendingRequestCore } from "./pending-request";
+
 const logger = getLogger(["workflow-host", "child", "substrate-write-bridge"]);
 
 /**
@@ -102,16 +104,11 @@ export interface CreateChildSubstrateWriteBridgeOpts {
   allocateRequestId?: () => string;
 }
 
-type PendingEntry = {
-  req: SubstrateWriteRequest;
-  resolve: (value: { commitSha: string }) => void;
-  reject: (err: Error) => void;
-};
-
 /**
  * Construct the child-side substrate-write bridge. Pending writes
- * live in a map keyed by `requestId`; the bridge resolves the awaiter
- * when the supervisor's matching `substrate.write.response` lands.
+ * live in the shared pending-request core keyed by `requestId`; the
+ * bridge resolves the awaiter when the supervisor's matching
+ * `substrate.write.response` lands.
  *
  * The supervisor may emit zero or more `substrate.merge.request`
  * frames per pending write (the supervisor's merge callback may run
@@ -123,20 +120,21 @@ type PendingEntry = {
 export function createChildSubstrateWriteBridge(
   opts: CreateChildSubstrateWriteBridgeOpts,
 ): ChildSubstrateWriteBridge {
-  const pending = new Map<string, PendingEntry>();
-  const allocate = opts.allocateRequestId ?? defaultRequestIdAllocator();
+  const pending = createPendingRequestCore<
+    { commitSha: string },
+    SubstrateWriteRequest
+  >({
+    label: "workflow-child substrate write",
+    allocatorPrefix: "sw",
+    allocateRequestId: opts.allocateRequestId,
+  });
 
   return {
     get pendingCount() {
-      return pending.size;
+      return pending.pendingCount;
     },
     async submit(req: SubstrateWriteRequest): Promise<{ commitSha: string }> {
-      const requestId = allocate();
-      const resultPromise = new Promise<{ commitSha: string }>(
-        (resolve, reject) => {
-          pending.set(requestId, { req, resolve, reject });
-        },
-      );
+      const { requestId, promise } = pending.register(req);
       try {
         await opts.upstreamSender.send({
           type: "substrate.write.request",
@@ -149,14 +147,10 @@ export function createChildSubstrateWriteBridge(
           },
         });
       } catch (cause) {
-        pending.delete(requestId);
-        const message = cause instanceof Error ? cause.message : String(cause);
-        throw new Error(
-          `workflow-child substrate write: upstream send failed for requestId ${requestId}: ${message}`,
-          { cause },
-        );
+        pending.discard(requestId);
+        throw pending.sendFailedError(requestId, cause);
       }
-      return resultPromise;
+      return promise;
     },
     handleMergeRequest(data) {
       const entry = pending.get(data.requestId);
@@ -172,7 +166,7 @@ export function createChildSubstrateWriteBridge(
               requestId: data.requestId,
               result: {
                 ok: false,
-                reason: `workflow-child substrate write: no pending entry for requestId ${data.requestId}`,
+                reason: pending.noPendingError(data.requestId).message,
               },
             },
           })
@@ -185,7 +179,7 @@ export function createChildSubstrateWriteBridge(
       void (async () => {
         try {
           const existing = decodeMergeRequest(data.existing);
-          const merged = await entry.req.merge(existing);
+          const merged = await entry.meta.merge(existing);
           const files = encodeFiles(merged);
           await opts.upstreamSender.send({
             type: "substrate.merge.response",
@@ -215,31 +209,19 @@ export function createChildSubstrateWriteBridge(
       })();
     },
     handleWriteResponse(data) {
-      const entry = pending.get(data.requestId);
+      const entry = pending.settle(data.requestId);
       if (entry === undefined) {
         logger.warn`substrate.write.response landed with no pending entry; requestId=${data.requestId} dropped`;
         return;
       }
-      pending.delete(data.requestId);
       if (data.result.ok) {
         entry.resolve({ commitSha: data.result.commitSha });
         return;
       }
-      entry.reject(
-        new Error(
-          `workflow-child substrate write (requestId=${data.requestId}) rejected by supervisor: ${data.result.reason}`,
-        ),
-      );
+      entry.reject(pending.rejectedError(data.requestId, data.result.reason));
     },
     cancelAll(reason: string) {
-      for (const [requestId, entry] of pending) {
-        entry.reject(
-          new Error(
-            `workflow-child substrate write (requestId=${requestId}) cancelled: ${reason}`,
-          ),
-        );
-      }
-      pending.clear();
+      pending.cancelAll(reason);
     },
   };
 }
@@ -249,7 +231,7 @@ function decodeMergeRequest(
 ): ReadonlyMap<string, Uint8Array> {
   const out = new Map<string, Uint8Array>();
   for (const entry of existing) {
-    out.set(entry.path, base64ToBytes(entry.contentBase64));
+    out.set(entry.path, base64Decode(entry.contentBase64));
   }
   return out;
 }
@@ -261,24 +243,7 @@ function encodeFiles(
   for (const [path, content] of Object.entries(files)) {
     const bytes =
       typeof content === "string" ? new TextEncoder().encode(content) : content;
-    out.push({ path, contentBase64: bytesToBase64(bytes) });
+    out.push({ path, contentBase64: base64Encode(bytes) });
   }
   return out;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  return base64Encode(bytes);
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  return base64Decode(value);
-}
-
-function defaultRequestIdAllocator(): () => string {
-  let counter = 0;
-  return () => {
-    counter += 1;
-    const rand = Math.random().toString(36).slice(2, 10);
-    return `sw-${String(counter)}-${rand}`;
-  };
 }

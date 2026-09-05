@@ -16,6 +16,7 @@ import {
 import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -147,18 +148,12 @@ export function createOAuthClientRoutes({
         where: eq(provider.id, body.providerId),
       });
       if (!providerRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
 
       const chain = await getAncestorChain(db, tenantCtx.id);
       if (!chain.includes(providerRow.tenantId)) {
-        return c.json(
-          { error: { code: "not_found", message: "Provider not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Provider not found");
       }
 
       const existing = await db.query.oauthClient.findFirst({
@@ -168,15 +163,10 @@ export function createOAuthClientRoutes({
         ),
       });
       if (existing) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message:
-                "OAuth client already exists for this provider in this tenant",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "OAuth client already exists for this provider in this tenant",
         );
       }
 
@@ -243,10 +233,7 @@ export function createOAuthClientRoutes({
       });
 
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "OAuth client not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "OAuth client not found");
       }
 
       return c.json(formatOAuthClient(row));
@@ -306,10 +293,7 @@ export function createOAuthClientRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "OAuth client not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "OAuth client not found");
       }
 
       return c.json(formatOAuthClient(updated));
@@ -347,10 +331,7 @@ export function createOAuthClientRoutes({
         .returning();
 
       if (deleted.length === 0) {
-        return c.json(
-          { error: { code: "not_found", message: "OAuth client not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "OAuth client not found");
       }
 
       return c.body(null, 204);

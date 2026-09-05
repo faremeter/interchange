@@ -6,6 +6,7 @@ import { getLogger } from "@intx/log";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 
 const log = getLogger(["hub", "middleware", "grant"]);
 
@@ -75,14 +76,10 @@ export function createRequireGrant({
         },
       );
 
-      return c.json(
-        {
-          error: {
-            code: "forbidden",
-            message: "You do not have permission to perform this action",
-          },
-        },
-        403,
+      return errorResponse(
+        c,
+        "forbidden",
+        "You do not have permission to perform this action",
       );
     });
   };

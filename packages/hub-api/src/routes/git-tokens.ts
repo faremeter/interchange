@@ -19,7 +19,8 @@ import { getLogger } from "@intx/log";
 import type { RepoAction } from "@intx/types/sidecar";
 import { base64urlEncode, ErrorResponse, paginatedSchema } from "@intx/types";
 
-import type { AppEnv, TenantEnv } from "../context";
+import { unauthorizedResponse, type AppEnv, type TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { ts } from "../format";
 import type { RequireGrant } from "../middleware/grant";
 import {
@@ -406,12 +407,7 @@ export function createTenantGitTokenRoutes({
       const principalCtx = c.get("principal");
       const user = c.get("user");
       if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
+        return unauthorizedResponse(c);
       }
       const body = c.req.valid("json");
 
@@ -491,10 +487,7 @@ export function createTenantGitTokenRoutes({
           tenantId: tenantCtx.id,
           tokenId,
         });
-        return c.json(
-          { error: { code: "not_found", message: "Token not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Token not found");
       }
 
       if (existing.revokedAt === null) {
@@ -553,12 +546,7 @@ export function createMeGitTokenRoutes({
     async (c) => {
       const user = c.get("user");
       if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
+        return unauthorizedResponse(c);
       }
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),
@@ -624,12 +612,7 @@ export function createMeGitTokenRoutes({
     async (c) => {
       const user = c.get("user");
       if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
+        return unauthorizedResponse(c);
       }
       const body = c.req.valid("json");
 
@@ -694,12 +677,7 @@ export function createMeGitTokenRoutes({
     async (c) => {
       const user = c.get("user");
       if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
+        return unauthorizedResponse(c);
       }
       const tokenId = c.req.param("tokenId");
 
@@ -720,10 +698,7 @@ export function createMeGitTokenRoutes({
             tokenId,
           },
         );
-        return c.json(
-          { error: { code: "not_found", message: "Token not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Token not found");
       }
 
       if (existing.revokedAt === null) {

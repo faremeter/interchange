@@ -47,6 +47,7 @@ import {
 import { WorkflowRunEventsResponse, formatRunEvent } from "./run-events-view";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import { loadCommittedRunGrants } from "../run-grant-materialization";
@@ -75,14 +76,10 @@ function workflowRunOperationUnsupported(
   c: Context<TenantEnv>,
   operation: string,
 ) {
-  return c.json(
-    {
-      error: {
-        code: "not_implemented",
-        message: `${operation} is not yet supported for workflow runs`,
-      },
-    },
-    501,
+  return errorResponse(
+    c,
+    "not_implemented",
+    `${operation} is not yet supported for workflow runs`,
   );
 }
 
@@ -216,21 +213,14 @@ export function createRunRoutes({
 
     const record = await findRoutableById(db, runId, tenantCtx.id);
     if (record === undefined) {
-      return c.json(
-        { error: { code: "not_found", message: "Run not found" } },
-        404,
-      );
+      return errorResponse(c, "not_found", "Run not found");
     }
 
     if (runReader === null) {
-      return c.json(
-        {
-          error: {
-            code: "unavailable",
-            message: "The run event log is not available",
-          },
-        },
-        503,
+      return errorResponse(
+        c,
+        "unavailable",
+        "The run event log is not available",
       );
     }
 
@@ -384,20 +374,14 @@ export function createRunRoutes({
       // mailId may itself contain underscores, so we match the suffix.
       const blobMatch = /^blob_(.+?)_(\d[\d.]*)$/.exec(blobId);
       if (!blobMatch) {
-        return c.json(
-          { error: { code: "bad_request", message: "Invalid blob ID format" } },
-          400,
-        );
+        return errorResponse(c, "bad_request", "Invalid blob ID format");
       }
 
       const mailId = blobMatch[1];
       const partPath = blobMatch[2];
 
       if (!mailId || !partPath) {
-        return c.json(
-          { error: { code: "bad_request", message: "Invalid blob ID format" } },
-          400,
-        );
+        return errorResponse(c, "bad_request", "Invalid blob ID format");
       }
 
       const tenant = c.get("tenant");
@@ -410,10 +394,7 @@ export function createRunRoutes({
       });
 
       if (!mailRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Blob not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Blob not found");
       }
 
       // The authorization subject is the mail's owning routable. A folded run's
@@ -427,10 +408,7 @@ export function createRunRoutes({
         mailRow.runId ??
         (await resolveRunIdForSession(db, mailRow.sessionId, tenant.id));
       if (!resolvedRunId) {
-        return c.json(
-          { error: { code: "not_found", message: "Blob not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Blob not found");
       }
 
       const principal = c.get("principal");
@@ -445,14 +423,10 @@ export function createRunRoutes({
       );
 
       if (authResult.effect !== "allow") {
-        return c.json(
-          {
-            error: {
-              code: "forbidden",
-              message: "You do not have permission to perform this action",
-            },
-          },
-          403,
+        return errorResponse(
+          c,
+          "forbidden",
+          "You do not have permission to perform this action",
         );
       }
 
@@ -460,10 +434,7 @@ export function createRunRoutes({
       try {
         partBytes = extractPartByPath(mailRow.raw, partPath);
       } catch {
-        return c.json(
-          { error: { code: "not_found", message: "Blob not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Blob not found");
       }
 
       return c.body(
@@ -511,10 +482,7 @@ export function createRunRoutes({
       // display name.
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Run not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Run not found");
       }
 
       // The display name lives on the definition the record belongs to,
@@ -526,10 +494,7 @@ export function createRunRoutes({
         ),
       });
       if (definitionRow === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Run not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Run not found");
       }
 
       // Enrich with runtime status from the event collector if available.
@@ -572,10 +537,7 @@ export function createRunRoutes({
 
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Run not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Run not found");
       }
 
       // The run's committed per-run grants ARE its effective floor: a standing
@@ -628,10 +590,7 @@ export function createRunRoutes({
 
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Run not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Run not found");
       }
 
       const approvals = await approvalStore.listByRunId(tenantCtx.id, runId);
@@ -674,17 +633,11 @@ export function createRunRoutes({
 
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Run not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Run not found");
       }
 
       if (viewStatusOf(record) === "stopped") {
-        return c.json(
-          { error: { code: "gone", message: "Run has stopped" } },
-          410,
-        );
+        return errorResponse(c, "gone", "Run has stopped");
       }
 
       const routableAddresses = sidecarRouter.getRoutableAddresses();
@@ -730,10 +683,7 @@ export function createRunRoutes({
 
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Run not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Run not found");
       }
 
       // Offerings are keyed on the definition (their `agentId` column holds a
@@ -743,10 +693,7 @@ export function createRunRoutes({
         where: eq(workflowDefinition.id, record.definitionId),
       });
       if (definitionRow === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Run not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Run not found");
       }
 
       const offerings = await db.query.offering.findMany({
@@ -891,14 +838,10 @@ export function createRunRoutes({
     bodyLimit({
       maxSize: MAX_MAIL_BODY_BYTES,
       onError: (c) =>
-        c.json(
-          {
-            error: {
-              code: "payload_too_large",
-              message: "Request body exceeds the maximum allowed size",
-            },
-          },
-          413,
+        errorResponse(
+          c,
+          "payload_too_large",
+          "Request body exceeds the maximum allowed size",
         ),
     }),
     validator("json", SendMessage),
@@ -910,10 +853,7 @@ export function createRunRoutes({
       // exactly as the turns/events routes do, before the trigger runs.
       const record = await findRoutableById(db, runId, tenantCtx.id);
       if (record === undefined) {
-        return c.json(
-          { error: { code: "not_found", message: "Run not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Run not found");
       }
 
       // Mail send fires the run through its workflow-native Trigger path. That
@@ -921,14 +861,10 @@ export function createRunRoutes({
       // runs without the deploy surface the trigger is null, so answer 503
       // rather than silently dropping the send.
       if (triggerWorkflowRun === null) {
-        return c.json(
-          {
-            error: {
-              code: "unavailable",
-              message: "The run trigger substrate is not available",
-            },
-          },
-          503,
+        return errorResponse(
+          c,
+          "unavailable",
+          "The run trigger substrate is not available",
         );
       }
 

@@ -26,6 +26,7 @@ import {
 import type { CredentialCipher } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -178,15 +179,7 @@ export function createModelOfferingRoutes({
         ),
       });
       if (!modelRow) {
-        return c.json(
-          {
-            error: {
-              code: "not_found",
-              message: "Model not found in this tenant",
-            },
-          },
-          404,
-        );
+        return errorResponse(c, "not_found", "Model not found in this tenant");
       }
 
       const providerRow = await db.query.modelProvider.findFirst({
@@ -196,14 +189,10 @@ export function createModelOfferingRoutes({
         ),
       });
       if (!providerRow) {
-        return c.json(
-          {
-            error: {
-              code: "not_found",
-              message: "Provider not found in this tenant",
-            },
-          },
-          404,
+        return errorResponse(
+          c,
+          "not_found",
+          "Provider not found in this tenant",
         );
       }
 
@@ -215,14 +204,10 @@ export function createModelOfferingRoutes({
         ),
       });
       if (existing) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "An offering for this model and provider already exists",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "An offering for this model and provider already exists",
         );
       }
 
@@ -286,10 +271,7 @@ export function createModelOfferingRoutes({
         ),
       });
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Offering not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Offering not found");
       }
       return c.json(formatModelOffering(row));
     },
@@ -343,10 +325,7 @@ export function createModelOfferingRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "Offering not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Offering not found");
       }
 
       void pushSourceUpdatesSubtree(
@@ -390,10 +369,7 @@ export function createModelOfferingRoutes({
         )
         .returning();
       if (deleted.length === 0) {
-        return c.json(
-          { error: { code: "not_found", message: "Offering not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Offering not found");
       }
       void pushSourceUpdatesSubtree(
         db,
@@ -441,10 +417,7 @@ export function createModelOfferingRoutes({
         ),
       });
       if (!offeringRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Offering not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Offering not found");
       }
 
       const rows = await db.query.modelPricing.findMany({
@@ -504,24 +477,17 @@ export function createModelOfferingRoutes({
         ),
       });
       if (!offeringRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Offering not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Offering not found");
       }
 
       let effectiveFrom = new Date();
       if (body.effectiveFrom !== undefined) {
         effectiveFrom = new Date(body.effectiveFrom);
         if (Number.isNaN(effectiveFrom.valueOf())) {
-          return c.json(
-            {
-              error: {
-                code: "invalid_request",
-                message: "effectiveFrom must be a valid ISO-8601 timestamp",
-              },
-            },
-            400,
+          return errorResponse(
+            c,
+            "invalid_request",
+            "effectiveFrom must be a valid ISO-8601 timestamp",
           );
         }
       }
@@ -534,15 +500,10 @@ export function createModelOfferingRoutes({
         ),
       });
       if (existing) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message:
-                "A pricing row already exists for this currency and effective-from",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "A pricing row already exists for this currency and effective-from",
         );
       }
 

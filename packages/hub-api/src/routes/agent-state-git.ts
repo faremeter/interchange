@@ -33,17 +33,10 @@ import { Hono, type Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { MiddlewareHandler } from "hono";
 
-import { authorize } from "@intx/authz";
 import { workflowRun } from "@intx/db/schema";
 import type { DB } from "@intx/db";
-import { repoActionToGrantVerb } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
-import type {
-  RefEntry,
-  RepoId,
-  RepoStore,
-  UserPrincipal,
-} from "@intx/hub-sessions";
+import type { RepoId, RepoStore, UserPrincipal } from "@intx/hub-sessions";
 import type { RepoAction } from "@intx/types/sidecar";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
@@ -51,15 +44,16 @@ import type {
   GitTokenClaims,
   TenantGitTokenEnv,
 } from "../middleware/git-token-auth";
-import {
-  advertiseUploadPack,
-  type RefSource,
-} from "../git-http/advertise-refs";
-import {
-  handleUploadPack,
-  type UploadPackRepoStore,
-} from "../git-http/upload-pack";
+import { advertiseUploadPack } from "../git-http/advertise-refs";
+import { handleUploadPack } from "../git-http/upload-pack";
 import { writePktLine, writeFlush } from "../git-http/pkt-line";
+import { errorResponse } from "../error-response";
+import {
+  buildUserPrincipal,
+  makeRefSource,
+  makeUploadPackStore,
+  resolveAuthzVerdict,
+} from "./git-user-principal";
 
 const log = getLogger(["hub", "agent-state-git"]);
 
@@ -248,85 +242,8 @@ export function createAgentStateReceivePackDeny(): MiddlewareHandler {
   });
 }
 
-// ----- Pre-resolved authz + UserPrincipal construction --------------
-
-function dateToNumber(d: Date): number {
-  return d.getTime();
-}
-
-async function resolveAuthzVerdict(args: {
-  grantStore: GrantStore;
-  conditionRegistry: ConditionRegistry;
-  principalId: string;
-  tenantId: string;
-  agentStateId: string;
-  action: RepoAction;
-}): Promise<UserPrincipal["authz"]> {
-  const resource = `agent-state:${args.agentStateId}`;
-  const grantVerb = repoActionToGrantVerb(args.action);
-  const verdict = await authorize(
-    args.grantStore,
-    args.principalId,
-    args.tenantId,
-    resource,
-    grantVerb,
-    args.conditionRegistry,
-  );
-  return {
-    effect: verdict.effect === "allow" ? "allow" : "deny",
-    resource,
-    grantVerb,
-  };
-}
-
-function buildUserPrincipal(args: {
-  principalId: string;
-  tenantId: string;
-  authz: UserPrincipal["authz"];
-  claims: GitTokenClaims;
-}): UserPrincipal {
-  return {
-    kind: "user",
-    principalId: args.principalId,
-    tenantId: args.tenantId,
-    authz: args.authz,
-    tokenClaims: {
-      refPattern: args.claims.refPattern,
-      actions: args.claims.actions,
-      expiresAt: dateToNumber(args.claims.expiresAt),
-    },
-  };
-}
-
-// ----- Substrate adapters -------------------------------------------
-
-function makeRefSource(
-  repoStore: RepoStore,
-  principal: UserPrincipal,
-): RefSource {
-  return {
-    async listRefs(_p, repoId): Promise<RefEntry[]> {
-      return repoStore.listRefs(principal, repoId);
-    },
-    async resolveHead(_p, repoId) {
-      return repoStore.resolveHead(principal, repoId);
-    },
-  };
-}
-
-function makeUploadPackStore(
-  repoStore: RepoStore,
-  principal: UserPrincipal,
-): UploadPackRepoStore {
-  return {
-    async listRefs(_p, repoId): Promise<RefEntry[]> {
-      return repoStore.listRefs(principal, repoId);
-    },
-    async getRepoDir(_p, repoId): Promise<string> {
-      return repoStore.getRepoDir(repoId);
-    },
-  };
-}
+// User-principal construction helpers shared with the asset smart-HTTP
+// group live in ./git-user-principal.
 
 // ----- Resolver shape -----------------------------------------------
 
@@ -426,7 +343,7 @@ async function resolveSmartHttp(
     conditionRegistry: deps.conditionRegistry,
     principalId: principalRow.id,
     tenantId,
-    agentStateId: resolved.id,
+    resource: `agent-state:${resolved.id}`,
     action,
   });
   if (authz.effect !== "allow") {
@@ -474,14 +391,10 @@ export function createAgentStateRunGitRoutes(
     if (service !== "git-upload-pack") {
       // The receive-pack case is handled by the deny middleware above;
       // anything else is a bad request.
-      return c.json(
-        {
-          error: {
-            code: "bad_request",
-            message: "info/refs requires service=git-upload-pack",
-          },
-        },
-        400,
+      return errorResponse(
+        c,
+        "bad_request",
+        "info/refs requires service=git-upload-pack",
       );
     }
     const r = await resolveSmartHttp(deps, c, "resolveRef");

@@ -13,6 +13,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -167,10 +168,7 @@ export function createRoleRoutes({
       });
 
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Role not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Role not found");
       }
 
       return c.json(formatRole(row));
@@ -211,22 +209,11 @@ export function createRoleRoutes({
       });
 
       if (!existing) {
-        return c.json(
-          { error: { code: "not_found", message: "Role not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Role not found");
       }
 
       if (existing.isSystem) {
-        return c.json(
-          {
-            error: {
-              code: "forbidden",
-              message: "Cannot modify system roles",
-            },
-          },
-          403,
-        );
+        return errorResponse(c, "forbidden", "Cannot modify system roles");
       }
 
       const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -281,22 +268,11 @@ export function createRoleRoutes({
       });
 
       if (!existing) {
-        return c.json(
-          { error: { code: "not_found", message: "Role not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Role not found");
       }
 
       if (existing.isSystem) {
-        return c.json(
-          {
-            error: {
-              code: "forbidden",
-              message: "Cannot delete system roles",
-            },
-          },
-          403,
-        );
+        return errorResponse(c, "forbidden", "Cannot delete system roles");
       }
 
       const assignments = await db.query.principalRole.findMany({
@@ -304,14 +280,10 @@ export function createRoleRoutes({
       });
 
       if (assignments.length > 0) {
-        return c.json(
-          {
-            error: {
-              code: "bad_request",
-              message: `Role is still assigned to ${assignments.length} principal(s)`,
-            },
-          },
-          400,
+        return errorResponse(
+          c,
+          "bad_request",
+          `Role is still assigned to ${assignments.length} principal(s)`,
         );
       }
 
@@ -368,20 +340,14 @@ export function createRoleAssignRoutes({
         ),
       });
       if (!principalRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Principal not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Principal not found");
       }
 
       const roleRow = await db.query.role.findFirst({
         where: and(eq(role.id, roleId), eq(role.tenantId, tenantCtx.id)),
       });
       if (!roleRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Role not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Role not found");
       }
 
       const existing = await db.query.principalRole.findFirst({
@@ -437,20 +403,14 @@ export function createRoleAssignRoutes({
         ),
       });
       if (!principalRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Principal not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Principal not found");
       }
 
       const roleRow = await db.query.role.findFirst({
         where: and(eq(role.id, roleId), eq(role.tenantId, tenantCtx.id)),
       });
       if (!roleRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Role not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Role not found");
       }
 
       const deleted = await db
@@ -464,12 +424,7 @@ export function createRoleAssignRoutes({
         .returning();
 
       if (deleted.length === 0) {
-        return c.json(
-          {
-            error: { code: "not_found", message: "Assignment not found" },
-          },
-          404,
-        );
+        return errorResponse(c, "not_found", "Assignment not found");
       }
 
       return c.body(null, 204);

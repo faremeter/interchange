@@ -12,7 +12,8 @@ import {
   ErrorResponse,
 } from "@intx/types";
 
-import type { AppEnv } from "../context";
+import { unauthorizedResponse, type AppEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 
@@ -67,12 +68,7 @@ export function createTenantRoutes({
     async (c) => {
       const user = c.get("user");
       if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
+        return unauthorizedResponse(c);
       }
 
       const body = c.req.valid("json");
@@ -84,12 +80,7 @@ export function createTenantRoutes({
         where: eq(tenant.slug, body.slug),
       });
       if (existing) {
-        return c.json(
-          {
-            error: { code: "conflict", message: "Slug already taken" },
-          },
-          409,
-        );
+        return errorResponse(c, "conflict", "Slug already taken");
       }
 
       const now = new Date();
@@ -246,12 +237,7 @@ export function createTenantRoutes({
     async (c) => {
       const user = c.get("user");
       if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
+        return unauthorizedResponse(c);
       }
 
       const tenantId = c.req.param("tenantId");
@@ -260,10 +246,7 @@ export function createTenantRoutes({
         where: eq(tenant.id, tenantId),
       });
       if (!tenantRow) {
-        return c.json(
-          { error: { code: "not_found", message: "Tenant not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Tenant not found");
       }
 
       const membership = await db.query.principal.findFirst({
@@ -274,15 +257,7 @@ export function createTenantRoutes({
         ),
       });
       if (!membership) {
-        return c.json(
-          {
-            error: {
-              code: "forbidden",
-              message: "Not a member of this tenant",
-            },
-          },
-          403,
-        );
+        return errorResponse(c, "forbidden", "Not a member of this tenant");
       }
 
       return c.json(formatTenant(tenantRow));
@@ -314,12 +289,7 @@ export function createTenantRoutes({
     async (c) => {
       const user = c.get("user");
       if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
+        return unauthorizedResponse(c);
       }
 
       const tenantId = c.req.param("tenantId");
@@ -333,15 +303,7 @@ export function createTenantRoutes({
         ),
       });
       if (!membership) {
-        return c.json(
-          {
-            error: {
-              code: "forbidden",
-              message: "Not a member of this tenant",
-            },
-          },
-          403,
-        );
+        return errorResponse(c, "forbidden", "Not a member of this tenant");
       }
 
       const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -355,10 +317,7 @@ export function createTenantRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "Tenant not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Tenant not found");
       }
 
       return c.json(formatTenant(updated));

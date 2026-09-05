@@ -14,6 +14,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { generateId } from "@intx/hub-common";
 import { idResource } from "../middleware/grant";
@@ -257,10 +258,7 @@ export function createPrincipalRoutes({
       });
 
       if (!row) {
-        return c.json(
-          { error: { code: "not_found", message: "Principal not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Principal not found");
       }
 
       const roles = await loadRolesForPrincipal(db, principalId);
@@ -309,10 +307,7 @@ export function createPrincipalRoutes({
         .returning();
 
       if (!updated) {
-        return c.json(
-          { error: { code: "not_found", message: "Principal not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Principal not found");
       }
 
       const roles = await loadRolesForPrincipal(db, principalId);
@@ -357,10 +352,7 @@ export function createPrincipalRoutes({
         .returning();
 
       if (deleted.length === 0) {
-        return c.json(
-          { error: { code: "not_found", message: "Principal not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Principal not found");
       }
 
       return c.body(null, 204);
@@ -415,15 +407,7 @@ export function createInviteRoutes({
       });
 
       if (!invitedUser) {
-        return c.json(
-          {
-            error: {
-              code: "not_found",
-              message: "No user found with that email",
-            },
-          },
-          404,
-        );
+        return errorResponse(c, "not_found", "No user found with that email");
       }
 
       const existing = await db.query.principal.findFirst({
@@ -435,14 +419,10 @@ export function createInviteRoutes({
       });
 
       if (existing) {
-        return c.json(
-          {
-            error: {
-              code: "conflict",
-              message: "User is already a member of this tenant",
-            },
-          },
-          409,
+        return errorResponse(
+          c,
+          "conflict",
+          "User is already a member of this tenant",
         );
       }
 

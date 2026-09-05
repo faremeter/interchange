@@ -15,7 +15,7 @@ import {
   paginatedSchema,
 } from "@intx/types";
 
-import type { AppEnv } from "../context";
+import { unauthorizedResponse, type AppEnv } from "../context";
 import { ts } from "../format";
 import {
   parsePageParams,
@@ -55,12 +55,7 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
     (c) => {
       const user = c.get("user");
       if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
+        return unauthorizedResponse(c);
       }
       return c.json({
         id: user.id,
@@ -102,12 +97,7 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
     async (c) => {
       const user = c.get("user");
       if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
+        return unauthorizedResponse(c);
       }
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),
@@ -208,12 +198,7 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
     async (c) => {
       const user = c.get("user");
       if (!user) {
-        return c.json(
-          {
-            error: { code: "unauthorized", message: "Authentication required" },
-          },
-          401,
-        );
+        return unauthorizedResponse(c);
       }
       const { limit, cursor } = parsePageParams({
         cursor: c.req.query("cursor"),

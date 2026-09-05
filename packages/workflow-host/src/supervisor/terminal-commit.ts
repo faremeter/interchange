@@ -20,6 +20,7 @@ import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import type { RunFailed } from "@intx/workflow";
+import { parseEventSeq } from "@intx/hub-sessions/substrate";
 import type {
   RepoId,
   RepoStore as SubstrateRepoStore,
@@ -33,7 +34,6 @@ const logger = getLogger(["workflow-host", "supervisor", "terminal-commit"]);
 /** Path layout inside the workflow-run repo: `runs/<runId>/events/<seq>.json`. */
 const RUNS_PREFIX = "runs";
 const EVENTS_DIR = "events";
-const EVENT_FILENAME_RE = /^(0|[1-9][0-9]*)\.json$/;
 
 /**
  * Terminal run-event kinds, mirroring the runtime's terminal vocabulary
@@ -120,11 +120,8 @@ export async function commitRunFailed(
         let maxPath: string | null = null;
         for (const filepath of existing.keys()) {
           const name = filepath.slice(prefix.length);
-          const match = EVENT_FILENAME_RE.exec(name);
-          if (match === null) continue;
-          const seqStr = match[1];
-          if (seqStr === undefined) continue;
-          const seq = Number.parseInt(seqStr, 10);
+          const seq = parseEventSeq(name);
+          if (seq === null) continue;
           if (seq > maxSeq) {
             maxSeq = seq;
             maxPath = filepath;

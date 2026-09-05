@@ -28,6 +28,7 @@ import {
 import { getLogger } from "@intx/log";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { ts } from "../format";
 import {
   approvalToolName,
@@ -438,14 +439,10 @@ export function createApprovalRoutes(
         deps.conditionRegistry,
       );
       if (authz.effect !== "allow") {
-        return c.json(
-          {
-            error: {
-              code: "forbidden",
-              message: "You do not have permission to list approvals",
-            },
-          },
-          403,
+        return errorResponse(
+          c,
+          "forbidden",
+          "You do not have permission to list approvals",
         );
       }
 
@@ -515,10 +512,7 @@ export function createApprovalRoutes(
       // learn that an approval id exists in another. Checked before authz so
       // the 403 below never leaks a foreign id.
       if (row === null || row.tenantId !== tenant.id) {
-        return c.json(
-          { error: { code: "not_found", message: "Approval not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Approval not found");
       }
 
       // Same grant the approve/reject routes require: whoever can resolve this
@@ -533,14 +527,10 @@ export function createApprovalRoutes(
         deps.conditionRegistry,
       );
       if (authz.effect !== "allow") {
-        return c.json(
-          {
-            error: {
-              code: "forbidden",
-              message: "You do not have permission to read this approval",
-            },
-          },
-          403,
+        return errorResponse(
+          c,
+          "forbidden",
+          "You do not have permission to read this approval",
         );
       }
 
@@ -681,60 +671,36 @@ function respond(c: Context<TenantEnv>, result: ResolveApprovalOutcome) {
     case "resolved":
       return c.json(formatApproval(result.approval), 200);
     case "not_found":
-      return c.json(
-        { error: { code: "not_found", message: "Approval not found" } },
-        404,
-      );
+      return errorResponse(c, "not_found", "Approval not found");
     case "forbidden":
-      return c.json(
-        {
-          error: {
-            code: "forbidden",
-            message: "You do not have permission to resolve this approval",
-          },
-        },
-        403,
+      return errorResponse(
+        c,
+        "forbidden",
+        "You do not have permission to resolve this approval",
       );
     case "already_resolved":
-      return c.json(
-        {
-          error: {
-            code: "already_resolved",
-            message: "Approval has already been resolved",
-          },
-        },
-        409,
+      return errorResponse(
+        c,
+        "already_resolved",
+        "Approval has already been resolved",
       );
     case "deployment_unavailable":
-      return c.json(
-        {
-          error: {
-            code: "deployment_unreachable",
-            message: "Workflow deployment allocation is no longer active",
-          },
-        },
-        409,
+      return errorResponse(
+        c,
+        "deployment_unreachable",
+        "Workflow deployment allocation is no longer active",
       );
     case "run_not_running":
-      return c.json(
-        {
-          error: {
-            code: "workflow_run_not_running",
-            message: "Workflow run is no longer running",
-          },
-        },
-        409,
+      return errorResponse(
+        c,
+        "workflow_run_not_running",
+        "Workflow run is no longer running",
       );
     case "dispatch_unavailable":
-      return c.json(
-        {
-          error: {
-            code: "workflow_dispatch_unavailable",
-            message:
-              "Durable workflow dispatch is unavailable for this provisioned deployment",
-          },
-        },
-        503,
+      return errorResponse(
+        c,
+        "workflow_dispatch_unavailable",
+        "Durable workflow dispatch is unavailable for this provisioned deployment",
       );
   }
 }

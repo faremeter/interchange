@@ -31,7 +31,6 @@ import { type } from "arktype";
 
 import ssri from "ssri";
 
-import { authorize } from "@intx/authz";
 import { asset as assetTable } from "@intx/db/schema";
 import {
   listAssetsForTenant,
@@ -39,7 +38,6 @@ import {
   type AssetWithOrigin,
   type DB,
 } from "@intx/db";
-import { repoActionToGrantVerb } from "@intx/hub-common";
 import { getLogger } from "@intx/log";
 import {
   AssetServiceError,
@@ -49,7 +47,6 @@ import {
   asTarballEntry,
   type AssetService,
   type Principal,
-  type RefEntry,
   type RepoId,
   type RepoStore,
   type UserPrincipal,
@@ -63,6 +60,7 @@ import {
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
+import { errorResponse } from "../error-response";
 import { ts } from "../format";
 import type {
   GitTokenClaims,
@@ -72,13 +70,15 @@ import { idResource, type RequireGrant } from "../middleware/grant";
 import {
   advertiseReceivePack,
   advertiseUploadPack,
-  type RefSource,
 } from "../git-http/advertise-refs";
-import {
-  handleUploadPack,
-  type UploadPackRepoStore,
-} from "../git-http/upload-pack";
+import { handleUploadPack } from "../git-http/upload-pack";
 import { handleReceivePack } from "../git-http/receive-pack";
+import {
+  buildUserPrincipal,
+  makeRefSource,
+  makeUploadPackStore,
+  resolveAuthzVerdict,
+} from "./git-user-principal";
 
 const log = getLogger(["hub", "assets"]);
 
@@ -158,7 +158,8 @@ function stripGitSuffix(raw: string): string | null {
   return raw.slice(0, -".git".length);
 }
 
-// Pre-resolved authz + UserPrincipal construction ------------------
+// User-principal construction helpers shared with the agent-state
+// smart-HTTP group live in ./git-user-principal.
 
 type AssetLookup = {
   id: string;
@@ -166,85 +167,6 @@ type AssetLookup = {
   kind: RepoKind;
   name: string;
 };
-
-function dateToNumber(d: Date): number {
-  return d.getTime();
-}
-
-async function resolveAuthzVerdict(args: {
-  grantStore: GrantStore;
-  conditionRegistry: ConditionRegistry;
-  principalId: string;
-  tenantId: string;
-  assetId: string;
-  action: RepoAction;
-}): Promise<UserPrincipal["authz"]> {
-  const resource = `asset:${args.assetId}`;
-  const grantVerb = repoActionToGrantVerb(args.action);
-  const verdict = await authorize(
-    args.grantStore,
-    args.principalId,
-    args.tenantId,
-    resource,
-    grantVerb,
-    args.conditionRegistry,
-  );
-  return {
-    effect: verdict.effect === "allow" ? "allow" : "deny",
-    resource,
-    grantVerb,
-  };
-}
-
-function buildUserPrincipal(args: {
-  principalId: string;
-  tenantId: string;
-  authz: UserPrincipal["authz"];
-  claims: GitTokenClaims;
-}): UserPrincipal {
-  return {
-    kind: "user",
-    principalId: args.principalId,
-    tenantId: args.tenantId,
-    authz: args.authz,
-    tokenClaims: {
-      refPattern: args.claims.refPattern,
-      actions: args.claims.actions,
-      expiresAt: dateToNumber(args.claims.expiresAt),
-    },
-  };
-}
-
-// Substrate adapters: bridge the substrate's RepoStore to the narrow
-// per-handler contracts that advertise-refs and upload-pack expose.
-
-function makeRefSource(
-  repoStore: RepoStore,
-  principal: UserPrincipal,
-): RefSource {
-  return {
-    async listRefs(_p, repoId): Promise<RefEntry[]> {
-      return repoStore.listRefs(principal, repoId);
-    },
-    async resolveHead(_p, repoId) {
-      return repoStore.resolveHead(principal, repoId);
-    },
-  };
-}
-
-function makeUploadPackStore(
-  repoStore: RepoStore,
-  principal: UserPrincipal,
-): UploadPackRepoStore {
-  return {
-    async listRefs(_p, repoId): Promise<RefEntry[]> {
-      return repoStore.listRefs(principal, repoId);
-    },
-    async getRepoDir(_p, repoId): Promise<string> {
-      return repoStore.getRepoDir(repoId);
-    },
-  };
-}
 
 // Routes ------------------------------------------------------------
 
@@ -393,14 +315,10 @@ export function createAssetRoutes({
       } else if (inheritedRaw === "false") {
         inherited = false;
       } else {
-        return c.json(
-          {
-            error: {
-              code: "bad_request",
-              message: `inherited must be "true" or "false", got ${JSON.stringify(inheritedRaw)}`,
-            },
-          },
-          400,
+        return errorResponse(
+          c,
+          "bad_request",
+          `inherited must be "true" or "false", got ${JSON.stringify(inheritedRaw)}`,
         );
       }
 
@@ -458,10 +376,7 @@ export function createAssetRoutes({
 
       const row = await resolveAssetById(db, tenantCtx.id, assetId);
       if (row === null) {
-        return c.json(
-          { error: { code: "not_found", message: "Asset not found" } },
-          404,
-        );
+        return errorResponse(c, "not_found", "Asset not found");
       }
 
       return c.json(formatAsset(row));
@@ -676,10 +591,7 @@ export function createAssetRoutes({
       const filename = c.req.param("filename");
       const filenameErr = validateTarballFilename(filename);
       if (filenameErr !== null) {
-        return c.json(
-          { error: { code: "bad_request", message: filenameErr } },
-          400,
-        );
+        return errorResponse(c, "bad_request", filenameErr);
       }
 
       const lookup = await resolveRegistryAsset(tenantCtx.id, assetId);
@@ -706,14 +618,10 @@ export function createAssetRoutes({
         // value (`1e308`). Insist on the digit-only shape so the
         // header is exactly what RFC 9110 says it is.
         if (!/^\d+$/.test(declaredLengthRaw)) {
-          return c.json(
-            {
-              error: {
-                code: "bad_request",
-                message: "Content-Length must be a non-negative integer",
-              },
-            },
-            400,
+          return errorResponse(
+            c,
+            "bad_request",
+            "Content-Length must be a non-negative integer",
           );
         }
         const declaredLength = Number(declaredLengthRaw);
@@ -721,28 +629,20 @@ export function createAssetRoutes({
           !Number.isFinite(declaredLength) ||
           declaredLength > maxTarballBytes
         ) {
-          return c.json(
-            {
-              error: {
-                code: "payload_too_large",
-                message: `tarball exceeds maximum size of ${String(maxTarballBytes)} bytes`,
-              },
-            },
-            413,
+          return errorResponse(
+            c,
+            "payload_too_large",
+            `tarball exceeds maximum size of ${String(maxTarballBytes)} bytes`,
           );
         }
       }
 
       const bytes = await readBodyWithLimit(c.req.raw, maxTarballBytes);
       if (bytes === null) {
-        return c.json(
-          {
-            error: {
-              code: "payload_too_large",
-              message: `tarball exceeds maximum size of ${String(maxTarballBytes)} bytes`,
-            },
-          },
-          413,
+        return errorResponse(
+          c,
+          "payload_too_large",
+          `tarball exceeds maximum size of ${String(maxTarballBytes)} bytes`,
         );
       }
       // Integrity is computed from the request bytes. The substrate
@@ -790,10 +690,7 @@ export function createAssetRoutes({
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.startsWith("path_violation:")) {
-          return c.json(
-            { error: { code: "path_violation", message: msg } },
-            400,
-          );
+          return errorResponse(c, "path_violation", msg);
         }
         throw err;
       }
@@ -897,10 +794,7 @@ export function createAssetRoutes({
       const filename = c.req.param("filename");
       const filenameErr = validateTarballFilename(filename);
       if (filenameErr !== null) {
-        return c.json(
-          { error: { code: "bad_request", message: filenameErr } },
-          400,
-        );
+        return errorResponse(c, "bad_request", filenameErr);
       }
 
       const lookup = await resolveRegistryAsset(tenantCtx.id, assetId);
@@ -947,14 +841,10 @@ export function createAssetRoutes({
         return c.json({ commit: commitSha });
       } catch (err) {
         if (err instanceof TarballNotFoundError) {
-          return c.json(
-            {
-              error: {
-                code: "not_found",
-                message: `tarball ${err.filename} not found in asset ${err.assetId}`,
-              },
-            },
-            404,
+          return errorResponse(
+            c,
+            "not_found",
+            `tarball ${err.filename} not found in asset ${err.assetId}`,
           );
         }
         throw err;
@@ -1117,7 +1007,7 @@ export function createAssetRoutes({
       conditionRegistry,
       principalId: principalRow.id,
       tenantId,
-      assetId: resolvedAsset.asset.id,
+      resource: `asset:${resolvedAsset.asset.id}`,
       action,
     });
     if (authz.effect !== "allow") {
@@ -1154,15 +1044,10 @@ export function createAssetRoutes({
   smartHttp.get("/:kind/:nameDotGit/info/refs", async (c) => {
     const service = c.req.query("service");
     if (service !== "git-upload-pack" && service !== "git-receive-pack") {
-      return c.json(
-        {
-          error: {
-            code: "bad_request",
-            message:
-              "info/refs requires service=git-upload-pack or git-receive-pack",
-          },
-        },
-        400,
+      return errorResponse(
+        c,
+        "bad_request",
+        "info/refs requires service=git-upload-pack or git-receive-pack",
       );
     }
     // info/refs maps to the `resolveRef` RepoAction for the bearer
