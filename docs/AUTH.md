@@ -41,6 +41,26 @@ principal
   UNIQUE(tenant_id, kind, ref_id)
 ```
 
+### Signing keys
+
+The `principal_key` table holds a principal's Ed25519 signing key, giving it a stable cryptographic identity. The public key is a stable handle a verifier can check a signature against; the hub custodies the private key.
+
+```
+principal_key
+  id            text PK        -- pky_...
+  principal_id  text FK -> principal (ON DELETE CASCADE)
+  public_key    text NOT NULL UNIQUE  -- hex-encoded 32-byte Ed25519 public key
+  private_key   text NOT NULL         -- hex-encoded 32-byte seed, sealed by the cipher
+  status        text NOT NULL         -- 'active' | 'retired'
+  created_at    timestamptz
+  updated_at    timestamptz
+  UNIQUE(principal_id) WHERE status = 'active'   -- one active key per principal
+```
+
+The private key seed is sealed at rest with the same AEAD cipher that protects credential secrets, bound to its row and column so a sealed key cannot be transplanted to another row. See [CREDENTIALS.md](./CREDENTIALS.md) for the encryption-at-rest mechanics.
+
+Custody is an **attribution** model, not non-repudiation. A signature proves the action came from a holder of the principal's private key, which is enough to attribute the action to the principal within the system. It is **not** proof against the hub operator, who also holds the key and could sign as the principal. Non-repudiation would require the private key to live somewhere the hub cannot reach, which the hub-custodied model does not provide.
+
 ### Request resolution flow
 
 ```

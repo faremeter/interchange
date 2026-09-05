@@ -30,6 +30,7 @@ import type {
   oauthClient,
   offering,
   principal,
+  principalKey,
   provider,
   signalCorrelation,
   tenant,
@@ -89,6 +90,9 @@ const WorkflowDefinitionVersionStatusValidator = type.enumerated(
 
 const PrincipalKindValidator = type.enumerated(...principalKinds);
 const PrincipalStatusValidator = type.enumerated(...principalStatuses);
+
+const principalKeyStatuses = ["active", "retired"] as const;
+const PrincipalKeyStatusValidator = type.enumerated(...principalKeyStatuses);
 
 const credentialTypes = [
   "api_key",
@@ -187,6 +191,13 @@ export function parsePrincipalRow(row: typeof principal.$inferSelect) {
     ...row,
     kind: PrincipalKindValidator.assert(row.kind),
     status: PrincipalStatusValidator.assert(row.status),
+  };
+}
+
+export function parsePrincipalKeyRow(row: typeof principalKey.$inferSelect) {
+  return {
+    ...row,
+    status: PrincipalKeyStatusValidator.assert(row.status),
   };
 }
 

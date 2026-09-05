@@ -40,3 +40,16 @@ export interface CredentialCipher {
 export function credentialAad(id: string, column: string): string {
   return JSON.stringify(["credential-secret", id, column]);
 }
+
+/**
+ * Build the additional-authenticated-data string binding a principal signing
+ * key's sealed private material to the `principal_key` row and column it belongs
+ * to. Shares the AEAD primitive and encoding rules with `credentialAad` but uses
+ * a distinct `"principal-key"` tag domain, so a credential-secret ciphertext and
+ * a principal-key ciphertext are never interchangeable even under the same key.
+ * The mint (write) and sign (read) sites MUST build the `aad` through this one
+ * function so the value matches.
+ */
+export function principalKeyAad(id: string, column: string): string {
+  return JSON.stringify(["principal-key", id, column]);
+}

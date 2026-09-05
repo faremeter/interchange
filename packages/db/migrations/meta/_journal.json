@@ -617,6 +617,13 @@
       "when": 1788200236163,
       "tag": "0088_thick_sprite",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1788617577404,
+      "tag": "0089_tense_selene",
+      "breakpoints": true
     }
   ]
 }
