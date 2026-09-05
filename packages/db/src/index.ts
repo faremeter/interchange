@@ -13,6 +13,11 @@ export {
 export { createGrantStore } from "./grant-store";
 export { createPrincipalStore, type PrincipalStore } from "./principal-store";
 export {
+  createPrincipalKeyStore,
+  type CreatePrincipalKeyStoreDeps,
+  type PrincipalKeyStore,
+} from "./principal-key-store";
+export {
   createApprovalStore,
   type ApprovalStore,
   type ResolveApprovalArgs,
@@ -128,6 +133,7 @@ export {
   parseGrantRow,
   parseApprovalRow,
   parsePrincipalRow,
+  parsePrincipalKeyRow,
   parseSignalCorrelationRow,
   parseWorkflowRunRow,
   parseWorkflowRunDispatchRow,

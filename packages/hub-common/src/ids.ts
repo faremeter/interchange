@@ -3,6 +3,7 @@ import { hexEncode } from "@intx/types";
 const PREFIXES = {
   tenant: "tnt_",
   principal: "prn_",
+  principalKey: "pky_",
   role: "rol_",
   grant: "grt_",
   federationTrust: "ftr_",
