@@ -1,6 +1,6 @@
 {
   "id": "b673a276-410f-4e34-99f9-b563273d63e1",
-  "prevId": "0f093e94-6e56-4f60-8600-53e8592155b5",
+  "prevId": "c5723916-35b0-432b-a488-4f54f49ad26f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3544,6 +3544,12 @@
         },
         "model_preferences": {
           "name": "model_preferences",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credential_refs": {
+          "name": "credential_refs",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

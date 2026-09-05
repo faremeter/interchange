@@ -3536,6 +3536,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "credential_refs": {
+          "name": "credential_refs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp",
