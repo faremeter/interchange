@@ -99,6 +99,11 @@ export const AGENT_ID = "run_test-agent";
 export const SESSION_ID = "ses_integration-1";
 export const SIDECAR_ID = "sc-integration-1";
 export const TOKEN = "test-token";
+
+// Grace period for each stage of the teardown's sidecar reap (SIGTERM, then
+// SIGKILL). Bounds the wait so a sidecar that is slow to reap under contention
+// cannot wedge the afterAll hook.
+const SIDECAR_REAP_GRACE_MS = 10_000;
 // A second sidecar identity, for tests that need two sidecars on one hub
 // (e.g. proving a cross-sidecar/federated mail deliver reaches the
 // receiver). The default fixture only spawns the first; a caller spawns the
@@ -1214,23 +1219,39 @@ export async function startDeployFlowEnv(
 
   const teardown = async (): Promise<void> => {
     // Close every tracked hub-side WebSocket handle before killing the
-    // sidecar so no live link lingers. Then wait for the sidecar
-    // subprocess to fully exit before removing its data directory. The
-    // earlier shape (kill, then immediately rm) raced the sidecar's
-    // still-open file handles inside `sidecar-data-*`; on a slow CI host
-    // the rm would observe EBUSY, EACCES, or partial removal, which the
-    // `.catch(() => {})` shrouded. Errors must surface from the rm, so
-    // the catch is dropped here. The server stops are bounded
-    // (`stopServerBounded`) because a test that dropped the hub link
-    // leaves Bun with a phantom connection its `server.stop` would wait
-    // on forever.
+    // sidecar so no live link lingers. Then reap the sidecar subprocess with a
+    // bounded SIGTERM -> timeout -> SIGKILL escalation -- the same shape the
+    // production sidecar provisioner uses -- before removing its data
+    // directory. The sidecar installs no graceful-shutdown SIGTERM handler, so
+    // under teardown contention (e.g. a sidecar still reaping its own
+    // crash-looping workflow-process children) a plain SIGTERM can leave
+    // `proc.exited` unresolved; an unbounded wait there wedged the afterAll
+    // hook until the whole suite was torn down. Waiting for the exit before the
+    // rm keeps the earlier fix intact: removing `sidecar-data-*` while the
+    // subprocess still holds file handles raced EBUSY/EACCES on slow hosts, so
+    // errors must surface from the rm rather than be shrouded. The server stops
+    // are bounded (`stopServerBounded`) because a test that dropped the hub
+    // link leaves Bun with a phantom connection its `server.stop` would wait on
+    // forever.
     deployments.clear();
     for (const handle of hub.liveHandles) {
       handle.close();
     }
     hub.liveHandles.clear();
+    const sidecarExitedWithin = (ms: number) =>
+      Promise.race([
+        sidecar.proc.exited.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), ms)),
+      ]);
     sidecar.proc.kill();
-    await sidecar.proc.exited;
+    if (!(await sidecarExitedWithin(SIDECAR_REAP_GRACE_MS))) {
+      sidecar.proc.kill(9);
+      if (!(await sidecarExitedWithin(SIDECAR_REAP_GRACE_MS))) {
+        throw new Error(
+          `deploy-flow-env teardown: sidecar pid ${String(sidecar.proc.pid)} did not exit after SIGKILL`,
+        );
+      }
+    }
     await stopServerBounded(hub.server);
     await stopServerBounded(inference.server);
     for (const d of tempDirs.splice(0)) {
