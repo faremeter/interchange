@@ -28,10 +28,9 @@ import type { GrantStore } from "@intx/types/authz";
 import {
   assembleSignedContent,
   assembleMessage,
-  createDetachedSignatureFromProvider,
   type MessageHeaders,
 } from "@intx/mime";
-import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
+import { createDetachedSignatureWithSigner } from "@intx/crypto";
 import {
   base64Encode,
   deriveWorkflowRunId,
@@ -143,6 +142,26 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     args: TriggerWorkflowRunArgs,
   ): Promise<TriggerWorkflowRunResult> {
     const { tenant, principal, anchorRunId, message: body } = args;
+
+    // The outbound mail is signed with the caller's durable hub principal key,
+    // and its From address (`${principal.refId}@${tenant.domain}`) must resolve
+    // back to that same key when the signature is verified. Only a user
+    // principal's address resolves to its hub principal key; a run principal's
+    // address resolves to the sidecar-minted `workflow_run.public_key`, and an
+    // agent principal's address has no resolution surface, so signing here as a
+    // non-user principal would guarantee a verification mismatch. The route
+    // layer only ever admits user principals to this path, so this is an
+    // invariant assertion, not a client-facing rejection: fail loud if a wiring
+    // change ever lets another kind through, rather than silently emitting mail
+    // that verification cannot resolve. Revisit this fence if the resolver
+    // learns to resolve agent addresses.
+    if (principal.kind !== "user") {
+      throw new Error(
+        `triggerWorkflowRun: signing principal ${principal.id} has kind ` +
+          `${principal.kind}; only a user principal may originate hub-signed mail`,
+      );
+    }
+
     const address = deriveRunAddress({
       runId: anchorRunId,
       domain: tenant.domain,
@@ -369,8 +388,6 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     // through sessionService.sendUserMessage because that path stamps
     // interchangeSessionId/agentId headers that scope the message to an
     // agent session; a workflow run trigger has no such session.
-    const keyPair = await generateKeyPair();
-    const crypto = createEd25519Crypto(keyPair);
     const headers: MessageHeaders = {
       from,
       to: [address],
@@ -398,9 +415,9 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         ? { attachments: messageAttachments }
         : {}),
     });
-    const signature = await createDetachedSignatureFromProvider(
+    const signature = await createDetachedSignatureWithSigner(
       signedContent,
-      crypto,
+      (input) => principalKeyStore.sign(principal.id, input),
     );
     const rawMessage = assembleMessage(headers, signedContent, signature);
     const base64 = base64Encode(rawMessage);

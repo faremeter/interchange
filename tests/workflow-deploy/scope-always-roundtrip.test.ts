@@ -107,7 +107,12 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAsset, seedGrant, seedPrincipal } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedGrant,
+  seedPrincipal,
+  seedPrincipalKey,
+} from "@intx/test-harness/seed";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 
@@ -565,6 +570,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         refId: OPERATOR_USER_ID,
         status: "active",
       });
+      // The operator signs the trigger mail with its durable hub principal key,
+      // which production mints at principal creation; the direct row insert
+      // above bypasses that, so mint it here or the trigger's sign() throws.
+      await seedPrincipalKey(h.db, OPERATOR_PRINCIPAL_ID);
       await seedAsset(h.db, {
         id: DEFINITION_ASSET_ID,
         tenantId: TENANT_ID,

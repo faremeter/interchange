@@ -6,7 +6,10 @@ import git from "isomorphic-git";
 import { type, type Type } from "arktype";
 
 import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
-import { WorkflowRunDispatchPayloadConflictError } from "@intx/db";
+import {
+  WorkflowRunDispatchPayloadConflictError,
+  type PrincipalKeyStore,
+} from "@intx/db";
 import { base64Decode, ErrorResponse, signalName } from "@intx/types";
 import type { GrantWalkSnapshot, SidecarAllocationStatus } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
@@ -545,6 +548,25 @@ function createMockSessionService(): SessionService {
   };
 }
 
+function createMockPrincipalKeyStore(): PrincipalKeyStore {
+  function notImpl(name: string): never {
+    throw new Error(`mock: principalKeyStore.${name} not implemented`);
+  }
+  return {
+    // The trigger mints the run principal's key while materializing grants; the
+    // return value is not read, so a canned hex public key suffices.
+    generate: async () => "ab".repeat(32),
+    getPublicKey: () => notImpl("getPublicKey"),
+    // The trigger signs the outbound mail with the caller's principal key.
+    // This suite asserts route behavior (status, run.grants ordering, grant
+    // materialization), not signature validity, so return a fixed-length raw
+    // Ed25519 signature the PGP packet assembler accepts. A real caller key
+    // signing a verifiable message is covered by the run-mail-send integration
+    // test.
+    sign: async () => new Uint8Array(64),
+  };
+}
+
 type WorkflowDispatchEnqueue = Parameters<
   WorkflowDispatchService["enqueue"]
 >[0];
@@ -781,6 +803,7 @@ function createTestApp(opts: TestAppOpts = {}) {
     getSession: createMockGetSession(),
     authHandler: () => new Response("", { status: 404 }),
     db,
+    principalKeyStore: createMockPrincipalKeyStore(),
     grantStore: createInMemoryGrantStore(opts.grants ?? [makeGrant()]),
     sidecarRouter: createMockSidecarRouter(
       opts.signalCalls ?? [],
