@@ -4,7 +4,7 @@ import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { tenant, principal, role, principalRole, grant } from "@intx/db/schema";
 import { createPrincipalStore, parseTenantRow } from "@intx/db";
-import type { DB } from "@intx/db";
+import type { DB, PrincipalKeyStore } from "@intx/db";
 import {
   CreateTenant,
   UpdateTenant,
@@ -34,13 +34,15 @@ function formatTenant(row: typeof tenant.$inferSelect) {
 
 export type CreateTenantRoutesDeps = {
   db: DB["db"];
+  principalKeyStore: PrincipalKeyStore;
 };
 
 export function createTenantRoutes({
   db,
+  principalKeyStore,
 }: CreateTenantRoutesDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
-  const principalStore = createPrincipalStore(db);
+  const principalStore = createPrincipalStore(db, principalKeyStore);
 
   app.post(
     "/",

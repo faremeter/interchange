@@ -8,16 +8,18 @@ import {
 } from "bun:test";
 import { and, eq } from "drizzle-orm";
 
-import { createPrincipalStore } from "@intx/db";
-import { principal } from "@intx/db/schema";
+import { createPrincipalStore, createPrincipalKeyStore } from "@intx/db";
+import { principal, principalKey } from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
+import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import { seedTenants } from "@intx/test-harness/seed";
 
 const TENANT = "tnt_ps";
+const cipher = createTestCredentialCipher();
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "createPrincipalStore (real DB)",
@@ -37,8 +39,28 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedTenants(h.db, [{ id: TENANT }]);
     });
 
-    test("createIfAbsent is idempotent on the natural key", async () => {
-      const store = createPrincipalStore(h.db);
+    function newStore() {
+      return createPrincipalStore(
+        h.db,
+        createPrincipalKeyStore({ db: h.db, cipher }),
+      );
+    }
+
+    async function activeKeyCount(principalId: string): Promise<number> {
+      const rows = await h.db
+        .select()
+        .from(principalKey)
+        .where(
+          and(
+            eq(principalKey.principalId, principalId),
+            eq(principalKey.status, "active"),
+          ),
+        );
+      return rows.length;
+    }
+
+    test("createIfAbsent inserts, mints a key, and is idempotent", async () => {
+      const store = newStore();
       const now = new Date();
       const row = {
         id: "prn_first",
@@ -52,9 +74,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const first = await store.createIfAbsent(row);
       expect(first?.id).toBe("prn_first");
+      expect(await activeKeyCount("prn_first")).toBe(1);
 
       // A second reservation of the same (tenantId, kind, refId) -- even with a
-      // different surrogate id -- must not insert a new row.
+      // different surrogate id -- inserts no row and mints no second key: the
+      // winning transaction already minted the one active key.
       const second = await store.createIfAbsent({ ...row, id: "prn_second" });
       expect(second).toBeNull();
 
@@ -70,10 +94,29 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       expect(rows).toHaveLength(1);
       expect(rows[0]?.id).toBe("prn_first");
+      expect(await activeKeyCount("prn_first")).toBe(1);
+      expect(await activeKeyCount("prn_second")).toBe(0);
+    });
+
+    test("create mints an active signing key for the new principal", async () => {
+      const store = newStore();
+      const now = new Date();
+
+      const created = await store.create({
+        id: "prn_keyed",
+        tenantId: TENANT,
+        kind: "user",
+        refId: "usr_keyed",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+      expect(created.id).toBe("prn_keyed");
+      expect(await activeKeyCount("prn_keyed")).toBe(1);
     });
 
     test("create fails loudly on a natural-key conflict", async () => {
-      const store = createPrincipalStore(h.db);
+      const store = newStore();
       const now = new Date();
       const row = {
         id: "prn_a",
@@ -90,7 +133,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test("create preserves the caller-supplied status", async () => {
-      const store = createPrincipalStore(h.db);
+      const store = newStore();
       const now = new Date();
 
       const created = await store.create({

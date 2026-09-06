@@ -9,7 +9,7 @@ import {
 
 import { eq } from "drizzle-orm";
 
-import { createGrantStore } from "@intx/db";
+import { createGrantStore, createPrincipalKeyStore } from "@intx/db";
 import {
   grant,
   principal,
@@ -24,6 +24,7 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
+import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import {
   seedAsset,
   seedGrant,
@@ -141,6 +142,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     ): ReturnType<ReturnType<typeof createMailTriggeredRunGrantsMaterializer>> {
       const materialize = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
+        principalKeyStore: createPrincipalKeyStore({
+          db: h.db,
+          cipher: createTestCredentialCipher(),
+        }),
         grantStore: createGrantStore(h.db),
       });
       return materialize({ agentAddress: WORKFLOW_ADDRESS, runId });

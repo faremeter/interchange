@@ -1,6 +1,7 @@
 import {
   createDB,
   createGrantStore,
+  createPrincipalKeyStore,
   createSidecarAllocationStore,
   createWorkflowRunDispatchStore,
 } from "@intx/db";
@@ -97,6 +98,27 @@ export async function createHubServer({
   const credentialCipher = createEnvKeyCredentialCipher(
     hexDecode(credentialEncryptionKeyHex),
   );
+
+  // Per-principal signing keys are sealed at rest under their own operator key,
+  // separate from CREDENTIAL_ENCRYPTION_KEY so the two rotate independently.
+  // Required at boot for the same reason: a missing key would silently persist
+  // minted private keys in the clear. 32 bytes, hex.
+  const principalKeyEncryptionKeyHex =
+    process.env["PRINCIPAL_KEY_ENCRYPTION_KEY"];
+  if (
+    principalKeyEncryptionKeyHex === undefined ||
+    principalKeyEncryptionKeyHex.trim() === ""
+  ) {
+    throw new Error(
+      "PRINCIPAL_KEY_ENCRYPTION_KEY environment variable is required",
+    );
+  }
+  const principalKeyStore = createPrincipalKeyStore({
+    db,
+    cipher: createEnvKeyCredentialCipher(
+      hexDecode(principalKeyEncryptionKeyHex),
+    ),
+  });
 
   // 10 MiB is the production cap for tool-package tarballs uploaded via
   // the package-registry PUT endpoint. The npm registry's own per-tarball
@@ -215,6 +237,7 @@ export async function createHubServer({
     materializeMailTriggeredRunGrants: createMailTriggeredRunGrantsMaterializer(
       {
         db,
+        principalKeyStore,
         grantStore: createGrantStore(db),
       },
     ),
@@ -414,6 +437,7 @@ export async function createHubServer({
     workflowDispatchService,
     eventCollectors,
     credentialCipher,
+    principalKeyStore,
     assetService,
     repoStore: agentRepoStore.repoStore,
     maxTarballBytes: hubMaxTarballBytes,

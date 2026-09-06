@@ -121,6 +121,7 @@ type HarnessEnv = {
   db: DBConfig;
   betterAuthSecret: string;
   credentialEncryptionKey: string;
+  principalKeyEncryptionKey: string;
 };
 
 /**
@@ -162,6 +163,11 @@ async function loadHubEnv(): Promise<HarnessEnv> {
     credentialEncryptionKey: requireKey(
       sharedAndHub,
       "CREDENTIAL_ENCRYPTION_KEY",
+      ".env.hub",
+    ),
+    principalKeyEncryptionKey: requireKey(
+      sharedAndHub,
+      "PRINCIPAL_KEY_ENCRYPTION_KEY",
       ".env.hub",
     ),
   };
@@ -491,6 +497,7 @@ export async function startHub(
     HUB_DATA_DIR: hubDataDir,
     BETTER_AUTH_SECRET: hubEnv.betterAuthSecret,
     CREDENTIAL_ENCRYPTION_KEY: hubEnv.credentialEncryptionKey,
+    PRINCIPAL_KEY_ENCRYPTION_KEY: hubEnv.principalKeyEncryptionKey,
     BETTER_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
   };
   // --conditions=intx-src resolves @intx/* to source; the spawned hub

@@ -213,6 +213,8 @@ Credential secrets are encrypted at rest: the credential `secret` and `refresh_s
 
 Encryption is a pluggable seam, the `CredentialCipher`. The built-in implementation encrypts under a single operator-provided key, `CREDENTIAL_ENCRYPTION_KEY` (32 bytes, hex); the hub refuses to start without it. A future KMS or envelope-encryption plugin implements the same seam and can keep key material inside the KMS without touching any call site.
 
+The same cipher seam seals per-principal signing keys at rest, under a separate key `PRINCIPAL_KEY_ENCRYPTION_KEY` so the two rotate independently. See [AUTH.md](./AUTH.md) for the principal signing-key custody and attribution model.
+
 The threat model this addresses is **database-only compromise** — a stolen backup, a replica leak, a SQL-injection read, a snoop over the table. It does **not** defend against full host compromise, where the attacker holds both the key and the data; that requires a KMS/envelope plugin.
 
 Deploying encryption over a database whose rows predate it requires a one-time re-key of the legacy plaintext. With the hub **stopped** (so no write races an un-re-keyed row against the strict read path), run `bin/rekey-credential-secrets.ts` with the hub's environment sourced, then start the hub. The pass is idempotent — already-encrypted rows are skipped — so it is safe to re-run or resume.

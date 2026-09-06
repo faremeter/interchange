@@ -7,8 +7,18 @@ import {
   workflowDefinitionVersion as workflowDefinitionVersionTable,
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
+import type { PrincipalKeyStore } from "@intx/db";
 
 import { createMailTriggeredRunGrantsMaterializer } from "./run-grant-materialization";
+
+// This suite exercises grant materialization, not key minting. The key store is
+// a no-op stub so the winning-reservation path does not try to insert into
+// principal_key against the hand-rolled mock DB.
+const stubPrincipalKeyStore: PrincipalKeyStore = {
+  generate: async () => "pky_stub",
+  sign: async () => new Uint8Array(64),
+  getPublicKey: async () => "pky_stub_public",
+};
 
 const TENANT_ID = "tenant-1";
 const ASSET_ID = "asset-wf";
@@ -181,6 +191,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         assetRow,
         grantSnapshot: snapshot(),
       }),
+      principalKeyStore: stubPrincipalKeyStore,
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
     const result = await materialize({
@@ -200,6 +211,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         snapshotReads: reads,
         topLevelRunStatus: "completed",
       }),
+      principalKeyStore: stubPrincipalKeyStore,
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -226,6 +238,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         topLevelRunStatus: null,
         lockedRunStatus: "failed",
       }),
+      principalKeyStore: stubPrincipalKeyStore,
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -244,6 +257,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
   test("stages the tool grant and the creator requirement, omitting the invoker one", async () => {
     const materialize = createMailTriggeredRunGrantsMaterializer({
       db: mockDb({ deploymentRow, assetRow, grantSnapshot: snapshot() }),
+      principalKeyStore: stubPrincipalKeyStore,
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -282,6 +296,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         assetRow,
         grantSnapshot: invokerOnlySnapshot(),
       }),
+      principalKeyStore: stubPrincipalKeyStore,
       grantStore: createInMemoryGrantStore([]),
     });
     const result = await materialize({
@@ -303,6 +318,7 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
     // materializer must raise rather than launch a run with an empty grant set.
     const materialize = createMailTriggeredRunGrantsMaterializer({
       db: mockDb({ deploymentRow, assetRow, grantSnapshot: null }),
+      principalKeyStore: stubPrincipalKeyStore,
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 
@@ -325,6 +341,7 @@ describe("createMailTriggeredRunGrantsMaterializer frozen basis", () => {
         grantSnapshot: snapshot(),
         snapshotReads: reads,
       }),
+      principalKeyStore: stubPrincipalKeyStore,
       grantStore: createInMemoryGrantStore([creatorGrant()]),
     });
 

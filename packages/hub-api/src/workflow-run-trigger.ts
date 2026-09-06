@@ -22,7 +22,7 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import type { DB } from "@intx/db";
+import type { DB, PrincipalKeyStore } from "@intx/db";
 import { loadFrozenGrantSnapshot } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
@@ -82,6 +82,7 @@ export const WorkflowRunTriggerResponse = type({
 
 export type TriggerWorkflowRunDeps = {
   db: DB["db"];
+  principalKeyStore: PrincipalKeyStore;
   grantStore: GrantStore;
   sidecarRouter: SidecarRouter;
   workflowDispatchService?: WorkflowDispatchService;
@@ -117,8 +118,14 @@ export type TriggerWorkflowRunResult =
  * result the caller maps onto its route surface.
  */
 export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
-  const { db, grantStore, sidecarRouter, workflowDispatchService, repoStore } =
-    deps;
+  const {
+    db,
+    principalKeyStore,
+    grantStore,
+    sidecarRouter,
+    workflowDispatchService,
+    repoStore,
+  } = deps;
 
   async function readRunLifecycle(
     anchorRunId: string,
@@ -436,6 +443,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         const canonicalStepGrants = await commitRunGrants(
           {
             db,
+            principalKeyStore,
             tenantId: tenant.id,
             anchorRunId,
             definitionId: anchor.definitionId,
@@ -495,6 +503,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       return commitRunGrants(
         {
           db,
+          principalKeyStore,
           tenantId: tenant.id,
           anchorRunId,
           definitionId: anchor.definitionId,

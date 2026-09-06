@@ -57,6 +57,11 @@ async function up(): Promise<void> {
           "CREDENTIAL_ENCRYPTION_KEY",
           ".env.hub",
         ),
+        PRINCIPAL_KEY_ENCRYPTION_KEY: requireKey(
+          hubEnv,
+          "PRINCIPAL_KEY_ENCRYPTION_KEY",
+          ".env.hub",
+        ),
       },
       // The migration role's connection to the provisioned database. It owns
       // the freshly-migrated tables, so it is the identity harness pre-flight
