@@ -40,7 +40,7 @@ cp .env.hub.example .env.hub
 cp .env.migrate.example .env.migrate
 ```
 
-The example files contain working dev defaults for most values. The only value you must generate is `BETTER_AUTH_SECRET` in `.env.hub` (any 32+ byte hex string works, e.g. `openssl rand -hex 32`).
+The example files contain working dev defaults for most values, but three secrets in `.env.hub` ship blank and you must generate each as a 32-byte hex value (`openssl rand -hex 32`): `BETTER_AUTH_SECRET`, `CREDENTIAL_ENCRYPTION_KEY`, and `PRINCIPAL_KEY_ENCRYPTION_KEY`. The hub refuses to start without the two encryption keys.
 
 | File           | Contains                                                         |
 | -------------- | ---------------------------------------------------------------- |
@@ -64,6 +64,8 @@ files next to the matching service config.
 | `HUB_URL`                            | `bin/seed`                                   | `http://localhost:3000`             | Base URL `bin/seed` targets when seeding via the hub API.                                                                                            |
 | `HUB_MAX_TARBALL_BYTES`              | hub (`apps/hub`)                             | 10 MiB                              | Per-tarball cap for tool packages uploaded to the package registry.                                                                                  |
 | `PG_SCHEMA`                          | hub (`apps/hub`)                             | unset                               | Pins the hub to a postgres schema. Integration-test-only; leave unset normally.                                                                      |
+| `CREDENTIAL_ENCRYPTION_KEY`          | hub (`apps/hub`)                             | none (required)                     | 32-byte hex key that seals credential secrets and OAuth client secrets at rest in the database. The hub refuses to start without it.                 |
+| `PRINCIPAL_KEY_ENCRYPTION_KEY`       | hub (`apps/hub`)                             | none (required)                     | 32-byte hex key that seals per-principal signing keys at rest, separate from `CREDENTIAL_ENCRYPTION_KEY`. The hub refuses to start without it.       |
 | `SIDECAR_CREDENTIAL_ENCRYPTION_KEY`  | sidecar (`apps/sidecar`)                     | none (required)                     | 32-byte hex key that seals credential material (inference apiKeys) at rest under `SIDECAR_DATA_DIR`. The sidecar refuses to start without it.        |
 | `SIDECAR_CACHE_DIR`                  | sidecar (`apps/sidecar`)                     | `<SIDECAR_DATA_DIR>/cache/tarballs` | Directory for the tool-package tarball cache.                                                                                                        |
 | `SIDECAR_CACHE_MAX_BYTES`            | sidecar (`apps/sidecar`)                     | 10 GiB                              | Maximum total size of the tarball cache.                                                                                                             |
