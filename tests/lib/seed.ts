@@ -8,8 +8,10 @@
 // assertions actually depend on.
 
 import type { DB } from "@intx/db";
+import { createPrincipalKeyStore } from "@intx/db";
 import type { WorkflowRunCredentialRefs } from "@intx/db/schema";
 import type { GrantWalkSnapshot } from "@intx/types";
+import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   asset,
   credential,
@@ -111,6 +113,28 @@ export async function seedPrincipal(db: Db, p: SeedPrincipal): Promise<void> {
     refId: p.refId ?? p.id,
     status: p.status ?? "active",
   });
+}
+
+/**
+ * Mint the active `principal_key` a principal carries in production. INTR-164
+ * mints a key in the same transaction a principal is created, so every real
+ * principal has one; `seedPrincipal` inserts the row directly and bypasses that
+ * path, so a fixture whose principal must SIGN (for example, the caller of a
+ * hub-originated mail trigger) mints the key explicitly here. Seals the seed
+ * with the noop cipher -- the same fallback `createApp` uses when no
+ * `PRINCIPAL_KEY_ENCRYPTION_KEY` is configured -- so the app's key store reads
+ * it back. Returns the hex-encoded public key so a test can verify signatures
+ * against it. The principal row must already exist.
+ */
+export async function seedPrincipalKey(
+  db: Db,
+  principalId: string,
+): Promise<string> {
+  const keyStore = createPrincipalKeyStore({
+    db,
+    cipher: createNoopCredentialCipher(),
+  });
+  return keyStore.generate(principalId);
 }
 
 export type SeedProvider = {

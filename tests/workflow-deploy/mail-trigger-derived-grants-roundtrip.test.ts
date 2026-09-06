@@ -85,7 +85,12 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAsset, seedGrant, seedPrincipal } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedGrant,
+  seedPrincipal,
+  seedPrincipalKey,
+} from "@intx/test-harness/seed";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
 
 import {
@@ -261,6 +266,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         refId: CALLER_USER_ID,
         status: "active",
       });
+      // The caller signs the trigger mail with its durable hub principal key,
+      // which production mints at principal creation; the direct row insert
+      // above bypasses that, so mint it here or the trigger's sign() throws.
+      await seedPrincipalKey(h.db, CALLER_PRINCIPAL_ID);
       // The `workflow`-kind asset the frozen definition projects over. The
       // deploy freeze writes a `workflow_definition` over this asset, and the
       // trigger route reads this asset row to hydrate.

@@ -32,14 +32,28 @@ import {
   createAssetService,
   type EventCollectorRegistry,
   type SessionService,
+  type SidecarRouter,
 } from "@intx/hub-sessions";
+import {
+  parseHeaderSection,
+  parseMimePart,
+  parseMultipart,
+  extractBoundary,
+} from "@intx/mime";
+import { verifyDetachedSignature } from "@intx/crypto";
+import { base64Decode, hexDecode } from "@intx/types";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAsset, seedGrant, seedPrincipal } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedGrant,
+  seedPrincipal,
+  seedPrincipalKey,
+} from "@intx/test-harness/seed";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 
 import {
@@ -79,6 +93,7 @@ const TriggerResponse = type({
 
 let env: DeployFlowEnv;
 let h: TestDb;
+let callerPublicKey = "";
 
 function createMockGetSession(userId: string): GetSession {
   const now = new Date("2025-01-01");
@@ -156,6 +171,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         refId: CALLER_USER_ID,
         status: "active",
       });
+      // The caller signs the trigger mail with its durable hub principal key,
+      // which production mints at principal creation; the direct row insert
+      // above bypasses that, so mint it here or the trigger's sign() throws.
+      // The returned public key anchors the outbound-signature assertion below.
+      callerPublicKey = await seedPrincipalKey(h.db, CALLER_PRINCIPAL_ID);
       await seedAsset(h.db, {
         id: DEFINITION_ASSET_ID,
         tenantId: TENANT_ID,
@@ -249,12 +269,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         repoStore: env.hub.agentRepoStore.repoStore,
       });
+      // Capture the base64 the trigger hands to routeMail so the outbound
+      // signature can be verified, while still delegating to the real router so
+      // the send reaches the sidecar and the reconciliation assertions hold.
+      let capturedMail: string | undefined;
+      const capturingRouter: SidecarRouter = {
+        ...env.hub.router,
+        routeMail(agentAddress, rawMessage, messageId) {
+          capturedMail = rawMessage;
+          return env.hub.router.routeMail(agentAddress, rawMessage, messageId);
+        },
+      };
       const runApp = createApp({
         getSession: createMockGetSession(CALLER_USER_ID),
         authHandler: () => new Response("", { status: 404 }),
         db: h.db,
         grantStore,
-        sidecarRouter: env.hub.router,
+        sidecarRouter: capturingRouter,
         sessionService: createMockSessionService(),
         eventCollectors: createMockEventCollectors(),
         assetService,
@@ -288,6 +319,40 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(runRows).toHaveLength(1);
       expect(runRows[0]?.id).toBe(DEPLOYMENT_ID);
       expect(runRows[0]?.anchorRunId).toBe(DEPLOYMENT_ID);
+
+      // The trigger signs hub-originated mail with the caller's durable hub
+      // principal key: the outbound message's detached signature verifies
+      // against the caller principal's public key, not a per-call throwaway
+      // key, so a user sender resolves to the key that signed its mail.
+      if (capturedMail === undefined) {
+        throw new Error("routeMail was not called; no outbound mail captured");
+      }
+      const rawMail = base64Decode(capturedMail);
+      const { headers, bodyOffset } = parseHeaderSection(rawMail);
+      const contentType = headers.get("content-type");
+      if (contentType === undefined) {
+        throw new Error("captured mail has no content-type header");
+      }
+      const boundary = extractBoundary(contentType);
+      if (!boundary) {
+        throw new Error("captured mail has no multipart boundary");
+      }
+      const parts = parseMultipart(rawMail.slice(bodyOffset), boundary);
+      expect(parts).toHaveLength(2);
+      const signedPart = parts[0];
+      const signaturePart = parts[1];
+      if (signedPart === undefined || signaturePart === undefined) {
+        throw new Error(
+          "captured mail is not a two-part multipart/signed body",
+        );
+      }
+      const parsedSignature = parseMimePart(signaturePart);
+      const verified = await verifyDetachedSignature(
+        signedPart,
+        parsedSignature.body,
+        hexDecode(callerPublicKey),
+      );
+      expect(verified).toBe(true);
     });
   },
 );
