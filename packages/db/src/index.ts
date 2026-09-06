@@ -23,6 +23,12 @@ export {
 } from "./principal-key-store";
 export { lookupLocalPrincipalSigner } from "./signer-identity";
 export {
+  resolveSenderKey,
+  auditSenderKeys,
+  type SenderKeyResolution,
+  type SenderKeyAuditReport,
+} from "./sender-key-resolver";
+export {
   createApprovalStore,
   type ApprovalStore,
   type ResolveApprovalArgs,
