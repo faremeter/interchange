@@ -4,7 +4,7 @@ import { describeRoute, resolver, validator } from "hono-openapi";
 
 import { principal, principalRole, role, user } from "@intx/db/schema";
 import { createPrincipalStore, parsePrincipalRow } from "@intx/db";
-import type { DB } from "@intx/db";
+import type { DB, PrincipalKeyStore } from "@intx/db";
 import {
   PrincipalResponse,
   UpdatePrincipal,
@@ -373,15 +373,17 @@ export function createPrincipalRoutes({
 // Invite is mounted separately at ../members/invite in app.ts
 export type CreateInviteRoutesDeps = {
   db: DB["db"];
+  principalKeyStore: PrincipalKeyStore;
   requireGrant: RequireGrant;
 };
 
 export function createInviteRoutes({
   db,
+  principalKeyStore,
   requireGrant,
 }: CreateInviteRoutesDeps): Hono<TenantEnv> {
   const inviteApp = new Hono<TenantEnv>();
-  const principalStore = createPrincipalStore(db);
+  const principalStore = createPrincipalStore(db, principalKeyStore);
 
   inviteApp.post(
     "/",

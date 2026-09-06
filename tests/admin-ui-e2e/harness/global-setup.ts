@@ -155,6 +155,7 @@ const ProvisionResult = type({
     DB_PASSWORD: "string",
     BETTER_AUTH_SECRET: "string",
     CREDENTIAL_ENCRYPTION_KEY: "string",
+    PRINCIPAL_KEY_ENCRYPTION_KEY: "string",
   },
   // The migration role's connection to the provisioned database. The seed
   // writes through this table-owning identity; unlike the hub role it always

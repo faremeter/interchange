@@ -61,6 +61,8 @@ The private key seed is sealed at rest with the same AEAD cipher that protects c
 
 Custody is an **attribution** model, not non-repudiation. A signature proves the action came from a holder of the principal's private key, which is enough to attribute the action to the principal within the system. It is **not** proof against the hub operator, who also holds the key and could sign as the principal. Non-repudiation would require the private key to live somewhere the hub cannot reach, which the hub-custodied model does not provide.
 
+Every principal is minted a signing key when it is created, in the same transaction as the principal row, so a principal never exists without a key. The hub seals the seed under `PRINCIPAL_KEY_ENCRYPTION_KEY` (32 bytes, hex) -- a separate key from `CREDENTIAL_ENCRYPTION_KEY`, so the two rotate independently -- and refuses to start without it.
+
 ### Request resolution flow
 
 ```

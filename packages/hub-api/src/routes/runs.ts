@@ -9,7 +9,7 @@ import {
   workflowDefinition,
   workflowRun,
 } from "@intx/db/schema";
-import type { DB, ApprovalStore } from "@intx/db";
+import type { DB, ApprovalStore, PrincipalKeyStore } from "@intx/db";
 import { authorize } from "@intx/authz";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { extractPartByPath } from "@intx/mime";
@@ -150,6 +150,7 @@ function runToRecord(row: RunListRow): RoutableRecord {
 
 export type CreateRunRoutesDeps = {
   db: DB["db"];
+  principalKeyStore: PrincipalKeyStore;
   sessionService: SessionService;
   sidecarRouter: SidecarRouter;
   eventCollectors: EventCollectorRegistry;
@@ -172,6 +173,7 @@ export type CreateRunRoutesDeps = {
 
 export function createRunRoutes({
   db,
+  principalKeyStore,
   sidecarRouter,
   eventCollectors,
   repoStore,
@@ -196,6 +198,7 @@ export function createRunRoutes({
     repoStore !== null
       ? createWorkflowRunTrigger({
           db,
+          principalKeyStore,
           grantStore,
           sidecarRouter,
           ...(workflowDispatchService !== undefined

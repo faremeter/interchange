@@ -51,7 +51,8 @@ import {
   test,
 } from "bun:test";
 
-import { createGrantStore } from "@intx/db";
+import { createGrantStore, createPrincipalKeyStore } from "@intx/db";
+import { createTestCredentialCipher } from "@intx/test-harness/crypto";
 import { tenant as tenantTable } from "@intx/db/schema";
 import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
@@ -146,6 +147,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // deliverMailToRecipient through its true grants-write seam.
       const materializer = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
+        principalKeyStore: createPrincipalKeyStore({
+          db: h.db,
+          cipher: createTestCredentialCipher(),
+        }),
         grantStore: createGrantStore(h.db),
       });
       env = await startDeployFlowEnv({
