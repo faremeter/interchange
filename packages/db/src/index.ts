@@ -21,6 +21,7 @@ export {
   type CreatePrincipalKeyStoreDeps,
   type PrincipalKeyStore,
 } from "./principal-key-store";
+export { lookupLocalPrincipalSigner } from "./signer-identity";
 export {
   createApprovalStore,
   type ApprovalStore,
