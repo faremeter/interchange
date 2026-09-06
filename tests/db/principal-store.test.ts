@@ -8,7 +8,11 @@ import {
 } from "bun:test";
 import { and, eq } from "drizzle-orm";
 
-import { createPrincipalStore, createPrincipalKeyStore } from "@intx/db";
+import {
+  createPrincipalStore,
+  createPrincipalKeyStore,
+  type PrincipalKeyStore,
+} from "@intx/db";
 import { principal, principalKey } from "@intx/db/schema";
 import {
   createTestDb,
@@ -152,6 +156,55 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(principal)
         .where(eq(principal.id, "prn_invited"));
       expect(persisted?.status).toBe("invited");
+    });
+
+    async function principalExists(id: string): Promise<boolean> {
+      const rows = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.id, id));
+      return rows.length > 0;
+    }
+
+    test("a failed key mint rolls back the principal insert", async () => {
+      // The key store throws on mint, so the whole transaction -- the principal
+      // insert included -- must roll back and leave no principal row. This pins
+      // the feature's headline invariant: a principal never exists without a key.
+      const throwingKeyStore: PrincipalKeyStore = {
+        generate: async () => {
+          throw new Error("mint boom");
+        },
+        sign: async () => new Uint8Array(64),
+        getPublicKey: async () => "pky_unused",
+      };
+      const store = createPrincipalStore(h.db, throwingKeyStore);
+      const now = new Date();
+
+      await expect(
+        store.create({
+          id: "prn_create_rollback",
+          tenantId: TENANT,
+          kind: "user",
+          refId: "usr_create_rollback",
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+        }),
+      ).rejects.toThrow(/mint boom/);
+      expect(await principalExists("prn_create_rollback")).toBe(false);
+
+      await expect(
+        store.createIfAbsent({
+          id: "prn_ifabsent_rollback",
+          tenantId: TENANT,
+          kind: "user",
+          refId: "usr_ifabsent_rollback",
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+        }),
+      ).rejects.toThrow(/mint boom/);
+      expect(await principalExists("prn_ifabsent_rollback")).toBe(false);
     });
   },
 );
