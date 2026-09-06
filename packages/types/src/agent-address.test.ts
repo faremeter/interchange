@@ -3,6 +3,7 @@ import { describe, test, expect } from "bun:test";
 import {
   formatRunAddress,
   isRunAddress,
+  parseAddress,
   parseRunAddress,
 } from "./agent-address";
 
@@ -11,6 +12,38 @@ describe("formatRunAddress", () => {
     expect(formatRunAddress("run_abc123", "tenant.example")).toBe(
       "run_abc123@tenant.example",
     );
+  });
+});
+
+describe("parseAddress", () => {
+  test("splits any local part from its domain without a prefix check", () => {
+    expect(parseAddress("usr_alice@tenant.example")).toEqual({
+      localPart: "usr_alice",
+      domain: "tenant.example",
+    });
+    expect(parseAddress("run_abc123@tenant.example")).toEqual({
+      localPart: "run_abc123",
+      domain: "tenant.example",
+    });
+  });
+
+  test("returns null when the @ is missing", () => {
+    expect(parseAddress("no-at-sign")).toBeNull();
+  });
+
+  test("returns null when the local part is empty", () => {
+    expect(parseAddress("@tenant.example")).toBeNull();
+  });
+
+  test("returns null when the domain part is empty", () => {
+    expect(parseAddress("usr_alice@")).toBeNull();
+  });
+
+  test("splits on the first @ and treats the rest as the domain", () => {
+    expect(parseAddress("usr_alice@foo@bar")).toEqual({
+      localPart: "usr_alice",
+      domain: "foo@bar",
+    });
   });
 });
 
