@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, resolver, validator } from "hono-openapi";
 
@@ -81,10 +81,16 @@ export function createTenantRoutes({
       const body = c.req.valid("json");
 
       const tenantId = generateId("tenant");
-      const domain = `${body.slug}.localhost`;
+      // Derive the domain from a lowercased slug and check the slug conflict
+      // case-insensitively. An inbound mail `From` is lowercased when parsed, so
+      // a sender address must map to exactly one tenant; `tenant_domain_lower_idx`
+      // enforces a unique `lower(domain)`. Normalizing here keeps a case-variant
+      // slug a clean 409 instead of a unique-violation 500, and stops a
+      // case-variant registration from shadowing another tenant's senders.
+      const domain = `${body.slug.toLowerCase()}.localhost`;
 
       const existing = await db.query.tenant.findFirst({
-        where: eq(tenant.slug, body.slug),
+        where: eq(sql`lower(${tenant.slug})`, body.slug.toLowerCase()),
       });
       if (existing) {
         return c.json(
