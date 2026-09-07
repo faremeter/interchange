@@ -34,15 +34,17 @@ export type SenderKeyResolution =
  * "unresolvable sender" answer the caller acts on; it is NOT an error.
  *
  * Addresses are matched case-insensitively. Inbound `From` addresses are
- * lowercased when parsed (see `@intx/mime` `extractAddrSpec`), but a stored
- * tenant domain derives from an unnormalized slug, so the address is normalized
- * here and stored values are compared under `lower(...)`. Because the tenant
- * domain and principal `refId` uniqueness constraints are case-sensitive,
- * case-variant rows can coexist and a case-insensitive user-address match can
- * hit more than one. The resolver prefers the exact (already-lowercase,
- * canonical) row; only when no exact row exists AND the case-insensitive match
- * is not unique is the sender genuinely ambiguous, and the resolver throws
- * rather than silently return one row's key -- which could be another tenant's.
+ * lowercased when parsed (see `@intx/mime` `extractAddrSpec`), so the address is
+ * normalized here and stored values are compared under `lower(...)`. Tenant
+ * domains are `lower(domain)`-unique (`tenant_domain_lower_idx`), so a
+ * normalized domain matches at most one tenant. A user `refId` is a
+ * case-sensitively-unique betterAuth id that can carry uppercase; lowercasing it
+ * to reconcile with the parser is lossy, so the resolver prefers the exact
+ * (already-lowercase) row and falls back to a case-insensitive match to find a
+ * mixed-case-stored refId. When two principals in one tenant hold case-variant
+ * refIds the case-insensitive match is not unique and no exact row disambiguates
+ * it: the resolver throws rather than silently return one, which would attribute
+ * the sender to the wrong principal.
  */
 export async function resolveSenderKey(
   db: DBExecutor,
@@ -71,10 +73,7 @@ export async function resolveSenderKey(
   }
 
   // A user sender resolves to its hub-custodied principal key, keyed by the
-  // `(tenant domain, user refId)` its From address carries. Prefer the exact
-  // (already-lowercase, canonical) row: the normalized address equals it, and
-  // the tenant domain is case-sensitively unique, so at most one tenant holds
-  // exactly this domain.
+  // `(tenant domain, user refId)` its From address carries.
   const principalId = await resolveUserPrincipalId(db, domain, localPart);
   if (principalId === null) return null;
   // The principal exists; a principal with no active key violates INTR-164's
@@ -87,11 +86,17 @@ export async function resolveSenderKey(
 
 /**
  * Resolve the user principal a normalized `<localPart>@<domain>` address names,
- * or `null` when none matches. Prefers the exact (already-lowercase) row; only
- * when no exact row exists does it fall back to a case-insensitive match, and a
- * non-unique case-insensitive match with no exact row is genuinely ambiguous --
- * two case-variant senders with no canonical row -- so it throws rather than
- * return an arbitrary one, which could be another tenant's principal.
+ * or `null` when none matches. `lower(domain)` is unique, so the domain selects
+ * at most one tenant; within it, prefer the principal whose `refId` is exactly
+ * the normalized localPart (the canonical lowercase refId). The domain is
+ * matched case-insensitively in both queries because an existing tenant's stored
+ * domain may be mixed-case (creation lowercases new ones, but legacy rows are
+ * left as stored). Only when no exact refId exists does it fall back to a
+ * case-insensitive refId match, which finds a mixed-case-stored refId. A
+ * non-unique case-insensitive match with no exact row means two principals in
+ * the tenant hold case-variant refIds; that is genuinely ambiguous, so it throws
+ * rather than return an arbitrary one and attribute the sender to the wrong
+ * principal.
  */
 async function resolveUserPrincipalId(
   db: DBExecutor,
@@ -104,7 +109,7 @@ async function resolveUserPrincipalId(
     .innerJoin(tenant, eq(principal.tenantId, tenant.id))
     .where(
       and(
-        eq(tenant.domain, domain),
+        eq(sql`lower(${tenant.domain})`, domain),
         eq(principal.kind, "user"),
         eq(principal.refId, localPart),
       ),
@@ -128,8 +133,8 @@ async function resolveUserPrincipalId(
   if (caseInsensitive.length > 1) {
     throw new Error(
       `resolveSenderKey: user sender ${localPart}@${domain} is ambiguous; it ` +
-        `matches multiple case-variant principals with no canonical row -- ` +
-        `case-variant tenant domains or refIds must be reconciled`,
+        `matches multiple principals with case-variant refIds and no canonical ` +
+        `row -- the colliding principal refIds must be reconciled`,
     );
   }
   const [only] = caseInsensitive;

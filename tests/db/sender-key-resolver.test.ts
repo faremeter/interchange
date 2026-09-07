@@ -148,61 +148,86 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
     ).toEqual({ source: "run", publicKey: RUN_PUBLIC_KEY });
   });
 
-  test("prefers the exact canonical row when a case-variant domain collides", async () => {
-    // Tenant domains are only case-sensitively unique, so a mixed-case variant
-    // can coexist with the canonical lowercase domain. Seed the WRONG (mixed)
-    // one first; the lowercased inbound address must still resolve to the
-    // canonical lowercase tenant's key, not an arbitrary colliding row.
-    await seedTenant("tnt_upper", "Acme.localhost");
+  test("prefers the exact canonical refId when a case-variant refId collides", async () => {
+    // A refId is a case-sensitively-unique betterAuth id that can carry
+    // uppercase, so two principals in one tenant can hold case-variant refIds.
+    // Seed the mixed-case variant first; the lowercased inbound address must
+    // still resolve to the exact (canonical lowercase) principal's key.
+    await seedTenant("tnt_case", "case.localhost");
     await seedPrincipal(h.db, {
-      id: "prn_upper",
-      tenantId: "tnt_upper",
+      id: "prn_variant",
+      tenantId: "tnt_case",
+      kind: "user",
+      refId: "USR_Alice",
+      status: "active",
+    });
+    await store.generate("prn_variant");
+    await seedPrincipal(h.db, {
+      id: "prn_exact",
+      tenantId: "tnt_case",
       kind: "user",
       refId: "usr_alice",
       status: "active",
     });
-    await store.generate("prn_upper");
+    const keyExact = await store.generate("prn_exact");
 
-    await seedTenant("tnt_lower", "acme.localhost");
+    expect(
+      await resolveSenderKey(h.db, store, "usr_alice@case.localhost"),
+    ).toEqual({ source: "user", publicKey: keyExact });
+  });
+
+  test("prefers the exact refId even when the tenant's stored domain is mixed-case", async () => {
+    // A legacy tenant whose stored domain was never lowercased (creation
+    // lowercases new ones; existing rows are left as stored). The exact-refId
+    // preference must still fire -- the domain is matched case-insensitively --
+    // so a mixed-case stored domain does not force the ambiguous ci fallback.
+    await seedTenant("tnt_legacy", "Acme.Localhost");
     await seedPrincipal(h.db, {
-      id: "prn_lower",
-      tenantId: "tnt_lower",
+      id: "prn_legacy_variant",
+      tenantId: "tnt_legacy",
+      kind: "user",
+      refId: "USR_Alice",
+      status: "active",
+    });
+    await store.generate("prn_legacy_variant");
+    await seedPrincipal(h.db, {
+      id: "prn_legacy_exact",
+      tenantId: "tnt_legacy",
       kind: "user",
       refId: "usr_alice",
       status: "active",
     });
-    const keyLower = await store.generate("prn_lower");
+    const keyExact = await store.generate("prn_legacy_exact");
 
     expect(
       await resolveSenderKey(h.db, store, "usr_alice@acme.localhost"),
-    ).toEqual({ source: "user", publicKey: keyLower });
+    ).toEqual({ source: "user", publicKey: keyExact });
   });
 
-  test("throws when a user address is ambiguous with no canonical row", async () => {
-    // Two case-variant domains, neither equal to the lowercased inbound address,
-    // so no canonical row disambiguates them. Rather than return an arbitrary
-    // tenant's key, resolution fails loud.
-    await seedTenant("tnt_v1", "Acme.localhost");
+  test("throws when a user address is ambiguous with no canonical refId", async () => {
+    // Two principals in one tenant with case-variant refIds, neither equal to
+    // the lowercased inbound localPart, so no canonical row disambiguates them.
+    // Rather than attribute the sender to an arbitrary principal, it fails loud.
+    await seedTenant("tnt_amb", "amb.localhost");
     await seedPrincipal(h.db, {
       id: "prn_v1",
-      tenantId: "tnt_v1",
+      tenantId: "tnt_amb",
       kind: "user",
-      refId: "usr_alice",
+      refId: "Usr_Alice",
       status: "active",
     });
     await store.generate("prn_v1");
-    await seedTenant("tnt_v2", "ACME.localhost");
     await seedPrincipal(h.db, {
       id: "prn_v2",
-      tenantId: "tnt_v2",
+      tenantId: "tnt_amb",
       kind: "user",
-      refId: "usr_alice",
+      refId: "USR_ALICE",
       status: "active",
     });
     await store.generate("prn_v2");
 
     await expect(
-      resolveSenderKey(h.db, store, "usr_alice@acme.localhost"),
+      resolveSenderKey(h.db, store, "usr_alice@amb.localhost"),
     ).rejects.toThrow(/ambiguous/);
   });
 
