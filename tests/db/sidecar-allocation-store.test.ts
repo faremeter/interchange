@@ -585,6 +585,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dispatch-terminal",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-terminal",
+        senderAddress: "principal-alloc@tenant.example",
         rawMessage: new Uint8Array([1, 2, 3]),
         stepGrants: [],
       });
@@ -775,6 +776,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dispatch-unrecoverable-pending",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-unrecoverable-pending",
+        senderAddress: "principal-alloc@tenant.example",
         rawMessage: new Uint8Array([1, 2, 3]),
         stepGrants: [],
       });
@@ -782,6 +784,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dispatch-unrecoverable-acknowledged",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-unrecoverable-acknowledged",
+        senderAddress: "principal-alloc@tenant.example",
         rawMessage: new Uint8Array([4, 5, 6]),
         stepGrants: [],
       });

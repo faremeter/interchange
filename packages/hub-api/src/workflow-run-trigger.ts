@@ -473,6 +473,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
             id: `dispatch:${anchorRunId}:${messageId}`,
             anchorRunId: anchorRunId,
             messageId,
+            senderAddress: fromAddr,
             rawMessage,
             stepGrants: canonicalStepGrants,
             now,

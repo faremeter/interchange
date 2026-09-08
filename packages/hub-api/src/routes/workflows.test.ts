@@ -614,6 +614,7 @@ function createMockWorkflowDispatchService(
           anchorRunId: args.anchorRunId,
           messageId: args.signal.signalId,
           kind: "signal",
+          senderAddress: null,
           rawMessage: new TextEncoder().encode(JSON.stringify(args.signal)),
           stepGrants: [],
           status: "pending",

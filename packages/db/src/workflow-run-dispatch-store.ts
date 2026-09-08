@@ -30,6 +30,7 @@ export type EnqueueWorkflowRunDispatchArgs = {
   readonly id: string;
   readonly anchorRunId: string;
   readonly messageId: string;
+  readonly senderAddress: string;
   readonly rawMessage: Uint8Array;
   readonly stepGrants: RunGrantsFrameType["stepGrants"];
   readonly now?: Date;
@@ -53,6 +54,7 @@ type InsertOrReconcileDispatchArgs = {
   readonly anchorRunId: string;
   readonly messageId: string;
   readonly kind: ParsedDispatch["kind"];
+  readonly senderAddress: string | null;
   readonly rawMessage: Uint8Array;
   readonly stepGrants: RunGrantsFrameType["stepGrants"];
   readonly now?: Date;
@@ -158,6 +160,7 @@ async function insertOrReconcileDispatch(
       anchorRunId: args.anchorRunId,
       messageId: args.messageId,
       kind: args.kind,
+      senderAddress: args.senderAddress,
       rawMessage: args.rawMessage,
       stepGrants: args.stepGrants,
       status: "pending",
@@ -242,6 +245,7 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
         anchorRunId: args.anchorRunId,
         messageId: args.messageId,
         kind: "mail",
+        senderAddress: args.senderAddress,
         rawMessage: args.rawMessage,
         stepGrants,
         ...(args.now !== undefined ? { now: args.now } : {}),
@@ -263,6 +267,7 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
         anchorRunId: args.anchorRunId,
         messageId: signal.signalId,
         kind: "signal",
+        senderAddress: null,
         rawMessage: encoded,
         stepGrants: [],
         ...(args.now !== undefined ? { now: args.now } : {}),

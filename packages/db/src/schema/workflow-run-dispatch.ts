@@ -43,6 +43,7 @@ export const workflowRunDispatch = pgTable(
       .$type<WorkflowRunDispatchKind>()
       .notNull()
       .default("mail"),
+    senderAddress: text("sender_address"),
     rawMessage: bytea("raw_message").notNull(),
     stepGrants: jsonb("step_grants").notNull(),
     status: text("status")
@@ -96,6 +97,15 @@ export const workflowRunDispatch = pgTable(
     check(
       "workflow_run_dispatch_pending_schedule_check",
       sql`${t.status} <> 'pending' or ${t.nextAttemptAt} is not null`,
+    ),
+    // A deliverable mail dispatch must carry the hub-verified sender that
+    // its inbound frame is stamped with; signals have no sender. Terminal
+    // (settled/failed) mail rows are exempt because they are never
+    // re-dispatched and so never reconstruct a frame -- this is what lets a
+    // migration fail legacy in-flight mail in place rather than delete it.
+    check(
+      "workflow_run_dispatch_mail_sender_check",
+      sql`${t.kind} <> 'mail' or ${t.status} in ('settled', 'failed') or ${t.senderAddress} is not null`,
     ),
   ],
 );
