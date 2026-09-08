@@ -21,6 +21,7 @@ function dispatch(overrides: Partial<ClaimedDispatch> = {}): ClaimedDispatch {
     anchorRunId: "deployment-1",
     messageId: "message-1",
     kind: "mail",
+    senderAddress: "principal-1@tenant-1.example",
     rawMessage: new TextEncoder().encode("raw mail"),
     stepGrants: [],
     status: "pending",

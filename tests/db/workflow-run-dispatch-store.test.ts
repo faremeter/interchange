@@ -16,6 +16,7 @@ import {
   sidecar,
   sidecarAllocation,
   workflowDefinition,
+  workflowRunDispatch,
 } from "@intx/db/schema";
 import { RunGrantsFrame, SignalDeliverFrame } from "@intx/types/sidecar";
 import {
@@ -28,6 +29,7 @@ import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
 const TENANT_ID = "tnt-dispatch";
 const DEFINITION_ID = "wfd-dispatch";
 const ANCHOR_RUN_ID = "dep-dispatch";
+const SENDER_ADDRESS = "principal-dispatch@tnt-dispatch.example";
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "workflowRunDispatchStore (real DB)",
@@ -88,12 +90,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dispatch-1",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "dispatch-message-1",
+        senderAddress: SENDER_ADDRESS,
         rawMessage,
         stepGrants: [],
       });
       expect(enqueued.created).toBe(true);
       expect(enqueued.dispatch.kind).toBe("mail");
       expect(enqueued.dispatch.status).toBe("pending");
+      expect(enqueued.dispatch.senderAddress).toBe(SENDER_ADDRESS);
 
       const claimed = await store.claimNextPending({
         leaseId: "delivery-lease-1",
@@ -142,6 +146,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dispatch-dedup",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "dispatch-message-dedup",
+        senderAddress: SENDER_ADDRESS,
         rawMessage: new Uint8Array([1, 2, 3]),
         stepGrants,
       };
@@ -177,6 +182,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dispatch-requeue",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "dispatch-message-requeue",
+        senderAddress: SENDER_ADDRESS,
         rawMessage: new Uint8Array([1]),
         stepGrants: [],
       });
@@ -203,6 +209,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dispatch-fenced-ack",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-fenced-ack",
+        senderAddress: SENDER_ADDRESS,
         rawMessage: new Uint8Array([1]),
         stepGrants: [],
       });
@@ -263,6 +270,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const enqueued = await store.enqueueSignal(args);
       expect(enqueued.created).toBe(true);
       expect(enqueued.dispatch.kind).toBe("signal");
+      expect(enqueued.dispatch.senderAddress).toBeNull();
       expect(
         SignalDeliverFrame.assert(
           JSON.parse(new TextDecoder().decode(enqueued.dispatch.rawMessage)),
@@ -304,6 +312,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           id: "dispatch-mail-second",
           anchorRunId: ANCHOR_RUN_ID,
           messageId: signalFirst.signal.signalId,
+          senderAddress: SENDER_ADDRESS,
           rawMessage: signalDispatch.dispatch.rawMessage,
           stepGrants: [],
         }),
@@ -328,6 +337,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dispatch-mail-first",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: mailFirstSignal.signalId,
+        senderAddress: SENDER_ADDRESS,
         rawMessage: encodedSignal,
         stepGrants: [],
       });
@@ -349,6 +359,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               id: "dispatch-mail-rollback",
               anchorRunId: ANCHOR_RUN_ID,
               messageId: "message-rollback",
+              senderAddress: SENDER_ADDRESS,
               rawMessage: new Uint8Array([1, 2, 3]),
               stepGrants: [],
             },
@@ -381,6 +392,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         id: "dispatch-already-consumed",
         anchorRunId: ANCHOR_RUN_ID,
         messageId: "message-consumed",
+        senderAddress: SENDER_ADDRESS,
         rawMessage: new Uint8Array([1]),
         stepGrants: [],
       });
@@ -413,6 +425,53 @@ describe.skipIf(!harnessDbEnvAvailable())(
         failureMessage: "run is terminal",
         nextAttemptAt: null,
       });
+    });
+
+    test("rejects a live mail dispatch with no sender", async () => {
+      // A mail dispatch that can still be re-dispatched must carry a
+      // hub-verified sender. The typed enqueue() API cannot express a null
+      // mail sender, so this writes the row directly to exercise the DB
+      // constraint that backstops the signal path and any direct writer.
+      const error = await h.db
+        .insert(workflowRunDispatch)
+        .values({
+          id: "dispatch-no-sender",
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: "message-no-sender",
+          kind: "mail",
+          rawMessage: new Uint8Array([1]),
+          stepGrants: [],
+        })
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+      expect(error).not.toBeNull();
+      // drizzle wraps the driver error as "Failed query: ..."; the violated
+      // constraint name is carried on the cause, not the wrapper message.
+      const cause = error instanceof Error ? error.cause : error;
+      const causeMessage =
+        cause instanceof Error ? cause.message : String(cause);
+      expect(causeMessage).toContain("workflow_run_dispatch_mail_sender_check");
+    });
+
+    test("exempts a terminal mail dispatch with no sender", async () => {
+      // A settled or failed mail dispatch never reconstructs a frame, so it
+      // needs no sender. This is what lets the migration fail in-flight
+      // legacy mail rows in place rather than delete them.
+      await h.db.insert(workflowRunDispatch).values({
+        id: "dispatch-terminal-no-sender",
+        anchorRunId: ANCHOR_RUN_ID,
+        messageId: "message-terminal-no-sender",
+        kind: "mail",
+        status: "failed",
+        rawMessage: new Uint8Array([1]),
+        stepGrants: [],
+      });
+      const store = createWorkflowRunDispatchStore(h.db);
+      const row = await store.findById("dispatch-terminal-no-sender");
+      expect(row?.status).toBe("failed");
+      expect(row?.senderAddress).toBeNull();
     });
   },
 );
