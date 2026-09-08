@@ -126,6 +126,7 @@ describe("createWorkflowDispatchService", () => {
         "run_abc",
         [],
         "cmF3IG1haWw=",
+        "principal-1@tenant-1.example",
         "message-1",
       ],
     ]);

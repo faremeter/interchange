@@ -1160,7 +1160,11 @@ describe("sidecar↔hub integration", () => {
       );
 
       const encoded = base64Encode(VALID_MESSAGE);
-      const accepted = env.router.routeMail(deploymentAddress, encoded);
+      const accepted = env.router.routeMail(
+        deploymentAddress,
+        encoded,
+        "user@integration.interchange",
+      );
       expect(accepted).toBe(true);
 
       await waitFor(() => routed.length > 0);

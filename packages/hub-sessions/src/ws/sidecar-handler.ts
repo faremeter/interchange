@@ -191,7 +191,9 @@ export type SidecarRouter = {
   routeMail(
     agentAddress: string,
     rawMessage: string,
+    authenticatedSender: string,
     messageId?: string,
+    runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] },
   ): boolean;
   /**
    * Deliver a run's authorization grants to the sidecar hosting the named
@@ -377,6 +379,7 @@ export type SidecarAllocationRouter = {
     runId: string,
     stepGrants: RunGrantsFrame["stepGrants"],
     rawMessage: string,
+    authenticatedSender: string,
     messageId: string,
   ): Promise<void>;
   /** Deliver an idempotent signal to the exact provisioned generation. */
@@ -1023,7 +1026,14 @@ export function createSidecarRouter(
           return;
         }
         if (frame.delivered !== true) {
-          return handleMailOutbound(frame.rawMessage, frame.recipients);
+          // frame.senderAddress is the sender this connection was just gated
+          // on by connOwnsAddress above -- a hub-verified value. Thread it so
+          // the relayed inbound frame is stamped with it, not the MIME From.
+          return handleMailOutbound(
+            frame.rawMessage,
+            frame.senderAddress,
+            frame.recipients,
+          );
         }
         if (lookups.persistMail) {
           return handleMailPersist(
@@ -1308,6 +1318,7 @@ export function createSidecarRouter(
 
   async function handleMailOutbound(
     rawMessage: string,
+    authenticatedSender: string,
     recipients: string[],
   ): Promise<void> {
     // A mail addressed to more than one workflow deployment would birth a
@@ -1343,7 +1354,11 @@ export function createSidecarRouter(
       // co-recipients. The catch fails THIS recipient closed (its run never
       // starts under-authorized) and continues to the rest.
       try {
-        const outcome = await deliverMailToRecipient(recipient, rawMessage);
+        const outcome = await deliverMailToRecipient(
+          recipient,
+          rawMessage,
+          authenticatedSender,
+        );
         if (outcome === "unrouted") unrouted.push(recipient);
       } catch (err) {
         logger.error`Failed to deliver mail to ${recipient}: ${err instanceof Error ? err.message : String(err)}`;
@@ -1381,6 +1396,7 @@ export function createSidecarRouter(
   async function deliverMailToRecipient(
     recipient: string,
     rawMessage: string,
+    authenticatedSender: string,
   ): Promise<"routed" | "unrouted" | "failed-closed"> {
     if (
       lookups.materializeMailTriggeredRunGrants !== undefined &&
@@ -1430,6 +1446,7 @@ export function createSidecarRouter(
         const outcome: "routed" | "unrouted" = routeMail(
           recipient,
           rawMessage,
+          authenticatedSender,
           messageId,
           { runId, stepGrants: result.stepGrants },
         )
@@ -1442,7 +1459,9 @@ export function createSidecarRouter(
       // authorize. No run is committed here, so no ack handshake is needed.
     }
 
-    return routeMail(recipient, rawMessage) ? "routed" : "unrouted";
+    return routeMail(recipient, rawMessage, authenticatedSender)
+      ? "routed"
+      : "unrouted";
   }
 
   async function handleMailPersist(
@@ -2357,9 +2376,17 @@ export function createSidecarRouter(
   function routeMail(
     agentAddress: string,
     rawMessage: string,
+    authenticatedSender: string,
     messageId?: string,
     runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] },
   ): boolean {
+    // `authenticatedSender` is hub-assigned by the caller from a hub-verified
+    // value (the ownership-gated sender of a relayed mail, or the triggering
+    // principal's address) -- never the message's own MIME `From`. It rides
+    // the frame as the hub-verified sender of record, so a recipient can take
+    // the sender from it rather than the forgeable `From`; no consumer reads
+    // it yet.
+    //
     // Carry the hub-minted messageId on the frame so the sidecar's durable-
     // receipt ack (`mail.inbound.ack`) keys on the same id the hub tracks, and
     // a redelivery replays identical bytes for the downstream RunStarted dedup.
@@ -2370,6 +2397,7 @@ export function createSidecarRouter(
       type: "mail.inbound",
       agentAddress,
       rawMessage,
+      authenticatedSender,
       ...(messageId !== undefined ? { messageId } : {}),
     };
     const ws = addressIndex.get(agentAddress);
@@ -2433,6 +2461,7 @@ export function createSidecarRouter(
     runId: string,
     stepGrants: RunGrantsFrame["stepGrants"],
     rawMessage: string,
+    authenticatedSender: string,
     messageId: string,
   ): Promise<void> {
     const { ws, conn } = await getAllocatedConnection(target, "routing");
@@ -2448,10 +2477,14 @@ export function createSidecarRouter(
       runId,
       stepGrants,
     });
+    // authenticatedSender is the sender persisted at enqueue on the dispatch
+    // row (the triggering principal's hub-verified address); the caller reads
+    // it from that row. It is never the message's MIME From.
     const frame: HubFrame = {
       type: "mail.inbound",
       agentAddress,
       rawMessage,
+      authenticatedSender,
       messageId,
     };
     conn.send(frame);

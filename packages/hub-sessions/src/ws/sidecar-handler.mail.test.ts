@@ -14,6 +14,8 @@ import {
   type SidecarAuthIdentity,
 } from "./sidecar-handler";
 
+const TEST_SENDER = "sender@example.test";
+
 function framesOfType(ws: { sent: string[] }, type: string) {
   return parsedFrames(ws).filter(
     (frame): frame is Record<string, unknown> =>
@@ -35,10 +37,16 @@ describe("SidecarRouter allocation mail durability", () => {
     const router = createAllocatedRouter();
     await connectAllocated(router, [TEST_IDENTITY.workflowRunAddress]);
 
-    expect(router.routeMail(TEST_IDENTITY.workflowRunAddress, "aGVsbG8=")).toBe(
-      true,
-    );
-    expect(router.routeMail("unknown@example.test", "aGVsbG8=")).toBe(false);
+    expect(
+      router.routeMail(
+        TEST_IDENTITY.workflowRunAddress,
+        "aGVsbG8=",
+        TEST_SENDER,
+      ),
+    ).toBe(true);
+    expect(
+      router.routeMail("unknown@example.test", "aGVsbG8=", TEST_SENDER),
+    ).toBe(false);
   });
 
   test("redelivers identical bytes until the allocated sidecar acks", async () => {
@@ -54,6 +62,7 @@ describe("SidecarRouter allocation mail durability", () => {
       router.routeMail(
         TEST_IDENTITY.workflowRunAddress,
         "aGVsbG8=",
+        TEST_SENDER,
         "mid-retry",
       ),
     ).toBe(true);
@@ -76,7 +85,12 @@ describe("SidecarRouter allocation mail durability", () => {
     const ws = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
-    router.routeMail(TEST_IDENTITY.workflowRunAddress, "aGk=", "mid-acked");
+    router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "aGk=",
+      TEST_SENDER,
+      "mid-acked",
+    );
 
     router.handleMessage(
       ws,
@@ -134,7 +148,12 @@ describe("SidecarRouter allocation mail durability", () => {
     );
     await tick();
 
-    router.routeMail(TEST_IDENTITY.workflowRunAddress, "b3duZWQ=", "mid-owned");
+    router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "b3duZWQ=",
+      TEST_SENDER,
+      "mid-owned",
+    );
     router.handleMessage(
       rogue,
       JSON.stringify({
@@ -169,7 +188,12 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
-    router.routeMail(TEST_IDENTITY.workflowRunAddress, "ZHJvcA==", "mid-drop");
+    router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "ZHJvcA==",
+      TEST_SENDER,
+      "mid-drop",
+    );
     await new Promise((resolve) => setTimeout(resolve, 80));
 
     expect(inboundCount(ws, "mid-drop")).toBe(3);
@@ -190,7 +214,7 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
-    router.routeMail(TEST_IDENTITY.workflowRunAddress, "eXk=");
+    router.routeMail(TEST_IDENTITY.workflowRunAddress, "eXk=", TEST_SENDER);
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
@@ -207,6 +231,7 @@ describe("SidecarRouter allocation mail durability", () => {
     router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "cmV0YWluZWQ=",
+      TEST_SENDER,
       "mid-retained",
     );
     router.handleClose(first);
@@ -234,6 +259,7 @@ describe("SidecarRouter allocation mail durability", () => {
     router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "ZXhwaXJlZA==",
+      TEST_SENDER,
       "mid-expired",
     );
     router.handleClose(first);
@@ -261,6 +287,7 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.anchorRunId,
       [],
       "dHJpZ2dlcg==",
+      TEST_SENDER,
       "mid-grants",
     );
     router.handleClose(first);
@@ -400,5 +427,80 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
         )
         .map((frame) => frame["type"]),
     ).toEqual(["mail.inbound"]);
+  });
+
+  test("relayed inbound mail carries the gate-verified sender", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    // The connection is gated on `senderAddress` by connOwnsAddress before the
+    // relay runs; the delivered frame must carry that hub-verified address as
+    // authenticatedSender, independent of whatever MIME From the opaque
+    // rawMessage bytes contain.
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    const inbound = framesOfType(ws, "mail.inbound");
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]?.["authenticatedSender"]).toBe(
+      TEST_IDENTITY.workflowRunAddress,
+    );
+    // And explicitly NOT the spoofable MIME From carried in rawMessage
+    // (`From: sender@example.test`) -- value-level independence, not just
+    // equality to the gate value.
+    expect(inbound[0]?.["authenticatedSender"]).not.toBe("sender@example.test");
+  });
+
+  test("drops mail.outbound whose sender the connection does not own", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    // The ownership gate landed by outcome #1 must still hold: a sidecar
+    // cannot relay mail as an address it does not own, so nothing is routed.
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: "not-owned@tenant.example",
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+  });
+
+  test("durable-dispatch inbound mail carries the enqueue-time sender", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    await router.sendWorkflowRunDispatchToAllocation(
+      TEST_TARGET,
+      TEST_IDENTITY.workflowRunAddress,
+      TEST_IDENTITY.anchorRunId,
+      [],
+      "dHJpZ2dlcg==",
+      TEST_SENDER,
+      "durable-mid",
+    );
+
+    const inbound = framesOfType(ws, "mail.inbound");
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]?.["authenticatedSender"]).toBe(TEST_SENDER);
   });
 });

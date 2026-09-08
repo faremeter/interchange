@@ -569,7 +569,15 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       };
     }
 
-    const delivered = sidecarRouter.routeMail(address, base64, messageId);
+    // Stamp the hub-verified principal address (fromAddr, the address the
+    // message is signed and addressed under) as the authenticated sender --
+    // never the message's own MIME From.
+    const delivered = sidecarRouter.routeMail(
+      address,
+      base64,
+      fromAddr,
+      messageId,
+    );
     if (!delivered) {
       return {
         ok: false,
