@@ -319,9 +319,6 @@ function createMockSessionService(): SessionService {
     stageWorkflowStep(_params) {
       return notImpl("stageWorkflowStep");
     },
-    sendUserMessage(_params) {
-      return notImpl("sendUserMessage");
-    },
     endSession(_addr, _reason) {
       return notImpl("endSession");
     },

@@ -323,7 +323,6 @@ function createMockSessionService(): SessionService {
   }
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
-    sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
   };
 }

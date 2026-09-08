@@ -380,14 +380,11 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     }
 
     // A trigger occurrence is threading-less at the mail boundary, so no
-    // inReplyTo or references are stamped. The supervisor decides whether
-    // this first-fires the absent top-level log or resumes a live onTrigger
-    // input. This is the same fresh-signed-message
-    // shape the deploy-flow fixture's mail trigger and the production
-    // session-service mail path assemble. The route does not route
-    // through sessionService.sendUserMessage because that path stamps
-    // interchangeSessionId/agentId headers that scope the message to an
-    // agent session; a workflow run trigger has no such session.
+    // inReplyTo or references are stamped, and it carries no agent session, so
+    // the interchangeSessionId/agentId headers are left unset. The supervisor
+    // decides whether this first-fires the absent top-level log or resumes a
+    // live onTrigger input. This is the same fresh-signed-message shape the
+    // deploy-flow fixture's mail trigger assembles.
     const headers: MessageHeaders = {
       from,
       to: [address],
