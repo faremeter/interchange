@@ -139,7 +139,6 @@ async function waitUntil(pred: () => boolean, timeoutMs = 2000): Promise<void> {
 function createMockSessionService(): SessionService {
   return {
     stageWorkflowStep: () => notImpl("stageWorkflowStep"),
-    sendUserMessage: () => notImpl("sendUserMessage"),
     endSession: () => notImpl("endSession"),
   };
 }

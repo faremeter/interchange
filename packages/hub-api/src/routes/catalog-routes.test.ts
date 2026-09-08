@@ -229,9 +229,6 @@ function createMockSessionService(): SessionService {
     stageWorkflowStep: () => {
       throw new Error("mock: sessionService.stageWorkflowStep not implemented");
     },
-    sendUserMessage: () => {
-      throw new Error("mock: sessionService.sendUserMessage not implemented");
-    },
     endSession: () => {
       throw new Error("mock: sessionService.endSession not implemented");
     },

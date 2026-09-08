@@ -4,12 +4,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as tar from "tar";
-import type {
-  CryptoProvider,
-  HarnessConfig,
-  MessageAttachment,
-} from "@intx/types/runtime";
-import { base64Decode, hexEncode } from "@intx/types";
+import type { HarnessConfig } from "@intx/types/runtime";
+import { hexEncode } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { projectLiveToInert } from "@intx/workflow";
 import {
@@ -17,7 +13,6 @@ import {
   WorkflowProjectionDefinition,
 } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
-import { extractAttachments } from "@intx/mime";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { generateId } from "@intx/hub-common";
@@ -26,11 +21,7 @@ import { createNoopCredentialCipher } from "@intx/crypto";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AssetService } from "./asset-service";
 import type { Principal, RepoId, RepoStore } from "./repo-store";
-import {
-  createSessionService,
-  SessionLaunchError,
-  type UserMessageParams,
-} from "./session-service";
+import { createSessionService, SessionLaunchError } from "./session-service";
 import type {
   SendPackOptions,
   SidecarAllocationRouter,
@@ -507,163 +498,6 @@ describe("SessionService", () => {
     if (call === undefined) throw new Error("unreachable");
     expect(call.method).toBe("sendAgentUndeploy");
     expect(call.args).toEqual([AGENT_ADDRESS, "test_end"]);
-  });
-
-  // --- sendUserMessage tests ---
-
-  function mockCryptoProvider(): CryptoProvider {
-    const fakeSig = new Uint8Array(64);
-    fakeSig.fill(0xab);
-    return {
-      sign: async (_data: Uint8Array) => fakeSig,
-      signSSH: async () => "unused-in-this-test",
-      verify: async () => true,
-      getPublicKey: () => new Uint8Array(32),
-    };
-  }
-
-  function userMessageParams(
-    overrides?: Partial<UserMessageParams>,
-  ): UserMessageParams {
-    return {
-      agentAddress: AGENT_ADDRESS,
-      from: "user@test.local",
-      messageId: "<msg-1@test.local>",
-      date: new Date("2026-01-15T12:00:00Z"),
-      content: "Hello agent",
-      sessionId: "ses-1",
-      tenantId: "tenant-1",
-      cryptoProvider: mockCryptoProvider(),
-      ...overrides,
-    };
-  }
-
-  test("sendUserMessage calls routeMail with base64 MIME", async () => {
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    await service.sendUserMessage(userMessageParams());
-
-    const mailCalls = router.calls.filter((c) => c.method === "routeMail");
-    expect(mailCalls.length).toBe(1);
-    const call = mailCalls[0];
-    if (call === undefined) throw new Error("unreachable");
-    expect(call.args[0]).toBe(AGENT_ADDRESS);
-
-    const rawArg = call.args[1];
-    if (typeof rawArg !== "string") throw new Error("expected string arg");
-    const decoded = new TextDecoder().decode(base64Decode(rawArg));
-    expect(decoded).toContain("From: user@test.local");
-    expect(decoded).toContain(`To: ${AGENT_ADDRESS}`);
-    expect(decoded).toContain("Message-ID: <msg-1@test.local>");
-    expect(decoded).toContain("Interchange-Session-ID: ses-1");
-    expect(decoded).toContain("Interchange-Tenant-ID: tenant-1");
-    expect(decoded).toContain("Hello agent");
-  });
-
-  test("sendUserMessage includes threading headers", async () => {
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    await service.sendUserMessage(
-      userMessageParams({
-        inReplyTo: "<prev@test.local>",
-        references: ["<root@test.local>", "<prev@test.local>"],
-      }),
-    );
-
-    const call = router.calls.find((c) => c.method === "routeMail");
-    if (call === undefined) throw new Error("unreachable");
-
-    const rawArg1 = call.args[1];
-    if (typeof rawArg1 !== "string") throw new Error("expected string arg");
-    const decoded = new TextDecoder().decode(base64Decode(rawArg1));
-    expect(decoded).toContain("In-Reply-To: <prev@test.local>");
-    expect(decoded).toContain(
-      "References: <root@test.local> <prev@test.local>",
-    );
-  });
-
-  test("sendUserMessage threads attachments into the signed envelope", async () => {
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    const attachments: MessageAttachment[] = [
-      {
-        name: "shot.png",
-        contentType: "image/png",
-        data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-      },
-    ];
-
-    await service.sendUserMessage(userMessageParams({ attachments }));
-
-    const call = router.calls.find((c) => c.method === "routeMail");
-    if (call === undefined) throw new Error("unreachable");
-    const rawArg = call.args[1];
-    if (typeof rawArg !== "string") throw new Error("expected string arg");
-    const raw = base64Decode(rawArg);
-
-    const extracted = extractAttachments(raw);
-    expect(extracted).toHaveLength(1);
-    const got = extracted[0];
-    const orig = attachments[0];
-    if (got === undefined || orig === undefined) {
-      throw new Error("unreachable");
-    }
-    expect(got.name).toBe("shot.png");
-    expect(got.contentType).toBe("image/png");
-    expect(Array.from(got.data)).toEqual(Array.from(orig.data));
-  });
-
-  test("sendUserMessage throws when agent is unreachable", async () => {
-    router.routeMailResult = false;
-
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    const err = await service
-      .sendUserMessage(userMessageParams())
-      .catch((e: unknown) => e);
-
-    expect(err).toBeInstanceOf(Error);
-    if (!(err instanceof Error)) throw new Error("unreachable");
-    expect(err.message).toContain("unreachable");
-  });
-
-  test("sendUserMessage propagates signing failure", async () => {
-    const badProvider: CryptoProvider = {
-      sign: async () => {
-        throw new Error("signing failed");
-      },
-      signSSH: async () => {
-        throw new Error("unreachable in this test");
-      },
-      verify: async () => true,
-      getPublicKey: () => new Uint8Array(32),
-    };
-
-    const service = createSessionService({
-      sidecarRouter: router,
-      agentRepoStore: repoStore,
-    });
-
-    const err = await service
-      .sendUserMessage(userMessageParams({ cryptoProvider: badProvider }))
-      .catch((e: unknown) => e);
-
-    expect(err).toBeInstanceOf(Error);
-    if (!(err instanceof Error)) throw new Error("unreachable");
-    expect(err.message).toBe("signing failed");
-    expect(router.calls.filter((c) => c.method === "routeMail").length).toBe(0);
   });
 
   // ---------------------------------------------------------------------

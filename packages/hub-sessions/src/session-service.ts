@@ -3,12 +3,6 @@ import { and, eq, isNull } from "drizzle-orm";
 
 import { getLogger } from "@intx/log";
 import {
-  assembleMessage,
-  assembleSignedContent,
-  createDetachedSignatureFromProvider,
-  type MessageHeaders,
-} from "@intx/mime";
-import {
   buildCredentialDelivery,
   listAssetsForTenant,
   resolveInferenceMaterials,
@@ -20,19 +14,14 @@ import {
   workflowRun as workflowRunTable,
   type WorkflowRunCredentialRefs,
 } from "@intx/db/schema";
-import { base64Encode, hexEncode } from "@intx/types";
+import { hexEncode } from "@intx/types";
 import type {
   CredentialDelivery,
   CredentialMaterialEntry,
 } from "@intx/types/sidecar";
 import type { CredentialCipher } from "@intx/types";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
-import type {
-  CryptoProvider,
-  HarnessConfig,
-  InferenceSource,
-  MessageAttachment,
-} from "@intx/types/runtime";
+import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
   type RegistryConfig,
   type RegistrySource,
@@ -130,13 +119,6 @@ export type SessionService = {
   }): Promise<void>;
 
   /**
-   * Compose a signed RFC 2822 message from the user and deliver it to the
-   * agent via the mail transport. Throws if the agent is unreachable.
-   * Returns the raw MIME bytes of the assembled message.
-   */
-  sendUserMessage(params: UserMessageParams): Promise<Uint8Array>;
-
-  /**
    * Undeploy an agent and wait for the sidecar to acknowledge.
    */
   endSession(agentAddress: string, reason: string): Promise<void>;
@@ -222,20 +204,6 @@ export type PreparedWorkflowDeployer = {
   deployPreparedCodeSourcedWorkflow(
     params: DeployPreparedCodeSourcedWorkflowParams,
   ): Promise<DeployWorkflowDefinitionResult>;
-};
-
-export type UserMessageParams = {
-  agentAddress: string;
-  from: string;
-  messageId: string;
-  date: Date;
-  content: string;
-  attachments?: MessageAttachment[];
-  inReplyTo?: string;
-  references?: string[];
-  sessionId: string;
-  tenantId: string;
-  cryptoProvider: CryptoProvider;
 };
 
 export type SessionServiceDeps = {
@@ -1846,66 +1814,6 @@ export function createSessionService(
     };
   }
 
-  async function sendUserMessage(
-    params: UserMessageParams,
-  ): Promise<Uint8Array> {
-    const {
-      agentAddress,
-      from,
-      messageId,
-      date,
-      content,
-      attachments,
-      inReplyTo,
-      references,
-      sessionId,
-      tenantId,
-      cryptoProvider,
-    } = params;
-
-    const headers: MessageHeaders = {
-      from,
-      to: [agentAddress],
-      cc: undefined,
-      date,
-      messageId,
-      subject: undefined,
-      inReplyTo,
-      references,
-      mimeVersion: "1.0",
-      interchangeType: "conversation.message",
-      interchangeCorrelationId: undefined,
-      interchangeTenantId: tenantId,
-      interchangeAgentId: undefined,
-      interchangeSessionId: sessionId,
-      interchangeOfferingId: undefined,
-      interchangeSchemaVersion: undefined,
-      traceparent: undefined,
-      tracestate: undefined,
-    };
-
-    const signedContent = assembleSignedContent({
-      kind: "conversation",
-      text: content,
-      ...(attachments !== undefined ? { attachments } : {}),
-    });
-    const signature = await createDetachedSignatureFromProvider(
-      signedContent,
-      cryptoProvider,
-    );
-    const rawMessage = assembleMessage(headers, signedContent, signature);
-    const base64 = base64Encode(rawMessage);
-
-    const delivered = sidecarRouter.routeMail(agentAddress, base64, messageId);
-    if (!delivered) {
-      throw new Error(
-        `Failed to deliver message to ${agentAddress}: agent is unreachable`,
-      );
-    }
-
-    return rawMessage;
-  }
-
   async function endSession(
     agentAddress: string,
     reason: string,
@@ -1917,7 +1825,6 @@ export function createSessionService(
     stageWorkflowStep,
     installAndApproveWorkflowSource,
     deployPreparedCodeSourcedWorkflow,
-    sendUserMessage,
     endSession,
   };
 }
