@@ -228,11 +228,21 @@ export type SignalCorrelationRegisterAckFrame =
  * makes at-least-once effectively-once. Present only on hub-originated mail
  * that participates in the ack/retry handshake (workflow trigger mail, session
  * conversation mail); agent-to-agent relayed mail omits it.
+ *
+ * `authenticatedSender` is the hub-verified sender ADDRESS of this message.
+ * The hub assigns it at the frame's construction site from a value it has
+ * itself verified -- the ownership-gated sender of a relayed mail, the
+ * address persisted at enqueue for a durable dispatch, or the triggering
+ * principal's address for hub-originated mail -- NEVER from the message's
+ * own (spoofable) MIME `From`. No consumer reads it yet; it is carried so a
+ * recipient can take the sender of record from this hub-verified value
+ * rather than the forgeable `From`.
  */
 export const MailInboundFrame = type({
   type: "'mail.inbound'",
   agentAddress: "string",
   rawMessage: "string",
+  authenticatedSender: "string",
   "messageId?": "string",
 });
 export type MailInboundFrame = typeof MailInboundFrame.infer;

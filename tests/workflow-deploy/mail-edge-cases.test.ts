@@ -466,6 +466,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     const delivered = env.hub.router.routeMail(
       ctx.deploymentMailAddress,
       base64,
+      "edge@integration.interchange",
       messageId,
     );
     expect(delivered).toBe(true);
@@ -650,7 +651,14 @@ async function routeRaw(
     );
   }
   const base64 = base64Encode(raw);
-  const delivered = env.hub.router.routeMail(address, base64);
+  // The hub-verified sender is independent of the raw message's own (possibly
+  // malformed) MIME From -- that independence is the point of these edge-case
+  // routes -- so stamp a fixed hub-side sender the way the trigger route does.
+  const delivered = env.hub.router.routeMail(
+    address,
+    base64,
+    "user@integration.interchange",
+  );
   if (!delivered) {
     throw new Error(
       `routeRaw: routeMail returned false for ${address}; address is not routable on the hub`,

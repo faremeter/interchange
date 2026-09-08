@@ -218,7 +218,12 @@ describe("SidecarRouter allocation routing", () => {
     const router = createAllocatedRouter();
     const first = await connect(router, [identity.workflowRunAddress]);
     expect(
-      router.routeMail(identity.workflowRunAddress, "aGVsbG8=", "message-1"),
+      router.routeMail(
+        identity.workflowRunAddress,
+        "aGVsbG8=",
+        "sender@example.test",
+        "message-1",
+      ),
     ).toBe(true);
     router.handleClose(first);
 
@@ -271,6 +276,7 @@ describe("SidecarRouter allocation routing", () => {
       identity.workflowRunAddress,
       [],
       "cmF3LW1haWw=",
+      "sender@example.test",
       "message-1",
     );
     expect(ws.sent.slice(-2).map((raw) => JSON.parse(raw).type)).toEqual([

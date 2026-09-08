@@ -274,9 +274,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       let capturedMail: string | undefined;
       const capturingRouter: SidecarRouter = {
         ...env.hub.router,
-        routeMail(agentAddress, rawMessage, messageId) {
-          capturedMail = rawMessage;
-          return env.hub.router.routeMail(agentAddress, rawMessage, messageId);
+        routeMail(...args: Parameters<SidecarRouter["routeMail"]>) {
+          capturedMail = args[1];
+          return env.hub.router.routeMail(...args);
         },
       };
       const runApp = createApp({

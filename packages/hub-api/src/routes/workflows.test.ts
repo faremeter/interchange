@@ -485,7 +485,11 @@ function createMockGetSession(): GetSession {
 }
 
 type SignalCall = Parameters<SidecarRouter["sendSignalDeliver"]>[0];
-type RouteMailCall = { address: string; rawMessage: string };
+type RouteMailCall = {
+  address: string;
+  rawMessage: string;
+  authenticatedSender: string;
+};
 type RunGrantsCall = {
   address: string;
   runId: string;
@@ -510,8 +514,8 @@ function createMockSidecarRouter(
     handleOpen: () => notImpl("handleOpen"),
     handleMessage: () => notImpl("handleMessage"),
     handleClose: () => notImpl("handleClose"),
-    routeMail: (address, rawMessage) => {
-      routeMailCalls.push({ address, rawMessage });
+    routeMail: (address, rawMessage, authenticatedSender) => {
+      routeMailCalls.push({ address, rawMessage, authenticatedSender });
       sendOrder.push({ kind: "mail", address });
       return routeMailResult;
     },
@@ -1595,6 +1599,10 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     const call = routeMailCalls[0];
     if (call === undefined) throw new Error("missing routeMail call");
     expect(call.address).toBe(`${DEPLOYMENT_ID}@${DOMAIN}`);
+    // The trigger stamps the hub-verified principal address as the
+    // authenticated sender (fromAddr = principal.refId@tenant.domain), not
+    // anything parsed from the message body.
+    expect(call.authenticatedSender).toBe(`${USER_ID}@${DOMAIN}`);
     // The wire payload is base64-encoded MIME carrying the body text.
     const decoded = new TextDecoder().decode(base64Decode(call.rawMessage));
     expect(decoded).toContain("kick off");

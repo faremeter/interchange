@@ -308,13 +308,25 @@ describe("hub-link mail.inbound throwing router", () => {
       // First mail.inbound: the router throws. With the C4 fix in
       // place, the link's switch arm catches the throw and logs it
       // without rejecting the messageQueue chain.
-      expect(env.router.routeMail(deploymentAddress, encoded)).toBe(true);
+      expect(
+        env.router.routeMail(
+          deploymentAddress,
+          encoded,
+          "user@integration.interchange",
+        ),
+      ).toBe(true);
 
       // Second mail.inbound: the router accepts. With the fix in
       // place this frame still flows through; without the fix the
       // chain has been wedged by the prior rejection and the router
       // is never consulted.
-      expect(env.router.routeMail(deploymentAddress, encoded)).toBe(true);
+      expect(
+        env.router.routeMail(
+          deploymentAddress,
+          encoded,
+          "user@integration.interchange",
+        ),
+      ).toBe(true);
 
       await waitFor(() => routedAfterThrow.length > 0);
       expect(routedAfterThrow).toHaveLength(1);
