@@ -1,0 +1,4 @@
+ALTER TABLE "sidecar_allocation" DROP CONSTRAINT "sidecar_allocation_status_check";--> statement-breakpoint
+DROP INDEX "sidecar_allocation_active_sidecar_idx";--> statement-breakpoint
+CREATE UNIQUE INDEX "sidecar_allocation_active_sidecar_idx" ON "sidecar_allocation" USING btree ("sidecar_id") WHERE "sidecar_allocation"."status" in ('provisioning', 'allocated', 'replacing', 'releasing', 'destroy_failed');--> statement-breakpoint
+ALTER TABLE "sidecar_allocation" ADD CONSTRAINT "sidecar_allocation_status_check" CHECK ("sidecar_allocation"."status" in ('pending', 'provisioning', 'allocated', 'replacing', 'releasing', 'destroy_failed', 'released', 'failed'));

@@ -204,6 +204,11 @@ export type FailSidecarAllocationArgs = {
   readonly now?: Date;
 };
 
+export type MarkSidecarDestroyFailedArgs = Omit<
+  FailSidecarAllocationArgs,
+  "expectedStatus"
+>;
+
 function parseSidecarAllocationRow(
   row: SidecarAllocationRow,
 ): SidecarAllocation {
@@ -715,6 +720,47 @@ export function createSidecarAllocationStore(db: DBHandle) {
         )
         .returning();
       return updated === undefined ? null : parseSidecarAllocationRow(updated);
+    },
+
+    async markDestroyFailed(
+      args: MarkSidecarDestroyFailedArgs,
+    ): Promise<SidecarAllocation | null> {
+      const now = databaseTimestamp(args.now);
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            status: "destroy_failed",
+            failureCode: args.code,
+            failureMessage: args.message,
+            nextAttemptAt: null,
+            reconciliationLeaseId: null,
+            reconciliationLeaseExpiresAt: null,
+            connectDeadline: null,
+            destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              inArray(sidecarAllocation.status, ["replacing", "releasing"]),
+              eq(sidecarAllocation.generation, args.expectedGeneration),
+              ...leaseCondition(args.expectedLeaseId),
+            ),
+          )
+          .returning();
+        if (updated === undefined) return null;
+
+        await failRunningRuns(tx, updated.anchorRunId, now);
+        await workflowRunDispatchStore.failUnsettled(
+          updated.anchorRunId,
+          args.code,
+          args.message,
+          now,
+          tx,
+        );
+        return parseSidecarAllocationRow(updated);
+      });
     },
 
     async failWithoutInfrastructure(

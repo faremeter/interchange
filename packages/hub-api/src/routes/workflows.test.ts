@@ -10,7 +10,12 @@ import {
   WorkflowRunDispatchPayloadConflictError,
   type PrincipalKeyStore,
 } from "@intx/db";
-import { base64Decode, ErrorResponse, signalName } from "@intx/types";
+import {
+  base64Decode,
+  ErrorResponse,
+  signalName,
+  WorkflowDeploymentResponse,
+} from "@intx/types";
 import type { GrantWalkSnapshot, SidecarAllocationStatus } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
@@ -956,6 +961,53 @@ function sourceDeployBody(
   };
 }
 
+test("deployment responses publish their status vocabulary in OpenAPI", async () => {
+  const app = createTestApp();
+  const res = await app.request("/openapi.json");
+  const spec = type({
+    paths: "Record<string, Record<string, unknown>>",
+  }).assert(await res.json());
+  const operations =
+    spec.paths["/api/tenants/{tenantId}/workflows/deployments"];
+  const deploymentSchema = {
+    type: "object",
+    properties: {
+      status: {
+        anyOf: expect.arrayContaining(
+          [
+            "deployed",
+            "pending",
+            "recovering",
+            "releasing",
+            "released",
+            "failed",
+            "destroy_failed",
+          ].map((status) => expect.objectContaining({ const: status })),
+        ),
+      },
+    },
+  };
+
+  expect(operations?.["post"]).toMatchObject({
+    responses: {
+      "201": {
+        content: { "application/json": { schema: deploymentSchema } },
+      },
+    },
+  });
+  expect(operations?.["get"]).toMatchObject({
+    responses: {
+      "200": {
+        content: {
+          "application/json": {
+            schema: { type: "array", items: deploymentSchema },
+          },
+        },
+      },
+    },
+  });
+});
+
 describe("POST /workflows/deployments", () => {
   test("rejects the legacy inference-source payload", async () => {
     const app = createTestApp({ grants: [makeGrant({ action: "create" })] });
@@ -1046,7 +1098,9 @@ describe("POST /workflows/deployments", () => {
     );
 
     expect(res.status).toBe(201);
-    expect(await res.json()).toMatchObject({
+    expect(
+      assertBody(WorkflowDeploymentResponse, await res.json()),
+    ).toMatchObject({
       id: DEPLOYMENT_ID,
       status: "pending",
     });
@@ -1185,7 +1239,10 @@ describe("GET /workflows/deployments", () => {
       new Request(`http://localhost${base()}/deployments`),
     );
     expect(res.status).toBe(200);
-    const json = await res.json();
+    const json = assertBody(
+      WorkflowDeploymentResponse.array(),
+      await res.json(),
+    );
     expect(json).toEqual([
       {
         id: DEPLOYMENT_ID,
@@ -1194,6 +1251,24 @@ describe("GET /workflows/deployments", () => {
         status: "deployed",
         createdAt: deploymentRow.createdAt.toISOString(),
       },
+    ]);
+  });
+
+  test("reports a permanent allocation cleanup failure", async () => {
+    const app = createTestApp({
+      db: {
+        deploymentList: [
+          { ...deploymentRow, allocationStatus: "destroy_failed" },
+        ],
+      },
+    });
+    const res = await app.fetch(
+      new Request(`http://localhost${base()}/deployments`),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      expect.objectContaining({ id: DEPLOYMENT_ID, status: "destroy_failed" }),
     ]);
   });
 
@@ -1403,6 +1478,7 @@ describe("POST /workflows/:anchorRunId/signals", () => {
 
   for (const allocationStatus of [
     "releasing",
+    "destroy_failed",
     "released",
     "failed",
   ] satisfies SidecarAllocationStatus[]) {
@@ -1846,6 +1922,7 @@ describe("POST /workflows/:anchorRunId/mail", () => {
 
   for (const allocationStatus of [
     "releasing",
+    "destroy_failed",
     "released",
     "failed",
   ] satisfies SidecarAllocationStatus[]) {

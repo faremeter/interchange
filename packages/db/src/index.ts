@@ -75,6 +75,7 @@ export {
   type MarkSidecarAllocatedArgs,
   type MarkSidecarConnectionLostArgs,
   type MarkSidecarConnectionReadyArgs,
+  type MarkSidecarDestroyFailedArgs,
   type MarkSidecarReleasedArgs,
   type ParkSidecarReconciliationPolicy,
   type ScheduleSidecarAllocationRetryArgs,

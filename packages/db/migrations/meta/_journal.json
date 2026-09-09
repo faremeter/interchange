@@ -638,6 +638,13 @@
       "when": 1788849155396,
       "tag": "0091_workflow_run_dispatch_sender_address",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1788967084060,
+      "tag": "0092_sidecar_destroy_failed",
+      "breakpoints": true
     }
   ]
 }

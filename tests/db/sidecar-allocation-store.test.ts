@@ -682,6 +682,170 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBeNull();
     });
 
+    for (const status of ["replacing", "releasing"] as const) {
+      test(`preserves capacity and stops reconciliation after ${status} fails permanently`, async () => {
+        const store = createSidecarAllocationStore(h.db);
+        const dispatchStore = createWorkflowRunDispatchStore(h.db);
+        await store.createPending({
+          id: "alloc-destroy",
+          anchorRunId: ANCHOR_RUN_ID,
+          tenantId: TENANT_ID,
+          provisionerId: "ec2-spot",
+          provisionerApiVersion: 1,
+          provisionerBindingFingerprint: "ec2-spot:test",
+        });
+        await store.bindInitialSidecar({
+          allocationId: "alloc-destroy",
+          expectedGeneration: 0,
+          sidecarId: "sidecar-destroy",
+          tokenHashSha256: new Uint8Array([1, 2, 3]),
+          connectDeadline: new Date(0),
+        });
+        await store.markAllocated({
+          allocationId: "alloc-destroy",
+          generation: 1,
+          externalRef: "vm-destroy",
+        });
+        await store.claimNextReconcilable({
+          leaseId: "lease-allocated",
+          leaseDurationMs: 60_000,
+        });
+        const failure = {
+          allocationId: "alloc-destroy",
+          expectedGeneration: 2,
+          expectedLeaseId: "lease-destroy",
+          code: "credentials_revoked",
+          message: "Credentials no longer permit deleting this worker",
+        };
+        expect(
+          await store.markDestroyFailed({
+            ...failure,
+            expectedGeneration: 1,
+            expectedLeaseId: "lease-allocated",
+          }),
+        ).toBeNull();
+
+        const transition = {
+          allocationId: "alloc-destroy",
+          expectedGeneration: 1,
+          expectedLeaseId: "lease-allocated",
+          expectedStatus: "allocated" as const,
+        };
+        if (status === "replacing") {
+          await store.beginReplacement({
+            ...transition,
+            nextAttemptAt: new Date(0),
+            failureCode: "connection_lost",
+            failureMessage: "Worker disconnected",
+          });
+        } else {
+          await store.beginRelease(transition);
+        }
+        expect(
+          await store.claimNextReconcilable({
+            leaseId: "lease-destroy",
+            leaseDurationMs: 60_000,
+          }),
+        ).toMatchObject({ status, generation: 2 });
+        await dispatchStore.enqueue({
+          id: "dispatch-destroy",
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: "message-destroy",
+          senderAddress: "principal-alloc@tenant.example",
+          rawMessage: new Uint8Array([1, 2, 3]),
+          stepGrants: [],
+        });
+
+        expect(
+          await store.markDestroyFailed({
+            ...failure,
+            expectedLeaseId: "lease-stale",
+          }),
+        ).toBeNull();
+        expect(
+          await store.markDestroyFailed({ ...failure, expectedGeneration: 1 }),
+        ).toBeNull();
+        expect((await store.findById("alloc-destroy"))?.status).toBe(status);
+        expect((await dispatchStore.findById("dispatch-destroy"))?.status).toBe(
+          "pending",
+        );
+
+        const failed = await store.markDestroyFailed(failure);
+        expect(failed).toMatchObject({
+          status: "destroy_failed",
+          generation: 2,
+          sidecarId: "sidecar-destroy",
+          externalRef: "vm-destroy",
+          failureCode: failure.code,
+          failureMessage: failure.message,
+          destroyAttempts: 1,
+        });
+        expect(failed?.nextAttemptAt).toBeUndefined();
+        expect(failed?.reconciliationLeaseId).toBeUndefined();
+        expect(failed?.reconciliationLeaseExpiresAt).toBeUndefined();
+        expect(failed?.connectDeadline).toBeUndefined();
+        expect(
+          await h.db.query.workflowRun.findFirst({
+            where: (row, { eq }) => eq(row.id, ANCHOR_RUN_ID),
+            columns: { status: true },
+          }),
+        ).toEqual({ status: "failed" });
+        expect(await dispatchStore.findById("dispatch-destroy")).toMatchObject({
+          status: "failed",
+          failureCode: failure.code,
+          failureMessage: failure.message,
+        });
+        expect(await store.listActive()).toEqual([]);
+        expect(await store.wakeReconciliation("alloc-destroy", 2)).toBe(false);
+        expect(
+          await store.claimNextReconcilable({
+            leaseId: "lease-after-failure",
+            leaseDurationMs: 60_000,
+          }),
+        ).toBeNull();
+        expect(await store.markDestroyFailed(failure)).toBeNull();
+        expect(
+          await store.markReleased({
+            allocationId: "alloc-destroy",
+            generation: 2,
+          }),
+        ).toBeNull();
+        expect(
+          await store.bindReplacementSidecar({
+            allocationId: "alloc-destroy",
+            generation: 2,
+            sidecarId: "sidecar-replacement",
+            tokenHashSha256: new Uint8Array([4, 5, 6]),
+            connectDeadline: new Date(0),
+          }),
+        ).toBeNull();
+
+        await seedWorkflowRun(h.db, {
+          id: "anchor-other",
+          anchorRunId: "anchor-other",
+          tenantId: TENANT_ID,
+          definitionId: DEFINITION_ID,
+        });
+        await expect(
+          store.createAdopted({
+            id: "alloc-other",
+            anchorRunId: "anchor-other",
+            tenantId: TENANT_ID,
+            provisionerId: "ec2-spot",
+            provisionerApiVersion: 1,
+            provisionerBindingFingerprint: "ec2-spot:test",
+            sidecarId: "sidecar-destroy",
+            generation: 1,
+            connectDeadline: new Date(0),
+          }),
+        ).rejects.toMatchObject({
+          cause: expect.objectContaining({
+            constraint_name: "sidecar_allocation_active_sidecar_idx",
+          }),
+        });
+      });
+    }
+
     test("allocates and settles a deployed anchor torn down before its first trigger", async () => {
       // The whole deploy->first-trigger window before a run is ever triggered:
       // the anchor is born "deployed". `createPending` must accept it (allocation

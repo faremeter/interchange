@@ -4,6 +4,7 @@ export const sidecarAllocationStatuses = [
   "allocated",
   "replacing",
   "releasing",
+  "destroy_failed",
   "released",
   "failed",
 ] as const;
@@ -21,6 +22,7 @@ export function isSidecarAllocationDispatchable(
     case "replacing":
       return true;
     case "releasing":
+    case "destroy_failed":
     case "released":
     case "failed":
       return false;

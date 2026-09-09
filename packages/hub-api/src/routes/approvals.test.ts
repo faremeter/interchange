@@ -740,6 +740,7 @@ describe("POST /approvals/:approvalId/approve", () => {
 
   for (const sidecarAllocationStatus of [
     "releasing",
+    "destroy_failed",
     "released",
     "failed",
   ] satisfies SidecarAllocationStatus[]) {
