@@ -13,6 +13,10 @@ export {
   type SenderKeyCache,
   type SenderKeyCacheDeps,
 } from "./sender-key-cache";
+export {
+  createPublicKeyCrypto,
+  createSenderCryptoResolver,
+} from "./sender-crypto";
 export type { HarnessBuilder } from "./harness-builder";
 export {
   createSessionManager,
