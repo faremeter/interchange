@@ -32,6 +32,7 @@ type AllocationStore = Pick<
   | "markAllocated"
   | "markConnectionLost"
   | "markConnectionReady"
+  | "markDestroyFailed"
   | "markReleased"
   | "parkReconciliation"
   | "scheduleReconnectIfUnscheduled"
@@ -447,8 +448,9 @@ export function createSidecarAllocationReconciler({
   ): Promise<boolean> {
     if (allocation.sidecarId === undefined) return true;
     const sidecarId = allocation.sidecarId;
+    let result: DestroySidecarResult;
     try {
-      const result = parseDestroyResult(
+      result = parseDestroyResult(
         await withLeaseHeartbeat(allocation, leaseId, () =>
           provisioner.destroy({
             allocationId: allocation.id,
@@ -460,9 +462,28 @@ export function createSidecarAllocationReconciler({
           }),
         ),
       );
-      if (result.kind === "destroyed") return true;
     } catch (error) {
       logger.warn`Destroy failed for allocation ${allocation.id}: ${error instanceof Error ? error.message : String(error)}`;
+      await retryDestroy(allocation, leaseId);
+      return false;
+    }
+    if (result.kind === "destroyed") return true;
+    if (!result.retryable) {
+      const failed = await allocationStore.markDestroyFailed({
+        allocationId: allocation.id,
+        expectedGeneration: allocation.generation,
+        expectedLeaseId: leaseId,
+        code: result.code,
+        message: result.message,
+        now: now(),
+      });
+      if (failed !== null) {
+        router.retireAllocation({
+          allocationId: failed.id,
+          generation: failed.generation,
+        });
+      }
+      return false;
     }
     await retryDestroy(allocation, leaseId);
     return false;

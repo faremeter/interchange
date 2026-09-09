@@ -51,6 +51,7 @@ function fakeStore(overrides: Partial<AllocationStore> = {}): AllocationStore {
     markAllocated: notUsed("markAllocated"),
     markConnectionLost: notUsed("markConnectionLost"),
     markConnectionReady: notUsed("markConnectionReady"),
+    markDestroyFailed: notUsed("markDestroyFailed"),
     markReleased: notUsed("markReleased"),
     parkReconciliation: async () => true,
     scheduleReconnectIfUnscheduled: notUsed("scheduleReconnectIfUnscheduled"),
@@ -353,6 +354,124 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(retired).toEqual([["alloc-1", 2]]);
   });
+
+  for (const status of ["releasing", "replacing"] as const) {
+    test(`stops ${status} after a permanent destroy rejection`, async () => {
+      const current = allocation({
+        status,
+        generation: 2,
+        sidecarId: "sc-old",
+        externalRef: "vm-old",
+        reconciliationLeaseId: "lease-1",
+      });
+      const calls: string[] = [];
+      const retired: [string, number][] = [];
+      let failed:
+        | Parameters<AllocationStore["markDestroyFailed"]>[0]
+        | undefined;
+      const store = fakeStore({
+        claimNextReconcilable: async () => current,
+        markDestroyFailed: async (args) => {
+          calls.push("fail");
+          failed = args;
+          return allocation({ ...current, status: "destroy_failed" });
+        },
+        scheduleRetry: async () => {
+          calls.push("retry");
+          return null;
+        },
+        bindReplacementSidecar: async () => {
+          calls.push("replace");
+          return null;
+        },
+        markReleased: async () => {
+          calls.push("release");
+          return null;
+        },
+        parkReconciliation: async () => {
+          calls.push("park");
+          return true;
+        },
+      });
+      const provisioner = testProvisioner({
+        async destroy() {
+          calls.push("destroy");
+          return {
+            kind: "rejected",
+            code: "credentials_revoked",
+            message: "Credentials no longer permit deleting this worker",
+            retryable: false,
+          };
+        },
+      });
+      const reconciler = createSidecarAllocationReconciler(
+        deps({ store, provisioner, retired }),
+      );
+
+      await reconciler.reconcileNext();
+
+      expect(calls).toEqual(["destroy", "fail"]);
+      expect(failed).toEqual({
+        allocationId: "alloc-1",
+        expectedGeneration: 2,
+        expectedLeaseId: "lease-1",
+        code: "credentials_revoked",
+        message: "Credentials no longer permit deleting this worker",
+        now: NOW,
+      });
+      expect(retired).toEqual([["alloc-1", 2]]);
+    });
+
+    for (const failure of ["retryable rejection", "thrown error"] as const) {
+      test(`retries ${status} after a destroy ${failure}`, async () => {
+        const current = allocation({
+          status,
+          generation: 2,
+          sidecarId: "sc-old",
+          destroyAttempts: 3,
+          reconciliationLeaseId: "lease-1",
+        });
+        let scheduled:
+          | Parameters<AllocationStore["scheduleRetry"]>[0]
+          | undefined;
+        const retired: [string, number][] = [];
+        const store = fakeStore({
+          claimNextReconcilable: async () => current,
+          scheduleRetry: async (args) => {
+            scheduled = args;
+            return current;
+          },
+        });
+        const provisioner = testProvisioner({
+          async destroy() {
+            if (failure === "thrown error") throw new Error("provider timeout");
+            return {
+              kind: "rejected",
+              code: "provider_unavailable",
+              message: "Provider temporarily unavailable",
+              retryable: true,
+            };
+          },
+        });
+        const reconciler = createSidecarAllocationReconciler(
+          deps({ store, provisioner, retired }),
+        );
+
+        await reconciler.reconcileNext();
+
+        expect(scheduled).toEqual({
+          allocationId: "alloc-1",
+          expectedStatus: status,
+          expectedGeneration: 2,
+          expectedLeaseId: "lease-1",
+          nextAttemptAt: new Date(NOW.getTime() + 8_000),
+          attempt: "destroy",
+          now: NOW,
+        });
+        expect(retired).toEqual([]);
+      });
+    }
+  }
 
   test("backs off before replacing a retryable ensure rejection", async () => {
     const pending = allocation();
