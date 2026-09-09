@@ -37,8 +37,9 @@ export type SidecarOperationFailure = typeof SidecarOperationFailure.infer;
 
 /**
  * Acceptance means the requested infrastructure exists, not that it is ready.
- * Rejection means no infrastructure exists for this generation; a provisioner
- * must throw when it cannot determine whether the request took effect.
+ * Rejection means no infrastructure exists for this generation (ensure-only;
+ * destroy rejections below carry no such guarantee); a provisioner must throw
+ * when it cannot determine whether the request took effect.
  */
 export const EnsureSidecarResult = type({
   kind: "'accepted'",
@@ -46,6 +47,10 @@ export const EnsureSidecarResult = type({
 }).or(SidecarOperationFailure);
 export type EnsureSidecarResult = typeof EnsureSidecarResult.infer;
 
+/**
+ * Destruction confirms the capacity is gone and older ensure calls are fenced.
+ * A non-retryable rejection stops automatic cleanup; capacity may still exist.
+ */
 export const DestroySidecarResult = type({
   kind: "'destroyed'",
 }).or(SidecarOperationFailure);
