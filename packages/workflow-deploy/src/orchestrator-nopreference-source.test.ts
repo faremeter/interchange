@@ -1,16 +1,18 @@
-// Pins the non-agent-step contract for `pickStepInferenceSource`.
+// Pins the fallback contract for `pickStepInferenceSource` when a step
+// declares no preference.
 //
-// Non-agent primitives (sleep, gate, awaitSignal, ...) carry no agent
-// preference, so the picker is called with `preferred: null` and would fall
-// through to the `HarnessConfig.defaultSource`. The capability walk emits NO
-// `inference.source:<provider>:<model>` grant for these steps -- it only emits
-// source grants from agent definitions. The picker must not paper over that
-// absence by pinning a source the operator never approved.
+// The picker sees only `preferred: null`, never what kind of step asked. The
+// caller that reaches it that way is an agent step whose `modelSources` is
+// empty: it resolves a source at runtime, so it can issue a request, but it
+// advertised no `(provider, model)` for the capability walk to surface and the
+// operator to approve. A step that cannot invoke inference does not arrive
+// here at all -- it takes the inert placeholder.
 //
-// Concrete shape: if a non-agent step is pinned to the defaultSource, that
-// source's `(provider, model)` must be in the operator-approved grants.
-// Otherwise the pin must fail loudly -- silent fallback is the capability-walk
-// bypass this test pins against.
+// Concrete shape: falling back to the `HarnessConfig.defaultSource` is allowed
+// only when that source's `(provider, model)` is in the operator-approved
+// grants. Otherwise the pin must fail loudly -- a silent fallback would hand an
+// inference-capable step a source the operator never approved, which is the
+// capability-walk bypass this test pins against.
 
 import { describe, test, expect } from "bun:test";
 
@@ -39,12 +41,12 @@ function makeConfig(args: {
   };
 }
 
-describe("pickStepInferenceSource (non-agent step)", () => {
-  test("rejects pinning a non-agent step to a defaultSource whose (provider, model) is not approved", () => {
-    // HarnessConfig carries TWO sources: an agent source and a distinct
-    // default. A non-agent step has no preference and falls back to the
-    // default. The default's (provider, model) is NOT in the approved set, so
-    // the picker must refuse to pin it.
+describe("pickStepInferenceSource (step with no declared preference)", () => {
+  test("rejects falling back to a defaultSource whose (provider, model) is not approved", () => {
+    // HarnessConfig carries TWO sources: one an agent declared, and a
+    // distinct default. A step that declared no preference falls back to the
+    // default, whose (provider, model) is NOT in the approved set, so the
+    // picker must refuse to pin it.
     const config = makeConfig({
       sources: [
         {
@@ -65,9 +67,10 @@ describe("pickStepInferenceSource (non-agent step)", () => {
       defaultSource: "src-default",
     });
 
-    // Approve the agent's (provider, model) but NOT the default's
-    // (openai, default-model). The walk surfaces nothing for a non-agent step,
-    // so the source pin is the only place the unapproved fallback is caught.
+    // Approve one agent's (provider, model) but NOT the default's
+    // (openai, default-model). A step that declared no source advertises
+    // nothing for the walk to surface, so the source pin is the only place the
+    // unapproved fallback is caught.
     const approvals = new Set<string>([
       "inference.source:anthropic:worker-model",
     ]);
@@ -83,10 +86,10 @@ describe("pickStepInferenceSource (non-agent step)", () => {
     ).toThrow(WorkflowDefinitionInvalidError);
   });
 
-  test("fails loudly when the only available source for a non-agent step is unapproved", () => {
+  test("fails loudly when the only available source is unapproved", () => {
     // A lone source, unapproved. Absent the source-pin cross-check the approval
-    // gate has nothing to fail on, since a non-agent step emits no
-    // `inference.source:` grant.
+    // gate has nothing to fail on, since a step that declares no source emits
+    // no `inference.source:` grant.
     const config = makeConfig({
       sources: [
         {
@@ -113,7 +116,7 @@ describe("pickStepInferenceSource (non-agent step)", () => {
     ).toThrow(WorkflowDefinitionInvalidError);
   });
 
-  test("allows pinning a non-agent step when the default's (provider, model) is approved", () => {
+  test("allows the fallback when the default's (provider, model) is approved", () => {
     const config = makeConfig({
       sources: [
         {
@@ -127,8 +130,8 @@ describe("pickStepInferenceSource (non-agent step)", () => {
       defaultSource: "src-anthropic",
     });
 
-    // The operator approved the (provider, model) of the source the non-agent
-    // step falls back to, so the pin proceeds.
+    // The operator approved the (provider, model) of the source the step falls
+    // back to, so the pin proceeds.
     const approvals = new Set<string>([
       "inference.source:anthropic:worker-model",
     ]);

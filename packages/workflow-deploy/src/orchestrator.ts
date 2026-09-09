@@ -12,10 +12,12 @@
 //
 // The source-pinning utilities (`pickStepInferenceSource`,
 // `buildInertProjectionStepSources`, `buildInertBodyStepSources`,
-// `isSourceApproved`) resolve each step's
-// inference source against the operator-approved grant set, so an unapproved
+// `isSourceApproved`) resolve each step's inference source. An agent-bearing
+// step resolves against the operator-approved grant set, so an unapproved
 // source fails the deploy closed rather than slipping past the capability-walk
-// gate.
+// gate. A step that cannot invoke inference takes the deploy's default source
+// as an inert placeholder: the wire shape requires a source for every step,
+// but that step never issues a request through it.
 
 import type {
   AgentDefinition,
@@ -250,16 +252,19 @@ export function collectAgentBearingStepIds(args: {
 }
 
 /**
- * Pin every step of a frozen inert projection to a single approved inference
- * source, producing the `sources` map the source-ref deploy frame carries. The
- * hub holds no live definition, so each step's declared `(provider, model)`
- * preference is read off the inert projection's `modelSources` and resolved
- * through the `pickStepInferenceSource` resolver + operator-approval gate. A
- * step whose preferred source the operator never approved (or that resolves to
- * no approved source at all) throws, failing the whole deploy closed before any
- * frame is sent. Every step -- agent or not -- is approval-gated here: a
- * non-agent step falls back to the approved default, so the sidecar child finds
- * a pinned source for each staged step.
+ * Pin every step of a frozen inert projection to a single inference source,
+ * producing the `sources` map the source-ref deploy frame carries. The hub
+ * holds no live definition, so an agent-bearing step's declared
+ * `(provider, model)` preference is read off the inert projection's
+ * `modelSources` and resolved through the `pickStepInferenceSource` resolver
+ * and its operator-approval gate. A preference the operator never approved --
+ * or that resolves to no approved source at all -- throws, failing the whole
+ * deploy closed before any frame is sent.
+ *
+ * A step that cannot invoke inference takes the inert placeholder instead and
+ * is not approval-gated. Its pin exists because the wire shape requires a
+ * source for every step, not because it names a route the step will take, and
+ * the hub delivers no credential against it.
  *
  * The walk recurses into `loop` bodies via `pinInertStepSources`. onTrigger
  * bodies are NOT walked here -- they are lifted to `referencedDefinitions` with
@@ -275,14 +280,20 @@ export function buildInertProjectionStepSources(args: {
     definition: args.projection,
     workflowId: args.projection.id,
     context: "buildInertProjectionStepSources: ",
-    resolveLeafSource: ({ stepId, preference }) =>
-      pickStepInferenceSource({
-        preferred: preference,
-        stepId,
-        workflowId: args.projection.id,
-        config: args.config,
-        operatorApprovals: args.operatorApprovals,
-      }),
+    resolveLeafSource: ({ stepId, isAgent, preference }) =>
+      isAgent
+        ? pickStepInferenceSource({
+            preferred: preference,
+            stepId,
+            workflowId: args.projection.id,
+            config: args.config,
+            operatorApprovals: args.operatorApprovals,
+          })
+        : inertPlaceholderSource({
+            stepId,
+            workflowId: args.projection.id,
+            config: args.config,
+          }),
   });
 }
 
