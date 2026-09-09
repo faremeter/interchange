@@ -1,15 +1,15 @@
 import { eq, and, ne } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import { modelProvider } from "@intx/db/schema";
 import { resolveTenantOwnedCredentialById } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   CreateModelProvider,
+  ErrorResponse,
   UpdateModelProvider,
   ModelProviderResponse,
-  ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 import {
@@ -31,6 +31,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 export function formatModelProvider(row: typeof modelProvider.$inferSelect) {
   return {
@@ -72,14 +73,10 @@ export function createModelProviderRoutes({
         "Lists the model providers created directly on this tenant. Providers inherited from ancestor tenants are not included.",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "List of model providers",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(ModelProviderResponse)),
-            },
-          },
-        },
+        200: jsonResponse(
+          "List of model providers",
+          paginatedSchema(ModelProviderResponse),
+        ),
       },
     }),
     async (c) => {
@@ -116,30 +113,16 @@ export function createModelProviderRoutes({
       description:
         "Registers an inference endpoint authenticated by exactly one of a credential or a wallet. Supplying both or neither is rejected.",
       responses: {
-        201: {
-          description: "Provider created",
-          content: {
-            "application/json": { schema: resolver(ModelProviderResponse) },
-          },
-        },
-        400: {
-          description: "Exactly one of credentialId or walletId is required",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Credential not found in this tenant",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description: "Provider name already exists in this tenant",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Provider created", ModelProviderResponse),
+        400: jsonResponse(
+          "Exactly one of credentialId or walletId is required",
+          ErrorResponse,
+        ),
+        404: jsonResponse("Credential not found in this tenant", ErrorResponse),
+        409: jsonResponse(
+          "Provider name already exists in this tenant",
+          ErrorResponse,
+        ),
       },
     }),
     validator("json", CreateModelProvider),
@@ -241,18 +224,8 @@ export function createModelProviderRoutes({
       tags: ["Catalog"],
       summary: "Get a model provider",
       responses: {
-        200: {
-          description: "Provider details",
-          content: {
-            "application/json": { schema: resolver(ModelProviderResponse) },
-          },
-        },
-        404: {
-          description: "Provider not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Provider details", ModelProviderResponse),
+        404: jsonResponse("Provider not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -280,24 +253,12 @@ export function createModelProviderRoutes({
       description:
         "Updates a provider's name, base URL, or disabled flag. Changing the authentication binding is not supported; delete and recreate the provider to repoint it.",
       responses: {
-        200: {
-          description: "Provider updated",
-          content: {
-            "application/json": { schema: resolver(ModelProviderResponse) },
-          },
-        },
-        404: {
-          description: "Provider not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description: "Provider name already exists in this tenant",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Provider updated", ModelProviderResponse),
+        404: jsonResponse("Provider not found", ErrorResponse),
+        409: jsonResponse(
+          "Provider name already exists in this tenant",
+          ErrorResponse,
+        ),
       },
     }),
     validator("json", UpdateModelProvider),
@@ -363,12 +324,7 @@ export function createModelProviderRoutes({
         "Removes the provider and cascades to the offerings that reference it. Running instances resolved through those offerings fail over to the next eligible source.",
       responses: {
         204: { description: "Provider removed" },
-        404: {
-          description: "Provider not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("Provider not found", ErrorResponse),
       },
     }),
     async (c) => {

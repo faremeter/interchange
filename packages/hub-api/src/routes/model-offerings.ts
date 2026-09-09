@@ -1,6 +1,6 @@
 import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import {
   model,
@@ -12,11 +12,11 @@ import type { DB } from "@intx/db";
 import { parseModelOfferingRow } from "@intx/db";
 import {
   CreateModelOffering,
+  ErrorResponse,
   UpdateModelOffering,
   CreatePricingRow,
   ModelOfferingResponse,
   PricingRowResponse,
-  ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 import {
@@ -38,6 +38,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 export function formatModelOffering(row: typeof modelOffering.$inferSelect) {
   // Validate the row once so the jsonb `quirks` is narrowed from `unknown`
@@ -103,14 +104,10 @@ export function createModelOfferingRoutes({
         "Lists the model offerings created directly on this tenant. Offerings inherited from ancestor tenants are not included; use the model discovery endpoint to see the resolved catalog.",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "List of model offerings",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(ModelOfferingResponse)),
-            },
-          },
-        },
+        200: jsonResponse(
+          "List of model offerings",
+          paginatedSchema(ModelOfferingResponse),
+        ),
       },
     }),
     async (c) => {
@@ -147,24 +144,15 @@ export function createModelOfferingRoutes({
       description:
         "Pairs a tenant-owned model with a tenant-owned provider. To offer an inherited model or provider, first create a tenant-local copy of it (shadowing).",
       responses: {
-        201: {
-          description: "Offering created",
-          content: {
-            "application/json": { schema: resolver(ModelOfferingResponse) },
-          },
-        },
-        404: {
-          description: "Model or provider not found in this tenant",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description: "Offering already exists for this model and provider",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Offering created", ModelOfferingResponse),
+        404: jsonResponse(
+          "Model or provider not found in this tenant",
+          ErrorResponse,
+        ),
+        409: jsonResponse(
+          "Offering already exists for this model and provider",
+          ErrorResponse,
+        ),
       },
     }),
     validator("json", CreateModelOffering),
@@ -247,18 +235,8 @@ export function createModelOfferingRoutes({
       tags: ["Catalog"],
       summary: "Get a model offering",
       responses: {
-        200: {
-          description: "Offering details",
-          content: {
-            "application/json": { schema: resolver(ModelOfferingResponse) },
-          },
-        },
-        404: {
-          description: "Offering not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Offering details", ModelOfferingResponse),
+        404: jsonResponse("Offering not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -284,18 +262,8 @@ export function createModelOfferingRoutes({
       tags: ["Catalog"],
       summary: "Update a model offering",
       responses: {
-        200: {
-          description: "Offering updated",
-          content: {
-            "application/json": { schema: resolver(ModelOfferingResponse) },
-          },
-        },
-        404: {
-          description: "Offering not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Offering updated", ModelOfferingResponse),
+        404: jsonResponse("Offering not found", ErrorResponse),
       },
     }),
     validator("json", UpdateModelOffering),
@@ -348,12 +316,7 @@ export function createModelOfferingRoutes({
         "Removes the offering and its pricing history. Running instances resolved through it fail over to the next eligible source.",
       responses: {
         204: { description: "Offering removed" },
-        404: {
-          description: "Offering not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("Offering not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -390,20 +353,8 @@ export function createModelOfferingRoutes({
       description:
         "Returns the full append-only pricing history for an offering, every currency and effective-from date, newest first.",
       responses: {
-        200: {
-          description: "Pricing rows",
-          content: {
-            "application/json": {
-              schema: resolver(PricingRowResponse.array()),
-            },
-          },
-        },
-        404: {
-          description: "Offering not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Pricing rows", PricingRowResponse.array()),
+        404: jsonResponse("Offering not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -437,31 +388,16 @@ export function createModelOfferingRoutes({
       description:
         "Appends a pricing row. Pricing is append-only: a price change inserts a new row with a later effective-from rather than editing an existing one, so historical cost attribution stays accurate.",
       responses: {
-        201: {
-          description: "Pricing row created",
-          content: {
-            "application/json": { schema: resolver(PricingRowResponse) },
-          },
-        },
-        400: {
-          description: "effectiveFrom is not a valid timestamp",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Offering not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description:
-            "A pricing row already exists for this currency and effective-from",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Pricing row created", PricingRowResponse),
+        400: jsonResponse(
+          "effectiveFrom is not a valid timestamp",
+          ErrorResponse,
+        ),
+        404: jsonResponse("Offering not found", ErrorResponse),
+        409: jsonResponse(
+          "A pricing row already exists for this currency and effective-from",
+          ErrorResponse,
+        ),
       },
     }),
     validator("json", CreatePricingRow),

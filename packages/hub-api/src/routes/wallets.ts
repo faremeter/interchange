@@ -1,16 +1,16 @@
 import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import { wallet, transaction } from "@intx/db/schema";
 import { parseWalletRow, parseTransactionRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   CreateWallet,
+  ErrorResponse,
   UpdateWallet,
   WalletResponse,
   TransactionResponse,
-  ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 
@@ -28,6 +28,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 function formatWallet(row: typeof wallet.$inferSelect) {
   const parsed = parseWalletRow(row);
@@ -80,14 +81,7 @@ export function createWalletRoutes({
       summary: "List wallets in the tenant",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "List of wallets",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(WalletResponse)),
-            },
-          },
-        },
+        200: jsonResponse("List of wallets", paginatedSchema(WalletResponse)),
       },
     }),
     async (c) => {
@@ -121,18 +115,8 @@ export function createWalletRoutes({
       description:
         "Creates a wallet with the specified payment backend and currency. Access for agents is managed through grants.",
       responses: {
-        201: {
-          description: "Wallet created",
-          content: {
-            "application/json": { schema: resolver(WalletResponse) },
-          },
-        },
-        400: {
-          description: "Validation error",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Wallet created", WalletResponse),
+        400: jsonResponse("Validation error", ErrorResponse),
       },
     }),
     validator("json", CreateWallet),
@@ -170,18 +154,8 @@ export function createWalletRoutes({
       summary: "Get wallet details",
       description: "Returns wallet details including current balance.",
       responses: {
-        200: {
-          description: "Wallet details",
-          content: {
-            "application/json": { schema: resolver(WalletResponse) },
-          },
-        },
-        404: {
-          description: "Wallet not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Wallet details", WalletResponse),
+        404: jsonResponse("Wallet not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -207,18 +181,8 @@ export function createWalletRoutes({
       tags: ["Wallets"],
       summary: "Update wallet config",
       responses: {
-        200: {
-          description: "Wallet updated",
-          content: {
-            "application/json": { schema: resolver(WalletResponse) },
-          },
-        },
-        404: {
-          description: "Wallet not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Wallet updated", WalletResponse),
+        404: jsonResponse("Wallet not found", ErrorResponse),
       },
     }),
     validator("json", UpdateWallet),
@@ -255,18 +219,11 @@ export function createWalletRoutes({
         204: {
           description: "Wallet deactivated",
         },
-        404: {
-          description: "Wallet not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description: "Wallet is in use by a model provider",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("Wallet not found", ErrorResponse),
+        409: jsonResponse(
+          "Wallet is in use by a model provider",
+          ErrorResponse,
+        ),
       },
     }),
     async (c) => {
@@ -334,14 +291,10 @@ export function createWalletRoutes({
         ...pageParameters,
       ],
       responses: {
-        200: {
-          description: "List of transactions",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(TransactionResponse)),
-            },
-          },
-        },
+        200: jsonResponse(
+          "List of transactions",
+          paginatedSchema(TransactionResponse),
+        ),
       },
     }),
     async (c) => {

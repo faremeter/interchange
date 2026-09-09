@@ -1,15 +1,15 @@
 import { eq, and, ilike } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import { offering, workflowDefinition } from "@intx/db/schema";
 import { parseOfferingRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   CreateOffering,
+  ErrorResponse,
   UpdateOffering,
   OfferingDetail,
-  ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 
@@ -26,6 +26,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 export function formatOffering(
   row: typeof offering.$inferSelect,
@@ -71,14 +72,7 @@ export function createOfferingRoutes({
         ...pageParameters,
       ],
       responses: {
-        200: {
-          description: "List of offerings",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(OfferingDetail)),
-            },
-          },
-        },
+        200: jsonResponse("List of offerings", paginatedSchema(OfferingDetail)),
       },
     }),
     async (c) => {
@@ -135,24 +129,9 @@ export function createOfferingRoutes({
       description:
         "Registers an offering for a workflow definition. The definition must belong to the tenant.",
       responses: {
-        201: {
-          description: "Offering registered",
-          content: {
-            "application/json": { schema: resolver(OfferingDetail) },
-          },
-        },
-        400: {
-          description: "Validation error",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Workflow definition not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Offering registered", OfferingDetail),
+        400: jsonResponse("Validation error", ErrorResponse),
+        404: jsonResponse("Workflow definition not found", ErrorResponse),
       },
     }),
     validator("json", CreateOffering),
@@ -207,18 +186,8 @@ export function createOfferingRoutes({
       description:
         "Returns pricing, definition info, and request/response type information.",
       responses: {
-        200: {
-          description: "Offering details",
-          content: {
-            "application/json": { schema: resolver(OfferingDetail) },
-          },
-        },
-        404: {
-          description: "Offering not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Offering details", OfferingDetail),
+        404: jsonResponse("Offering not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -251,18 +220,8 @@ export function createOfferingRoutes({
       tags: ["Discovery"],
       summary: "Update an offering",
       responses: {
-        200: {
-          description: "Offering updated",
-          content: {
-            "application/json": { schema: resolver(OfferingDetail) },
-          },
-        },
-        404: {
-          description: "Offering not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Offering updated", OfferingDetail),
+        404: jsonResponse("Offering not found", ErrorResponse),
       },
     }),
     validator("json", UpdateOffering),
@@ -310,12 +269,7 @@ export function createOfferingRoutes({
         204: {
           description: "Offering removed",
         },
-        404: {
-          description: "Offering not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("Offering not found", ErrorResponse),
       },
     }),
     async (c) => {

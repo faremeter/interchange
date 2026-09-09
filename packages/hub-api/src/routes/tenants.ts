@@ -1,20 +1,21 @@
 import { eq, and, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import { tenant, principal, role, principalRole, grant } from "@intx/db/schema";
 import { createPrincipalStore, parseTenantRow } from "@intx/db";
 import type { DB, PrincipalKeyStore } from "@intx/db";
 import {
   CreateTenant,
+  ErrorResponse,
   UpdateTenant,
   TenantResponse,
-  ErrorResponse,
 } from "@intx/types";
 
 import { unauthorizedResponse, type AppEnv } from "../context";
 import { errorResponse } from "../error-response";
 import { first, ts } from "../format";
+import { jsonResponse } from "../openapi";
 import { generateId } from "@intx/hub-common";
 
 const SYSTEM_ROLES = ["owner", "admin", "member"] as const;
@@ -53,18 +54,8 @@ export function createTenantRoutes({
       description:
         "Creates a new tenant. The authenticated user becomes the owner with a principal and default owner role.",
       responses: {
-        201: {
-          description: "Tenant created",
-          content: {
-            "application/json": { schema: resolver(TenantResponse) },
-          },
-        },
-        400: {
-          description: "Validation error",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Tenant created", TenantResponse),
+        400: jsonResponse("Validation error", ErrorResponse),
       },
     }),
     validator("json", CreateTenant),
@@ -229,24 +220,9 @@ export function createTenantRoutes({
       tags: ["Tenants"],
       summary: "Get tenant details",
       responses: {
-        200: {
-          description: "Tenant details",
-          content: {
-            "application/json": { schema: resolver(TenantResponse) },
-          },
-        },
-        403: {
-          description: "Not a member of this tenant",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Tenant not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Tenant details", TenantResponse),
+        403: jsonResponse("Not a member of this tenant", ErrorResponse),
+        404: jsonResponse("Tenant not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -286,18 +262,8 @@ export function createTenantRoutes({
       summary: "Update tenant config",
       description: "Requires admin or higher grant within the tenant.",
       responses: {
-        200: {
-          description: "Tenant updated",
-          content: {
-            "application/json": { schema: resolver(TenantResponse) },
-          },
-        },
-        403: {
-          description: "Insufficient grants",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Tenant updated", TenantResponse),
+        403: jsonResponse("Insufficient grants", ErrorResponse),
       },
     }),
     validator("json", UpdateTenant),

@@ -1,13 +1,13 @@
 import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import { federationTrust, tenant } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import {
   FederationTrust,
-  CreateFederationTrust,
   ErrorResponse,
+  CreateFederationTrust,
   paginatedSchema,
 } from "@intx/types";
 
@@ -22,6 +22,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 export type CreateTenantFederationRoutesDeps = {
   db: DB["db"];
@@ -39,14 +40,10 @@ export function createTenantFederationRoutes({
       summary: "List federation trust relationships",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "Federation trusts",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(FederationTrust)),
-            },
-          },
-        },
+        200: jsonResponse(
+          "Federation trusts",
+          paginatedSchema(FederationTrust),
+        ),
       },
     }),
     async (c) => {
@@ -105,18 +102,8 @@ export function createTenantFederationRoutes({
       description:
         "Creates a trust relationship with another tenant for cross-tenant agent discovery and interaction.",
       responses: {
-        201: {
-          description: "Trust established",
-          content: {
-            "application/json": { schema: resolver(FederationTrust) },
-          },
-        },
-        400: {
-          description: "Validation error",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Trust established", FederationTrust),
+        400: jsonResponse("Validation error", ErrorResponse),
       },
     }),
     validator("json", CreateFederationTrust),
@@ -175,12 +162,7 @@ export function createTenantFederationRoutes({
         204: {
           description: "Trust revoked",
         },
-        404: {
-          description: "Trust not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("Trust not found", ErrorResponse),
       },
     }),
     async (c) => {

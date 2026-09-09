@@ -1,17 +1,17 @@
 import { type SQL, eq, and, inArray, isNotNull, isNull } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver } from "hono-openapi";
+import { describeRoute } from "hono-openapi";
 
 import { principal, workflowDefinition, workflowRun } from "@intx/db/schema";
 import { parsePrincipalRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   UserProfile,
+  ErrorResponse,
   PrincipalSummary,
   WorkflowRunSummary,
   SessionSummary,
   ApprovalSummary,
-  ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 
@@ -24,6 +24,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 export type CreateMeRoutesDeps = {
   db: DB["db"];
@@ -38,18 +39,8 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
       tags: ["User"],
       summary: "Get current user profile",
       responses: {
-        200: {
-          description: "User profile",
-          content: {
-            "application/json": { schema: resolver(UserProfile) },
-          },
-        },
-        401: {
-          description: "Not authenticated",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("User profile", UserProfile),
+        401: jsonResponse("Not authenticated", ErrorResponse),
       },
     }),
     (c) => {
@@ -78,20 +69,11 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
         "Returns all of the authenticated user's principals across tenants, with tenant name, roles, and status in each.",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "List of principals across tenants",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(PrincipalSummary)),
-            },
-          },
-        },
-        401: {
-          description: "Not authenticated",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse(
+          "List of principals across tenants",
+          paginatedSchema(PrincipalSummary),
+        ),
+        401: jsonResponse("Not authenticated", ErrorResponse),
       },
     }),
     async (c) => {
@@ -185,14 +167,10 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
         "Aggregates running workflow runs from all tenants the user belongs to. Each result is tagged with tenantId.",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "Runs across tenants",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(WorkflowRunSummary)),
-            },
-          },
-        },
+        200: jsonResponse(
+          "Runs across tenants",
+          paginatedSchema(WorkflowRunSummary),
+        ),
       },
     }),
     async (c) => {
@@ -284,14 +262,7 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
       description:
         "Aggregates active sessions from all tenants the user belongs to. Each result is tagged with tenantId.",
       responses: {
-        200: {
-          description: "Sessions across tenants",
-          content: {
-            "application/json": {
-              schema: resolver(SessionSummary.array()),
-            },
-          },
-        },
+        200: jsonResponse("Sessions across tenants", SessionSummary.array()),
       },
     }),
     (_c) => {
@@ -308,14 +279,7 @@ export function createMeRoutes({ db }: CreateMeRoutesDeps): Hono<AppEnv> {
       description:
         "Aggregates pending approval requests from all tenants the user belongs to. Each result is tagged with tenantId.",
       responses: {
-        200: {
-          description: "Approvals across tenants",
-          content: {
-            "application/json": {
-              schema: resolver(ApprovalSummary.array()),
-            },
-          },
-        },
+        200: jsonResponse("Approvals across tenants", ApprovalSummary.array()),
       },
     }),
     (_c) => {
