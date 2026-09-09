@@ -304,6 +304,18 @@ export const SignalDeliverFrame = type({
 export type SignalDeliverFrame = typeof SignalDeliverFrame.infer;
 
 /**
+ * A sender address bound to the public key the hub vouches for. `publicKey`
+ * is the hex-encoded raw 32-byte Ed25519 key -- the same encoding as
+ * `MailInboundFrame.authenticatedSenderPublicKey`. `address` is the full
+ * domain-qualified sender address.
+ */
+export const SenderIdentity = type({
+  address: "string",
+  publicKey: "string",
+});
+export type SenderIdentity = typeof SenderIdentity.infer;
+
+/**
  * Deliver a run's authorization grants to a multi-step deployment's
  * supervisor. The hub forwards the frame to the sidecar that hosts the
  * deployment named by `agentAddress` (the deployment-level mail
@@ -316,12 +328,20 @@ export type SignalDeliverFrame = typeof SignalDeliverFrame.infer;
  * frame's `config.grants` ships, so the run's grants ride the same
  * validated grant encoding as the deploy-time step grants rather than a
  * new one.
+ *
+ * `senderIdentities` carries the resolved public keys of the run's
+ * authorized senders, co-delivered on the same `run.grants` barrier as the
+ * authorization grant so a recipient can bind each sender address to the
+ * key the hub vouches for. A sender with no resolvable key is omitted rather
+ * than carried as null, so every entry has a concrete key. The field is
+ * optional: a producer that does not co-deliver keys omits it entirely.
  */
 export const RunGrantsFrame = type({
   type: "'run.grants'",
   agentAddress: "string",
   runId: "string",
   stepGrants: WireGrantRule.array(),
+  "senderIdentities?": SenderIdentity.array(),
 });
 export type RunGrantsFrame = typeof RunGrantsFrame.infer;
 
