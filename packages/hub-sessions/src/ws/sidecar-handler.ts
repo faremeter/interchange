@@ -191,7 +191,11 @@ export type SidecarRouter = {
     authenticatedSender: string,
     authenticatedSenderPublicKey: string | null,
     messageId?: string,
-    runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] },
+    runGrants?: {
+      runId: string;
+      stepGrants: RunGrantsFrame["stepGrants"];
+      senderIdentities?: RunGrantsFrame["senderIdentities"];
+    },
   ): boolean;
   /**
    * Deliver a run's authorization grants to the sidecar hosting the named
@@ -207,11 +211,18 @@ export type SidecarRouter = {
    * `run.grants` then has no queue to ride and this returns `false`. Returns
    * `false` whenever the address is unroutable; the caller keeps any stable-run
    * grant reservation so a later first-delivery attempt reuses it.
+   *
+   * `senderIdentities` co-delivers the run's authorized senders' resolved keys
+   * on the same barrier as the grant, so a recipient that caches from this
+   * frame binds each sender address to the hub-vouched key. The caller passes
+   * `undefined` when there is no sender to co-deliver (a standing-grant refresh)
+   * or the sender has no resolvable key; a null key is never carried.
    */
   sendRunGrants(
     agentAddress: string,
     runId: string,
     stepGrants: RunGrantsFrame["stepGrants"],
+    senderIdentities: RunGrantsFrame["senderIdentities"],
   ): boolean;
   /**
    * Returns the current connector-thread state for the named agent, or
@@ -527,8 +538,14 @@ export function createSidecarRouter(
     // `run.grants` frame AHEAD of the mail so the redelivered trigger lands on
     // a sidecar that has the run's grants, rather than failing its onRunStart
     // barrier closed. Re-materializing at redelivery time is unsafe (it carries
-    // commit/authority semantics); replaying the same bytes is not.
-    runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] };
+    // commit/authority semantics); replaying the same bytes is not. The
+    // co-delivered `senderIdentities` ride the same snapshot, so a sidecar that
+    // first learns the grant on the reconnect replay also learns the key.
+    runGrants?: {
+      runId: string;
+      stepGrants: RunGrantsFrame["stepGrants"];
+      senderIdentities?: RunGrantsFrame["senderIdentities"];
+    };
     /** Present for a durable trigger pinned to a provisioned allocation. */
     allocatedTarget?: AllocatedSidecarTarget;
   };
@@ -640,7 +657,11 @@ export function createSidecarRouter(
     agentAddress: string,
     messageId: string,
     frame: HubFrame,
-    runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] },
+    runGrants?: {
+      runId: string;
+      stepGrants: RunGrantsFrame["stepGrants"];
+      senderIdentities?: RunGrantsFrame["senderIdentities"];
+    },
     allocatedTarget?: AllocatedSidecarTarget,
   ): void {
     let byId = pendingMail.get(agentAddress);
@@ -678,6 +699,9 @@ export function createSidecarRouter(
       agentAddress: entry.agentAddress,
       runId: entry.runGrants.runId,
       stepGrants: entry.runGrants.stepGrants,
+      ...(entry.runGrants.senderIdentities !== undefined
+        ? { senderIdentities: entry.runGrants.senderIdentities }
+        : {}),
     });
   }
 
@@ -1380,6 +1404,19 @@ export function createSidecarRouter(
       lookups.resolveSenderKey !== undefined
         ? await lookups.resolveSenderKey(authenticatedSender)
         : null;
+    // Co-deliver the sender's resolved key on the run's grants barrier so a
+    // recipient that caches from the `run.grants` frame binds the sender
+    // address to it. A null key is omitted -- never carried -- so the
+    // "authorized-with-a-key implies key cached" invariant holds.
+    const senderIdentities =
+      authenticatedSenderPublicKey !== null
+        ? [
+            {
+              address: authenticatedSender,
+              publicKey: authenticatedSenderPublicKey,
+            },
+          ]
+        : undefined;
     if (
       lookups.materializeMailTriggeredRunGrants !== undefined &&
       isRunAddress(recipient)
@@ -1410,7 +1447,9 @@ export function createSidecarRouter(
         // deployment is unroutable. Do not route the mail that would dispatch
         // it; the grants-only reservation remains the canonical snapshot for a
         // later first-delivery attempt.
-        if (!sendRunGrants(recipient, runId, result.stepGrants)) {
+        if (
+          !sendRunGrants(recipient, runId, result.stepGrants, senderIdentities)
+        ) {
           logger.error`Deployment ${recipient} is not routable for run ${runId}; retaining the unfired run's grant reservation for retry`;
           return "unrouted";
         }
@@ -1431,7 +1470,11 @@ export function createSidecarRouter(
           authenticatedSender,
           authenticatedSenderPublicKey,
           messageId,
-          { runId, stepGrants: result.stepGrants },
+          {
+            runId,
+            stepGrants: result.stepGrants,
+            ...(senderIdentities !== undefined ? { senderIdentities } : {}),
+          },
         )
           ? "routed"
           : "unrouted";
@@ -2312,7 +2355,11 @@ export function createSidecarRouter(
     authenticatedSender: string,
     authenticatedSenderPublicKey: string | null,
     messageId?: string,
-    runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] },
+    runGrants?: {
+      runId: string;
+      stepGrants: RunGrantsFrame["stepGrants"];
+      senderIdentities?: RunGrantsFrame["senderIdentities"];
+    },
   ): boolean {
     // `authenticatedSender` is hub-assigned by the caller from a hub-verified
     // value (the ownership-gated sender of a relayed mail, or the triggering
@@ -2367,12 +2414,14 @@ export function createSidecarRouter(
     agentAddress: string,
     runId: string,
     stepGrants: RunGrantsFrame["stepGrants"],
+    senderIdentities: RunGrantsFrame["senderIdentities"],
   ): boolean {
     const frame: HubFrame = {
       type: "run.grants",
       agentAddress,
       runId,
       stepGrants,
+      ...(senderIdentities !== undefined ? { senderIdentities } : {}),
     };
 
     const ws = addressIndex.get(agentAddress);
@@ -2411,13 +2460,6 @@ export function createSidecarRouter(
         `Address ${agentAddress} is not routed on allocation ${target.allocationId}`,
       );
     }
-    const runGrants = { runId, stepGrants };
-    conn.send({
-      type: "run.grants",
-      agentAddress,
-      runId,
-      stepGrants,
-    });
     // authenticatedSender is the sender persisted at enqueue on the dispatch
     // row (the triggering principal's hub-verified address); the caller reads
     // it from that row. It is never the message's MIME From.
@@ -2427,11 +2469,37 @@ export function createSidecarRouter(
     // run sender's deployment key is immutable once acked; a user sender's key
     // rotating mid-flight would leave the fixed signed bytes checked against
     // the new key, which the recipient logs as unverifiable. Null when
-    // unresolvable (no resolver wired, or the sender has no durable key).
+    // unresolvable (no resolver wired, or the sender has no durable key). The
+    // lookup contract (see SidecarLookups.resolveSenderKey) is best-effort and
+    // never throws, so resolving ahead of the run.grants send cannot block it.
     const authenticatedSenderPublicKey =
       lookups.resolveSenderKey !== undefined
         ? await lookups.resolveSenderKey(authenticatedSender)
         : null;
+    // Co-deliver the resolved key on the run's grants barrier, omitting a null
+    // key so it is never cached (see deliverMailToRecipient). The same list
+    // rides the pending-mail entry so the reconnect replay carries it too.
+    const senderIdentities =
+      authenticatedSenderPublicKey !== null
+        ? [
+            {
+              address: authenticatedSender,
+              publicKey: authenticatedSenderPublicKey,
+            },
+          ]
+        : undefined;
+    const runGrants = {
+      runId,
+      stepGrants,
+      ...(senderIdentities !== undefined ? { senderIdentities } : {}),
+    };
+    conn.send({
+      type: "run.grants",
+      agentAddress,
+      runId,
+      stepGrants,
+      ...(senderIdentities !== undefined ? { senderIdentities } : {}),
+    });
     const frame: HubFrame = {
       type: "mail.inbound",
       agentAddress,

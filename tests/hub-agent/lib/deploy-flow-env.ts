@@ -1852,6 +1852,7 @@ export async function fireMailTrigger(
     address,
     runId,
     opts.grants ?? [],
+    undefined,
   );
   if (!grantsDelivered) {
     throw new Error(

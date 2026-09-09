@@ -454,6 +454,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
       ctx.deploymentMailAddress,
       runId,
       [],
+      undefined,
     );
     expect(grantsDelivered).toBe(true);
     await new Promise((r) => setTimeout(r, 2_000));
@@ -645,7 +646,12 @@ async function routeRaw(
   // runs/<deploymentAddress>/grants.json, regardless of the message's
   // derived messageId.
   const runId = deriveWorkflowRunId(address);
-  const grantsDelivered = env.hub.router.sendRunGrants(address, runId, []);
+  const grantsDelivered = env.hub.router.sendRunGrants(
+    address,
+    runId,
+    [],
+    undefined,
+  );
   if (!grantsDelivered) {
     throw new Error(
       `routeRaw: sendRunGrants returned false for ${address}; address is not routable on the hub`,

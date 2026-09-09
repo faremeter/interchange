@@ -76,10 +76,14 @@ async function propagateRunGrantsToSidecar(
     );
     // A run with no committed per-run grants has nothing to push.
     if (committed === null) return;
+    // A standing-grant refresh carries no inbound sender, so there is no sender
+    // key to co-deliver on this barrier; the sender's key rides the run.grants
+    // frame that its triggering mail pushed.
     const delivered = deps.sidecarRouter.sendRunGrants(
       approval.agentAddress,
       approval.runId,
       committed.stepGrants,
+      undefined,
     );
     if (!delivered) {
       log.warn`standing grant for run ${approval.runId} not pushed: deployment ${approval.agentAddress} is not routable; the next dispatch re-establishes it`;
