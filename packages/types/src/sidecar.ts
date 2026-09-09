@@ -234,9 +234,9 @@ export type SignalCorrelationRegisterAckFrame =
  * itself verified -- the ownership-gated sender of a relayed mail, the
  * address persisted at enqueue for a durable dispatch, or the triggering
  * principal's address for hub-originated mail -- NEVER from the message's
- * own (spoofable) MIME `From`. No consumer reads it yet; it is carried so a
- * recipient can take the sender of record from this hub-verified value
- * rather than the forgeable `From`.
+ * own (spoofable) MIME `From`. The recipient's shadow signature check takes
+ * the sender of record from this hub-verified value rather than the forgeable
+ * `From`, but only to log a verdict -- it does not gate delivery.
  *
  * `authenticatedSenderPublicKey` is the hub-resolved public key of
  * `authenticatedSender`, hex-encoded (the raw 32-byte Ed25519 key). The hub
@@ -245,7 +245,9 @@ export type SignalCorrelationRegisterAckFrame =
  * key the hub vouches for rather than one derived from the message. It is
  * `null` when the sender has no resolvable key -- a run whose deploy is not
  * yet acked, or an address that matches no known principal -- a legitimate
- * "unverifiable sender" state, not an error. No consumer reads it yet.
+ * "unverifiable sender" state, not an error. The recipient's shadow signature
+ * check reads it to verify the message and log a verdict, but does not gate
+ * delivery.
  */
 export const MailInboundFrame = type({
   type: "'mail.inbound'",

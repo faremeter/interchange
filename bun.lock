@@ -319,6 +319,8 @@
         "@intx/harness": "workspace:*",
         "@intx/log": "workspace:*",
         "@intx/mail-memory": "workspace:*",
+        "@intx/mailbox": "workspace:*",
+        "@intx/mime": "workspace:*",
         "@intx/pack-transport": "workspace:*",
         "@intx/storage-isogit": "workspace:*",
         "@intx/types": "workspace:*",

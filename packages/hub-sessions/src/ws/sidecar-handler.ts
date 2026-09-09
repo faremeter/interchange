@@ -2400,12 +2400,14 @@ export function createSidecarRouter(
     // value (the ownership-gated sender of a relayed mail, or the triggering
     // principal's address) -- never the message's own MIME `From`. It rides
     // the frame as the hub-verified sender of record, so a recipient can take
-    // the sender from it rather than the forgeable `From`; no consumer reads
-    // it yet.
+    // the sender from it rather than the forgeable `From`. The recipient's
+    // shadow signature check reads it as the sender of record, but only to log
+    // a verdict -- it does not gate delivery.
     //
     // `authenticatedSenderPublicKey` is the caller's hub-resolved key for that
-    // sender (null when unresolvable), carried alongside so the recipient
-    // verifies the signature locally against the hub-vouched key.
+    // sender (null when unresolvable), carried alongside so the recipient's
+    // shadow check verifies the signature against the hub-vouched key and logs
+    // a verdict; it does not gate delivery.
     //
     // Carry the hub-minted messageId on the frame so the sidecar's durable-
     // receipt ack (`mail.inbound.ack`) keys on the same id the hub tracks, and

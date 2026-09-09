@@ -42,6 +42,7 @@ import {
   DEFAULT_REGISTER_ACK_MAX_ATTEMPTS,
   DEFAULT_REGISTER_ACK_TIMEOUT_MS,
 } from "./register-acker";
+import { shadowVerifyInboundSignature } from "./inbound-signature-shadow";
 import { base64Decode, base64Encode } from "@intx/types";
 import type { ApprovalSnapshot, InferenceEvent } from "@intx/types/runtime";
 
@@ -1423,6 +1424,30 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     switch (frame.type) {
       case "mail.inbound": {
         const rawBytes = base64Decode(frame.rawMessage);
+        // This ingress is the one place raw inbound bytes meet the hub-verified
+        // sender identity (`authenticatedSender` + its resolved key), and every
+        // producer -- relay, trigger, durable dispatch -- converges here, so the
+        // signature shadow lives here. Verify off to the side and LOG the
+        // verdict; never gate delivery on it. Deferred to a microtask so even
+        // the verify's synchronous MIME re-parse runs after the admit below and
+        // off the messageQueue chain -- the shadow must never delay or wedge
+        // delivery. The in-process mail-memory transport (the standalone harness
+        // path) does not deliver through this seam and carries no hub-verified
+        // sender, so it is outside this path.
+        void Promise.resolve()
+          .then(() =>
+            shadowVerifyInboundSignature({
+              raw: rawBytes,
+              authenticatedSender: frame.authenticatedSender,
+              authenticatedSenderPublicKey: frame.authenticatedSenderPublicKey,
+              messageId: frame.messageId,
+              agentAddress: frame.agentAddress,
+            }),
+          )
+          .catch((cause: unknown) => {
+            const msg = cause instanceof Error ? cause.message : String(cause);
+            logger.error`inbound mail signature shadow-verify crashed for ${frame.agentAddress}: ${msg}`;
+          });
         // Supervised deployments register the deployment-level mail
         // address on `mailInboundRouter` once their supervisor spawns;
         // that handler delivers the bytes to the supervisor's mail-bus
