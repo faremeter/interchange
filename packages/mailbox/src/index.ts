@@ -9,3 +9,4 @@ export { executeSearch } from "./search";
 export { executeThread } from "./thread";
 export { fetchHeaders, fetchStructure, fetchPart, fetchFull } from "./fetch";
 export { buildMessageHeaders } from "./headers";
+export { verifyMimeSignature } from "./verify-signature";
