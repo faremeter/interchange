@@ -15,7 +15,6 @@ import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 
 import { generateKeyPair } from "@intx/crypto";
-import type { DBExecutor } from "@intx/db";
 import { sidecarAllocation } from "@intx/db/schema";
 import {
   createAgentRepoStore,
@@ -118,7 +117,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
     }
 
-    async function getBackendPid(tx: DBExecutor): Promise<number> {
+    // The concrete postgres transaction the harness hands to a `transaction`
+    // callback, so raw `tx.execute` keeps its typed rows.
+    type HarnessTx = Parameters<Parameters<TestDb["db"]["transaction"]>[0]>[0];
+
+    async function getBackendPid(tx: HarnessTx): Promise<number> {
       const rows = await tx.execute(
         sql`select pg_backend_pid()::integer as pid`,
       );

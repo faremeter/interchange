@@ -9,13 +9,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import {
-  createDB,
-  dropSchema,
-  runMigrations,
-  type DB,
-  type DBConfig,
-} from "@intx/db";
+import { createDB, dropSchema, runMigrations, type DBConfig } from "@intx/db";
 import { sql } from "drizzle-orm";
 
 import { REPO_ROOT, optionalKey, parseEnvFileSync, requireKey } from "./env";
@@ -93,7 +87,11 @@ export function randomSchemaName(): string {
  * grants are needed and no hub subprocess is involved.
  */
 export type TestDb = {
-  db: DB["db"];
+  // The harness always builds a postgres-js database, so pin `db` to the
+  // concrete type `createDB` returns rather than the driver-agnostic `DB["db"]`.
+  // That keeps raw `db.execute` results typed for the postgres-only tests that
+  // read rows off `pg_*` queries.
+  db: ReturnType<typeof createDB>["db"];
   schema: string;
   reset: () => Promise<void>;
   close: () => Promise<void>;
