@@ -39,7 +39,7 @@ import {
   verifySSHSignature,
   createEd25519Crypto,
 } from "@intx/crypto";
-import { hexDecode, hexEncode } from "@intx/types";
+import { hexDecode } from "@intx/types";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -50,6 +50,7 @@ import {
 import { configureSync, getConfig, resetSync } from "@intx/log";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
+import { createPublicKeyCrypto } from "../sender-crypto";
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 
@@ -98,11 +99,13 @@ function createTestDeployRouter(keyStore: AgentKeyStore): DeployRouter {
 function withTestDeployBindings(): {
   keyStore: AgentKeyStore & { registerKey(address: string, kp: KeyPair): void };
   deployRouter: DeployRouter;
+  resolveSenderCrypto: () => undefined;
 } {
   const keyStore = createTestKeyStore();
   return {
     keyStore,
     deployRouter: createTestDeployRouter(keyStore),
+    resolveSenderCrypto: () => undefined,
   };
 }
 
@@ -332,7 +335,6 @@ describe("hub-link mail.inbound throwing router", () => {
           deploymentAddress,
           encoded,
           "user@integration.interchange",
-          null,
         ),
       ).toBe(true);
 
@@ -345,7 +347,6 @@ describe("hub-link mail.inbound throwing router", () => {
           deploymentAddress,
           encoded,
           "user@integration.interchange",
-          null,
         ),
       ).toBe(true);
 
@@ -459,6 +460,9 @@ describe("hub-link mail.inbound signature shadow", () => {
       deploymentAddress: string;
       routed: Uint8Array[];
     }) => Promise<void>,
+    resolveSenderCrypto?: Parameters<
+      typeof createHubLink
+    >[0]["resolveSenderCrypto"],
   ): Promise<void> {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
@@ -482,6 +486,7 @@ describe("hub-link mail.inbound signature shadow", () => {
       transport,
       sessions,
       ...bindings,
+      ...(resolveSenderCrypto !== undefined ? { resolveSenderCrypto } : {}),
       mailInboundRouter,
       getWorkflowAddresses: () => [deploymentAddress],
     });
@@ -500,7 +505,10 @@ describe("hub-link mail.inbound signature shadow", () => {
     }
   }
 
-  test("a validly-signed frame logs a valid/match verdict and is admitted", async () => {
+  test("a signature the cached key verifies logs valid/match and is admitted", async () => {
+    // The cache resolves the sender's real key, so the recipient verifies the
+    // signature locally and logs valid/match. The resolver returns the key (not
+    // the () => undefined default), so this exercises the populated-cache path.
     const sender = "external@remote.interchange";
     const crypto = createEd25519Crypto(await generateKeyPair());
     const raw = await makeSignedMail(crypto, sender);
@@ -509,12 +517,7 @@ describe("hub-link mail.inbound signature shadow", () => {
       "shadowvalid",
       async ({ deploymentAddress, routed }) => {
         expect(
-          env.router.routeMail(
-            deploymentAddress,
-            base64Encode(raw),
-            sender,
-            hexEncode(crypto.getPublicKey()),
-          ),
+          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
         ).toBe(true);
 
         await waitFor(() => shadowVerdicts().length > 0);
@@ -525,10 +528,14 @@ describe("hub-link mail.inbound signature shadow", () => {
         await waitFor(() => routed.length > 0);
         expect(routed).toHaveLength(1);
       },
+      (address) =>
+        address === sender
+          ? createPublicKeyCrypto(crypto.getPublicKey())
+          : undefined,
     );
   });
 
-  test("a tampered signature logs invalid and is still admitted", async () => {
+  test("a signature the cached key does not verify logs invalid and is still admitted", async () => {
     const sender = "external@remote.interchange";
     const signer = createEd25519Crypto(await generateKeyPair());
     const other = createEd25519Crypto(await generateKeyPair());
@@ -537,15 +544,10 @@ describe("hub-link mail.inbound signature shadow", () => {
     await withConnectedLink(
       "shadowbad",
       async ({ deploymentAddress, routed }) => {
-        // The hub stamps a key that does not match the signer, so the recipient
-        // verdict is invalid -- but shadow admits it anyway.
+        // The cache holds a key that did not sign the message, so the verdict
+        // is invalid -- but shadow admits it anyway.
         expect(
-          env.router.routeMail(
-            deploymentAddress,
-            base64Encode(raw),
-            sender,
-            hexEncode(other.getPublicKey()),
-          ),
+          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
         ).toBe(true);
 
         await waitFor(() => shadowVerdicts().length > 0);
@@ -553,24 +555,25 @@ describe("hub-link mail.inbound signature shadow", () => {
         await waitFor(() => routed.length > 0);
         expect(routed).toHaveLength(1);
       },
+      (address) =>
+        address === sender
+          ? createPublicKeyCrypto(other.getPublicKey())
+          : undefined,
     );
   });
 
-  test("a null sender key logs unknown and is still admitted", async () => {
+  test("a cache miss logs unknown and is still admitted", async () => {
     const sender = "external@remote.interchange";
     const crypto = createEd25519Crypto(await generateKeyPair());
     const raw = await makeSignedMail(crypto, sender);
 
     await withConnectedLink(
-      "shadownull",
+      "shadowmiss",
       async ({ deploymentAddress, routed }) => {
+        // The default resolver returns undefined (empty cache), so there is no
+        // key to verify against -- a quiet unknown, and still admitted.
         expect(
-          env.router.routeMail(
-            deploymentAddress,
-            base64Encode(raw),
-            sender,
-            null,
-          ),
+          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
         ).toBe(true);
 
         await waitFor(() => shadowVerdicts().length > 0);
@@ -591,12 +594,7 @@ describe("hub-link mail.inbound signature shadow", () => {
       "shadowforge",
       async ({ deploymentAddress, routed }) => {
         expect(
-          env.router.routeMail(
-            deploymentAddress,
-            base64Encode(raw),
-            stamp,
-            hexEncode(crypto.getPublicKey()),
-          ),
+          env.router.routeMail(deploymentAddress, base64Encode(raw), stamp),
         ).toBe(true);
 
         await waitFor(() => shadowVerdicts().length > 0);
@@ -606,6 +604,10 @@ describe("hub-link mail.inbound signature shadow", () => {
         await waitFor(() => routed.length > 0);
         expect(routed).toHaveLength(1);
       },
+      (address) =>
+        address === stamp
+          ? createPublicKeyCrypto(crypto.getPublicKey())
+          : undefined,
     );
   });
 });

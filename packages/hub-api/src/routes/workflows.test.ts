@@ -494,7 +494,6 @@ type RouteMailCall = {
   address: string;
   rawMessage: string;
   authenticatedSender: string;
-  authenticatedSenderPublicKey: string | null;
 };
 type RunGrantsCall = {
   address: string;
@@ -520,17 +519,11 @@ function createMockSidecarRouter(
     handleOpen: () => notImpl("handleOpen"),
     handleMessage: () => notImpl("handleMessage"),
     handleClose: () => notImpl("handleClose"),
-    routeMail: (
-      address,
-      rawMessage,
-      authenticatedSender,
-      authenticatedSenderPublicKey,
-    ) => {
+    routeMail: (address, rawMessage, authenticatedSender) => {
       routeMailCalls.push({
         address,
         rawMessage,
         authenticatedSender,
-        authenticatedSenderPublicKey,
       });
       sendOrder.push({ kind: "mail", address });
       return routeMailResult;
@@ -1692,10 +1685,6 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     // authenticated sender (fromAddr = principal.refId@tenant.domain), not
     // anything parsed from the message body.
     expect(call.authenticatedSender).toBe(`${USER_ID}@${DOMAIN}`);
-    // The trigger resolves the authenticated sender's hub-held key and stamps
-    // it on the frame so the recipient can verify the signature. The mock key
-    // store mints this canned hex key for the triggering principal.
-    expect(call.authenticatedSenderPublicKey).toBe("ab".repeat(32));
     // The wire payload is base64-encoded MIME carrying the body text.
     const decoded = new TextDecoder().decode(base64Decode(call.rawMessage));
     expect(decoded).toContain("kick off");
@@ -1705,10 +1694,11 @@ describe("POST /workflows/:anchorRunId/mail", () => {
   });
 
   test("routes the trigger mail even when the sender key cannot be resolved", async () => {
-    // The frame sender key is shadow-only and nullable, so a resolution fault
-    // (here a misconfigured key store whose getPublicKey throws) must degrade to
-    // null rather than fail the trigger. Otherwise the fault would strand a run
-    // whose grants (sent before the mail) have already gone out.
+    // The sender key is co-delivered best-effort for shadow verification, so a
+    // resolution fault (here a misconfigured key store whose getPublicKey
+    // throws) must degrade to omitting it rather than fail the trigger.
+    // Otherwise the fault would strand a run whose grants (sent before the
+    // mail) have already gone out.
     const routeMailCalls: RouteMailCall[] = [];
     const throwingKeyStore: PrincipalKeyStore = {
       ...createMockPrincipalKeyStore(),
@@ -1727,11 +1717,10 @@ describe("POST /workflows/:anchorRunId/mail", () => {
       authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
     );
 
+    // The resolution fault degrades to omitting the co-delivered key rather
+    // than propagating; the mail still routes so the run is not stranded.
     expect(res.status).toBe(202);
     expect(routeMailCalls).toHaveLength(1);
-    // The resolution fault degrades to a null stamped key rather than
-    // propagating; the mail still routes so the run is not stranded.
-    expect(routeMailCalls[0]?.authenticatedSenderPublicKey).toBeNull();
   });
 
   test("a later trigger occurrence reuses the live run's committed grants", async () => {

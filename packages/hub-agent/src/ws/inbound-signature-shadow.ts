@@ -1,5 +1,5 @@
 import { getLogger } from "@intx/log";
-import { hexDecode } from "@intx/types";
+import type { CryptoProvider } from "@intx/types/runtime";
 import { verifyMimeSignature } from "@intx/mailbox";
 import { parseHeaderSection, extractAddrSpec } from "@intx/mime";
 
@@ -10,18 +10,15 @@ const logger = getLogger([
   "inbound-signature-shadow",
 ]);
 
-// A raw Ed25519 public key is 32 bytes; the hub stamps it hex-encoded on the
-// frame.
-const ED25519_PUBLIC_KEY_BYTES = 32;
-
 /**
  * The two-axis verdict of shadow-verifying one inbound mail frame.
  *
  * `signature` reuses the `SignatureStatus` vocabulary --
  * `valid | invalid | missing | unknown` -- with an added `error` for a fault in
- * the verifier itself (a malformed key, an unparseable sender). It answers: does
- * the message's detached signature verify against the key the hub resolved for
- * `authenticatedSender`?
+ * the verifier itself (verify throwing, an unparseable sender). It answers: does
+ * the message's detached signature verify against the key the recipient's local
+ * cache holds for `authenticatedSender`? `unknown` means the cache holds no key
+ * for the sender, so there is nothing to verify against.
  *
  * `fromMatch` is an orthogonal axis: given a VALID signature, does the message's
  * visible `From` bind to `authenticatedSender`? A valid signature over a `From`
@@ -45,51 +42,61 @@ export type InboundSignatureVerdict = {
 export type InboundSignatureShadowInput = {
   raw: Uint8Array;
   authenticatedSender: string;
-  authenticatedSenderPublicKey: string | null;
   messageId: string | undefined;
   agentAddress: string;
 };
 
 /**
- * Verify an inbound mail frame's signature against the hub-resolved sender key
- * and LOG the verdict. Shadow only: this NEVER rejects delivery and NEVER
- * throws -- the caller runs it beside an unconditional admit. Returns the
- * verdict so a caller (or a test) can read it without scraping the log.
+ * Verify an inbound mail frame's signature against the key the recipient's
+ * local cache holds for `authenticatedSender` and LOG the verdict. The key is
+ * resolved through `resolveSenderCrypto` -- the cache-backed source populated by
+ * the hub's co-delivery on the run's grants barrier -- so the recipient verifies
+ * locally against the key the hub vouched for, never a key travelling on the
+ * message itself.
  *
- * A fault in the verifier (malformed key, unparseable sender) degrades to an
- * `error` verdict logged at ERROR -- surfaced loudly and kept distinct from the
- * ordinary `unknown` of an unresolvable sender, which stays a quiet `info`.
+ * Shadow only: this NEVER rejects delivery and NEVER throws -- the caller runs
+ * it beside an unconditional admit. Returns the verdict so a caller (or a test)
+ * can read it without scraping the log.
+ *
+ * A cache miss is a quiet `unknown` (an expected, benign state -- see below),
+ * not a fault. A genuine fault (the resolver throwing, the cached key being
+ * unreadable, or the verify throwing) degrades to an `error` verdict logged at
+ * ERROR -- surfaced loudly and kept distinct from `unknown`.
  */
 export async function shadowVerifyInboundSignature(
   input: InboundSignatureShadowInput,
+  resolveSenderCrypto: (address: string) => CryptoProvider | undefined,
 ): Promise<InboundSignatureVerdict> {
-  const { raw, authenticatedSender, authenticatedSenderPublicKey } = input;
-
-  if (authenticatedSenderPublicKey === null) {
-    // No hub-resolved key: an unresolvable sender (a run whose deploy is not yet
-    // acked, an address matching no principal). Nothing to verify against; the
-    // mail is admitted as an unverifiable sender. Not a fault -- a quiet
-    // `unknown`.
-    return logVerdict(
-      {
-        signature: "unknown",
-        fromMatch: "unchecked",
-        authenticatedSender,
-        messageFrom: null,
-      },
-      input,
-    );
-  }
+  const { raw, authenticatedSender } = input;
 
   let verdict: InboundSignatureVerdict;
   try {
-    const key = hexDecode(authenticatedSenderPublicKey);
-    if (key.length !== ED25519_PUBLIC_KEY_BYTES) {
-      throw new Error(
-        `expected a ${ED25519_PUBLIC_KEY_BYTES}-byte Ed25519 key, got ${key.length}`,
+    // Resolve and read the cached key inside the try so ANY fault -- the
+    // resolver throwing, `getPublicKey` throwing, or the verify throwing --
+    // is contained as a single `error` verdict rather than escaping. This is
+    // what keeps the "never throws" contract true.
+    const crypto = resolveSenderCrypto(authenticatedSender);
+    if (crypto === undefined) {
+      // Cache miss: the local keyring holds no key for this sender, so there
+      // is nothing to verify against. Expected for a sender whose key was
+      // never co-delivered (a run authorized before this shipped, relayed mail
+      // with no preceding grant co-delivery) or was unresolvable, or a
+      // rotation the cache has not yet refreshed. The mail is admitted as an
+      // unverifiable sender -- a quiet `unknown`, keyed by `authenticatedSender`
+      // in the log so the observation window stays legible.
+      return logVerdict(
+        {
+          signature: "unknown",
+          fromMatch: "unchecked",
+          authenticatedSender,
+          messageFrom: null,
+        },
+        input,
       );
     }
-    const signature = await verifyMimeSignature(raw, key);
+    // The cached key is raw bytes, already validated 32-byte Ed25519 at cache
+    // write/load time, so it feeds `verifyMimeSignature` directly.
+    const signature = await verifyMimeSignature(raw, crypto.getPublicKey());
     verdict = {
       signature,
       fromMatch: "unchecked",

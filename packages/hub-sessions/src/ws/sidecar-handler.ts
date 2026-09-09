@@ -189,7 +189,6 @@ export type SidecarRouter = {
     agentAddress: string,
     rawMessage: string,
     authenticatedSender: string,
-    authenticatedSenderPublicKey: string | null,
     messageId?: string,
     runGrants?: {
       runId: string;
@@ -1396,27 +1395,6 @@ export function createSidecarRouter(
     rawMessage: string,
     authenticatedSender: string,
   ): Promise<"routed" | "unrouted" | "failed-closed"> {
-    // Resolve the sender's hub-held key once for either delivery branch. A
-    // missing resolver or an unresolvable sender yields null; the recipient
-    // logs the mail as unverifiable and admits it (shadow), so this never
-    // blocks delivery.
-    const authenticatedSenderPublicKey =
-      lookups.resolveSenderKey !== undefined
-        ? await lookups.resolveSenderKey(authenticatedSender)
-        : null;
-    // Co-deliver the sender's resolved key on the run's grants barrier so a
-    // recipient that caches from the `run.grants` frame binds the sender
-    // address to it. A null key is omitted -- never carried -- so the
-    // "authorized-with-a-key implies key cached" invariant holds.
-    const senderIdentities =
-      authenticatedSenderPublicKey !== null
-        ? [
-            {
-              address: authenticatedSender,
-              publicKey: authenticatedSenderPublicKey,
-            },
-          ]
-        : undefined;
     if (
       lookups.materializeMailTriggeredRunGrants !== undefined &&
       isRunAddress(recipient)
@@ -1443,6 +1421,29 @@ export function createSidecarRouter(
         return "failed-closed";
       }
       if (result.outcome === "materialized") {
+        // Resolve the sender's hub-held key to co-deliver on the run's grants
+        // barrier, so a recipient that caches from the `run.grants` frame binds
+        // the sender address to it and can verify the sender's mail locally. A
+        // missing resolver or an unresolvable sender yields null; a null key is
+        // omitted -- never carried -- so the "authorized-with-a-key implies key
+        // cached" invariant holds, and the recipient logs such mail as
+        // unverifiable and admits it (shadow) rather than blocking delivery.
+        // Resolved only here, inside the run-grants branch that consumes it: a
+        // non-run recipient, a `skip`, or a rejected materialization never pays
+        // for the lookup.
+        const authenticatedSenderPublicKey =
+          lookups.resolveSenderKey !== undefined
+            ? await lookups.resolveSenderKey(authenticatedSender)
+            : null;
+        const senderIdentities =
+          authenticatedSenderPublicKey !== null
+            ? [
+                {
+                  address: authenticatedSender,
+                  publicKey: authenticatedSenderPublicKey,
+                },
+              ]
+            : undefined;
         // Send the run's grants ahead of the mail. A `false` here means the
         // deployment is unroutable. Do not route the mail that would dispatch
         // it; the grants-only reservation remains the canonical snapshot for a
@@ -1468,7 +1469,6 @@ export function createSidecarRouter(
           recipient,
           rawMessage,
           authenticatedSender,
-          authenticatedSenderPublicKey,
           messageId,
           {
             runId,
@@ -1485,12 +1485,7 @@ export function createSidecarRouter(
       // authorize. No run is committed here, so no ack handshake is needed.
     }
 
-    return routeMail(
-      recipient,
-      rawMessage,
-      authenticatedSender,
-      authenticatedSenderPublicKey,
-    )
+    return routeMail(recipient, rawMessage, authenticatedSender)
       ? "routed"
       : "unrouted";
   }
@@ -2353,7 +2348,6 @@ export function createSidecarRouter(
     agentAddress: string,
     rawMessage: string,
     authenticatedSender: string,
-    authenticatedSenderPublicKey: string | null,
     messageId?: string,
     runGrants?: {
       runId: string;
@@ -2366,13 +2360,9 @@ export function createSidecarRouter(
     // principal's address) -- never the message's own MIME `From`. It rides
     // the frame as the hub-verified sender of record, so a recipient can take
     // the sender from it rather than the forgeable `From`. The recipient's
-    // shadow signature check reads it as the sender of record, but only to log
-    // a verdict -- it does not gate delivery.
-    //
-    // `authenticatedSenderPublicKey` is the caller's hub-resolved key for that
-    // sender (null when unresolvable), carried alongside so the recipient's
-    // shadow check verifies the signature against the hub-vouched key and logs
-    // a verdict; it does not gate delivery.
+    // shadow signature check reads it as the sender of record -- resolving the
+    // sender's key from its local cache to verify the signature -- but only to
+    // log a verdict; it does not gate delivery.
     //
     // Carry the hub-minted messageId on the frame so the sidecar's durable-
     // receipt ack (`mail.inbound.ack`) keys on the same id the hub tracks, and
@@ -2385,7 +2375,6 @@ export function createSidecarRouter(
       agentAddress,
       rawMessage,
       authenticatedSender,
-      authenticatedSenderPublicKey,
       ...(messageId !== undefined ? { messageId } : {}),
     };
     const ws = addressIndex.get(agentAddress);
@@ -2465,13 +2454,14 @@ export function createSidecarRouter(
     // it from that row. It is never the message's MIME From.
     //
     // Resolve its key here, at dispatch (redelivery) time, from that persisted
-    // address -- so the frame reflects the sender's current hub-held key. A
-    // run sender's deployment key is immutable once acked; a user sender's key
-    // rotating mid-flight would leave the fixed signed bytes checked against
-    // the new key, which the recipient logs as unverifiable. Null when
-    // unresolvable (no resolver wired, or the sender has no durable key). The
-    // lookup contract (see SidecarLookups.resolveSenderKey) is best-effort and
-    // never throws, so resolving ahead of the run.grants send cannot block it.
+    // address, to co-deliver on the run's grants barrier so the recipient
+    // caches the sender's current hub-held key. A run sender's deployment key
+    // is immutable once acked; a user sender's key rotating mid-flight would
+    // leave the fixed signed bytes checked against the new key, which the
+    // recipient logs as unverifiable. Null when unresolvable (no resolver
+    // wired, or the sender has no durable key). The lookup contract (see
+    // SidecarLookups.resolveSenderKey) is best-effort and never throws, so
+    // resolving ahead of the run.grants send cannot block it.
     const authenticatedSenderPublicKey =
       lookups.resolveSenderKey !== undefined
         ? await lookups.resolveSenderKey(authenticatedSender)
@@ -2505,7 +2495,6 @@ export function createSidecarRouter(
       agentAddress,
       rawMessage,
       authenticatedSender,
-      authenticatedSenderPublicKey,
       messageId,
     };
     conn.send(frame);

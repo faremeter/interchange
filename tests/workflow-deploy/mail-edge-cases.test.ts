@@ -468,7 +468,6 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
       ctx.deploymentMailAddress,
       base64,
       "edge@integration.interchange",
-      null,
       messageId,
     );
     expect(delivered).toBe(true);
@@ -665,7 +664,6 @@ async function routeRaw(
     address,
     base64,
     "user@integration.interchange",
-    null,
   );
   if (!delivered) {
     throw new Error(

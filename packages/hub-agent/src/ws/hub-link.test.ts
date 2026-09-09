@@ -156,11 +156,15 @@ function createTestDeployRouter(keyStore: AgentKeyStore): DeployRouter {
 function withTestDeployBindings(): {
   keyStore: AgentKeyStore & { registerKey(address: string, kp: KeyPair): void };
   deployRouter: DeployRouter;
+  resolveSenderCrypto: () => undefined;
 } {
   const keyStore = createTestKeyStore();
   return {
     keyStore,
     deployRouter: createTestDeployRouter(keyStore),
+    // These tests do not exercise the inbound signature compare, so the shadow
+    // resolves no cached key.
+    resolveSenderCrypto: () => undefined,
   };
 }
 import type { KeyPair } from "@intx/types/runtime";
@@ -782,6 +786,7 @@ describe("sidecar↔hub integration", () => {
       transport,
       sessions,
       keyStore,
+      resolveSenderCrypto: () => undefined,
       deployRouter: createTestDeployRouter(keyStore),
     });
 
@@ -1164,7 +1169,6 @@ describe("sidecar↔hub integration", () => {
         deploymentAddress,
         encoded,
         "user@integration.interchange",
-        null,
       );
       expect(accepted).toBe(true);
 
