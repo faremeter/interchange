@@ -11,6 +11,7 @@ import {
   auditSenderKeys,
   createPrincipalKeyStore,
   resolveSenderKey,
+  resolveFrameSenderKey,
   type PrincipalKeyStore,
 } from "@intx/db";
 import { tenant as tenantTable } from "@intx/db/schema";
@@ -245,6 +246,39 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
     await expect(
       resolveSenderKey(h.db, store, "usr_keyless@keyless.localhost"),
     ).rejects.toThrow(/no active key/);
+  });
+
+  test("resolveFrameSenderKey returns the key, and degrades a fault to null", async () => {
+    // A resolvable sender yields its hex key. A resolution FAULT -- here a
+    // keyless principal, the INTR-164 break that makes resolveSenderKey throw --
+    // degrades to null instead, so a shadow-verification fault never blocks mail
+    // delivery.
+    await seedTenant("tnt_frame", "frame.localhost");
+    await seedPrincipal(h.db, {
+      id: "prn_frame_ok",
+      tenantId: "tnt_frame",
+      kind: "user",
+      refId: "usr_ok",
+      status: "active",
+    });
+    const publicKey = await store.generate("prn_frame_ok");
+    expect(
+      await resolveFrameSenderKey(h.db, store, "usr_ok@frame.localhost"),
+    ).toBe(publicKey);
+
+    await seedPrincipal(h.db, {
+      id: "prn_frame_keyless",
+      tenantId: "tnt_frame",
+      kind: "user",
+      refId: "usr_keyless2",
+      status: "active",
+    });
+    await expect(
+      resolveSenderKey(h.db, store, "usr_keyless2@frame.localhost"),
+    ).rejects.toThrow(/no active key/);
+    expect(
+      await resolveFrameSenderKey(h.db, store, "usr_keyless2@frame.localhost"),
+    ).toBeNull();
   });
 
   test("audit: reports no unresolved senders when every sender has a key", async () => {

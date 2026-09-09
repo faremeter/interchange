@@ -1863,7 +1863,7 @@ export async function fireMailTrigger(
   // signed-under address as the authenticated sender. This fixture reuses
   // that same address as the MIME From, so it is not a From-independence
   // check.
-  const delivered = env.hub.router.routeMail(address, base64, from);
+  const delivered = env.hub.router.routeMail(address, base64, from, null);
   if (!delivered) {
     throw new Error(
       `fireMailTrigger: routeMail returned false for ${address}; address is not routable on the hub`,

@@ -42,10 +42,11 @@ describe("SidecarRouter allocation mail durability", () => {
         TEST_IDENTITY.workflowRunAddress,
         "aGVsbG8=",
         TEST_SENDER,
+        null,
       ),
     ).toBe(true);
     expect(
-      router.routeMail("unknown@example.test", "aGVsbG8=", TEST_SENDER),
+      router.routeMail("unknown@example.test", "aGVsbG8=", TEST_SENDER, null),
     ).toBe(false);
   });
 
@@ -63,6 +64,7 @@ describe("SidecarRouter allocation mail durability", () => {
         TEST_IDENTITY.workflowRunAddress,
         "aGVsbG8=",
         TEST_SENDER,
+        null,
         "mid-retry",
       ),
     ).toBe(true);
@@ -89,6 +91,7 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.workflowRunAddress,
       "aGk=",
       TEST_SENDER,
+      null,
       "mid-acked",
     );
 
@@ -152,6 +155,7 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.workflowRunAddress,
       "b3duZWQ=",
       TEST_SENDER,
+      null,
       "mid-owned",
     );
     router.handleMessage(
@@ -192,6 +196,7 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.workflowRunAddress,
       "ZHJvcA==",
       TEST_SENDER,
+      null,
       "mid-drop",
     );
     await new Promise((resolve) => setTimeout(resolve, 80));
@@ -214,7 +219,12 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
-    router.routeMail(TEST_IDENTITY.workflowRunAddress, "eXk=", TEST_SENDER);
+    router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "eXk=",
+      TEST_SENDER,
+      null,
+    );
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
@@ -232,6 +242,7 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.workflowRunAddress,
       "cmV0YWluZWQ=",
       TEST_SENDER,
+      null,
       "mid-retained",
     );
     router.handleClose(first);
@@ -260,6 +271,7 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.workflowRunAddress,
       "ZXhwaXJlZA==",
       TEST_SENDER,
+      null,
       "mid-expired",
     );
     router.handleClose(first);
@@ -309,6 +321,41 @@ describe("SidecarRouter allocation mail durability", () => {
       "run.grants",
       "mail.inbound",
     ]);
+  });
+
+  test("dispatched inbound mail carries the hub-resolved sender key", async () => {
+    const hexKey = "bb".repeat(32);
+    const resolvedFor: string[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async resolveSenderKey(address) {
+          resolvedFor.push(address);
+          return hexKey;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    await router.sendWorkflowRunDispatchToAllocation(
+      TEST_TARGET,
+      TEST_IDENTITY.workflowRunAddress,
+      TEST_IDENTITY.anchorRunId,
+      [],
+      "dHJpZ2dlcg==",
+      TEST_SENDER,
+      "mid-key",
+    );
+
+    // The dispatch path resolves the key from the persisted sender, never the
+    // MIME From, and stamps it on the redelivered frame.
+    expect(resolvedFor).toEqual([TEST_SENDER]);
+    const inbound = framesOfType(ws, "mail.inbound").filter(
+      (frame) => frame["messageId"] === "mid-key",
+    );
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]?.["authenticatedSenderPublicKey"]).toBe(hexKey);
   });
 });
 
@@ -459,6 +506,67 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     // (`From: sender@example.test`) -- value-level independence, not just
     // equality to the gate value.
     expect(inbound[0]?.["authenticatedSender"]).not.toBe("sender@example.test");
+  });
+
+  test("relayed inbound mail carries the hub-resolved sender key", async () => {
+    const hexKey = "aa".repeat(32);
+    const resolvedFor: string[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async resolveSenderKey(address) {
+          resolvedFor.push(address);
+          return hexKey;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    // The key is resolved from the hub-verified sender, never the MIME From.
+    expect(resolvedFor).toEqual([TEST_IDENTITY.workflowRunAddress]);
+    const inbound = framesOfType(ws, "mail.inbound");
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]?.["authenticatedSenderPublicKey"]).toBe(hexKey);
+  });
+
+  test("inbound mail carries a null sender key when unresolvable", async () => {
+    const router = createAllocatedRouter({
+      lookups: {
+        async resolveSenderKey() {
+          return null;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    const inbound = framesOfType(ws, "mail.inbound");
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]?.["authenticatedSenderPublicKey"]).toBeNull();
   });
 
   test("drops mail.outbound whose sender the connection does not own", async () => {

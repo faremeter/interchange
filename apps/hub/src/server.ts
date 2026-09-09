@@ -4,6 +4,7 @@ import {
   createPrincipalKeyStore,
   createSidecarAllocationStore,
   createWorkflowRunDispatchStore,
+  resolveFrameSenderKey,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
@@ -241,6 +242,8 @@ export async function createHubServer({
         grantStore: createGrantStore(db),
       },
     ),
+    resolveSenderKey: (address) =>
+      resolveFrameSenderKey(db, principalKeyStore, address),
   };
 
   const sidecarCredentials = createSidecarCredentialResolver({ db });

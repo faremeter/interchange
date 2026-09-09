@@ -489,6 +489,7 @@ type RouteMailCall = {
   address: string;
   rawMessage: string;
   authenticatedSender: string;
+  authenticatedSenderPublicKey: string | null;
 };
 type RunGrantsCall = {
   address: string;
@@ -514,8 +515,18 @@ function createMockSidecarRouter(
     handleOpen: () => notImpl("handleOpen"),
     handleMessage: () => notImpl("handleMessage"),
     handleClose: () => notImpl("handleClose"),
-    routeMail: (address, rawMessage, authenticatedSender) => {
-      routeMailCalls.push({ address, rawMessage, authenticatedSender });
+    routeMail: (
+      address,
+      rawMessage,
+      authenticatedSender,
+      authenticatedSenderPublicKey,
+    ) => {
+      routeMailCalls.push({
+        address,
+        rawMessage,
+        authenticatedSender,
+        authenticatedSenderPublicKey,
+      });
       sendOrder.push({ kind: "mail", address });
       return routeMailResult;
     },
@@ -552,14 +563,15 @@ function createMockSessionService(): SessionService {
 }
 
 function createMockPrincipalKeyStore(): PrincipalKeyStore {
-  function notImpl(name: string): never {
-    throw new Error(`mock: principalKeyStore.${name} not implemented`);
-  }
   return {
     // The trigger mints the run principal's key while materializing grants; the
     // return value is not read, so a canned hex public key suffices.
     generate: async () => "ab".repeat(32),
-    getPublicKey: () => notImpl("getPublicKey"),
+    // The trigger resolves the triggering principal's public key to stamp on
+    // the inbound frame (so the recipient can verify the mail). Return the same
+    // canned hex key the store mints; this suite asserts route behavior, not the
+    // key's cryptographic validity.
+    getPublicKey: async () => "ab".repeat(32),
     // The trigger signs the outbound mail with the caller's principal key.
     // This suite asserts route behavior (status, run.grants ordering, grant
     // materialization), not signature validity, so return a fixed-length raw
@@ -750,6 +762,7 @@ function createMockEventCollectors(): EventCollectorRegistry {
 type TestAppOpts = {
   db?: MockDBOpts;
   grants?: GrantRule[];
+  principalKeyStore?: PrincipalKeyStore;
   signalCalls?: SignalCall[];
   routeMailCalls?: RouteMailCall[];
   routeMailResult?: boolean;
@@ -807,7 +820,7 @@ function createTestApp(opts: TestAppOpts = {}) {
     getSession: createMockGetSession(),
     authHandler: () => new Response("", { status: 404 }),
     db,
-    principalKeyStore: createMockPrincipalKeyStore(),
+    principalKeyStore: opts.principalKeyStore ?? createMockPrincipalKeyStore(),
     grantStore: createInMemoryGrantStore(opts.grants ?? [makeGrant()]),
     sidecarRouter: createMockSidecarRouter(
       opts.signalCalls ?? [],
@@ -1603,12 +1616,46 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     // authenticated sender (fromAddr = principal.refId@tenant.domain), not
     // anything parsed from the message body.
     expect(call.authenticatedSender).toBe(`${USER_ID}@${DOMAIN}`);
+    // The trigger resolves the authenticated sender's hub-held key and stamps
+    // it on the frame so the recipient can verify the signature. The mock key
+    // store mints this canned hex key for the triggering principal.
+    expect(call.authenticatedSenderPublicKey).toBe("ab".repeat(32));
     // The wire payload is base64-encoded MIME carrying the body text.
     const decoded = new TextDecoder().decode(base64Decode(call.rawMessage));
     expect(decoded).toContain("kick off");
     // A run trigger is threading-less: no In-Reply-To / References.
     expect(decoded).not.toContain("In-Reply-To");
     expect(decoded).not.toContain("References:");
+  });
+
+  test("routes the trigger mail even when the sender key cannot be resolved", async () => {
+    // The frame sender key is shadow-only and nullable, so a resolution fault
+    // (here a misconfigured key store whose getPublicKey throws) must degrade to
+    // null rather than fail the trigger. Otherwise the fault would strand a run
+    // whose grants (sent before the mail) have already gone out.
+    const routeMailCalls: RouteMailCall[] = [];
+    const throwingKeyStore: PrincipalKeyStore = {
+      ...createMockPrincipalKeyStore(),
+      getPublicKey: async () => {
+        throw new Error("mock: key store misconfigured");
+      },
+    };
+    const app = createTestApp({
+      grants: [manageGrant()],
+      routeMailCalls,
+      principalKeyStore: throwingKeyStore,
+      db: { deploymentRow, assetRow: workflowAssetRow },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "kick off" }),
+    );
+
+    expect(res.status).toBe(202);
+    expect(routeMailCalls).toHaveLength(1);
+    // The resolution fault degrades to a null stamped key rather than
+    // propagating; the mail still routes so the run is not stranded.
+    expect(routeMailCalls[0]?.authenticatedSenderPublicKey).toBeNull();
   });
 
   test("a later trigger occurrence reuses the live run's committed grants", async () => {

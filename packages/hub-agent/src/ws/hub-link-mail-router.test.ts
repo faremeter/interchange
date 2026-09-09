@@ -313,6 +313,7 @@ describe("hub-link mail.inbound throwing router", () => {
           deploymentAddress,
           encoded,
           "user@integration.interchange",
+          null,
         ),
       ).toBe(true);
 
@@ -325,6 +326,7 @@ describe("hub-link mail.inbound throwing router", () => {
           deploymentAddress,
           encoded,
           "user@integration.interchange",
+          null,
         ),
       ).toBe(true);
 

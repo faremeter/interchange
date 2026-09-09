@@ -192,6 +192,7 @@ export type SidecarRouter = {
     agentAddress: string,
     rawMessage: string,
     authenticatedSender: string,
+    authenticatedSenderPublicKey: string | null,
     messageId?: string,
     runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] },
   ): boolean;
@@ -1398,6 +1399,14 @@ export function createSidecarRouter(
     rawMessage: string,
     authenticatedSender: string,
   ): Promise<"routed" | "unrouted" | "failed-closed"> {
+    // Resolve the sender's hub-held key once for either delivery branch. A
+    // missing resolver or an unresolvable sender yields null; the recipient
+    // logs the mail as unverifiable and admits it (shadow), so this never
+    // blocks delivery.
+    const authenticatedSenderPublicKey =
+      lookups.resolveSenderKey !== undefined
+        ? await lookups.resolveSenderKey(authenticatedSender)
+        : null;
     if (
       lookups.materializeMailTriggeredRunGrants !== undefined &&
       isRunAddress(recipient)
@@ -1447,6 +1456,7 @@ export function createSidecarRouter(
           recipient,
           rawMessage,
           authenticatedSender,
+          authenticatedSenderPublicKey,
           messageId,
           { runId, stepGrants: result.stepGrants },
         )
@@ -1459,7 +1469,12 @@ export function createSidecarRouter(
       // authorize. No run is committed here, so no ack handshake is needed.
     }
 
-    return routeMail(recipient, rawMessage, authenticatedSender)
+    return routeMail(
+      recipient,
+      rawMessage,
+      authenticatedSender,
+      authenticatedSenderPublicKey,
+    )
       ? "routed"
       : "unrouted";
   }
@@ -2377,6 +2392,7 @@ export function createSidecarRouter(
     agentAddress: string,
     rawMessage: string,
     authenticatedSender: string,
+    authenticatedSenderPublicKey: string | null,
     messageId?: string,
     runGrants?: { runId: string; stepGrants: RunGrantsFrame["stepGrants"] },
   ): boolean {
@@ -2386,6 +2402,10 @@ export function createSidecarRouter(
     // the frame as the hub-verified sender of record, so a recipient can take
     // the sender from it rather than the forgeable `From`; no consumer reads
     // it yet.
+    //
+    // `authenticatedSenderPublicKey` is the caller's hub-resolved key for that
+    // sender (null when unresolvable), carried alongside so the recipient
+    // verifies the signature locally against the hub-vouched key.
     //
     // Carry the hub-minted messageId on the frame so the sidecar's durable-
     // receipt ack (`mail.inbound.ack`) keys on the same id the hub tracks, and
@@ -2398,6 +2418,7 @@ export function createSidecarRouter(
       agentAddress,
       rawMessage,
       authenticatedSender,
+      authenticatedSenderPublicKey,
       ...(messageId !== undefined ? { messageId } : {}),
     };
     const ws = addressIndex.get(agentAddress);
@@ -2480,11 +2501,23 @@ export function createSidecarRouter(
     // authenticatedSender is the sender persisted at enqueue on the dispatch
     // row (the triggering principal's hub-verified address); the caller reads
     // it from that row. It is never the message's MIME From.
+    //
+    // Resolve its key here, at dispatch (redelivery) time, from that persisted
+    // address -- so the frame reflects the sender's current hub-held key. A
+    // run sender's deployment key is immutable once acked; a user sender's key
+    // rotating mid-flight would leave the fixed signed bytes checked against
+    // the new key, which the recipient logs as unverifiable. Null when
+    // unresolvable (no resolver wired, or the sender has no durable key).
+    const authenticatedSenderPublicKey =
+      lookups.resolveSenderKey !== undefined
+        ? await lookups.resolveSenderKey(authenticatedSender)
+        : null;
     const frame: HubFrame = {
       type: "mail.inbound",
       agentAddress,
       rawMessage,
       authenticatedSender,
+      authenticatedSenderPublicKey,
       messageId,
     };
     conn.send(frame);

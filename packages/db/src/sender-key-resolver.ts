@@ -1,6 +1,7 @@
 import { and, eq, isNotNull, or, sql } from "drizzle-orm";
 
 import { parseAddress } from "@intx/types";
+import { getLogger } from "@intx/log";
 
 import type { DBExecutor } from "./client";
 import type { PrincipalKeyStore } from "./principal-key-store";
@@ -9,6 +10,8 @@ import { tenant } from "./schema/tenants";
 import { workflowRun } from "./schema/workflow-run";
 
 const RUN_PREFIX = "run_";
+
+const logger = getLogger(["db", "sender-key-resolver"]);
 
 /**
  * The durable public key that authenticates a signed mail sender, resolved from
@@ -82,6 +85,41 @@ export async function resolveSenderKey(
   // key above, a keyless principal is a real breakage that must surface.
   const publicKey = await principalKeyStore.getPublicKey(principalId, db);
   return { source: "user", publicKey };
+}
+
+/**
+ * Resolve the hex-encoded public key to stamp on an outbound mail frame, as a
+ * BEST-EFFORT value that never blocks delivery. Returns the key, or `null` when
+ * the sender has no resolvable key -- OR when resolution FAILS.
+ *
+ * {@link resolveSenderKey} throws on a genuine fault (an ambiguous user address,
+ * or a principal with no active key -- an INTR-164 invariant break). Those
+ * throws must fail loud for {@link auditSenderKeys}, but they must not break
+ * mail delivery: the frame key is nullable and shadow-only, so a recipient
+ * treats a null key as an unverifiable sender and admits the mail anyway.
+ * Coupling delivery to key resolution would let a data-integrity fault strand a
+ * run or drop mail. So a throw here degrades to `null` and is logged at ERROR
+ * with its cause -- a degraded fault, kept distinct from the ordinary
+ * unresolvable-sender `null`, which stays silent.
+ *
+ * The principal key store is real in production (INTR-164 mints every principal
+ * a key), so the throw path is a defensive safety net, not the common case: the
+ * normal outcome is a resolved, populated key.
+ */
+export async function resolveFrameSenderKey(
+  db: DBExecutor,
+  principalKeyStore: PrincipalKeyStore,
+  address: string,
+): Promise<string | null> {
+  try {
+    return (
+      (await resolveSenderKey(db, principalKeyStore, address))?.publicKey ??
+      null
+    );
+  } catch (cause) {
+    logger.error`Degraded to a null frame sender key for ${address}: resolving its public key failed (a fault, not an unresolvable sender): ${cause instanceof Error ? cause.message : String(cause)}`;
+    return null;
+  }
 }
 
 /**
