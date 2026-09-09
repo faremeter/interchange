@@ -9,6 +9,7 @@ import {
   MailOutboundFrame,
   PackRejectFrame,
   PackRejectReason,
+  RunGrantsFrame,
   SidecarFrame,
   SignalCorrelationRegisterFrame,
   SourcesUpdateFrame,
@@ -391,5 +392,79 @@ describe("CredentialsUpdateFrame revoke", () => {
   test("a non-string revoke entry is rejected", () => {
     const bad = { ...pureRevoke, revoke: [123] };
     expect(CredentialsUpdateFrame(bad) instanceof type.errors).toBe(true);
+  });
+});
+
+describe("RunGrantsFrame senderIdentities co-delivery", () => {
+  const base = {
+    type: "run.grants" as const,
+    agentAddress: "dep@integration.interchange",
+    runId: "run_1",
+    stepGrants: [],
+  };
+  const identities = [
+    {
+      address: "run_sender@integration.interchange",
+      publicKey: "aa".repeat(32),
+    },
+  ];
+
+  test("the HubFrame union admits a run.grants frame carrying identities", () => {
+    // The sidecar parses inbound frames through the HubFrame union, so the
+    // co-delivered keys must reach the run.grants member and round-trip.
+    const out = HubFrame({ ...base, senderIdentities: identities });
+    if (out instanceof type.errors) {
+      throw new Error(`expected a valid HubFrame: ${out.summary}`);
+    }
+    if (out.type !== "run.grants") {
+      throw new Error(`expected a run.grants frame, got ${out.type}`);
+    }
+    expect(out.senderIdentities).toEqual(identities);
+  });
+
+  test("the HubFrame union rejects a malformed identity entry", () => {
+    // arktype passes undeclared keys through unchanged, so a valid-input
+    // round-trip alone cannot prove the field is declared on the wire path:
+    // it would survive even if senderIdentities were dropped from the schema.
+    // A malformed entry rejected THROUGH the union is the real guard -- were
+    // the field undeclared, the bad entry would ride the union as a harmless
+    // passthrough key and this parse would succeed, silently starving the
+    // recipient's key cache.
+    const bad = {
+      ...base,
+      senderIdentities: [{ address: "run_sender@integration.interchange" }],
+    };
+    expect(HubFrame(bad) instanceof type.errors).toBe(true);
+  });
+
+  test("a frame with no senderIdentities validates and omits the key", () => {
+    const out = RunGrantsFrame(base);
+    if (out instanceof type.errors) {
+      throw new Error(`expected a valid frame: ${out.summary}`);
+    }
+    expect("senderIdentities" in out).toBe(false);
+  });
+
+  test("an identity entry missing its public key is rejected", () => {
+    const bad = {
+      ...base,
+      senderIdentities: [{ address: "run_sender@integration.interchange" }],
+    };
+    expect(RunGrantsFrame(bad) instanceof type.errors).toBe(true);
+  });
+
+  test("an identity entry with a non-string public key is rejected", () => {
+    const bad = {
+      ...base,
+      senderIdentities: [
+        { address: "run_sender@integration.interchange", publicKey: 123 },
+      ],
+    };
+    expect(RunGrantsFrame(bad) instanceof type.errors).toBe(true);
+  });
+
+  test("an identity entry missing its address is rejected", () => {
+    const bad = { ...base, senderIdentities: [{ publicKey: "aa".repeat(32) }] };
+    expect(RunGrantsFrame(bad) instanceof type.errors).toBe(true);
   });
 });
