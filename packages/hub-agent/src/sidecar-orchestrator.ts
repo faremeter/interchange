@@ -16,6 +16,7 @@ import type { HubTransport } from "@intx/mail-memory";
 import type { SignalKind } from "@intx/types";
 import type {
   ApprovalSnapshot,
+  CryptoProvider,
   InferenceEvent,
   KeyPair,
 } from "@intx/types/runtime";
@@ -100,6 +101,13 @@ export type SidecarOrchestratorConfig = {
   dataDir: string;
   transport: HubTransport;
   cryptoOps: SidecarCryptoOps;
+  /**
+   * Resolves a sender address to the crypto that verifies its inbound mail.
+   * The host builds this over the sidecar's sender-key cache and the
+   * orchestrator forwards it unchanged to `createHubLink`, where the inbound
+   * signature shadow uses it.
+   */
+  resolveSenderCrypto: (address: string) => CryptoProvider | undefined;
   /**
    * Host-injected `DeployRouter` factory. The orchestrator calls it
    * once after `sessions` and `keyStore` are constructed; the
@@ -220,6 +228,7 @@ export function createSidecarOrchestrator(
     dataDir,
     transport,
     cryptoOps,
+    resolveSenderCrypto,
     createDeployRouter,
     mailInboundRouter,
     signalInboundRouter,
@@ -310,6 +319,7 @@ export function createSidecarOrchestrator(
     transport,
     sessions,
     keyStore,
+    resolveSenderCrypto,
     deployRouter,
     applyWorkflowRunPack,
     ...(mailInboundRouter !== undefined ? { mailInboundRouter } : {}),

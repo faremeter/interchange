@@ -7,9 +7,10 @@ import {
   generateMessageId,
   type MessageHeaders,
 } from "@intx/mime";
-import { hexEncode } from "@intx/types";
+import type { CryptoProvider } from "@intx/types/runtime";
 
 import { shadowVerifyInboundSignature } from "./inbound-signature-shadow";
+import { createPublicKeyCrypto } from "../sender-crypto";
 
 const AGENT_ADDRESS = "run_anchor@tenant.example";
 
@@ -51,42 +52,59 @@ async function signedMessage(
   return assembleMessage(headersFrom(from), content, sig);
 }
 
-function hexKey(crypto: Awaited<ReturnType<typeof makeCrypto>>): string {
-  return hexEncode(crypto.getPublicKey());
+/**
+ * A resolver that hands back `crypto`'s public key for `sender` and misses
+ * (returns undefined) for anyone else -- the cache the recipient verifies
+ * against.
+ */
+function cacheFor(
+  sender: string,
+  crypto: Awaited<ReturnType<typeof makeCrypto>>,
+): (address: string) => CryptoProvider | undefined {
+  return (address) =>
+    address === sender
+      ? createPublicKeyCrypto(crypto.getPublicKey())
+      : undefined;
 }
 
+const emptyCache = (): undefined => undefined;
+
 describe("shadowVerifyInboundSignature", () => {
-  test("valid signature whose From matches the stamp: valid/match", async () => {
+  test("signature the cached key verifies, From matches: valid/match", async () => {
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
 
-    const verdict = await shadowVerifyInboundSignature({
-      raw,
-      authenticatedSender: sender,
-      authenticatedSenderPublicKey: hexKey(crypto),
-      messageId: "mid-valid",
-      agentAddress: AGENT_ADDRESS,
-    });
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-valid",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(sender, crypto),
+    );
 
     expect(verdict.signature).toBe("valid");
     expect(verdict.fromMatch).toBe("match");
     expect(verdict.messageFrom).toBe(sender);
   });
 
-  test("signature against a different key: invalid, From unchecked", async () => {
+  test("signature against a different cached key: invalid, From unchecked", async () => {
     const sender = "alpha@test.interchange";
     const signer = await makeCrypto();
     const other = await makeCrypto();
     const raw = await signedMessage(signer, sender);
 
-    const verdict = await shadowVerifyInboundSignature({
-      raw,
-      authenticatedSender: sender,
-      authenticatedSenderPublicKey: hexKey(other),
-      messageId: "mid-invalid",
-      agentAddress: AGENT_ADDRESS,
-    });
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-invalid",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(sender, other),
+    );
 
     expect(verdict.signature).toBe("invalid");
     // A From-binding is only meaningful atop a valid signature.
@@ -107,105 +125,133 @@ describe("shadowVerifyInboundSignature", () => {
       ].join("\r\n"),
     );
 
-    const verdict = await shadowVerifyInboundSignature({
-      raw,
-      authenticatedSender: sender,
-      authenticatedSenderPublicKey: hexKey(crypto),
-      messageId: "mid-missing",
-      agentAddress: AGENT_ADDRESS,
-    });
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-missing",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(sender, crypto),
+    );
 
     expect(verdict.signature).toBe("missing");
     expect(verdict.fromMatch).toBe("unchecked");
   });
 
   test("valid signature under a forged From: valid/mismatch", async () => {
-    // The message is genuinely signed by `signer`'s key (so the hub stamps
-    // `signer`'s address + key), but its visible From claims a different
-    // sender. A valid signature over a borrowed display identity is the
-    // forgery this binding catches.
+    // The message is genuinely signed by `crypto` (the key the cache holds for
+    // the stamped `signer`), but its visible From claims a different sender. A
+    // valid signature over a borrowed display identity is the forgery this
+    // binding catches.
     const signer = "alpha@test.interchange";
     const forgedFrom = "victim@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, forgedFrom);
 
-    const verdict = await shadowVerifyInboundSignature({
-      raw,
-      authenticatedSender: signer,
-      authenticatedSenderPublicKey: hexKey(crypto),
-      messageId: "mid-forged",
-      agentAddress: AGENT_ADDRESS,
-    });
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: signer,
+        messageId: "mid-forged",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(signer, crypto),
+    );
 
     expect(verdict.signature).toBe("valid");
     expect(verdict.fromMatch).toBe("mismatch");
     expect(verdict.messageFrom).toBe(forgedFrom);
   });
 
-  test("null sender key: unknown, admitted", async () => {
+  test("cache miss: unknown, admitted", async () => {
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
 
-    const verdict = await shadowVerifyInboundSignature({
-      raw,
-      authenticatedSender: sender,
-      authenticatedSenderPublicKey: null,
-      messageId: "mid-null",
-      agentAddress: AGENT_ADDRESS,
-    });
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-miss",
+        agentAddress: AGENT_ADDRESS,
+      },
+      emptyCache,
+    );
 
     expect(verdict.signature).toBe("unknown");
     expect(verdict.fromMatch).toBe("unchecked");
   });
 
-  test("malformed hex key degrades to a distinct error verdict", async () => {
+  test("a resolver that throws degrades to error, not a crash", async () => {
+    // The resolver call is inside the verify's try, so a throw is contained as
+    // a distinct `error` verdict rather than escaping and being mis-logged as a
+    // mail-path crash.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
 
-    const verdict = await shadowVerifyInboundSignature({
-      raw,
-      authenticatedSender: sender,
-      authenticatedSenderPublicKey: "not-hex",
-      messageId: "mid-badhex",
-      agentAddress: AGENT_ADDRESS,
-    });
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-resolver-fault",
+        agentAddress: AGENT_ADDRESS,
+      },
+      () => {
+        throw new Error("resolver boom");
+      },
+    );
 
     expect(verdict.signature).toBe("error");
     expect(verdict.fromMatch).toBe("unchecked");
   });
 
-  test("well-formed hex of the wrong length is an error, not a crash", async () => {
+  test("an unreadable cached key degrades to error, not a crash", async () => {
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
+    // A provider whose getPublicKey throws -- the verify path must contain it
+    // as a distinct `error` verdict rather than crash the mail path.
+    const faulty: CryptoProvider = {
+      getPublicKey() {
+        throw new Error("cached key unreadable");
+      },
+      sign: () => Promise.reject(new Error("verify-only")),
+      signSSH: () => Promise.reject(new Error("verify-only")),
+      verify: () => Promise.reject(new Error("verify-only")),
+    };
 
-    const verdict = await shadowVerifyInboundSignature({
-      raw,
-      authenticatedSender: sender,
-      // 16 bytes of valid hex -- half an Ed25519 key.
-      authenticatedSenderPublicKey: "ab".repeat(16),
-      messageId: "mid-shortkey",
-      agentAddress: AGENT_ADDRESS,
-    });
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-key-fault",
+        agentAddress: AGENT_ADDRESS,
+      },
+      () => faulty,
+    );
 
     expect(verdict.signature).toBe("error");
+    expect(verdict.fromMatch).toBe("unchecked");
   });
 
   test("a display-name From still binds to the stamp addr-spec", async () => {
     // extractAddrSpec strips the display name, so `Alpha <a@b>` binds to the
     // bare stamp `a@b` without a false mismatch.
+    const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, "Alpha <alpha@test.interchange>");
 
-    const verdict = await shadowVerifyInboundSignature({
-      raw,
-      authenticatedSender: "alpha@test.interchange",
-      authenticatedSenderPublicKey: hexKey(crypto),
-      messageId: "mid-display",
-      agentAddress: AGENT_ADDRESS,
-    });
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-display",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(sender, crypto),
+    );
 
     expect(verdict.signature).toBe("valid");
     expect(verdict.fromMatch).toBe("match");
@@ -217,19 +263,22 @@ describe("shadowVerifyInboundSignature", () => {
     // forgery verdict -- that would poison the corpus (and later drop
     // legitimate mail under enforcement). extractAddrSpec rejects the two-@
     // input; the binding degrades to unchecked while the signature stands.
+    const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(
       crypto,
       "alpha@test.interchange, beta@test.interchange",
     );
 
-    const verdict = await shadowVerifyInboundSignature({
-      raw,
-      authenticatedSender: "alpha@test.interchange",
-      authenticatedSenderPublicKey: hexKey(crypto),
-      messageId: "mid-multi",
-      agentAddress: AGENT_ADDRESS,
-    });
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-multi",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(sender, crypto),
+    );
 
     expect(verdict.signature).toBe("valid");
     expect(verdict.fromMatch).toBe("unchecked");
@@ -238,16 +287,19 @@ describe("shadowVerifyInboundSignature", () => {
   test("case-variant From still matches the stamp", async () => {
     // extractAddrSpec normalizes to lowercase, so an upper-case From binds to a
     // lower-case stamp without a false mismatch.
+    const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, "Alpha@Test.Interchange");
 
-    const verdict = await shadowVerifyInboundSignature({
-      raw,
-      authenticatedSender: "alpha@test.interchange",
-      authenticatedSenderPublicKey: hexKey(crypto),
-      messageId: "mid-case",
-      agentAddress: AGENT_ADDRESS,
-    });
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-case",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(sender, crypto),
+    );
 
     expect(verdict.signature).toBe("valid");
     expect(verdict.fromMatch).toBe("match");

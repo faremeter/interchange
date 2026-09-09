@@ -236,25 +236,14 @@ export type SignalCorrelationRegisterAckFrame =
  * principal's address for hub-originated mail -- NEVER from the message's
  * own (spoofable) MIME `From`. The recipient's shadow signature check takes
  * the sender of record from this hub-verified value rather than the forgeable
- * `From`, but only to log a verdict -- it does not gate delivery.
- *
- * `authenticatedSenderPublicKey` is the hub-resolved public key of
- * `authenticatedSender`, hex-encoded (the raw 32-byte Ed25519 key). The hub
- * resolves it from its own durable key stores at the frame's construction
- * site, so a recipient can verify the message's signature locally against the
- * key the hub vouches for rather than one derived from the message. It is
- * `null` when the sender has no resolvable key -- a run whose deploy is not
- * yet acked, or an address that matches no known principal -- a legitimate
- * "unverifiable sender" state, not an error. The recipient's shadow signature
- * check reads it to verify the message and log a verdict, but does not gate
- * delivery.
+ * `From`, resolves the sender's key from its local cache, and logs a verdict --
+ * it does not gate delivery.
  */
 export const MailInboundFrame = type({
   type: "'mail.inbound'",
   agentAddress: "string",
   rawMessage: "string",
   authenticatedSender: "string",
-  authenticatedSenderPublicKey: "string | null",
   "messageId?": "string",
 });
 export type MailInboundFrame = typeof MailInboundFrame.infer;
@@ -305,8 +294,7 @@ export type SignalDeliverFrame = typeof SignalDeliverFrame.infer;
 
 /**
  * A sender address bound to the public key the hub vouches for. `publicKey`
- * is the hex-encoded raw 32-byte Ed25519 key -- the same encoding as
- * `MailInboundFrame.authenticatedSenderPublicKey`. `address` is the full
+ * is the hex-encoded raw 32-byte Ed25519 key. `address` is the full
  * domain-qualified sender address.
  */
 export const SenderIdentity = type({

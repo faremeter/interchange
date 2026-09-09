@@ -10,6 +10,7 @@ import {
 } from "@intx/crypto";
 import {
   createSenderKeyCache,
+  createSenderCryptoResolver,
   createSidecarOrchestrator,
   type HubLink,
 } from "@intx/hub-agent";
@@ -245,6 +246,12 @@ const senderKeyCache = await createSenderKeyCache({
     writeFileAtomicDurable(filePath, contents, { mode: 0o600 }),
 });
 
+// The read side of the same cache: the inbound signature shadow resolves a
+// sender address to the crypto that verifies its mail. Built here at the edge
+// so the hub link stays source-opaque -- it resolves address -> crypto without
+// holding the cache or knowing where the key came from.
+const resolveSenderCrypto = createSenderCryptoResolver(senderKeyCache);
+
 // The deploy router records `(runId -> agentAddress)` here on
 // every inbound `agent.deploy`; the facade resolves the mapping when
 // firing the pack push so the outbound frames carry the right
@@ -441,6 +448,7 @@ const orchestrator = createSidecarOrchestrator({
     generateKeyPair,
     verifySSHSig: verifySSHSignature,
   },
+  resolveSenderCrypto,
   mailInboundRouter: multistepMailRouter,
   signalInboundRouter: multistepSignalRouter,
   drainInboundRouter: multistepDrainRouter,

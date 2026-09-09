@@ -44,7 +44,11 @@ import {
 } from "./register-acker";
 import { shadowVerifyInboundSignature } from "./inbound-signature-shadow";
 import { base64Decode, base64Encode } from "@intx/types";
-import type { ApprovalSnapshot, InferenceEvent } from "@intx/types/runtime";
+import type {
+  ApprovalSnapshot,
+  CryptoProvider,
+  InferenceEvent,
+} from "@intx/types/runtime";
 
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
@@ -498,6 +502,15 @@ export type HubLinkConfig = {
    */
   keyStore: AgentKeyStore;
   /**
+   * Resolves a sender address to the crypto whose public key verifies that
+   * sender's inbound mail, or `undefined` when no key is known. The inbound
+   * signature shadow uses it to check each frame's signature against the key a
+   * local cache holds, beside the check against the key the hub stamped on the
+   * frame. Source-opaque by design: the link never learns whether the key came
+   * from a local cache or a relayed foreign key.
+   */
+  resolveSenderCrypto: (address: string) => CryptoProvider | undefined;
+  /**
    * Routes every inbound `agent.deploy` frame. Production wiring
    * supplies a router that stages each deploy through the workflow-run
    * substrate: a provision-step frame primes a per-step repo, and a
@@ -689,6 +702,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     transport,
     sessions,
     keyStore,
+    resolveSenderCrypto,
     deployRouter,
     mailInboundRouter,
     signalInboundRouter,
@@ -1436,13 +1450,15 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // sender, so it is outside this path.
         void Promise.resolve()
           .then(() =>
-            shadowVerifyInboundSignature({
-              raw: rawBytes,
-              authenticatedSender: frame.authenticatedSender,
-              authenticatedSenderPublicKey: frame.authenticatedSenderPublicKey,
-              messageId: frame.messageId,
-              agentAddress: frame.agentAddress,
-            }),
+            shadowVerifyInboundSignature(
+              {
+                raw: rawBytes,
+                authenticatedSender: frame.authenticatedSender,
+                messageId: frame.messageId,
+                agentAddress: frame.agentAddress,
+              },
+              resolveSenderCrypto,
+            ),
           )
           .catch((cause: unknown) => {
             const msg = cause instanceof Error ? cause.message : String(cause);

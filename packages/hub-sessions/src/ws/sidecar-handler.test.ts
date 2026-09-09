@@ -222,7 +222,6 @@ describe("SidecarRouter allocation routing", () => {
         identity.workflowRunAddress,
         "aGVsbG8=",
         "sender@example.test",
-        null,
         "message-1",
       ),
     ).toBe(true);

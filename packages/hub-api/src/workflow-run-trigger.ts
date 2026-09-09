@@ -592,7 +592,6 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
       address,
       base64,
       fromAddr,
-      authenticatedSenderPublicKey,
       messageId,
     );
     if (!delivered) {

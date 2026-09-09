@@ -170,6 +170,7 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
         generateKeyPair,
         verifySSHSig: verifySSHSignature,
       },
+      resolveSenderCrypto: () => undefined,
       createDeployRouter: () => ({
         deploy: () => Promise.resolve({ publicKey: "aa".repeat(32) }),
       }),
