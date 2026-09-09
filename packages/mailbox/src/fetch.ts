@@ -22,7 +22,7 @@ import {
   extractAttachments,
 } from "@intx/mime";
 import { buildMessageHeaders } from "./headers";
-import { verifyDetachedSignature } from "@intx/crypto";
+import { verifyMimeSignature } from "./verify-signature";
 
 const MessagePayload = type({
   type: InterchangeType,
@@ -188,42 +188,7 @@ async function verifyMessageSignature(
     return "unknown";
   }
 
-  try {
-    const { headers, bodyOffset } = parseHeaderSection(raw);
-    const body = raw.slice(bodyOffset);
-    const contentType = headers.get("content-type") ?? "";
-
-    if (!contentType.toLowerCase().includes("multipart/signed")) {
-      return "missing";
-    }
-
-    const boundary = extractBoundary(contentType);
-    if (boundary === undefined) return "missing";
-
-    const parts = parseMultipart(body, boundary);
-    if (parts.length < 2) return "missing";
-
-    const signedContentBytes = parts[0]!;
-    const sigPartBytes = parts[1]!;
-    const sigPart = parseMimePart(sigPartBytes);
-
-    if (
-      !sigPart.contentType.toLowerCase().includes("application/pgp-signature")
-    ) {
-      return "missing";
-    }
-
-    const publicKey = senderCrypto.getPublicKey();
-    const valid = await verifyDetachedSignature(
-      signedContentBytes,
-      sigPart.body,
-      publicKey,
-    );
-
-    return valid ? "valid" : "invalid";
-  } catch {
-    return "invalid";
-  }
+  return verifyMimeSignature(raw, senderCrypto.getPublicKey());
 }
 
 function buildStructure(body: Uint8Array, contentType: string): BodyStructure {

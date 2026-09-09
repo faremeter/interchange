@@ -1,10 +1,12 @@
 import { describe, test, expect } from "bun:test";
+import type { CryptoProvider } from "@intx/types/runtime";
 import {
   createInMemoryMailboxStore,
   executeSearch,
   fetchHeaders,
   fetchStructure,
   fetchPart,
+  fetchFull,
   type MailboxStore,
   type StoredEnvelope,
 } from "./index";
@@ -214,5 +216,27 @@ describe("async fetch projections route through readRaw", () => {
     await expect(
       fetchHeaders({ uid: 42, mailbox: "INBOX" }, store),
     ).rejects.toThrow(/not found/);
+  });
+
+  test("fetchFull propagates a sender whose getPublicKey throws", async () => {
+    // A CryptoProvider that cannot produce its own public key is a local
+    // fault, not a bad signature: the error surfaces rather than being
+    // masked as a signature status. The key is resolved for every inbound
+    // from a known sender, so even this non-signed message reaches it.
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(rawMessage("Hello", "b"), envelopeFor(), []);
+
+    const brokenSender: CryptoProvider = {
+      sign: () => Promise.reject(new Error("unused")),
+      signSSH: () => Promise.reject(new Error("unused")),
+      verify: () => Promise.resolve(false),
+      getPublicKey: () => {
+        throw new Error("no public key");
+      },
+    };
+
+    await expect(
+      fetchFull({ uid, mailbox: "INBOX" }, store, () => brokenSender),
+    ).rejects.toThrow(/no public key/);
   });
 });
