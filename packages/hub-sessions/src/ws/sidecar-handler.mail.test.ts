@@ -357,6 +357,76 @@ describe("SidecarRouter allocation mail durability", () => {
     expect(inbound).toHaveLength(1);
     expect(inbound[0]?.["authenticatedSenderPublicKey"]).toBe(hexKey);
   });
+
+  test("co-delivers the resolved sender key on the dispatched run.grants frame", async () => {
+    const hexKey = "cc".repeat(32);
+    const router = createAllocatedRouter({
+      lookups: {
+        async resolveSenderKey() {
+          return hexKey;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    await router.sendWorkflowRunDispatchToAllocation(
+      TEST_TARGET,
+      TEST_IDENTITY.workflowRunAddress,
+      TEST_IDENTITY.anchorRunId,
+      [],
+      "dHJpZ2dlcg==",
+      TEST_SENDER,
+      "mid-codeliver",
+    );
+
+    const grants = framesOfType(ws, "run.grants");
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.["senderIdentities"]).toEqual([
+      { address: TEST_SENDER, publicKey: hexKey },
+    ]);
+  });
+
+  test("replays the co-delivered sender key on reconnect", async () => {
+    // A sidecar that missed the original dispatch learns the grant only from
+    // the reconnect replay; the co-delivered key must ride that replay too, or
+    // the sidecar would hold a grant for a sender whose key it never cached.
+    const hexKey = "dd".repeat(32);
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 10_000,
+      disconnectQueueTTLMs: 60_000,
+      lookups: {
+        async resolveSenderKey() {
+          return hexKey;
+        },
+      },
+    });
+    const first = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    await router.sendWorkflowRunDispatchToAllocation(
+      TEST_TARGET,
+      TEST_IDENTITY.workflowRunAddress,
+      TEST_IDENTITY.anchorRunId,
+      [],
+      "dHJpZ2dlcg==",
+      TEST_SENDER,
+      "mid-replay-key",
+    );
+    router.handleClose(first);
+
+    const second = await connectAllocated(
+      router,
+      [TEST_IDENTITY.workflowRunAddress],
+      "reconnect",
+    );
+    const grants = framesOfType(second, "run.grants");
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.["senderIdentities"]).toEqual([
+      { address: TEST_SENDER, publicKey: hexKey },
+    ]);
+  });
 });
 
 describe("SidecarRouter workflow-trigger mail gating", () => {
@@ -406,6 +476,116 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
         )
         .map((frame) => frame["type"]),
     ).toEqual(["run.grants", "mail.inbound"]);
+  });
+
+  test("co-delivers the sender key on the live run.grants frame", async () => {
+    const hexKey = "ee".repeat(32);
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderKey() {
+          return hexKey;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    const grants = framesOfType(ws, "run.grants");
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.["senderIdentities"]).toEqual([
+      { address: TEST_IDENTITY.workflowRunAddress, publicKey: hexKey },
+    ]);
+  });
+
+  test("replays the mail-trigger sender key on reconnect", async () => {
+    // The mail-relay trigger commits a run through the messageId handshake, so
+    // its co-delivered key rides the pending-mail entry, not just the live
+    // send. A sidecar that drops before the ack must still learn the key from
+    // the reconnect replay.
+    const hexKey = "ff".repeat(32);
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 10_000,
+      disconnectQueueTTLMs: 60_000,
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderKey() {
+          return hexKey;
+        },
+      },
+    });
+    const first = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.handleMessage(
+      first,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+    router.handleClose(first);
+
+    const second = await connectAllocated(
+      router,
+      [TEST_IDENTITY.workflowRunAddress],
+      "reconnect",
+    );
+    const grants = framesOfType(second, "run.grants");
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.["senderIdentities"]).toEqual([
+      { address: TEST_IDENTITY.workflowRunAddress, publicKey: hexKey },
+    ]);
+  });
+
+  test("omits senderIdentities from the run.grants frame when the key is unresolvable", async () => {
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderKey() {
+          return null;
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    const grants = framesOfType(ws, "run.grants");
+    expect(grants).toHaveLength(1);
+    expect("senderIdentities" in (grants[0] ?? {})).toBe(false);
   });
 
   test("fails a rejected workflow recipient closed", async () => {
