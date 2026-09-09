@@ -1,15 +1,16 @@
 import { Hono } from "hono";
-import { describeRoute, resolver } from "hono-openapi";
+import { describeRoute } from "hono-openapi";
 import {
   LogEntry,
+  ErrorResponse,
   MetricsResponse,
   TraceResponse,
   SpanResponse,
-  ErrorResponse,
 } from "@intx/types";
 
 import type { AppEnv } from "../context";
 import { errorResponse } from "../error-response";
+import { jsonResponse } from "../openapi";
 
 export function createObservabilityRoutes(): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -31,20 +32,8 @@ export function createObservabilityRoutes(): Hono<AppEnv> {
         { name: "endTime", in: "query", schema: { type: "string" } },
       ],
       responses: {
-        200: {
-          description: "Log entries",
-          content: {
-            "application/json": {
-              schema: resolver(LogEntry.array()),
-            },
-          },
-        },
-        404: {
-          description: "Agent not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Log entries", LogEntry.array()),
+        404: jsonResponse("Agent not found", ErrorResponse),
       },
     }),
     (c) => errorResponse(c, "not_implemented", "Not implemented"),
@@ -58,18 +47,8 @@ export function createObservabilityRoutes(): Hono<AppEnv> {
       description:
         "Returns throughput, latency, error rates, token usage, and cost metrics.",
       responses: {
-        200: {
-          description: "Agent metrics",
-          content: {
-            "application/json": { schema: resolver(MetricsResponse) },
-          },
-        },
-        404: {
-          description: "Agent not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Agent metrics", MetricsResponse),
+        404: jsonResponse("Agent not found", ErrorResponse),
       },
     }),
     (c) => errorResponse(c, "not_implemented", "Not implemented"),
@@ -90,14 +69,7 @@ export function createObservabilityRoutes(): Hono<AppEnv> {
         { name: "endTime", in: "query", schema: { type: "string" } },
       ],
       responses: {
-        200: {
-          description: "List of traces",
-          content: {
-            "application/json": {
-              schema: resolver(SpanResponse.array()),
-            },
-          },
-        },
+        200: jsonResponse("List of traces", SpanResponse.array()),
       },
     }),
     (c) => errorResponse(c, "not_implemented", "Not implemented"),
@@ -110,18 +82,8 @@ export function createObservabilityRoutes(): Hono<AppEnv> {
       summary: "Get a full trace",
       description: "Returns all spans in a trace across agent boundaries.",
       responses: {
-        200: {
-          description: "Trace with spans",
-          content: {
-            "application/json": { schema: resolver(TraceResponse) },
-          },
-        },
-        404: {
-          description: "Trace not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Trace with spans", TraceResponse),
+        404: jsonResponse("Trace not found", ErrorResponse),
       },
     }),
     (c) => errorResponse(c, "not_implemented", "Not implemented"),

@@ -26,7 +26,7 @@
 
 import { and, eq } from "drizzle-orm";
 import { Hono, type Context } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 import { type } from "arktype";
 
 import ssri from "ssri";
@@ -55,8 +55,8 @@ import type { RepoAction, RepoKind } from "@intx/types/sidecar";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import {
   AssetResponse,
-  AssetWithOriginResponse,
   ErrorResponse,
+  AssetWithOriginResponse,
 } from "@intx/types";
 
 import type { TenantEnv } from "../context";
@@ -79,6 +79,7 @@ import {
   makeUploadPackStore,
   resolveAuthzVerdict,
 } from "./git-user-principal";
+import { jsonResponse } from "../openapi";
 
 const log = getLogger(["hub", "assets"]);
 
@@ -295,14 +296,7 @@ export function createAssetRoutes({
         },
       ],
       responses: {
-        200: {
-          description: "List of assets",
-          content: {
-            "application/json": {
-              schema: resolver(AssetWithOriginResponse.array()),
-            },
-          },
-        },
+        200: jsonResponse("List of assets", AssetWithOriginResponse.array()),
       },
     }),
     async (c) => {
@@ -356,18 +350,8 @@ export function createAssetRoutes({
       description:
         "Returns asset metadata. Resolves through the tenant hierarchy: assets declared on the tenant or any ancestor are visible. Sibling-tenant assets return 404 so callers cannot probe for cross-tenant existence.",
       responses: {
-        200: {
-          description: "Asset metadata",
-          content: {
-            "application/json": { schema: resolver(AssetResponse) },
-          },
-        },
-        404: {
-          description: "Asset not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Asset metadata", AssetResponse),
+        404: jsonResponse("Asset not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -392,24 +376,9 @@ export function createAssetRoutes({
       description:
         "Inserts an asset row and initializes the backing git repository with a hub-signed genesis commit and the asset-route .gitignore body.",
       responses: {
-        201: {
-          description: "Asset created",
-          content: {
-            "application/json": { schema: resolver(AssetResponseSchema) },
-          },
-        },
-        400: {
-          description: "Validation error",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description: "Asset already exists",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Asset created", AssetResponseSchema),
+        400: jsonResponse("Validation error", ErrorResponse),
+        409: jsonResponse("Asset already exists", ErrorResponse),
       },
     }),
     validator("json", CreateAsset),
@@ -565,24 +534,12 @@ export function createAssetRoutes({
       description:
         "Commits raw tarball bytes at tarballs/<filename> in the package-registry asset's git tree. Overwrites permitted. The kind handler validates the tarball's package.json before the commit is accepted.",
       responses: {
-        200: {
-          description: "Tarball stored",
-          content: {
-            "application/json": { schema: resolver(TarballPutResponse) },
-          },
-        },
-        400: {
-          description: "Invalid filename or rejected content",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Asset not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Tarball stored", TarballPutResponse),
+        400: jsonResponse(
+          "Invalid filename or rejected content",
+          ErrorResponse,
+        ),
+        404: jsonResponse("Asset not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -706,18 +663,8 @@ export function createAssetRoutes({
       description:
         "Returns the current set of tarballs under tarballs/ for the package-registry asset, with size and SRI integrity for each entry.",
       responses: {
-        200: {
-          description: "Tarball list",
-          content: {
-            "application/json": { schema: resolver(TarballListResponse) },
-          },
-        },
-        404: {
-          description: "Asset not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Tarball list", TarballListResponse),
+        404: jsonResponse("Asset not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -768,24 +715,9 @@ export function createAssetRoutes({
       description:
         "Removes the named tarball from the package-registry asset and commits the resulting tree. Returns 404 if the asset or filename does not exist.",
       responses: {
-        200: {
-          description: "Tarball removed",
-          content: {
-            "application/json": { schema: resolver(TarballDeleteResponse) },
-          },
-        },
-        400: {
-          description: "Invalid filename",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Asset or filename not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Tarball removed", TarballDeleteResponse),
+        400: jsonResponse("Invalid filename", ErrorResponse),
+        404: jsonResponse("Asset or filename not found", ErrorResponse),
       },
     }),
     async (c) => {

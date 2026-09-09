@@ -1,6 +1,6 @@
 import { eq, and, isNull } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import { credential, grant as grantTable, provider } from "@intx/db/schema";
 import {
@@ -11,9 +11,9 @@ import {
 import type { DB } from "@intx/db";
 import {
   CreateCredential,
+  ErrorResponse,
   UpdateCredential,
   CredentialResponse,
-  ErrorResponse,
   paginatedSchema,
   credentialAad,
 } from "@intx/types";
@@ -33,6 +33,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 import {
   pushCredentialRevoke,
   pushSourceUpdates,
@@ -91,14 +92,10 @@ export function createCredentialRoutes({
         ...pageParameters,
       ],
       responses: {
-        200: {
-          description: "List of credentials",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(CredentialResponse)),
-            },
-          },
-        },
+        200: jsonResponse(
+          "List of credentials",
+          paginatedSchema(CredentialResponse),
+        ),
       },
     }),
     async (c) => {
@@ -143,30 +140,13 @@ export function createCredentialRoutes({
       description:
         "Stores a credential (API key, OAuth token, etc.). The secret is stored securely and never returned in subsequent reads. A provider must be specified.",
       responses: {
-        201: {
-          description: "Credential stored",
-          content: {
-            "application/json": { schema: resolver(CredentialResponse) },
-          },
-        },
-        400: {
-          description: "Validation error",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Provider not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description: "Credential name already exists in this tenant",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Credential stored", CredentialResponse),
+        400: jsonResponse("Validation error", ErrorResponse),
+        404: jsonResponse("Provider not found", ErrorResponse),
+        409: jsonResponse(
+          "Credential name already exists in this tenant",
+          ErrorResponse,
+        ),
       },
     }),
     validator("json", CreateCredential),
@@ -279,18 +259,8 @@ export function createCredentialRoutes({
       description:
         "Resolves a credential by name, walking the tenant hierarchy. Returns metadata only (no secret). Useful for discovering which credential an agent would get.",
       responses: {
-        200: {
-          description: "Credential metadata",
-          content: {
-            "application/json": { schema: resolver(CredentialResponse) },
-          },
-        },
-        404: {
-          description: "Credential not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Credential metadata", CredentialResponse),
+        404: jsonResponse("Credential not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -316,18 +286,8 @@ export function createCredentialRoutes({
       description:
         "Returns credential metadata. The secret is never included. Supports hierarchy-aware access.",
       responses: {
-        200: {
-          description: "Credential metadata",
-          content: {
-            "application/json": { schema: resolver(CredentialResponse) },
-          },
-        },
-        404: {
-          description: "Credential not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Credential metadata", CredentialResponse),
+        404: jsonResponse("Credential not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -359,18 +319,8 @@ export function createCredentialRoutes({
       summary: "Rotate or update a credential",
       description: "Only credentials owned by this tenant can be updated.",
       responses: {
-        200: {
-          description: "Credential updated",
-          content: {
-            "application/json": { schema: resolver(CredentialResponse) },
-          },
-        },
-        404: {
-          description: "Credential not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Credential updated", CredentialResponse),
+        404: jsonResponse("Credential not found", ErrorResponse),
       },
     }),
     validator("json", UpdateCredential),
@@ -462,18 +412,11 @@ export function createCredentialRoutes({
         204: {
           description: "Credential revoked",
         },
-        404: {
-          description: "Credential not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description: "Credential is in use by a model provider",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("Credential not found", ErrorResponse),
+        409: jsonResponse(
+          "Credential is in use by a model provider",
+          ErrorResponse,
+        ),
       },
     }),
     async (c) => {

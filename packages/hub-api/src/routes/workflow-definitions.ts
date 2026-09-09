@@ -1,6 +1,6 @@
 import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import { workflowDefinition, workflowDefinitionVersion } from "@intx/db/schema";
 import {
@@ -11,9 +11,9 @@ import {
 import type { DB } from "@intx/db";
 import {
   WorkflowDefinitionVersion,
+  ErrorResponse,
   WorkflowDefinitionResponse,
   WorkflowRollbackRequest,
-  ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 
@@ -29,6 +29,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 export type CreateWorkflowDefinitionRoutesDeps = {
   db: DB["db"];
@@ -52,14 +53,10 @@ export function createWorkflowDefinitionRoutes({
         "Lists the workflow definitions for the tenant, most recent first.",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "List of workflow definitions",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(WorkflowDefinitionResponse)),
-            },
-          },
-        },
+        200: jsonResponse(
+          "List of workflow definitions",
+          paginatedSchema(WorkflowDefinitionResponse),
+        ),
       },
     }),
     async (c) => {
@@ -113,20 +110,11 @@ export function createWorkflowDefinitionRoutes({
       description: "Lists all versions of a workflow definition with status.",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "List of versions",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(WorkflowDefinitionVersion)),
-            },
-          },
-        },
-        404: {
-          description: "Definition not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse(
+          "List of versions",
+          paginatedSchema(WorkflowDefinitionVersion),
+        ),
+        404: jsonResponse("Definition not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -197,26 +185,9 @@ export function createWorkflowDefinitionRoutes({
       description:
         "Activates the specified version and stops the current one; repoints currentVersion.",
       responses: {
-        200: {
-          description: "Rollback applied",
-          content: {
-            "application/json": {
-              schema: resolver(WorkflowDefinitionResponse),
-            },
-          },
-        },
-        400: {
-          description: "Invalid version",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Definition not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Rollback applied", WorkflowDefinitionResponse),
+        400: jsonResponse("Invalid version", ErrorResponse),
+        404: jsonResponse("Definition not found", ErrorResponse),
       },
     }),
     validator("json", WorkflowRollbackRequest),

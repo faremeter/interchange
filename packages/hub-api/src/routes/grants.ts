@@ -1,6 +1,6 @@
 import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import { authorize } from "@intx/authz";
 import { grant, principal } from "@intx/db/schema";
@@ -9,11 +9,11 @@ import type { DB } from "@intx/db";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import {
   CreateGrant,
+  ErrorResponse,
   UpdateGrant,
   GrantResponse,
   EvaluateRequest,
   EvaluateResult,
-  ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 
@@ -31,6 +31,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 type ResolvedNames = {
   roleNames: Map<string, string>;
@@ -157,14 +158,7 @@ export function createGrantRoutes({
         ...pageParameters,
       ],
       responses: {
-        200: {
-          description: "List of grants",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(GrantResponse)),
-            },
-          },
-        },
+        200: jsonResponse("List of grants", paginatedSchema(GrantResponse)),
       },
     }),
     async (c) => {
@@ -216,18 +210,8 @@ export function createGrantRoutes({
       description:
         "Creates a grant targeting either a role or a principal directly. Exactly one of roleId or principalId must be provided.",
       responses: {
-        201: {
-          description: "Grant created",
-          content: {
-            "application/json": { schema: resolver(GrantResponse) },
-          },
-        },
-        400: {
-          description: "Validation error",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Grant created", GrantResponse),
+        400: jsonResponse("Validation error", ErrorResponse),
       },
     }),
     validator("json", CreateGrant),
@@ -270,18 +254,8 @@ export function createGrantRoutes({
       tags: ["Grants"],
       summary: "Get grant details",
       responses: {
-        200: {
-          description: "Grant details",
-          content: {
-            "application/json": { schema: resolver(GrantResponse) },
-          },
-        },
-        404: {
-          description: "Grant not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Grant details", GrantResponse),
+        404: jsonResponse("Grant not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -308,18 +282,8 @@ export function createGrantRoutes({
       summary: "Update a grant",
       description: "Update effect, conditions, or expiry on an existing grant.",
       responses: {
-        200: {
-          description: "Grant updated",
-          content: {
-            "application/json": { schema: resolver(GrantResponse) },
-          },
-        },
-        404: {
-          description: "Grant not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Grant updated", GrantResponse),
+        404: jsonResponse("Grant not found", ErrorResponse),
       },
     }),
     validator("json", UpdateGrant),
@@ -360,12 +324,7 @@ export function createGrantRoutes({
         204: {
           description: "Grant revoked",
         },
-        404: {
-          description: "Grant not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("Grant not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -410,18 +369,8 @@ export function createEvaluateRoutes({
       description:
         "Evaluates what would happen if a principal attempted an operation. Returns the resolved effect and all matching grants. Useful for debugging authorization.",
       responses: {
-        200: {
-          description: "Evaluation result",
-          content: {
-            "application/json": { schema: resolver(EvaluateResult) },
-          },
-        },
-        404: {
-          description: "Principal not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Evaluation result", EvaluateResult),
+        404: jsonResponse("Principal not found", ErrorResponse),
       },
     }),
     validator("json", EvaluateRequest),

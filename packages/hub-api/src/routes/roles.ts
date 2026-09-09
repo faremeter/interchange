@@ -1,14 +1,14 @@
 import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import { role, principalRole, principal } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import {
   CreateRole,
+  ErrorResponse,
   UpdateRole,
   RoleResponse,
-  ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 
@@ -25,6 +25,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 function formatRole(row: typeof role.$inferSelect) {
   return {
@@ -59,14 +60,7 @@ export function createRoleRoutes({
         "Lists both system roles (owner, admin, member) and custom roles.",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "List of roles",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(RoleResponse)),
-            },
-          },
-        },
+        200: jsonResponse("List of roles", paginatedSchema(RoleResponse)),
       },
     }),
     async (c) => {
@@ -98,18 +92,8 @@ export function createRoleRoutes({
       tags: ["Roles"],
       summary: "Create a custom role",
       responses: {
-        201: {
-          description: "Role created",
-          content: {
-            "application/json": { schema: resolver(RoleResponse) },
-          },
-        },
-        400: {
-          description: "Validation error",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("Role created", RoleResponse),
+        400: jsonResponse("Validation error", ErrorResponse),
       },
     }),
     validator("json", CreateRole),
@@ -145,18 +129,8 @@ export function createRoleRoutes({
       summary: "Get role details",
       description: "Returns role details including attached grants.",
       responses: {
-        200: {
-          description: "Role details",
-          content: {
-            "application/json": { schema: resolver(RoleResponse) },
-          },
-        },
-        404: {
-          description: "Role not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Role details", RoleResponse),
+        404: jsonResponse("Role not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -184,18 +158,8 @@ export function createRoleRoutes({
       description:
         "Update name or description. System roles cannot be modified.",
       responses: {
-        200: {
-          description: "Role updated",
-          content: {
-            "application/json": { schema: resolver(RoleResponse) },
-          },
-        },
-        403: {
-          description: "Cannot modify system role",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Role updated", RoleResponse),
+        403: jsonResponse("Cannot modify system role", ErrorResponse),
       },
     }),
     validator("json", UpdateRole),
@@ -245,18 +209,8 @@ export function createRoleRoutes({
         204: {
           description: "Role deleted",
         },
-        400: {
-          description: "Role still assigned to principals",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        403: {
-          description: "Cannot delete system role",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        400: jsonResponse("Role still assigned to principals", ErrorResponse),
+        403: jsonResponse("Cannot delete system role", ErrorResponse),
       },
     }),
     async (c) => {
@@ -320,12 +274,7 @@ export function createRoleAssignRoutes({
         204: {
           description: "Role assigned",
         },
-        404: {
-          description: "Principal or role not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("Principal or role not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -379,12 +328,7 @@ export function createRoleAssignRoutes({
         204: {
           description: "Role removed",
         },
-        404: {
-          description: "Assignment not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("Assignment not found", ErrorResponse),
       },
     }),
     async (c) => {

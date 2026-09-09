@@ -1,7 +1,7 @@
 import { eq, and, inArray, isNotNull } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import {
   offering,
@@ -16,13 +16,13 @@ import { extractPartByPath } from "@intx/mime";
 
 import {
   WorkflowRunResponse,
+  ErrorResponse,
   WorkflowRunHealth,
   RunAuthorizationResponse,
   RunApprovalsResponse,
   OfferingDetail,
   SendMessage,
   MailResponse,
-  ErrorResponse,
   paginatedSchema,
 } from "@intx/types";
 import {
@@ -64,6 +64,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 // Stop and mail history are not yet wired onto a workflow (anchor) run. They
 // were built for the retired folded-launch surface and need genuinely new
@@ -262,14 +263,7 @@ export function createRunRoutes({
         ...pageParameters,
       ],
       responses: {
-        200: {
-          description: "List of runs",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(WorkflowRunResponse)),
-            },
-          },
-        },
+        200: jsonResponse("List of runs", paginatedSchema(WorkflowRunResponse)),
       },
     }),
     async (c) => {
@@ -349,24 +343,9 @@ export function createRunRoutes({
           description: "Blob bytes",
           content: { "application/octet-stream": {} },
         },
-        400: {
-          description: "Invalid blob ID",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        403: {
-          description: "Forbidden",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Blob not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        400: jsonResponse("Invalid blob ID", ErrorResponse),
+        403: jsonResponse("Forbidden", ErrorResponse),
+        404: jsonResponse("Blob not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -463,18 +442,8 @@ export function createRunRoutes({
       description:
         "Returns workflow run state including status, public key, and sidecar assignment.",
       responses: {
-        200: {
-          description: "Run detail",
-          content: {
-            "application/json": { schema: resolver(WorkflowRunResponse) },
-          },
-        },
-        404: {
-          description: "Run not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Run detail", WorkflowRunResponse),
+        404: jsonResponse("Run not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -518,20 +487,8 @@ export function createRunRoutes({
       description:
         "Returns the run's effective authorization floor: its committed grants and their resolved effects. A standing 'always' approval mutates the tool's committed grant in place at resolve time (approve-always sets allow, reject-always sets deny), so a standing-resolved tool reads that effect directly here. This is the floor the runtime enforces, so the view mirrors what the run can do. Complete for the source-ref deploy lineage (the shipping pipeline); a pinned-tool deploy's sidecar-injected ask floor is not reflected here.",
       responses: {
-        200: {
-          description: "Run authorization",
-          content: {
-            "application/json": {
-              schema: resolver(RunAuthorizationResponse),
-            },
-          },
-        },
-        404: {
-          description: "Run not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Run authorization", RunAuthorizationResponse),
+        404: jsonResponse("Run not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -573,18 +530,8 @@ export function createRunRoutes({
       description:
         "Returns the run's approval decisions, newest first, across every status. The tools an operator turned into standing approvals are the entries with scope 'always' and status 'approved'.",
       responses: {
-        200: {
-          description: "Run approvals",
-          content: {
-            "application/json": { schema: resolver(RunApprovalsResponse) },
-          },
-        },
-        404: {
-          description: "Run not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Run approvals", RunApprovalsResponse),
+        404: jsonResponse("Run not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -610,24 +557,9 @@ export function createRunRoutes({
       description:
         "Returns liveness and readiness for a live run. Liveness reflects whether the run's sidecar connection is active. Readiness reflects whether the run has an active event collector and can process work.",
       responses: {
-        200: {
-          description: "Health status",
-          content: {
-            "application/json": { schema: resolver(WorkflowRunHealth) },
-          },
-        },
-        404: {
-          description: "Run not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        410: {
-          description: "Run stopped",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Health status", WorkflowRunHealth),
+        404: jsonResponse("Run not found", ErrorResponse),
+        410: jsonResponse("Run stopped", ErrorResponse),
       },
     }),
     async (c) => {
@@ -664,20 +596,8 @@ export function createRunRoutes({
       description:
         "Returns the offerings associated with the run's workflow definition. These represent the capabilities the run can provide.",
       responses: {
-        200: {
-          description: "List of offerings",
-          content: {
-            "application/json": {
-              schema: resolver(OfferingDetail.array()),
-            },
-          },
-        },
-        404: {
-          description: "Run not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("List of offerings", OfferingDetail.array()),
+        404: jsonResponse("Run not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -724,24 +644,9 @@ export function createRunRoutes({
         204: {
           description: "Run stopped",
         },
-        404: {
-          description: "Run not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description: "Run already stopped",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        502: {
-          description: "Sidecar unavailable",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("Run not found", ErrorResponse),
+        409: jsonResponse("Run already stopped", ErrorResponse),
+        502: jsonResponse("Sidecar unavailable", ErrorResponse),
       },
     }),
     async (c) => {
@@ -764,24 +669,9 @@ export function createRunRoutes({
       description:
         "Returns the run's committed, seq-ordered event log (RunStarted, StepStarted, StepCompleted, SignalAwaited, RunCompleted, etc.). The full log is returned on every call; a client polling for live updates deduplicates on seq. A run that has not been triggered yet returns an empty list.",
       responses: {
-        200: {
-          description: "Seq-ordered run events",
-          content: {
-            "application/json": { schema: resolver(WorkflowRunEventsResponse) },
-          },
-        },
-        404: {
-          description: "Run not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        503: {
-          description: "Run event log unavailable",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Seq-ordered run events", WorkflowRunEventsResponse),
+        404: jsonResponse("Run not found", ErrorResponse),
+        503: jsonResponse("Run event log unavailable", ErrorResponse),
       },
     }),
     async (c) => serveRunEvents(c, c.req.param("runId")),
@@ -796,46 +686,24 @@ export function createRunRoutes({
       description:
         "Delivers a fresh signed conversation message to the run, firing it through the run's workflow-native Trigger path. The first accepted message fires the run; while it remains live, later messages may resume its onTrigger input. A terminal run cannot be fired again. The returned messageId identifies this trigger occurrence.",
       responses: {
-        202: {
-          description: "Trigger accepted for delivery",
-          content: {
-            "application/json": {
-              schema: resolver(WorkflowRunTriggerResponse),
-            },
-          },
-        },
-        400: {
-          description:
-            "Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Run not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description:
-            "Run address is not routable, its allocation is no longer active, or the run is terminal",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        413: {
-          description: "Request body exceeds the maximum allowed size",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        503: {
-          description: "Run trigger substrate unavailable",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        202: jsonResponse(
+          "Trigger accepted for delivery",
+          WorkflowRunTriggerResponse,
+        ),
+        400: jsonResponse(
+          "Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.",
+          ErrorResponse,
+        ),
+        404: jsonResponse("Run not found", ErrorResponse),
+        409: jsonResponse(
+          "Run address is not routable, its allocation is no longer active, or the run is terminal",
+          ErrorResponse,
+        ),
+        413: jsonResponse(
+          "Request body exceeds the maximum allowed size",
+          ErrorResponse,
+        ),
+        503: jsonResponse("Run trigger substrate unavailable", ErrorResponse),
       },
     }),
     bodyLimit({
@@ -892,20 +760,8 @@ export function createRunRoutes({
         "Returns parsed JMAP Email objects in reverse chronological order. Cursor-paginated.",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "List of mail",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(MailResponse)),
-            },
-          },
-        },
-        404: {
-          description: "Run not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("List of mail", paginatedSchema(MailResponse)),
+        404: jsonResponse("Run not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -926,24 +782,9 @@ export function createRunRoutes({
       description:
         "Returns the run's step and lifecycle events in seq order -- the same committed event log the events route serves, presented as the run's turns. A run that has not been triggered yet returns an empty list.",
       responses: {
-        200: {
-          description: "Seq-ordered run events",
-          content: {
-            "application/json": { schema: resolver(WorkflowRunEventsResponse) },
-          },
-        },
-        404: {
-          description: "Run not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        503: {
-          description: "Run event log unavailable",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("Seq-ordered run events", WorkflowRunEventsResponse),
+        404: jsonResponse("Run not found", ErrorResponse),
+        503: jsonResponse("Run event log unavailable", ErrorResponse),
       },
     }),
     async (c) => serveRunEvents(c, c.req.param("runId")),

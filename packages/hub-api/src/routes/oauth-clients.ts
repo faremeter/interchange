@@ -1,15 +1,15 @@
 import { eq, and } from "drizzle-orm";
 import { Hono } from "hono";
-import { describeRoute, resolver, validator } from "hono-openapi";
+import { describeRoute, validator } from "hono-openapi";
 
 import { oauthClient, provider } from "@intx/db/schema";
 import { getAncestorChain, parseOAuthClientRow } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
   CreateOAuthClient,
+  ErrorResponse,
   UpdateOAuthClient,
   OAuthClientResponse,
-  ErrorResponse,
   paginatedSchema,
   credentialAad,
 } from "@intx/types";
@@ -28,6 +28,7 @@ import {
   paginatedResponse,
   pageParameters,
 } from "../pagination";
+import { jsonResponse } from "../openapi";
 
 function formatOAuthClient(row: typeof oauthClient.$inferSelect) {
   const parsed = parseOAuthClientRow(row);
@@ -67,14 +68,10 @@ export function createOAuthClientRoutes({
         "Lists OAuth client registrations for the tenant. Secrets are never returned.",
       parameters: [...pageParameters],
       responses: {
-        200: {
-          description: "List of OAuth clients",
-          content: {
-            "application/json": {
-              schema: resolver(paginatedSchema(OAuthClientResponse)),
-            },
-          },
-        },
+        200: jsonResponse(
+          "List of OAuth clients",
+          paginatedSchema(OAuthClientResponse),
+        ),
       },
     }),
     async (c) => {
@@ -112,31 +109,13 @@ export function createOAuthClientRoutes({
       description:
         "Registers an OAuth client (client_id/client_secret) for a provider. The provider must exist in the tenant or its ancestors.",
       responses: {
-        201: {
-          description: "OAuth client registered",
-          content: {
-            "application/json": { schema: resolver(OAuthClientResponse) },
-          },
-        },
-        400: {
-          description: "Validation error",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        404: {
-          description: "Provider not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
-        409: {
-          description:
-            "OAuth client already exists for this provider in this tenant",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        201: jsonResponse("OAuth client registered", OAuthClientResponse),
+        400: jsonResponse("Validation error", ErrorResponse),
+        404: jsonResponse("Provider not found", ErrorResponse),
+        409: jsonResponse(
+          "OAuth client already exists for this provider in this tenant",
+          ErrorResponse,
+        ),
       },
     }),
     validator("json", CreateOAuthClient),
@@ -207,18 +186,8 @@ export function createOAuthClientRoutes({
       summary: "Get OAuth client details",
       description: "Returns OAuth client metadata. Secrets are never included.",
       responses: {
-        200: {
-          description: "OAuth client details",
-          content: {
-            "application/json": { schema: resolver(OAuthClientResponse) },
-          },
-        },
-        404: {
-          description: "OAuth client not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("OAuth client details", OAuthClientResponse),
+        404: jsonResponse("OAuth client not found", ErrorResponse),
       },
     }),
     async (c) => {
@@ -247,18 +216,8 @@ export function createOAuthClientRoutes({
       tags: ["OAuth Clients"],
       summary: "Update an OAuth client registration",
       responses: {
-        200: {
-          description: "OAuth client updated",
-          content: {
-            "application/json": { schema: resolver(OAuthClientResponse) },
-          },
-        },
-        404: {
-          description: "OAuth client not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        200: jsonResponse("OAuth client updated", OAuthClientResponse),
+        404: jsonResponse("OAuth client not found", ErrorResponse),
       },
     }),
     validator("json", UpdateOAuthClient),
@@ -308,12 +267,7 @@ export function createOAuthClientRoutes({
       summary: "Remove an OAuth client registration",
       responses: {
         204: { description: "OAuth client removed" },
-        404: {
-          description: "OAuth client not found",
-          content: {
-            "application/json": { schema: resolver(ErrorResponse) },
-          },
-        },
+        404: jsonResponse("OAuth client not found", ErrorResponse),
       },
     }),
     async (c) => {
