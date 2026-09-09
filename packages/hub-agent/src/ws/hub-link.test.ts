@@ -1164,6 +1164,7 @@ describe("sidecar↔hub integration", () => {
         deploymentAddress,
         encoded,
         "user@integration.interchange",
+        null,
       );
       expect(accepted).toBe(true);
 

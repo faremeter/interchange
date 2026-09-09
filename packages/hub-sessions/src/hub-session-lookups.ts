@@ -48,7 +48,9 @@ export function createHubSessionLookups(
 ): Required<
   Omit<
     SidecarLookups,
-    "materializeMailTriggeredRunGrants" | "resyncCredentials"
+    | "materializeMailTriggeredRunGrants"
+    | "resyncCredentials"
+    | "resolveSenderKey"
   >
 > {
   const { db, agentRepoStore } = deps;

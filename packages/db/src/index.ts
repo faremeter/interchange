@@ -24,6 +24,7 @@ export {
 export { lookupLocalPrincipalSigner } from "./signer-identity";
 export {
   resolveSenderKey,
+  resolveFrameSenderKey,
   auditSenderKeys,
   type SenderKeyResolution,
   type SenderKeyAuditReport,

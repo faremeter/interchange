@@ -237,12 +237,22 @@ export type SignalCorrelationRegisterAckFrame =
  * own (spoofable) MIME `From`. No consumer reads it yet; it is carried so a
  * recipient can take the sender of record from this hub-verified value
  * rather than the forgeable `From`.
+ *
+ * `authenticatedSenderPublicKey` is the hub-resolved public key of
+ * `authenticatedSender`, hex-encoded (the raw 32-byte Ed25519 key). The hub
+ * resolves it from its own durable key stores at the frame's construction
+ * site, so a recipient can verify the message's signature locally against the
+ * key the hub vouches for rather than one derived from the message. It is
+ * `null` when the sender has no resolvable key -- a run whose deploy is not
+ * yet acked, or an address that matches no known principal -- a legitimate
+ * "unverifiable sender" state, not an error. No consumer reads it yet.
  */
 export const MailInboundFrame = type({
   type: "'mail.inbound'",
   agentAddress: "string",
   rawMessage: "string",
   authenticatedSender: "string",
+  authenticatedSenderPublicKey: "string | null",
   "messageId?": "string",
 });
 export type MailInboundFrame = typeof MailInboundFrame.infer;

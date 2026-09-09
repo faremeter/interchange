@@ -23,7 +23,7 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { DB, PrincipalKeyStore } from "@intx/db";
-import { loadFrozenGrantSnapshot } from "@intx/db";
+import { loadFrozenGrantSnapshot, resolveFrameSenderKey } from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
   assembleSignedContent,
@@ -571,11 +571,21 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
 
     // Stamp the hub-verified principal address (fromAddr, the address the
     // message is signed and addressed under) as the authenticated sender --
-    // never the message's own MIME From.
+    // never the message's own MIME From. Resolve its hub-held key alongside so
+    // the recipient can verify the signature locally against the key the hub
+    // vouches for. Best-effort: a resolution fault degrades to a null key
+    // (logged) rather than 500-ing a trigger whose grants have already been
+    // sent -- verification is shadow-only and must never block the trigger.
+    const authenticatedSenderPublicKey = await resolveFrameSenderKey(
+      db,
+      principalKeyStore,
+      fromAddr,
+    );
     const delivered = sidecarRouter.routeMail(
       address,
       base64,
       fromAddr,
+      authenticatedSenderPublicKey,
       messageId,
     );
     if (!delivered) {
