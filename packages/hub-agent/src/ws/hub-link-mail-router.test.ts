@@ -12,7 +12,14 @@
 // frame. This test exercises the patched arm end-to-end through the
 // real hub-link WS surface to make the regression observable.
 
-import { describe, test, expect, afterAll } from "bun:test";
+import {
+  describe,
+  test,
+  expect,
+  afterAll,
+  beforeAll,
+  beforeEach,
+} from "bun:test";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import {
@@ -27,8 +34,20 @@ import type {
   InboundMessage,
   KeyPair,
 } from "@intx/types/runtime";
-import { generateKeyPair, verifySSHSignature } from "@intx/crypto";
-import { hexDecode } from "@intx/types";
+import {
+  generateKeyPair,
+  verifySSHSignature,
+  createEd25519Crypto,
+} from "@intx/crypto";
+import { hexDecode, hexEncode } from "@intx/types";
+import {
+  assembleSignedContent,
+  assembleMessage,
+  createDetachedSignatureFromProvider,
+  generateMessageId,
+  type MessageHeaders,
+} from "@intx/mime";
+import { configureSync, getConfig, resetSync } from "@intx/log";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
 import type { AgentKeyStore } from "../agent-key-store";
@@ -339,5 +358,254 @@ describe("hub-link mail.inbound throwing router", () => {
         () => !env.router.getConnectedSidecars().includes("sc-mail-wedge"),
       );
     }
+  });
+});
+
+type CapturedLog = {
+  category: readonly string[];
+  level: string;
+  properties: Record<string, unknown>;
+};
+
+const capturedLogs: CapturedLog[] = [];
+const savedLogConfig = getConfig();
+
+beforeAll(() => {
+  configureSync({
+    reset: true,
+    sinks: {
+      capture: (record) => {
+        capturedLogs.push({
+          category: record.category,
+          level: record.level,
+          properties: record.properties,
+        });
+      },
+    },
+    loggers: [
+      { category: [], lowestLevel: "debug", sinks: ["capture"] },
+      {
+        category: ["logtape", "meta"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+  });
+});
+
+afterAll(() => {
+  if (savedLogConfig) {
+    configureSync({ reset: true, ...savedLogConfig });
+  } else {
+    resetSync();
+  }
+});
+
+function shadowVerdicts(): CapturedLog[] {
+  return capturedLogs.filter(
+    (r) =>
+      r.category.length >= 4 &&
+      r.category[2] === "ws" &&
+      r.category[3] === "inbound-signature-shadow",
+  );
+}
+
+function signedHeaders(from: string): MessageHeaders {
+  return {
+    from,
+    to: ["agent-1@test.interchange"],
+    cc: undefined,
+    date: new Date("2026-04-17T12:00:00Z"),
+    messageId: generateMessageId(from),
+    subject: undefined,
+    inReplyTo: undefined,
+    references: undefined,
+    mimeVersion: "1.0",
+    interchangeType: "conversation.message",
+    interchangeCorrelationId: undefined,
+    interchangeTenantId: undefined,
+    interchangeAgentId: undefined,
+    interchangeSessionId: undefined,
+    interchangeOfferingId: undefined,
+    interchangeSchemaVersion: undefined,
+    traceparent: undefined,
+    tracestate: undefined,
+  };
+}
+
+async function makeSignedMail(
+  crypto: Awaited<ReturnType<typeof createEd25519Crypto>>,
+  from: string,
+): Promise<Uint8Array> {
+  const content = assembleSignedContent({
+    kind: "conversation",
+    text: "signed body",
+  });
+  const sig = await createDetachedSignatureFromProvider(content, crypto);
+  return assembleMessage(signedHeaders(from), content, sig);
+}
+
+// Drives a `mail.inbound` frame across the real hub-link WS surface and proves
+// the INTR-512 shadow verify at the ingress seam LOGS a verdict and ADMITS the
+// mail in every case (the router still receives it), never dropping.
+describe("hub-link mail.inbound signature shadow", () => {
+  beforeEach(() => {
+    capturedLogs.length = 0;
+  });
+
+  async function withConnectedLink(
+    label: string,
+    body: (ctx: {
+      deploymentAddress: string;
+      routed: Uint8Array[];
+    }) => Promise<void>,
+  ): Promise<void> {
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const deploymentAddress = `run_${label}@integration.interchange`;
+    sessions.addresses.push(deploymentAddress);
+
+    const routed: Uint8Array[] = [];
+    const mailInboundRouter = {
+      tryRoute(_address: string, message: Uint8Array): Promise<void> | null {
+        routed.push(message);
+        return Promise.resolve();
+      },
+    };
+
+    const bindings = withTestDeployBindings();
+    await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId: `sc-shadow-${label}`,
+      token: "test-token",
+      transport,
+      sessions,
+      ...bindings,
+      mailInboundRouter,
+      getWorkflowAddresses: () => [deploymentAddress],
+    });
+
+    client.connect();
+    try {
+      await waitFor(() =>
+        env.router.getRoutableAddresses().includes(deploymentAddress),
+      );
+      await body({ deploymentAddress, routed });
+    } finally {
+      client.close();
+      await waitFor(
+        () => !env.router.getConnectedSidecars().includes(`sc-shadow-${label}`),
+      );
+    }
+  }
+
+  test("a validly-signed frame logs a valid/match verdict and is admitted", async () => {
+    const sender = "external@remote.interchange";
+    const crypto = createEd25519Crypto(await generateKeyPair());
+    const raw = await makeSignedMail(crypto, sender);
+
+    await withConnectedLink(
+      "shadowvalid",
+      async ({ deploymentAddress, routed }) => {
+        expect(
+          env.router.routeMail(
+            deploymentAddress,
+            base64Encode(raw),
+            sender,
+            hexEncode(crypto.getPublicKey()),
+          ),
+        ).toBe(true);
+
+        await waitFor(() => shadowVerdicts().length > 0);
+        const verdict = shadowVerdicts()[0];
+        expect(verdict?.properties["signature"]).toBe("valid");
+        expect(verdict?.properties["fromMatch"]).toBe("match");
+        // Admitted: the frame still reached the mail router.
+        await waitFor(() => routed.length > 0);
+        expect(routed).toHaveLength(1);
+      },
+    );
+  });
+
+  test("a tampered signature logs invalid and is still admitted", async () => {
+    const sender = "external@remote.interchange";
+    const signer = createEd25519Crypto(await generateKeyPair());
+    const other = createEd25519Crypto(await generateKeyPair());
+    const raw = await makeSignedMail(signer, sender);
+
+    await withConnectedLink(
+      "shadowbad",
+      async ({ deploymentAddress, routed }) => {
+        // The hub stamps a key that does not match the signer, so the recipient
+        // verdict is invalid -- but shadow admits it anyway.
+        expect(
+          env.router.routeMail(
+            deploymentAddress,
+            base64Encode(raw),
+            sender,
+            hexEncode(other.getPublicKey()),
+          ),
+        ).toBe(true);
+
+        await waitFor(() => shadowVerdicts().length > 0);
+        expect(shadowVerdicts()[0]?.properties["signature"]).toBe("invalid");
+        await waitFor(() => routed.length > 0);
+        expect(routed).toHaveLength(1);
+      },
+    );
+  });
+
+  test("a null sender key logs unknown and is still admitted", async () => {
+    const sender = "external@remote.interchange";
+    const crypto = createEd25519Crypto(await generateKeyPair());
+    const raw = await makeSignedMail(crypto, sender);
+
+    await withConnectedLink(
+      "shadownull",
+      async ({ deploymentAddress, routed }) => {
+        expect(
+          env.router.routeMail(
+            deploymentAddress,
+            base64Encode(raw),
+            sender,
+            null,
+          ),
+        ).toBe(true);
+
+        await waitFor(() => shadowVerdicts().length > 0);
+        expect(shadowVerdicts()[0]?.properties["signature"]).toBe("unknown");
+        await waitFor(() => routed.length > 0);
+        expect(routed).toHaveLength(1);
+      },
+    );
+  });
+
+  test("a valid signature under a forged From is flagged and still admitted", async () => {
+    const stamp = "external@remote.interchange";
+    const forgedFrom = "victim@remote.interchange";
+    const crypto = createEd25519Crypto(await generateKeyPair());
+    const raw = await makeSignedMail(crypto, forgedFrom);
+
+    await withConnectedLink(
+      "shadowforge",
+      async ({ deploymentAddress, routed }) => {
+        expect(
+          env.router.routeMail(
+            deploymentAddress,
+            base64Encode(raw),
+            stamp,
+            hexEncode(crypto.getPublicKey()),
+          ),
+        ).toBe(true);
+
+        await waitFor(() => shadowVerdicts().length > 0);
+        const verdict = shadowVerdicts()[0];
+        expect(verdict?.properties["signature"]).toBe("valid");
+        expect(verdict?.properties["fromMatch"]).toBe("mismatch");
+        await waitFor(() => routed.length > 0);
+        expect(routed).toHaveLength(1);
+      },
+    );
   });
 });
