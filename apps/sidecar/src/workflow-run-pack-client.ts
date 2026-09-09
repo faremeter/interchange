@@ -18,7 +18,7 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { SourcesUpdatedData } from "@intx/workflow-host";
 import type { InferenceSource } from "@intx/types/runtime";
-import { CredentialDelivery } from "@intx/types/sidecar";
+import { CredentialDelivery, type SenderIdentity } from "@intx/types/sidecar";
 import type {
   RepoId,
   RepoStore,
@@ -292,10 +292,16 @@ export function createMultistepSignalRouter(): MultistepSignalRouter {
  * `runs/<runId>/events/` subtree. The write is awaited so the frame's FIFO
  * completion means the grants are durable on disk before the next frame is
  * processed.
+ *
+ * `senderIdentities` carries the run's authorized senders' hub-vouched keys,
+ * co-delivered on the same `run.grants` frame. The handler caches each one
+ * before the grants write, so a grant that lands durably is never missing the
+ * key its recipient needs to verify the sender's mail.
  */
 export type MultistepGrantsHandler = (args: {
   runId: string;
   stepGrants: readonly unknown[];
+  senderIdentities?: readonly SenderIdentity[];
 }) => Promise<void>;
 
 /**
@@ -321,6 +327,7 @@ export type MultistepGrantsRouter = {
     agentAddress: string;
     runId: string;
     stepGrants: readonly unknown[];
+    senderIdentities?: readonly SenderIdentity[];
   }): Promise<boolean>;
 };
 
@@ -336,7 +343,13 @@ export function createMultistepGrantsRouter(): MultistepGrantsRouter {
     async tryRoute(frame) {
       const handler = handlers.get(frame.agentAddress);
       if (handler === undefined) return false;
-      await handler({ runId: frame.runId, stepGrants: frame.stepGrants });
+      await handler({
+        runId: frame.runId,
+        stepGrants: frame.stepGrants,
+        ...(frame.senderIdentities !== undefined
+          ? { senderIdentities: frame.senderIdentities }
+          : {}),
+      });
       return true;
     },
   };

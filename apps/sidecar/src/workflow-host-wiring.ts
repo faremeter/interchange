@@ -26,6 +26,7 @@ import type {
   AgentKeyStore,
   DeployRouter,
   DeployRouterResult,
+  SenderKeyCache,
   SessionManager,
 } from "@intx/hub-agent";
 import {
@@ -49,7 +50,12 @@ import {
   type SuspensionRegistration,
   type WorkflowSupervisor,
 } from "@intx/workflow-host";
-import { hexEncode, type CredentialCipher, type SignalKind } from "@intx/types";
+import {
+  hexDecode,
+  hexEncode,
+  type CredentialCipher,
+  type SignalKind,
+} from "@intx/types";
 import {
   parseInferenceEvent,
   type ApprovalSnapshot,
@@ -95,6 +101,9 @@ import {
 import { readRunGrants, runGrantsPath } from "./run-grants";
 
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
+
+// A raw Ed25519 public key is 32 bytes.
+const ED25519_PUBLIC_KEY_BYTES = 32;
 
 /**
  * Project an run address into the substrate-safe id of its
@@ -1010,6 +1019,13 @@ export interface SidecarDeployRouter extends DeployRouter {
 export function createSidecarDeployRouter(deps: {
   sessions: SessionManager;
   keyStore: AgentKeyStore;
+  /**
+   * Cache of hub-vouched sender public keys. The grants handler writes each
+   * co-delivered `senderIdentities` entry here before the run's grants land,
+   * so a durable grant is never missing the key its recipient needs to verify
+   * the sender's inbound mail.
+   */
+  senderKeyCache: SenderKeyCache;
   transport: HubTransport;
   repoStore: RepoStore;
   signingKeySeed: Uint8Array;
@@ -1941,6 +1957,31 @@ export function createSidecarDeployRouter(deps: {
       // machinery still takes them.
       deps.multistepGrantsRouter?.register(spec.agentAddress, async (args) => {
         try {
+          // Cache the co-delivered sender keys BEFORE the grants file lands, so
+          // "grant durable" implies "key durable": a cache-write fault falls
+          // into the catch below and poisons the run rather than starting it
+          // with a grant whose sender the recipient cannot verify. A malformed
+          // key is a hub-side defect that is keyless from here, so skip it and
+          // cache the valid ones (no weaker than the hub having omitted it)
+          // rather than wedge the run on every replay -- but log it at ERROR,
+          // naming the address and reason, so the hub bug surfaces loudly
+          // instead of being silently dropped.
+          for (const identity of args.senderIdentities ?? []) {
+            let publicKey: Uint8Array;
+            try {
+              publicKey = hexDecode(identity.publicKey);
+            } catch (cause) {
+              const message =
+                cause instanceof Error ? cause.message : String(cause);
+              logger.error`Skipping unparseable sender key for ${identity.address} on run ${args.runId}: ${message}`;
+              continue;
+            }
+            if (publicKey.length !== ED25519_PUBLIC_KEY_BYTES) {
+              logger.error`Skipping wrong-length sender key for ${identity.address} on run ${args.runId}: got ${String(publicKey.length)} bytes`;
+              continue;
+            }
+            await deps.senderKeyCache.put(identity.address, publicKey);
+          }
           await writeStepGrants({
             repoStore: deps.repoStore,
             anchorRunId: runId,
@@ -1950,9 +1991,9 @@ export function createSidecarDeployRouter(deps: {
             runId: args.runId,
           });
         } catch (cause) {
-          // The per-run grants file did not land. Poison the runId so the
-          // grants barrier fails the run instead of starting it under the
-          // deploy-time grant set, then re-throw so the hub-link logs the
+          // A sender-key or per-run grants write did not land. Poison the runId
+          // so the grants barrier fails the run instead of starting it under
+          // the deploy-time grant set, then re-throw so the hub-link logs the
           // durable-write failure loudly.
           poisonedRunIds.add(args.runId);
           throw cause;

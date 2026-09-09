@@ -8,6 +8,11 @@ export {
   type AgentKeyStore,
   type AgentKeyStoreDeps,
 } from "./agent-key-store";
+export {
+  createSenderKeyCache,
+  type SenderKeyCache,
+  type SenderKeyCacheDeps,
+} from "./sender-key-cache";
 export type { HarnessBuilder } from "./harness-builder";
 export {
   createSessionManager,
