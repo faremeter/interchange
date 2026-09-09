@@ -379,6 +379,7 @@ async function buildRouter(args: {
       }),
       forgetAgent: () => undefined,
     } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["keyStore"],
+    senderKeyCache: { get: () => undefined, put: async () => undefined },
     transport: args.transport,
     repoStore,
     signingKeySeed: signingKeyPair.privateKey,

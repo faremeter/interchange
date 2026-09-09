@@ -263,6 +263,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
+      senderKeyCache: { get: () => undefined, put: async () => undefined },
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,

@@ -8,7 +8,11 @@ import {
   generateKeyPair,
   verifySSHSignature,
 } from "@intx/crypto";
-import { createSidecarOrchestrator, type HubLink } from "@intx/hub-agent";
+import {
+  createSenderKeyCache,
+  createSidecarOrchestrator,
+  type HubLink,
+} from "@intx/hub-agent";
 import { hexEncode } from "@intx/types";
 import { createAgentRepoStore } from "@intx/hub-sessions";
 import { createTarballCache } from "@intx/tool-packaging";
@@ -49,6 +53,7 @@ import { createWorkflowClosureMaterializer } from "./workflow-closure-materializ
 import { MAX_INLINE_ASSET_PAYLOAD_BYTES } from "./source-asset-delivery";
 import { createWorkflowProbeExecutor } from "./workflow-probe-handler";
 import { loadOrMintSidecarKeypair } from "./signing-keypair";
+import { writeFileAtomicDurable } from "./atomic-write";
 
 await setup();
 
@@ -225,6 +230,19 @@ const sidecarSigningKey = await loadOrMintSidecarKeypair(SIDECAR_SIGNING_DIR);
 const agentRepoStore = createAgentRepoStore({
   dataDir,
   signingKey: sidecarSigningKey,
+});
+
+// Cache of the hub-vouched public keys of senders this sidecar's deployments
+// are authorized to receive mail from. The grants handler writes each key the
+// hub co-delivers on a `run.grants` frame; the recipient's inbound-mail verify
+// reads it back. The keyring is loaded here at boot so a restart keeps every
+// previously-cached key. The durable-write primitive is injected so the cache
+// write is atomic and fsynced -- at least as durable as the run-grants write it
+// gates -- while the cache itself stays in @intx/hub-agent.
+const senderKeyCache = await createSenderKeyCache({
+  dataDir,
+  writeFileDurable: (filePath, contents) =>
+    writeFileAtomicDurable(filePath, contents, { mode: 0o600 }),
 });
 
 // The deploy router records `(runId -> agentAddress)` here on
@@ -505,6 +523,7 @@ const orchestrator = createSidecarOrchestrator({
     const router = createSidecarDeployRouter({
       sessions,
       keyStore,
+      senderKeyCache,
       transport,
       repoStore: wrappedRepoStore,
       signingKeySeed: sidecarSigningKey.privateKey,
