@@ -473,7 +473,11 @@ export function createSidecarAllocationReconciler({
     leaseId: string,
   ): Promise<void> {
     router.fenceAllocation(allocation.id, allocation.generation);
-    if (allocation.status === "released" || allocation.status === "failed") {
+    if (
+      allocation.status === "released" ||
+      allocation.status === "failed" ||
+      allocation.status === "destroy_failed"
+    ) {
       return;
     }
     const provisioner = provisionerFor(allocation);

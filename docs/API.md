@@ -595,7 +595,7 @@ Installs, probes, gates, and freezes a code-sourced workflow definition from its
 
 Body: unknown
 
-201: unknown -- Workflow deployment accepted for provisioning
+201: WorkflowDeploymentResponse -- Workflow deployment accepted for provisioning
 404: ErrorResponse -- Workflow asset not found
 409: ErrorResponse -- Workflow definition or source offering chain invalid, workflow provisioning unavailable, or provisioner selection failed
 500: ErrorResponse -- Deployment projection row missing after preparation
@@ -606,7 +606,7 @@ List workflow deployments
 
 Lists the workflow deployments for the tenant, most recent first.
 
-200: unknown -- List of workflow deployments
+200: WorkflowDeploymentResponse[] -- List of workflow deployments
 
 ### POST /api/tenants/:tenantId/workflows/:runId/signals
 Deliver a signal to a workflow run
@@ -1631,6 +1631,12 @@ Source: packages/types/src/wallets.ts
 Source: packages/types/src/workflows.ts
 
 **status**: Lifecycle state of the definition: `deployed` (a launchable version is active) or `stopped` (deactivated).
+
+### WorkflowDeploymentResponse
+`{ createdAt: string, definitionAssetId: string, id: string, status: "deployed" | "destroy_failed" | "failed" | "pending" | "recovering" | "released" | "releasing", tenantId: string }`
+Source: packages/types/src/workflows.ts
+
+**status**: Deployment lifecycle status. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.
 
 ### WorkflowRollbackRequest
 `{ version: string }`

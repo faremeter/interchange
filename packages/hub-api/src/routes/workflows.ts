@@ -24,7 +24,9 @@ import {
   ErrorResponse,
   isSidecarAllocationDispatchable,
   SendMessage,
+  WorkflowDeploymentResponse,
   type SidecarAllocationStatus,
+  type WorkflowDeploymentStatus,
 } from "@intx/types";
 import { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
@@ -96,14 +98,6 @@ const DeliverSignal = type({
   "payload?": "unknown",
 });
 
-const WorkflowDeploymentResponse = type({
-  id: "string",
-  tenantId: "string",
-  definitionAssetId: "string",
-  status: "string",
-  createdAt: "string",
-});
-
 const WorkflowRunListResponse = type({
   runIds: "string[]",
 });
@@ -125,8 +119,8 @@ function formatDeployment(
     allocationStatus?: SidecarAllocationStatus | null;
     allocationNextAttemptAt?: Date | null;
   },
-  statusOverride?: string,
-) {
+  statusOverride?: WorkflowDeploymentStatus,
+): WorkflowDeploymentResponse {
   if (row.definitionAssetId === null) {
     throw new Error(
       `deployment ${row.id}: anchor run's definition has no asset`,
@@ -144,7 +138,7 @@ function formatDeployment(
 function formatAllocationStatus(row: {
   allocationStatus?: SidecarAllocationStatus | null;
   allocationNextAttemptAt?: Date | null;
-}): string {
+}): WorkflowDeploymentStatus {
   switch (row.allocationStatus) {
     case undefined:
     case null:
@@ -157,6 +151,7 @@ function formatAllocationStatus(row: {
     case "replacing":
       return "recovering";
     case "releasing":
+    case "destroy_failed":
     case "released":
     case "failed":
       return row.allocationStatus;
@@ -328,7 +323,7 @@ export function createWorkflowRoutes({
       const sessionId = generateId("session");
 
       let deployedId: string;
-      let deploymentStatus: string;
+      let deploymentStatus: WorkflowDeploymentStatus;
       try {
         const prepared =
           await workflowAllocationService.prepareProvisionedDeployment({
