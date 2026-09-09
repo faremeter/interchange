@@ -17,7 +17,6 @@
     }
   },
   "dependencies": {
-    "@intx/harness": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/mail-memory": "workspace:*",
     "@intx/mailbox": "workspace:*",
