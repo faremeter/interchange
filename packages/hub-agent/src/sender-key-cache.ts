@@ -69,6 +69,15 @@ export type SenderKeyCache = {
    * resolves.
    */
   put(address: string, publicKey: Uint8Array): Promise<void>;
+  /**
+   * A snapshot of every address the cache currently holds a key for. Returns a
+   * fresh array, decoupled from the backing map, so a later `put` does not
+   * change an array a caller is still holding -- the reported set stays stable
+   * across an `await`. The cache reports addresses only; the key values stay
+   * inside because the refresh-on-reconnect flow re-resolves each current key
+   * hub-side rather than trusting the cached (possibly stale) one.
+   */
+  addresses(): string[];
 };
 
 export async function createSenderKeyCache(
@@ -136,6 +145,10 @@ export async function createSenderKeyCache(
     return keys.get(address);
   }
 
+  function addresses(): string[] {
+    return [...keys.keys()];
+  }
+
   async function put(address: string, publicKey: Uint8Array): Promise<void> {
     if (publicKey.length !== ED25519_PUBLIC_KEY_BYTES) {
       throw new Error(
@@ -153,5 +166,5 @@ export async function createSenderKeyCache(
 
   await loadFromDisk();
 
-  return { get, put };
+  return { get, put, addresses };
 }

@@ -145,6 +145,37 @@ describe("SenderKeyCache", () => {
     expect(cache.get("short@example.com")).toBeUndefined();
   });
 
+  test("reports exactly the addresses it holds a key for", async () => {
+    const dataDir = await tempDir();
+    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    await cache.put("alice@a.example", makeKey(5));
+    await cache.put("bob@b.example", makeKey(9));
+
+    expect([...cache.addresses()].sort()).toEqual([
+      "alice@a.example",
+      "bob@b.example",
+    ]);
+  });
+
+  test("reports no addresses for a freshly constructed cache", async () => {
+    const dataDir = await tempDir();
+    // No keyring dir exists yet, so loadFromDisk finds nothing: the cold-start
+    // path the reconnect reporter hits before any key has been cached.
+    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    expect(cache.addresses()).toEqual([]);
+  });
+
+  test("returns a snapshot a later put does not retroactively mutate", async () => {
+    const dataDir = await tempDir();
+    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    await cache.put("alice@a.example", makeKey(5));
+
+    const snapshot = cache.addresses();
+    await cache.put("bob@b.example", makeKey(9));
+
+    expect(snapshot).toEqual(["alice@a.example"]);
+  });
+
   test("a failed durable write leaves no in-memory entry", async () => {
     const dataDir = await tempDir();
     const cache = await createSenderKeyCache({
