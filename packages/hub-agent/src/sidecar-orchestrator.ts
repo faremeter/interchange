@@ -109,6 +109,13 @@ export type SidecarOrchestratorConfig = {
    */
   resolveSenderCrypto: (address: string) => CryptoProvider | undefined;
   /**
+   * Persists the hub-vouched public key for a sender address. The host builds
+   * it over the same sender-key cache as `resolveSenderCrypto` and the
+   * orchestrator forwards it unchanged to `createHubLink`, where an inbound
+   * `sender.key.refresh` frame drives it.
+   */
+  cacheSenderKey: (address: string, publicKey: string) => Promise<void>;
+  /**
    * Host-injected `DeployRouter` factory. The orchestrator calls it
    * once after `sessions` and `keyStore` are constructed; the
    * returned router routes every `agent.deploy` frame on the link.
@@ -229,6 +236,7 @@ export function createSidecarOrchestrator(
     transport,
     cryptoOps,
     resolveSenderCrypto,
+    cacheSenderKey,
     createDeployRouter,
     mailInboundRouter,
     signalInboundRouter,
@@ -320,6 +328,7 @@ export function createSidecarOrchestrator(
     sessions,
     keyStore,
     resolveSenderCrypto,
+    cacheSenderKey,
     deployRouter,
     applyWorkflowRunPack,
     ...(mailInboundRouter !== undefined ? { mailInboundRouter } : {}),

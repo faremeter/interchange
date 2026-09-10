@@ -334,6 +334,34 @@ export const RunGrantsFrame = type({
 export type RunGrantsFrame = typeof RunGrantsFrame.infer;
 
 /**
+ * Re-push the current public key the hub vouches for a cached sender, keyed by
+ * the sender's `address`. `publicKey` is the hex-encoded raw 32-byte Ed25519
+ * key, exactly as `SenderIdentity` carries it. The sidecar overwrites its cached
+ * key for `address` and touches nothing else -- no grants, no per-run state.
+ *
+ * The hub sends one per rotatable sender the sidecar reported on (re)connect,
+ * after re-resolving the sender's current key: a user-principal rotation that
+ * happened while the sidecar was disconnected lands on the sidecar this way.
+ *
+ * It is a dedicated frame rather than a reuse of two shapes it resembles.
+ * Not `SenderIdentity` (whose shape it currently matches): that type is a fact
+ * embedded in `run.grants`, so composing it would couple this command's wire
+ * contract to a grants-owned type. Not `run.grants`: a rotated key is
+ * address-keyed and cross-run, whereas grants are run-keyed, and routing this
+ * through the grants barrier would poison a healthy idle run on a transient
+ * cache-write fault and do a per-run durable write for a change that alters no
+ * grants. One address per frame keeps each key's cache write independently
+ * fallible -- a fault on one sender never fails the refresh of another -- which
+ * is the property a batched frame would give up.
+ */
+export const SenderKeyRefreshFrame = type({
+  type: "'sender.key.refresh'",
+  address: "string",
+  publicKey: "string",
+});
+export type SenderKeyRefreshFrame = typeof SenderKeyRefreshFrame.infer;
+
+/**
  * Deliver a workflow-host drain control payload to a multi-step
  * deployment's supervisor. The hub forwards the frame to the sidecar
  * that hosts the deployment named by `agentAddress` (the
@@ -1013,6 +1041,7 @@ export const HubFrame = type.or(
   SyncRequestFrame,
   SignalDeliverFrame,
   RunGrantsFrame,
+  SenderKeyRefreshFrame,
   SignalCorrelationRegisterAckFrame,
   DrainDeliverFrame,
   WorkflowProbeRequestFrame,
