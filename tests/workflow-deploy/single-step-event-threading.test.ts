@@ -209,7 +209,11 @@ describe("single-step event threading", () => {
 
     const req = buildRequest(tool);
     const settled = invoker(req);
-    await harness.run();
+    // The harness's default per-`harness.run()` wall-clock hang budget is
+    // 250ms; widen it so scheduling jitter under the Makefile's 4-way
+    // parallel suite is not misread as a hang. Assertions below are
+    // unchanged.
+    await harness.run({ wallClockBudgetMs: 2000 });
     const result = await settled;
 
     // The step produced the real agent reply, and the real tool ran.
@@ -270,7 +274,9 @@ describe("single-step event threading", () => {
 
     const req = buildRequest(tool);
     const settled = invoker(req);
-    await harness.run();
+    // Widen the default 250ms wall-clock hang budget (see above) so
+    // parallel-suite scheduling jitter is not misread as a hang.
+    await harness.run({ wallClockBudgetMs: 2000 });
     const result = await settled;
 
     expect(outputOf(result)).toMatchObject({ reply: "no observers" });

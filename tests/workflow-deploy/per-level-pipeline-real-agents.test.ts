@@ -652,6 +652,14 @@ const workflowAuthorize: WorkflowAuthorizeFn = (resource, action_) => {
 // drawing extra pulls from the non-round-partitioned fixed-role pool.
 const POOL = 16;
 
+// The harness's default wall-clock budget bounds a single `harness.run()`
+// drain pass (250ms). The workflow-deploy pass now runs 4-way parallel in
+// the Makefile, so an honest drain can briefly overshoot under CPU
+// contention; widen the hang-detection budget so scheduling jitter is not
+// misread as a hang. A real hang still trips this (and the per-test
+// timeout) well before the suite stalls.
+const HANG_BUDGET_MS = 2000;
+
 function enqueueResponse(harness: Harness, chunks: Uint8Array[]) {
   const stream = harness.scenario.createStream();
   stream.enqueueAll(chunks, { startAt: harness.clock.now() + 1 });
@@ -977,7 +985,7 @@ describe("per-level pipeline with real agents", () => {
       settled = true;
     });
     while (!settled) {
-      await harness.run();
+      await harness.run({ wallClockBudgetMs: HANG_BUDGET_MS });
       // Yield so in-flight runtime work (repoStore commits, agent teardown)
       // can park the next inference fetch before the next drain pass.
       await new Promise((resolve) => setTimeout(resolve, 0));
