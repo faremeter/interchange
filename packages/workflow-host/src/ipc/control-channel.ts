@@ -199,7 +199,7 @@ export type MailboxNotifyHeaders = typeof MailboxNotifyHeaders.infer;
  * union and not by widening the envelope shape. Inference events
  * NEVER appear here; they ride the event channel.
  */
-export const ControlPayload = type(
+export const ControlPayload = type.or(
   {
     type: "'trigger.fire'",
     data: {
@@ -216,7 +216,6 @@ export const ControlPayload = type(
       payload: "unknown",
     },
   },
-  "|",
   {
     type: "'signal.deliver'",
     data: {
@@ -233,20 +232,19 @@ export const ControlPayload = type(
       payload: "unknown",
     },
   },
-)
-  .or({
+  {
     type: "'drain'",
     data: {
       deadlineMs: "number",
     },
-  })
-  .or({
+  },
+  {
     type: "'shutdown'",
     data: {
       reason: "string",
     },
-  })
-  .or({
+  },
+  {
     type: "'grants-updated'",
     data: {
       /**
@@ -268,12 +266,12 @@ export const ControlPayload = type(
        */
       "stepHashes?": "Record<string, string>",
     },
-  })
-  .or({
+  },
+  {
     type: "'sources-updated'",
     data: SourcesUpdatedData,
-  })
-  .or({
+  },
+  {
     // Refreshed credential material for the deployment's inference sources and
     // tools. The child MERGES this into its in-memory cell (see
     // `mergeCredentialDelivery`): `delivery.materials` upsert by credentialId
@@ -291,8 +289,8 @@ export const ControlPayload = type(
       delivery: CredentialDelivery,
       "revoke?": "string[]",
     },
-  })
-  .or({
+  },
+  {
     type: "'ready'",
     data: {
       childPid: "number",
@@ -304,8 +302,8 @@ export const ControlPayload = type(
        */
       childPublicKey: "string",
     },
-  })
-  .or({
+  },
+  {
     // Child-initiated request to recycle the workflow-process. The
     // child emits this when its own self-check decides it needs to be
     // recycled (an internal consistency error it can't recover from,
@@ -319,8 +317,8 @@ export const ControlPayload = type(
     data: {
       reason: "string",
     },
-  })
-  .or({
+  },
+  {
     // Child-initiated `writeTreePreservingPrefix` request. The child
     // does not hold a substrate write authority for the workflow-run
     // repo (single-writer at the ref tip belongs to the supervisor);
@@ -343,8 +341,8 @@ export const ControlPayload = type(
       preservePrefix: "string > 0",
       message: "string > 0",
     },
-  })
-  .or({
+  },
+  {
     // Supervisor-initiated request for the child's merge bytes. Fired
     // from inside the supervisor's `writeTreePreservingPrefix` merge
     // callback while the per-repo lock is held; the child receives the
@@ -361,8 +359,8 @@ export const ControlPayload = type(
         contentBase64: "string",
       }).array(),
     },
-  })
-  .or({
+  },
+  {
     // Child's merge result. `requestId` correlates with the
     // `substrate.write.request` that started the write; the supervisor
     // resumes its merge callback with the supplied entries (or
@@ -385,8 +383,8 @@ export const ControlPayload = type(
         },
       ),
     },
-  })
-  .or({
+  },
+  {
     // Supervisor's terminal reply to a child's `substrate.write.request`.
     // The `requestId` echoes the child's allocated correlation id so
     // the child's pending-id map resolves the awaiter. A successful
@@ -410,8 +408,8 @@ export const ControlPayload = type(
         },
       ),
     },
-  })
-  .or({
+  },
+  {
     // Child-initiated outbound-mail request (OUTBOUND half of mailbox
     // ownership, §3a). The workflow-process child never holds the
     // agent's signing key and never calls `transport.send` itself. When
@@ -437,8 +435,8 @@ export const ControlPayload = type(
       "mailbox?": "string",
       message: OutboundMessagePayload,
     },
-  })
-  .or({
+  },
+  {
     // Supervisor's terminal reply to a child's `outbound.message`. The
     // `requestId` echoes the child's correlation id so the child's
     // pending mail-tool awaiter resolves. A successful send surfaces the
@@ -462,8 +460,8 @@ export const ControlPayload = type(
         },
       ),
     },
-  })
-  .or({
+  },
+  {
     // Child-initiated terminal-run notification. The workflow-process
     // child emits this when one of its runs reaches a terminal phase
     // (`RunCompleted`, `RunFailed`, `RunCancelled`) so the supervisor's
@@ -489,8 +487,8 @@ export const ControlPayload = type(
         message: "string",
       },
     },
-  })
-  .or({
+  },
+  {
     // Child-initiated control-plane suspension notification. The
     // workflow-process child emits this when a workflow agent step parks
     // on a reserved `signalName(correlationId)` channel (`env.onPark`),
@@ -514,8 +512,8 @@ export const ControlPayload = type(
       // process boundary. Optional: only an ask-rail suspension carries one.
       "snapshot?": BoundedApprovalSnapshot,
     },
-  })
-  .or({
+  },
+  {
     // Supervisor-initiated request: enumerate the child's currently-parked
     // approval correlations. The supervisor fires this after a
     // re-establishment (child respawn, or hub-link reconnect fanned out to
@@ -530,8 +528,8 @@ export const ControlPayload = type(
     data: {
       requestId: "string > 0",
     },
-  })
-  .or({
+  },
+  {
     // Child's reply to `parked-correlations.request`. Each entry mirrors
     // `park.notify`'s data -- the child-supplied half of a
     // `SuspensionRegistration` the supervisor stamps its deployment identity
@@ -553,8 +551,8 @@ export const ControlPayload = type(
         "snapshot?": BoundedApprovalSnapshot,
       }).array(),
     },
-  })
-  .or({
+  },
+  {
     // Child reports self-discovered runs after reconnect or recycle.
     // The supervisor seeds its cohort tracking from these runIds so
     // drain accumulators and dispatch routing account for runs the
@@ -563,8 +561,8 @@ export const ControlPayload = type(
     data: {
       runIds: type("string > 0").array(),
     },
-  })
-  .or({
+  },
+  {
     // Supervisor-to-child one-way notification that new mail landed in a
     // deployment mailbox (INBOUND half of mailbox ownership, §3b). One-way
     // like `grants-updated`/`sources-updated`: no correlation id, no response.
@@ -582,8 +580,8 @@ export const ControlPayload = type(
       uid: "number >= 1",
       headers: MailboxNotifyHeaders,
     },
-  })
-  .or({
+  },
+  {
     // Child-initiated mailbox-mutation request (INBOUND half of mailbox
     // ownership, §3b). The supervisor is the sole writer to the
     // workflow-run mailbox: a step agent reads its INBOX locally but
@@ -616,8 +614,8 @@ export const ControlPayload = type(
         op: "'expunge'",
       },
     ),
-  })
-  .or({
+  },
+  {
     // Supervisor's terminal reply to a child's `mailbox.mutate.request`.
     // The `requestId` echoes the child's correlation id so the child's
     // pending mail-tool awaiter resolves. The reply is sent only after
@@ -643,7 +641,8 @@ export const ControlPayload = type(
         },
       ),
     },
-  });
+  },
+);
 
 export type ControlPayload = typeof ControlPayload.infer;
 
