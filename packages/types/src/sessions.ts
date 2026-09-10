@@ -96,35 +96,37 @@ export type MailResponse = typeof MailResponse.infer;
 // needs to locate and explain the rejection, alongside a human-readable
 // `message`. This is the wire contract for the route's attachment 400s; the
 // route handler is the single producer.
-export const AttachmentError = type({
-  code: "'oversize_attachment'",
-  message: "string",
-  attachmentIndex: "number",
-  byteLength: "number",
-  limitBytes: "number",
-})
-  .or({
+export const AttachmentError = type.or(
+  {
+    code: "'oversize_attachment'",
+    message: "string",
+    attachmentIndex: "number",
+    byteLength: "number",
+    limitBytes: "number",
+  },
+  {
     code: "'disallowed_mime_type'",
     message: "string",
     attachmentIndex: "number",
     mimeType: "string",
-  })
-  .or({
+  },
+  {
     code: "'invalid_attachment_name'",
     message: "string",
     attachmentIndex: "number",
-  })
-  .or({
+  },
+  {
     code: "'malformed_base64'",
     message: "string",
     attachmentIndex: "number",
-  })
-  .or({
+  },
+  {
     code: "'oversize_total'",
     message: "string",
     totalBytes: "number",
     limitBytes: "number",
-  });
+  },
+);
 export type AttachmentError = typeof AttachmentError.infer;
 
 export const AttachmentErrorResponse = type({ error: AttachmentError });

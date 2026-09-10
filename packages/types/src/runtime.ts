@@ -881,7 +881,9 @@ const MediaSourceUrl = type({
   url: "string",
 });
 
-export const MediaSource = MediaSourceBase64.or(MediaSourceFileReference).or(
+export const MediaSource = type.or(
+  MediaSourceBase64,
+  MediaSourceFileReference,
   MediaSourceUrl,
 );
 export type MediaSource = typeof MediaSource.infer;
@@ -1166,28 +1168,29 @@ const ToolResultBlock = type({
   // SafetyRatingBlocks (safety signals annotate model/request
   // filtering), and not CodeExecution blocks (server-side code
   // execution is a distinct lifecycle from the user-tool round-trip).
-  content: TextBlock.or(ImageBlock)
-    .or(AudioBlock)
-    .or(VideoBlock)
-    .or(DocumentBlock)
+  content: type
+    .or(TextBlock, ImageBlock, AudioBlock, VideoBlock, DocumentBlock)
     .array(),
   "detail?": "unknown",
   "isError?": "boolean",
 });
 
-export const ContentBlock = TextBlock.or(ThinkingBlock)
-  .or(RedactedThinkingBlock)
-  .or(RefusalBlock)
-  .or(ImageBlock)
-  .or(AudioBlock)
-  .or(VideoBlock)
-  .or(DocumentBlock)
-  .or(CitationBlock)
-  .or(SafetyRatingBlock)
-  .or(CodeExecutionRequestBlock)
-  .or(CodeExecutionResultBlock)
-  .or(ToolCallBlock)
-  .or(ToolResultBlock);
+export const ContentBlock = type.or(
+  TextBlock,
+  ThinkingBlock,
+  RedactedThinkingBlock,
+  RefusalBlock,
+  ImageBlock,
+  AudioBlock,
+  VideoBlock,
+  DocumentBlock,
+  CitationBlock,
+  SafetyRatingBlock,
+  CodeExecutionRequestBlock,
+  CodeExecutionResultBlock,
+  ToolCallBlock,
+  ToolResultBlock,
+);
 export type ContentBlock = typeof ContentBlock.infer;
 
 /**
@@ -1303,12 +1306,13 @@ const WireInboundMessage = type({
  *
  * (INFERENCE.md § Event Protocol)
  */
-export const InferenceEvent = type({
-  type: "'inference.start'",
-  seq: "number",
-  data: { model: "string" },
-})
-  .or({
+export const InferenceEvent = type.or(
+  {
+    type: "'inference.start'",
+    seq: "number",
+    data: { model: "string" },
+  },
+  {
     type: "'inference.thinking.delta'",
     seq: "number",
     data: {
@@ -1316,18 +1320,18 @@ export const InferenceEvent = type({
       partial: PartialMessage,
       "index?": "number",
     },
-  })
-  .or({
+  },
+  {
     type: "'inference.block.signature'",
     seq: "number",
     data: { signature: "string", "index?": "number" },
-  })
-  .or({
+  },
+  {
     type: "'inference.thinking.redacted'",
     seq: "number",
     data: { redactedThinking: RedactedThinkingBlock, "index?": "number" },
-  })
-  .or({
+  },
+  {
     type: "'inference.text.delta'",
     seq: "number",
     data: {
@@ -1335,8 +1339,8 @@ export const InferenceEvent = type({
       partial: PartialMessage,
       "index?": "number",
     },
-  })
-  .or({
+  },
+  {
     type: "'inference.refusal.delta'",
     seq: "number",
     data: {
@@ -1344,8 +1348,8 @@ export const InferenceEvent = type({
       partial: PartialMessage,
       "index?": "number",
     },
-  })
-  .or({
+  },
+  {
     type: "'inference.tool_call.start'",
     seq: "number",
     data: {
@@ -1354,8 +1358,8 @@ export const InferenceEvent = type({
       partial: PartialMessage,
       "index?": "number",
     },
-  })
-  .or({
+  },
+  {
     type: "'inference.tool_call.delta'",
     seq: "number",
     data: {
@@ -1364,8 +1368,8 @@ export const InferenceEvent = type({
       partial: PartialMessage,
       "index?": "number",
     },
-  })
-  .or({
+  },
+  {
     type: "'inference.tool_call.end'",
     seq: "number",
     data: {
@@ -1375,13 +1379,13 @@ export const InferenceEvent = type({
       partial: PartialMessage,
       "index?": "number",
     },
-  })
-  .or({
+  },
+  {
     type: "'inference.usage'",
     seq: "number",
     data: { usage: TokenUsage, source: LastCycleSource },
-  })
-  .or({
+  },
+  {
     type: "'inference.done'",
     seq: "number",
     data: {
@@ -1390,13 +1394,13 @@ export const InferenceEvent = type({
       source: LastCycleSource,
       "pacingDelayMs?": "number",
     },
-  })
-  .or({
+  },
+  {
     type: "'inference.error'",
     seq: "number",
     data: { error: InferenceError, partial: PartialMessage },
-  })
-  .or({
+  },
+  {
     type: "'inference.retry'",
     seq: "number",
     data: {
@@ -1404,8 +1408,8 @@ export const InferenceEvent = type({
       delayMs: "number",
       previousError: InferenceError,
     },
-  })
-  .or({
+  },
+  {
     type: "'inference.citation'",
     seq: "number",
     // `index`, when present, names the source content block (typically
@@ -1417,8 +1421,8 @@ export const InferenceEvent = type({
     // `content[]` and consumers attribute them to the nearest
     // preceding TextBlock per the CitationBlock docstring.
     data: { citation: CitationBlock, "index?": "number" },
-  })
-  .or({
+  },
+  {
     type: "'inference.safety_rating'",
     seq: "number",
     // Prompt-level structured safety signal (observed Gemini
@@ -1426,13 +1430,13 @@ export const InferenceEvent = type({
     // capture has zero candidates. Harness appends the block to the
     // finalized turn's `content[]`.
     data: { safetyRating: SafetyRatingBlock },
-  })
-  .or({
+  },
+  {
     type: "'inference.code_execution.start'",
     seq: "number",
     data: { request: CodeExecutionRequestBlock, "index?": "number" },
-  })
-  .or({
+  },
+  {
     type: "'inference.code_execution.delta'",
     seq: "number",
     // requestId correlates fragments back to the originating
@@ -1447,13 +1451,13 @@ export const InferenceEvent = type({
       codeFragment: "string",
       "index?": "number",
     },
-  })
-  .or({
+  },
+  {
     type: "'inference.code_execution.result'",
     seq: "number",
     data: { result: CodeExecutionResultBlock, "index?": "number" },
-  })
-  .or({
+  },
+  {
     type: "'inference.image_output'",
     seq: "number",
     // Fires mid-stream when an adapter finalizes an image-output
@@ -1464,28 +1468,28 @@ export const InferenceEvent = type({
     // ~1MB inline blobs); consumers that subscribe to this event
     // should treat it as a non-trivial transport size.
     data: { image: ImageBlock, "index?": "number" },
-  })
-  .or({
+  },
+  {
     type: "'tool.start'",
     seq: "number",
     data: { call: ToolCall },
-  })
-  .or({
+  },
+  {
     type: "'tool.update'",
     seq: "number",
     data: { callId: "string", partial: "string" },
-  })
-  .or({
+  },
+  {
     type: "'tool.done'",
     seq: "number",
     data: { result: ToolResult },
-  })
-  .or({
+  },
+  {
     type: "'message.queued'",
     seq: "number",
     data: { message: WireInboundMessage },
-  })
-  .or({
+  },
+  {
     type: "'message.run.started'",
     seq: "number",
     data: {
@@ -1493,8 +1497,8 @@ export const InferenceEvent = type({
       messageRunId: "string",
       receivedAt: "number",
     },
-  })
-  .or({
+  },
+  {
     type: "'message.run.ended'",
     seq: "number",
     data: {
@@ -1506,23 +1510,23 @@ export const InferenceEvent = type({
         "kind?": "string",
       },
     },
-  })
-  .or({
+  },
+  {
     type: "'message.correlated'",
     seq: "number",
     data: { message: WireInboundMessage, correlationId: "string" },
-  })
-  .or({
+  },
+  {
     type: "'connector.reply'",
     seq: "number",
     data: { content: "string", "checkpointHash?": "string" },
-  })
-  .or({
+  },
+  {
     type: "'reactor.start'",
     seq: "number",
     data: "object",
-  })
-  .or({
+  },
+  {
     type: "'reactor.gate.blocked'",
     seq: "number",
     data: {
@@ -1531,50 +1535,51 @@ export const InferenceEvent = type({
       "correlationId?": "string",
       "approvalSnapshot?": ApprovalSnapshot,
     },
-  })
-  .or({
+  },
+  {
     type: "'reactor.gate.cleared'",
     seq: "number",
     data: {
       gateId: "string",
       reason: type.enumerated("resolved", "timeout", "shutdown"),
     },
-  })
-  .or({
+  },
+  {
     type: "'reactor.done'",
     seq: "number",
     data: "object",
-  })
-  .or({
+  },
+  {
     type: "'reactor.error'",
     seq: "number",
     data: { error: "string", fatal: "boolean" },
-  })
-  .or({
+  },
+  {
     type: "'fork.created'",
     seq: "number",
     data: { forkId: "string", parentId: "string", mode: ForkMode },
-  })
-  .or({
+  },
+  {
     type: "'fork.done'",
     seq: "number",
     data: { forkId: "string", "result?": "unknown" },
-  })
-  .or({
+  },
+  {
     type: "'fork.error'",
     seq: "number",
     data: { forkId: "string", error: "string" },
-  })
-  .or({
+  },
+  {
     type: "'fork.aborted'",
     seq: "number",
     data: { forkId: "string" },
-  })
-  .or({
+  },
+  {
     type: /^custom\./,
     seq: "number",
     data: "Record<string, unknown>",
-  });
+  },
+);
 // The TypeScript type is defined manually rather than inferred from the
 // validator because the `custom.*` variant uses a regex pattern which
 // arktype infers as `string`. A bare `string` in the discriminant position
