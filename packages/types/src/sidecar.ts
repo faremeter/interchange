@@ -967,42 +967,48 @@ export type WorkflowProbeErrorFrame = typeof WorkflowProbeErrorFrame.infer;
 // ---------------------------------------------------------------------------
 
 /** All frame types the sidecar sends to the hub. */
-export const SidecarFrame = RegisterFrame.or(ReconnectFrame)
-  .or(AgentDeployAckFrame)
-  .or(AgentErrorFrame)
-  .or(MailOutboundFrame)
-  .or(AgentEventFrame)
-  .or(ConnectorStateChangedFrame)
-  .or(PingFrame)
-  .or(SessionAckFrame)
-  .or(SessionErrorFrame)
-  .or(AgentUndeployAckFrame)
-  .or(SignalCorrelationRegisterFrame)
-  .or(PackPushFrame)
-  .or(PackDoneFrame)
-  .or(PackAckFrame)
-  .or(PackRejectFrame)
-  .or(MailInboundAckFrame)
-  .or(WorkflowProbeResultFrame)
-  .or(WorkflowProbeErrorFrame);
+export const SidecarFrame = type.or(
+  RegisterFrame,
+  ReconnectFrame,
+  AgentDeployAckFrame,
+  AgentErrorFrame,
+  MailOutboundFrame,
+  AgentEventFrame,
+  ConnectorStateChangedFrame,
+  PingFrame,
+  SessionAckFrame,
+  SessionErrorFrame,
+  AgentUndeployAckFrame,
+  SignalCorrelationRegisterFrame,
+  PackPushFrame,
+  PackDoneFrame,
+  PackAckFrame,
+  PackRejectFrame,
+  MailInboundAckFrame,
+  WorkflowProbeResultFrame,
+  WorkflowProbeErrorFrame,
+);
 export type SidecarFrame = typeof SidecarFrame.infer;
 
 /** All frame types the hub sends to the sidecar. */
-export const HubFrame = MailInboundFrame.or(AgentDeployFrame)
-  .or(AgentUndeployFrame)
-  .or(PongFrame)
-  .or(SourcesUpdateFrame)
-  .or(CredentialsUpdateFrame)
-  .or(PackPushFrame)
-  .or(PackDoneFrame)
-  .or(PackAckFrame)
-  .or(PackRejectFrame)
-  .or(SyncRequestFrame)
-  .or(SignalDeliverFrame)
-  .or(RunGrantsFrame)
-  .or(SignalCorrelationRegisterAckFrame)
-  .or(DrainDeliverFrame)
-  .or(WorkflowProbeRequestFrame);
+export const HubFrame = type.or(
+  MailInboundFrame,
+  AgentDeployFrame,
+  AgentUndeployFrame,
+  PongFrame,
+  SourcesUpdateFrame,
+  CredentialsUpdateFrame,
+  PackPushFrame,
+  PackDoneFrame,
+  PackAckFrame,
+  PackRejectFrame,
+  SyncRequestFrame,
+  SignalDeliverFrame,
+  RunGrantsFrame,
+  SignalCorrelationRegisterAckFrame,
+  DrainDeliverFrame,
+  WorkflowProbeRequestFrame,
+);
 export type HubFrame = typeof HubFrame.infer;
 
 /** Any frame on the wire, regardless of direction. */
