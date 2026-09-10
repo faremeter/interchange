@@ -130,7 +130,11 @@ describe("deploy-failure registry leak", () => {
         typeof createSidecarDeployRouter
       >[0]["sessions"],
       keyStore: stubKeyStore(),
-      senderKeyCache: { get: () => undefined, put: async () => undefined },
+      senderKeyCache: {
+        get: () => undefined,
+        put: async () => undefined,
+        addresses: () => [],
+      },
       transport,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- an unsupported frame throws before any repoStore usage
       repoStore: {} as Parameters<
@@ -214,7 +218,11 @@ describe("deploy-failure registry leak", () => {
     const router = createSidecarDeployRouter({
       sessions,
       keyStore,
-      senderKeyCache: { get: () => undefined, put: async () => undefined },
+      senderKeyCache: {
+        get: () => undefined,
+        put: async () => undefined,
+        addresses: () => [],
+      },
       transport,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
       repoStore: repoStoreStub as RepoStore,
@@ -368,7 +376,11 @@ describe("deploy-failure registry leak", () => {
     const router = createSidecarDeployRouter({
       sessions,
       keyStore,
-      senderKeyCache: { get: () => undefined, put: async () => undefined },
+      senderKeyCache: {
+        get: () => undefined,
+        put: async () => undefined,
+        addresses: () => [],
+      },
       transport,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
       repoStore: repoStoreStub as RepoStore,

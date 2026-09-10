@@ -256,7 +256,11 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
-      senderKeyCache: { get: () => undefined, put: async () => undefined },
+      senderKeyCache: {
+        get: () => undefined,
+        put: async () => undefined,
+        addresses: () => [],
+      },
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
@@ -854,6 +858,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       senderKeyCache: opts.senderKeyCache ?? {
         get: () => undefined,
         put: async () => undefined,
+        addresses: () => [],
       },
       transport,
       repoStore,
@@ -1543,6 +1548,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
             .catch(() => false));
         puts.push({ address, grantsExisted });
       },
+      addresses: () => [],
     };
 
     const { grantsRouter, agentAddress, anchorRunId, tempBase } =
@@ -1591,6 +1597,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       put: async () => {
         throw new Error("sender-key disk full");
       },
+      addresses: () => [],
     };
 
     const { grantsRouter, agentAddress, anchorRunId, tempBase } =
@@ -1638,6 +1645,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       put: async (address: string) => {
         puts.push(address);
       },
+      addresses: () => [],
     };
 
     const { grantsRouter, agentAddress, anchorRunId, tempBase } =
