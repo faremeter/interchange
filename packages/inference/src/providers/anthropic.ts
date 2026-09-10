@@ -570,12 +570,15 @@ const MessageStart = type({
 const MessageStop = type({ type: "'message_stop'" });
 const Ping = type({ type: "'ping'" });
 
-const AnthropicSSEEvent = ContentBlockDelta.or(ContentBlockStart)
-  .or(ContentBlockStop)
-  .or(MessageDelta)
-  .or(MessageStart)
-  .or(MessageStop)
-  .or(Ping);
+const AnthropicSSEEvent = type.or(
+  ContentBlockDelta,
+  ContentBlockStart,
+  ContentBlockStop,
+  MessageDelta,
+  MessageStart,
+  MessageStop,
+  Ping,
+);
 
 // Maps Anthropic's wire usage object onto the internal TokenUsage. Anthropic
 // never reports a distinct thinking-token count, so `thinking` is always 0.
