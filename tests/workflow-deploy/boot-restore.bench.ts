@@ -383,6 +383,7 @@ async function buildRouter(args: {
       get: () => undefined,
       put: async () => undefined,
       addresses: () => [],
+      rotatableAddresses: () => [],
     },
     transport: args.transport,
     repoStore,

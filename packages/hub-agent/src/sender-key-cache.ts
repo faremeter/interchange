@@ -27,7 +27,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
-import { hasCode, hexDecode, hexEncode } from "@intx/types";
+import { hasCode, hexDecode, hexEncode, isRunAddress } from "@intx/types";
 
 const logger = getLogger(["interchange", "hub-agent", "sender-key-cache"]);
 
@@ -78,6 +78,17 @@ export type SenderKeyCache = {
    * hub-side rather than trusting the cached (possibly stale) one.
    */
   addresses(): string[];
+  /**
+   * The cached addresses whose key can rotate: `addresses()` minus run
+   * addresses. A run address resolves to the immutable
+   * `workflow_run.public_key`, so its cached key never changes; a user sender
+   * resolves to a hub principal key that can rotate. The reconnect reporter
+   * sends exactly this set so the hub re-resolves only the senders whose key
+   * could have changed while the sidecar was disconnected. This is a
+   * work-saving filter, not a trust boundary -- the hub resolves every reported
+   * address on its own.
+   */
+  rotatableAddresses(): string[];
 };
 
 export async function createSenderKeyCache(
@@ -149,6 +160,10 @@ export async function createSenderKeyCache(
     return [...keys.keys()];
   }
 
+  function rotatableAddresses(): string[] {
+    return addresses().filter((address) => !isRunAddress(address));
+  }
+
   async function put(address: string, publicKey: Uint8Array): Promise<void> {
     if (publicKey.length !== ED25519_PUBLIC_KEY_BYTES) {
       throw new Error(
@@ -166,5 +181,5 @@ export async function createSenderKeyCache(
 
   await loadFromDisk();
 
-  return { get, put, addresses };
+  return { get, put, addresses, rotatableAddresses };
 }

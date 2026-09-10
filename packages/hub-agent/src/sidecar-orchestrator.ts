@@ -192,6 +192,14 @@ export type SidecarOrchestratorConfig = {
    */
   getWorkflowAddresses?: () => string[];
   /**
+   * Returns the rotatable (non-run) sender addresses this sidecar holds cached
+   * keys for. Forwarded to the hub link, which reports them on every
+   * (re)connect so the hub re-resolves and re-pushes each key. Production wires
+   * this to the sender-key cache's rotatable view; omitted, the link reports
+   * none.
+   */
+  getCachedSenderAddresses?: () => string[];
+  /**
    * Invoked with the workflow-substrate addresses the link just announced in
    * an authenticated reconnect. Forwarded to the hub link so the workflow-run
    * pack pusher can re-drive a push a disconnect cancelled -- gated on the
@@ -247,6 +255,7 @@ export function createSidecarOrchestrator(
     applyWorkflowRunPack,
     workflowProbeExecutor,
     getWorkflowAddresses,
+    getCachedSenderAddresses,
     onWorkflowAddressesRoutable,
     onWorkflowAddressesUnroutable,
     pingIntervalMs,
@@ -341,6 +350,9 @@ export function createSidecarOrchestrator(
       : {}),
     ...(workflowProbeExecutor !== undefined ? { workflowProbeExecutor } : {}),
     ...(getWorkflowAddresses !== undefined ? { getWorkflowAddresses } : {}),
+    ...(getCachedSenderAddresses !== undefined
+      ? { getCachedSenderAddresses }
+      : {}),
     ...(onWorkflowAddressesRoutable !== undefined
       ? { onWorkflowAddressesRoutable }
       : {}),

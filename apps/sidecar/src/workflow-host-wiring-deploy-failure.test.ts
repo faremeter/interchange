@@ -134,6 +134,7 @@ describe("deploy-failure registry leak", () => {
         get: () => undefined,
         put: async () => undefined,
         addresses: () => [],
+        rotatableAddresses: () => [],
       },
       transport,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- an unsupported frame throws before any repoStore usage
@@ -222,6 +223,7 @@ describe("deploy-failure registry leak", () => {
         get: () => undefined,
         put: async () => undefined,
         addresses: () => [],
+        rotatableAddresses: () => [],
       },
       transport,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure
@@ -380,6 +382,7 @@ describe("deploy-failure registry leak", () => {
         get: () => undefined,
         put: async () => undefined,
         addresses: () => [],
+        rotatableAddresses: () => [],
       },
       transport,
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub: only getRepoDir + writeTree are exercised before the spawn-time failure

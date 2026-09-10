@@ -260,6 +260,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
         get: () => undefined,
         put: async () => undefined,
         addresses: () => [],
+        rotatableAddresses: () => [],
       },
       transport,
       repoStore,
@@ -859,6 +860,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         get: () => undefined,
         put: async () => undefined,
         addresses: () => [],
+        rotatableAddresses: () => [],
       },
       transport,
       repoStore,
@@ -1549,6 +1551,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         puts.push({ address, grantsExisted });
       },
       addresses: () => [],
+      rotatableAddresses: () => [],
     };
 
     const { grantsRouter, agentAddress, anchorRunId, tempBase } =
@@ -1598,6 +1601,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         throw new Error("sender-key disk full");
       },
       addresses: () => [],
+      rotatableAddresses: () => [],
     };
 
     const { grantsRouter, agentAddress, anchorRunId, tempBase } =
@@ -1646,6 +1650,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         puts.push(address);
       },
       addresses: () => [],
+      rotatableAddresses: () => [],
     };
 
     const { grantsRouter, agentAddress, anchorRunId, tempBase } =

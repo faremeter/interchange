@@ -617,6 +617,19 @@ export type HubLinkConfig = {
    */
   getWorkflowAddresses?: () => string[];
   /**
+   * Returns the rotatable (non-run) sender addresses this sidecar holds cached
+   * keys for. Read at each (re)connect and reported on the register/reconnect
+   * frame so the Hub re-resolves and re-pushes each key, catching a rotation
+   * that landed while the sidecar was disconnected.
+   *
+   * Optional with an empty default, UNLIKE the required `cacheSenderKey`: this
+   * is a report-path reader whose empty result is a legitimate steady state (no
+   * cached senders, or a host with no sender substrate), the same shape as
+   * `getWorkflowAddresses`. `cacheSenderKey` sits on the receive path a sidecar
+   * must always be able to serve, so it is required; this one is not.
+   */
+  getCachedSenderAddresses?: () => string[];
+  /**
    * Invoked after the allocation-authenticated reconnect frame is written.
    * The Hub serializes that frame ahead of later pack frames on the same
    * socket, so the workflow-run pack pusher can safely re-drive a cancelled
@@ -726,6 +739,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     applyWorkflowRunPack,
     workflowProbeExecutor = defaultWorkflowProbeExecutor,
     getWorkflowAddresses = () => [],
+    getCachedSenderAddresses = () => [],
     onWorkflowAddressesRoutable,
     onWorkflowAddressesUnroutable,
     pingIntervalMs = DEFAULT_PING_INTERVAL_MS,
@@ -1662,12 +1676,21 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       // reconnect would expose a false empty inventory and let allocation
       // reconciliation restore Hub state over the live workflow.
       const restoredAddresses = getWorkflowAddresses();
+      // Report the sidecar's cached rotatable senders on both frames: the
+      // register-vs-reconnect choice turns on workflow-address presence, so a
+      // sidecar with cached senders but no restored workflow substrate still
+      // announces them on a register frame. Omit the field when empty to honor
+      // its additive-optional wire shape.
+      const cachedSenderAddresses = getCachedSenderAddresses();
+      const senderReport =
+        cachedSenderAddresses.length > 0 ? { cachedSenderAddresses } : {};
       if (restoredAddresses.length === 0) {
         completeHandshake(connection, {
           type: "register",
           sidecarId,
           token,
           agentAddresses: [],
+          ...senderReport,
         });
       } else {
         completeHandshake(connection, {
@@ -1675,6 +1698,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
           sidecarId,
           token,
           agentAddresses: restoredAddresses,
+          ...senderReport,
         });
       }
     });

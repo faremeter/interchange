@@ -35,6 +35,13 @@ export const RegisterFrame = type({
   sidecarId: "string",
   token: "string",
   agentAddresses: "string[]",
+  // The rotatable (non-run) sender addresses this sidecar holds cached keys
+  // for. The hub re-resolves each current key and re-pushes it on a
+  // `sender.key.refresh`, so a user-principal rotation that landed while the
+  // sidecar was disconnected reaches its cache. Additive-optional and omitted
+  // when empty: a sidecar with no cached senders (or a pre-upgrade one) sends
+  // no field, and the hub treats absence as "nothing to refresh".
+  "cachedSenderAddresses?": "string[]",
 });
 export type RegisterFrame = typeof RegisterFrame.infer;
 
@@ -48,6 +55,12 @@ export const ReconnectFrame = type({
   sidecarId: "string",
   token: "string",
   agentAddresses: "string[]",
+  // The rotatable (non-run) sender addresses this sidecar holds cached keys
+  // for; see `RegisterFrame`. Carried on both frames because the register vs
+  // reconnect choice turns on workflow-address presence, not sender-cache
+  // presence -- a sidecar that restored no workflow substrate still reports its
+  // cached senders on a register frame. Additive-optional, omitted when empty.
+  "cachedSenderAddresses?": "string[]",
 });
 export type ReconnectFrame = typeof ReconnectFrame.infer;
 
