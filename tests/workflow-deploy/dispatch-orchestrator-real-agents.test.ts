@@ -1042,6 +1042,13 @@ describe("dispatch orchestrator with real agents", () => {
   // unmatched request -- which would otherwise park a fetch forever and hang --
   // into a loud failure.
   const MAX_DRAIN_PASSES = 2000;
+  // The harness's default wall-clock budget bounds a single `harness.run()`
+  // drain pass (250ms). This pass now runs 4-way parallel in the Makefile, so
+  // an honest drain can briefly overshoot under CPU contention; widen the
+  // hang-detection budget so scheduling jitter is not misread as a hang. A
+  // real hang still trips this (and the per-test timeout) well before the
+  // suite stalls.
+  const HANG_BUDGET_MS = 2000;
   async function drive(
     env: WorkflowRuntimeEnv,
     resume?: { runId: string; resumeFromEvents: readonly WorkflowEvent[] },
@@ -1065,7 +1072,7 @@ describe("dispatch orchestrator with real agents", () => {
             `settling; likely an unmatched or pool-exhausted inference request`,
         );
       }
-      await harness.run();
+      await harness.run({ wallClockBudgetMs: HANG_BUDGET_MS });
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
     return complete;
