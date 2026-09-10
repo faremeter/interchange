@@ -478,6 +478,13 @@ const orchestrator = createSidecarOrchestrator({
     }
     return sidecarDeployRouter.activeAddresses();
   },
+  // Report the sidecar's cached rotatable senders on every (re)connect so the
+  // hub re-resolves each current key and re-pushes it, catching a rotation that
+  // landed while the sidecar was disconnected. The cache owns the "only user
+  // senders rotate" filter (a run sender's key is the immutable
+  // workflow_run.public_key); the link stays source-opaque and reports whatever
+  // this returns.
+  getCachedSenderAddresses: () => senderKeyCache.rotatableAddresses(),
   // When the hub-link re-announces a deployment address in an authenticated
   // reconnect, re-drive any workflow-run pack the disconnect cancelled. The
   // link fires this AFTER sending the reconnect frame, so the hub routes the

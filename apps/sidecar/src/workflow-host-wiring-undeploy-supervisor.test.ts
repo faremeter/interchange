@@ -267,6 +267,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         get: () => undefined,
         put: async () => undefined,
         addresses: () => [],
+        rotatableAddresses: () => [],
       },
       transport,
       repoStore,

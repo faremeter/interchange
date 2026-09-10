@@ -256,6 +256,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
         get: () => undefined,
         put: async () => undefined,
         addresses: () => [],
+        rotatableAddresses: () => [],
       },
       transport,
       repoStore,

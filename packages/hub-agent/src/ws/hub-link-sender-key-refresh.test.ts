@@ -1,14 +1,20 @@
-// Exercises the `sender.key.refresh` arm in `handleMessage`: a hub-pushed
-// key-only refresh drives the source-opaque `cacheSenderKey` write peer and
-// touches nothing else. The frame updates the sidecar's cached sender key; a
-// cache-write fault (transient disk fault or malformed key) is logged at ERROR
-// and swallowed, never wedging the per-connection message chain and never
-// poisoning a run -- there is no run to poison on this address-keyed path.
+// Exercises both halves of the sender-key refresh feature's hub-link surface:
 //
-// The write is driven through the REAL edge composition the sidecar wires in
-// `index.ts` (`(address, hex) => senderKeyCache.put(address, hexDecode(hex))`)
-// against a real `SenderKeyCache`, so the hex-decode and 32-byte-length
-// boundaries are exercised end to end rather than mocked.
+//   1. REPORT (on connect): the link announces the sidecar's cached rotatable
+//      senders on its register/reconnect frame, read from the
+//      `getCachedSenderAddresses` callback. Reported on BOTH frame types and
+//      omitted when empty.
+//   2. RECEIVE (`sender.key.refresh` arm in `handleMessage`): a hub-pushed
+//      key-only refresh drives the source-opaque `cacheSenderKey` write peer
+//      and touches nothing else. A cache-write fault (transient disk fault or
+//      malformed key) is logged at ERROR and swallowed, never wedging the
+//      per-connection message chain and never poisoning a run -- there is no
+//      run to poison on this address-keyed path.
+//
+// The receive path is driven through the REAL edge composition the sidecar
+// wires in `index.ts` (`(address, hex) => senderKeyCache.put(address,
+// hexDecode(hex))`) against a real `SenderKeyCache`, so the hex-decode and
+// 32-byte-length boundaries are exercised end to end rather than mocked.
 
 import {
   describe,
@@ -23,8 +29,10 @@ import path from "node:path";
 import os from "node:os";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
+import { type } from "arktype";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { hexDecode, hexEncode } from "@intx/types";
+import { RegisterFrame, ReconnectFrame } from "@intx/types/sidecar";
 import { configureSync, getConfig, resetSync } from "@intx/log";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
@@ -111,19 +119,34 @@ async function waitFor(
 }
 
 // ---------------------------------------------------------------------------
-// Test server: relays raw hub->sidecar frames to the connected link. It
+// Test server: relays raw hub->sidecar frames to the connected link and records
+// the sidecar->hub frames the link sends (its register/reconnect handshake). It
 // captures the server-side send handle so a test can push an arbitrary frame;
 // the client's message listener is attached synchronously at socket creation,
 // so the handle being set means the link is ready to receive.
 // ---------------------------------------------------------------------------
 
 type ServerSend = (frame: unknown) => void;
+type HandshakeFrame = RegisterFrame | ReconnectFrame;
+
+// The sidecar sends a register or reconnect frame at handshake (plus pings and
+// pack frames later). Validate each inbound frame against the real
+// register/reconnect schemas; anything else is ignored.
+function parseHandshake(raw: unknown): HandshakeFrame | null {
+  const register = RegisterFrame(raw);
+  if (!(register instanceof type.errors)) return register;
+  const reconnect = ReconnectFrame(raw);
+  if (!(reconnect instanceof type.errors)) return reconnect;
+  return null;
+}
 
 function startTestServer(): {
   server: ReturnType<typeof Bun.serve>;
   awaitSend: () => Promise<ServerSend>;
+  awaitHandshake: (sidecarId: string) => Promise<HandshakeFrame>;
 } {
   let send: ServerSend | null = null;
+  const handshakes: HandshakeFrame[] = [];
 
   const app = new Hono();
   app.get(
@@ -131,6 +154,12 @@ function startTestServer(): {
     upgradeWebSocket(() => ({
       onOpen(_evt, ws) {
         send = (frame) => ws.send(JSON.stringify(frame));
+      },
+      onMessage(evt) {
+        if (typeof evt.data !== "string") return;
+        const raw: unknown = JSON.parse(evt.data);
+        const frame = parseHandshake(raw);
+        if (frame !== null) handshakes.push(frame);
       },
       onClose() {
         send = null;
@@ -147,7 +176,14 @@ function startTestServer(): {
     return captured;
   }
 
-  return { server, awaitSend };
+  async function awaitHandshake(sidecarId: string): Promise<HandshakeFrame> {
+    await waitFor(() => handshakes.some((h) => h.sidecarId === sidecarId));
+    const frame = handshakes.find((h) => h.sidecarId === sidecarId);
+    if (frame === undefined) throw new Error("handshake frame disappeared");
+    return frame;
+  }
+
+  return { server, awaitSend, awaitHandshake };
 }
 
 const env = startTestServer();
@@ -209,6 +245,10 @@ function refreshErrors(): string[] {
 function createTestLink(
   cacheSenderKey: (address: string, publicKey: string) => Promise<void>,
   sidecarId: string,
+  report?: {
+    getWorkflowAddresses?: () => string[];
+    getCachedSenderAddresses?: () => string[];
+  },
 ) {
   return createHubLink({
     hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -220,8 +260,16 @@ function createTestLink(
     resolveSenderCrypto: () => undefined,
     cacheSenderKey,
     deployRouter: createStubDeployRouter(),
+    ...(report?.getWorkflowAddresses !== undefined
+      ? { getWorkflowAddresses: report.getWorkflowAddresses }
+      : {}),
+    ...(report?.getCachedSenderAddresses !== undefined
+      ? { getCachedSenderAddresses: report.getCachedSenderAddresses }
+      : {}),
   });
 }
+
+const noopCacheSenderKey = async () => undefined;
 
 function makeKey(seed: number): Uint8Array {
   const key = new Uint8Array(32);
@@ -329,6 +377,61 @@ describe("hub-link sender.key.refresh", () => {
       });
       await waitFor(() => cache.get(goodAddress) !== undefined);
       expect(cache.get(goodAddress)).toEqual(goodKey);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+describe("hub-link cached-sender report on connect", () => {
+  test("a register frame carries the reported cached senders", async () => {
+    const reported = ["usr_alice@tenant.example", "usr_bob@tenant.example"];
+    const client = createTestLink(noopCacheSenderKey, "sc-report-register", {
+      // No workflow addresses -> the link sends a register frame.
+      getWorkflowAddresses: () => [],
+      getCachedSenderAddresses: () => reported,
+    });
+
+    client.connect();
+    try {
+      const frame = await env.awaitHandshake("sc-report-register");
+      expect(frame.type).toBe("register");
+      expect(frame.cachedSenderAddresses).toEqual(reported);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a reconnect frame carries the reported cached senders", async () => {
+    const reported = ["usr_carol@tenant.example"];
+    const client = createTestLink(noopCacheSenderKey, "sc-report-reconnect", {
+      // A restored workflow address -> the link sends a reconnect frame; the
+      // cached-sender report must ride it too, not only the register path.
+      getWorkflowAddresses: () => ["run_deployment@tenant.example"],
+      getCachedSenderAddresses: () => reported,
+    });
+
+    client.connect();
+    try {
+      const frame = await env.awaitHandshake("sc-report-reconnect");
+      expect(frame.type).toBe("reconnect");
+      expect(frame.cachedSenderAddresses).toEqual(reported);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("an empty report omits the field from the frame", async () => {
+    const client = createTestLink(noopCacheSenderKey, "sc-report-empty", {
+      getWorkflowAddresses: () => [],
+      getCachedSenderAddresses: () => [],
+    });
+
+    client.connect();
+    try {
+      const frame = await env.awaitHandshake("sc-report-empty");
+      expect(frame.type).toBe("register");
+      expect(frame.cachedSenderAddresses).toBeUndefined();
     } finally {
       client.close();
     }

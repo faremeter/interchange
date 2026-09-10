@@ -157,6 +157,23 @@ describe("SenderKeyCache", () => {
     ]);
   });
 
+  test("reports only rotatable (non-run) addresses for the reconnect report", async () => {
+    const dataDir = await tempDir();
+    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    await cache.put("usr_alice@tenant.example", makeKey(5));
+    await cache.put("run_job1@tenant.example", makeKey(9));
+    await cache.put("usr_bob@tenant.example", makeKey(13));
+
+    // A run sender's key is the immutable workflow_run.public_key, so only the
+    // user senders are worth re-resolving on reconnect.
+    expect([...cache.rotatableAddresses()].sort()).toEqual([
+      "usr_alice@tenant.example",
+      "usr_bob@tenant.example",
+    ]);
+    // The unfiltered snapshot still carries every cached address.
+    expect(cache.addresses()).toHaveLength(3);
+  });
+
   test("reports no addresses for a freshly constructed cache", async () => {
     const dataDir = await tempDir();
     // No keyring dir exists yet, so loadFromDisk finds nothing: the cold-start

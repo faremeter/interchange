@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { isRunAddress } from "@intx/types";
 
 import {
   createPublicKeyCrypto,
@@ -18,6 +19,7 @@ function stubCache(entries: Record<string, Uint8Array>): SenderKeyCache {
     get: (address) => map.get(address),
     put: async () => undefined,
     addresses: () => [...map.keys()],
+    rotatableAddresses: () => [...map.keys()].filter((a) => !isRunAddress(a)),
   };
 }
 
