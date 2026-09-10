@@ -44,18 +44,20 @@ const FollowUp = type({
 // response_format, Gemini's responseSchema; Anthropic does not
 // receive a structured-output request because its adapter rejects
 // the field at the marshaling boundary).
-const ResponseFormatIntent = type({
-  kind: "'text'",
-})
-  .or({
+const ResponseFormatIntent = type.or(
+  {
+    kind: "'text'",
+  },
+  {
     kind: "'json'",
-  })
-  .or({
+  },
+  {
     kind: "'json-schema'",
     name: "string",
     schema: "unknown",
     "strict?": "boolean",
-  });
+  },
+);
 
 export const CapabilityIntent = type({
   prompt: "string",
