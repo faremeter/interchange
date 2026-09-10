@@ -26,6 +26,7 @@ import {
   RepoId,
   type SignalDeliverFrame,
   type RunGrantsFrame,
+  type SenderKeyRefreshFrame,
   type SignalCorrelationRegisterFrame,
   type SignalCorrelationRegisterAckFrame,
   type DrainDeliverFrame,
@@ -511,6 +512,17 @@ export type HubLinkConfig = {
    */
   resolveSenderCrypto: (address: string) => CryptoProvider | undefined;
   /**
+   * Persists the hub-vouched public key for a sender address, overwriting any
+   * previously cached key. The link calls it on an inbound `sender.key.refresh`
+   * frame, passing the frame's hex-encoded key through unchanged. Source-opaque,
+   * the write peer of `resolveSenderCrypto`: the host builds it over the
+   * sidecar's sender-key cache (decode the hex, `put` the bytes) so the link
+   * never touches key material or decoding. Required, not optional, because its
+   * read peer is required and every composition that runs the link already holds
+   * the same cache.
+   */
+  cacheSenderKey: (address: string, publicKey: string) => Promise<void>;
+  /**
    * Routes every inbound `agent.deploy` frame. Production wiring
    * supplies a router that stages each deploy through the workflow-run
    * substrate: a provision-step frame primes a per-step repo, and a
@@ -703,6 +715,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     sessions,
     keyStore,
     resolveSenderCrypto,
+    cacheSenderKey,
     deployRouter,
     mailInboundRouter,
     signalInboundRouter,
@@ -1223,6 +1236,34 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
+  async function handleSenderKeyRefresh(
+    frame: SenderKeyRefreshFrame,
+  ): Promise<void> {
+    // Address-keyed and cross-run: it caches one sender's current key and
+    // touches no run, so unlike `run.grants` a fault here has no run to poison.
+    // Swallow it after logging at ERROR -- there is no reply channel and the
+    // link must never wedge. A malformed key (bad hex, wrong length) is simply
+    // dropped. A transient cache-write fault is louder than it looks: the
+    // sidecar keeps the STALE key and verifies this sender's mail against it
+    // until the next reconnect re-pushes, so this push is best-effort, not
+    // delivery-guaranteed.
+    //
+    // Awaited inline on the message chain, NOT detached the way the
+    // `mail.inbound` durable write is: the co-resident `run.grants` handler also
+    // caches sender keys on this same chain, so serializing the refresh write
+    // keeps last-write-wins deterministic against a concurrent grants write for
+    // the same address. The fan-out is bounded (one frame per rotatable cached
+    // sender, once per reconnect), so the head-of-line cost stays far short of
+    // the heartbeat window; a detached write would trade that determinism for
+    // latency this low-volume path does not need.
+    try {
+      await cacheSenderKey(frame.address, frame.publicKey);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error`sender.key.refresh cache write failed for ${frame.address}: ${msg}`;
+    }
+  }
+
   async function handleSourcesUpdate(frame: SourcesUpdateFrame): Promise<void> {
     // `sources.update` is request/ack (the hub awaits a reply within its
     // request timeout), so every path answers `session.ack` or
@@ -1544,6 +1585,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "run.grants":
         await handleRunGrants(frame);
+        break;
+      case "sender.key.refresh":
+        await handleSenderKeyRefresh(frame);
         break;
       case "drain.deliver":
         await handleDrainDeliver(frame);

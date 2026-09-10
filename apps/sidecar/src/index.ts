@@ -14,7 +14,7 @@ import {
   createSidecarOrchestrator,
   type HubLink,
 } from "@intx/hub-agent";
-import { hexEncode } from "@intx/types";
+import { hexDecode, hexEncode } from "@intx/types";
 import { createAgentRepoStore } from "@intx/hub-sessions";
 import { createTarballCache } from "@intx/tool-packaging";
 
@@ -449,6 +449,13 @@ const orchestrator = createSidecarOrchestrator({
     verifySSHSig: verifySSHSignature,
   },
   resolveSenderCrypto,
+  // Write peer of `resolveSenderCrypto`: an inbound `sender.key.refresh` frame
+  // re-pushes a rotated sender key here. Decode the hex and persist through the
+  // same cache the read side serves from; `put` owns the 32-byte length check
+  // and `hexDecode` owns hex validity, so both faults surface to the link's
+  // handler rather than being masked here.
+  cacheSenderKey: (address, publicKey) =>
+    senderKeyCache.put(address, hexDecode(publicKey)),
   mailInboundRouter: multistepMailRouter,
   signalInboundRouter: multistepSignalRouter,
   drainInboundRouter: multistepDrainRouter,

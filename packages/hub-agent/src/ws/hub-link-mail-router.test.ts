@@ -100,12 +100,14 @@ function withTestDeployBindings(): {
   keyStore: AgentKeyStore & { registerKey(address: string, kp: KeyPair): void };
   deployRouter: DeployRouter;
   resolveSenderCrypto: () => undefined;
+  cacheSenderKey: () => Promise<void>;
 } {
   const keyStore = createTestKeyStore();
   return {
     keyStore,
     deployRouter: createTestDeployRouter(keyStore),
     resolveSenderCrypto: () => undefined,
+    cacheSenderKey: async () => undefined,
   };
 }
 
