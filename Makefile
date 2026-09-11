@@ -12,6 +12,14 @@ BUN := bun --conditions=intx-src
 # guest with no change in flakiness.
 WF_PARALLEL ?= 4
 
+# Worker count for the unit pass. Like WF_PARALLEL, 4 is the safe floor for
+# CI (4 vCPU); raise it on bigger machines, e.g. `make test-unit
+# UNIT_PARALLEL=16`. Unit workers are light (no spawned subprocesses), so
+# the cost is process startup and module loading rather than RAM; on a
+# 32-core guest 16 workers measured ~45% faster than 4, while 32 workers
+# flaked the suite's load-sensitive 2s waitFor timers.
+UNIT_PARALLEL ?= 4
+
 all: lint build build-admin-ui test
 
 build: FORCE
@@ -34,9 +42,14 @@ lint: FORCE
 test: test-unit test-workflow test-core
 
 # The unit pass: parallel-safe tests at the default 5s timeout. Whole
-# directories are enumerated (bun discovers every *.test.ts beneath).
+# directories are enumerated (bun discovers every *.test.ts beneath). Files
+# run in parallel (UNIT_PARALLEL workers); --no-isolate keeps one global and
+# module registry per worker across that worker's files, matching the
+# single-process sharing of a serial run while amortizing the per-file
+# @intx/* import cost (with --parallel's default per-file isolation every
+# file re-imports the whole module graph, which is slower than serial).
 test-unit: FORCE
-	$(BUN) test packages/ apps/ bin/ tests/agent/ tests/agent-audit-log/ tests/agent-blob-spill/ tests/agent-common/ tests/agent-multi-provider/ tests/agent-quickstart/ tests/agent-resume/ tests/agent-rewind/ tests/agent-rich-tool/ tests/agent-structured-payload/ tests/coding-agent/ tests/hub-agent/lib/ tests/inference-testing/ tests/tool-packaging/ tests/workflow/
+	$(BUN) test --parallel=$(UNIT_PARALLEL) --no-isolate packages/ apps/ bin/ tests/agent/ tests/agent-audit-log/ tests/agent-blob-spill/ tests/agent-common/ tests/agent-multi-provider/ tests/agent-quickstart/ tests/agent-resume/ tests/agent-rewind/ tests/agent-rich-tool/ tests/agent-structured-payload/ tests/coding-agent/ tests/hub-agent/lib/ tests/inference-testing/ tests/tool-packaging/ tests/workflow/
 
 # The workflow-deploy integration pass: spawns real hub/sidecar processes
 # and drives real agents, so it needs the extended timeout. Split from the
