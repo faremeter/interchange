@@ -464,6 +464,19 @@ const DEFAULT_PING_TIMEOUT_MS = 60_000;
 const DEFAULT_MAIL_ACK_RETRY_INTERVAL_MS = 10_000;
 const DEFAULT_MAIL_ACK_MAX_RETRIES = 5;
 
+// The hub re-resolves and re-pushes a key for each rotatable sender a sidecar
+// reports on (re)connect. A legitimate sidecar caches keys for tens, maybe low
+// hundreds of distinct user senders, so this cap sits well above ten times that
+// ceiling: it NEVER truncates a real report -- dropping a genuine sender would
+// leave its key stale, the exact failure this refresh exists to prevent. It
+// bounds only a hostile or buggy sidecar, since a compromised authenticated
+// sidecar could otherwise report an unbounded set and drive that many sequential
+// DB resolves on every reconnect. The cap lives in the handler, not on the
+// arktype frame schema, on purpose: rejecting an over-cap frame at parse would
+// fail the whole reconnect (a hard outage) rather than degrade gracefully to a
+// bounded refresh.
+export const MAX_RESYNC_SENDER_ADDRESSES = 2048;
+
 export function createSidecarRouter(
   config: SidecarRouterConfig,
 ): SidecarRouter & SidecarAllocationRouter {
@@ -1300,8 +1313,19 @@ export function createSidecarRouter(
     const resolveSenderKey = lookups.resolveSenderKey;
     if (identity.kind === "allocated" && resolveSenderKey !== undefined) {
       const rotatableSenders = new Set(cachedSenderAddresses);
+      // Resolve-don't-trust applied to input SIZE: bound the reported set before
+      // acting on it. Run addresses count toward the cap by design -- the
+      // isRunAddress skip below is inside the loop, so the iteration, and thus
+      // the DB resolves, can never exceed the cap regardless of the run/non-run
+      // mix. Over the cap, refresh the first MAX_RESYNC_SENDER_ADDRESSES and log
+      // the overflow so a misbehaving sidecar is detectable.
+      let sendersToResync = [...rotatableSenders];
+      if (sendersToResync.length > MAX_RESYNC_SENDER_ADDRESSES) {
+        logger.warn`Sidecar ${identity.sidecarId} reported ${String(sendersToResync.length)} cached sender addresses on allocation ${identity.allocationId} generation ${String(identity.generation)}, over the ${String(MAX_RESYNC_SENDER_ADDRESSES)} resync cap; refreshing the first ${String(MAX_RESYNC_SENDER_ADDRESSES)} and ignoring the rest`;
+        sendersToResync = sendersToResync.slice(0, MAX_RESYNC_SENDER_ADDRESSES);
+      }
       void (async () => {
-        for (const address of rotatableSenders) {
+        for (const address of sendersToResync) {
           // The sidecar already reports only non-run senders, but do not trust
           // the report: a run sender's key is the immutable
           // workflow_run.public_key and never needs a refresh, so skip it here

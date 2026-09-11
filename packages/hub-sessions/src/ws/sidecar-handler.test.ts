@@ -1,9 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import {
+  describe,
+  expect,
+  test,
+  beforeAll,
+  afterAll,
+  beforeEach,
+} from "bun:test";
 
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
+import { configureSync, getConfig, resetSync } from "@intx/log";
 
 import {
   createSidecarRouter,
+  MAX_RESYNC_SENDER_ADDRESSES,
   type SidecarAuthIdentity,
   type WsHandle,
 } from "./sidecar-handler";
@@ -426,5 +435,111 @@ describe("SidecarRouter allocation routing", () => {
 
     expect(ws.closed).toBe(true);
     expect(await router.isAllocatedSidecarReady(target)).toBe(false);
+  });
+});
+
+type CapturedLog = {
+  category: readonly string[];
+  level: string;
+  message: readonly unknown[];
+};
+
+async function waitUntil(predicate: () => boolean, tries = 200): Promise<void> {
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    if (predicate()) return;
+    await tick();
+  }
+  throw new Error("condition was not met in time");
+}
+
+describe("SidecarRouter sender-key resync cap", () => {
+  const capturedLogs: CapturedLog[] = [];
+  let savedLogConfig: ReturnType<typeof getConfig>;
+
+  beforeAll(() => {
+    savedLogConfig = getConfig();
+    configureSync({
+      reset: true,
+      sinks: {
+        capture: (record) => {
+          capturedLogs.push({
+            category: record.category,
+            level: record.level,
+            message: record.message,
+          });
+        },
+      },
+      loggers: [
+        { category: [], lowestLevel: "debug", sinks: ["capture"] },
+        {
+          category: ["logtape", "meta"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+      ],
+    });
+  });
+
+  afterAll(() => {
+    if (savedLogConfig) {
+      configureSync({ reset: true, ...savedLogConfig });
+    } else {
+      resetSync();
+    }
+  });
+
+  beforeEach(() => {
+    capturedLogs.length = 0;
+  });
+
+  function capWarnings(): string[] {
+    return capturedLogs
+      .filter(
+        (r) =>
+          r.level === "warning" && r.message.join("").includes("resync cap"),
+      )
+      .map((r) => r.message.join(""));
+  }
+
+  function refreshAddresses(ws: ReturnType<typeof createMockWs>): unknown[] {
+    return ws.sent
+      .map((raw): Record<string, unknown> => JSON.parse(raw))
+      .filter((f) => f.type === "sender.key.refresh")
+      .map((f) => f.address);
+  }
+
+  test("resolves and refreshes every reported sender under the cap", async () => {
+    const key = "ab".repeat(32);
+    const router = createSenderKeyRouter(() => Promise.resolve(key));
+    const senders = ["usr_a@exclusive", "usr_b@exclusive", "usr_c@exclusive"];
+    const ws = await connect(router, [], { cachedSenderAddresses: senders });
+
+    await waitUntil(() => refreshAddresses(ws).length === senders.length);
+    expect([...refreshAddresses(ws)].sort()).toEqual([...senders].sort());
+    expect(capWarnings()).toEqual([]);
+  });
+
+  test("caps an over-large reported set and warns", async () => {
+    const key = "cd".repeat(32);
+    const router = createSenderKeyRouter(() => Promise.resolve(key));
+    const reported = Array.from(
+      { length: MAX_RESYNC_SENDER_ADDRESSES + 1 },
+      (_, i) => `usr_s${String(i)}@exclusive`,
+    );
+    // The cap runs on the de-duped set, so a generator collision would silently
+    // hollow the test; assert distinctness before the behavioral checks.
+    expect(new Set(reported).size).toBe(MAX_RESYNC_SENDER_ADDRESSES + 1);
+
+    const ws = await connect(router, [], { cachedSenderAddresses: reported });
+    await waitUntil(
+      () => refreshAddresses(ws).length >= MAX_RESYNC_SENDER_ADDRESSES,
+    );
+    // Let any erroneous extra send settle, then confirm the cap held exactly.
+    await tick();
+    expect(refreshAddresses(ws)).toHaveLength(MAX_RESYNC_SENDER_ADDRESSES);
+
+    const warnings = capWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(String(MAX_RESYNC_SENDER_ADDRESSES + 1));
   });
 });
