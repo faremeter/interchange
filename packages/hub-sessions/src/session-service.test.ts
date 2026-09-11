@@ -88,6 +88,21 @@ function createMockRouter(): TestSidecarRouter & {
       });
       return mock.routeMailResult;
     }) as SidecarRouter["sendRunGrants"],
+    noteSenderDeployStarted: ((address: string): void => {
+      calls.push({
+        method: "noteSenderDeployStarted",
+        args: [address],
+      });
+    }) as SidecarRouter["noteSenderDeployStarted"],
+    noteSenderDeploySettled: ((
+      address: string,
+      outcome: Parameters<SidecarRouter["noteSenderDeploySettled"]>[1],
+    ): void => {
+      calls.push({
+        method: "noteSenderDeploySettled",
+        args: [address, outcome],
+      });
+    }) as SidecarRouter["noteSenderDeploySettled"],
     sendAgentDeploy: ((
       agentAddress: string,
       config: HarnessConfig,

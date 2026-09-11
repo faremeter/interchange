@@ -533,6 +533,8 @@ function createMockSidecarRouter(
       sendOrder.push({ kind: "run.grants", address });
       return runGrantsResult;
     },
+    noteSenderDeployStarted: () => notImpl("noteSenderDeployStarted"),
+    noteSenderDeploySettled: () => notImpl("noteSenderDeploySettled"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),

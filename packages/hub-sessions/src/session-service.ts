@@ -1604,36 +1604,63 @@ export function createSessionService(
       definitionId: string;
       credentialRefs?: WorkflowRunCredentialRefs;
     };
-    if (source.kind === "asset") {
-      if (resolveAttachment === null) {
-        throw new Error(
-          "deployPreparedCodeSourcedWorkflow: asset source deploy is missing its attachment resolver",
-        );
+    try {
+      // Bracket the allocated pre-ack window: mark the sender's key-record as
+      // mid-flight before the deploy emit so a run that sends mail before its
+      // anchor key is committed parks rather than delivering keyless. The settle
+      // in both the success and catch paths below clears the marker.
+      sidecarRouter.noteSenderDeployStarted(params.agentAddress);
+      if (source.kind === "asset") {
+        if (resolveAttachment === null) {
+          throw new Error(
+            "deployPreparedCodeSourcedWorkflow: asset source deploy is missing its attachment resolver",
+          );
+        }
+        result = await emitSourceRefDeployFrame({
+          ...commonEmit,
+          source,
+          resolveAttachment,
+        });
+      } else {
+        result = await emitSourceRefDeployFrame({ ...commonEmit, source });
       }
-      result = await emitSourceRefDeployFrame({
-        ...commonEmit,
-        source,
-        resolveAttachment,
+
+      await updateAnchorPublicKeyUnderAllocationLock({
+        tenantId: params.tenantId,
+        anchorRunId: params.anchorRunId,
+        allocationTarget: params.allocationTarget,
+        publicKey: result.publicKey,
+        ...(result.credentialRefs !== undefined
+          ? { credentialRefs: result.credentialRefs }
+          : {}),
       });
-    } else {
-      result = await emitSourceRefDeployFrame({ ...commonEmit, source });
+
+      // The anchor's public key is now durable. Wake any mail the run parked
+      // while pre-ack so it delivers with the sender key co-delivered, closing
+      // the window where a run sends before its key is recorded. The write above
+      // happens-before this settle, so a re-drive resolves the recorded key.
+      // `params.agentAddress` is the run's deploy address, byte-identical to the
+      // sender address its mail was sent under (asserted against the anchor at
+      // deploy time), so a settle matches the parked entries.
+      sidecarRouter.noteSenderDeploySettled(params.agentAddress, {
+        recorded: result.publicKey,
+      });
+
+      return {
+        anchorRunId: params.anchorRunId,
+        deploymentAddress: params.agentAddress,
+        publicKey: result.publicKey,
+      };
+    } catch (error) {
+      // The deploy frame or the durable key write failed. Drain any mail the run
+      // parked while pre-ack so it surfaces as undelivered rather than waiting
+      // out the TTL. An allocated deploy's failure is owned here, not in the
+      // router's reject boundary.
+      sidecarRouter.noteSenderDeploySettled(params.agentAddress, {
+        failed: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
-
-    await updateAnchorPublicKeyUnderAllocationLock({
-      tenantId: params.tenantId,
-      anchorRunId: params.anchorRunId,
-      allocationTarget: params.allocationTarget,
-      publicKey: result.publicKey,
-      ...(result.credentialRefs !== undefined
-        ? { credentialRefs: result.credentialRefs }
-        : {}),
-    });
-
-    return {
-      anchorRunId: params.anchorRunId,
-      deploymentAddress: params.agentAddress,
-      publicKey: result.publicKey,
-    };
   }
 
   async function sendAttachmentPack(

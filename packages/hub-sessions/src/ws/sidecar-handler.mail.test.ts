@@ -511,7 +511,12 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     ]);
   });
 
-  test("omits senderIdentities from the run.grants frame when the key is unresolvable", async () => {
+  test("holds a run sender's mail while its key is unresolvable", async () => {
+    // A run-address sender whose key does not resolve is treated as pre-ack: it
+    // minted its keypair locally and may have sent before the hub recorded its
+    // public key. The mail is HELD (not delivered keyless) until the key lands,
+    // so no run.grants and no mail.inbound reach the recipient here. A later
+    // deploy settle wakes it, or the TTL surfaces it as undelivered.
     const router = createAllocatedRouter({
       lookups: {
         async materializeMailTriggeredRunGrants() {
@@ -526,6 +531,10 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
+    // The mail is held only while a key-record settle is guaranteed to arrive.
+    // Mark the sender's deploy in flight so an unresolvable key parks rather than
+    // delivering keyless.
+    router.noteSenderDeployStarted(TEST_IDENTITY.workflowRunAddress);
     router.handleMessage(
       ws,
       JSON.stringify({
@@ -537,9 +546,8 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     );
     await tick();
 
-    const grants = framesOfType(ws, "run.grants");
-    expect(grants).toHaveLength(1);
-    expect("senderIdentities" in (grants[0] ?? {})).toBe(false);
+    expect(framesOfType(ws, "run.grants")).toHaveLength(0);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
   });
 
   test("fails a rejected workflow recipient closed", async () => {

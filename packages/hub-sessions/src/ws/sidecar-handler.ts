@@ -181,6 +181,18 @@ export type WorkflowProbeResult = {
   wireHash: string;
 };
 
+/**
+ * The result of a run-address sender's deploy, reported to the router once the
+ * deploy's key write is durable. `recorded` carries the sender's now-persisted
+ * public key and wakes the sender's parked pre-ack mail for redelivery;
+ * `failed` carries a failure reason and drains that mail to
+ * `mail.outbound.undelivered`. Modeled as a discriminated result so a settle is
+ * unambiguous about which side of the deploy it reports.
+ */
+export type SenderDeploySettledOutcome =
+  | { recorded: string }
+  | { failed: string };
+
 export type SidecarRouter = {
   handleOpen(ws: WsHandle): void;
   handleMessage(ws: WsHandle, data: string): void;
@@ -224,6 +236,30 @@ export type SidecarRouter = {
     stepGrants: RunGrantsFrame["stepGrants"],
     senderIdentities: RunGrantsFrame["senderIdentities"],
   ): boolean;
+  /**
+   * Report that a run-address sender's deploy has settled, driving any mail the
+   * sender parked while its public key was not yet recorded. A `recorded`
+   * outcome wakes the parked mail and re-drives its delivery now that the key
+   * co-delivers; a `failed` outcome drains it to `mail.outbound.undelivered`.
+   * Called from BOTH durable key-record sites (the non-allocated deploy-ack
+   * projection and the allocated anchor-key update) immediately after the write.
+   * The `address` MUST be byte-identical to the sender address the mail was sent
+   * under, or no parked entry matches. Idempotent by sender: a second settle, or
+   * a settle after the TTL already drained the mail, is a no-op.
+   */
+  noteSenderDeploySettled(
+    address: string,
+    outcome: SenderDeploySettledOutcome,
+  ): void;
+  /**
+   * Mark a run-address sender's ALLOCATED deploy as mid-flight, before the deploy
+   * emit and its anchor-key update. An allocated run records its key later than
+   * the deploy ack clears `pendingDeploys`, so this marker covers the allocated
+   * pre-ack window that `pendingDeploys` alone under-covers. `noteSenderDeploySettled`
+   * clears it on both the recorded and failed outcomes, keeping the start/settle
+   * bracket balanced.
+   */
+  noteSenderDeployStarted(address: string): void;
   /**
    * Returns the current connector-thread state for the named agent, or
    * `null` if the agent has no active connector thread (or if the
@@ -525,6 +561,13 @@ export function createSidecarRouter(
   const pendingRequests = new PendingTracker<string>();
   // agentAddress → pending deploy promise (matched by agent.deploy.ack/agent.error)
   const pendingDeploys = new PendingTracker<string, string>();
+  // Run addresses whose ALLOCATED deploy is mid-flight -- key-record has been
+  // started but not yet committed. pendingDeploys clears at the deploy ack, but an
+  // allocated run's key is recorded LATER by session-service's anchor-key update,
+  // so pendingDeploys alone under-covers the allocated pre-ack window. session-
+  // service brackets this marker across its deploy try/catch: set before the
+  // deploy emit, cleared by noteSenderDeploySettled on record or failure.
+  const allocatedKeyRecordInFlight = new Set<string>();
   // agentAddress → queued frames for disconnected agents awaiting reconnect
   type DisconnectedAgent = {
     queue: HubFrame[];
@@ -570,6 +613,26 @@ export function createSidecarRouter(
   // does not leak entries. Cleared when the address reconnects (redelivery) or
   // its last pending entry is acked.
   const pendingMailRetention = new Map<string, ReturnType<typeof setTimeout>>();
+  // sender address → pre-ack mail parked while the sender's public key is not
+  // yet recorded. A run mints its signing keypair locally at the sidecar and can
+  // send mail before the hub has recorded its `public_key`; such mail resolves a
+  // null sender key, so no key co-delivers and a strict recipient drops it as an
+  // unknown sender. Each entry holds what a re-drive of `handleMailOutbound`
+  // needs -- the raw message and its recipients -- plus a per-entry TTL timer.
+  // This is a SIBLING of `pendingMail`, keyed by SENDER: it means "the SENDER's
+  // key is missing," the opposite axis from the recipient-keyed disconnect queue
+  // (`disconnectedAgents`), which means "the RECIPIENT socket is gone." Here the
+  // recipient is live; only the sender's key is absent. `noteSenderDeploySettled`
+  // drives an entry to delivery once the key lands or to
+  // `mail.outbound.undelivered` when the deploy fails; the TTL backstops the case
+  // where neither happens.
+  type DeferredSenderMailEntry = {
+    authenticatedSender: string;
+    rawMessage: string;
+    recipients: string[];
+    timer: ReturnType<typeof setTimeout>;
+  };
+  const deferredSenderMail = new Map<string, Set<DeferredSenderMailEntry>>();
   // agentAddress → set of subscriber callbacks for agent events
   const agentSubscribers = new Map<string, Set<(event: unknown) => void>>();
   // agentAddress → cached connector-thread state, populated by
@@ -1417,6 +1480,201 @@ export function createSidecarRouter(
     );
   }
 
+  // Park a pre-ack sender's mail synchronously and return its entry. Registering
+  // the entry BEFORE the caller awaits `resolveSenderKey` is the interlock that
+  // guarantees a settle landing during the resolve has an entry to find: the
+  // event loop is single-threaded, so no settle can interleave between this
+  // synchronous registration and the caller's first await.
+  function parkDeferredSenderMail(
+    authenticatedSender: string,
+    rawMessage: string,
+    recipients: string[],
+  ): DeferredSenderMailEntry {
+    let parked = deferredSenderMail.get(authenticatedSender);
+    if (parked === undefined) {
+      parked = new Set();
+      deferredSenderMail.set(authenticatedSender, parked);
+    }
+    const entry: DeferredSenderMailEntry = {
+      authenticatedSender,
+      rawMessage,
+      recipients,
+      timer: setTimeout(() => {
+        // TTL backstop for the case where a settle never arrives (the sender's
+        // deploy never acked and never failed loudly). Claim the entry and
+        // surface it as undelivered so the mail is not held forever.
+        if (!claimDeferredSenderEntry(entry)) return;
+        events.emit("mail.outbound.undelivered", {
+          rawMessage: entry.rawMessage,
+          recipients: entry.recipients,
+        });
+        logger.warn`Dropping mail from ${entry.authenticatedSender}: its sender key was not recorded before the deferred-mail TTL expired`;
+      }, disconnectQueueTTLMs),
+    };
+    parked.add(entry);
+    return entry;
+  }
+
+  // Remove one parked entry by identity, clearing its TTL timer. Returns whether
+  // THIS call removed it. The inline-deliver path, a settle, and the TTL all
+  // race to claim the same entry; only the claimer acts on it, so a claim that
+  // finds nothing (already claimed) is a no-op. This is the idempotent
+  // remove-by-key that keeps a settle and the inline non-null branch from both
+  // delivering the same message.
+  function claimDeferredSenderEntry(entry: DeferredSenderMailEntry): boolean {
+    const parked = deferredSenderMail.get(entry.authenticatedSender);
+    if (parked === undefined) return false;
+    const claimed = parked.delete(entry);
+    if (!claimed) return false;
+    clearTimeout(entry.timer);
+    if (parked.size === 0) deferredSenderMail.delete(entry.authenticatedSender);
+    return true;
+  }
+
+  // Claim every entry parked for a sender, clearing their TTL timers. A later
+  // settle or TTL for the same sender then finds nothing.
+  function claimAllDeferredSenderMail(
+    authenticatedSender: string,
+  ): DeferredSenderMailEntry[] {
+    const parked = deferredSenderMail.get(authenticatedSender);
+    if (parked === undefined) return [];
+    deferredSenderMail.delete(authenticatedSender);
+    const entries = [...parked];
+    for (const entry of entries) clearTimeout(entry.timer);
+    return entries;
+  }
+
+  function drainDeferredSenderMail(
+    authenticatedSender: string,
+    reason: string,
+  ): void {
+    const entries = claimAllDeferredSenderMail(authenticatedSender);
+    if (entries.length === 0) return;
+    for (const entry of entries) {
+      events.emit("mail.outbound.undelivered", {
+        rawMessage: entry.rawMessage,
+        recipients: entry.recipients,
+      });
+    }
+    logger.warn`Dropping ${String(entries.length)} deferred message(s) from ${authenticatedSender}: ${reason}`;
+  }
+
+  function noteSenderDeployStarted(address: string): void {
+    allocatedKeyRecordInFlight.add(address);
+  }
+
+  function noteSenderDeploySettled(
+    address: string,
+    outcome: SenderDeploySettledOutcome,
+  ): void {
+    allocatedKeyRecordInFlight.delete(address);
+    if ("failed" in outcome) {
+      drainDeferredSenderMail(
+        address,
+        `sender deploy failed: ${outcome.failed}`,
+      );
+      return;
+    }
+    for (const entry of claimAllDeferredSenderMail(address)) {
+      // Re-drive delivery as its OWN task, off the settle's stack, so delivery
+      // work never runs on the deploy-ack handler's stack or reorders against
+      // it. The re-drive re-enters handleMailOutbound; the key is recorded (the
+      // durable write happens-before this settle), so it resolves the sender key
+      // and delivers inline.
+      void Promise.resolve()
+        .then(() =>
+          handleMailOutbound(
+            entry.rawMessage,
+            entry.authenticatedSender,
+            entry.recipients,
+          ),
+        )
+        .catch((err: unknown) => {
+          logger.error`Re-driving deferred mail from ${entry.authenticatedSender} failed: ${err instanceof Error ? err.message : String(err)}`;
+        });
+    }
+  }
+
+  function senderIdentitiesFromKey(
+    address: string,
+    publicKey: string | null,
+  ): RunGrantsFrame["senderIdentities"] {
+    return publicKey !== null ? [{ address, publicKey }] : undefined;
+  }
+
+  // Resolve the co-delivered sender identities for a message, applying the
+  // register-before-read interlock for a pre-ack run sender. Returns either
+  // `deliver: true` with the resolved identities (undefined when there is no
+  // resolvable key), or `deliver: false` when the message is parked and will be
+  // driven later by a settle (`noteSenderDeploySettled`) or the TTL.
+  async function resolveSenderIdentitiesOrPark(
+    rawMessage: string,
+    authenticatedSender: string,
+    recipients: string[],
+  ): Promise<
+    | { deliver: true; senderIdentities: RunGrantsFrame["senderIdentities"] }
+    | { deliver: false }
+  > {
+    const resolveSenderKey = lookups.resolveSenderKey;
+    if (resolveSenderKey === undefined)
+      return { deliver: true, senderIdentities: undefined };
+
+    // The co-delivered key is consumed only by a run recipient caching it from the
+    // run.grants frame. Purely external/federated mail never uses it and is never
+    // locally verified, so resolve nothing and never park it.
+    if (!recipients.some(isRunAddress))
+      return { deliver: true, senderIdentities: undefined };
+
+    // A stable-key (non-run) sender has no pre-ack window; resolve inline.
+    if (!isRunAddress(authenticatedSender)) {
+      const key = await resolveSenderKey(authenticatedSender);
+      return {
+        deliver: true,
+        senderIdentities: senderIdentitiesFromKey(authenticatedSender, key),
+      };
+    }
+
+    // Park a run sender ONLY while a key-record settle is guaranteed to arrive -- a
+    // deploy is in flight. Without one, a null resolve is a transient fault or a
+    // genuine absence on an already-settled run: no settle is coming, so parking
+    // would strand the mail to the TTL. Deliver on the normal path instead.
+    const settleGuaranteed =
+      pendingDeploys.has(authenticatedSender) ||
+      allocatedKeyRecordInFlight.has(authenticatedSender);
+    if (!settleGuaranteed) {
+      const key = await resolveSenderKey(authenticatedSender);
+      return {
+        deliver: true,
+        senderIdentities: senderIdentitiesFromKey(authenticatedSender, key),
+      };
+    }
+
+    // Register-before-read: park a waiter entry synchronously (NO await) so a
+    // settle that lands while we resolve below has an entry to find, THEN
+    // resolve. The single-threaded event loop cannot interleave a settle between
+    // this registration and the await.
+    const entry = parkDeferredSenderMail(
+      authenticatedSender,
+      rawMessage,
+      recipients,
+    );
+    const key = await resolveSenderKey(authenticatedSender);
+    if (key === null) {
+      // Not recorded yet. Leave the entry parked; a settle or the TTL drives it.
+      return { deliver: false };
+    }
+    // The key was already recorded before we parked. Claim our entry and deliver
+    // inline -- unless a concurrent settle already claimed it and is re-driving
+    // this message, in which case claiming fails and we must NOT deliver again.
+    if (!claimDeferredSenderEntry(entry)) {
+      return { deliver: false };
+    }
+    return {
+      deliver: true,
+      senderIdentities: senderIdentitiesFromKey(authenticatedSender, key),
+    };
+  }
+
   async function handleMailOutbound(
     rawMessage: string,
     authenticatedSender: string,
@@ -1447,6 +1705,22 @@ export function createSidecarRouter(
       }
     }
 
+    // Resolve the sender's hub-held key ONCE for the whole message, ahead of the
+    // recipient fan-out and any grant materialization, so every recipient in
+    // this fan-out binds the same key snapshot. A run-address sender may be
+    // pre-ack -- it minted its keypair locally and can send before the hub
+    // records its public key. The register-before-read interlock holds such mail
+    // until the key lands rather than delivering it keyless, which a strict
+    // recipient drops as an unknown sender. A parked message returns here and is
+    // re-driven later by a settle or the TTL.
+    const resolution = await resolveSenderIdentitiesOrPark(
+      rawMessage,
+      authenticatedSender,
+      recipients,
+    );
+    if (!resolution.deliver) return;
+    const senderIdentities = resolution.senderIdentities;
+
     // Route to locally connected sidecars first, then try disconnect queues.
     const unrouted: string[] = [];
     for (const recipient of recipients) {
@@ -1459,6 +1733,7 @@ export function createSidecarRouter(
           recipient,
           rawMessage,
           authenticatedSender,
+          senderIdentities,
         );
         if (outcome === "unrouted") unrouted.push(recipient);
       } catch (err) {
@@ -1498,6 +1773,7 @@ export function createSidecarRouter(
     recipient: string,
     rawMessage: string,
     authenticatedSender: string,
+    senderIdentities: RunGrantsFrame["senderIdentities"],
   ): Promise<"routed" | "unrouted" | "failed-closed"> {
     if (
       lookups.materializeMailTriggeredRunGrants !== undefined &&
@@ -1525,29 +1801,14 @@ export function createSidecarRouter(
         return "failed-closed";
       }
       if (result.outcome === "materialized") {
-        // Resolve the sender's hub-held key to co-deliver on the run's grants
-        // barrier, so a recipient that caches from the `run.grants` frame binds
-        // the sender address to it and can verify the sender's mail locally. A
-        // missing resolver or an unresolvable sender yields null; a null key is
-        // omitted -- never carried -- so the "authorized-with-a-key implies key
+        // The sender's hub-held key was resolved ONCE in handleMailOutbound,
+        // ahead of this fan-out, and threaded in as `senderIdentities`. Co-
+        // deliver it on the run's grants barrier so a recipient that caches from
+        // the `run.grants` frame binds the sender address to the key and can
+        // verify the sender's mail locally. A null key is never carried (the
+        // list is undefined then), so the "authorized-with-a-key implies key
         // cached" invariant holds, and the recipient logs such mail as
         // unverifiable and admits it (shadow) rather than blocking delivery.
-        // Resolved only here, inside the run-grants branch that consumes it: a
-        // non-run recipient, a `skip`, or a rejected materialization never pays
-        // for the lookup.
-        const authenticatedSenderPublicKey =
-          lookups.resolveSenderKey !== undefined
-            ? await lookups.resolveSenderKey(authenticatedSender)
-            : null;
-        const senderIdentities =
-          authenticatedSenderPublicKey !== null
-            ? [
-                {
-                  address: authenticatedSender,
-                  publicKey: authenticatedSenderPublicKey,
-                },
-              ]
-            : undefined;
         // Send the run's grants ahead of the mail. A `false` here means the
         // deployment is unroutable. Do not route the mail that would dispatch
         // it; the grants-only reservation remains the canonical snapshot for a
@@ -2700,6 +2961,16 @@ export function createSidecarRouter(
               addressSet.delete(agentAddress);
               addressIndex.delete(agentAddress);
             }
+            // A non-allocated deployment's key is recorded by the deploy-ack
+            // projection, whose failure (reject/timeout/agent.error/disconnect)
+            // is observed only here. Drain any pre-ack sender mail parked on
+            // this address so it surfaces as undelivered rather than waiting out
+            // the TTL. An allocated deployment's failure is drained by its
+            // session-service owner instead, so skip it here to keep one owner
+            // per case.
+            if (conn.identity.kind !== "allocated") {
+              drainDeferredSenderMail(agentAddress, `deploy failed: ${error}`);
+            }
             reject(deployFrameFailure(error, true));
           },
         },
@@ -3111,6 +3382,8 @@ export function createSidecarRouter(
     handleClose,
     routeMail,
     sendRunGrants,
+    noteSenderDeployStarted,
+    noteSenderDeploySettled,
     sendProbeToAllocation,
     disconnectAllocation,
     sendAgentUndeploy,

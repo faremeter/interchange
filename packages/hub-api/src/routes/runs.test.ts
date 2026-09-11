@@ -278,6 +278,12 @@ function createMockSidecarRouter(
     sendRunGrants(_addr, _runId, _stepGrants) {
       return notImpl("sendRunGrants");
     },
+    noteSenderDeployStarted(_addr) {
+      return notImpl("noteSenderDeployStarted");
+    },
+    noteSenderDeploySettled(_addr, _outcome) {
+      return notImpl("noteSenderDeploySettled");
+    },
     sendAgentUndeploy(_addr, _reason) {
       return notImpl("sendAgentUndeploy");
     },

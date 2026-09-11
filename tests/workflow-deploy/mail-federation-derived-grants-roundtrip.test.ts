@@ -209,6 +209,8 @@ function createRoutingSidecarRouter(): SidecarRouter {
     handleClose: () => notImplRouter("handleClose"),
     routeMail: () => true,
     sendRunGrants: () => true,
+    noteSenderDeployStarted: () => undefined,
+    noteSenderDeploySettled: () => undefined,
     sendAgentUndeploy: () => notImplRouter("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImplRouter("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImplRouter("sendCredentialsUpdate"),

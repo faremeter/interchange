@@ -297,6 +297,8 @@ function createMockSidecarRouter(
     // principal is seeded, so loadCommittedRunGrants returns null before this is
     // reached); sendRunGrants is never called.
     sendRunGrants: () => notImpl("sendRunGrants"),
+    noteSenderDeployStarted: () => notImpl("noteSenderDeployStarted"),
+    noteSenderDeploySettled: () => notImpl("noteSenderDeploySettled"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
