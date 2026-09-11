@@ -1,5 +1,9 @@
 import { getLogger } from "@intx/log";
-import type { CryptoProvider, InboundMailOutcome } from "@intx/types/runtime";
+import type {
+  CryptoProvider,
+  InboundMailOutcome,
+  InboundMailPolicy,
+} from "@intx/types/runtime";
 import { verifyMimeSignature } from "@intx/mailbox";
 import { parseHeaderSection, extractAddrSpec } from "@intx/mime";
 
@@ -73,6 +77,57 @@ export function outcomeForVerdict(
   if (signature === "missing") return "missing";
   if (signature === "unknown") return "unknown";
   return "clean";
+}
+
+/**
+ * A TOTAL admission decision map: for EVERY {@link InboundMailOutcome}, whether a
+ * message that resolved to that outcome is `reject`ed or `admit`ted. The per-mail
+ * delivery decision looks this up directly by the message's outcome with no
+ * fallback -- every key is present, so there is never an absent value for the
+ * lookup to default.
+ *
+ * This is the resolved counterpart of the SPARSE authored `InboundMailPolicy`:
+ * the sparse policy carries only what an author declared, and
+ * {@link resolveInboundMailPolicy} expands it into this total map ONCE.
+ */
+export type ResolvedInboundMailPolicy = Record<
+  InboundMailOutcome,
+  "reject" | "admit"
+>;
+
+/**
+ * Resolve the SPARSE authored {@link InboundMailPolicy} into a TOTAL
+ * {@link ResolvedInboundMailPolicy}, applying every default HERE. This is the
+ * single place inbound-admission defaults live: the resolution runs once, and
+ * the per-mail delivery path looks up the resolved map directly -- it must never
+ * re-derive a default with a `?? "reject"` of its own.
+ *
+ * The two non-author-controllable outcomes are pinned regardless of what the
+ * author declared:
+ *   - `clean` -> always `admit`: nothing about the message was suspect, so there
+ *     is nothing to relax and no reason to reject.
+ *   - `error` -> always `reject`: a fault stopped the check from running, so we
+ *     could make no trust claim about the message. `error` is not even a key in
+ *     {@link InboundMailPolicy}, so an authored policy cannot relax it -- a
+ *     message we could not check through is never something an author waves past.
+ *
+ * The four author-controllable outcomes (`untrustedFrom`, `invalid`, `missing`,
+ * `unknown`) take the authored value where the author set that key, and default
+ * to `reject` otherwise. `reject` is the secure default: an outcome the author
+ * did not explicitly choose to admit stays rejected, so an omitted policy (or a
+ * policy that omits one outcome) fails closed rather than open.
+ */
+export function resolveInboundMailPolicy(
+  authored: InboundMailPolicy | undefined,
+): ResolvedInboundMailPolicy {
+  return {
+    clean: "admit",
+    error: "reject",
+    untrustedFrom: authored?.untrustedFrom ?? "reject",
+    invalid: authored?.invalid ?? "reject",
+    missing: authored?.missing ?? "reject",
+    unknown: authored?.unknown ?? "reject",
+  };
 }
 
 export type InboundSignatureShadowInput = {

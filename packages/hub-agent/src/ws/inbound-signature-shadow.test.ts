@@ -7,12 +7,18 @@ import {
   generateMessageId,
   type MessageHeaders,
 } from "@intx/mime";
-import type { CryptoProvider, InboundMailOutcome } from "@intx/types/runtime";
+import type {
+  CryptoProvider,
+  InboundMailOutcome,
+  InboundMailPolicy,
+} from "@intx/types/runtime";
 
 import {
   shadowVerifyInboundSignature,
   outcomeForVerdict,
+  resolveInboundMailPolicy,
   type InboundSignatureVerdict,
+  type ResolvedInboundMailPolicy,
 } from "./inbound-signature-shadow";
 import { createPublicKeyCrypto } from "../sender-crypto";
 
@@ -464,4 +470,61 @@ describe("outcomeForVerdict", () => {
       expect(outcomeForVerdict(verdict(signature, fromMatch))).toBe(expected);
     });
   }
+});
+
+describe("resolveInboundMailPolicy", () => {
+  // The secure baseline: clean admits, everything else rejects. Both an absent
+  // policy and an empty object resolve to exactly this.
+  const secureBaseline: ResolvedInboundMailPolicy = {
+    clean: "admit",
+    error: "reject",
+    untrustedFrom: "reject",
+    invalid: "reject",
+    missing: "reject",
+    unknown: "reject",
+  };
+
+  test("undefined authored resolves to the secure baseline", () => {
+    expect(resolveInboundMailPolicy(undefined)).toEqual(secureBaseline);
+  });
+
+  test("empty authored policy resolves identically to undefined", () => {
+    expect(resolveInboundMailPolicy({})).toEqual(secureBaseline);
+  });
+
+  test("a partial policy admits only the outcomes it names", () => {
+    const authored: InboundMailPolicy = {
+      missing: "admit",
+      untrustedFrom: "admit",
+    };
+
+    expect(resolveInboundMailPolicy(authored)).toEqual({
+      clean: "admit",
+      error: "reject",
+      untrustedFrom: "admit",
+      invalid: "reject",
+      missing: "admit",
+      unknown: "reject",
+    });
+  });
+
+  test("error stays reject even when every author-controllable key admits", () => {
+    // A policy that relaxes every outcome an author may control still cannot
+    // relax `error` -- a fault we could not check through is never admitted.
+    const authored: InboundMailPolicy = {
+      untrustedFrom: "admit",
+      invalid: "admit",
+      missing: "admit",
+      unknown: "admit",
+    };
+
+    expect(resolveInboundMailPolicy(authored)).toEqual({
+      clean: "admit",
+      error: "reject",
+      untrustedFrom: "admit",
+      invalid: "admit",
+      missing: "admit",
+      unknown: "admit",
+    });
+  });
 });
