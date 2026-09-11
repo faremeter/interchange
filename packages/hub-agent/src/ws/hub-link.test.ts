@@ -31,6 +31,19 @@ import type {
 type TestSendPackOptions = { mountPath?: string; repoId?: RepoId };
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
+import type { ResolvedInboundMailPolicy } from "./inbound-signature-shadow";
+
+// These tests exercise routing and protocol, not admission policy, so they
+// hand the seam a policy that admits every outcome -- inbound mail routes as it
+// did before enforcement, keeping the tests focused on what they assert.
+const admitAllInboundMailPolicy: ResolvedInboundMailPolicy = {
+  clean: "admit",
+  error: "admit",
+  untrustedFrom: "admit",
+  invalid: "admit",
+  missing: "admit",
+  unknown: "admit",
+};
 
 // These tests exercise routing and the hub-link protocol, not handshake
 // auth, so the router accepts any token and keys off the claimed id.
@@ -157,6 +170,7 @@ function withTestDeployBindings(): {
   keyStore: AgentKeyStore & { registerKey(address: string, kp: KeyPair): void };
   deployRouter: DeployRouter;
   resolveSenderCrypto: () => undefined;
+  lookupInboundMailPolicy: () => ResolvedInboundMailPolicy;
   cacheSenderKey: () => Promise<void>;
   evictSenderKey: () => Promise<void>;
 } {
@@ -167,6 +181,7 @@ function withTestDeployBindings(): {
     // These tests do not exercise the inbound signature compare, so the shadow
     // resolves no cached key and the refresh/evict sinks are no-ops.
     resolveSenderCrypto: () => undefined,
+    lookupInboundMailPolicy: () => admitAllInboundMailPolicy,
     cacheSenderKey: async () => undefined,
     evictSenderKey: async () => undefined,
   };
@@ -791,6 +806,7 @@ describe("sidecar↔hub integration", () => {
       sessions,
       keyStore,
       resolveSenderCrypto: () => undefined,
+      lookupInboundMailPolicy: () => admitAllInboundMailPolicy,
       cacheSenderKey: async () => undefined,
       evictSenderKey: async () => undefined,
       deployRouter: createTestDeployRouter(keyStore),

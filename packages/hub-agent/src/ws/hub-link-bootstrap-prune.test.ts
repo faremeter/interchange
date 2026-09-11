@@ -37,6 +37,7 @@ import type {
 import { hexDecode } from "@intx/types";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
+import { resolveInboundMailPolicy } from "./inbound-signature-shadow";
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 
@@ -297,6 +298,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       sessions,
       keyStore,
       resolveSenderCrypto: () => undefined,
+      lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
       cacheSenderKey: async () => undefined,
       evictSenderKey: async () => undefined,
       deployRouter: createTestDeployRouter(keyStore),

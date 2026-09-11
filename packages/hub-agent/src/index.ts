@@ -17,6 +17,16 @@ export {
   createPublicKeyCrypto,
   createSenderCryptoResolver,
 } from "./sender-crypto";
+export {
+  resolveInboundMailPolicy,
+  type ResolvedInboundMailPolicy,
+} from "./ws/inbound-signature-shadow";
+export {
+  createInboundMailPolicyRegistry,
+  createInboundMailPolicyLookup,
+  FULLY_CLOSED_INBOUND_MAIL_POLICY,
+  type InboundMailPolicyRegistry,
+} from "./ws/inbound-mail-policy-registry";
 export type { HarnessBuilder } from "./harness-builder";
 export {
   createSessionManager,

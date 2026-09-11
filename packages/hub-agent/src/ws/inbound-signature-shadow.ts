@@ -145,9 +145,12 @@ export type InboundSignatureShadowInput = {
  * locally against the key the hub vouched for, never a key travelling on the
  * message itself.
  *
- * Shadow only: this NEVER rejects delivery and NEVER throws -- the caller runs
- * it beside an unconditional admit. Returns the verdict so a caller (or a test)
- * can read it without scraping the log.
+ * This NEVER throws. A fault degrades to an `error` verdict, logged at ERROR
+ * and returned like any other verdict. The enforcement caller relies on this
+ * contract: it awaits this inline on the delivery path with no per-call catch,
+ * gates admission on the returned outcome, and drops the mail on a reject, so a
+ * throw that escaped here would wedge the delivery chain. Returns the verdict so
+ * the caller (or a test) can read it without scraping the log.
  *
  * A cache miss is a quiet `unknown` (an expected, benign state -- see below),
  * not a fault. A genuine fault (the resolver throwing, the cached key being

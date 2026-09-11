@@ -50,6 +50,14 @@ import {
 import { configureSync, getConfig, resetSync } from "@intx/log";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
+import {
+  resolveInboundMailPolicy,
+  type ResolvedInboundMailPolicy,
+} from "./inbound-signature-shadow";
+import {
+  createInboundMailPolicyRegistry,
+  createInboundMailPolicyLookup,
+} from "./inbound-mail-policy-registry";
 import { createPublicKeyCrypto } from "../sender-crypto";
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
@@ -112,6 +120,17 @@ function withTestDeployBindings(): {
     evictSenderKey: async () => undefined,
   };
 }
+
+// A resolved policy that admits every outcome. Used by the queue-liveness test,
+// where the point is that a frame flows, not which outcome the policy relaxes.
+const ADMIT_ALL_INBOUND_MAIL_POLICY: ResolvedInboundMailPolicy = {
+  clean: "admit",
+  error: "admit",
+  untrustedFrom: "admit",
+  invalid: "admit",
+  missing: "admit",
+  unknown: "admit",
+};
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -312,6 +331,8 @@ describe("hub-link mail.inbound throwing router", () => {
 
     const bindings = withTestDeployBindings();
     await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
+    const policyRegistry = createInboundMailPolicyRegistry();
+    policyRegistry.register(deploymentAddress, ADMIT_ALL_INBOUND_MAIL_POLICY);
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-mail-wedge",
@@ -319,6 +340,7 @@ describe("hub-link mail.inbound throwing router", () => {
       transport,
       sessions,
       ...bindings,
+      lookupInboundMailPolicy: createInboundMailPolicyLookup(policyRegistry),
       mailInboundRouter,
       getWorkflowAddresses: () => [deploymentAddress],
     });
@@ -450,10 +472,11 @@ async function makeSignedMail(
   return assembleMessage(signedHeaders(from), content, sig);
 }
 
-// Drives a `mail.inbound` frame across the real hub-link WS surface and proves
-// the INTR-512 shadow verify at the ingress seam LOGS a verdict and ADMITS the
-// mail in every case (the router still receives it), never dropping.
-describe("hub-link mail.inbound signature shadow", () => {
+// Drives `mail.inbound` frames across the real hub-link WS surface and proves
+// the INTR-512 verify at the ingress seam now ENFORCES the recipient's resolved
+// inbound-mail policy: an admitted outcome reaches the mail router, a rejected
+// one is dropped before it ever gets there.
+describe("hub-link mail.inbound signature enforcement", () => {
   beforeEach(() => {
     capturedLogs.length = 0;
   });
@@ -464,9 +487,17 @@ describe("hub-link mail.inbound signature shadow", () => {
       deploymentAddress: string;
       routed: Uint8Array[];
     }) => Promise<void>,
-    resolveSenderCrypto?: Parameters<
-      typeof createHubLink
-    >[0]["resolveSenderCrypto"],
+    opts?: {
+      resolveSenderCrypto?: Parameters<
+        typeof createHubLink
+      >[0]["resolveSenderCrypto"];
+      // The resolved policy registered for the deployment address. Omit for the
+      // neutral "author declared nothing" policy (clean admits, the four
+      // author-controllable outcomes reject); pass `null` to leave the address
+      // UNREGISTERED so the seam resolves it to the fully-closed default and
+      // rejects every outcome.
+      policy?: ResolvedInboundMailPolicy | null;
+    },
   ): Promise<void> {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
@@ -481,16 +512,28 @@ describe("hub-link mail.inbound signature shadow", () => {
       },
     };
 
+    const policyRegistry = createInboundMailPolicyRegistry();
+    const policy = opts?.policy;
+    if (policy !== null) {
+      policyRegistry.register(
+        deploymentAddress,
+        policy ?? resolveInboundMailPolicy(undefined),
+      );
+    }
+
     const bindings = withTestDeployBindings();
     await provisionDeploymentKey(bindings.keyStore, deploymentAddress);
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
-      sidecarId: `sc-shadow-${label}`,
+      sidecarId: `sc-enforce-${label}`,
       token: "test-token",
       transport,
       sessions,
       ...bindings,
-      ...(resolveSenderCrypto !== undefined ? { resolveSenderCrypto } : {}),
+      ...(opts?.resolveSenderCrypto !== undefined
+        ? { resolveSenderCrypto: opts.resolveSenderCrypto }
+        : {}),
+      lookupInboundMailPolicy: createInboundMailPolicyLookup(policyRegistry),
       mailInboundRouter,
       getWorkflowAddresses: () => [deploymentAddress],
     });
@@ -504,21 +547,22 @@ describe("hub-link mail.inbound signature shadow", () => {
     } finally {
       client.close();
       await waitFor(
-        () => !env.router.getConnectedSidecars().includes(`sc-shadow-${label}`),
+        () =>
+          !env.router.getConnectedSidecars().includes(`sc-enforce-${label}`),
       );
     }
   }
 
-  test("a signature the cached key verifies logs valid/match and is admitted", async () => {
-    // The cache resolves the sender's real key, so the recipient verifies the
-    // signature locally and logs valid/match. The resolver returns the key (not
-    // the () => undefined default), so this exercises the populated-cache path.
+  test("a clean valid/match signature under an admit policy is delivered", async () => {
+    // The cache resolves the sender's real key, so the message verifies
+    // valid/match -> clean, which the neutral policy admits. The frame reaches
+    // the mail router.
     const sender = "external@remote.interchange";
     const crypto = createEd25519Crypto(await generateKeyPair());
     const raw = await makeSignedMail(crypto, sender);
 
     await withConnectedLink(
-      "shadowvalid",
+      "clean",
       async ({ deploymentAddress, routed }) => {
         expect(
           env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
@@ -528,74 +572,84 @@ describe("hub-link mail.inbound signature shadow", () => {
         const verdict = shadowVerdicts()[0];
         expect(verdict?.properties["signature"]).toBe("valid");
         expect(verdict?.properties["fromMatch"]).toBe("match");
-        // Admitted: the frame still reached the mail router.
         await waitFor(() => routed.length > 0);
         expect(routed).toHaveLength(1);
       },
-      (address) =>
-        address === sender
-          ? createPublicKeyCrypto(crypto.getPublicKey())
-          : undefined,
-    );
-  });
-
-  test("a signature the cached key does not verify logs invalid and is still admitted", async () => {
-    const sender = "external@remote.interchange";
-    const signer = createEd25519Crypto(await generateKeyPair());
-    const other = createEd25519Crypto(await generateKeyPair());
-    const raw = await makeSignedMail(signer, sender);
-
-    await withConnectedLink(
-      "shadowbad",
-      async ({ deploymentAddress, routed }) => {
-        // The cache holds a key that did not sign the message, so the verdict
-        // is invalid -- but shadow admits it anyway.
-        expect(
-          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
-        ).toBe(true);
-
-        await waitFor(() => shadowVerdicts().length > 0);
-        expect(shadowVerdicts()[0]?.properties["signature"]).toBe("invalid");
-        await waitFor(() => routed.length > 0);
-        expect(routed).toHaveLength(1);
+      {
+        resolveSenderCrypto: (address) =>
+          address === sender
+            ? createPublicKeyCrypto(crypto.getPublicKey())
+            : undefined,
       },
-      (address) =>
-        address === sender
-          ? createPublicKeyCrypto(other.getPublicKey())
-          : undefined,
     );
   });
 
-  test("a cache miss logs unknown and is still admitted", async () => {
+  test("a fault degrades to an error verdict and is rejected", async () => {
     const sender = "external@remote.interchange";
     const crypto = createEd25519Crypto(await generateKeyPair());
     const raw = await makeSignedMail(crypto, sender);
 
     await withConnectedLink(
-      "shadowmiss",
+      "error",
       async ({ deploymentAddress, routed }) => {
-        // The default resolver returns undefined (empty cache), so there is no
-        // key to verify against -- a quiet unknown, and still admitted.
         expect(
           env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
         ).toBe(true);
 
         await waitFor(() => shadowVerdicts().length > 0);
-        expect(shadowVerdicts()[0]?.properties["signature"]).toBe("unknown");
-        await waitFor(() => routed.length > 0);
-        expect(routed).toHaveLength(1);
+        expect(shadowVerdicts()[0]?.properties["signature"]).toBe("error");
+        // error is pinned to reject in every resolved policy, so the mail is
+        // dropped before the router is consulted.
+        expect(routed).toHaveLength(0);
+      },
+      {
+        // The resolver throws; the verify contains that as an `error` verdict
+        // rather than letting it escape.
+        resolveSenderCrypto: () => {
+          throw new Error("resolver boom");
+        },
       },
     );
   });
 
-  test("a valid signature under a forged From is flagged and still admitted", async () => {
+  test("an unregistered address resolves to the fully-closed policy and rejects a clean mail", async () => {
+    const sender = "external@remote.interchange";
+    const crypto = createEd25519Crypto(await generateKeyPair());
+    const raw = await makeSignedMail(crypto, sender);
+
+    await withConnectedLink(
+      "unregistered",
+      async ({ deploymentAddress, routed }) => {
+        expect(
+          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
+        ).toBe(true);
+
+        await waitFor(() => shadowVerdicts().length > 0);
+        const verdict = shadowVerdicts()[0];
+        // The verify still runs and the message is clean (valid/match), yet the
+        // fully-closed policy of an unregistered address rejects even `clean`.
+        expect(verdict?.properties["signature"]).toBe("valid");
+        expect(verdict?.properties["fromMatch"]).toBe("match");
+        expect(routed).toHaveLength(0);
+      },
+      {
+        policy: null,
+        resolveSenderCrypto: (address) =>
+          address === sender
+            ? createPublicKeyCrypto(crypto.getPublicKey())
+            : undefined,
+      },
+    );
+  });
+
+  test("a valid signature under a forged From is untrustedFrom and rejected", async () => {
     const stamp = "external@remote.interchange";
     const forgedFrom = "victim@remote.interchange";
     const crypto = createEd25519Crypto(await generateKeyPair());
     const raw = await makeSignedMail(crypto, forgedFrom);
 
     await withConnectedLink(
-      "shadowforge",
+      "forged",
       async ({ deploymentAddress, routed }) => {
         expect(
           env.router.routeMail(deploymentAddress, base64Encode(raw), stamp),
@@ -605,13 +659,180 @@ describe("hub-link mail.inbound signature shadow", () => {
         const verdict = shadowVerdicts()[0];
         expect(verdict?.properties["signature"]).toBe("valid");
         expect(verdict?.properties["fromMatch"]).toBe("mismatch");
+        // valid+mismatch -> untrustedFrom, which the neutral policy rejects.
+        expect(routed).toHaveLength(0);
+      },
+      {
+        resolveSenderCrypto: (address) =>
+          address === stamp
+            ? createPublicKeyCrypto(crypto.getPublicKey())
+            : undefined,
+      },
+    );
+  });
+
+  test("a present but unparseable From is untrustedFrom and rejected", async () => {
+    const sender = "external@remote.interchange";
+    const crypto = createEd25519Crypto(await generateKeyPair());
+    // A two-address From cannot reduce to one addr-spec, so the binding is
+    // `unparseable` -- present but malformed, distinct from no From at all.
+    const raw = await makeSignedMail(
+      crypto,
+      "alpha@remote.interchange, beta@remote.interchange",
+    );
+
+    await withConnectedLink(
+      "unparseable",
+      async ({ deploymentAddress, routed }) => {
+        expect(
+          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
+        ).toBe(true);
+
+        // An unparseable From also emits a debug log in the same category
+        // ahead of the verdict line, so select the verdict record by its
+        // `signature` property rather than taking the first record.
+        await waitFor(() =>
+          shadowVerdicts().some((r) => r.properties["signature"] !== undefined),
+        );
+        const verdict = shadowVerdicts().find(
+          (r) => r.properties["signature"] !== undefined,
+        );
+        expect(verdict?.properties["fromMatch"]).toBe("unparseable");
+        // unparseable -> untrustedFrom, which the neutral policy rejects.
+        expect(routed).toHaveLength(0);
+      },
+      {
+        resolveSenderCrypto: (address) =>
+          address === sender
+            ? createPublicKeyCrypto(crypto.getPublicKey())
+            : undefined,
+      },
+    );
+  });
+
+  test("a missing signature under the neutral policy is rejected", async () => {
+    // A plain, unsigned message (no multipart/signed body) verifies `missing`
+    // once a cached key resolves for the sender, distinct from the `unknown` of
+    // a cache miss. The neutral policy leaves `missing` at the default reject,
+    // so the mail is dropped before the router is consulted.
+    const sender = "external@remote.interchange";
+    const crypto = createEd25519Crypto(await generateKeyPair());
+
+    await withConnectedLink(
+      "missing",
+      async ({ deploymentAddress, routed }) => {
+        expect(
+          env.router.routeMail(
+            deploymentAddress,
+            base64Encode(VALID_MESSAGE),
+            sender,
+          ),
+        ).toBe(true);
+
+        await waitFor(() => shadowVerdicts().length > 0);
+        const verdict = shadowVerdicts()[0];
+        expect(verdict?.properties["signature"]).toBe("missing");
+        // missing -> missing, which the neutral policy rejects.
+        expect(routed).toHaveLength(0);
+      },
+      {
+        resolveSenderCrypto: (address) =>
+          address === sender
+            ? createPublicKeyCrypto(crypto.getPublicKey())
+            : undefined,
+      },
+    );
+  });
+
+  test("an author policy admitting unknown admits an unknown but still rejects an invalid", async () => {
+    const unknownSender = "stranger@remote.interchange";
+    const invalidSender = "imposter@remote.interchange";
+    const signer = createEd25519Crypto(await generateKeyPair());
+    const wrongKey = createEd25519Crypto(await generateKeyPair());
+    const unknownRaw = await makeSignedMail(signer, unknownSender);
+    const invalidRaw = await makeSignedMail(signer, invalidSender);
+
+    await withConnectedLink(
+      "unknownadmit",
+      async ({ deploymentAddress, routed }) => {
+        // unknownSender has no cached key -> unknown -> admitted by the policy.
+        expect(
+          env.router.routeMail(
+            deploymentAddress,
+            base64Encode(unknownRaw),
+            unknownSender,
+          ),
+        ).toBe(true);
+        // invalidSender's cached key did not sign the message -> invalid, which
+        // this policy leaves at the default reject.
+        expect(
+          env.router.routeMail(
+            deploymentAddress,
+            base64Encode(invalidRaw),
+            invalidSender,
+          ),
+        ).toBe(true);
+
+        await waitFor(() => shadowVerdicts().length >= 2);
+        const signatures = shadowVerdicts().map(
+          (r) => r.properties["signature"],
+        );
+        expect(signatures).toContain("unknown");
+        expect(signatures).toContain("invalid");
         await waitFor(() => routed.length > 0);
         expect(routed).toHaveLength(1);
+        expect(routed[0]).toEqual(unknownRaw);
       },
-      (address) =>
-        address === stamp
-          ? createPublicKeyCrypto(crypto.getPublicKey())
-          : undefined,
+      {
+        policy: resolveInboundMailPolicy({ unknown: "admit" }),
+        resolveSenderCrypto: (address) =>
+          address === invalidSender
+            ? createPublicKeyCrypto(wrongKey.getPublicKey())
+            : undefined,
+      },
+    );
+  });
+
+  test("a rejected frame does not wedge the queue for a following frame", async () => {
+    const rejectSender = "reject@remote.interchange";
+    const admitSender = "admit@remote.interchange";
+    const crypto = createEd25519Crypto(await generateKeyPair());
+    const rejectRaw = await makeSignedMail(crypto, rejectSender);
+    const admitRaw = await makeSignedMail(crypto, admitSender);
+
+    await withConnectedLink(
+      "liveness",
+      async ({ deploymentAddress, routed }) => {
+        // First frame: the resolver throws -> error -> rejected inline. The
+        // inline verify + reject must not wedge the messageQueue chain.
+        expect(
+          env.router.routeMail(
+            deploymentAddress,
+            base64Encode(rejectRaw),
+            rejectSender,
+          ),
+        ).toBe(true);
+        // Second frame: a cache miss -> unknown -> admitted by the policy, so
+        // it proves the chain still processes after the reject.
+        expect(
+          env.router.routeMail(
+            deploymentAddress,
+            base64Encode(admitRaw),
+            admitSender,
+          ),
+        ).toBe(true);
+
+        await waitFor(() => routed.length > 0);
+        expect(routed).toHaveLength(1);
+        expect(routed[0]).toEqual(admitRaw);
+      },
+      {
+        policy: resolveInboundMailPolicy({ unknown: "admit" }),
+        resolveSenderCrypto: (address) => {
+          if (address === rejectSender) throw new Error("resolver boom");
+          return undefined;
+        },
+      },
     );
   });
 });

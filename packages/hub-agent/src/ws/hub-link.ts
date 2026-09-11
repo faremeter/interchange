@@ -45,7 +45,11 @@ import {
   DEFAULT_REGISTER_ACK_MAX_ATTEMPTS,
   DEFAULT_REGISTER_ACK_TIMEOUT_MS,
 } from "./register-acker";
-import { shadowVerifyInboundSignature } from "./inbound-signature-shadow";
+import {
+  shadowVerifyInboundSignature,
+  outcomeForVerdict,
+  type ResolvedInboundMailPolicy,
+} from "./inbound-signature-shadow";
 import { base64Decode, base64Encode } from "@intx/types";
 import type {
   ApprovalSnapshot,
@@ -514,6 +518,16 @@ export type HubLinkConfig = {
    */
   resolveSenderCrypto: (address: string) => CryptoProvider | undefined;
   /**
+   * Resolves a recipient deployment address to the TOTAL inbound-mail
+   * admission policy the `mail.inbound` seam enforces for it. The host builds
+   * this over the sidecar's per-address policy registry: a hydrated deployment
+   * registers its resolved policy, and an address the registry does not hold
+   * resolves to a fully-closed policy that rejects every outcome. The seam
+   * indexes the returned map directly by the message's admission outcome, so
+   * this lookup owns the unknown-address default and the seam adds no fallback.
+   */
+  lookupInboundMailPolicy: (address: string) => ResolvedInboundMailPolicy;
+  /**
    * Persists the hub-vouched public key for a sender address, overwriting any
    * previously cached key. The link calls it on an inbound `sender.key.refresh`
    * frame, passing the frame's hex-encoded key through unchanged. Source-opaque,
@@ -740,6 +754,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     sessions,
     keyStore,
     resolveSenderCrypto,
+    lookupInboundMailPolicy,
     cacheSenderKey,
     evictSenderKey,
     deployRouter,
@@ -1547,29 +1562,53 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // This ingress is the one place raw inbound bytes meet the hub-verified
         // sender identity (`authenticatedSender` + its resolved key), and every
         // producer -- relay, trigger, durable dispatch -- converges here, so the
-        // signature shadow lives here. Verify off to the side and LOG the
-        // verdict; never gate delivery on it. Deferred to a microtask so even
-        // the verify's synchronous MIME re-parse runs after the admit below and
-        // off the messageQueue chain -- the shadow must never delay or wedge
-        // delivery. The in-process mail-memory transport (the standalone harness
-        // path) does not deliver through this seam and carries no hub-verified
-        // sender, so it is outside this path.
-        void Promise.resolve()
-          .then(() =>
-            shadowVerifyInboundSignature(
-              {
-                raw: rawBytes,
-                authenticatedSender: frame.authenticatedSender,
-                messageId: frame.messageId,
-                agentAddress: frame.agentAddress,
-              },
-              resolveSenderCrypto,
-            ),
-          )
-          .catch((cause: unknown) => {
-            const msg = cause instanceof Error ? cause.message : String(cause);
-            logger.error`inbound mail signature shadow-verify crashed for ${frame.agentAddress}: ${msg}`;
-          });
+        // inbound-signature verify gates delivery here. Await it INLINE on the
+        // messageQueue chain: the verdict decides admission, so delivery must
+        // not race ahead of it. The verify is CPU-bound -- a synchronous cache
+        // read, an Ed25519 verify, and a MIME re-parse, with no I/O and no lock
+        // -- so it cannot hang and needs no timeout race around it. It never
+        // throws: a fault degrades to an `error` verdict. The in-process
+        // mail-memory transport (the standalone harness path) does not deliver
+        // through this seam and carries no hub-verified sender, so it is outside
+        // this path.
+        const verdict = await shadowVerifyInboundSignature(
+          {
+            raw: rawBytes,
+            authenticatedSender: frame.authenticatedSender,
+            messageId: frame.messageId,
+            agentAddress: frame.agentAddress,
+          },
+          resolveSenderCrypto,
+        );
+        const outcome = outcomeForVerdict(verdict);
+        // The recipient deployment's resolved admission policy. `frame.
+        // agentAddress` is the mail-router registration key, so an address
+        // with no registered deployment resolves to the fully-closed policy
+        // and rejects every outcome. The map is total, so index it directly.
+        // The seam admits ONLY an explicitly-admitted outcome and drops
+        // everything else: the fail direction is closed by construction, so a
+        // non-`admit` value (today only `reject`, but any future non-admit
+        // verdict too) drops rather than leaks through.
+        const policy = lookupInboundMailPolicy(frame.agentAddress);
+        if (policy[outcome] !== "admit") {
+          logger.warn(
+            "Rejecting inbound mail for {agentAddress}: outcome {outcome} is not admitted (authenticatedSender {authenticatedSender}, messageId {messageId})",
+            {
+              agentAddress: frame.agentAddress,
+              outcome,
+              authenticatedSender: frame.authenticatedSender,
+              messageId: frame.messageId ?? null,
+            },
+          );
+          // A rejected mail is simply not delivered -- the same drop as the
+          // no-handler path below: no ack, no reply frame, no dispatch-fail.
+          // The hub's redelivery and expiry machinery handles the rest.
+          break;
+        }
+        // Admitted: deliver exactly as an admitted frame always has, keeping
+        // the detached durable settlement and detached ack below off the
+        // messageQueue chain -- only the verify above is awaited inline.
+        //
         // Supervised deployments register the deployment-level mail
         // address on `mailInboundRouter` once their supervisor spawns;
         // that handler delivers the bytes to the supervisor's mail-bus

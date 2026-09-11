@@ -38,6 +38,7 @@ import {
   type WorkflowProbeExecutor,
   type ReconnectScheduler,
 } from "./ws/hub-link";
+import type { ResolvedInboundMailPolicy } from "./ws/inbound-signature-shadow";
 
 const log = getLogger(["interchange", "hub-agent", "orchestrator"]);
 
@@ -108,6 +109,13 @@ export type SidecarOrchestratorConfig = {
    * signature shadow uses it.
    */
   resolveSenderCrypto: (address: string) => CryptoProvider | undefined;
+  /**
+   * Resolves a recipient deployment address to its total inbound-mail
+   * admission policy. The host builds this over the sidecar's per-address
+   * policy registry and the orchestrator forwards it unchanged to
+   * `createHubLink`, where the `mail.inbound` seam enforces it.
+   */
+  lookupInboundMailPolicy: (address: string) => ResolvedInboundMailPolicy;
   /**
    * Persists the hub-vouched public key for a sender address. The host builds
    * it over the same sender-key cache as `resolveSenderCrypto` and the
@@ -251,6 +259,7 @@ export function createSidecarOrchestrator(
     transport,
     cryptoOps,
     resolveSenderCrypto,
+    lookupInboundMailPolicy,
     cacheSenderKey,
     evictSenderKey,
     createDeployRouter,
@@ -345,6 +354,7 @@ export function createSidecarOrchestrator(
     sessions,
     keyStore,
     resolveSenderCrypto,
+    lookupInboundMailPolicy,
     cacheSenderKey,
     evictSenderKey,
     deployRouter,
