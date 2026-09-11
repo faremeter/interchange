@@ -19,6 +19,7 @@ import {
   ReconnectFrame,
   RegisterFrame,
   RunGrantsFrame,
+  SenderKeyEvictFrame,
   SidecarFrame,
   SignalCorrelationRegisterFrame,
   SourcesUpdateFrame,
@@ -712,5 +713,41 @@ describe("frame payload byte limits", () => {
     expect(MAX_SIDECAR_FRAME_BYTES).toBeGreaterThan(
       MAX_MAIL_OUTBOUND_BODY_BYTES,
     );
+  });
+});
+
+describe("SenderKeyEvictFrame", () => {
+  const frame = {
+    type: "sender.key.evict",
+    address: "usr_deleted@tenant.test",
+  };
+
+  test("the HubFrame union admits an evict frame and round-trips it", () => {
+    // The sidecar parses inbound frames through the HubFrame union, so the
+    // evict must reach its member and keep its address.
+    const out = HubFrame(frame);
+    if (out instanceof type.errors) {
+      throw new Error(`expected a valid HubFrame: ${out.summary}`);
+    }
+    if (out.type !== "sender.key.evict") {
+      throw new Error(`expected a sender.key.evict frame, got ${out.type}`);
+    }
+    expect(out.address).toBe("usr_deleted@tenant.test");
+  });
+
+  test("carries no publicKey (it is not a refresh)", () => {
+    // The evict frame is deliberately keyless; a stray publicKey is an
+    // undeclared key arktype passes through, so assert the parsed frame's shape
+    // holds only the address.
+    const out = SenderKeyEvictFrame(frame);
+    if (out instanceof type.errors) {
+      throw new Error(`expected a valid frame: ${out.summary}`);
+    }
+    expect("publicKey" in out).toBe(false);
+  });
+
+  test("rejects a frame with no address", () => {
+    const out = SenderKeyEvictFrame({ type: "sender.key.evict" });
+    expect(out instanceof type.errors).toBe(true);
   });
 });

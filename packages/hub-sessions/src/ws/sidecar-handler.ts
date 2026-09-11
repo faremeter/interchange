@@ -1317,45 +1317,64 @@ export function createSidecarRouter(
     }
     // Reconcile the sidecar's cached sender keys, closing the offline window: a
     // user-principal key that rotated while the sidecar was disconnected is
-    // re-resolved and pushed back now, so the recipient stops verifying that
-    // sender's mail against a stale key. Only allocated sidecars host a sender
-    // cache worth refreshing. Resolve and push SEQUENTIALLY in one detached
-    // task: registration is never blocked, and a large cache cannot fan out
-    // into one concurrent DB query per reported sender on every reconnect.
-    const resolveSenderKey = lookups.resolveSenderKey;
-    if (identity.kind === "allocated" && resolveSenderKey !== undefined) {
+    // re-resolved and re-pushed, and a sender whose principal was DELETED while
+    // the sidecar was disconnected is evicted, so the recipient stops verifying
+    // either against a key the hub no longer vouches for. Only allocated
+    // sidecars host a sender cache worth reconciling. Resolve and push
+    // SEQUENTIALLY in one detached task: registration is never blocked, and a
+    // large cache cannot fan out into one concurrent DB query per reported
+    // sender on every reconnect.
+    const resolveSenderKeyStrict = lookups.resolveSenderKeyStrict;
+    if (identity.kind === "allocated" && resolveSenderKeyStrict !== undefined) {
       const rotatableSenders = new Set(cachedSenderAddresses);
       // Resolve-don't-trust applied to input SIZE: bound the reported set before
       // acting on it. Run addresses count toward the cap by design -- the
       // isRunAddress skip below is inside the loop, so the iteration, and thus
       // the DB resolves, can never exceed the cap regardless of the run/non-run
-      // mix. Over the cap, refresh the first MAX_RESYNC_SENDER_ADDRESSES and log
-      // the overflow so a misbehaving sidecar is detectable.
+      // mix. Over the cap, reconcile the first MAX_RESYNC_SENDER_ADDRESSES and
+      // log the overflow so a misbehaving sidecar is detectable.
       let sendersToResync = [...rotatableSenders];
       if (sendersToResync.length > MAX_RESYNC_SENDER_ADDRESSES) {
-        logger.warn`Sidecar ${identity.sidecarId} reported ${String(sendersToResync.length)} cached sender addresses on allocation ${identity.allocationId} generation ${String(identity.generation)}, over the ${String(MAX_RESYNC_SENDER_ADDRESSES)} resync cap; refreshing the first ${String(MAX_RESYNC_SENDER_ADDRESSES)} and ignoring the rest`;
+        logger.warn`Sidecar ${identity.sidecarId} reported ${String(sendersToResync.length)} cached sender addresses on allocation ${identity.allocationId} generation ${String(identity.generation)}, over the ${String(MAX_RESYNC_SENDER_ADDRESSES)} resync cap; reconciling the first ${String(MAX_RESYNC_SENDER_ADDRESSES)} and ignoring the rest`;
         sendersToResync = sendersToResync.slice(0, MAX_RESYNC_SENDER_ADDRESSES);
       }
       void (async () => {
         for (const address of sendersToResync) {
           // The sidecar already reports only non-run senders, but do not trust
           // the report: a run sender's key is the immutable
-          // workflow_run.public_key and never needs a refresh, so skip it here
-          // too rather than couple correctness to the sidecar's filter.
+          // workflow_run.public_key and is never refreshed or evicted, so skip
+          // it here too rather than couple correctness to the sidecar's filter.
           if (isRunAddress(address)) continue;
-          // Best-effort: a deleted or unresolvable sender resolves to null (the
-          // resolver logs a genuine fault at ERROR itself), so skip it and never
-          // fail the reconnect over one sender.
-          const publicKey = await resolveSenderKey(address);
+          // Tri-state, deleted-vs-fault distinguished by the STRICT resolver:
+          //   - resolves to a key -> refresh the sidecar's cached key;
+          //   - CONFIRMED null (no matching principal = a deleted sender) ->
+          //     evict it;
+          //   - THROWS (fault: ambiguous address, keyless-principal invariant
+          //     break, DB error) -> keep the stale key, evict nothing.
+          // Never evicting on a fault is the load-bearing property: dropping a
+          // live key on a transient DB fault would be worse than doing nothing.
+          // Only the resolve is guarded here; conn.send stays outside so a
+          // socket-gone throw propagates to the outer catch and stops the loop.
+          let publicKey: string | null;
+          try {
+            publicKey = await resolveSenderKeyStrict(address);
+          } catch (cause) {
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.error`Keeping the stale cached key for ${address}: resolving it faulted (a fault, not a deleted sender): ${message}`;
+            continue;
+          }
           if (publicKey !== null) {
             conn.send({ type: "sender.key.refresh", address, publicKey });
+          } else {
+            conn.send({ type: "sender.key.evict", address });
           }
         }
       })().catch((cause) => {
-        // resolveSenderKey never throws, but conn.send (JSON.stringify + the
-        // socket write) can throw synchronously once the sidecar is gone. That
-        // means the connection left, so stop -- the remaining sends would fail
-        // the same way.
+        // The per-address resolve is guarded above, so the only throw reaching
+        // here is conn.send (JSON.stringify + the socket write) once the sidecar
+        // is gone. That means the connection left, so stop -- the remaining
+        // sends would fail the same way.
         const message = cause instanceof Error ? cause.message : String(cause);
         logger.warn`Sender-key resync for sidecar ${identity.sidecarId} stopped: ${message}`;
       });

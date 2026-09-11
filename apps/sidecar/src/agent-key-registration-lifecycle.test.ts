@@ -255,6 +255,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       senderKeyCache: {
         get: () => undefined,
         put: async () => undefined,
+        evict: async () => undefined,
         addresses: () => [],
         rotatableAddresses: () => [],
       },

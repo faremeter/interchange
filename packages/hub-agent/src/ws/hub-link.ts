@@ -28,6 +28,7 @@ import {
   type SignalDeliverFrame,
   type RunGrantsFrame,
   type SenderKeyRefreshFrame,
+  type SenderKeyEvictFrame,
   type SignalCorrelationRegisterFrame,
   type SignalCorrelationRegisterAckFrame,
   type DrainDeliverFrame,
@@ -524,6 +525,16 @@ export type HubLinkConfig = {
    */
   cacheSenderKey: (address: string, publicKey: string) => Promise<void>;
   /**
+   * Durably removes the cached key for a sender address. The link calls it on
+   * an inbound `sender.key.evict` frame, when the hub has re-resolved a reported
+   * cached sender to no durable key (a deleted principal). The evicting peer of
+   * `cacheSenderKey`: the host builds it over the sidecar's sender-key cache
+   * (`evict` the address) so the link never touches the cache directly. Required
+   * for the same reason as `cacheSenderKey` -- every composition that can cache
+   * a key must be able to evict one, and both share the one cache.
+   */
+  evictSenderKey: (address: string) => Promise<void>;
+  /**
    * Routes every inbound `agent.deploy` frame. Production wiring
    * supplies a router that stages each deploy through the workflow-run
    * substrate: a provision-step frame primes a per-step repo, and a
@@ -730,6 +741,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     keyStore,
     resolveSenderCrypto,
     cacheSenderKey,
+    evictSenderKey,
     deployRouter,
     mailInboundRouter,
     signalInboundRouter,
@@ -1300,6 +1312,23 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
+  async function handleSenderKeyEvict(
+    frame: SenderKeyEvictFrame,
+  ): Promise<void> {
+    // Mirror of `handleSenderKeyRefresh` for the evict direction: address-keyed,
+    // cross-run, no reply channel, awaited inline on the message chain so it
+    // serializes deterministically against a concurrent refresh/grants write for
+    // the same address. A fault swallowed after logging at ERROR keeps the STALE
+    // key cached until the next reconnect re-evicts -- the evict is best-effort,
+    // not delivery-guaranteed, exactly like the refresh it complements.
+    try {
+      await evictSenderKey(frame.address);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error`sender.key.evict cache removal failed for ${frame.address}: ${msg}`;
+    }
+  }
+
   async function handleSourcesUpdate(frame: SourcesUpdateFrame): Promise<void> {
     // `sources.update` is request/ack (the hub awaits a reply within its
     // request timeout), so every path answers `session.ack` or
@@ -1624,6 +1653,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "sender.key.refresh":
         await handleSenderKeyRefresh(frame);
+        break;
+      case "sender.key.evict":
+        await handleSenderKeyEvict(frame);
         break;
       case "drain.deliver":
         await handleDrainDeliver(frame);

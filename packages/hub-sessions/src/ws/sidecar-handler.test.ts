@@ -91,14 +91,14 @@ function createAllocatedRouter(
 }
 
 function createSenderKeyRouter(
-  resolveSenderKey: (address: string) => Promise<string | null>,
+  resolveSenderKeyStrict: (address: string) => Promise<string | null>,
 ) {
   const router = createSidecarRouter({
     authenticateSidecar: async () => identity,
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
-    lookups: { resolveSenderKey },
+    lookups: { resolveSenderKeyStrict },
   });
   router.fenceAllocation(identity.allocationId, identity.generation);
   return router;
@@ -234,7 +234,10 @@ describe("SidecarRouter allocation routing", () => {
     expect(frame.publicKey).toBe(key);
   });
 
-  test("skips a reported sender that resolves to no key", async () => {
+  test("evicts a reported sender that resolves to no key", async () => {
+    // A CONFIRMED null from the strict resolver is a deleted sender: the hub
+    // pushes an evict so the sidecar drops the stale key, rather than the old
+    // no-op-skip that left the revoked key cached forever.
     const resolved: string[] = [];
     const router = createSenderKeyRouter((address) => {
       resolved.push(address);
@@ -243,16 +246,44 @@ describe("SidecarRouter allocation routing", () => {
     const ws = await connect(router, [], {
       cachedSenderAddresses: ["usr_ghost@exclusive"],
     });
-    // Let the detached resync task run to completion.
-    await tick();
-    await tick();
 
-    // The resolver ran (the path executed) but nothing was pushed.
+    const frame = await waitForFrame(ws, (f) => f.type === "sender.key.evict");
+    expect(frame).toEqual({
+      type: "sender.key.evict",
+      address: "usr_ghost@exclusive",
+    });
     expect(resolved).toEqual(["usr_ghost@exclusive"]);
     const refreshes = ws.sent
       .map((raw): Record<string, unknown> => JSON.parse(raw))
       .filter((f) => f.type === "sender.key.refresh");
     expect(refreshes).toEqual([]);
+  });
+
+  test("keeps the stale key (no evict) when resolution faults", async () => {
+    // THE load-bearing distinction: a THROW is a transient/data fault, not a
+    // deleted sender. Evicting a live key on a DB blip would be worse than
+    // doing nothing, so a fault pushes NEITHER a refresh nor an evict -- the
+    // sidecar keeps verifying against its cached key until the next reconnect.
+    const resolved: string[] = [];
+    const router = createSenderKeyRouter((address) => {
+      resolved.push(address);
+      return Promise.reject(new Error("simulated resolver fault"));
+    });
+    const ws = await connect(router, [], {
+      cachedSenderAddresses: ["usr_faulty@exclusive"],
+    });
+    // Let the detached resync task run to completion.
+    await tick();
+    await tick();
+
+    // The resolve was attempted, and neither a refresh nor an evict was pushed.
+    expect(resolved).toEqual(["usr_faulty@exclusive"]);
+    const reconciliations = ws.sent
+      .map((raw): Record<string, unknown> => JSON.parse(raw))
+      .filter(
+        (f) => f.type === "sender.key.refresh" || f.type === "sender.key.evict",
+      );
+    expect(reconciliations).toEqual([]);
   });
 
   test("skips a run address in the report without resolving it", async () => {
@@ -272,13 +303,18 @@ describe("SidecarRouter allocation routing", () => {
         f.type === "sender.key.refresh" && f.address === "usr_bob@exclusive",
     );
     // The run address is filtered before resolution; only the user sender is
-    // resolved and refreshed.
+    // resolved and refreshed. The run address is never resolved and thus never
+    // evicted -- its key is the immutable workflow_run.public_key.
     expect(resolved).toEqual(["usr_bob@exclusive"]);
-    const refreshed = ws.sent
+    const reconciled = ws.sent
       .map((raw): Record<string, unknown> => JSON.parse(raw))
-      .filter((f) => f.type === "sender.key.refresh")
-      .map((f) => f.address);
-    expect(refreshed).toEqual(["usr_bob@exclusive"]);
+      .filter(
+        (f) => f.type === "sender.key.refresh" || f.type === "sender.key.evict",
+      )
+      .map((f) => ({ type: f.type, address: f.address }));
+    expect(reconciled).toEqual([
+      { type: "sender.key.refresh", address: "usr_bob@exclusive" },
+    ]);
   });
 
   test("deploys only through the exact allocation target", async () => {

@@ -133,6 +133,7 @@ describe("deploy-failure registry leak", () => {
       senderKeyCache: {
         get: () => undefined,
         put: async () => undefined,
+        evict: async () => undefined,
         addresses: () => [],
         rotatableAddresses: () => [],
       },
@@ -222,6 +223,7 @@ describe("deploy-failure registry leak", () => {
       senderKeyCache: {
         get: () => undefined,
         put: async () => undefined,
+        evict: async () => undefined,
         addresses: () => [],
         rotatableAddresses: () => [],
       },
@@ -381,6 +383,7 @@ describe("deploy-failure registry leak", () => {
       senderKeyCache: {
         get: () => undefined,
         put: async () => undefined,
+        evict: async () => undefined,
         addresses: () => [],
         rotatableAddresses: () => [],
       },

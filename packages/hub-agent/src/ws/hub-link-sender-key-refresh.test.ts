@@ -88,6 +88,10 @@ async function writeFileDurable(
   await fs.writeFile(filePath, contents);
 }
 
+async function removeFileDurable(filePath: string): Promise<void> {
+  await fs.rm(filePath, { force: true });
+}
+
 const tempDirs: string[] = [];
 
 async function tempDir(): Promise<string> {
@@ -242,6 +246,15 @@ function refreshErrors(): string[] {
     .map((r) => r.message.join(""));
 }
 
+function evictErrors(): string[] {
+  return capturedLogs
+    .filter(
+      (r) =>
+        r.level === "error" && r.message.join("").includes("sender.key.evict"),
+    )
+    .map((r) => r.message.join(""));
+}
+
 function createTestLink(
   cacheSenderKey: (address: string, publicKey: string) => Promise<void>,
   sidecarId: string,
@@ -249,6 +262,7 @@ function createTestLink(
     getWorkflowAddresses?: () => string[];
     getCachedSenderAddresses?: () => string[];
   },
+  evictSenderKey: (address: string) => Promise<void> = async () => undefined,
 ) {
   return createHubLink({
     hubURL: `ws://localhost:${env.server.port}/ws`,
@@ -259,6 +273,7 @@ function createTestLink(
     keyStore: createStubKeyStore(),
     resolveSenderCrypto: () => undefined,
     cacheSenderKey,
+    evictSenderKey,
     deployRouter: createStubDeployRouter(),
     ...(report?.getWorkflowAddresses !== undefined
       ? { getWorkflowAddresses: report.getWorkflowAddresses }
@@ -284,7 +299,11 @@ describe("hub-link sender.key.refresh", () => {
 
   test("updates the cache with the refreshed key through the real edge", async () => {
     const dataDir = await tempDir();
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     const client = createTestLink(
       (address, publicKey) => cache.put(address, hexDecode(publicKey)),
       "sc-refresh-ok",
@@ -347,7 +366,11 @@ describe("hub-link sender.key.refresh", () => {
   test("a wrong-length key is rejected without partially updating the cache", async () => {
     capturedLogs.length = 0;
     const dataDir = await tempDir();
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     const client = createTestLink(
       (address, publicKey) => cache.put(address, hexDecode(publicKey)),
       "sc-refresh-badkey",
@@ -377,6 +400,77 @@ describe("hub-link sender.key.refresh", () => {
       });
       await waitFor(() => cache.get(goodAddress) !== undefined);
       expect(cache.get(goodAddress)).toEqual(goodKey);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+describe("hub-link sender.key.evict", () => {
+  beforeAll(() => {
+    capturedLogs.length = 0;
+  });
+
+  test("removes the cached key through the real edge", async () => {
+    const dataDir = await tempDir();
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    const address = "usr_deleted@tenant.example";
+    await cache.put(address, makeKey(11));
+
+    const client = createTestLink(
+      noopCacheSenderKey,
+      "sc-evict-ok",
+      undefined,
+      (addr) => cache.evict(addr),
+    );
+
+    client.connect();
+    try {
+      const send = await env.awaitSend();
+      send({ type: "sender.key.evict", address });
+
+      await waitFor(() => cache.get(address) === undefined);
+      expect(cache.get(address)).toBeUndefined();
+      expect(evictErrors()).toHaveLength(0);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("an eviction fault is logged and does not wedge later frames", async () => {
+    capturedLogs.length = 0;
+    let calls = 0;
+    const evicted: string[] = [];
+    const evictSenderKey = async (address: string) => {
+      calls += 1;
+      // Transient fault on the first evict; the second must still be processed,
+      // proving the swallowed throw did not wedge the message chain.
+      if (calls === 1) throw new Error("unlink failed");
+      evicted.push(address);
+    };
+    const client = createTestLink(
+      noopCacheSenderKey,
+      "sc-evict-fault",
+      undefined,
+      evictSenderKey,
+    );
+
+    client.connect();
+    try {
+      const send = await env.awaitSend();
+      send({ type: "sender.key.evict", address: "usr_faulty@tenant.example" });
+      send({ type: "sender.key.evict", address: "usr_second@tenant.example" });
+
+      await waitFor(() => evicted.length > 0);
+      expect(evicted).toEqual(["usr_second@tenant.example"]);
+      expect(calls).toBe(2);
+      const errors = evictErrors();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("usr_faulty@tenant.example");
     } finally {
       client.close();
     }

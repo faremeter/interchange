@@ -298,6 +298,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       keyStore,
       resolveSenderCrypto: () => undefined,
       cacheSenderKey: async () => undefined,
+      evictSenderKey: async () => undefined,
       deployRouter: createTestDeployRouter(keyStore),
     });
 

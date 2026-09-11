@@ -259,6 +259,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       senderKeyCache: {
         get: () => undefined,
         put: async () => undefined,
+        evict: async () => undefined,
         addresses: () => [],
         rotatableAddresses: () => [],
       },
@@ -859,6 +860,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       senderKeyCache: opts.senderKeyCache ?? {
         get: () => undefined,
         put: async () => undefined,
+        evict: async () => undefined,
         addresses: () => [],
         rotatableAddresses: () => [],
       },
@@ -1550,6 +1552,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
             .catch(() => false));
         puts.push({ address, grantsExisted });
       },
+      evict: async () => undefined,
       addresses: () => [],
       rotatableAddresses: () => [],
     };
@@ -1600,6 +1603,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       put: async () => {
         throw new Error("sender-key disk full");
       },
+      evict: async () => undefined,
       addresses: () => [],
       rotatableAddresses: () => [],
     };
@@ -1649,6 +1653,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       put: async (address: string) => {
         puts.push(address);
       },
+      evict: async () => undefined,
       addresses: () => [],
       rotatableAddresses: () => [],
     };

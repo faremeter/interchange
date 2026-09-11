@@ -266,6 +266,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       senderKeyCache: {
         get: () => undefined,
         put: async () => undefined,
+        evict: async () => undefined,
         addresses: () => [],
         rotatableAddresses: () => [],
       },

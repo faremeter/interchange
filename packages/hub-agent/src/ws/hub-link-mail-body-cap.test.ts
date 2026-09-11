@@ -124,6 +124,7 @@ function makeLink() {
     keyStore: unusedKeyStore,
     resolveSenderCrypto: () => undefined,
     cacheSenderKey: async () => undefined,
+    evictSenderKey: async () => undefined,
     deployRouter: unusedDeployRouter,
   });
   return { capture, link };

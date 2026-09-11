@@ -30,6 +30,13 @@ async function writeFileDurable(
   await fs.writeFile(filePath, contents);
 }
 
+// The durable-removal counterpart; `force` makes it idempotent like the
+// production `removeFileAtomicDurable`. Its atomicity/fsync are orthogonal to
+// what these tests assert.
+async function removeFileDurable(filePath: string): Promise<void> {
+  await fs.rm(filePath, { force: true });
+}
+
 function makeKey(seed: number): Uint8Array {
   const key = new Uint8Array(32);
   for (let i = 0; i < 32; i++) key[i] = (seed + i) & 0xff;
@@ -41,7 +48,11 @@ const senderKeysDir = (dataDir: string) => path.join(dataDir, "sender-keys");
 describe("SenderKeyCache", () => {
   test("caches a key and reads it back keyed on the full address", async () => {
     const dataDir = await tempDir();
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
 
     const address = "run_abc@tenant.example.com";
     await cache.put(address, makeKey(3));
@@ -53,17 +64,29 @@ describe("SenderKeyCache", () => {
 
   test("returns undefined for an unknown sender", async () => {
     const dataDir = await tempDir();
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     expect(cache.get("nobody@example.com")).toBeUndefined();
   });
 
   test("survives a restart by loading the keyring from disk", async () => {
     const dataDir = await tempDir();
-    const first = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const first = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     await first.put("alice@a.example", makeKey(5));
     await first.put("bob@b.example", makeKey(9));
 
-    const restarted = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const restarted = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     expect(restarted.get("alice@a.example")).toEqual(makeKey(5));
     expect(restarted.get("bob@b.example")).toEqual(makeKey(9));
   });
@@ -72,7 +95,11 @@ describe("SenderKeyCache", () => {
     // "a.b@c.example" and "a_b@c.example" both flatten to one filename under
     // the AgentKeyStore sanitize scheme; the injective hex filename must not.
     const dataDir = await tempDir();
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     await cache.put("a.b@c.example", makeKey(1));
     await cache.put("a_b@c.example", makeKey(2));
 
@@ -82,25 +109,41 @@ describe("SenderKeyCache", () => {
     const files = await fs.readdir(senderKeysDir(dataDir));
     expect(files).toHaveLength(2);
 
-    const restarted = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const restarted = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     expect(restarted.get("a.b@c.example")).toEqual(makeKey(1));
     expect(restarted.get("a_b@c.example")).toEqual(makeKey(2));
   });
 
   test("the latest write for an address wins", async () => {
     const dataDir = await tempDir();
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     await cache.put("rotator@example.com", makeKey(4));
     await cache.put("rotator@example.com", makeKey(8));
 
     expect(cache.get("rotator@example.com")).toEqual(makeKey(8));
-    const restarted = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const restarted = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     expect(restarted.get("rotator@example.com")).toEqual(makeKey(8));
   });
 
   test("skips a corrupt file on load without dropping the other keys", async () => {
     const dataDir = await tempDir();
-    const good = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const good = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     await good.put("good@example.com", makeKey(6));
 
     const dir = senderKeysDir(dataDir);
@@ -110,14 +153,22 @@ describe("SenderKeyCache", () => {
     // A stray temp file the way a crashed atomic write would leave one.
     await fs.writeFile(path.join(dir, "leftover.tmp.123.abcd"), "junk");
 
-    const restarted = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const restarted = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     expect(restarted.get("good@example.com")).toEqual(makeKey(6));
     expect(restarted.get("corrupt@example")).toBeUndefined();
   });
 
   test("skips a file whose envelope address does not match its filename", async () => {
     const dataDir = await tempDir();
-    await createSenderKeyCache({ dataDir, writeFileDurable });
+    await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     const dir = senderKeysDir(dataDir);
     await fs.mkdir(dir, { recursive: true });
     // File named for address A but carrying address B: a tamper/corruption the
@@ -131,14 +182,22 @@ describe("SenderKeyCache", () => {
       }),
     );
 
-    const restarted = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const restarted = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     expect(restarted.get("a@example.com")).toBeUndefined();
     expect(restarted.get("b@example.com")).toBeUndefined();
   });
 
   test("rejects a wrong-length key at put", async () => {
     const dataDir = await tempDir();
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     await expect(
       cache.put("short@example.com", new Uint8Array(16)),
     ).rejects.toThrow(/32/);
@@ -147,7 +206,11 @@ describe("SenderKeyCache", () => {
 
   test("reports exactly the addresses it holds a key for", async () => {
     const dataDir = await tempDir();
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     await cache.put("alice@a.example", makeKey(5));
     await cache.put("bob@b.example", makeKey(9));
 
@@ -159,7 +222,11 @@ describe("SenderKeyCache", () => {
 
   test("reports only rotatable (non-run) addresses for the reconnect report", async () => {
     const dataDir = await tempDir();
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     await cache.put("usr_alice@tenant.example", makeKey(5));
     await cache.put("run_job1@tenant.example", makeKey(9));
     await cache.put("usr_bob@tenant.example", makeKey(13));
@@ -178,13 +245,21 @@ describe("SenderKeyCache", () => {
     const dataDir = await tempDir();
     // No keyring dir exists yet, so loadFromDisk finds nothing: the cold-start
     // path the reconnect reporter hits before any key has been cached.
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     expect(cache.addresses()).toEqual([]);
   });
 
   test("returns a snapshot a later put does not retroactively mutate", async () => {
     const dataDir = await tempDir();
-    const cache = await createSenderKeyCache({ dataDir, writeFileDurable });
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
     await cache.put("alice@a.example", makeKey(5));
 
     const snapshot = cache.addresses();
@@ -200,6 +275,7 @@ describe("SenderKeyCache", () => {
       writeFileDurable: async () => {
         throw new Error("disk full");
       },
+      removeFileDurable,
     });
     await expect(cache.put("faulty@example.com", makeKey(7))).rejects.toThrow(
       "disk full",
@@ -207,5 +283,66 @@ describe("SenderKeyCache", () => {
     // Memory is only updated after the durable write lands, so a failed write
     // must not leave a phantom key that a restart would not reproduce.
     expect(cache.get("faulty@example.com")).toBeUndefined();
+  });
+
+  test("evict durably removes a cached key from memory and disk", async () => {
+    const dataDir = await tempDir();
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    await cache.put("usr_alice@tenant.example", makeKey(5));
+    await cache.put("usr_bob@tenant.example", makeKey(9));
+
+    await cache.evict("usr_alice@tenant.example");
+
+    // Gone from memory, and its on-disk file is gone while the sibling remains.
+    expect(cache.get("usr_alice@tenant.example")).toBeUndefined();
+    expect(cache.get("usr_bob@tenant.example")).toEqual(makeKey(9));
+    const files = await fs.readdir(senderKeysDir(dataDir));
+    expect(files).toHaveLength(1);
+
+    // A restart does not resurrect the evicted key.
+    const restarted = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    expect(restarted.get("usr_alice@tenant.example")).toBeUndefined();
+    expect(restarted.get("usr_bob@tenant.example")).toEqual(makeKey(9));
+  });
+
+  test("evict is a no-op for an address the cache does not hold", async () => {
+    const dataDir = await tempDir();
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    // Idempotent: removing an absent address neither throws nor disturbs others.
+    await cache.put("usr_bob@tenant.example", makeKey(9));
+    await cache.evict("usr_ghost@tenant.example");
+    expect(cache.get("usr_bob@tenant.example")).toEqual(makeKey(9));
+  });
+
+  test("a failed durable removal keeps the key in memory", async () => {
+    const dataDir = await tempDir();
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable: async () => {
+        throw new Error("unlink failed");
+      },
+    });
+    await cache.put("usr_alice@tenant.example", makeKey(5));
+
+    // Disk-first, symmetric with put: the durable removal is awaited before the
+    // map delete, so a removal fault throws and leaves BOTH stores holding the
+    // key -- a restart would otherwise reload a key the caller believed evicted.
+    await expect(cache.evict("usr_alice@tenant.example")).rejects.toThrow(
+      "unlink failed",
+    );
+    expect(cache.get("usr_alice@tenant.example")).toEqual(makeKey(5));
   });
 });

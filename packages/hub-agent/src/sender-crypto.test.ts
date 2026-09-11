@@ -18,6 +18,7 @@ function stubCache(entries: Record<string, Uint8Array>): SenderKeyCache {
   return {
     get: (address) => map.get(address),
     put: async () => undefined,
+    evict: async () => undefined,
     addresses: () => [...map.keys()],
     rotatableAddresses: () => [...map.keys()].filter((a) => !isRunAddress(a)),
   };
