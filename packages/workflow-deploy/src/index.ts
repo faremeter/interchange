@@ -11,7 +11,7 @@
 //     (`deriveRunAddress`, `deriveStepAddress`, `resolveStepAddress`, ...)
 //     and per-step inference-source resolution against the operator-
 //     approved grant set (`pickStepInferenceSource`, `pinInertStepSources`,
-//     `buildInertProjectionStepSources`).
+//     `buildInertProjectionStepSources`, `buildInertBodyStepSources`).
 
 export {
   walkCapabilities,
@@ -38,6 +38,7 @@ export {
   pickStepInferenceSource,
   pinInertStepSources,
   buildInertProjectionStepSources,
+  buildInertBodyStepSources,
   buildSingleStepAgentDefinition,
   deriveRunAddress,
   deriveRunAgentId,
