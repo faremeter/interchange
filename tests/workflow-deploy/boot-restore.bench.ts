@@ -382,6 +382,7 @@ async function buildRouter(args: {
     senderKeyCache: {
       get: () => undefined,
       put: async () => undefined,
+      evict: async () => undefined,
       addresses: () => [],
       rotatableAddresses: () => [],
     },

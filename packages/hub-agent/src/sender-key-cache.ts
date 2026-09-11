@@ -13,9 +13,12 @@
 // FOREIGN senders' public keys only. There is no private material here.
 //
 // The hub owns key freshness -- it re-pushes a rotated key on the next
-// grant or reconnect -- so the cache has no TTL, generation, or eviction.
-// A second entry for an address overwrites the first; the latest push
-// wins.
+// grant or reconnect -- so the cache has no TTL or generation. A second
+// entry for an address overwrites the first; the latest push wins.
+// Eviction is revocation-driven, not time-driven: the hub sends a
+// `sender.key.evict` when it re-resolves a reported cached sender to no
+// durable key (a deleted principal), and the cache durably removes it so a
+// power loss cannot resurrect a key the hub no longer vouches for.
 //
 // The whole keyring is loaded into memory at construction, so `get` is a
 // synchronous memory read on the inbound-verify path and a restart sees
@@ -52,6 +55,14 @@ export type SenderKeyCacheDeps = {
    * durable-write primitive.
    */
   writeFileDurable: (path: string, contents: string) => Promise<void>;
+  /**
+   * Durably remove the file at `path` (unlink + parent-dir fsync). Injected
+   * from the same durable-primitive owner as `writeFileDurable`. A raw unlink
+   * can be resurrected by a power loss, re-staling the cache with a key the hub
+   * revoked -- the exact failure eviction exists to prevent -- so the removal
+   * must be as durable as the write it reverses.
+   */
+  removeFileDurable: (path: string) => Promise<void>;
 };
 
 export type SenderKeyCache = {
@@ -69,6 +80,15 @@ export type SenderKeyCache = {
    * resolves.
    */
   put(address: string, publicKey: Uint8Array): Promise<void>;
+  /**
+   * Remove the cached key for `address`, durably deleting its on-disk entry
+   * before dropping it from memory. Disk-first mirrors `put`'s write-then-set:
+   * the map is rebuilt from disk on construction, so if the durable removal
+   * fails and throws, both stores still hold the key (consistent, and the next
+   * reconnect retries) rather than a memory-evicted key resurrecting from disk
+   * on restart. A no-op for an address the cache does not hold.
+   */
+  evict(address: string): Promise<void>;
   /**
    * A snapshot of every address the cache currently holds a key for. Returns a
    * fresh array, decoupled from the backing map, so a later `put` does not
@@ -94,7 +114,7 @@ export type SenderKeyCache = {
 export async function createSenderKeyCache(
   deps: SenderKeyCacheDeps,
 ): Promise<SenderKeyCache> {
-  const { dataDir, writeFileDurable } = deps;
+  const { dataDir, writeFileDurable, removeFileDurable } = deps;
   const dir = path.join(dataDir, SENDER_KEYS_DIR_NAME);
   const keys = new Map<string, Uint8Array>();
 
@@ -179,7 +199,12 @@ export async function createSenderKeyCache(
     keys.set(address, publicKey);
   }
 
+  async function evict(address: string): Promise<void> {
+    await removeFileDurable(keyPath(address));
+    keys.delete(address);
+  }
+
   await loadFromDisk();
 
-  return { get, put, addresses, rotatableAddresses };
+  return { get, put, evict, addresses, rotatableAddresses };
 }

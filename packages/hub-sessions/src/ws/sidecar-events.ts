@@ -265,20 +265,36 @@ export type SidecarLookups = {
 
   /** Resolves the hub-held public key a sender address signs with, hex-encoded,
    * or `null` when the sender has no resolvable key (a run whose deploy is not
-   * yet acked, an address matching no known principal). Two consumers share it:
-   * the `mail.inbound` frame carries the result so a recipient verifies the
-   * signature locally against the hub-resolved key rather than the message's own
-   * spoofable From; and the register/reconnect handler re-resolves each cached
-   * sender the sidecar reports, pushing a `sender.key.refresh` so a key that
-   * rotated during the offline window reaches the sidecar cache. Returns only
+   * yet acked, an address matching no known principal). The `mail.inbound` frame
+   * carries the result so a recipient verifies the signature locally against the
+   * hub-resolved key rather than the message's own spoofable From. Returns only
    * the key string, not its source, so the recipient cannot branch on sender
    * kind.
    *
    * Best-effort: this NEVER throws. A resolution fault degrades to `null`
    * (logged at ERROR by the resolver), so a key-resolution problem can never
    * block mail delivery. The strict, throwing resolver is `resolveSenderKey`
-   * in `@intx/db`. */
+   * in `@intx/db`; the reconnect reconciliation consumes it through
+   * `resolveSenderKeyStrict` below, which needs to tell a fault from a genuine
+   * absence. */
   resolveSenderKey?: (address: string) => Promise<string | null>;
+
+  /** Strict sibling of `resolveSenderKey` for the reconnect reconciliation. The
+   * register/reconnect handler re-resolves each reported cached sender and acts
+   * on the three-way outcome the best-effort resolver collapses:
+   *   - returns the hex key when the sender resolves -> push `sender.key.refresh`;
+   *   - returns `null` for a CONFIRMED absence (no matching principal = a deleted
+   *     sender) -> push `sender.key.evict`;
+   *   - THROWS on a fault (ambiguous address, a keyless-principal invariant
+   *     break, a DB error) -> keep the stale cached key, evict nothing.
+   * Never evicting on a throw is load-bearing: dropping a live key on a
+   * transient DB fault would be worse than doing nothing. Wraps the strict
+   * `resolveSenderKey` in `@intx/db` (unwrapped to the key string). Note the
+   * naming inversion: in `@intx/db` the STRICT resolver is `resolveSenderKey`
+   * and the best-effort one is `resolveFrameSenderKey`, whereas on this lookup
+   * type the best-effort field is `resolveSenderKey` and this is the strict
+   * one. */
+  resolveSenderKeyStrict?: (address: string) => Promise<string | null>;
 
   /** Co-writes the `signal_correlation` routing row and the `approval` row
    * for a suspending workflow agent step, in one transaction. Called from

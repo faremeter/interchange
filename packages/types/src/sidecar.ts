@@ -466,6 +466,26 @@ export const SenderKeyRefreshFrame = type({
 export type SenderKeyRefreshFrame = typeof SenderKeyRefreshFrame.infer;
 
 /**
+ * Evict a cached sender key, keyed by the sender's `address`. The sidecar
+ * durably removes its cached key for `address` and touches nothing else. The
+ * hub sends it during reconnect reconciliation for a reported cached sender it
+ * re-resolves to NO durable key -- a sender whose principal was deleted while
+ * the sidecar was disconnected -- so the sidecar stops verifying that sender's
+ * mail against a key the hub no longer vouches for.
+ *
+ * A dedicated sibling of `sender.key.refresh` rather than a mode on it: that
+ * frame's doc argues against a mode-dependent shape, and a refresh always
+ * carries a key whereas an evict never does, so a shared frame would make
+ * `publicKey` conditionally present. One address per frame keeps each eviction
+ * independently fallible, the same property the refresh frame preserves.
+ */
+export const SenderKeyEvictFrame = type({
+  type: "'sender.key.evict'",
+  address: "string",
+});
+export type SenderKeyEvictFrame = typeof SenderKeyEvictFrame.infer;
+
+/**
  * Deliver a workflow-host drain control payload to a multi-step
  * deployment's supervisor. The hub forwards the frame to the sidecar
  * that hosts the deployment named by `agentAddress` (the
@@ -1148,6 +1168,7 @@ export const HubFrame = type.or(
   SignalDeliverFrame,
   RunGrantsFrame,
   SenderKeyRefreshFrame,
+  SenderKeyEvictFrame,
   SignalCorrelationRegisterAckFrame,
   DrainDeliverFrame,
   WorkflowProbeRequestFrame,

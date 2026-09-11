@@ -116,6 +116,13 @@ export type SidecarOrchestratorConfig = {
    */
   cacheSenderKey: (address: string, publicKey: string) => Promise<void>;
   /**
+   * Durably removes a sender's cached key. The host builds it over the same
+   * sender-key cache as `cacheSenderKey` and the orchestrator forwards it
+   * unchanged to `createHubLink`, where an inbound `sender.key.evict` frame
+   * drives it.
+   */
+  evictSenderKey: (address: string) => Promise<void>;
+  /**
    * Host-injected `DeployRouter` factory. The orchestrator calls it
    * once after `sessions` and `keyStore` are constructed; the
    * returned router routes every `agent.deploy` frame on the link.
@@ -245,6 +252,7 @@ export function createSidecarOrchestrator(
     cryptoOps,
     resolveSenderCrypto,
     cacheSenderKey,
+    evictSenderKey,
     createDeployRouter,
     mailInboundRouter,
     signalInboundRouter,
@@ -338,6 +346,7 @@ export function createSidecarOrchestrator(
     keyStore,
     resolveSenderCrypto,
     cacheSenderKey,
+    evictSenderKey,
     deployRouter,
     applyWorkflowRunPack,
     ...(mailInboundRouter !== undefined ? { mailInboundRouter } : {}),

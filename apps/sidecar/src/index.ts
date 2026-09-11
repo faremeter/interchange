@@ -54,7 +54,10 @@ import { createWorkflowClosureMaterializer } from "./workflow-closure-materializ
 import { MAX_INLINE_ASSET_PAYLOAD_BYTES } from "./source-asset-delivery";
 import { createWorkflowProbeExecutor } from "./workflow-probe-handler";
 import { loadOrMintSidecarKeypair } from "./signing-keypair";
-import { writeFileAtomicDurable } from "./atomic-write";
+import {
+  removeFileAtomicDurable,
+  writeFileAtomicDurable,
+} from "./atomic-write";
 
 await setup();
 
@@ -244,6 +247,7 @@ const senderKeyCache = await createSenderKeyCache({
   dataDir,
   writeFileDurable: (filePath, contents) =>
     writeFileAtomicDurable(filePath, contents, { mode: 0o600 }),
+  removeFileDurable: (filePath) => removeFileAtomicDurable(filePath),
 });
 
 // The read side of the same cache: the inbound signature shadow resolves a
@@ -456,6 +460,9 @@ const orchestrator = createSidecarOrchestrator({
   // handler rather than being masked here.
   cacheSenderKey: (address, publicKey) =>
     senderKeyCache.put(address, hexDecode(publicKey)),
+  // Evicting peer of `cacheSenderKey`: an inbound `sender.key.evict` frame
+  // durably removes a revoked sender's cached key through the same cache.
+  evictSenderKey: (address) => senderKeyCache.evict(address),
   mailInboundRouter: multistepMailRouter,
   signalInboundRouter: multistepSignalRouter,
   drainInboundRouter: multistepDrainRouter,

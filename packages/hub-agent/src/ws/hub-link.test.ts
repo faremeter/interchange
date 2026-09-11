@@ -158,15 +158,17 @@ function withTestDeployBindings(): {
   deployRouter: DeployRouter;
   resolveSenderCrypto: () => undefined;
   cacheSenderKey: () => Promise<void>;
+  evictSenderKey: () => Promise<void>;
 } {
   const keyStore = createTestKeyStore();
   return {
     keyStore,
     deployRouter: createTestDeployRouter(keyStore),
     // These tests do not exercise the inbound signature compare, so the shadow
-    // resolves no cached key and the refresh sink is a no-op.
+    // resolves no cached key and the refresh/evict sinks are no-ops.
     resolveSenderCrypto: () => undefined,
     cacheSenderKey: async () => undefined,
+    evictSenderKey: async () => undefined,
   };
 }
 import type { KeyPair } from "@intx/types/runtime";
@@ -790,6 +792,7 @@ describe("sidecar↔hub integration", () => {
       keyStore,
       resolveSenderCrypto: () => undefined,
       cacheSenderKey: async () => undefined,
+      evictSenderKey: async () => undefined,
       deployRouter: createTestDeployRouter(keyStore),
     });
 

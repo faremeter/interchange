@@ -51,6 +51,7 @@ export function createHubSessionLookups(
     | "materializeMailTriggeredRunGrants"
     | "resyncCredentials"
     | "resolveSenderKey"
+    | "resolveSenderKeyStrict"
   >
 > {
   const { db, agentRepoStore } = deps;

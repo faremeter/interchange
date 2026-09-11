@@ -101,6 +101,7 @@ function withTestDeployBindings(): {
   deployRouter: DeployRouter;
   resolveSenderCrypto: () => undefined;
   cacheSenderKey: () => Promise<void>;
+  evictSenderKey: () => Promise<void>;
 } {
   const keyStore = createTestKeyStore();
   return {
@@ -108,6 +109,7 @@ function withTestDeployBindings(): {
     deployRouter: createTestDeployRouter(keyStore),
     resolveSenderCrypto: () => undefined,
     cacheSenderKey: async () => undefined,
+    evictSenderKey: async () => undefined,
   };
 }
 

@@ -82,6 +82,10 @@ async function writeFileDurable(
   await fs.writeFile(filePath, contents);
 }
 
+async function removeFileDurable(filePath: string): Promise<void> {
+  await fs.rm(filePath, { force: true });
+}
+
 const tempDirs: string[] = [];
 
 async function tempDir(): Promise<string> {
@@ -129,7 +133,7 @@ type AllocatedIdentity = Extract<
 >;
 
 function startRotationServer(
-  resolveSenderKey: (address: string) => Promise<string | null>,
+  resolveSenderKeyStrict: (address: string) => Promise<string | null>,
 ) {
   const observedHandshakes: string[] = [];
   // Memoize one mutable identity per sidecarId so the handshake frame can pin
@@ -157,7 +161,7 @@ function startRotationServer(
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 5000,
-    lookups: { resolveSenderKey },
+    lookups: { resolveSenderKeyStrict },
   });
 
   function prepareHandshake(data: string): void {
@@ -234,6 +238,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
       const seedCache = await createSenderKeyCache({
         dataDir,
         writeFileDurable,
+        removeFileDurable,
       });
       await seedCache.put(sender, oldKey);
 
@@ -242,6 +247,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
       const firstCache = await createSenderKeyCache({
         dataDir,
         writeFileDurable,
+        removeFileDurable,
       });
       const first = createHubLink({
         hubURL,
@@ -253,6 +259,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
         resolveSenderCrypto: () => undefined,
         cacheSenderKey: (address, publicKey) =>
           firstCache.put(address, hexDecode(publicKey)),
+        evictSenderKey: (address) => firstCache.evict(address),
         deployRouter: createStubDeployRouter(),
         getCachedSenderAddresses: () => firstCache.rotatableAddresses(),
       });
@@ -269,6 +276,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
       const reconnectCache = await createSenderKeyCache({
         dataDir,
         writeFileDurable,
+        removeFileDurable,
       });
       expect(reconnectCache.get(sender)).toEqual(oldKey);
       const workflowAddress = "run_deploy@tenant.example";
@@ -282,6 +290,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
         resolveSenderCrypto: () => undefined,
         cacheSenderKey: (address, publicKey) =>
           reconnectCache.put(address, hexDecode(publicKey)),
+        evictSenderKey: (address) => reconnectCache.evict(address),
         deployRouter: createStubDeployRouter(),
         getWorkflowAddresses: () => [workflowAddress],
         getCachedSenderAddresses: () => reconnectCache.rotatableAddresses(),
@@ -295,6 +304,105 @@ describe("hub-link sender-key rotation on reconnect", () => {
         });
         expect(reconnectCache.get(sender)).toEqual(newKey);
         expect(reconnectCache.get(sender)).not.toEqual(oldKey);
+        expect(observedHandshakes).toContain("reconnect");
+      } finally {
+        second.close();
+      }
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("a sender deleted during the offline window is evicted from the cache on reconnect", async () => {
+    const sender = "usr_deleted@tenant.example";
+    const key = makeKey(3);
+    // The sender exists on the first connection and is hard-deleted before the
+    // reconnect. The strict resolver returns the key while it exists and a
+    // confirmed null once deleted -- the deleted-vs-fault distinction the evict
+    // path turns on.
+    let deleted = false;
+    const { server, router, observedHandshakes } = startRotationServer(
+      (address) =>
+        Promise.resolve(address === sender && !deleted ? hexEncode(key) : null),
+    );
+
+    const dataDir = await tempDir();
+    const sidecarId = "sc-evict-reconnect";
+    const hubURL = `ws://localhost:${server.port}/ws`;
+
+    try {
+      // The sidecar already holds the sender's key before it ever connects.
+      const seedCache = await createSenderKeyCache({
+        dataDir,
+        writeFileDurable,
+        removeFileDurable,
+      });
+      await seedCache.put(sender, key);
+
+      // First connection: the sender still exists, so the hub refreshes the
+      // unchanged key -- a no-op that leaves the cache holding it.
+      const firstCache = await createSenderKeyCache({
+        dataDir,
+        writeFileDurable,
+        removeFileDurable,
+      });
+      const first = createHubLink({
+        hubURL,
+        sidecarId,
+        token: "test-token",
+        transport: createInMemoryTransport(),
+        sessions: createStubSessionManager(),
+        keyStore: createStubKeyStore(),
+        resolveSenderCrypto: () => undefined,
+        cacheSenderKey: (address, publicKey) =>
+          firstCache.put(address, hexDecode(publicKey)),
+        evictSenderKey: (address) => firstCache.evict(address),
+        deployRouter: createStubDeployRouter(),
+        getCachedSenderAddresses: () => firstCache.rotatableAddresses(),
+      });
+      first.connect();
+      await waitFor(() => router.getConnectedSidecars().includes(sidecarId));
+      first.close();
+      await waitFor(() => !router.getConnectedSidecars().includes(sidecarId));
+
+      // The sender's principal is hard-deleted hub-side while the sidecar is
+      // disconnected: the strict resolver now returns a confirmed null for it.
+      deleted = true;
+
+      // The sidecar reconnects, cold-loading the cache (which still holds the
+      // now-revoked key) from the same data dir. A restored workflow address
+      // makes this a genuine `reconnect` frame.
+      const reconnectCache = await createSenderKeyCache({
+        dataDir,
+        writeFileDurable,
+        removeFileDurable,
+      });
+      // Precondition: the key IS present before reconnect, so the removal
+      // assertion below is non-vacuous -- were the evict path dropped, the key
+      // would remain and `get` would keep returning it (the reconnect refresh
+      // never re-adds a deleted sender's key).
+      expect(reconnectCache.get(sender)).toEqual(key);
+      const workflowAddress = "run_deploy@tenant.example";
+      const second = createHubLink({
+        hubURL,
+        sidecarId,
+        token: "test-token",
+        transport: createInMemoryTransport(),
+        sessions: createStubSessionManager(),
+        keyStore: createStubKeyStore(),
+        resolveSenderCrypto: () => undefined,
+        cacheSenderKey: (address, publicKey) =>
+          reconnectCache.put(address, hexDecode(publicKey)),
+        evictSenderKey: (address) => reconnectCache.evict(address),
+        deployRouter: createStubDeployRouter(),
+        getWorkflowAddresses: () => [workflowAddress],
+        getCachedSenderAddresses: () => reconnectCache.rotatableAddresses(),
+      });
+      second.connect();
+      try {
+        // The evict push is fire-and-forget, so poll for the cache to drop it.
+        await waitFor(() => reconnectCache.get(sender) === undefined);
+        expect(reconnectCache.get(sender)).toBeUndefined();
         expect(observedHandshakes).toContain("reconnect");
       } finally {
         second.close();

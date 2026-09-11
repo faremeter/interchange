@@ -5,6 +5,7 @@ import {
   createSidecarAllocationStore,
   createWorkflowRunDispatchStore,
   resolveFrameSenderKey,
+  resolveSenderKey,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
@@ -245,6 +246,13 @@ export async function createHubServer({
     ),
     resolveSenderKey: (address) =>
       resolveFrameSenderKey(db, principalKeyStore, address),
+    // The strict sibling for reconnect reconciliation: it preserves the strict
+    // resolver's throw (a fault must be kept distinct from a confirmed absence
+    // so the handler evicts only a genuinely deleted sender, never on a fault),
+    // and unwraps the resolution to the hex key the handler pushes.
+    resolveSenderKeyStrict: async (address) =>
+      (await resolveSenderKey(db, principalKeyStore, address))?.publicKey ??
+      null,
   };
 
   const sidecarCredentials = createSidecarCredentialResolver({ db });

@@ -3,7 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { writeFileAtomicDurable } from "./atomic-write";
+import {
+  removeFileAtomicDurable,
+  writeFileAtomicDurable,
+} from "./atomic-write";
 
 async function makeDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "atomic-write-"));
@@ -96,6 +99,45 @@ describe("writeFileAtomicDurable", () => {
       writeFileAtomicDurable(file, "new", { mode: 0o600 }),
     ).rejects.toThrow();
     expect(await listNames(dir)).toEqual(["record.json"]);
+
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe("removeFileAtomicDurable", () => {
+  test("removes an existing file", async () => {
+    const dir = await makeDir();
+    const file = path.join(dir, "record.json");
+    await fs.writeFile(file, "x");
+
+    await removeFileAtomicDurable(file);
+    expect(await listNames(dir)).toEqual([]);
+
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  test("is a no-op for an already-absent file", async () => {
+    const dir = await makeDir();
+    const file = path.join(dir, "never-existed.json");
+
+    // Idempotent: removing an absent file completes without throwing, so a
+    // re-driven eviction of an already-evicted key is not a fault.
+    await removeFileAtomicDurable(file);
+    expect(await listNames(dir)).toEqual([]);
+
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  test("leaves sibling files untouched", async () => {
+    const dir = await makeDir();
+    const target = path.join(dir, "target.json");
+    const sibling = path.join(dir, "keep.json");
+    await fs.writeFile(target, "gone");
+    await fs.writeFile(sibling, "stay");
+
+    await removeFileAtomicDurable(target);
+    expect(await listNames(dir)).toEqual(["keep.json"]);
+    expect(await fs.readFile(sibling, "utf8")).toBe("stay");
 
     await fs.rm(dir, { recursive: true, force: true });
   });
