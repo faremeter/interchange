@@ -7,9 +7,13 @@ import {
   generateMessageId,
   type MessageHeaders,
 } from "@intx/mime";
-import type { CryptoProvider } from "@intx/types/runtime";
+import type { CryptoProvider, InboundMailOutcome } from "@intx/types/runtime";
 
-import { shadowVerifyInboundSignature } from "./inbound-signature-shadow";
+import {
+  shadowVerifyInboundSignature,
+  outcomeForVerdict,
+  type InboundSignatureVerdict,
+} from "./inbound-signature-shadow";
 import { createPublicKeyCrypto } from "../sender-crypto";
 
 const AGENT_ADDRESS = "run_anchor@tenant.example";
@@ -411,4 +415,53 @@ describe("shadowVerifyInboundSignature", () => {
     expect(verdict.signature).toBe("valid");
     expect(verdict.fromMatch).toBe("match");
   });
+});
+
+describe("outcomeForVerdict", () => {
+  function verdict(
+    signature: InboundSignatureVerdict["signature"],
+    fromMatch: InboundSignatureVerdict["fromMatch"],
+  ): InboundSignatureVerdict {
+    return {
+      signature,
+      fromMatch,
+      authenticatedSender: AGENT_ADDRESS,
+      messageFrom: null,
+    };
+  }
+
+  // Every reachable (signature, fromMatch) pair mapped to its outcome. match
+  // and mismatch only occur atop a valid signature; unparseable can accompany
+  // any non-error status. error carries fromMatch unchecked in practice, but
+  // the mapping treats error as dominant regardless of the From axis.
+  const table: [
+    InboundSignatureVerdict["signature"],
+    InboundSignatureVerdict["fromMatch"],
+    InboundMailOutcome,
+  ][] = [
+    ["error", "unchecked", "error"],
+    ["error", "unparseable", "error"],
+    ["error", "match", "error"],
+    ["error", "mismatch", "error"],
+
+    ["valid", "match", "clean"],
+    ["valid", "unchecked", "clean"],
+    ["valid", "mismatch", "untrustedFrom"],
+    ["valid", "unparseable", "untrustedFrom"],
+
+    ["invalid", "unchecked", "invalid"],
+    ["invalid", "unparseable", "untrustedFrom"],
+
+    ["missing", "unchecked", "missing"],
+    ["missing", "unparseable", "untrustedFrom"],
+
+    ["unknown", "unchecked", "unknown"],
+    ["unknown", "unparseable", "untrustedFrom"],
+  ];
+
+  for (const [signature, fromMatch, expected] of table) {
+    test(`${signature}/${fromMatch} -> ${expected}`, () => {
+      expect(outcomeForVerdict(verdict(signature, fromMatch))).toBe(expected);
+    });
+  }
 });

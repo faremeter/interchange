@@ -248,6 +248,45 @@ export const SignatureStatus = type.enumerated(
 export type SignatureStatus = typeof SignatureStatus.infer;
 
 /**
+ * The admission outcome of an inbound message. This is the single vocabulary a
+ * delivery decision keys on, distinct from the two-axis signature verdict that
+ * produces it.
+ *
+ * - `clean` — nothing suspect; always admitted
+ * - `untrustedFrom` — the visible `From` cannot be trusted, either because it is
+ *   present but unparseable or because a valid signature is worn under a
+ *   mismatched sender identity
+ * - `invalid` — the signature check failed (tampering or the wrong key)
+ * - `missing` — the message carried no signature
+ * - `unknown` — no key was available to verify against
+ * - `error` — a fault stopped the check from running at all; always rejected
+ */
+export const InboundMailOutcome = type.enumerated(
+  "clean",
+  "untrustedFrom",
+  "invalid",
+  "missing",
+  "unknown",
+  "error",
+);
+export type InboundMailOutcome = typeof InboundMailOutcome.infer;
+
+/**
+ * The subset of {@link InboundMailOutcome} a workflow author may relax to admit
+ * a message that would otherwise be rejected. It omits `clean` (which always
+ * admits, so there is nothing to relax) and `error` (pinned to reject, since a
+ * fault we could not check through is never something an author should be able
+ * to wave past). A per-workflow policy keys on exactly these outcomes.
+ */
+export const AuthorControllableOutcome = type.enumerated(
+  "untrustedFrom",
+  "invalid",
+  "missing",
+  "unknown",
+);
+export type AuthorControllableOutcome = typeof AuthorControllableOutcome.infer;
+
+/**
  * A parsed MIME part. `content` is the DECODED bytes in memory (the
  * transfer-encoding has already been undone). `filename` and `disposition` are
  * surfaced from the part's `Content-Disposition` / `Content-Type` so a consumer

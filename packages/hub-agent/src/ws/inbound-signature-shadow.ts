@@ -1,5 +1,5 @@
 import { getLogger } from "@intx/log";
-import type { CryptoProvider } from "@intx/types/runtime";
+import type { CryptoProvider, InboundMailOutcome } from "@intx/types/runtime";
 import { verifyMimeSignature } from "@intx/mailbox";
 import { parseHeaderSection, extractAddrSpec } from "@intx/mime";
 
@@ -43,6 +43,37 @@ export type InboundSignatureVerdict = {
   authenticatedSender: string;
   messageFrom: string | null;
 };
+
+/**
+ * Reduce a two-axis {@link InboundSignatureVerdict} to the single
+ * {@link InboundMailOutcome} a delivery decision keys on.
+ *
+ * The precedence is reject-dominant: when more than one axis is unhappy, the
+ * outcome is the one that most resists admission. Two outcomes dominate, for
+ * distinct reasons:
+ *   - `error` outranks everything -- a fault stopped the check from running, so
+ *     we could not check the message and can make no trust claim about it.
+ *   - `untrustedFrom` outranks the signature axis -- a `From` we cannot trust
+ *     (present but unparseable, or a valid signature worn under a mismatched
+ *     identity) is a forgery signal that must not be masked by a merely
+ *     unverifiable signature underneath it.
+ *
+ * `match`/`mismatch` only ever occur atop a `valid` signature (a guarantee of
+ * how the verdict is produced), while `unparseable` can accompany any non-error
+ * signature status; the ordering below reflects both facts.
+ */
+export function outcomeForVerdict(
+  verdict: InboundSignatureVerdict,
+): InboundMailOutcome {
+  const { signature, fromMatch } = verdict;
+  if (signature === "error") return "error";
+  if (fromMatch === "unparseable") return "untrustedFrom";
+  if (signature === "valid" && fromMatch === "mismatch") return "untrustedFrom";
+  if (signature === "invalid") return "invalid";
+  if (signature === "missing") return "missing";
+  if (signature === "unknown") return "unknown";
+  return "clean";
+}
 
 export type InboundSignatureShadowInput = {
   raw: Uint8Array;
