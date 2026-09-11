@@ -263,13 +263,16 @@ export type SidecarLookups = {
     raw: Uint8Array;
   }) => Promise<SidecarMailPersistedRow[]>;
 
-  /** Resolves the hub-held public key an inbound mail's authenticated sender
-   * signs with, hex-encoded, or `null` when the sender has no resolvable key
-   * (a run whose deploy is not yet acked, an address matching no known
-   * principal). The wire layer carries the result on the `mail.inbound` frame
-   * so the recipient verifies the signature locally against the hub-resolved
-   * key rather than the message's own spoofable From. Returns only the key
-   * string, not its source, so the recipient cannot branch on sender kind.
+  /** Resolves the hub-held public key a sender address signs with, hex-encoded,
+   * or `null` when the sender has no resolvable key (a run whose deploy is not
+   * yet acked, an address matching no known principal). Two consumers share it:
+   * the `mail.inbound` frame carries the result so a recipient verifies the
+   * signature locally against the hub-resolved key rather than the message's own
+   * spoofable From; and the register/reconnect handler re-resolves each cached
+   * sender the sidecar reports, pushing a `sender.key.refresh` so a key that
+   * rotated during the offline window reaches the sidecar cache. Returns only
+   * the key string, not its source, so the recipient cannot branch on sender
+   * kind.
    *
    * Best-effort: this NEVER throws. A resolution fault degrades to `null`
    * (logged at ERROR by the resolver), so a key-resolution problem can never

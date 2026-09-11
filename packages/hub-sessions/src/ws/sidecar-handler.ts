@@ -993,14 +993,16 @@ export function createSidecarRouter(
     switch (frame.type) {
       case "register": {
         const agentAddresses = frame.agentAddresses;
+        const cachedSenderAddresses = frame.cachedSenderAddresses ?? [];
         return authenticateHandshake(ws, frame, (identity) =>
-          handleRegister(ws, identity, agentAddresses),
+          handleRegister(ws, identity, agentAddresses, cachedSenderAddresses),
         );
       }
       case "reconnect": {
         const agentAddresses = frame.agentAddresses;
+        const cachedSenderAddresses = frame.cachedSenderAddresses ?? [];
         return authenticateHandshake(ws, frame, (identity) =>
-          handleReconnect(ws, identity, agentAddresses),
+          handleReconnect(ws, identity, agentAddresses, cachedSenderAddresses),
         );
       }
       case "agent.deploy.ack":
@@ -1194,6 +1196,7 @@ export function createSidecarRouter(
     ws: WsHandle,
     identity: SidecarAuthIdentity,
     agentAddresses: string[],
+    cachedSenderAddresses: string[],
   ): Promise<void> {
     if (allocationFences.get(identity.allocationId) !== identity.generation) {
       logger.warn`Rejected allocated sidecar ${identity.sidecarId}: allocation ${identity.allocationId} generation ${String(identity.generation)} is not fenced as current`;
@@ -1287,6 +1290,40 @@ export function createSidecarRouter(
         resyncCredentials(address);
       }
     }
+    // Reconcile the sidecar's cached sender keys, closing the offline window: a
+    // user-principal key that rotated while the sidecar was disconnected is
+    // re-resolved and pushed back now, so the recipient stops verifying that
+    // sender's mail against a stale key. Only allocated sidecars host a sender
+    // cache worth refreshing. Resolve and push SEQUENTIALLY in one detached
+    // task: registration is never blocked, and a large cache cannot fan out
+    // into one concurrent DB query per reported sender on every reconnect.
+    const resolveSenderKey = lookups.resolveSenderKey;
+    if (identity.kind === "allocated" && resolveSenderKey !== undefined) {
+      const rotatableSenders = new Set(cachedSenderAddresses);
+      void (async () => {
+        for (const address of rotatableSenders) {
+          // The sidecar already reports only non-run senders, but do not trust
+          // the report: a run sender's key is the immutable
+          // workflow_run.public_key and never needs a refresh, so skip it here
+          // too rather than couple correctness to the sidecar's filter.
+          if (isRunAddress(address)) continue;
+          // Best-effort: a deleted or unresolvable sender resolves to null (the
+          // resolver logs a genuine fault at ERROR itself), so skip it and never
+          // fail the reconnect over one sender.
+          const publicKey = await resolveSenderKey(address);
+          if (publicKey !== null) {
+            conn.send({ type: "sender.key.refresh", address, publicKey });
+          }
+        }
+      })().catch((cause) => {
+        // resolveSenderKey never throws, but conn.send (JSON.stringify + the
+        // socket write) can throw synchronously once the sidecar is gone. That
+        // means the connection left, so stop -- the remaining sends would fail
+        // the same way.
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.warn`Sender-key resync for sidecar ${identity.sidecarId} stopped: ${message}`;
+      });
+    }
     logger.info`Provisioned sidecar ${identity.sidecarId} registered for allocation ${identity.allocationId} generation ${String(identity.generation)}`;
     await notifyAllocationWaiters(identity.allocationId);
     if (identity.kind === "allocated") {
@@ -1301,16 +1338,28 @@ export function createSidecarRouter(
     ws: WsHandle,
     identity: SidecarAuthIdentity,
     agentAddresses: string[],
+    cachedSenderAddresses: string[],
   ): Promise<void> {
-    await handleAllocatedRegister(ws, identity, agentAddresses);
+    await handleAllocatedRegister(
+      ws,
+      identity,
+      agentAddresses,
+      cachedSenderAddresses,
+    );
   }
 
   async function handleReconnect(
     ws: WsHandle,
     identity: SidecarAuthIdentity,
     agentAddresses: string[],
+    cachedSenderAddresses: string[],
   ): Promise<void> {
-    await handleAllocatedRegister(ws, identity, agentAddresses);
+    await handleAllocatedRegister(
+      ws,
+      identity,
+      agentAddresses,
+      cachedSenderAddresses,
+    );
   }
 
   async function handleMailOutbound(

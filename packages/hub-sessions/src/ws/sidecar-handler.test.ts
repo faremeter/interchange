@@ -80,23 +80,59 @@ function createAllocatedRouter(
   return router;
 }
 
+function createSenderKeyRouter(
+  resolveSenderKey: (address: string) => Promise<string | null>,
+) {
+  const router = createSidecarRouter({
+    authenticateSidecar: async () => identity,
+    validateSidecarIdentity: async () => true,
+    hubPublicKey: "a".repeat(64),
+    requestTimeoutMs: 500,
+    lookups: { resolveSenderKey },
+  });
+  router.fenceAllocation(identity.allocationId, identity.generation);
+  return router;
+}
+
 async function connect(
   router: ReturnType<typeof createSidecarRouter>,
   agentAddresses: string[] = [],
+  handshake: {
+    frameType?: "register" | "reconnect";
+    cachedSenderAddresses?: string[];
+  } = {},
 ) {
   const ws = createMockWs();
   router.handleOpen(ws);
   router.handleMessage(
     ws,
     JSON.stringify({
-      type: "register",
+      type: handshake.frameType ?? "register",
       sidecarId: identity.sidecarId,
       token: "token",
       agentAddresses,
+      ...(handshake.cachedSenderAddresses !== undefined
+        ? { cachedSenderAddresses: handshake.cachedSenderAddresses }
+        : {}),
     }),
   );
   await tick();
   return ws;
+}
+
+async function waitForFrame(
+  ws: ReturnType<typeof createMockWs>,
+  predicate: (frame: Record<string, unknown>) => boolean,
+  tries = 25,
+): Promise<Record<string, unknown>> {
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    for (const raw of ws.sent) {
+      const frame: Record<string, unknown> = JSON.parse(raw);
+      if (predicate(frame)) return frame;
+    }
+    await tick();
+  }
+  throw new Error("expected frame was never sent");
 }
 
 describe("SidecarRouter allocation routing", () => {
@@ -147,6 +183,92 @@ describe("SidecarRouter allocation routing", () => {
 
     expect(ws.closed).toBe(false);
     expect(resynced).toEqual([runAddress]);
+  });
+
+  test("pushes a sender-key refresh for each reported cached sender", async () => {
+    const key = "ab".repeat(32);
+    const resolved: string[] = [];
+    const router = createSenderKeyRouter((address) => {
+      resolved.push(address);
+      return Promise.resolve(address === "usr_alice@exclusive" ? key : null);
+    });
+    const ws = await connect(router, [], {
+      cachedSenderAddresses: ["usr_alice@exclusive"],
+    });
+
+    const frame = await waitForFrame(
+      ws,
+      (f) => f.type === "sender.key.refresh",
+    );
+    expect(frame).toEqual({
+      type: "sender.key.refresh",
+      address: "usr_alice@exclusive",
+      publicKey: key,
+    });
+    expect(resolved).toEqual(["usr_alice@exclusive"]);
+  });
+
+  test("pushes the refresh on the reconnect path too", async () => {
+    const key = "cd".repeat(32);
+    const router = createSenderKeyRouter(() => Promise.resolve(key));
+    const ws = await connect(router, [], {
+      frameType: "reconnect",
+      cachedSenderAddresses: ["usr_carol@exclusive"],
+    });
+
+    const frame = await waitForFrame(
+      ws,
+      (f) => f.type === "sender.key.refresh",
+    );
+    expect(frame.address).toBe("usr_carol@exclusive");
+    expect(frame.publicKey).toBe(key);
+  });
+
+  test("skips a reported sender that resolves to no key", async () => {
+    const resolved: string[] = [];
+    const router = createSenderKeyRouter((address) => {
+      resolved.push(address);
+      return Promise.resolve(null);
+    });
+    const ws = await connect(router, [], {
+      cachedSenderAddresses: ["usr_ghost@exclusive"],
+    });
+    // Let the detached resync task run to completion.
+    await tick();
+    await tick();
+
+    // The resolver ran (the path executed) but nothing was pushed.
+    expect(resolved).toEqual(["usr_ghost@exclusive"]);
+    const refreshes = ws.sent
+      .map((raw): Record<string, unknown> => JSON.parse(raw))
+      .filter((f) => f.type === "sender.key.refresh");
+    expect(refreshes).toEqual([]);
+  });
+
+  test("skips a run address in the report without resolving it", async () => {
+    const key = "ef".repeat(32);
+    const resolved: string[] = [];
+    const router = createSenderKeyRouter((address) => {
+      resolved.push(address);
+      return Promise.resolve(key);
+    });
+    const ws = await connect(router, [], {
+      cachedSenderAddresses: ["run_job1@exclusive", "usr_bob@exclusive"],
+    });
+
+    await waitForFrame(
+      ws,
+      (f) =>
+        f.type === "sender.key.refresh" && f.address === "usr_bob@exclusive",
+    );
+    // The run address is filtered before resolution; only the user sender is
+    // resolved and refreshed.
+    expect(resolved).toEqual(["usr_bob@exclusive"]);
+    const refreshed = ws.sent
+      .map((raw): Record<string, unknown> => JSON.parse(raw))
+      .filter((f) => f.type === "sender.key.refresh")
+      .map((f) => f.address);
+    expect(refreshed).toEqual(["usr_bob@exclusive"]);
   });
 
   test("deploys only through the exact allocation target", async () => {
