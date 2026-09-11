@@ -45,6 +45,7 @@ import {
   settleWorkflowRunPacks,
   startDeployFlowEnv,
   startSidecarSubprocess,
+  terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
   waitForWorkflowRunComplete,
@@ -96,8 +97,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (restartedSidecar !== undefined) {
-    restartedSidecar.proc.kill();
-    await restartedSidecar.proc.exited;
+    await terminateSidecarSubprocess(restartedSidecar);
   }
   if (env !== undefined) await env.teardown();
   if (h !== undefined) await h.close();
@@ -245,8 +245,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await settleWorkflowRunPacks(env);
 
       const crashedDataDir = env.sidecar.dataDir;
-      env.sidecar.proc.kill();
-      await env.sidecar.proc.exited;
+      await terminateSidecarSubprocess(env.sidecar);
 
       await waitFor(
         () =>

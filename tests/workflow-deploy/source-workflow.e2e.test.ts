@@ -57,6 +57,7 @@ import {
   seedInferenceCredentials,
   startDeployFlowEnv,
   startSidecarSubprocess,
+  terminateSidecarSubprocess,
   waitFor,
   waitForFirstRunId,
   waitForWorkflowRunComplete,
@@ -207,8 +208,7 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
 
   afterAll(async () => {
     if (restartedSidecar !== undefined) {
-      restartedSidecar.proc.kill();
-      await restartedSidecar.proc.exited;
+      await terminateSidecarSubprocess(restartedSidecar);
     }
     for (const dir of restartTempDirs.splice(0)) {
       await fs.rm(dir, { recursive: true, force: true });
@@ -437,8 +437,7 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
     if (hubPort === undefined) {
       throw new Error("source e2e: hub.server.port is undefined after kill");
     }
-    env.sidecar.proc.kill();
-    await env.sidecar.proc.exited;
+    await terminateSidecarSubprocess(env.sidecar);
 
     restartedSidecar = await startSidecarSubprocess({
       hubPort,

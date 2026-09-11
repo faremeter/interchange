@@ -110,6 +110,12 @@ export const TOKEN = "test-token";
 // SIGKILL). Bounds the wait so a sidecar that is slow to reap under contention
 // cannot wedge the afterAll hook.
 const SIDECAR_REAP_GRACE_MS = 10_000;
+// Grace period for the sidecar's *descendants* after the reap SIGKILLs them
+// during `terminateSidecarSubprocess`. SIGKILL cannot be caught or ignored, so
+// a descendant still alive this long after is stuck in an uninterruptible
+// kernel state; failing loudly surfaces it instead of leaking a ~300MB
+// process (the full @intx module graph) into the next test file.
+const CHILD_REAP_GRACE_MS = 2_000;
 // A second sidecar identity, for tests that need two sidecars on one hub
 // (e.g. proving a cross-sidecar/federated mail deliver reaches the
 // receiver). The default fixture only spawns the first; a caller spawns the
@@ -1072,6 +1078,120 @@ export async function startSidecarSubprocess(opts: {
   return { proc, dataDir, stderr };
 }
 
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Live PIDs in the process subtree rooted at `rootPid`, excluding the root
+ * itself. Walked transitively over `ps -A -o pid=,ppid=` (the same table
+ * shape `listWorkflowHostChildren` reads), so no depth is assumed and no argv
+ * match is needed: every descendant of the sidecar is a process the test
+ * owns (its workflow-process children and any tools they spawn).
+ */
+function listProcessSubtree(rootPid: number): number[] {
+  const result = Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid="]);
+  const childrenOf = new Map<number, number[]>();
+  for (const line of new TextDecoder().decode(result.stdout).split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    if (match === null || match[1] === undefined || match[2] === undefined) {
+      continue;
+    }
+    const pid = Number.parseInt(match[1], 10);
+    const ppid = Number.parseInt(match[2], 10);
+    const siblings = childrenOf.get(ppid) ?? [];
+    siblings.push(pid);
+    childrenOf.set(ppid, siblings);
+  }
+  const found: number[] = [];
+  const seen = new Set<number>([rootPid]);
+  const queue: number[] = [rootPid];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined) continue;
+    for (const child of childrenOf.get(current) ?? []) {
+      if (!seen.has(child)) {
+        seen.add(child);
+        queue.push(child);
+        found.push(child);
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Terminate a sidecar subprocess (bounded SIGTERM -> SIGKILL escalation) and
+ * then reap its process subtree.
+ *
+ * The escalation mirrors the production sidecar provisioner and the previous
+ * inline teardown logic: the sidecar installs no graceful-shutdown SIGTERM
+ * handler, so under contention a plain SIGTERM can leave `proc.exited`
+ * unresolved; an unbounded wait there wedged the afterAll hook until the whole
+ * suite was torn down. Waiting for the exit before the caller removes the
+ * data directory keeps the earlier fix intact: removing `sidecar-data-*` while
+ * a subprocess still holds file handles raced EBUSY/EACCES on slow hosts, so
+ * errors must surface from the rm rather than be shrouded.
+ *
+ * The subtree reap closes the second half of the sidecar leak: killing the
+ * sidecar orphans its workflow-process children. They normally notice the dead
+ * host through their broken IPC channel and exit on their own, but under load
+ * that has been observed to take tens of seconds, and each straggler holds
+ * ~300MB of RSS plus its OS file handles into the next test file's boot,
+ * inflating the pass's peak RSS. The descendants are snapshotted *before* the
+ * kill: once the sidecar exits, the kernel re-parents its children to init
+ * and they can no longer be attributed to it.
+ *
+ * Safe to call twice on the same handle (crash tests terminate the sidecar
+ * mid-test, then `teardown()` terminates it again): `proc.kill()` is a no-op
+ * and `proc.exited` is already resolved on a finished subprocess, and a
+ * subtree walk from a dead pid finds nothing.
+ */
+export async function terminateSidecarSubprocess(
+  handle: SidecarHandle,
+): Promise<void> {
+  const pid = handle.proc.pid;
+  const subtree = pid !== undefined ? listProcessSubtree(pid) : [];
+  handle.proc.kill();
+  const exitedWithin = (ms: number) =>
+    Promise.race([
+      handle.proc.exited.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), ms)),
+    ]);
+  if (!(await exitedWithin(SIDECAR_REAP_GRACE_MS))) {
+    handle.proc.kill(9);
+    if (!(await exitedWithin(SIDECAR_REAP_GRACE_MS))) {
+      throw new Error(
+        `sidecar pid ${String(pid)} did not exit after SIGKILL within ${String(SIDECAR_REAP_GRACE_MS)}ms`,
+      );
+    }
+  }
+  for (const descendant of subtree) {
+    if (descendant === pid || !pidAlive(descendant)) continue;
+    try {
+      process.kill(descendant, "SIGKILL");
+    } catch {
+      // Exited between the liveness check and the signal.
+    }
+  }
+  const deadline = Date.now() + CHILD_REAP_GRACE_MS;
+  for (;;) {
+    const lingering = subtree.filter((d) => d !== pid && pidAlive(d));
+    if (lingering.length === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `sidecar pid ${String(pid)} descendant(s) ${lingering.join(",")} did not exit after SIGKILL within ${String(CHILD_REAP_GRACE_MS)}ms`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 /**
  * Per-deployment handle tracked by the env. Populated by
  * `deployWorkflowSourceForTest`; consulted by `readWorkflowRunEvents`,
@@ -1277,39 +1397,21 @@ export async function startDeployFlowEnv(
 
   const teardown = async (): Promise<void> => {
     // Close every tracked hub-side WebSocket handle before killing the
-    // sidecar so no live link lingers. Then reap the sidecar subprocess with a
-    // bounded SIGTERM -> timeout -> SIGKILL escalation -- the same shape the
-    // production sidecar provisioner uses -- before removing its data
-    // directory. The sidecar installs no graceful-shutdown SIGTERM handler, so
-    // under teardown contention (e.g. a sidecar still reaping its own
-    // crash-looping workflow-process children) a plain SIGTERM can leave
-    // `proc.exited` unresolved; an unbounded wait there wedged the afterAll
-    // hook until the whole suite was torn down. Waiting for the exit before the
-    // rm keeps the earlier fix intact: removing `sidecar-data-*` while the
-    // subprocess still holds file handles raced EBUSY/EACCES on slow hosts, so
-    // errors must surface from the rm rather than be shrouded. The server stops
-    // are bounded (`stopServerBounded`) because a test that dropped the hub
-    // link leaves Bun with a phantom connection its `server.stop` would wait on
+    // sidecar so no live link lingers. Then terminate the sidecar and reap
+    // its process subtree (`terminateSidecarSubprocess`) before removing its
+    // data directory: waiting for every process to exit before the rm keeps
+    // the earlier fix intact -- removing `sidecar-data-*` while a subprocess
+    // still holds file handles raced EBUSY/EACCES on slow hosts, so errors
+    // must surface from the rm rather than be shrouded. The server stops are
+    // bounded (`stopServerBounded`) because a test that dropped the hub link
+    // leaves Bun with a phantom connection its `server.stop` would wait on
     // forever.
     deployments.clear();
     for (const handle of hub.liveHandles) {
       handle.close();
     }
     hub.liveHandles.clear();
-    const sidecarExitedWithin = (ms: number) =>
-      Promise.race([
-        sidecar.proc.exited.then(() => true),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), ms)),
-      ]);
-    sidecar.proc.kill();
-    if (!(await sidecarExitedWithin(SIDECAR_REAP_GRACE_MS))) {
-      sidecar.proc.kill(9);
-      if (!(await sidecarExitedWithin(SIDECAR_REAP_GRACE_MS))) {
-        throw new Error(
-          `deploy-flow-env teardown: sidecar pid ${String(sidecar.proc.pid)} did not exit after SIGKILL`,
-        );
-      }
-    }
+    await terminateSidecarSubprocess(sidecar);
     await stopServerBounded(hub.server);
     await stopServerBounded(inference.server);
     for (const d of tempDirs.splice(0)) {

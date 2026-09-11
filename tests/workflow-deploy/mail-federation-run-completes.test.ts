@@ -73,6 +73,7 @@ import {
   fireMailTrigger,
   startDeployFlowEnv,
   startSidecarSubprocess,
+  terminateSidecarSubprocess,
   waitFor,
   waitForReconnect,
   waitForWorkflowRunComplete,
@@ -174,7 +175,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     afterAll(async () => {
       if (sidecar2) {
-        sidecar2.proc.kill();
+        await terminateSidecarSubprocess(sidecar2);
         sidecar2 = undefined;
       }
       if (env !== undefined) await env.teardown();
