@@ -11,7 +11,7 @@
 // lookup this module builds (`createInboundMailPolicyLookup`), so the seam sees
 // a total policy for every address and never re-derives a default of its own.
 
-import type { ResolvedInboundMailPolicy } from "./inbound-signature-shadow";
+import type { ResolvedInboundMailPolicy } from "./inbound-signature";
 
 /**
  * The fully-closed resolved policy: EVERY inbound-mail outcome -- including

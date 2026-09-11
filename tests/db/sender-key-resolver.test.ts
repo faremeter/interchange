@@ -251,8 +251,8 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
   test("resolveFrameSenderKey returns the key, and degrades a fault to null", async () => {
     // A resolvable sender yields its hex key. A resolution FAULT -- here a
     // keyless principal, the INTR-164 break that makes resolveSenderKey throw --
-    // degrades to null instead, so a shadow-verification fault never blocks mail
-    // delivery.
+    // degrades to null instead, so a resolution fault never blocks the send
+    // path (the recipient then resolves the sender as unverifiable).
     await seedTenant("tnt_frame", "frame.localhost");
     await seedPrincipal(h.db, {
       id: "prn_frame_ok",

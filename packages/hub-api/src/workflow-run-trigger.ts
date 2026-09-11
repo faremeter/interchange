@@ -550,8 +550,9 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     // recipient can verify the signature locally against the key the hub
     // vouches for, and co-deliver it on the run's grants barrier below so the
     // sender's key rides the same push as the grant. Best-effort: a resolution
-    // fault degrades to a null key (logged) rather than blocking the trigger --
-    // verification is shadow-only. A null key is omitted from the co-delivery.
+    // fault degrades to a null key (logged) rather than blocking the trigger.
+    // A null key is omitted from the co-delivery, so the recipient resolves the
+    // sender to `unknown`, which its admission policy rejects by default.
     const authenticatedSenderPublicKey = await resolveFrameSenderKey(
       db,
       principalKeyStore,

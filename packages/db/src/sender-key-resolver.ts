@@ -95,8 +95,9 @@ export async function resolveSenderKey(
  * {@link resolveSenderKey} throws on a genuine fault (an ambiguous user address,
  * or a principal with no active key -- an INTR-164 invariant break). Those
  * throws must fail loud for {@link auditSenderKeys}, but they must not break
- * mail delivery: the frame key is nullable and shadow-only, so a recipient
- * treats a null key as an unverifiable sender and admits the mail anyway.
+ * the send path: the frame key is nullable, so a recipient with no co-delivered
+ * key resolves the sender as `unknown`, which its admission policy rejects by
+ * default (a workflow may relax `unknown` to admit).
  * Coupling delivery to key resolution would let a data-integrity fault strand a
  * run or drop mail. So a throw here degrades to `null` and is logged at ERROR
  * with its cause -- a degraded fault, kept distinct from the ordinary

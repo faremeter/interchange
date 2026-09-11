@@ -30,7 +30,7 @@ import { createInMemoryTransport } from "@intx/mail-memory";
 import { hexDecode, hexEncode } from "@intx/types";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
-import { resolveInboundMailPolicy } from "./inbound-signature-shadow";
+import { resolveInboundMailPolicy } from "./inbound-signature";
 import { createSenderKeyCache } from "../sender-key-cache";
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";

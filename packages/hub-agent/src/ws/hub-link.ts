@@ -46,10 +46,10 @@ import {
   DEFAULT_REGISTER_ACK_TIMEOUT_MS,
 } from "./register-acker";
 import {
-  shadowVerifyInboundSignature,
+  verifyInboundSignature,
   outcomeForVerdict,
   type ResolvedInboundMailPolicy,
-} from "./inbound-signature-shadow";
+} from "./inbound-signature";
 import { base64Decode, base64Encode } from "@intx/types";
 import type {
   ApprovalSnapshot,
@@ -511,7 +511,7 @@ export type HubLinkConfig = {
   /**
    * Resolves a sender address to the crypto whose public key verifies that
    * sender's inbound mail, or `undefined` when no key is known. The inbound
-   * signature shadow uses it to check each frame's signature against the key a
+   * signature verify uses it to check each frame's signature against the key a
    * local cache holds, beside the check against the key the hub stamped on the
    * frame. Source-opaque by design: the link never learns whether the key came
    * from a local cache or a relayed foreign key.
@@ -1571,7 +1571,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // mail-memory transport (the standalone harness path) does not deliver
         // through this seam and carries no hub-verified sender, so it is outside
         // this path.
-        const verdict = await shadowVerifyInboundSignature(
+        const verdict = await verifyInboundSignature(
           {
             raw: rawBytes,
             authenticatedSender: frame.authenticatedSender,

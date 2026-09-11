@@ -338,10 +338,11 @@ export type SignalCorrelationRegisterAckFrame =
  * itself verified -- the ownership-gated sender of a relayed mail, the
  * address persisted at enqueue for a durable dispatch, or the triggering
  * principal's address for hub-originated mail -- NEVER from the message's
- * own (spoofable) MIME `From`. The recipient's shadow signature check takes
- * the sender of record from this hub-verified value rather than the forgeable
- * `From`, resolves the sender's key from its local cache, and logs a verdict --
- * it does not gate delivery.
+ * own (spoofable) MIME `From`. The recipient's signature check takes the
+ * sender of record from this hub-verified value rather than the forgeable
+ * `From`, resolves the sender's key from its local cache, verifies the
+ * signature, and gates delivery on the resulting admission outcome per the
+ * recipient's inbound-mail policy.
  */
 export const MailInboundFrame = type({
   type: "'mail.inbound'",

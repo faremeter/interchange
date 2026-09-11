@@ -1918,8 +1918,9 @@ export function createSidecarRouter(
         // the `run.grants` frame binds the sender address to the key and can
         // verify the sender's mail locally. A null key is never carried (the
         // list is undefined then), so the "authorized-with-a-key implies key
-        // cached" invariant holds, and the recipient logs such mail as
-        // unverifiable and admits it (shadow) rather than blocking delivery.
+        // cached" invariant holds; a recipient with no cached key resolves such
+        // mail as `unknown`, which its admission policy rejects by default (a
+        // workflow may relax `unknown` to admit).
         // Send the run's grants ahead of the mail. A `false` here means the
         // deployment is unroutable. Do not route the mail that would dispatch
         // it; the grants-only reservation remains the canonical snapshot for a
@@ -2836,9 +2837,9 @@ export function createSidecarRouter(
     // principal's address) -- never the message's own MIME `From`. It rides
     // the frame as the hub-verified sender of record, so a recipient can take
     // the sender from it rather than the forgeable `From`. The recipient's
-    // shadow signature check reads it as the sender of record -- resolving the
-    // sender's key from its local cache to verify the signature -- but only to
-    // log a verdict; it does not gate delivery.
+    // signature check reads it as the sender of record -- resolving the
+    // sender's key from its local cache to verify the signature -- and its
+    // admission policy gates delivery on the verdict.
     //
     // Carry the hub-minted messageId on the frame so the sidecar's durable-
     // receipt ack (`mail.inbound.ack`) keys on the same id the hub tracks, and

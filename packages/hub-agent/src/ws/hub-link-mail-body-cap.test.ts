@@ -28,7 +28,7 @@ import type {
 import { configureSync, getConfig, resetSync } from "@intx/log";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
-import { resolveInboundMailPolicy } from "./inbound-signature-shadow";
+import { resolveInboundMailPolicy } from "./inbound-signature";
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
 

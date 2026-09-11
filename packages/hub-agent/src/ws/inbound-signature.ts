@@ -11,11 +11,11 @@ const logger = getLogger([
   "interchange",
   "hub-agent",
   "ws",
-  "inbound-signature-shadow",
+  "inbound-signature",
 ]);
 
 /**
- * The two-axis verdict of shadow-verifying one inbound mail frame.
+ * The two-axis verdict of verifying one inbound mail frame.
  *
  * `signature` reuses the `SignatureStatus` vocabulary --
  * `valid | invalid | missing | unknown` -- with an added `error` for a fault in
@@ -130,7 +130,7 @@ export function resolveInboundMailPolicy(
   };
 }
 
-export type InboundSignatureShadowInput = {
+export type InboundSignatureInput = {
   raw: Uint8Array;
   authenticatedSender: string;
   messageId: string | undefined;
@@ -157,8 +157,8 @@ export type InboundSignatureShadowInput = {
  * unreadable, or the verify throwing) degrades to an `error` verdict logged at
  * ERROR -- surfaced loudly and kept distinct from `unknown`.
  */
-export async function shadowVerifyInboundSignature(
-  input: InboundSignatureShadowInput,
+export async function verifyInboundSignature(
+  input: InboundSignatureInput,
   resolveSenderCrypto: (address: string) => CryptoProvider | undefined,
 ): Promise<InboundSignatureVerdict> {
   const { raw, authenticatedSender } = input;
@@ -204,10 +204,10 @@ export async function shadowVerifyInboundSignature(
     evaluateVisibleFrom(verdict, raw);
   } catch (cause) {
     logger.error(
-      "inbound mail signature shadow-verify FAULTED for {authenticatedSender} (messageId {messageId}, agentAddress {agentAddress}): {cause}",
+      "inbound mail signature verify FAULTED for {authenticatedSender} (messageId {messageId}, agentAddress {agentAddress}): {cause}",
       {
         // Carry the same `signature`/`fromMatch` keys the clean verdict logs, so
-        // a consumer counting the shadow corpus by `signature` sees faults too.
+        // a consumer counting the verdict corpus by `signature` sees faults too.
         signature: "error",
         fromMatch: "unchecked",
         authenticatedSender,
@@ -239,7 +239,7 @@ export async function shadowVerifyInboundSignature(
  *
  * A stamped `authenticatedSender` that is not a bare addr-spec leaves the
  * binding `unchecked` rather than clobbering the standing signature verdict --
- * the signature is the primary signal, and a shadow must not turn an unparseable
+ * the signature is the primary signal, and the check must not turn an unparseable
  * header into a false verdict.
  */
 function evaluateVisibleFrom(
@@ -291,10 +291,10 @@ function readMessageFrom(raw: Uint8Array): string | null {
 
 function logVerdict(
   verdict: InboundSignatureVerdict,
-  input: InboundSignatureShadowInput,
+  input: InboundSignatureInput,
 ): InboundSignatureVerdict {
   logger.info(
-    "inbound mail signature shadow verdict {signature}/{fromMatch} for {authenticatedSender} (from {messageFrom}, messageId {messageId}, agentAddress {agentAddress})",
+    "inbound mail signature verdict {signature}/{fromMatch} for {authenticatedSender} (from {messageFrom}, messageId {messageId}, agentAddress {agentAddress})",
     {
       signature: verdict.signature,
       fromMatch: verdict.fromMatch,

@@ -14,12 +14,12 @@ import type {
 } from "@intx/types/runtime";
 
 import {
-  shadowVerifyInboundSignature,
+  verifyInboundSignature,
   outcomeForVerdict,
   resolveInboundMailPolicy,
   type InboundSignatureVerdict,
   type ResolvedInboundMailPolicy,
-} from "./inbound-signature-shadow";
+} from "./inbound-signature";
 import { createPublicKeyCrypto } from "../sender-crypto";
 
 const AGENT_ADDRESS = "run_anchor@tenant.example";
@@ -79,13 +79,13 @@ function cacheFor(
 
 const emptyCache = (): undefined => undefined;
 
-describe("shadowVerifyInboundSignature", () => {
+describe("verifyInboundSignature", () => {
   test("signature the cached key verifies, From matches: valid/match", async () => {
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -106,7 +106,7 @@ describe("shadowVerifyInboundSignature", () => {
     const other = await makeCrypto();
     const raw = await signedMessage(signer, sender);
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -135,7 +135,7 @@ describe("shadowVerifyInboundSignature", () => {
       ].join("\r\n"),
     );
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -159,7 +159,7 @@ describe("shadowVerifyInboundSignature", () => {
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, forgedFrom);
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: signer,
@@ -179,7 +179,7 @@ describe("shadowVerifyInboundSignature", () => {
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -201,7 +201,7 @@ describe("shadowVerifyInboundSignature", () => {
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -232,7 +232,7 @@ describe("shadowVerifyInboundSignature", () => {
       verify: () => Promise.reject(new Error("verify-only")),
     };
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -253,7 +253,7 @@ describe("shadowVerifyInboundSignature", () => {
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, "Alpha <alpha@test.interchange>");
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -269,7 +269,7 @@ describe("shadowVerifyInboundSignature", () => {
   });
 
   test("an unparseable multi-address From is unparseable, not a false mismatch", async () => {
-    // A shadow must not turn a From it cannot reduce to one addr-spec into a
+    // The check must not turn a From it cannot reduce to one addr-spec into a
     // forgery verdict -- that would poison the corpus (and later drop
     // legitimate mail under enforcement). extractAddrSpec rejects the two-@
     // input; the binding is `unparseable` -- present but malformed, distinct
@@ -281,7 +281,7 @@ describe("shadowVerifyInboundSignature", () => {
       "alpha@test.interchange, beta@test.interchange",
     );
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -307,7 +307,7 @@ describe("shadowVerifyInboundSignature", () => {
       "alpha@test.interchange, beta@test.interchange",
     );
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -338,7 +338,7 @@ describe("shadowVerifyInboundSignature", () => {
       ].join("\r\n"),
     );
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -360,7 +360,7 @@ describe("shadowVerifyInboundSignature", () => {
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,
@@ -379,14 +379,14 @@ describe("shadowVerifyInboundSignature", () => {
     // The load-bearing asymmetry: a present-and-parseable message From under a
     // VALID signature, but the stamped authenticatedSender itself is not a bare
     // addr-spec (a two-@ string extractAddrSpec refuses). The binding must stay
-    // `unchecked` -- the signature is the primary signal, and a shadow must not
+    // `unchecked` -- the signature is the primary signal, and the check must not
     // turn an unparseable STAMP into a false `unparseable` From verdict (that
     // state is reserved for a present-but-malformed message From).
     const badSender = "alpha@test@interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, "alpha@test.interchange");
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: badSender,
@@ -408,7 +408,7 @@ describe("shadowVerifyInboundSignature", () => {
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, "Alpha@Test.Interchange");
 
-    const verdict = await shadowVerifyInboundSignature(
+    const verdict = await verifyInboundSignature(
       {
         raw,
         authenticatedSender: sender,

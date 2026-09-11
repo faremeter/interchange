@@ -20,7 +20,7 @@ export {
 export {
   resolveInboundMailPolicy,
   type ResolvedInboundMailPolicy,
-} from "./ws/inbound-signature-shadow";
+} from "./ws/inbound-signature";
 export {
   createInboundMailPolicyRegistry,
   createInboundMailPolicyLookup,

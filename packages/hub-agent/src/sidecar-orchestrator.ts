@@ -38,7 +38,7 @@ import {
   type WorkflowProbeExecutor,
   type ReconnectScheduler,
 } from "./ws/hub-link";
-import type { ResolvedInboundMailPolicy } from "./ws/inbound-signature-shadow";
+import type { ResolvedInboundMailPolicy } from "./ws/inbound-signature";
 
 const log = getLogger(["interchange", "hub-agent", "orchestrator"]);
 
@@ -106,7 +106,7 @@ export type SidecarOrchestratorConfig = {
    * Resolves a sender address to the crypto that verifies its inbound mail.
    * The host builds this over the sidecar's sender-key cache and the
    * orchestrator forwards it unchanged to `createHubLink`, where the inbound
-   * signature shadow uses it.
+   * signature verify uses it.
    */
   resolveSenderCrypto: (address: string) => CryptoProvider | undefined;
   /**

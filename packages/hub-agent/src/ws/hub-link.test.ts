@@ -31,7 +31,7 @@ import type {
 type TestSendPackOptions = { mountPath?: string; repoId?: RepoId };
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
-import type { ResolvedInboundMailPolicy } from "./inbound-signature-shadow";
+import type { ResolvedInboundMailPolicy } from "./inbound-signature";
 
 // These tests exercise routing and protocol, not admission policy, so they
 // hand the seam a policy that admits every outcome -- inbound mail routes as it
@@ -178,7 +178,7 @@ function withTestDeployBindings(): {
   return {
     keyStore,
     deployRouter: createTestDeployRouter(keyStore),
-    // These tests do not exercise the inbound signature compare, so the shadow
+    // These tests do not exercise the inbound signature compare, so the verify
     // resolves no cached key and the refresh/evict sinks are no-ops.
     resolveSenderCrypto: () => undefined,
     lookupInboundMailPolicy: () => admitAllInboundMailPolicy,

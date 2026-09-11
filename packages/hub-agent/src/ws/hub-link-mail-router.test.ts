@@ -53,7 +53,7 @@ import { createHubLink, type DeployRouter } from "./hub-link";
 import {
   resolveInboundMailPolicy,
   type ResolvedInboundMailPolicy,
-} from "./inbound-signature-shadow";
+} from "./inbound-signature";
 import {
   createInboundMailPolicyRegistry,
   createInboundMailPolicyLookup,
@@ -428,12 +428,12 @@ afterAll(() => {
   }
 });
 
-function shadowVerdicts(): CapturedLog[] {
+function verdicts(): CapturedLog[] {
   return capturedLogs.filter(
     (r) =>
       r.category.length >= 4 &&
       r.category[2] === "ws" &&
-      r.category[3] === "inbound-signature-shadow",
+      r.category[3] === "inbound-signature",
   );
 }
 
@@ -568,8 +568,8 @@ describe("hub-link mail.inbound signature enforcement", () => {
           env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
         ).toBe(true);
 
-        await waitFor(() => shadowVerdicts().length > 0);
-        const verdict = shadowVerdicts()[0];
+        await waitFor(() => verdicts().length > 0);
+        const verdict = verdicts()[0];
         expect(verdict?.properties["signature"]).toBe("valid");
         expect(verdict?.properties["fromMatch"]).toBe("match");
         await waitFor(() => routed.length > 0);
@@ -596,8 +596,8 @@ describe("hub-link mail.inbound signature enforcement", () => {
           env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
         ).toBe(true);
 
-        await waitFor(() => shadowVerdicts().length > 0);
-        expect(shadowVerdicts()[0]?.properties["signature"]).toBe("error");
+        await waitFor(() => verdicts().length > 0);
+        expect(verdicts()[0]?.properties["signature"]).toBe("error");
         // error is pinned to reject in every resolved policy, so the mail is
         // dropped before the router is consulted.
         expect(routed).toHaveLength(0);
@@ -624,8 +624,8 @@ describe("hub-link mail.inbound signature enforcement", () => {
           env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
         ).toBe(true);
 
-        await waitFor(() => shadowVerdicts().length > 0);
-        const verdict = shadowVerdicts()[0];
+        await waitFor(() => verdicts().length > 0);
+        const verdict = verdicts()[0];
         // The verify still runs and the message is clean (valid/match), yet the
         // fully-closed policy of an unregistered address rejects even `clean`.
         expect(verdict?.properties["signature"]).toBe("valid");
@@ -655,8 +655,8 @@ describe("hub-link mail.inbound signature enforcement", () => {
           env.router.routeMail(deploymentAddress, base64Encode(raw), stamp),
         ).toBe(true);
 
-        await waitFor(() => shadowVerdicts().length > 0);
-        const verdict = shadowVerdicts()[0];
+        await waitFor(() => verdicts().length > 0);
+        const verdict = verdicts()[0];
         expect(verdict?.properties["signature"]).toBe("valid");
         expect(verdict?.properties["fromMatch"]).toBe("mismatch");
         // valid+mismatch -> untrustedFrom, which the neutral policy rejects.
@@ -692,9 +692,9 @@ describe("hub-link mail.inbound signature enforcement", () => {
         // ahead of the verdict line, so select the verdict record by its
         // `signature` property rather than taking the first record.
         await waitFor(() =>
-          shadowVerdicts().some((r) => r.properties["signature"] !== undefined),
+          verdicts().some((r) => r.properties["signature"] !== undefined),
         );
-        const verdict = shadowVerdicts().find(
+        const verdict = verdicts().find(
           (r) => r.properties["signature"] !== undefined,
         );
         expect(verdict?.properties["fromMatch"]).toBe("unparseable");
@@ -729,8 +729,8 @@ describe("hub-link mail.inbound signature enforcement", () => {
           ),
         ).toBe(true);
 
-        await waitFor(() => shadowVerdicts().length > 0);
-        const verdict = shadowVerdicts()[0];
+        await waitFor(() => verdicts().length > 0);
+        const verdict = verdicts()[0];
         expect(verdict?.properties["signature"]).toBe("missing");
         // missing -> missing, which the neutral policy rejects.
         expect(routed).toHaveLength(0);
@@ -773,10 +773,8 @@ describe("hub-link mail.inbound signature enforcement", () => {
           ),
         ).toBe(true);
 
-        await waitFor(() => shadowVerdicts().length >= 2);
-        const signatures = shadowVerdicts().map(
-          (r) => r.properties["signature"],
-        );
+        await waitFor(() => verdicts().length >= 2);
+        const signatures = verdicts().map((r) => r.properties["signature"]);
         expect(signatures).toContain("unknown");
         expect(signatures).toContain("invalid");
         await waitFor(() => routed.length > 0);

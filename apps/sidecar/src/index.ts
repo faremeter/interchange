@@ -252,7 +252,7 @@ const senderKeyCache = await createSenderKeyCache({
   removeFileDurable: (filePath) => removeFileAtomicDurable(filePath),
 });
 
-// The read side of the same cache: the inbound signature shadow resolves a
+// The read side of the same cache: the inbound signature verify resolves a
 // sender address to the crypto that verifies its mail. Built here at the edge
 // so the hub link stays source-opaque -- it resolves address -> crypto without
 // holding the cache or knowing where the key came from.
