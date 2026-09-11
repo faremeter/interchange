@@ -20,12 +20,17 @@ const logger = getLogger([
  * cache holds for `authenticatedSender`? `unknown` means the cache holds no key
  * for the sender, so there is nothing to verify against.
  *
- * `fromMatch` is an orthogonal axis: given a VALID signature, does the message's
- * visible `From` bind to `authenticatedSender`? A valid signature over a `From`
- * that names a different sender is an identity forgery -- a legitimate key
- * signing under a borrowed display identity -- and it can only arise atop a
- * valid signature, so `fromMatch` is `unchecked` whenever the signature is not
- * `valid` or the message carries no parseable `From`.
+ * `fromMatch` is an orthogonal axis over the message's visible `From`, evaluated
+ * for EVERY non-error signature status (valid, invalid, missing, unknown):
+ *   - `unchecked`: the message carries no `From`, OR it carries a parseable
+ *     `From` but the signature is not `valid`, so a match is not meaningful.
+ *   - `unparseable`: the message carries a `From` that cannot be reduced to one
+ *     addr-spec. This is DISTINCT from `unchecked` (no `From` at all) -- a
+ *     present but unparseable `From` is suspicious, not benign.
+ *   - `match` / `mismatch`: only atop a VALID signature with a parseable `From`,
+ *     whether that `From` binds to `authenticatedSender`. A valid signature over
+ *     a `From` that names a different sender is an identity forgery -- a
+ *     legitimate key signing under a borrowed display identity.
  *
  * The signature covers only the message's signed content part, NOT its
  * top-level `From` header (see `@intx/mime` `assembleMessage`). The binding
@@ -34,7 +39,7 @@ const logger = getLogger([
  */
 export type InboundSignatureVerdict = {
   signature: "valid" | "invalid" | "missing" | "unknown" | "error";
-  fromMatch: "match" | "mismatch" | "unchecked";
+  fromMatch: "match" | "mismatch" | "unchecked" | "unparseable";
   authenticatedSender: string;
   messageFrom: string | null;
 };
@@ -84,28 +89,30 @@ export async function shadowVerifyInboundSignature(
       // rotation the cache has not yet refreshed. The mail is admitted as an
       // unverifiable sender -- a quiet `unknown`, keyed by `authenticatedSender`
       // in the log so the observation window stays legible.
-      return logVerdict(
-        {
-          signature: "unknown",
-          fromMatch: "unchecked",
-          authenticatedSender,
-          messageFrom: null,
-        },
-        input,
-      );
+      verdict = {
+        signature: "unknown",
+        fromMatch: "unchecked",
+        authenticatedSender,
+        messageFrom: null,
+      };
+    } else {
+      // The cached key is raw bytes, already validated 32-byte Ed25519 at cache
+      // write/load time, so it feeds `verifyMimeSignature` directly.
+      const signature = await verifyMimeSignature(raw, crypto.getPublicKey());
+      verdict = {
+        signature,
+        fromMatch: "unchecked",
+        authenticatedSender,
+        messageFrom: null,
+      };
     }
-    // The cached key is raw bytes, already validated 32-byte Ed25519 at cache
-    // write/load time, so it feeds `verifyMimeSignature` directly.
-    const signature = await verifyMimeSignature(raw, crypto.getPublicKey());
-    verdict = {
-      signature,
-      fromMatch: "unchecked",
-      authenticatedSender,
-      messageFrom: null,
-    };
-    if (signature === "valid") {
-      bindVisibleFrom(verdict, raw);
-    }
+    // Evaluate the visible From for EVERY non-error status. It records
+    // `messageFrom` and, atop a VALID signature, resolves the `fromMatch`
+    // binding; a present-but-unparseable From is marked `unparseable` even
+    // under invalid/missing/unknown, so a later enforcement precedence can see
+    // it. `evaluateVisibleFrom` never throws, so it does not reach the `error`
+    // path below.
+    evaluateVisibleFrom(verdict, raw);
   } catch (cause) {
     logger.error(
       "inbound mail signature shadow-verify FAULTED for {authenticatedSender} (messageId {messageId}, agentAddress {agentAddress}): {cause}",
@@ -132,28 +139,52 @@ export async function shadowVerifyInboundSignature(
 }
 
 /**
- * Bind the message's visible `From` to `authenticatedSender` on a VALID
- * signature. A parse failure (a malformed `From`, or an `authenticatedSender`
- * that is not a bare addr-spec) leaves the binding `unchecked` rather than
- * clobbering the standing signature verdict -- the signature is the primary
- * signal, and a shadow must not turn an unparseable header into a false verdict.
+ * Evaluate the message's visible `From` onto `verdict`, for any non-error
+ * signature status. Uses the tri-state of `readMessageFrom`:
+ *   - no `From` (or empty): leaves the binding `unchecked`, `messageFrom` null.
+ *   - `From` present but unparseable (`readMessageFrom` throws): marks the
+ *     binding `unparseable` -- a present but malformed `From` is a distinct,
+ *     suspicious state, kept separate from the benign no-`From` `unchecked`.
+ *   - `From` present and parsed: records `messageFrom`, and ONLY atop a VALID
+ *     signature compares it to `authenticatedSender` for `match`/`mismatch`.
+ *
+ * A stamped `authenticatedSender` that is not a bare addr-spec leaves the
+ * binding `unchecked` rather than clobbering the standing signature verdict --
+ * the signature is the primary signal, and a shadow must not turn an unparseable
+ * header into a false verdict.
  */
-function bindVisibleFrom(
+function evaluateVisibleFrom(
   verdict: InboundSignatureVerdict,
   raw: Uint8Array,
 ): void {
+  let messageFrom: string | null;
   try {
-    const messageFrom = readMessageFrom(raw);
-    verdict.messageFrom = messageFrom;
-    if (messageFrom !== null) {
-      verdict.fromMatch =
-        messageFrom === extractAddrSpec(verdict.authenticatedSender)
-          ? "match"
-          : "mismatch";
-    }
+    messageFrom = readMessageFrom(raw);
   } catch (cause) {
+    // The message carries a `From` that `extractAddrSpec` refuses -- present
+    // but unparseable, distinct from no `From` at all.
+    verdict.fromMatch = "unparseable";
     logger.debug(
       "inbound mail From-binding unparseable for {authenticatedSender}: {cause}",
+      {
+        authenticatedSender: verdict.authenticatedSender,
+        cause: describeCause(cause),
+      },
+    );
+    return;
+  }
+  if (messageFrom === null) return;
+  verdict.messageFrom = messageFrom;
+  // A From-binding is only meaningful atop a valid signature.
+  if (verdict.signature !== "valid") return;
+  try {
+    verdict.fromMatch =
+      messageFrom === extractAddrSpec(verdict.authenticatedSender)
+        ? "match"
+        : "mismatch";
+  } catch (cause) {
+    logger.debug(
+      "inbound mail sender stamp {authenticatedSender} is not a parseable addr-spec; leaving From-binding unchecked: {cause}",
       {
         authenticatedSender: verdict.authenticatedSender,
         cause: describeCause(cause),

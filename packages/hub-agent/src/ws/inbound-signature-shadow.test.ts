@@ -258,11 +258,12 @@ describe("shadowVerifyInboundSignature", () => {
     expect(verdict.messageFrom).toBe("alpha@test.interchange");
   });
 
-  test("an unparseable multi-address From stays unchecked, not a false mismatch", async () => {
+  test("an unparseable multi-address From is unparseable, not a false mismatch", async () => {
     // A shadow must not turn a From it cannot reduce to one addr-spec into a
     // forgery verdict -- that would poison the corpus (and later drop
     // legitimate mail under enforcement). extractAddrSpec rejects the two-@
-    // input; the binding degrades to unchecked while the signature stands.
+    // input; the binding is `unparseable` -- present but malformed, distinct
+    // from a benign no-From `unchecked` -- while the signature stands.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(
@@ -281,6 +282,112 @@ describe("shadowVerifyInboundSignature", () => {
     );
 
     expect(verdict.signature).toBe("valid");
+    expect(verdict.fromMatch).toBe("unparseable");
+    expect(verdict.messageFrom).toBeNull();
+  });
+
+  test("an unparseable From at a cache miss is unparseable, not unchecked", async () => {
+    // The From presence is evaluated for every non-error status, not only
+    // valid. A present-but-unparseable From under an `unknown` signature is
+    // still `unparseable` -- a later enforcement precedence needs to see it.
+    const sender = "alpha@test.interchange";
+    const crypto = await makeCrypto();
+    const raw = await signedMessage(
+      crypto,
+      "alpha@test.interchange, beta@test.interchange",
+    );
+
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-multi-miss",
+        agentAddress: AGENT_ADDRESS,
+      },
+      emptyCache,
+    );
+
+    expect(verdict.signature).toBe("unknown");
+    expect(verdict.fromMatch).toBe("unparseable");
+    expect(verdict.messageFrom).toBeNull();
+  });
+
+  test("no From header at all stays unchecked, distinct from unparseable", async () => {
+    // A message with no From carries no identity claim to bind -- a benign
+    // `unchecked` with a null messageFrom, kept distinct from a present but
+    // unparseable From.
+    const sender = "alpha@test.interchange";
+    const crypto = await makeCrypto();
+    const raw = new TextEncoder().encode(
+      [
+        "To: beta@test.interchange",
+        "Subject: no from",
+        "Content-Type: text/plain",
+        "",
+        "no from header",
+      ].join("\r\n"),
+    );
+
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-no-from",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(sender, crypto),
+    );
+
+    expect(verdict.fromMatch).toBe("unchecked");
+    expect(verdict.messageFrom).toBeNull();
+  });
+
+  test("a cache miss with a parseable From is unchecked, not unparseable", async () => {
+    // A parseable From under a non-valid signature records `messageFrom` but
+    // leaves the binding `unchecked` -- a match is only meaningful atop a valid
+    // signature, and this must NOT be mistaken for `unparseable`.
+    const sender = "alpha@test.interchange";
+    const crypto = await makeCrypto();
+    const raw = await signedMessage(crypto, sender);
+
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-miss-parseable",
+        agentAddress: AGENT_ADDRESS,
+      },
+      emptyCache,
+    );
+
+    expect(verdict.signature).toBe("unknown");
+    expect(verdict.fromMatch).toBe("unchecked");
+    expect(verdict.messageFrom).toBe(sender);
+  });
+
+  test("valid signature with an unparseable stamped sender stays unchecked, not unparseable", async () => {
+    // The load-bearing asymmetry: a present-and-parseable message From under a
+    // VALID signature, but the stamped authenticatedSender itself is not a bare
+    // addr-spec (a two-@ string extractAddrSpec refuses). The binding must stay
+    // `unchecked` -- the signature is the primary signal, and a shadow must not
+    // turn an unparseable STAMP into a false `unparseable` From verdict (that
+    // state is reserved for a present-but-malformed message From).
+    const badSender = "alpha@test@interchange";
+    const crypto = await makeCrypto();
+    const raw = await signedMessage(crypto, "alpha@test.interchange");
+
+    const verdict = await shadowVerifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: badSender,
+        messageId: "mid-bad-sender",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(badSender, crypto),
+    );
+
+    expect(verdict.signature).toBe("valid");
+    expect(verdict.messageFrom).toBe("alpha@test.interchange");
     expect(verdict.fromMatch).toBe("unchecked");
   });
 
