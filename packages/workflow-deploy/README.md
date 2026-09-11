@@ -38,6 +38,12 @@ Public surface:
   agent-bearing step resolves through the gate, while a step that cannot
   invoke inference takes the deploy's default source as an inert
   placeholder.
+- `collectAgentBearingStepIds(...)` — the ids of the steps that can actually
+  invoke inference (`agent`, or `map` over one). Every other primitive is
+  pinned a source to satisfy the wire requirement that each step carry one but
+  never issues a request through it, so a consumer deciding what a step is
+  entitled to — credential delivery, notably — asks this rather than reading
+  the pinned map.
 - `enumerateInertBodies(...)` — lift each inline trigger body (onTrigger
   section or childWorkflow child), transitively, out of a frozen inert
   projection so the hub can stage it and pin its per-step sources. The

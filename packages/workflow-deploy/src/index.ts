@@ -11,7 +11,9 @@
 //     (`deriveRunAddress`, `deriveStepAddress`, `resolveStepAddress`, ...)
 //     and per-step inference-source resolution against the operator-
 //     approved grant set (`pickStepInferenceSource`, `pinInertStepSources`,
-//     `buildInertProjectionStepSources`, `buildInertBodyStepSources`).
+//     `buildInertProjectionStepSources`, `buildInertBodyStepSources`), plus
+//     `collectAgentBearingStepIds` for consumers that must tell a step which
+//     can invoke inference from one merely carrying a placeholder pin.
 
 export {
   walkCapabilities,
@@ -37,6 +39,7 @@ export {
 export {
   pickStepInferenceSource,
   pinInertStepSources,
+  collectAgentBearingStepIds,
   buildInertProjectionStepSources,
   buildInertBodyStepSources,
   buildSingleStepAgentDefinition,

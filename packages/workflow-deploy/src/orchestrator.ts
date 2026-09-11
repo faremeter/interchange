@@ -174,7 +174,38 @@ export function pinInertStepSources(args: {
   }) => InferenceSource;
 }): Record<string, InferenceSource[]> {
   const sources: Record<string, InferenceSource[]> = {};
-  const pin = (def: WorkflowProjectionDefinition): void => {
+  forEachInertStep(args, ({ stepId, isAgent, preference }) => {
+    const resolved = args.resolveLeafSource({ stepId, isAgent, preference });
+    const existing = sources[stepId]?.[0];
+    if (existing !== undefined) {
+      if (!sameInferenceSource(existing, resolved)) {
+        throw new WorkflowDefinitionInvalidError(
+          args.workflowId,
+          `step id ${stepId} resolves to two different inference sources across nested loop bodies; a loop-body step id that collides with another step must resolve to the same source`,
+        );
+      }
+      return;
+    }
+    sources[stepId] = [resolved];
+  });
+  return sources;
+}
+
+/**
+ * Walk a frozen inert definition's steps in `stepOrder`, recursing into `loop`
+ * bodies, and hand each leaf its `(isAgent, preference)` classification. Owns
+ * the traversal so every consumer classifies steps the same way; a second
+ * implementation would drift from this one the first time a primitive is added.
+ */
+function forEachInertStep(
+  args: { definition: WorkflowProjectionDefinition; context: string },
+  visit: (leaf: {
+    stepId: string;
+    isAgent: boolean;
+    preference: InertBodyStepPreference | null;
+  }) => void,
+): void {
+  const walk = (def: WorkflowProjectionDefinition): void => {
     for (const stepId of def.stepOrder) {
       const stepValue = def.steps[stepId];
       const { isAgent, preference } = readInertStepInference(
@@ -182,24 +213,40 @@ export function pinInertStepSources(args: {
         args.context,
         stepId,
       );
-      const resolved = args.resolveLeafSource({ stepId, isAgent, preference });
-      const existing = sources[stepId]?.[0];
-      if (existing !== undefined) {
-        if (!sameInferenceSource(existing, resolved)) {
-          throw new WorkflowDefinitionInvalidError(
-            args.workflowId,
-            `step id ${stepId} resolves to two different inference sources across nested loop bodies; a loop-body step id that collides with another step must resolve to the same source`,
-          );
-        }
-      } else {
-        sources[stepId] = [resolved];
-      }
+      visit({ stepId, isAgent, preference });
       const loopBody = inertLoopBody(stepValue);
-      if (loopBody !== null) pin(loopBody);
+      if (loopBody !== null) walk(loopBody);
     }
   };
-  pin(args.definition);
-  return sources;
+  walk(args.definition);
+}
+
+/**
+ * Collect the ids of the steps in a frozen inert definition that can invoke
+ * inference: an `agent` step or a `map` over one. Every other primitive --
+ * `action`, `gate`, `awaitSignal`, `sleep`, `escalation`, and the `loop`,
+ * `onTrigger` and `childWorkflow` containers -- is pinned a source to satisfy
+ * the wire requirement that every step carry one, and never issues a request
+ * through it.
+ *
+ * A container's own id is excluded while its contents are not: a `loop` body's
+ * steps are classified on their own visit into the same flat namespace, and an
+ * `onTrigger` or `childWorkflow` body is lifted to its own definition and
+ * classified there.
+ *
+ * Derived from the definition rather than from a pinned sources map, so a
+ * consumer deciding what a step is entitled to reads the hash-covered
+ * projection instead of trusting a map it was handed.
+ */
+export function collectAgentBearingStepIds(args: {
+  definition: WorkflowProjectionDefinition;
+  context: string;
+}): Set<string> {
+  const agentStepIds = new Set<string>();
+  forEachInertStep(args, ({ stepId, isAgent }) => {
+    if (isAgent) agentStepIds.add(stepId);
+  });
+  return agentStepIds;
 }
 
 /**
