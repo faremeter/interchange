@@ -69,6 +69,42 @@ export const MAX_PROBE_GRANTS_FRAME = 8192;
 export const MAX_CREDENTIAL_REVOCATIONS_FRAME = 1024;
 
 // ---------------------------------------------------------------------------
+// Frame payload byte limits
+// ---------------------------------------------------------------------------
+//
+// Byte-size ceilings on the control socket, complementary to the element-count
+// ceilings above. One layer owns each dimension: the hub sidecar websocket's
+// maxPayloadLength owns the whole-frame byte size, and the mail body cap owns
+// one mail's rawMessage.
+
+// The largest rawMessage (base64-encoded MIME) a `mail.outbound` frame may
+// carry. A shared-policy ceiling: it holds the SAME number as `@intx/hub-api`'s
+// `MAX_MAIL_BODY_BYTES`, which caps the inbound HTTP mail route's whole request
+// body, so the frame path and the HTTP path enforce the same body ceiling. The
+// two measure different quantities -- an HTTP whole request body vs the frame's
+// rawMessage alone -- so they are deliberately separate constants held equal by
+// a guard test rather than one constant conflating two policies.
+// Enforced symmetrically: the hub drops an over-cap received frame (the DoS
+// backstop) and the sidecar refuses to send one.
+export const MAX_MAIL_OUTBOUND_BODY_BYTES = 44 * 1024 * 1024;
+
+// Headroom above the largest legit received frame for its base64/JSON framing
+// and its (separately count-capped) address arrays, so `maxPayloadLength` never
+// closes the socket on a legitimate mail frame whose rawMessage sits at the body
+// cap.
+const FRAME_OVERHEAD_BYTES = 20 * 1024 * 1024;
+
+// The ceiling wired as the hub sidecar websocket's `maxPayloadLength`. Bun
+// closes the connection on a RECEIVED message larger than this, so it must clear
+// the largest legit received frame -- the `mail.outbound` frame, whose
+// rawMessage is bounded by `MAX_MAIL_OUTBOUND_BODY_BYTES`, plus framing
+// overhead. maxPayloadLength gates incoming messages only; it does NOT limit
+// what the hub sends, so the hub->sidecar inline-asset deploy does not factor
+// into this number.
+export const MAX_SIDECAR_FRAME_BYTES =
+  MAX_MAIL_OUTBOUND_BODY_BYTES + FRAME_OVERHEAD_BYTES;
+
+// ---------------------------------------------------------------------------
 // Sidecar → Hub
 // ---------------------------------------------------------------------------
 

@@ -16,6 +16,7 @@ import type { GrantWalkSnapshot } from "@intx/types";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import { type } from "arktype";
 import {
+  MAX_MAIL_OUTBOUND_BODY_BYTES,
   SidecarFrame,
   type AgentDeployAckFrame,
   type AgentDeployFrame,
@@ -1035,6 +1036,17 @@ export function createSidecarRouter(
         if (conn === undefined) return;
         if (!connOwnsAddress(conn, frame.senderAddress)) {
           logger.warn`Dropping mail.outbound from ${frame.senderAddress}: not registered to this sidecar`;
+          return;
+        }
+        // The DoS backstop and the trust boundary for an untrusted sidecar's
+        // mail body: measure the true byte cost (a hostile sidecar can send
+        // multi-byte UTF-8, so `.length` would undercount) and drop an over-cap
+        // frame here before either delivery path allocates on it. The socket's
+        // maxPayloadLength has already closed the connection for a truly huge
+        // frame; this catches one between the mail cap and that ceiling.
+        const bodyBytes = Buffer.byteLength(frame.rawMessage, "utf8");
+        if (bodyBytes > MAX_MAIL_OUTBOUND_BODY_BYTES) {
+          logger.warn`Dropping mail.outbound from ${frame.senderAddress}: rawMessage of ${String(bodyBytes)} bytes exceeds the ${String(MAX_MAIL_OUTBOUND_BODY_BYTES)}-byte cap`;
           return;
         }
         if (frame.delivered !== true) {

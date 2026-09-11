@@ -13,6 +13,7 @@ import {
   createSidecarRouter,
   type SidecarAuthIdentity,
 } from "./sidecar-handler";
+import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
 
 const TEST_SENDER = "sender@example.test";
 
@@ -682,5 +683,71 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     const inbound = framesOfType(ws, "mail.inbound");
     expect(inbound).toHaveLength(1);
     expect(inbound[0]?.["authenticatedSender"]).toBe(TEST_SENDER);
+  });
+});
+
+describe("SidecarRouter mail.outbound body cap", () => {
+  const smallRawMessage = btoa(
+    "From: run_anchor@tenant.example\r\nTo: run_anchor@tenant.example\r\nMessage-ID: <cap-1@example.test>\r\n\r\nbody",
+  );
+
+  function createCapRouter() {
+    return createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderKey() {
+          return "ab".repeat(32);
+        },
+      },
+    });
+  }
+
+  test("delivers a within-cap mail.outbound", async () => {
+    const router = createCapRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage: smallRawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    // A legit-sized frame is delivered: the cap does not false-reject.
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
+  });
+
+  test("drops an over-cap mail.outbound before either delivery path", async () => {
+    const router = createCapRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    // The array-length ceiling admits this frame (one recipient) and the
+    // schema puts no length bound on rawMessage, so it passes the union parse
+    // and reaches dispatch -- where the app-layer byte cap drops it. The
+    // materializer/mail-inbound fan-out never runs, so no frame is emitted.
+    const oversized = "A".repeat(MAX_MAIL_OUTBOUND_BODY_BYTES + 4);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage: oversized,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+    expect(framesOfType(ws, "run.grants")).toHaveLength(0);
   });
 });

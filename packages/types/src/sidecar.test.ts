@@ -10,7 +10,9 @@ import {
   MAX_CACHED_SENDER_ADDRESSES_FRAME,
   MAX_CREDENTIAL_REVOCATIONS_FRAME,
   MAX_MAIL_ADDRESSES_FRAME,
+  MAX_MAIL_OUTBOUND_BODY_BYTES,
   MAX_PROBE_GRANTS_FRAME,
+  MAX_SIDECAR_FRAME_BYTES,
   MailOutboundFrame,
   PackRejectFrame,
   PackRejectReason,
@@ -697,5 +699,18 @@ describe("frame array-length ceilings", () => {
       expect(CredentialsUpdateFrame(frame) instanceof type.errors).toBe(true);
       expect(HubFrame(frame) instanceof type.errors).toBe(true);
     });
+  });
+});
+
+describe("frame payload byte limits", () => {
+  test("the sidecar frame ceiling stays above the mail body cap", () => {
+    // maxPayloadLength must clear the largest legit received frame -- a
+    // mail.outbound whose rawMessage sits at the body cap, plus framing
+    // overhead -- or Bun would close the sidecar's control socket on a
+    // legitimate max-size mail. This pins that ordering, which the whole
+    // payload-limit design depends on.
+    expect(MAX_SIDECAR_FRAME_BYTES).toBeGreaterThan(
+      MAX_MAIL_OUTBOUND_BODY_BYTES,
+    );
   });
 });
