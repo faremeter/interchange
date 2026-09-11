@@ -725,6 +725,21 @@ export function createSidecarRouter(
     return true;
   }
 
+  // Arm a redelivery-retry timer for a tracked pending mail. Wraps the async
+  // `retryPendingMail` so a rejection -- a socket write that throws once the
+  // sidecar is gone -- is logged rather than floating out of the timer as an
+  // unhandled rejection.
+  function scheduleMailRetry(
+    agentAddress: string,
+    messageId: string,
+  ): ReturnType<typeof setTimeout> {
+    return setTimeout(() => {
+      void retryPendingMail(agentAddress, messageId).catch((err: unknown) => {
+        logger.warn`Redelivery retry for mail ${messageId} to ${agentAddress} failed: ${err instanceof Error ? err.message : String(err)}`;
+      });
+    }, mailAckRetryIntervalMs);
+  }
+
   // Track a connected-window `mail.inbound` for redelivery until the sidecar
   // acks its durable inbox write. Replaces any prior entry for the same
   // (agentAddress, messageId) -- clearing its timer first so no timer leaks --
@@ -752,33 +767,134 @@ export function createSidecarRouter(
       messageId,
       frame,
       attempts: 0,
-      timer: setTimeout(
-        () => retryPendingMail(agentAddress, messageId),
-        mailAckRetryIntervalMs,
-      ),
+      timer: scheduleMailRetry(agentAddress, messageId),
       ...(runGrants !== undefined ? { runGrants } : {}),
       ...(allocatedTarget !== undefined ? { allocatedTarget } : {}),
     });
   }
 
-  // Replay a mail-triggered run's grants ahead of a redelivery of its trigger
-  // mail. Same-connection FIFO lands the `run.grants` frame before the mail, so
-  // the redelivered run resolves its onRunStart barrier instead of failing
-  // closed on missing grants.
-  function replayRunGrantsAhead(
-    conn: SidecarConnection,
+  // Resolve the frame that must precede a redelivery of a trigger mail on the
+  // FIFO socket, re-resolving a keyless run sender's key so it still
+  // co-delivers. Returns:
+  //   - a `run.grants` frame when the entry carries run grants (the redelivered
+  //     run resolves its onRunStart barrier instead of failing closed on
+  //     missing grants);
+  //   - a bare `sender.key.refresh` frame when the entry carries NO run grants
+  //     but its run sender's key was never co-delivered, so the recipient still
+  //     caches the key ahead of the mail;
+  //   - `undefined` when nothing must precede the mail.
+  //
+  // The re-resolve is KIND-GATED to run-address senders only. A run's
+  // deployment key is immutable once acked, so the re-resolved key equals the
+  // signing-time key -- safe. A user (non-run) sender's key may have rotated
+  // since it signed, so re-resolving would check the fixed signed bytes against
+  // a newer key and turn a valid message into a false `invalid`; such a sender
+  // lacking a captured key stays keyless (an honest `unknown`). An entry that
+  // captured `senderIdentities` at track time replays that snapshot as-is: it
+  // holds the signing-time key and is never re-resolved.
+  //
+  // Awaits any key resolve so the caller sends the returned frame and the mail
+  // back-to-back with no await between them, keeping the co-delivered key ahead
+  // of the mail on the FIFO socket.
+  async function resolveReplayLeadFrame(
     entry: PendingMailEntry,
-  ): void {
-    if (entry.runGrants === undefined) return;
-    conn.send({
+  ): Promise<HubFrame | undefined> {
+    const authenticatedSender =
+      entry.frame.type === "mail.inbound"
+        ? entry.frame.authenticatedSender
+        : undefined;
+    const senderIsRun =
+      authenticatedSender !== undefined && isRunAddress(authenticatedSender);
+
+    if (entry.runGrants === undefined) {
+      if (authenticatedSender === undefined || !senderIsRun) return undefined;
+      const key = await reresolveRunSenderKey(authenticatedSender);
+      if (key === null) return undefined;
+      return {
+        type: "sender.key.refresh",
+        address: authenticatedSender,
+        publicKey: key,
+      };
+    }
+
+    let senderIdentities = entry.runGrants.senderIdentities;
+    if (
+      senderIdentities === undefined &&
+      authenticatedSender !== undefined &&
+      senderIsRun
+    ) {
+      const key = await reresolveRunSenderKey(authenticatedSender);
+      senderIdentities = senderIdentitiesFromKey(authenticatedSender, key);
+    }
+    return {
       type: "run.grants",
       agentAddress: entry.agentAddress,
       runId: entry.runGrants.runId,
       stepGrants: entry.runGrants.stepGrants,
-      ...(entry.runGrants.senderIdentities !== undefined
-        ? { senderIdentities: entry.runGrants.senderIdentities }
-        : {}),
-    });
+      ...(senderIdentities !== undefined ? { senderIdentities } : {}),
+    };
+  }
+
+  // Best-effort re-resolve of a run sender's hub-held key at replay time. Only
+  // called for a run-address sender, whose deployment key is immutable once
+  // acked, so the current key equals the signing-time key. Returns null when no
+  // resolver is wired or the sender has no durable key.
+  //
+  // This relies on `lookups.resolveSenderKey` being the BEST-EFFORT,
+  // NEVER-THROWS resolver (the contract at sidecar-events.ts:274-279, wired to
+  // resolveFrameSenderKey, which swallows faults to null). That contract is
+  // load-bearing here: `redeliverPendingMail` clears the retention TTL up-front
+  // and re-arms each entry's per-entry timer only on a successful send, so a
+  // resolver that THREW would abort the redeliver loop and strand the
+  // not-yet-processed entries with no timer and no TTL until a process restart.
+  // A strict/throwing resolver must NOT be wired here. Do not add a try/catch:
+  // the boundary owns the never-throws contract; duplicating it here would
+  // violate that ownership. The dispatch-time resolveSenderKey call
+  // (sendWorkflowRunDispatchToAllocation path) carries the same dependency
+  // note.
+  async function reresolveRunSenderKey(
+    authenticatedSender: string,
+  ): Promise<string | null> {
+    const resolveSenderKey = lookups.resolveSenderKey;
+    if (resolveSenderKey === undefined) return null;
+    return resolveSenderKey(authenticatedSender);
+  }
+
+  // Replay a pending mail's lead frame (its run grants or a re-resolved sender
+  // key) and then the mail itself over `conn`. Awaits the resolve FIRST, then
+  // sends the lead frame and the mail back-to-back with NO await between them,
+  // so the co-delivered key always precedes the mail on the FIFO socket.
+  // Returns whether the mail was (re)sent, so the caller re-arms the retry timer
+  // only for an entry it actually redelivered.
+  async function replaySendPendingMail(
+    conn: SidecarConnection,
+    entry: PendingMailEntry,
+  ): Promise<boolean> {
+    const lead = await resolveReplayLeadFrame(entry);
+    // The resolve above may have awaited real I/O; during that gap a queued
+    // `mail.inbound.ack` can advance and run `resolvePendingMail` (delete +
+    // clearTimeout) on this entry. The window is opened by the timer-macrotask
+    // retry path, NOT by any bypass: `mail.inbound.ack` is a QUEUED frame
+    // (frameBypassesQueue returns false for it). It can interleave because the
+    // retry runs as an independent setTimeout macrotask (retryPendingMail), so
+    // the owning ws's message chain is free to advance the ack during the
+    // resolve await. On the reconnect/redeliver path the ack cannot interleave
+    // at all -- it queues behind the still-running reconnect handler on the
+    // same ws -- so here this guard is pure defense-in-depth. Re-confirm it is
+    // still the tracked entry before sending, or a post-ack redelivery would
+    // arm a retry timer on a detached entry.
+    if (pendingMail.get(entry.agentAddress)?.get(entry.messageId) !== entry) {
+      return false;
+    }
+    // The same gap can span a disconnect or a takeover that moves the address
+    // off `conn`. Sending on the stale conn would write to a dead socket and
+    // re-arm a retry that later drops a still-retained entry. Skip so the entry
+    // survives for the reconnect redelivery.
+    const ws = addressIndex.get(entry.agentAddress);
+    if (ws === undefined || connections.get(ws) !== conn) return false;
+    if (lead !== undefined) conn.send(lead);
+    conn.send(entry.frame);
+    return true;
   }
 
   function deletePendingMail(
@@ -799,7 +915,10 @@ export function createSidecarRouter(
     }
   }
 
-  function retryPendingMail(agentAddress: string, messageId: string): void {
+  async function retryPendingMail(
+    agentAddress: string,
+    messageId: string,
+  ): Promise<void> {
     const byId = pendingMail.get(agentAddress);
     if (byId === undefined) return;
     const entry = byId.get(messageId);
@@ -844,13 +963,9 @@ export function createSidecarRouter(
       return;
     }
 
+    if (!(await replaySendPendingMail(conn, entry))) return;
     entry.attempts += 1;
-    replayRunGrantsAhead(conn, entry);
-    conn.send(entry.frame);
-    entry.timer = setTimeout(
-      () => retryPendingMail(agentAddress, messageId),
-      mailAckRetryIntervalMs,
-    );
+    entry.timer = scheduleMailRetry(agentAddress, messageId);
   }
 
   function resolvePendingMail(agentAddress: string, messageId: string): void {
@@ -899,10 +1014,10 @@ export function createSidecarRouter(
   // (effectively-once) and processes one it had dropped (no loss). Re-arms the
   // connected-window retry over the new connection with a fresh per-generation
   // budget, so a redelivery that is itself dropped before its ack is retried.
-  function redeliverPendingMail(
+  async function redeliverPendingMail(
     agentAddress: string,
     conn: SidecarConnection,
-  ): void {
+  ): Promise<void> {
     const retention = pendingMailRetention.get(agentAddress);
     if (retention !== undefined) {
       clearTimeout(retention);
@@ -924,13 +1039,9 @@ export function createSidecarRouter(
         deletePendingMail(byId, agentAddress, entry.messageId);
         continue;
       }
-      replayRunGrantsAhead(conn, entry);
-      conn.send(entry.frame);
+      if (!(await replaySendPendingMail(conn, entry))) continue;
       entry.attempts = 0;
-      entry.timer = setTimeout(
-        () => retryPendingMail(agentAddress, entry.messageId),
-        mailAckRetryIntervalMs,
-      );
+      entry.timer = scheduleMailRetry(agentAddress, entry.messageId);
     }
     if (byId.size > 0) {
       logger.info`Redelivered ${String(byId.size)} un-acked message(s) to ${agentAddress} on reconnect`;
@@ -1364,7 +1475,7 @@ export function createSidecarRouter(
     }
     allocatedConnections.set(identity.allocationId, { ws, identity });
     for (const address of newlyRoutedAddresses) {
-      redeliverPendingMail(address, conn);
+      await redeliverPendingMail(address, conn);
     }
     // Reconcile a reconnecting deployment's credentials, closing the offline
     // window: a credential revoked, deleted, or rotated while the sidecar was

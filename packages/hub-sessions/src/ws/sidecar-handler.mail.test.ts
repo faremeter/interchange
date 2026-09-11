@@ -381,6 +381,267 @@ describe("SidecarRouter allocation mail durability", () => {
       { address: TEST_SENDER, publicKey: hexKey },
     ]);
   });
+
+  test("re-resolves and co-delivers a keyless run sender's key on reconnect replay", async () => {
+    // A trigger tracked with NO captured senderIdentities and a RUN-address
+    // sender is the gap: replaying it as-is would leave the recipient with no
+    // key and see the sender as unknown. A run's deployment key is immutable
+    // once acked, so re-resolving at replay is safe and co-delivers the key
+    // ahead of the mail.
+    const runSender = "run_peer@tenant.example";
+    const hexKey = "ee".repeat(32);
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 10_000,
+      disconnectQueueTTLMs: 60_000,
+      lookups: {
+        async resolveSenderKey() {
+          return hexKey;
+        },
+      },
+    });
+    const first = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "a2V5bGVzcw==",
+      runSender,
+      "mid-keyless-run",
+      { runId: TEST_IDENTITY.anchorRunId, stepGrants: [] },
+    );
+    router.handleClose(first);
+
+    const second = await connectAllocated(
+      router,
+      [TEST_IDENTITY.workflowRunAddress],
+      "reconnect",
+    );
+
+    const grants = framesOfType(second, "run.grants");
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.["senderIdentities"]).toEqual([
+      { address: runSender, publicKey: hexKey },
+    ]);
+    const relevant = parsedFrames(second).filter(
+      (frame): frame is Record<string, unknown> =>
+        typeof frame === "object" &&
+        frame !== null &&
+        "type" in frame &&
+        (frame.type === "run.grants" || frame.type === "mail.inbound"),
+    );
+    expect(relevant.map((frame) => frame["type"])).toEqual([
+      "run.grants",
+      "mail.inbound",
+    ]);
+  });
+
+  test("leaves a keyless USER sender's replay keyless (never re-resolves)", async () => {
+    // A user (non-run) sender's key may have rotated since it signed; re-resolving
+    // would check the fixed signed bytes against a newer key and turn a valid
+    // message into a false invalid. A keyless user-sender entry stays keyless.
+    const hexKey = "ff".repeat(32);
+    let resolveCalls = 0;
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 10_000,
+      disconnectQueueTTLMs: 60_000,
+      lookups: {
+        async resolveSenderKey() {
+          resolveCalls += 1;
+          return hexKey;
+        },
+      },
+    });
+    const first = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "a2V5bGVzcw==",
+      TEST_SENDER,
+      "mid-keyless-user",
+      { runId: TEST_IDENTITY.anchorRunId, stepGrants: [] },
+    );
+    router.handleClose(first);
+
+    const second = await connectAllocated(
+      router,
+      [TEST_IDENTITY.workflowRunAddress],
+      "reconnect",
+    );
+
+    const grants = framesOfType(second, "run.grants");
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.["senderIdentities"]).toBeUndefined();
+    expect(resolveCalls).toBe(0);
+  });
+
+  test("replays a captured sender key rather than the current re-resolved one", async () => {
+    // An entry that captured senderIdentities at track time carries the
+    // SIGNING-TIME key. Re-resolving would fetch the CURRENT key, which for a
+    // rotated sender differs and would turn a valid message into a false
+    // invalid. The captured snapshot must replay verbatim.
+    const capturedKey = "11".repeat(32);
+    const rotatedKey = "22".repeat(32);
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 10_000,
+      disconnectQueueTTLMs: 60_000,
+      lookups: {
+        async resolveSenderKey() {
+          return rotatedKey;
+        },
+      },
+    });
+    const first = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "Y2FwdHVyZWQ=",
+      TEST_SENDER,
+      "mid-captured",
+      {
+        runId: TEST_IDENTITY.anchorRunId,
+        stepGrants: [],
+        senderIdentities: [{ address: TEST_SENDER, publicKey: capturedKey }],
+      },
+    );
+    router.handleClose(first);
+
+    const second = await connectAllocated(
+      router,
+      [TEST_IDENTITY.workflowRunAddress],
+      "reconnect",
+    );
+
+    const grants = framesOfType(second, "run.grants");
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.["senderIdentities"]).toEqual([
+      { address: TEST_SENDER, publicKey: capturedKey },
+    ]);
+  });
+
+  test("pushes a sender.key.refresh ahead of a grant-less run sender's replay", async () => {
+    // A tracked mail with NO run grants still needs its run sender's key
+    // co-delivered on replay. There is no run.grants frame to carry it, so a
+    // bare sender.key.refresh precedes the mail on the FIFO socket.
+    const runSender = "run_peer@tenant.example";
+    const hexKey = "33".repeat(32);
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 10_000,
+      disconnectQueueTTLMs: 60_000,
+      lookups: {
+        async resolveSenderKey() {
+          return hexKey;
+        },
+      },
+    });
+    const first = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "Z3JhbnRsZXNz",
+      runSender,
+      "mid-grantless-run",
+    );
+    router.handleClose(first);
+
+    const second = await connectAllocated(
+      router,
+      [TEST_IDENTITY.workflowRunAddress],
+      "reconnect",
+    );
+
+    const relevant = parsedFrames(second).filter(
+      (frame): frame is Record<string, unknown> =>
+        typeof frame === "object" &&
+        frame !== null &&
+        "type" in frame &&
+        (frame.type === "sender.key.refresh" || frame.type === "mail.inbound"),
+    );
+    expect(relevant.map((frame) => frame["type"])).toEqual([
+      "sender.key.refresh",
+      "mail.inbound",
+    ]);
+    expect(relevant[0]).toEqual({
+      type: "sender.key.refresh",
+      address: runSender,
+      publicKey: hexKey,
+    });
+    expect(framesOfType(second, "run.grants")).toHaveLength(0);
+  });
+
+  test("a run-sender replay acked mid-resolve is not redelivered or re-armed", async () => {
+    // The connected-window retry runs as an independent setTimeout macrotask, so
+    // while its keyless run-sender replay awaits resolveSenderKey a queued
+    // mail.inbound.ack can advance on the owning ws and run resolvePendingMail
+    // (delete + clearTimeout). The post-await guard in replaySendPendingMail
+    // must observe the entry is gone and skip the send, so the acked mail is
+    // neither redelivered nor re-armed onto a detached entry. Drive that race
+    // deterministically by parking resolveSenderKey on a deferred, acking while
+    // it is parked, then releasing it.
+    const runSender = "run_peer@tenant.example";
+    const hexKey = "44".repeat(32);
+    let releaseKey!: (key: string) => void;
+    let signalKeyRequested!: () => void;
+    const keyRequested = new Promise<void>((resolve) => {
+      signalKeyRequested = resolve;
+    });
+    let resolveCalls = 0;
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 20,
+      mailAckMaxRetries: 5,
+      lookups: {
+        async resolveSenderKey() {
+          resolveCalls += 1;
+          signalKeyRequested();
+          return new Promise<string>((resolve) => {
+            releaseKey = resolve;
+          });
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "cmVzb2x2ZS1yYWNl",
+      runSender,
+      "mid-ack-race",
+    );
+    // The initial delivery is synchronous and does not resolve the sender key.
+    expect(inboundCount(ws, "mid-ack-race")).toBe(1);
+    expect(resolveCalls).toBe(0);
+
+    // Let the retry macrotask fire and park on the deferred resolveSenderKey.
+    await keyRequested;
+    expect(resolveCalls).toBe(1);
+
+    // Ack while the replay is parked: resolvePendingMail deletes the entry and
+    // clears its timer. Drain the ack's message-chain microtask before release.
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.inbound.ack",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        messageId: "mid-ack-race",
+      }),
+    );
+    await tick();
+
+    // Release the resolve; the guard must see the entry is gone and skip.
+    releaseKey(hexKey);
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // No redelivery: still exactly the one initial mail.inbound, no
+    // sender.key.refresh pushed for the aborted replay, and no re-armed retry
+    // (resolveSenderKey was called only for the single parked replay).
+    expect(inboundCount(ws, "mid-ack-race")).toBe(1);
+    expect(framesOfType(ws, "sender.key.refresh")).toHaveLength(0);
+    expect(resolveCalls).toBe(1);
+  });
 });
 
 describe("SidecarRouter workflow-trigger mail gating", () => {
