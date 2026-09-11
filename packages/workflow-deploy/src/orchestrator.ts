@@ -11,7 +11,8 @@
 // from the host-sourced step count alone.
 //
 // The source-pinning utilities (`pickStepInferenceSource`,
-// `buildInertProjectionStepSources`, `isSourceApproved`) resolve each step's
+// `buildInertProjectionStepSources`, `buildInertBodyStepSources`,
+// `isSourceApproved`) resolve each step's
 // inference source against the operator-approved grant set, so an unapproved
 // source fails the deploy closed rather than slipping past the capability-walk
 // gate.
@@ -235,6 +236,73 @@ export function buildInertProjectionStepSources(args: {
         config: args.config,
         operatorApprovals: args.operatorApprovals,
       }),
+  });
+}
+
+/**
+ * Resolve the inert placeholder source that a step which cannot invoke
+ * inference is pinned to: the deploy's default source. Such a step never
+ * issues a request, so the pin exists only to fill the per-step coverage slot
+ * the deploy frame requires, and carries no approval decision.
+ *
+ * The lookup runs per leaf rather than once per walk on purpose. A definition
+ * whose steps all resolve a source of their own must not fail merely because
+ * `defaultSource` dangles; only a step that actually needs the placeholder
+ * does.
+ */
+function inertPlaceholderSource(args: {
+  stepId: string;
+  workflowId: string;
+  config: HarnessConfig;
+}): InferenceSource {
+  const placeholder = args.config.sources.find(
+    (source) => source.id === args.config.defaultSource,
+  );
+  if (placeholder === undefined) {
+    throw new WorkflowDefinitionInvalidError(
+      args.workflowId,
+      `step ${args.stepId} needs an inert placeholder source, but defaultSource ${JSON.stringify(args.config.defaultSource)} names no entry in HarnessConfig.sources`,
+    );
+  }
+  return placeholder;
+}
+
+/**
+ * Pin every step of a lifted onTrigger body to a single inference source,
+ * producing the `sources` map the body's `referencedDefinitions` entry carries.
+ *
+ * An agent-bearing body step resolves through `pickStepInferenceSource` and its
+ * operator-approval gate. A body step that is not agent-bearing cannot invoke
+ * inference, so it takes the inert placeholder and no approval applies to it.
+ *
+ * The branch keys on whether the step is agent-bearing, never on whether it
+ * declared a preference: an agent that declares no `modelSources` also arrives
+ * without one, and must keep its gate.
+ */
+export function buildInertBodyStepSources(args: {
+  definition: WorkflowProjectionDefinition;
+  workflowId: string;
+  config: HarnessConfig;
+  operatorApprovals: ApprovalSet;
+}): Record<string, InferenceSource[]> {
+  return pinInertStepSources({
+    definition: args.definition,
+    workflowId: args.workflowId,
+    context: `buildInertBodyStepSources ${args.workflowId}: `,
+    resolveLeafSource: ({ stepId, isAgent, preference }) =>
+      isAgent
+        ? pickStepInferenceSource({
+            preferred: preference,
+            stepId,
+            workflowId: args.workflowId,
+            config: args.config,
+            operatorApprovals: args.operatorApprovals,
+          })
+        : inertPlaceholderSource({
+            stepId,
+            workflowId: args.workflowId,
+            config: args.config,
+          }),
   });
 }
 

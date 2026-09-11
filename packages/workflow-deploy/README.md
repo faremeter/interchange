@@ -29,16 +29,20 @@ Public surface:
   — operator-approval gating against a flat `ApprovalSet` or an async
   source.
 - `pickStepInferenceSource(...)` / `pinInertStepSources(...)` /
-  `buildInertProjectionStepSources(...)` — resolve each step's inference
-  source against the operator-approved grant set, so an unapproved source
-  fails the deploy closed. `pinInertStepSources` is the shared walk (step
-  order, loop-body recursion, flat-map collision rule) parameterized by a
-  per-step leaf resolver.
+  `buildInertProjectionStepSources(...)` / `buildInertBodyStepSources(...)`
+  — resolve each step's inference source against the operator-approved
+  grant set, so an unapproved source fails the deploy closed.
+  `pinInertStepSources` is the shared walk (step order, loop-body
+  recursion, flat-map collision rule) parameterized by a per-step leaf
+  resolver. `buildInertBodyStepSources` pins a lifted body: an
+  agent-bearing step resolves through the gate, while a step that cannot
+  invoke inference takes the deploy's default source as an inert
+  placeholder.
 - `enumerateInertBodies(...)` — lift each inline trigger body (onTrigger
   section or childWorkflow child), transitively, out of a frozen inert
   projection so the hub can stage it and pin its per-step sources. The
   enumeration is purely structural; each body step's `(provider, model)`
-  preference is read at pin time by `pinInertStepSources`.
+  preference is read at pin time by `buildInertBodyStepSources`.
 - `deriveRunAddress` / `deriveStepAddress` / `resolveStepAddress` /
   `deriveRunAgentId` / `deriveStepAgentId` / `deriveWorkflowRunRepoId`
   — the pure address and id derivation helpers.
