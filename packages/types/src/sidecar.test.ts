@@ -6,13 +6,21 @@ import {
   CredentialsUpdateFrame,
   DeployApplyErrorCategory,
   HubFrame,
+  MAX_AGENT_ADDRESSES_FRAME,
+  MAX_CACHED_SENDER_ADDRESSES_FRAME,
+  MAX_CREDENTIAL_REVOCATIONS_FRAME,
+  MAX_MAIL_ADDRESSES_FRAME,
+  MAX_PROBE_GRANTS_FRAME,
   MailOutboundFrame,
   PackRejectFrame,
   PackRejectReason,
+  ReconnectFrame,
+  RegisterFrame,
   RunGrantsFrame,
   SidecarFrame,
   SignalCorrelationRegisterFrame,
   SourcesUpdateFrame,
+  WorkflowProbeResultFrame,
 } from "./sidecar";
 
 describe("MailOutboundFrame sender ownership claim", () => {
@@ -466,5 +474,228 @@ describe("RunGrantsFrame senderIdentities co-delivery", () => {
   test("an identity entry missing its address is rejected", () => {
     const bad = { ...base, senderIdentities: [{ publicKey: "aa".repeat(32) }] };
     expect(RunGrantsFrame(bad) instanceof type.errors).toBe(true);
+  });
+});
+
+describe("frame array-length ceilings", () => {
+  const addresses = (n: number) =>
+    Array.from({ length: n }, (_, i) => `addr-${String(i)}@example.test`);
+
+  describe("RegisterFrame agentAddresses", () => {
+    const base = { type: "register", sidecarId: "sc-1", token: "tok" };
+
+    test("accepts a frame at the ceiling", () => {
+      const frame = {
+        ...base,
+        agentAddresses: addresses(MAX_AGENT_ADDRESSES_FRAME),
+      };
+      expect(RegisterFrame(frame) instanceof type.errors).toBe(false);
+      expect(SidecarFrame(frame) instanceof type.errors).toBe(false);
+    });
+
+    test("rejects a frame past the ceiling through the union", () => {
+      const frame = {
+        ...base,
+        agentAddresses: addresses(MAX_AGENT_ADDRESSES_FRAME + 1),
+      };
+      expect(RegisterFrame(frame) instanceof type.errors).toBe(true);
+      expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
+    });
+  });
+
+  describe("RegisterFrame cachedSenderAddresses", () => {
+    const base = {
+      type: "register",
+      sidecarId: "sc-1",
+      token: "tok",
+      agentAddresses: ["wf@example.test"],
+    };
+
+    test("accepts a count above the resync handler cap but within the ceiling", () => {
+      // The ceiling sits far above the hub-sessions `MAX_RESYNC_SENDER_ADDRESSES`
+      // handler cap (2048) so a report over that cap still parses and reaches the
+      // handler's graceful "resync the first N, log the overflow" degrade rather
+      // than dropping the whole register frame and stalling the reconnect.
+      const frame = { ...base, cachedSenderAddresses: addresses(2049) };
+      expect(RegisterFrame(frame) instanceof type.errors).toBe(false);
+      expect(SidecarFrame(frame) instanceof type.errors).toBe(false);
+    });
+
+    test("rejects a report past the ceiling through the union", () => {
+      const frame = {
+        ...base,
+        cachedSenderAddresses: addresses(MAX_CACHED_SENDER_ADDRESSES_FRAME + 1),
+      };
+      expect(RegisterFrame(frame) instanceof type.errors).toBe(true);
+      expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
+    });
+  });
+
+  describe("MailOutboundFrame recipients", () => {
+    const base = {
+      type: "mail.outbound",
+      senderAddress: "sender@example.test",
+      rawMessage: "bWFpbA==",
+    };
+
+    test("accepts a frame at the ceiling", () => {
+      const frame = {
+        ...base,
+        recipients: addresses(MAX_MAIL_ADDRESSES_FRAME),
+      };
+      expect(MailOutboundFrame(frame) instanceof type.errors).toBe(false);
+    });
+
+    test("rejects recipients past the ceiling through the union", () => {
+      const frame = {
+        ...base,
+        recipients: addresses(MAX_MAIL_ADDRESSES_FRAME + 1),
+      };
+      expect(MailOutboundFrame(frame) instanceof type.errors).toBe(true);
+      expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
+    });
+
+    test("rejects a cc list past the ceiling", () => {
+      const frame = {
+        ...base,
+        recipients: ["recipient@example.test"],
+        cc: addresses(MAX_MAIL_ADDRESSES_FRAME + 1),
+      };
+      expect(MailOutboundFrame(frame) instanceof type.errors).toBe(true);
+    });
+  });
+
+  describe("WorkflowProbeResultFrame grants", () => {
+    const projection = {
+      id: "wf-probe",
+      triggers: [],
+      stepOrder: ["s1"],
+      steps: { s1: { kind: "step", id: "s1" } },
+    };
+    const grantWalkSnapshot = {
+      perStep: [{ stepId: "s1", grants: [], grantEffects: {} }],
+      grantRequirements: [],
+    };
+    const base = {
+      type: "workflow.probe.result",
+      requestId: "req_1",
+      projection,
+      grantWalkSnapshot,
+      wireHash: "abc123",
+    };
+
+    test("accepts a frame at the ceiling", () => {
+      const frame = {
+        ...base,
+        grants: Array.from(
+          { length: MAX_PROBE_GRANTS_FRAME },
+          (_, i) => `grant-${String(i)}`,
+        ),
+      };
+      expect(WorkflowProbeResultFrame(frame) instanceof type.errors).toBe(
+        false,
+      );
+    });
+
+    test("rejects grants past the ceiling through the union", () => {
+      const frame = {
+        ...base,
+        grants: Array.from(
+          { length: MAX_PROBE_GRANTS_FRAME + 1 },
+          (_, i) => `grant-${String(i)}`,
+        ),
+      };
+      expect(WorkflowProbeResultFrame(frame) instanceof type.errors).toBe(true);
+      expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
+    });
+  });
+
+  // The bounded optional fields moved from the `"string[]"` DSL to a chained
+  // `type("string").array().atMostLength(n)` value under a `"key?"` key. The
+  // regression that mechanical change risks is losing optionality (the key
+  // becomes required) or gaining a lower bound (an empty array is rejected).
+  describe("bounded optional fields stay optional", () => {
+    test("RegisterFrame validates with cachedSenderAddresses omitted or empty", () => {
+      const base = {
+        type: "register",
+        sidecarId: "sc-1",
+        token: "tok",
+        agentAddresses: ["wf@example.test"],
+      };
+      expect(RegisterFrame(base) instanceof type.errors).toBe(false);
+      expect(
+        RegisterFrame({ ...base, cachedSenderAddresses: [] }) instanceof
+          type.errors,
+      ).toBe(false);
+    });
+
+    test("ReconnectFrame validates with cachedSenderAddresses omitted or empty", () => {
+      const base = {
+        type: "reconnect",
+        sidecarId: "sc-1",
+        token: "tok",
+        agentAddresses: ["wf@example.test"],
+      };
+      expect(ReconnectFrame(base) instanceof type.errors).toBe(false);
+      expect(
+        ReconnectFrame({ ...base, cachedSenderAddresses: [] }) instanceof
+          type.errors,
+      ).toBe(false);
+    });
+
+    test("MailOutboundFrame validates with empty to and cc lists", () => {
+      const frame = {
+        type: "mail.outbound",
+        senderAddress: "sender@example.test",
+        rawMessage: "bWFpbA==",
+        recipients: ["recipient@example.test"],
+        to: [],
+        cc: [],
+      };
+      expect(MailOutboundFrame(frame) instanceof type.errors).toBe(false);
+    });
+
+    test("CredentialsUpdateFrame validates with an empty revoke list", () => {
+      const frame = {
+        type: "credentials.update",
+        requestId: "req_1",
+        agentAddress: "dep@example.test",
+        delivery: { bindings: [], materials: [] },
+        revoke: [],
+      };
+      expect(CredentialsUpdateFrame(frame) instanceof type.errors).toBe(false);
+    });
+  });
+
+  describe("CredentialsUpdateFrame revoke", () => {
+    const base = {
+      type: "credentials.update",
+      requestId: "req_1",
+      agentAddress: "dep@example.test",
+      delivery: { bindings: [], materials: [] },
+    };
+
+    test("accepts a revoke list at the ceiling", () => {
+      const frame = {
+        ...base,
+        revoke: Array.from(
+          { length: MAX_CREDENTIAL_REVOCATIONS_FRAME },
+          (_, i) => `cred-${String(i)}`,
+        ),
+      };
+      expect(CredentialsUpdateFrame(frame) instanceof type.errors).toBe(false);
+    });
+
+    test("rejects a revoke list past the ceiling through the union", () => {
+      const frame = {
+        ...base,
+        revoke: Array.from(
+          { length: MAX_CREDENTIAL_REVOCATIONS_FRAME + 1 },
+          (_, i) => `cred-${String(i)}`,
+        ),
+      };
+      expect(CredentialsUpdateFrame(frame) instanceof type.errors).toBe(true);
+      expect(HubFrame(frame) instanceof type.errors).toBe(true);
+    });
   });
 });

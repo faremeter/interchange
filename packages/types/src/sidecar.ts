@@ -22,6 +22,53 @@ import { ToolPackageManifest } from "./tool-packages";
 import { WorkflowDefinitionSource } from "./workflow-sources";
 
 // ---------------------------------------------------------------------------
+// Frame array-length ceilings
+// ---------------------------------------------------------------------------
+//
+// Hostile-absurdity upper bounds on the unbounded `string[]` fields of the wire
+// frames below. They bound element COUNT, not byte size: a peer that sends a
+// `string[]` of millions of tiny elements costs little in bytes but forces the
+// receiver to allocate, iterate, dedup, or map over an absurd count. A total
+// payload byte limit is the weakest defense exactly here -- many one-character
+// elements are a huge count at a small byte cost -- so element-count caps are
+// the right tool for `string[]`. The object-typed frame arrays are out of scope
+// for these caps: their elements each carry many bytes, so an absurd count of
+// them is far costlier on the wire, and a payload-size limit is the right
+// backstop for that byte-heavy dimension. An over-count frame fails this parse
+// and routes through the existing invalid-frame drop+log path; no handler change
+// is needed.
+
+// A sidecar's reported agent addresses. The register/reconnect handler already
+// gates each reported address against the allocation's single minted workflow
+// address, so the legitimate count is ~1; this is a generous absurdity backstop.
+export const MAX_AGENT_ADDRESSES_FRAME = 512;
+
+// A sidecar's reported cached sender addresses. This MUST stay well above the
+// `MAX_RESYNC_SENDER_ADDRESSES` handler cap (currently 2048 in the hub-sessions
+// sidecar-handler): that cap drives a graceful "resync the first N, log the
+// overflow" degrade rather than dropping the frame, so a schema ceiling at or
+// below it would turn the degrade into a hard reconnect outage -- the whole
+// register frame would fail this parse and drop, and the sidecar could not
+// reconnect. The `@intx/types` package must not import from `@intx/hub-sessions`,
+// so the coupling is a documented invariant guarded by a test in that package.
+export const MAX_CACHED_SENDER_ADDRESSES_FRAME = 65536;
+
+// A mail frame's recipient / To / Cc address lists. `recipients` is the routing
+// set; `to`/`cc` are audit-only header metadata. A modest ceiling far above any
+// real recipient list.
+export const MAX_MAIL_ADDRESSES_FRAME = 1024;
+
+// A workflow probe result's flattened grant strings (the deduped union of every
+// step's grants). No enforced workflow step-count or per-step grant-count cap
+// exists to derive this from, so it is a reasonable absurdity ceiling rather
+// than a computed bound.
+export const MAX_PROBE_GRANTS_FRAME = 8192;
+
+// A credentials-update frame's revoked credential ids. A modest ceiling far
+// above any real credential set.
+export const MAX_CREDENTIAL_REVOCATIONS_FRAME = 1024;
+
+// ---------------------------------------------------------------------------
 // Sidecar → Hub
 // ---------------------------------------------------------------------------
 
@@ -34,14 +81,18 @@ export const RegisterFrame = type({
   type: "'register'",
   sidecarId: "string",
   token: "string",
-  agentAddresses: "string[]",
+  agentAddresses: type("string")
+    .array()
+    .atMostLength(MAX_AGENT_ADDRESSES_FRAME),
   // The rotatable (non-run) sender addresses this sidecar holds cached keys
   // for. The hub re-resolves each current key and re-pushes it on a
   // `sender.key.refresh`, so a user-principal rotation that landed while the
   // sidecar was disconnected reaches its cache. Additive-optional and omitted
   // when empty: a sidecar with no cached senders (or a pre-upgrade one) sends
   // no field, and the hub treats absence as "nothing to refresh".
-  "cachedSenderAddresses?": "string[]",
+  "cachedSenderAddresses?": type("string")
+    .array()
+    .atMostLength(MAX_CACHED_SENDER_ADDRESSES_FRAME),
 });
 export type RegisterFrame = typeof RegisterFrame.infer;
 
@@ -54,13 +105,17 @@ export const ReconnectFrame = type({
   type: "'reconnect'",
   sidecarId: "string",
   token: "string",
-  agentAddresses: "string[]",
+  agentAddresses: type("string")
+    .array()
+    .atMostLength(MAX_AGENT_ADDRESSES_FRAME),
   // The rotatable (non-run) sender addresses this sidecar holds cached keys
   // for; see `RegisterFrame`. Carried on both frames because the register vs
   // reconnect choice turns on workflow-address presence, not sender-cache
   // presence -- a sidecar that restored no workflow substrate still reports its
   // cached senders on a register frame. Additive-optional, omitted when empty.
-  "cachedSenderAddresses?": "string[]",
+  "cachedSenderAddresses?": type("string")
+    .array()
+    .atMostLength(MAX_CACHED_SENDER_ADDRESSES_FRAME),
 });
 export type ReconnectFrame = typeof ReconnectFrame.infer;
 
@@ -98,12 +153,12 @@ export type AgentErrorFrame = typeof AgentErrorFrame.infer;
 export const MailOutboundFrame = type({
   type: "'mail.outbound'",
   rawMessage: "string",
-  recipients: "string[]",
+  recipients: type("string").array().atMostLength(MAX_MAIL_ADDRESSES_FRAME),
   senderAddress: "string",
   "sessionId?": "string",
   "messageId?": "string",
-  "to?": "string[]",
-  "cc?": "string[]",
+  "to?": type("string").array().atMostLength(MAX_MAIL_ADDRESSES_FRAME),
+  "cc?": type("string").array().atMostLength(MAX_MAIL_ADDRESSES_FRAME),
   "delivered?": "boolean",
 });
 export type MailOutboundFrame = typeof MailOutboundFrame.infer;
@@ -646,7 +701,9 @@ export const CredentialsUpdateFrame = type({
   requestId: "string",
   agentAddress: "string",
   delivery: CredentialDelivery,
-  "revoke?": "string[]",
+  "revoke?": type("string")
+    .array()
+    .atMostLength(MAX_CREDENTIAL_REVOCATIONS_FRAME),
 });
 export type CredentialsUpdateFrame = typeof CredentialsUpdateFrame.infer;
 
@@ -993,7 +1050,7 @@ export const WorkflowProbeResultFrame = type({
   type: "'workflow.probe.result'",
   requestId: "string",
   projection: WorkflowProjectionDefinition,
-  grants: "string[]",
+  grants: type("string").array().atMostLength(MAX_PROBE_GRANTS_FRAME),
   grantWalkSnapshot: GrantWalkSnapshot,
   wireHash: "string",
 });

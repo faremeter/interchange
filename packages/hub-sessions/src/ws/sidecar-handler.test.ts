@@ -9,6 +9,7 @@ import {
 
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import { configureSync, getConfig, resetSync } from "@intx/log";
+import { MAX_CACHED_SENDER_ADDRESSES_FRAME } from "@intx/types/sidecar";
 
 import {
   createSidecarRouter,
@@ -541,5 +542,17 @@ describe("SidecarRouter sender-key resync cap", () => {
     const warnings = capWarnings();
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain(String(MAX_RESYNC_SENDER_ADDRESSES + 1));
+  });
+
+  test("the cachedSenderAddresses frame ceiling stays above the resync cap", () => {
+    // These caps live in separate packages (`@intx/types` cannot import from
+    // `@intx/hub-sessions`), so the invariant that lets this handler degrade
+    // gracefully is only enforceable here, where both are visible. If the frame
+    // ceiling ever slipped to or below the resync cap, an over-cap report would
+    // fail the frame parse and drop the whole register frame -- turning the
+    // graceful slice-and-log degrade above into a hard reconnect outage.
+    expect(MAX_CACHED_SENDER_ADDRESSES_FRAME).toBeGreaterThan(
+      MAX_RESYNC_SENDER_ADDRESSES,
+    );
   });
 });
