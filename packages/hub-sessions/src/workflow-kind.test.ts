@@ -218,6 +218,56 @@ describe("workflowDefinitionEnvelopeSchema", () => {
     }
     expect(validated.credentialBindings).toEqual(blob.credentialBindings);
   });
+
+  // Same property for inboundMailPolicy: declaring it on the envelope makes a
+  // malformed policy fail at the deploy boundary. The policy keys on exactly
+  // the four author-controllable outcomes, so an unknown outcome key (a typo or
+  // a non-controllable outcome such as `clean`) must be rejected here rather
+  // than ride through to later admission resolution. The rejection test fails
+  // if the `inboundMailPolicy?` line is removed from the schema.
+  test("rejects a declared inboundMailPolicy carrying an unknown outcome key", () => {
+    const validated = workflowDefinitionEnvelopeSchema({
+      id: "my-workflow",
+      triggers: [{ type: "mail", to: "wf@acme.test" }],
+      steps: { first: { kind: "step", id: "first" } },
+      stepOrder: ["first"],
+      inboundMailPolicy: { clean: "admit" },
+    });
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a declared inboundMailPolicy carrying a non reject/admit value", () => {
+    const validated = workflowDefinitionEnvelopeSchema({
+      id: "my-workflow",
+      triggers: [{ type: "mail", to: "wf@acme.test" }],
+      steps: { first: { kind: "step", id: "first" } },
+      stepOrder: ["first"],
+      inboundMailPolicy: { missing: "quarantine" },
+    });
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("accepts and preserves a well-formed sparse inboundMailPolicy", () => {
+    const blob = {
+      id: "my-workflow",
+      triggers: [{ type: "mail", to: "wf@acme.test" }],
+      steps: { first: { kind: "step", id: "first" } },
+      stepOrder: ["first"],
+      inboundMailPolicy: {
+        untrustedFrom: "admit" as const,
+        missing: "reject" as const,
+      },
+    };
+    const validated = workflowDefinitionEnvelopeSchema(blob);
+    if (validated instanceof type.errors) {
+      throw new Error(`unexpected validation error: ${validated.summary}`);
+    }
+    expect(validated.inboundMailPolicy).toEqual(blob.inboundMailPolicy);
+    // The two unset outcomes stay absent -- the envelope does not populate a
+    // default for an outcome the author omitted.
+    expect(validated.inboundMailPolicy).not.toHaveProperty("invalid");
+    expect(validated.inboundMailPolicy).not.toHaveProperty("unknown");
+  });
 });
 
 describe("workflowKindHandler metadata", () => {

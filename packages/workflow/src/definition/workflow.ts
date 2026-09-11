@@ -14,6 +14,7 @@ import type {
   GrantRequirement,
   SidecarCapabilityPolicy,
 } from "@intx/types";
+import type { InboundMailPolicy } from "@intx/types/runtime";
 
 import { normalizeSingularShorthand } from "./shorthand";
 import {
@@ -60,6 +61,15 @@ export interface WorkflowDefinition {
    */
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
+  /**
+   * The author-declared inbound-mail admission policy. Present only when the
+   * workflow declares a mail trigger; a policy that can never take effect is
+   * rejected at definition time. Sparse: an absent outcome key is not defaulted
+   * here. Nothing in this package consumes it yet -- it is carried through the
+   * projection and content hash so a later resolution step can key delivery
+   * decisions on it.
+   */
+  inboundMailPolicy?: InboundMailPolicy;
 }
 
 export interface WorkflowConfig {
@@ -71,6 +81,7 @@ export interface WorkflowConfig {
   grantRequirements?: readonly GrantRequirement[];
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
+  inboundMailPolicy?: InboundMailPolicy;
 }
 
 export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
@@ -82,6 +93,7 @@ export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
   grantRequirements?: readonly GrantRequirement[];
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
+  inboundMailPolicy?: InboundMailPolicy;
 }
 
 /**
@@ -192,6 +204,24 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
   // trigger to the workflow's subscription set.
   const triggers = resolveTriggers(config, collectSectionTriggers(steps));
 
+  // An inbound-mail admission policy governs how mail delivered to this
+  // workflow is admitted, so it is meaningless without a mail trigger to
+  // deliver that mail. A policy on a workflow that no mail can ever reach is a
+  // silent authoring error -- the author believes they constrained admission,
+  // but the constraint can never take effect. Reject it here, at the authoring
+  // boundary, rather than let it ride through the projection as a dead field.
+  // The check runs after resolveTriggers so a mail trigger contributed by an
+  // onTrigger section's `on` counts, not only a top-level `trigger`/`triggers`.
+  if (config.inboundMailPolicy !== undefined) {
+    const hasMailTrigger = triggers.some((trigger) => trigger.type === "mail");
+    if (!hasMailTrigger) {
+      throw new Error(
+        `defineWorkflow ${config.id} declares an inboundMailPolicy but no mail ` +
+          `trigger; the policy can never take effect`,
+      );
+    }
+  }
+
   const definition: WorkflowDefinition = {
     id: config.id,
     triggers,
@@ -206,6 +236,9 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
       : {}),
     ...(config.sidecarPlacement !== undefined
       ? { sidecarPlacement: config.sidecarPlacement }
+      : {}),
+    ...(config.inboundMailPolicy !== undefined
+      ? { inboundMailPolicy: config.inboundMailPolicy }
       : {}),
   };
   return definition;
@@ -1026,6 +1059,14 @@ function projectForHash(definition: WorkflowDefinition): unknown {
       : {}),
     ...(definition.sidecarPlacement !== undefined
       ? { sidecarPlacement: definition.sidecarPlacement }
+      : {}),
+    // The admission policy changes how inbound mail is admitted, so two
+    // definitions differing only in their policy must hash differently --
+    // include it exactly as credentialBindings is included. Absent, the
+    // spread contributes nothing, so a definition without a policy hashes
+    // identically to one authored before the field existed.
+    ...(definition.inboundMailPolicy !== undefined
+      ? { inboundMailPolicy: definition.inboundMailPolicy }
       : {}),
     steps: Object.fromEntries(
       Object.entries(definition.steps).map(([id, primitive]) => [

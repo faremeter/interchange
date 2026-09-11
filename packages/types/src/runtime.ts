@@ -287,6 +287,29 @@ export const AuthorControllableOutcome = type.enumerated(
 export type AuthorControllableOutcome = typeof AuthorControllableOutcome.infer;
 
 /**
+ * A per-workflow inbound-mail admission policy: for each admission outcome the
+ * author may control, whether a message that resolved to that outcome is
+ * `reject`ed or `admit`ted. The key set is exactly the
+ * {@link AuthorControllableOutcome} values -- `clean` (always admitted) and
+ * `error` (pinned to reject) are deliberately not keys.
+ *
+ * The object is SPARSE: every key is optional, and an omitted key is NOT a
+ * default of any kind here. It is left for a later resolution step to interpret
+ * an absent outcome. Keeping it sparse means the content hash covers only what
+ * the author actually declared, so a definition that omits the policy hashes
+ * identically to one authored before the field existed. Undeclared keys are
+ * rejected so a typo such as `clean` or `errror` fails at the wire boundary
+ * rather than riding through as an inert unknown key.
+ */
+export const InboundMailPolicy = type({
+  "untrustedFrom?": "'reject' | 'admit'",
+  "invalid?": "'reject' | 'admit'",
+  "missing?": "'reject' | 'admit'",
+  "unknown?": "'reject' | 'admit'",
+}).onUndeclaredKey("reject");
+export type InboundMailPolicy = typeof InboundMailPolicy.infer;
+
+/**
  * A parsed MIME part. `content` is the DECODED bytes in memory (the
  * transfer-encoding has already been undone). `filename` and `disposition` are
  * surfaced from the part's `Content-Disposition` / `Content-Type` so a consumer

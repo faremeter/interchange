@@ -38,6 +38,7 @@ import type {
 } from "@intx/agent";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { CredentialBinding, SidecarCapabilityPolicy } from "@intx/types";
+import type { InboundMailPolicy } from "@intx/types/runtime";
 import type {
   ActionPrimitive,
   AwaitSignalPrimitive,
@@ -215,6 +216,13 @@ export interface InertWorkflowDefinition {
   // different bindings would change this projection and fail re-verify.
   readonly credentialBindings?: readonly CredentialBinding[];
   readonly sidecarPlacement?: SidecarCapabilityPolicy;
+  // The author-declared inbound-mail admission policy, projected verbatim (it
+  // is already pure plain data). It is part of the hashed surface on purpose:
+  // the policy governs how mail addressed to the deployment is admitted, so a
+  // changed or tampered policy must move the content hash and fail re-verify.
+  // Sparse -- an outcome the author left unset stays unset in the projection,
+  // so the hash covers only the declared keys.
+  readonly inboundMailPolicy?: InboundMailPolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +294,13 @@ function projectDefinition(
       : {}),
     ...(sidecarCapabilities.length > 0
       ? { sidecarPlacement: { capabilities: [...sidecarCapabilities] } }
+      : {}),
+    // The admission policy is pure plain data (a sparse map of outcome ->
+    // reject/admit), so it projects verbatim like the credential bindings.
+    // Keeping it in the projection puts the author-approved admission surface
+    // inside the content hash (see `InertWorkflowDefinition`).
+    ...(definition.inboundMailPolicy !== undefined
+      ? { inboundMailPolicy: { ...definition.inboundMailPolicy } }
       : {}),
   };
 }

@@ -6,6 +6,7 @@ import {
   type AgentDefinition,
   type BaseEnv,
 } from "@intx/agent";
+import type { InboundMailPolicy } from "@intx/types/runtime";
 
 import {
   action,
@@ -463,6 +464,59 @@ describe("defineWorkflow", () => {
       steps: { a: step({ agent: a }) },
     });
     expect(def.triggers).toEqual([{ type: "manual" }]);
+  });
+});
+
+describe("inboundMailPolicy", () => {
+  test("carries a sparse policy through when a mail trigger is declared", () => {
+    const def = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: makeAgent("a") }) },
+      inboundMailPolicy: { untrustedFrom: "admit", missing: "reject" },
+    });
+    expect(def.inboundMailPolicy).toEqual({
+      untrustedFrom: "admit",
+      missing: "reject",
+    });
+    // The two unset outcomes stay unset rather than defaulted -- the field is
+    // sparse and no key is populated for an outcome the author omitted.
+    expect(def.inboundMailPolicy).not.toHaveProperty("invalid");
+    expect(def.inboundMailPolicy).not.toHaveProperty("unknown");
+  });
+
+  test("accepts a policy when a mail trigger comes from an onTrigger section", () => {
+    const def = defineWorkflow({
+      id: "w",
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: "s@x.example" },
+          body: simpleBody(),
+        }),
+      },
+      inboundMailPolicy: { invalid: "reject" },
+    });
+    expect(def.inboundMailPolicy).toEqual({ invalid: "reject" });
+  });
+
+  test("rejects a policy when no mail trigger is declared", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: { a: step({ agent: makeAgent("a") }) },
+        inboundMailPolicy: { missing: "reject" },
+      }),
+    ).toThrow(/no mail trigger/);
+  });
+
+  test("omits the field entirely when no policy is declared", () => {
+    const def = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: makeAgent("a") }) },
+    });
+    expect(def).not.toHaveProperty("inboundMailPolicy");
   });
 });
 
@@ -1746,6 +1800,49 @@ describe("hashDefinition", () => {
     });
 
     expect(hashDefinition(withRequirements)).not.toEqual(hashDefinition(base));
+  });
+
+  test("a declared inbound mail policy changes the content hash", () => {
+    const a = makeAgent("a");
+    const base = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: a }) },
+    });
+    const withPolicy = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: a }) },
+      inboundMailPolicy: { untrustedFrom: "admit" },
+    });
+    expect(hashDefinition(withPolicy)).not.toEqual(hashDefinition(base));
+  });
+
+  test("an absent inbound mail policy is hash-invariant against a mail-triggered baseline", () => {
+    // A definition that omits the policy must hash identically whether or not
+    // the field ever entered the construction -- the absent field contributes
+    // nothing to the canonical form, so a deployment authored before the field
+    // existed keeps its content handle. Construct one baseline through a
+    // conditional spread that resolves to no key (the sparse-optional contract:
+    // an omitted policy is never populated), and assert it matches the plain
+    // baseline.
+    const a = makeAgent("a");
+    const plain = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: a }) },
+    });
+    const declaredPolicy: InboundMailPolicy | undefined = undefined;
+    const omitted = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: a }) },
+      ...(declaredPolicy !== undefined
+        ? { inboundMailPolicy: declaredPolicy }
+        : {}),
+    });
+    expect(omitted).not.toHaveProperty("inboundMailPolicy");
+    expect(hashDefinition(omitted)).toEqual(hashDefinition(plain));
   });
 });
 
