@@ -47,6 +47,7 @@ import type {
 } from "@intx/types/workflow-sources";
 import {
   buildInertProjectionStepSources,
+  collectAgentBearingStepIds,
   deriveRunAddress,
   WorkflowDefinitionInvalidError,
   type DeployContent as OrchestratorDeployContent,
@@ -651,9 +652,16 @@ async function prepareSourceRefDeploy(
   // Assemble the ONE credential delivery. Its `materials` cover three rails, each
   // authorized upstream on its own terms, deduped by credentialId into one cell:
   //   - tool bindings, grant-scoped through `buildCredentialDelivery` above;
-  //   - EVERY top-level inference source (`args.sources`), tenant-owned;
-  //   - EVERY inline body step's inference source (onTrigger/childWorkflow bodies
+  //   - the inference source pinned to each top-level step that can actually
+  //     invoke inference, tenant-owned;
+  //   - the same for each inline body step (onTrigger/childWorkflow bodies
   //     pinned above), tenant-owned.
+  // Which steps those are is read from the hash-covered projection, never from
+  // the pinned map: every step carries a pin because the wire shape demands one,
+  // but a step that cannot issue a request has no use for a secret. Delivering
+  // one anyway decrypts a tenant credential, seals it to the sidecar, and
+  // re-delivers it on every reconnect, on behalf of a step that never makes a
+  // call.
   // The inference rails are resolved HERE from the DB under the tenant-ownership
   // authority, so this deploy is self-contained: a direct deploy (a test) that
   // seeds the credentials in the DB -- rather than pre-supplying material -- still
@@ -667,17 +675,34 @@ async function prepareSourceRefDeploy(
     materials.set(material.credentialId, material);
   }
   const inferenceCredentialIds = new Set<string>();
-  for (const stepSources of Object.values(args.sources)) {
-    for (const source of stepSources) {
-      inferenceCredentialIds.add(source.credentialId);
-    }
-  }
-  for (const body of referencedDefinitions) {
-    for (const stepSources of Object.values(body.sources)) {
+  const addAgentBearingCredentials = (
+    definition: WorkflowProjectionWithSources["definition"],
+    pinned: Readonly<Record<string, readonly InferenceSource[]>>,
+    context: string,
+  ): void => {
+    for (const stepId of collectAgentBearingStepIds({ definition, context })) {
+      const stepSources = pinned[stepId];
+      if (stepSources === undefined) {
+        throw new Error(
+          `${context}step ${stepId} can invoke inference but carries no pinned source`,
+        );
+      }
       for (const source of stepSources) {
         inferenceCredentialIds.add(source.credentialId);
       }
     }
+  };
+  addAgentBearingCredentials(
+    projection,
+    args.sources,
+    "deployCodeSourcedWorkflow: ",
+  );
+  for (const body of referencedDefinitions) {
+    addAgentBearingCredentials(
+      body.definition,
+      body.sources,
+      `deployCodeSourcedWorkflow body ${body.definition.id}: `,
+    );
   }
   if (inferenceCredentialIds.size > 0) {
     if (args.credentialCipher === undefined) {
