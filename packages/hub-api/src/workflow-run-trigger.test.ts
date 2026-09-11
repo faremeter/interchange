@@ -1,6 +1,11 @@
 import { describe, test, expect } from "bun:test";
 
-import { createWorkflowRunTrigger } from "./workflow-run-trigger";
+import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
+
+import {
+  createWorkflowRunTrigger,
+  MAX_MAIL_BODY_BYTES,
+} from "./workflow-run-trigger";
 import type { PrincipalRow, TenantRow } from "./context";
 
 // The signing guard runs before any dependency is touched, so each dep is a
@@ -102,5 +107,17 @@ describe("triggerWorkflowRun signing-principal guard", () => {
         message: { content: "hi" },
       }),
     ).rejects.toThrow(/db must not be used/);
+  });
+});
+
+describe("mail body cap shared policy", () => {
+  test("the HTTP body cap and the frame body cap hold the same ceiling", () => {
+    // The inbound HTTP mail route caps its whole request body at
+    // MAX_MAIL_BODY_BYTES; the mail.outbound frame caps its rawMessage at
+    // @intx/types' MAX_MAIL_OUTBOUND_BODY_BYTES. They measure different
+    // quantities but must admit one mail of the same size, so they carry the
+    // same number. This is the one place both are visible (@intx/types cannot
+    // import @intx/hub-api), so it guards the shared policy against drift.
+    expect(MAX_MAIL_OUTBOUND_BODY_BYTES).toBe(MAX_MAIL_BODY_BYTES);
   });
 });

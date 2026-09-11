@@ -35,6 +35,7 @@ import {
 } from "@intx/hub-sessions";
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
+import { MAX_SIDECAR_FRAME_BYTES } from "@intx/types/sidecar";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@intx/log";
 
@@ -472,9 +473,27 @@ export async function createHubServer({
 
   log.info("Starting server on port {port}", { port });
 
+  // Cap the size of a frame the hub accepts from a sidecar. Bun's default
+  // (~16MB) sits below legitimate frames -- a large mail.outbound would trip it
+  // and Bun would CLOSE the sidecar's control socket, forcing a reconnect. Raise
+  // it above the largest legit received frame so only a genuinely oversized
+  // frame closes the connection. hono types the shared `websocket` handler with
+  // its minimal BunWebSocketHandler interface, which omits Bun's serve-level
+  // `maxPayloadLength`. The explicit `typeof websocket & { maxPayloadLength }`
+  // annotation adds the field with a nameable type -- both halves are portable,
+  // which keeps createHubServer's return type nameable, where an un-annotated
+  // inline spread infers an anonymous intersection that references hono's
+  // internal websocket type and trips TS2742 -- while still type-checking the
+  // option name so a future typo fails to compile rather than silently reverting
+  // to Bun's default.
+  const sidecarWebsocket: typeof websocket & { maxPayloadLength: number } = {
+    ...websocket,
+    maxPayloadLength: MAX_SIDECAR_FRAME_BYTES,
+  };
+
   return {
     fetch: app.fetch,
-    websocket,
+    websocket: sidecarWebsocket,
     port,
     idleTimeout: 0,
   };

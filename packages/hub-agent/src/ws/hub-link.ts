@@ -11,6 +11,7 @@ import type { HubTransport } from "@intx/mail-memory";
 import { type } from "arktype";
 import {
   HubFrame,
+  MAX_MAIL_OUTBOUND_BODY_BYTES,
   type SidecarFrame,
   type RegisterFrame,
   type ReconnectFrame,
@@ -865,6 +866,17 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   transport.setRemoteSendHandler(
     async (rawMessage, recipients, senderAddress) => {
       const encoded = base64Encode(rawMessage);
+      // Fail loud at the source: this send is awaited through the transport, so
+      // a throw surfaces to the producing agent as a real error rather than the
+      // silent hub-side drop it would otherwise get. The hub re-enforces the cap
+      // on receive -- that is the authoritative DoS backstop; this is the
+      // producer-facing error.
+      const bodyBytes = Buffer.byteLength(encoded, "utf8");
+      if (bodyBytes > MAX_MAIL_OUTBOUND_BODY_BYTES) {
+        throw new Error(
+          `refusing to send mail.outbound from ${senderAddress}: rawMessage of ${String(bodyBytes)} bytes exceeds the ${String(MAX_MAIL_OUTBOUND_BODY_BYTES)}-byte cap`,
+        );
+      }
       send({
         type: "mail.outbound",
         rawMessage: encoded,
@@ -880,6 +892,16 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   // handled by the RemoteSendHandler above.
   transport.addMessageSentHandler(async (ctx) => {
     const encoded = base64Encode(ctx.rawMessage);
+    // This is the post-delivery audit/projection forward; the mail already went
+    // out locally, so there is nothing left to fail. A throw here is swallowed
+    // (the transport runs message-sent handlers under Promise.allSettled), so
+    // an over-cap frame is logged loudly and skipped rather than thrown -- the
+    // hub would drop it on receive regardless.
+    const bodyBytes = Buffer.byteLength(encoded, "utf8");
+    if (bodyBytes > MAX_MAIL_OUTBOUND_BODY_BYTES) {
+      logger.error`Skipping delivered mail.outbound audit frame from ${ctx.senderAddress}: rawMessage of ${String(bodyBytes)} bytes exceeds the ${String(MAX_MAIL_OUTBOUND_BODY_BYTES)}-byte cap`;
+      return;
+    }
     const sessionId = sessions.getSessionId(ctx.senderAddress);
     send({
       type: "mail.outbound",
