@@ -892,18 +892,23 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   // check so the hub can bind the claim to this authenticated connection.
   transport.setRemoteSendHandler(
     async (rawMessage, recipients, senderAddress) => {
-      const encoded = base64Encode(rawMessage);
+      // Derive the base64 payload length arithmetically (4 output characters
+      // per 3 input bytes, padded up) rather than materializing the encoding:
+      // an over-cap send is rejected before the encode allocates the ~59MB
+      // base64 string a 44MB body would produce, and the throw below stays
+      // byte-for-byte identical to the encoded-length check it replaces.
+      const bodyBytes = Math.ceil(rawMessage.byteLength / 3) * 4;
       // Fail loud at the source: this send is awaited through the transport, so
       // a throw surfaces to the producing agent as a real error rather than the
       // silent hub-side drop it would otherwise get. The hub re-enforces the cap
       // on receive -- that is the authoritative DoS backstop; this is the
       // producer-facing error.
-      const bodyBytes = Buffer.byteLength(encoded, "utf8");
       if (bodyBytes > MAX_MAIL_OUTBOUND_BODY_BYTES) {
         throw new Error(
           `refusing to send mail.outbound from ${senderAddress}: rawMessage of ${String(bodyBytes)} bytes exceeds the ${String(MAX_MAIL_OUTBOUND_BODY_BYTES)}-byte cap`,
         );
       }
+      const encoded = base64Encode(rawMessage);
       send({
         type: "mail.outbound",
         rawMessage: encoded,
@@ -918,17 +923,20 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   // Remote sends are marked delivered: true as well — routing was already
   // handled by the RemoteSendHandler above.
   transport.addMessageSentHandler(async (ctx) => {
-    const encoded = base64Encode(ctx.rawMessage);
+    // Same arithmetic pre-check as the remote-send handler above: the audit
+    // forward skips an over-cap frame before the encode allocates the ~59MB
+    // base64 string, keeping the logged byte count identical.
+    const bodyBytes = Math.ceil(ctx.rawMessage.byteLength / 3) * 4;
     // This is the post-delivery audit/projection forward; the mail already went
     // out locally, so there is nothing left to fail. A throw here is swallowed
     // (the transport runs message-sent handlers under Promise.allSettled), so
     // an over-cap frame is logged loudly and skipped rather than thrown -- the
     // hub would drop it on receive regardless.
-    const bodyBytes = Buffer.byteLength(encoded, "utf8");
     if (bodyBytes > MAX_MAIL_OUTBOUND_BODY_BYTES) {
       logger.error`Skipping delivered mail.outbound audit frame from ${ctx.senderAddress}: rawMessage of ${String(bodyBytes)} bytes exceeds the ${String(MAX_MAIL_OUTBOUND_BODY_BYTES)}-byte cap`;
       return;
     }
+    const encoded = base64Encode(ctx.rawMessage);
     const sessionId = sessions.getSessionId(ctx.senderAddress);
     send({
       type: "mail.outbound",
