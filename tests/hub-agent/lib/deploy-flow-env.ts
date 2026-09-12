@@ -1848,11 +1848,22 @@ export async function fireMailTrigger(
   // use, so this fixture cannot mask a divergence by hand-picking the right
   // value.
   const runId = deriveWorkflowRunId(address);
+  // Co-deliver the trigger signer's public key on the run's grants barrier,
+  // exactly as production does: the HTTP trigger route resolves and co-delivers
+  // the principal key, so the recipient caches the sender's key before the mail
+  // arrives and the admission verdict is clean (valid signature + address
+  // match). Without this, the recipient caches no key, the verdict is unknown,
+  // and strict inbound enforcement rejects the trigger so the run never starts.
+  // The identity address is the MIME From, which this fixture also reuses as the
+  // authenticated sender on routeMail, so the from-match holds.
+  const senderIdentities = [
+    { address: from, publicKey: hexEncode(keyPair.publicKey) },
+  ];
   const grantsDelivered = env.hub.router.sendRunGrants(
     address,
     runId,
     opts.grants ?? [],
-    undefined,
+    senderIdentities,
   );
   if (!grantsDelivered) {
     throw new Error(

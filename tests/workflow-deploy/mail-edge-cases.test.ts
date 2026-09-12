@@ -570,6 +570,15 @@ async function deployEdgeWorkflow(
     address: deploymentMailAddress,
     agentId: `agent-${anchorRunId}-step`,
     workflowId: `wf_${anchorRunId}`,
+    // These cases exercise the supervisor's messageId parsing and the
+    // connected-window reconnect redelivery, NOT inbound-signature admission.
+    // They inject UNSIGNED, hand-built mail through the raw routeRaw/routeMail
+    // seam with no co-delivered sender key, so the recipient caches no key and
+    // the admission verdict is `unknown`. Author a policy that admits `unknown`
+    // so the intended non-signature behavior runs; strict enforcement (which
+    // rejects `unknown` under the default policy) is pinned by
+    // inbound-mail-enforcement-real-route.test.ts, not here.
+    inboundMailPolicy: { unknown: "admit" },
   });
 
   const handle = await deployWorkflowSourceForTest(env, {
