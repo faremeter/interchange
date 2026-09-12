@@ -20,6 +20,13 @@ WF_PARALLEL ?= 4
 # flaked the suite's load-sensitive 2s waitFor timers.
 UNIT_PARALLEL ?= 4
 
+# Worker count for the core integration pass. Like the other lanes, 4 is
+# the safe floor for CI (4 vCPU); raise it on bigger machines, e.g.
+# `make test-core CORE_PARALLEL=8`. Measured on a 32-core guest:
+# serial 41-45s; CORE_PARALLEL=4 ~16s; CORE_PARALLEL=8 ~10s (best);
+# 16-32 workers plateau ~10.5-12s (DB-bound).
+CORE_PARALLEL ?= 4
+
 all: lint build build-admin-ui test
 
 build: FORCE
@@ -75,9 +82,17 @@ test-workflow: FORCE
 	$(BUN) test --timeout 120000 --parallel=$(WF_PARALLEL) --no-isolate tests/workflow-deploy/multistep-signal.test.ts tests/workflow-deploy/hub-link-reconnect.test.ts tests/workflow-deploy/reconnect-reemits-parked-correlation.test.ts tests/workflow-deploy/interrupted-pack-reconnect-recovery.test.ts tests/workflow-deploy/deploy-window-reconnect-recovery.test.ts tests/workflow-deploy/midrun-signal-survives-reconnect.test.ts tests/workflow-deploy/multistep-perstep-reroute-reconnect.test.ts tests/workflow-deploy/crash-restart-reconnect-resumes.test.ts tests/workflow-deploy/crash-respawn-fifo.test.ts tests/workflow-deploy/crash-loop-latch.test.ts tests/workflow-deploy/on-trigger-signal-delivery.test.ts tests/workflow-deploy/on-trigger-between-events-restart.test.ts tests/workflow-deploy/on-trigger-body-sleep-restart-resumes.test.ts tests/workflow-deploy/on-trigger-agent-body.test.ts tests/workflow-deploy/on-trigger-loop-body.test.ts tests/workflow-deploy/single-step-real-agent.test.ts tests/workflow-deploy/map-fan-out-real-agent.test.ts tests/workflow-deploy/multistep-signed-send.test.ts tests/workflow-deploy/single-step-message-input.test.ts tests/workflow-deploy/single-step-posix-tool.test.ts tests/workflow-deploy/single-step-credential-tool.test.ts tests/workflow-deploy/credential-bound-route-deploy.test.ts tests/workflow-deploy/folded-tools-failover-real-agent.test.ts tests/workflow-deploy/single-step-grants-bridge.test.ts tests/workflow-deploy/single-step-pinned-ask-tool.test.ts tests/workflow-deploy/single-step-per-run-grants.test.ts tests/workflow-deploy/approval-tracer-roundtrip.test.ts tests/workflow-deploy/scope-always-roundtrip.test.ts tests/workflow-deploy/mail-trigger-derived-grants-roundtrip.test.ts tests/workflow-deploy/mail-trigger-run-completes-real-route.test.ts tests/workflow-deploy/inbound-mail-enforcement-real-route.test.ts tests/workflow-deploy/run-mail-send-real-route.test.ts tests/workflow-deploy/mail-federation-derived-grants-roundtrip.test.ts tests/workflow-deploy/mail-federation-run-completes.test.ts tests/workflow-deploy/single-step-event-threading.test.ts tests/workflow-deploy/single-step-conversation-durability.test.ts tests/workflow-deploy/per-level-pipeline-real-agents.test.ts tests/workflow-deploy/dispatch-orchestrator-real-agents.test.ts tests/workflow-deploy/single-step-full-lifecycle.test.ts tests/workflow-deploy/single-step-mail-loop.test.ts tests/workflow-deploy/single-step-mail-in-reply-to.test.ts tests/workflow-deploy/single-step-mail-wait-wake.test.ts tests/workflow-deploy/single-step-mail-two-turn-thread.test.ts tests/workflow-deploy/single-step-mail-interactive-turns.test.ts tests/workflow-deploy/single-step-mail-flag-expunge.test.ts tests/workflow-deploy/cross-process-custom-adapter.test.ts tests/workflow-deploy/conversation-state-wal.test.ts tests/workflow-deploy/conversation-state-connector-seed.test.ts tests/workflow-deploy/drain-roundtrip.test.ts tests/workflow-deploy/fixtures/child-workflow.test.ts tests/workflow-deploy/child-workflow-roundtrip.test.ts tests/workflow-deploy/child-workflow-tool-invoke-roundtrip.test.ts tests/workflow-deploy/child-workflow-inherited-grants-roundtrip.test.ts tests/workflow-deploy/on-trigger-childworkflow-roundtrip.test.ts tests/workflow-deploy/loop-roundtrip.test.ts tests/workflow-deploy/loop-nested-roundtrip.test.ts tests/workflow-deploy/loop-action-roundtrip.test.ts tests/workflow-deploy/all-action-deploy.test.ts tests/workflow-deploy/onfailure-action-roundtrip.test.ts tests/workflow-deploy/loop-await-signal-restart-resumes.test.ts tests/workflow-deploy/loop-childworkflow-roundtrip.test.ts tests/workflow-deploy/loop-work-then-signal-restart-resumes.test.ts tests/workflow-deploy/loop-await-signal-drain-roundtrip.test.ts tests/workflow-deploy/loop-childworkflow-parked-grandchild-drain.test.ts tests/workflow-deploy/on-trigger-drain-roundtrip.test.ts tests/workflow-deploy/unresolvable-director.test.ts tests/workflow-deploy/fifo-mail.test.ts tests/workflow-deploy/mail-edge-cases.test.ts tests/workflow-deploy/run-event-batching.test.ts tests/workflow-deploy/walking-skeleton.e2e.test.ts tests/workflow-deploy/asset-source.e2e.test.ts tests/workflow-deploy/source-workflow.e2e.test.ts tests/workflow-deploy/source-monorepo.e2e.test.ts tests/workflow-deploy/source-monorepo-many.e2e.test.ts tests/workflow-deploy/source-tamper-reject.e2e.test.ts tests/workflow-deploy/source-catalog.e2e.test.ts tests/workflow-deploy/source-mixed-closure.e2e.test.ts tests/workflow-deploy/source-credential.e2e.test.ts tests/workflow-deploy/source-inline-tool.e2e.test.ts tests/workflow-deploy/source-posix-lsp.e2e.test.ts
 
 # The core integration pass: inference, hub-api, and db suites that need
-# real Postgres and the extended timeout.
+# real Postgres and the extended timeout. Files run in parallel
+# (CORE_PARALLEL workers); without --parallel, bun runs test files
+# serially and this pass measured 41-45s on a 32-core guest vs ~16s at
+# the default 4 workers. --no-isolate keeps one global and module
+# registry per worker across its files, amortizing the @intx/* import
+# cost exactly as in the other lanes. The files are isolated from one
+# another (servers bind port 0, data dirs are mkdtemp under
+# os.tmpdir(), and DB-backed files migrate their own unique Postgres
+# schema per file), so they are safe to run concurrently.
 test-core: FORCE
-	$(BUN) test --timeout 120000 tests/inference/ tests/hub-api/ tests/db/
+	$(BUN) test --timeout 120000 --parallel=$(CORE_PARALLEL) --no-isolate tests/inference/ tests/hub-api/ tests/db/
 
 test-load: FORCE
 	$(BUN) test --timeout 300000 tests/workflow-deploy/fifo-mail-load.test.ts
