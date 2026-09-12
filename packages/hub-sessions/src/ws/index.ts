@@ -2,6 +2,7 @@ export {
   createSidecarRouter,
   type SidecarRouter,
   type SidecarRouterConfig,
+  type SenderDeploySettledOutcome,
   type SidecarConnection,
   type SidecarAuthIdentity,
   type SidecarAuthenticator,

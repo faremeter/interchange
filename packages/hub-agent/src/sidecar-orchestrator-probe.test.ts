@@ -27,6 +27,7 @@ import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
 
 import { createSidecarOrchestrator } from "./sidecar-orchestrator";
+import { resolveInboundMailPolicy } from "./ws/inbound-signature";
 import type { WorkflowProbeExecutor, WorkflowProbeResult } from "./ws/hub-link";
 
 const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
@@ -171,6 +172,7 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
         verifySSHSig: verifySSHSignature,
       },
       resolveSenderCrypto: () => undefined,
+      lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
       cacheSenderKey: async () => undefined,
       evictSenderKey: async () => undefined,
       createDeployRouter: () => ({

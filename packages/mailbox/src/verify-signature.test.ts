@@ -65,7 +65,7 @@ describe("verifyMimeSignature", () => {
   });
 
   test("returns invalid, not a throw, for a corrupt signature part", async () => {
-    // Shadow verification must never let a malformed signature escape as an
+    // Signature verification must never let a malformed signature escape as an
     // exception: a corrupt `application/pgp-signature` part is a verdict
     // ("invalid"), not an error the caller has to catch.
     const crypto = await makeCrypto();

@@ -156,6 +156,9 @@ export function generateMessageId(address: string): string {
  *   - content after the closing `>` in an angle-bracketed form
  *     (e.g. `Name <a@b> (comment)`) — would silently fall through to a
  *     misparsed bare-form attempt, so we refuse instead
+ *   - trailing content in a bare form (e.g. `a@b (comment)`) — a well-formed
+ *     bare addr-spec has no internal whitespace, so we refuse rather than
+ *     fold the trailing token into the domain
  *
  * Per RFC 5321 §2.4 the local-part is technically case-sensitive, but no
  * production system honors that; matching case-insensitively is the
@@ -180,6 +183,16 @@ export function extractAddrSpec(addressLine: string): string {
     }
     candidate = trimmed.slice(angleOpen + 1, -1).trim();
   } else {
+    // Bare form. An unquoted addr-spec carries no internal whitespace, so
+    // treat any as trailing content (e.g. `a@b (comment)`) and refuse rather
+    // than mangle the domain. Domain literals carry no internal whitespace, so
+    // the only bare inputs this rejects are malformed or quoted local-parts,
+    // both of which the function refuses by design anyway.
+    if (/\s/.test(trimmed)) {
+      throw new Error(
+        `extractAddrSpec: trailing content in bare address ${JSON.stringify(addressLine)}`,
+      );
+    }
     candidate = trimmed;
   }
 

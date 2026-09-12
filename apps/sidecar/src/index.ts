@@ -11,6 +11,8 @@ import {
 import {
   createSenderKeyCache,
   createSenderCryptoResolver,
+  createInboundMailPolicyRegistry,
+  createInboundMailPolicyLookup,
   createSidecarOrchestrator,
   type HubLink,
 } from "@intx/hub-agent";
@@ -250,11 +252,22 @@ const senderKeyCache = await createSenderKeyCache({
   removeFileDurable: (filePath) => removeFileAtomicDurable(filePath),
 });
 
-// The read side of the same cache: the inbound signature shadow resolves a
+// The read side of the same cache: the inbound signature verify resolves a
 // sender address to the crypto that verifies its mail. Built here at the edge
 // so the hub link stays source-opaque -- it resolves address -> crypto without
 // holding the cache or knowing where the key came from.
 const resolveSenderCrypto = createSenderCryptoResolver(senderKeyCache);
+
+// Per-recipient-address registry of resolved inbound-mail admission policies.
+// The workflow-host wiring resolves each hydrated deployment's authored
+// `inboundMailPolicy` into this registry beside its mail-router registration
+// and removes it on teardown; the read side below hands the hub-link's
+// `mail.inbound` seam a total policy for every address. Built here at the edge
+// so the hub link stays policy-source-opaque, mirroring `resolveSenderCrypto`.
+const inboundMailPolicyRegistry = createInboundMailPolicyRegistry();
+const lookupInboundMailPolicy = createInboundMailPolicyLookup(
+  inboundMailPolicyRegistry,
+);
 
 // The deploy router records `(runId -> agentAddress)` here on
 // every inbound `agent.deploy`; the facade resolves the mapping when
@@ -453,6 +466,7 @@ const orchestrator = createSidecarOrchestrator({
     verifySSHSig: verifySSHSignature,
   },
   resolveSenderCrypto,
+  lookupInboundMailPolicy,
   // Write peer of `resolveSenderCrypto`: an inbound `sender.key.refresh` frame
   // re-pushes a rotated sender key here. Decode the hex and persist through the
   // same cache the read side serves from; `put` owns the 32-byte length check
@@ -566,6 +580,7 @@ const orchestrator = createSidecarOrchestrator({
         deploymentAddressRegistry.unregister(runId);
       },
       multistepMailRouter,
+      inboundMailPolicyRegistry,
       multistepSignalRouter,
       multistepDrainRouter,
       multistepGrantsRouter,

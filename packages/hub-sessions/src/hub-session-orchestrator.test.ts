@@ -127,11 +127,17 @@ function createMockDB(opts: MockDBOpts) {
   /* eslint-enable @typescript-eslint/no-unsafe-type-assertion */
 }
 
-type RouterCall = {
-  kind: "dispatchAgentEvent";
-  addr: string;
-  event: unknown;
-};
+type RouterCall =
+  | {
+      kind: "dispatchAgentEvent";
+      addr: string;
+      event: unknown;
+    }
+  | {
+      kind: "noteSenderDeploySettled";
+      addr: string;
+      outcome: { recorded: string } | { failed: string };
+    };
 
 function createRouterFacade(): {
   facade: Parameters<typeof createHubSessionOrchestrator>[0]["router"];
@@ -143,6 +149,9 @@ function createRouterFacade(): {
     facade: {
       dispatchAgentEvent(addr, event) {
         calls.push({ kind: "dispatchAgentEvent", addr, event });
+      },
+      noteSenderDeploySettled(addr, outcome) {
+        calls.push({ kind: "noteSenderDeploySettled", addr, outcome });
       },
     },
   };
@@ -346,6 +355,13 @@ describe("createHubSessionOrchestrator", () => {
       expect(harness.updates).toHaveLength(1);
       expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
       expect(harness.updates[0]?.table).toBe("workflow_run");
+      // The durable write settles the sender's deploy so its parked pre-ack mail
+      // wakes, keyed byte-identically on the deploy address.
+      expect(harness.router.calls).toContainEqual({
+        kind: "noteSenderDeploySettled",
+        addr: AGENT_ADDRESS,
+        outcome: { recorded: "deadbeef" },
+      });
     });
 
     test("persists the public key for a workflow-derived deployment address", async () => {
@@ -360,6 +376,11 @@ describe("createHubSessionOrchestrator", () => {
       expect(harness.updates).toHaveLength(1);
       expect(harness.updates[0]?.set).toEqual({ publicKey: "deadbeef" });
       expect(harness.updates[0]?.table).toBe("workflow_run");
+      expect(harness.router.calls).toContainEqual({
+        kind: "noteSenderDeploySettled",
+        addr: "run_abc@workflow.interchange",
+        outcome: { recorded: "deadbeef" },
+      });
     });
 
     test("defers an allocated deployment key until initialization completes", async () => {
@@ -374,6 +395,13 @@ describe("createHubSessionOrchestrator", () => {
       });
 
       expect(harness.updates).toEqual([]);
+      // The allocated path settles its own key under the allocation lock, so the
+      // non-allocated projection neither writes nor settles here.
+      expect(
+        harness.router.calls.filter(
+          (c) => c.kind === "noteSenderDeploySettled",
+        ),
+      ).toEqual([]);
     });
   });
 

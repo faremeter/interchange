@@ -28,6 +28,7 @@ import type {
   GrantRequirement,
   SidecarCapabilityPolicy,
 } from "@intx/types";
+import type { InboundMailPolicy } from "@intx/types/runtime";
 
 import { step } from "./primitives";
 import type { Primitive } from "./primitives";
@@ -43,6 +44,7 @@ export interface SingularShorthand<EnvReq extends BaseEnv> {
   grantRequirements?: readonly GrantRequirement[];
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
+  inboundMailPolicy?: InboundMailPolicy;
 }
 
 export interface PluralShape {
@@ -54,6 +56,7 @@ export interface PluralShape {
   grantRequirements?: readonly GrantRequirement[];
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
+  inboundMailPolicy?: InboundMailPolicy;
 }
 
 export function normalizeSingularShorthand<EnvReq extends BaseEnv>(
@@ -73,6 +76,9 @@ export function normalizeSingularShorthand<EnvReq extends BaseEnv>(
       : {}),
     ...(config.sidecarPlacement !== undefined
       ? { sidecarPlacement: config.sidecarPlacement }
+      : {}),
+    ...(config.inboundMailPolicy !== undefined
+      ? { inboundMailPolicy: config.inboundMailPolicy }
       : {}),
   };
 }

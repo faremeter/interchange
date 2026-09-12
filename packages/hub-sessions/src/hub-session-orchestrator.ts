@@ -20,6 +20,7 @@ import { getLogger } from "@intx/log";
 
 import type { EventCollectorRegistry } from "./event-collector-registry";
 import type { SidecarEventEmitter } from "./ws/sidecar-events";
+import type { SenderDeploySettledOutcome } from "./ws/sidecar-handler";
 
 const log = getLogger(["hub", "orchestrator"]);
 
@@ -28,6 +29,10 @@ const log = getLogger(["hub", "orchestrator"]);
  * from the rest of the router API. */
 export type HubSessionRouterFacade = {
   dispatchAgentEvent(agentAddress: string, event: unknown): void;
+  noteSenderDeploySettled(
+    address: string,
+    outcome: SenderDeploySettledOutcome,
+  ): void;
 };
 
 export type HubSessionOrchestratorDeps = {
@@ -101,6 +106,14 @@ export function createHubSessionOrchestrator(
         .update(workflowRun)
         .set({ publicKey })
         .where(eq(workflowRun.address, agentAddress));
+
+      // The key is now durable. Wake any mail the run parked while pre-ack so it
+      // is delivered with the sender key co-delivered, closing the window where
+      // a run sends before its key is recorded. The write above happens-before
+      // this settle, so a re-drive resolves the recorded key. The address is the
+      // run's own deploy address, byte-identical to the sender address its mail
+      // was sent under.
+      router.noteSenderDeploySettled(agentAddress, { recorded: publicKey });
     }),
   );
 

@@ -533,6 +533,8 @@ function createMockSidecarRouter(
       sendOrder.push({ kind: "run.grants", address });
       return runGrantsResult;
     },
+    noteSenderDeployStarted: () => notImpl("noteSenderDeployStarted"),
+    noteSenderDeploySettled: () => notImpl("noteSenderDeploySettled"),
     sendAgentUndeploy: () => notImpl("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
@@ -1694,11 +1696,11 @@ describe("POST /workflows/:anchorRunId/mail", () => {
   });
 
   test("routes the trigger mail even when the sender key cannot be resolved", async () => {
-    // The sender key is co-delivered best-effort for shadow verification, so a
-    // resolution fault (here a misconfigured key store whose getPublicKey
-    // throws) must degrade to omitting it rather than fail the trigger.
-    // Otherwise the fault would strand a run whose grants (sent before the
-    // mail) have already gone out.
+    // The sender key is co-delivered best-effort for the recipient's signature
+    // verification, so a resolution fault (here a misconfigured key store whose
+    // getPublicKey throws) must degrade to omitting it rather than fail the
+    // trigger. Otherwise the fault would strand a run whose grants (sent before
+    // the mail) have already gone out.
     const routeMailCalls: RouteMailCall[] = [];
     const throwingKeyStore: PrincipalKeyStore = {
       ...createMockPrincipalKeyStore(),

@@ -30,6 +30,7 @@ import { createInMemoryTransport } from "@intx/mail-memory";
 import { hexDecode, hexEncode } from "@intx/types";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
+import { resolveInboundMailPolicy } from "./inbound-signature";
 import { createSenderKeyCache } from "../sender-key-cache";
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
@@ -257,6 +258,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
         sessions: createStubSessionManager(),
         keyStore: createStubKeyStore(),
         resolveSenderCrypto: () => undefined,
+        lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
         cacheSenderKey: (address, publicKey) =>
           firstCache.put(address, hexDecode(publicKey)),
         evictSenderKey: (address) => firstCache.evict(address),
@@ -288,6 +290,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
         sessions: createStubSessionManager(),
         keyStore: createStubKeyStore(),
         resolveSenderCrypto: () => undefined,
+        lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
         cacheSenderKey: (address, publicKey) =>
           reconnectCache.put(address, hexDecode(publicKey)),
         evictSenderKey: (address) => reconnectCache.evict(address),
@@ -354,6 +357,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
         sessions: createStubSessionManager(),
         keyStore: createStubKeyStore(),
         resolveSenderCrypto: () => undefined,
+        lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
         cacheSenderKey: (address, publicKey) =>
           firstCache.put(address, hexDecode(publicKey)),
         evictSenderKey: (address) => firstCache.evict(address),
@@ -391,6 +395,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
         sessions: createStubSessionManager(),
         keyStore: createStubKeyStore(),
         resolveSenderCrypto: () => undefined,
+        lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
         cacheSenderKey: (address, publicKey) =>
           reconnectCache.put(address, hexDecode(publicKey)),
         evictSenderKey: (address) => reconnectCache.evict(address),

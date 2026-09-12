@@ -22,12 +22,14 @@ import {
   type RepoStore,
   type WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions";
-import type {
-  AgentKeyStore,
-  DeployRouter,
-  DeployRouterResult,
-  SenderKeyCache,
-  SessionManager,
+import {
+  resolveInboundMailPolicy,
+  type AgentKeyStore,
+  type DeployRouter,
+  type DeployRouterResult,
+  type InboundMailPolicyRegistry,
+  type SenderKeyCache,
+  type SessionManager,
 } from "@intx/hub-agent";
 import {
   createWorkflowSupervisor,
@@ -1168,6 +1170,21 @@ export function createSidecarDeployRouter(deps: {
    */
   multistepMailRouter?: MultistepMailRouter;
   /**
+   * Per-recipient-address registry of resolved inbound-mail admission
+   * policies the sidecar hub-link's `mail.inbound` seam enforces. The
+   * multi-step branch resolves this deployment's authored
+   * `inboundMailPolicy` into the registry once `supervisor.spawn`
+   * succeeds -- beside the mail-router registration -- and removes the
+   * entry in the same teardown, so a reused address never inherits a
+   * stale policy.
+   *
+   * Optional so tests that exercise the multi-step branch without the
+   * hub-link seam can omit it; an absent registry means an inbound frame
+   * for the address resolves to the fully-closed default and is rejected
+   * until the wiring is plumbed.
+   */
+  inboundMailPolicyRegistry?: InboundMailPolicyRegistry;
+  /**
    * Per-deployment-address signal handler registry the sidecar
    * hub-link's `signal.deliver` path consults. The multi-step branch
    * registers `wired.supervisor.deliverSignal` against the deployment's
@@ -1440,6 +1457,7 @@ export function createSidecarDeployRouter(deps: {
     // Drop racing frames at the router boundary first, then unwind the
     // underlying registrations -- the same ordering the undeploy hook uses.
     deps.multistepMailRouter?.unregister(args.agentAddress);
+    deps.inboundMailPolicyRegistry?.unregister(args.agentAddress);
     deps.multistepSignalRouter?.unregister(args.agentAddress);
     deps.multistepDrainRouter?.unregister(args.agentAddress);
     deps.multistepGrantsRouter?.unregister(args.agentAddress);
@@ -1935,6 +1953,14 @@ export function createSidecarDeployRouter(deps: {
       deps.multistepMailRouter?.register(spec.agentAddress, (message) =>
         wired.routeInbound(message),
       );
+      // Resolve this deployment's authored inbound-mail policy into a total
+      // decision map ONCE and store it beside the mail-router registration, so
+      // the hub-link seam has the recipient's policy before any inbound frame
+      // for this address can route.
+      deps.inboundMailPolicyRegistry?.register(
+        spec.agentAddress,
+        resolveInboundMailPolicy(spec.definition.inboundMailPolicy),
+      );
       // Register the signal-delivery handler so a hub `signal.deliver` frame
       // dispatches through the supervisor's `deliverSignal`.
       deps.multistepSignalRouter?.register(spec.agentAddress, async (args) => {
@@ -2111,6 +2137,7 @@ export function createSidecarDeployRouter(deps: {
         // the success path confirmed; ordering matches the `undeploy` hook.
         if (routersRegistered) {
           deps.multistepMailRouter?.unregister(spec.agentAddress);
+          deps.inboundMailPolicyRegistry?.unregister(spec.agentAddress);
           deps.multistepSignalRouter?.unregister(spec.agentAddress);
           deps.multistepDrainRouter?.unregister(spec.agentAddress);
           deps.multistepGrantsRouter?.unregister(spec.agentAddress);
@@ -2450,6 +2477,7 @@ export function createSidecarDeployRouter(deps: {
       // racing frames first, then unwind the underlying resource.
       const runId = deriveDeploymentId(frame.agentAddress);
       deps.multistepMailRouter?.unregister(frame.agentAddress);
+      deps.inboundMailPolicyRegistry?.unregister(frame.agentAddress);
       deps.multistepSignalRouter?.unregister(frame.agentAddress);
       deps.multistepDrainRouter?.unregister(frame.agentAddress);
       deps.multistepGrantsRouter?.unregister(frame.agentAddress);

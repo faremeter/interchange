@@ -36,6 +36,7 @@ import { RegisterFrame, ReconnectFrame } from "@intx/types/sidecar";
 import { configureSync, getConfig, resetSync } from "@intx/log";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
+import { resolveInboundMailPolicy } from "./inbound-signature";
 import { createSenderKeyCache } from "../sender-key-cache";
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
@@ -272,6 +273,7 @@ function createTestLink(
     sessions: createStubSessionManager(),
     keyStore: createStubKeyStore(),
     resolveSenderCrypto: () => undefined,
+    lookupInboundMailPolicy: () => resolveInboundMailPolicy(undefined),
     cacheSenderKey,
     evictSenderKey,
     deployRouter: createStubDeployRouter(),

@@ -135,6 +135,14 @@ describe("extractAddrSpec", () => {
     ).toThrow();
   });
 
+  test("throws on a trailing comment in a bare form", () => {
+    expect(() => extractAddrSpec("alice@example.com (comment)")).toThrow();
+  });
+
+  test("throws on a trailing token in a bare form", () => {
+    expect(() => extractAddrSpec("alice@example.com foo")).toThrow();
+  });
+
   test("throws on a quoted local-part", () => {
     expect(() => extractAddrSpec('"a@b"@example.com')).toThrow();
   });

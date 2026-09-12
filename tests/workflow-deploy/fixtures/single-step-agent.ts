@@ -9,6 +9,8 @@
 // deploys more than one instance in a single sidecar overrides them to keep the
 // definitions distinct.
 
+import type { InboundMailPolicy } from "@intx/types/runtime";
+
 export type SingleStepAgentFixtureParams = {
   /** The step's key in the workflow's `steps` map. */
   stepId: string;
@@ -27,6 +29,15 @@ export type SingleStepAgentFixtureParams = {
    * provider id so the deployed definition pins that provider.
    */
   provider?: string;
+  /**
+   * The workflow's authored inbound-mail admission policy. Omitted by default,
+   * so the deployed definition carries no `inboundMailPolicy` and the recipient
+   * resolves to the secure default (reject every non-`clean` outcome). A caller
+   * that exercises the enforcement seam sets it to relax a specific outcome
+   * (for example `{ missing: "admit" }`) so an otherwise-rejected message is
+   * admitted for that deployment.
+   */
+  inboundMailPolicy?: InboundMailPolicy;
 };
 
 export function singleStepAgentEntry(
@@ -35,6 +46,10 @@ export function singleStepAgentEntry(
   const agentId = params.agentId ?? "single-step-agent";
   const workflowId = params.workflowId ?? "wf_single_step_agent";
   const provider = params.provider ?? "anthropic";
+  const inboundMailPolicyField =
+    params.inboundMailPolicy !== undefined
+      ? `\n  inboundMailPolicy: ${JSON.stringify(params.inboundMailPolicy)},`
+      : "";
   return `
 import { defineWorkflow, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
@@ -51,7 +66,7 @@ const agent = defineAgent({
 
 export const workflow = defineWorkflow({
   id: ${JSON.stringify(workflowId)},
-  trigger: { type: "mail", to: ${JSON.stringify(params.address)} },
+  trigger: { type: "mail", to: ${JSON.stringify(params.address)} },${inboundMailPolicyField}
   steps: {
     [${JSON.stringify(params.stepId)}]: step({ agent }),
   },
