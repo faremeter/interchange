@@ -1620,6 +1620,13 @@ export async function deployWorkflowSourceForTest(
   env: DeployFlowEnv,
   opts: DeployWorkflowSourceForTestOpts,
 ): Promise<DeployWorkflowSourceForTestHandle> {
+  // Reap every tracked deployment whose run is already terminal before
+  // standing up the new one: the new deploy proves the previous test is
+  // done with those deployments, so their parked workflow-process children
+  // (~330MB each) are dead weight. Fire-and-forget via the production
+  // `agent.undeploy` path; see `reapTerminalDeployments`.
+  reapTerminalDeployments(env);
+
   const deploymentDomain = opts.deploymentDomain ?? DEFAULT_DEPLOYMENT_DOMAIN;
   const workflowRunRef = opts.workflowRunRef ?? DEFAULT_WORKFLOW_RUN_REF;
   const entry = opts.entry ?? DEFAULT_WORKFLOW_ENTRY;
@@ -1832,6 +1839,48 @@ function requireDeployment(
 
 export type { WorkflowRunEvent };
 
+// ---- Reaping completed deployments' workflow-process children ----
+//
+// A workflow-process child (~330MB of module graph) stays alive for the
+// whole test file once its deployment's run completes: the sidecar keeps
+// deployments deployed (warm) until an undeploy or the sidecar exits, and
+// the fixture only tears the sidecar down in the file's afterAll. A file
+// that deploys several workflows therefore accumulates one parked child
+// per completed deployment, and the workflow lane's peak RSS is set by
+// those parked children (e.g. child-workflow-roundtrip peaks at ~2.7GiB
+// with six parked children where the single-deployment baseline is ~1GiB).
+//
+// The fixture reaps a completed deployment through the production
+// `agent.undeploy` wire path (the same frame the hub sends for a real
+// undeploy) when a NEW deployment is registered. At that point every
+// previously-completed deployment is provably done -- each test deploys
+// its own workflow and no test re-triggers a completed deployment after a
+// later deploy in the same file -- so killing its child is unobservable to
+// test logic. The undeploy is fire-and-forget so the next deploy is never
+// delayed by the reap, and a failed/timed-out undeploy leaves the child
+// parked until teardown (the pre-existing behavior), so the reap is
+// strictly best-effort. Terminal marking happens only in the read helpers
+// below (a run whose LAST event is terminal is by definition finished);
+// an externally-registered handle that is never read is never reaped.
+const terminalDeployments = new WeakMap<DeploymentHandle, boolean>();
+const reapedDeployments = new WeakSet<DeploymentHandle>();
+
+function reapTerminalDeployments(env: DeployFlowEnv): void {
+  for (const handle of env.deployments.values()) {
+    if (terminalDeployments.get(handle) !== true) continue;
+    if (reapedDeployments.has(handle)) continue;
+    reapedDeployments.add(handle);
+    void env.hub.router
+      .sendAgentUndeploy(
+        handle.mailAddress,
+        "test fixture: deployment run complete; reaping parked child",
+      )
+      .catch(() => {
+        // Best-effort: leave the child parked until teardown.
+      });
+  }
+}
+
 /**
  * Read every event under `runs/<runId>/events/` from the deployment's
  * workflow-run repo and return them in ascending `seq` order. Returns
@@ -1848,11 +1897,21 @@ export async function readWorkflowRunEvents(
 ): Promise<WorkflowRunEvent[]> {
   const handle = requireDeployment(env, anchorRunId);
   const reader = createWorkflowRunReader(env.hub.agentRepoStore.repoStore);
-  return reader.readRunEvents(
+  const events = await reader.readRunEvents(
     handle.workflowRunRepoId,
     handle.workflowRunRef,
     runId,
   );
+  // The log is seq-ordered, so a terminal last event means the run is
+  // finished: no further event can follow it. Marking here lets tests that
+  // poll for terminal state via this helper (instead of
+  // `waitForWorkflowRunComplete`) still reap the deployment's parked child
+  // at the next deploy.
+  const last = events.at(-1);
+  if (last !== undefined && WORKFLOW_RUN_TERMINAL_TYPES.has(last.type)) {
+    terminalDeployments.set(handle, true);
+  }
+  return events;
 }
 
 /**
@@ -1888,7 +1947,13 @@ export async function waitForWorkflowRunComplete(
     const terminal = events.find((e) =>
       WORKFLOW_RUN_TERMINAL_TYPES.has(e.type),
     );
-    if (terminal !== undefined) return terminal;
+    if (terminal !== undefined) {
+      const handle = env.deployments.get(anchorRunId);
+      if (handle !== undefined) {
+        terminalDeployments.set(handle, true);
+      }
+      return terminal;
+    }
     if (Date.now() - start > timeoutMs) {
       const diag = diagnostics?.();
       const ctx = diag ? `\n${diag}` : "";
