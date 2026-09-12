@@ -56,6 +56,7 @@ import {
   readClaimCheckDir,
   readWorkflowRunEvents,
   settleThenDrop,
+  PRODUCTION_RECONNECT_DELAY_MS,
   startDeployFlowEnv,
   waitFor,
   waitForReconnect,
@@ -123,7 +124,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   if (!harnessDbEnvAvailable()) return;
-  env = await startDeployFlowEnv();
+  env = await startDeployFlowEnv({
+    // This scenario IS the mid-pack disconnect race: the recovery machinery
+    // (push cancel -> reconnect -> re-drive) assumes the disconnect is fully
+    // processed before the reconnect opens. The production 3s delay is part of
+    // that envelope -- a faster reconnect can reopen the link while the
+    // interrupted push is still being torn down and fail the run.
+    sidecarEnv: {
+      SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS,
+    },
+  });
 });
 
 afterEach(async () => {

@@ -106,6 +106,20 @@ export const SESSION_ID = "ses_integration-1";
 export const SIDECAR_ID = "sc-integration-1";
 export const TOKEN = "test-token";
 
+// The production hub-link reconnect backoff (see `DEFAULT_RECONNECT_DELAY_MS`
+// in `@intx/hub-agent`'s hub-link). The fixture's default sidecar env replaces
+// it with a short test delay (see `startSidecarSubprocess`), so a test that
+// asserts the delay itself (e.g. `reconnectMs > 1_000`) opts back in via
+// `sidecarEnv: { SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS }`.
+export const PRODUCTION_RECONNECT_DELAY_MS = "3000";
+
+// The fixture's default reconnect backoff for spawned sidecars: short enough
+// that the reconnect-survival suite does not burn 3s of wall clock per dropped
+// link, long enough that a drop still lands as a genuine disconnect before the
+// reconnect cycle starts. Tests that pin the production delay override it via
+// `sidecarEnv` (see `PRODUCTION_RECONNECT_DELAY_MS`).
+const TEST_RECONNECT_DELAY_MS = "250";
+
 // Grace period for each stage of the teardown's sidecar reap (SIGTERM, then
 // SIGKILL). Bounds the wait so a sidecar that is slow to reap under contention
 // cannot wedge the afterAll hook.
@@ -1038,6 +1052,11 @@ export async function startSidecarSubprocess(opts: {
     // a noop that would let a plaintext-sealing regression pass green.
     SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
       "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    // Fast reconnect backoff for tests that do not assert the delay itself
+    // (recovery semantics are independent of the backoff duration); a test
+    // that pins the production 3s delay passes
+    // `sidecarEnv: { SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS }`.
+    SIDECAR_RECONNECT_DELAY_MS: TEST_RECONNECT_DELAY_MS,
     ...(opts.extraEnv ?? {}),
   };
 
@@ -2367,8 +2386,9 @@ export function dropHubLink(env: DeployFlowEnv): void {
 export type WaitForReconnectOpts = {
   /**
    * Ceiling on the reconnect wait. Defaults to `20_000`, comfortably above
-   * the observed ~3s reconnect (the sidecar's 3s `DEFAULT_RECONNECT_DELAY_MS`
-   * plus a handshake).
+   * the observed reconnect (the sidecar's reconnect delay plus a handshake;
+   * the fixture shortens the delay to `TEST_RECONNECT_DELAY_MS` unless a test
+   * pins the production 3s value).
    */
   timeoutMs?: number;
 };

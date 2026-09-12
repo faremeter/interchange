@@ -457,7 +457,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
       undefined,
     );
     expect(grantsDelivered).toBe(true);
-    await new Promise((r) => setTimeout(r, 2_000));
+    await new Promise((r) => setTimeout(r, 1_000));
 
     // Deliver the trigger mail with its hub-minted messageId (the production
     // workflow-trigger route carries it; the hub tracks it for redelivery),

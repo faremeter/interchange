@@ -76,8 +76,15 @@ const BODY_STEP_ID = "wait";
 // Long enough that detecting the body's durable park and killing the sidecar
 // reliably beats the timer firing (the body must be parked AT crash time), while
 // its persisted `fireAt` stays far inside the test budget so the re-armed timer
-// fires after the restart.
-const SLEEP_DURATION_MS = 30_000;
+// fires after the restart. Park detection (a durable `TimerSet` with no
+// `StepCompleted`) lands in well under a second on an idle machine and ~1-2s
+// under suite-wide load, and the kill+restart+reconnect chain fits in a few
+// seconds, so 12s keeps a wide margin on both sides. A past `fireAt` on restore
+// fires immediately (the scheduler clamps the delay to 0), so even a restart
+// that lands late still completes the body after the crash; the load-bearing
+// assertions (single `TimerSet`/`TimerFired` pair, completion only after the
+// restart) do not depend on the absolute duration.
+const SLEEP_DURATION_MS = 12_000;
 
 const FIRST_BODY = "First event body alpha-7391.";
 

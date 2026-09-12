@@ -207,6 +207,25 @@ if (readyTimeoutRaw !== undefined && readyTimeoutRaw.trim() !== "") {
   readyTimeoutMs = parsed;
 }
 
+// Hub-link reconnect backoff (ms). Resolved here at the boot edge -- the
+// single layer that owns operator config -- and forwarded to the
+// orchestrator's hub link. Absent or empty => the link's 3s
+// `DEFAULT_RECONNECT_DELAY_MS`. Production never sets this; the deploy-flow
+// test harness sets a short value so reconnect-survival tests that do not
+// assert the delay itself (they assert the reconnect's recovery semantics,
+// not the backoff duration) do not burn 3s of wall clock per dropped link.
+const reconnectDelayRaw = process.env["SIDECAR_RECONNECT_DELAY_MS"];
+let reconnectDelayMs: number | undefined;
+if (reconnectDelayRaw !== undefined && reconnectDelayRaw.trim() !== "") {
+  const parsed = Number.parseInt(reconnectDelayRaw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(
+      `SIDECAR_RECONNECT_DELAY_MS must be a positive integer (milliseconds), got ${reconnectDelayRaw}`,
+    );
+  }
+  reconnectDelayMs = parsed;
+}
+
 // Sweep any tmp staging directories left behind by a `put` or
 // `extractTarball` that crashed between staging and the final rename
 // on a previous boot. Running here, before the orchestrator starts
@@ -485,6 +504,9 @@ const orchestrator = createSidecarOrchestrator({
   credentialsInboundRouter: multistepCredentialsRouter,
   applyWorkflowRunPack: restoreWorkflowRunPack,
   workflowProbeExecutor,
+  // Test-only override of the hub-link reconnect backoff; unset in
+  // production, where the link applies its 3s default.
+  ...(reconnectDelayMs !== undefined ? { reconnectDelayMs } : {}),
   // The hub link calls this on every (re)connect to announce the workflow
   // deployments this sidecar hosts so the hub re-registers their routes.
   // `createDeployRouter` runs synchronously during construction (below), so

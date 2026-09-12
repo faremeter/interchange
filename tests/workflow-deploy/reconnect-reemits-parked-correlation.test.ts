@@ -115,6 +115,7 @@ import {
   dropHubLink,
   fireMailTrigger,
   readWorkflowRunEvents,
+  PRODUCTION_RECONNECT_DELAY_MS,
   startDeployFlowEnv,
   waitFor,
   waitForFirstRunId,
@@ -388,6 +389,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // Wire the real DB co-write into the fixture hub so a register frame
         // that reaches the hub writes real rows.
         registerSignalCorrelation: createRegisterSignalCorrelation(h.db),
+        // This test pins the production reconnect delay: the
+        // `reconnectMs > 1_000` assertion proves the sidecar really cycled
+        // through its delayed reconnect rather than instantly re-connecting.
+        sidecarEnv: {
+          SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS,
+        },
       });
     });
 

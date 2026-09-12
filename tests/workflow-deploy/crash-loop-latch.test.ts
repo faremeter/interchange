@@ -305,10 +305,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The latch tore down the deployment, not the sidecar.
       expect(env.sidecar.proc.exitCode).toBeNull();
 
-      // No 4th respawn: wait comfortably past the would-be 4s backoff (never
-      // scheduled -- the guard latched instead) and confirm no fresh child
-      // appears under the sidecar.
-      await new Promise((r) => setTimeout(r, 8_000));
+      // No 4th respawn: wait past the would-be 4s backoff (never scheduled --
+      // the guard latched instead) plus scheduling margin, and confirm no
+      // fresh child appears under the sidecar.
+      await new Promise((r) => setTimeout(r, 6_000));
       const survivors = listWorkflowHostChildren(env).filter(
         (pid) => !killed.includes(pid),
       );

@@ -57,6 +57,7 @@ import {
   injectSignal,
   readWorkflowRunEvents,
   settleThenDrop,
+  PRODUCTION_RECONNECT_DELAY_MS,
   startDeployFlowEnv,
   waitFor,
   waitForReconnect,
@@ -107,7 +108,14 @@ beforeAll(async () => {
     creatorPrincipalId: CALLER_PRINCIPAL_ID,
   });
 
-  env = await startDeployFlowEnv();
+  env = await startDeployFlowEnv({
+    // This test pins the production reconnect delay: the `reconnectMs > 1_000`
+    // assertion proves the sidecar really cycled through its delayed reconnect
+    // rather than instantly re-connecting.
+    sidecarEnv: {
+      SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS,
+    },
+  });
 });
 
 afterAll(async () => {
