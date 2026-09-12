@@ -88,6 +88,12 @@ import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources
 import type { ApprovalSet } from "@intx/workflow-deploy";
 import type { WorkflowDefinition } from "@intx/workflow";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
+import {
+  resolveFrameSenderKey,
+  resolveSenderKey,
+  type DBExecutor,
+  type PrincipalKeyStore,
+} from "@intx/db";
 import { credential, provider } from "@intx/db/schema";
 import { stopServerBounded } from "@intx/test-harness/bun-server";
 import type { TestDb } from "@intx/test-harness/db-harness";
@@ -626,6 +632,10 @@ export async function startHub(
   opts: {
     registerSignalCorrelation?: SidecarLookups["registerSignalCorrelation"];
     materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
+    senderKeyResolution?: {
+      db: DBExecutor;
+      principalKeyStore: PrincipalKeyStore;
+    };
   } = {},
 ): Promise<HubEnv> {
   const agentEvents: HubEnv["agentEvents"] = [];
@@ -640,6 +650,10 @@ export async function startHub(
   // reads it. A bare number field on the returned env would not reflect the
   // bumps, so the count lives behind a stable object reference.
   const workflowRunPackReceipts = { count: 0 };
+
+  // Held in a local so the sender-key lookup closures below narrow away the
+  // `undefined` case once and capture the concrete resolution channel.
+  const senderKeyResolution = opts.senderKeyResolution;
 
   // Arm-once mid-pack interrupt state, off by default. A test flips
   // `armed = true` to make the FIRST refs/heads/main workflow-run pack drop
@@ -811,6 +825,32 @@ export async function startHub(
         ? {
             materializeMailTriggeredRunGrants:
               opts.materializeMailTriggeredRunGrants,
+          }
+        : {}),
+      // Resolve a signed mail sender's durable public key so the materializer
+      // path co-delivers it on the recipient run's grants barrier, exactly as
+      // production wires it (apps/hub/src/server.ts). Without this, the
+      // materializer-path mail resolves `unknown` and strict enforcement drops
+      // it. The best-effort `resolveSenderKey` degrades a fault to null
+      // (`resolveFrameSenderKey`); the strict sibling for reconnect
+      // reconciliation preserves the throw and unwraps to the hex key. Only
+      // wired when a test supplies its db + principal key store.
+      ...(senderKeyResolution !== undefined
+        ? {
+            resolveSenderKey: (address: string) =>
+              resolveFrameSenderKey(
+                senderKeyResolution.db,
+                senderKeyResolution.principalKeyStore,
+                address,
+              ),
+            resolveSenderKeyStrict: async (address: string) =>
+              (
+                await resolveSenderKey(
+                  senderKeyResolution.db,
+                  senderKeyResolution.principalKeyStore,
+                  address,
+                )
+              )?.publicKey ?? null,
           }
         : {}),
     },
@@ -1128,6 +1168,21 @@ export type StartDeployFlowEnvOpts = {
    * mail is routed without materialization.
    */
   materializeMailTriggeredRunGrants?: SidecarLookups["materializeMailTriggeredRunGrants"];
+  /**
+   * A db + principal key store the mock hub uses to resolve a signed mail
+   * sender's durable public key, wired into the sidecar router as the
+   * `resolveSenderKey` / `resolveSenderKeyStrict` lookups exactly as production
+   * does (apps/hub/src/server.ts). When set, the materializer path co-delivers
+   * the resolved key on the recipient run's grants barrier, so a same-hub
+   * sender with a resolvable key verifies `clean` instead of the cache-miss
+   * `unknown` strict enforcement drops. Only the federated-mail capstone
+   * supplies it (over its real test DB); every other test leaves it unset and
+   * no key is co-delivered on that path.
+   */
+  senderKeyResolution?: {
+    db: DBExecutor;
+    principalKeyStore: PrincipalKeyStore;
+  };
 };
 
 // Compose the full deploy-flow env: hub server, mock inference, sidecar
@@ -1152,6 +1207,9 @@ export async function startDeployFlowEnv(
           materializeMailTriggeredRunGrants:
             opts.materializeMailTriggeredRunGrants,
         }
+      : {}),
+    ...(opts.senderKeyResolution !== undefined
+      ? { senderKeyResolution: opts.senderKeyResolution }
       : {}),
   });
   const inference = startMockInference({

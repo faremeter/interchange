@@ -306,21 +306,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
         principalId: CALLER_PRINCIPAL_ID,
       });
 
-      // D1: no authored policy. D2: admits `missing`.
+      // D1: no authored policy. Deploy D1 alone up front and run its
+      // push-producing scenarios (a)/(b) before D2 exists; D2 is deployed
+      // later, just before scenario (c). See the D2 deploy below for why the
+      // deploys cannot both happen up front.
       const d1 = await deployEnforcementWorkflow({
         anchorRunId: D1_DEPLOYMENT_ID,
         definitionAssetId: D1_DEFINITION_ASSET_ID,
         mailAddress: d1MailAddress,
       });
-      const d2 = await deployEnforcementWorkflow({
-        anchorRunId: D2_DEPLOYMENT_ID,
-        definitionAssetId: D2_DEFINITION_ASSET_ID,
-        mailAddress: d2MailAddress,
-        inboundMailPolicy: { missing: "admit" },
-      });
 
       const d1RunId = deriveWorkflowRunId(d1MailAddress);
-      const d2RunId = deriveWorkflowRunId(d2MailAddress);
 
       // ----- (a) VALID -> ADMITTED on D1 (real trigger route) -----
       // The production `/mail` route signs with the caller's durable principal
@@ -459,6 +455,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(d1ConsumedMessageIds).not.toContain(droppedMessageId);
 
       // ----- (c) SAME UNSIGNED shape -> ADMITTED on D2 (admits `missing`) -----
+      // Deploy D2 only now, after D1's push-producing scenario (a) has
+      // completed. The env models a SINGLE provisioner allocation identity per
+      // sidecar, and each deploy rebinds the connected sidecar's `conn.identity`
+      // to its own anchor IN PLACE (see `prepareAllocationIdentity` in
+      // deploy-flow-env). While the identity is bound to D2, the hub ownership
+      // check rejects a workflow-run pack whose `anchorRunId` is D1
+      // (`path_violation`). D1 pushes its only pack in scenario (a) and never
+      // pushes again -- scenario (b) is a drop with no run -- so binding the
+      // identity to D2 here is safe: D1 is done pushing, and D2's push in this
+      // scenario lands while the identity is bound to D2.
+      const d2 = await deployEnforcementWorkflow({
+        anchorRunId: D2_DEPLOYMENT_ID,
+        definitionAssetId: D2_DEFINITION_ASSET_ID,
+        mailAddress: d2MailAddress,
+        inboundMailPolicy: { missing: "admit" },
+      });
+      const d2RunId = deriveWorkflowRunId(d2MailAddress);
+
       const admittedMessageId =
         "<enforce-missing-admit-1@integration.interchange>";
       const admittedRaw = buildMinimalMail({

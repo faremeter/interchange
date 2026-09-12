@@ -145,12 +145,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The REAL materializer the production sidecar router uses, wired into
       // the fixture hub so a `mail.outbound` frame for the receiver drives
       // deliverMailToRecipient through its true grants-write seam.
+      const principalKeyStore = createPrincipalKeyStore({
+        db: h.db,
+        cipher: createTestCredentialCipher(),
+      });
       const materializer = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
-        principalKeyStore: createPrincipalKeyStore({
-          db: h.db,
-          cipher: createTestCredentialCipher(),
-        }),
+        principalKeyStore,
         grantStore: createGrantStore(h.db),
       });
       env = await startDeployFlowEnv({
@@ -163,6 +164,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         inferenceEchoUserMessage: true,
         materializeMailTriggeredRunGrants: materializer,
+        // Co-deliver the sender's durable key on the receiver run's grants
+        // barrier the way production does, so the sender (a local same-hub run
+        // with a resolvable key) verifies `clean` rather than the cache-miss
+        // `unknown` that strict inbound enforcement drops.
+        senderKeyResolution: { db: h.db, principalKeyStore },
       });
     });
 
