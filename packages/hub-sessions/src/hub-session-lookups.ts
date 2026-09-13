@@ -52,6 +52,7 @@ export function createHubSessionLookups(
     | "resyncCredentials"
     | "resolveSenderKey"
     | "resolveSenderKeyStrict"
+    | "resolveSenderPrincipal"
   >
 > {
   const { db, agentRepoStore } = deps;

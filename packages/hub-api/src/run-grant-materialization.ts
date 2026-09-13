@@ -179,16 +179,17 @@ export type StageRunGrantsFromSnapshotArgs = {
   now: Date;
   /**
    * Declared invoker grants resolved against the launching principal's
-   * authority. The mail path passes an empty set (no invoker is on the
-   * wire); the external trigger route passes the caller's grants.
+   * authority. The external trigger route passes the caller's grants; the mail
+   * path passes the authenticated sender's grants (empty when the sender did
+   * not resolve to an invoker principal).
    */
   invokerGrants: GrantRule[];
   /** Declared creator grants resolved against the workflow asset's creator. */
   creatorGrants: GrantRule[];
   /**
-   * Grant requirements to resolve. The mail path pre-filters the snapshot's
-   * requirements to the non-invoker ones before calling; the external route
-   * passes the snapshot's requirements unfiltered.
+   * Grant requirements to resolve. Both call sites pass the snapshot's
+   * requirements unfiltered, so an invoker-sourced requirement resolves against
+   * the passed `invokerGrants` and fails closed when they are insufficient.
    */
   grantRequirements: readonly GrantRequirement[];
 };
@@ -570,13 +571,15 @@ type FrozenRunGrantBasis = {
  *
  * A mail-triggered run derives its grants from the RECEIVING deployment's
  * frozen snapshot: the snapshot's `tool:`/`effect:` runtime grants plus the
- * CREATOR-resolved declared requirements. Invoker-sourced requirements are
- * NOT materialized -- no invoker is on the wire -- and the run still
- * launches: a step that needs an invoker grant fails closed at its own
- * authz check. The snapshot's requirements are pre-filtered to
- * `source !== "invoker"` before staging, so `resolveGrantMaterialization`
- * keeps its reject-on-insufficient-invoker contract intact for the external
- * route.
+ * declared requirements resolved against their sources. Creator-sourced
+ * requirements resolve against the workflow asset's creator;
+ * invoker-sourced requirements resolve against the authenticated mail sender's
+ * grants, binding the sender as the run's invoker -- the mail equivalent of the
+ * HTTP-trigger route resolving its calling principal as invoker. The sender's
+ * `(principalId, tenantId)` are resolved ONCE at the mail seam and threaded in;
+ * when the sender did not resolve to a concrete invoker principal both are
+ * `null`, no invoker grants are collected, and any invoker-sourced requirement
+ * fails closed in `resolveGrantMaterialization`.
  *
  * The materializer reserves the stable run and its immutable grants before
  * delivery. A delivery failure can therefore leave a grants-only run, which
@@ -588,6 +591,8 @@ export function createMailTriggeredRunGrantsMaterializer(
 ): (args: {
   agentAddress: string;
   runId: string;
+  senderPrincipalId: string | null;
+  senderTenantId: string | null;
 }) => Promise<MailTriggeredRunGrantsResult> {
   // Closure-level cache of each deployment's deploy-approved snapshot, keyed by
   // the workflow definition's identity. A definition id is content-addressed --
@@ -601,7 +606,7 @@ export function createMailTriggeredRunGrantsMaterializer(
   // snapshot, never a live re-hydrate or re-walk.
   const frozenBasisByDefinition = new Map<string, FrozenRunGrantBasis>();
 
-  return async ({ agentAddress, runId }) => {
+  return async ({ agentAddress, runId, senderPrincipalId, senderTenantId }) => {
     const topLevelRun = alias(workflowRun, "mail_triggered_top_level_run");
     const [anchor] = await deps.db
       .select({
@@ -687,12 +692,23 @@ export function createMailTriggeredRunGrantsMaterializer(
       frozenBasisByDefinition.set(definitionId, basis);
     }
 
-    // Invoker-sourced requirements are not materialized on the mail path:
-    // filter them out BEFORE staging rather than teaching the resolver a skip
-    // mode, so the external route keeps resolving invoker grants.
-    const creatorRequirements = basis.snapshot.grantRequirements.filter(
-      (r) => r.source !== "invoker",
-    );
+    // The definition's FULL declared requirements are resolved -- both creator-
+    // and invoker-sourced -- so an invoker requirement materializes against the
+    // sender's grants rather than being stripped. Passing the unfiltered list
+    // keeps `resolveGrantMaterialization`'s reject-on-insufficient-invoker
+    // contract intact, so an invoker requirement the sender cannot satisfy fails
+    // the run closed instead of launching under-authorized.
+    const declaredGrantRequirements = basis.snapshot.grantRequirements;
+
+    // Invoker authority is the authenticated mail sender's grants, binding the
+    // sender as the run's invoker. Resolved live per run against the sender's
+    // `(principalId, tenantId)` threaded from the seam. A null sender (an
+    // unresolvable/ambiguous sender, or none resolved) collects nothing, so an
+    // invoker-sourced requirement fails closed above.
+    const invokerGrants =
+      senderPrincipalId !== null && senderTenantId !== null
+        ? await deps.grantStore.collectGrants(senderPrincipalId, senderTenantId)
+        : [];
 
     // Creator authority is resolved LIVE per run: the definition's grant SHAPE
     // is frozen in the snapshot, but which grants the creator currently holds
@@ -708,7 +724,7 @@ export function createMailTriggeredRunGrantsMaterializer(
       deps.grantStore,
       tenantId,
       creatorPrincipalId,
-      creatorRequirements,
+      declaredGrantRequirements,
     );
 
     // Derive the run principal id from `(tenantId, runId)`. The runId is the
@@ -721,9 +737,9 @@ export function createMailTriggeredRunGrantsMaterializer(
       tenantId: tenantId,
       runPrincipalId,
       now,
-      invokerGrants: [],
+      invokerGrants,
       creatorGrants,
-      grantRequirements: creatorRequirements,
+      grantRequirements: declaredGrantRequirements,
     });
     if (!staged.ok) {
       return {

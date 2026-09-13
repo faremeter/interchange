@@ -139,6 +139,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     async function materializeOnce(
       runId: string,
+      sender: {
+        senderPrincipalId: string | null;
+        senderTenantId: string | null;
+      } = { senderPrincipalId: null, senderTenantId: null },
     ): ReturnType<ReturnType<typeof createMailTriggeredRunGrantsMaterializer>> {
       const materialize = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
@@ -148,7 +152,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
         grantStore: createGrantStore(h.db),
       });
-      return materialize({ agentAddress: WORKFLOW_ADDRESS, runId });
+      return materialize({ agentAddress: WORKFLOW_ADDRESS, runId, ...sender });
     }
 
     test("derives a run's grants from the persisted snapshot and commits once", async () => {

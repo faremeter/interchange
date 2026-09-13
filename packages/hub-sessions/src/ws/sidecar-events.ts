@@ -29,6 +29,7 @@ import type {
   ConnectorThreadState,
 } from "@intx/types/runtime";
 import type { SignalKind } from "@intx/types";
+import type { MailAcceptCoordinate } from "@intx/db";
 import { getLogger } from "@intx/log";
 
 const logger = getLogger(["hub", "ws", "sidecar", "events"]);
@@ -52,6 +53,20 @@ export type WorkflowRunPackSource = {
   readonly allocationId: string;
   readonly anchorRunId: string;
   readonly generation: number;
+};
+
+/**
+ * A mail sender's durable invoker identity, resolved once at the mail seam from
+ * the authenticated sender address. `principalId` and `tenantId` are the ids the
+ * mail-triggered run binds its invoker authority to; `coordinates` are the same
+ * sender rendered as the `mail.accept` admission coordinates a later gate matches
+ * against. The resolution is strict: it is produced only for a sender that
+ * resolves to a concrete principal, so both ids are non-null here.
+ */
+export type SenderInvokerPrincipal = {
+  principalId: string;
+  tenantId: string;
+  coordinates: MailAcceptCoordinate[];
 };
 
 /**
@@ -296,6 +311,26 @@ export type SidecarLookups = {
    * one. */
   resolveSenderKeyStrict?: (address: string) => Promise<string | null>;
 
+  /** Resolves an authenticated mail sender to its durable invoker identity --
+   * the principal and tenant a mail-triggered run binds as its invoker, plus the
+   * sender's admission coordinates. Distinct from `resolveSenderKey`: that one is
+   * best-effort (degrade-to-null) and yields only a signing key for co-delivery;
+   * this one is the STRICT, coordinate-carrying resolution the invoker binding
+   * needs, and it must NOT be sourced from the degrade-to-null path.
+   *
+   * Returns `null` when the sender does not resolve to a concrete invoker
+   * principal -- an address matching no principal, or a run whose deploy is acked
+   * but whose principal is not yet minted (a principal-less signer). THROWS on a
+   * genuine fault (an ambiguous address, a data-integrity break). Both a `null`
+   * and a throw fail the invoker binding closed at the seam: the run materializes
+   * with no invoker authority, so any invoker-sourced grant requirement fails
+   * closed. Wraps the strict `resolveSenderKey` in `@intx/db` WITHOUT unwrapping
+   * to the key, keeping `senderCoordinates`' fail-closed on a principal-less run.
+   */
+  resolveSenderPrincipal?: (
+    address: string,
+  ) => Promise<SenderInvokerPrincipal | null>;
+
   /** Co-writes the `signal_correlation` routing row and the `approval` row
    * for a suspending workflow agent step, in one transaction. Called from
    * the `signal.correlation.register` frame handler after the wire layer has
@@ -325,10 +360,20 @@ export type SidecarLookups = {
    * address names no deployed workflow deployment, so no grants are sent and
    * the mail still forwards. On `rejected` the stable run is terminal or a
    * declared requirement's authority is insufficient; the caller fails the
-   * mail closed for that recipient. */
+   * mail closed for that recipient.
+   *
+   * `senderPrincipalId`/`senderTenantId` are the authenticated sender's invoker
+   * identity, resolved ONCE at the seam via `resolveSenderPrincipal` and threaded
+   * in so the run binds its sender as invoker: the materializer collects that
+   * principal's grants and resolves the definition's invoker-sourced
+   * requirements against them. Both are `null` when the sender did not resolve to
+   * a concrete invoker principal, in which case no invoker grants are collected
+   * and any invoker-sourced requirement fails closed. */
   materializeMailTriggeredRunGrants?: (args: {
     agentAddress: string;
     runId: string;
+    senderPrincipalId: string | null;
+    senderTenantId: string | null;
   }) => Promise<MailTriggeredRunGrantsResult>;
 
   /** Ingests a received agent-state pack and returns whether the wire

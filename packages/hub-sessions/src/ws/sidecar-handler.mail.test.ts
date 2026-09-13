@@ -649,13 +649,77 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     "From: sender@example.test\r\nTo: run_anchor@tenant.example\r\nMessage-ID: <mail-1@example.test>\r\n\r\nbody",
   );
 
-  test("materializes and sends run grants before workflow mail", async () => {
+  test("materializes and sends run grants before workflow mail, binding the resolved sender as invoker", async () => {
     const materialized: unknown[] = [];
     const router = createAllocatedRouter({
       lookups: {
         async materializeMailTriggeredRunGrants(args) {
           materialized.push(args);
           return { outcome: "materialized", stepGrants: [] };
+        },
+        // The strict, coordinate-carrying resolution the seam runs ONCE for the
+        // fan-out. Its principal/tenant thread into the materializer as the
+        // run's invoker identity.
+        async resolveSenderPrincipal() {
+          return {
+            principalId: "prn_sender",
+            tenantId: "tenant-x",
+            coordinates: [],
+          };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage,
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    // The materializer is invoked with the recipient's run id AND the once-
+    // resolved sender invoker identity threaded through the seam.
+    expect(materialized).toEqual([
+      {
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        runId: TEST_IDENTITY.anchorRunId,
+        senderPrincipalId: "prn_sender",
+        senderTenantId: "tenant-x",
+      },
+    ]);
+    expect(
+      parsedFrames(ws)
+        .filter(
+          (frame): frame is Record<string, unknown> =>
+            typeof frame === "object" &&
+            frame !== null &&
+            "type" in frame &&
+            (frame.type === "run.grants" || frame.type === "mail.inbound"),
+        )
+        .map((frame) => frame["type"]),
+    ).toEqual(["run.grants", "mail.inbound"]);
+  });
+
+  test("threads null sender ids when the sender does not resolve to an invoker", async () => {
+    // An unresolvable sender yields no invoker principal; the materializer is
+    // still invoked (its own resolver fails any invoker requirement closed), but
+    // with null sender ids so no invoker authority binds.
+    const materialized: unknown[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants(args) {
+          materialized.push(args);
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderPrincipal() {
+          return null;
         },
       },
     });
@@ -678,19 +742,10 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       {
         agentAddress: TEST_IDENTITY.workflowRunAddress,
         runId: TEST_IDENTITY.anchorRunId,
+        senderPrincipalId: null,
+        senderTenantId: null,
       },
     ]);
-    expect(
-      parsedFrames(ws)
-        .filter(
-          (frame): frame is Record<string, unknown> =>
-            typeof frame === "object" &&
-            frame !== null &&
-            "type" in frame &&
-            (frame.type === "run.grants" || frame.type === "mail.inbound"),
-        )
-        .map((frame) => frame["type"]),
-    ).toEqual(["run.grants", "mail.inbound"]);
   });
 
   test("co-delivers the sender key on the live run.grants frame", async () => {

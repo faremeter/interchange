@@ -35,6 +35,11 @@ export {
   type SenderKeyResolution,
   type SenderKeyAuditReport,
 } from "./sender-key-resolver";
+// Re-exported from `@intx/authz` alongside `senderCoordinates`, which produces
+// it: a consumer that resolves a sender's admission coordinates through this
+// package can name the coordinate type without depending on `@intx/authz`
+// directly.
+export type { MailAcceptCoordinate } from "@intx/authz";
 export {
   createApprovalStore,
   type ApprovalStore,
