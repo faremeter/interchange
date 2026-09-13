@@ -31,6 +31,7 @@ export {
   resolveSenderKey,
   resolveFrameSenderKey,
   auditSenderKeys,
+  senderCoordinates,
   type SenderKeyResolution,
   type SenderKeyAuditReport,
 } from "./sender-key-resolver";
