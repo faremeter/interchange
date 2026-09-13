@@ -12,6 +12,14 @@ export {
   MAIL_ACCEPT_ACTION,
 } from "./coord";
 export type { CoordType, MailAcceptCoordinate } from "./coord";
+export {
+  mailAcceptRelationToken,
+  resolveMailAcceptRelations,
+} from "./mail-accept-relation";
+export type {
+  MailAcceptRelation,
+  AuthoredMailAccept,
+} from "./mail-accept-relation";
 export { evaluateConditions } from "./conditions";
 export { timeWindowEvaluator } from "./time-window";
 export {
