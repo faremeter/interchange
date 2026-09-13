@@ -32,6 +32,20 @@
 //   - `mail.send:<domain>`           -- the trigger address's domain
 //                                        (the deployment's right to
 //                                        send mail as that domain)
+//   - `mail.accept:<relation>`       -- a relational accept marker
+//                                        (`invoker`/`self`/`tenant`/
+//                                        `correspondent`/`parent`/`child`)
+//                                        resolved from the definition's
+//                                        authored `mailAccept` via the
+//                                        shared default resolver
+//   - `mail.accept:principal:<id>`   -- an explicit principal coordinate
+//                                        from `mailAccept.principals[]`
+//   - `mail.accept:definition:<id>`  -- an explicit definition coordinate
+//                                        from `mailAccept.definitions[]`
+//
+// The `mail.accept:*` axis is emitted ONLY for a definition that declares
+// a mail trigger, so a non-mail workflow never widens its approval surface
+// with accept markers it can never exercise (see `collectMailAcceptGrants`).
 //
 // Wildcard semantics (e.g. `tool:@vendor/foo/*`) are intentionally
 // deferred: v1 ships explicit per-tool approvals so the operator UX
@@ -61,6 +75,11 @@ import {
   toolApprovalEffect,
   UnknownDirectorIdError,
 } from "@intx/agent";
+import {
+  mailAcceptRelationToken,
+  mailAcceptResource,
+  resolveMailAcceptRelations,
+} from "@intx/authz";
 import type { GrantEffect } from "@intx/types";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
@@ -147,18 +166,22 @@ function freezeDeclarations(
 /**
  * Walk a workflow definition and produce per-step grant declarations.
  *
- * The walk visits every step's agent definition once; trigger-derived
- * grants (`mail.address:` / `mail.send:`) are attached to every step
- * because the workflow's mail-receive and mail-send authority is a
- * deployment-wide property -- any step can be the one whose run
- * consumes inbound mail or generates a reply.
+ * The walk visits every step's agent definition once; deployment-wide
+ * grants (the trigger-derived `mail.address:` / `mail.send:` axis and the
+ * `mail.accept:*` accept axis) are attached to every step because the
+ * workflow's mail-receive, mail-send, and mail-accept authority is a
+ * deployment-wide property -- any step can be the one whose run consumes
+ * inbound mail or generates a reply.
  */
 export function walkCapabilities(
   workflow: WorkflowDefinition,
   registry: DirectorRegistry,
   pluginDefs: PluginToolDefinitions = new Map(),
 ): CapabilityWalkResult {
-  const triggerGrants = collectTriggerGrants(workflow);
+  const triggerGrants = [
+    ...collectTriggerGrants(workflow),
+    ...collectMailAcceptGrants(workflow),
+  ];
   const unresolved = new Set<string>();
   const perStep = new Map<string, GrantDeclarations>();
 
@@ -445,6 +468,48 @@ function collectTriggerGrants(workflow: WorkflowDefinition): string[] {
     if (domain !== null) {
       grants.add(`mail.send:${domain}`);
     }
+  }
+  return [...grants];
+}
+
+/**
+ * Emit the deployment-wide `mail.accept:*` approval strings from the
+ * definition's authored `mailAccept` field.
+ *
+ * GUARD: emit accept markers ONLY when the definition declares a mail
+ * trigger -- the same condition `collectTriggerGrants` gates its axis on.
+ * `resolveMailAcceptRelations` returns the `{parent, child}` default set for
+ * an ABSENT `mailAccept`, so an unguarded fold would stamp
+ * `mail.accept:parent`/`mail.accept:child` onto EVERY definition, including
+ * non-mail workflows that can never receive inbound mail. That would grow
+ * every deployment's approval surface with markers it can never exercise and
+ * force needless re-approval on re-probe. A definition with no mail trigger
+ * therefore emits NO `mail.accept:*` strings, regardless of its `mailAccept`
+ * field.
+ *
+ * Relational toggles resolve through the shared `resolveMailAcceptRelations`
+ * resolver (the single home of the default-on rule -- not re-derived here) and
+ * emit id-less relation tokens. Explicit `principals`/`definitions` ids emit
+ * concrete coordinates known at deploy time. Both feed the same approval-gate
+ * set membership check, which treats every grant string as opaque.
+ */
+function collectMailAcceptGrants(workflow: WorkflowDefinition): string[] {
+  const hasMailTrigger = workflow.triggers.some(
+    (trigger) => trigger.type === "mail",
+  );
+  if (!hasMailTrigger) {
+    return [];
+  }
+
+  const grants = new Set<string>();
+  for (const relation of resolveMailAcceptRelations(workflow.mailAccept)) {
+    grants.add(mailAcceptRelationToken(relation));
+  }
+  for (const id of workflow.mailAccept?.principals ?? []) {
+    grants.add(mailAcceptResource("principal", id));
+  }
+  for (const id of workflow.mailAccept?.definitions ?? []) {
+    grants.add(mailAcceptResource("definition", id));
   }
   return [...grants];
 }
