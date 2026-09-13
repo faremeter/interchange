@@ -7,7 +7,7 @@
 import { type } from "arktype";
 
 import { CredentialBinding } from "./credentials";
-import { InboundMailPolicy, InferenceSource } from "./runtime";
+import { InboundMailPolicy, MailAccept, InferenceSource } from "./runtime";
 import { SidecarCapabilityPolicy } from "./sidecar-capabilities";
 
 /**
@@ -122,6 +122,14 @@ export const WorkflowProjectionDefinition = type({
   // surface, so a stripped policy would also desync the sidecar's re-verify
   // from the hub-approved hash.
   "inboundMailPolicy?": InboundMailPolicy,
+  // The author-declared relational accept-rules, projected verbatim by the
+  // live->inert projector. Like inboundMailPolicy above, this MUST stay in sync
+  // with that projector: the `"+": "delete"` below strips any undeclared key,
+  // so accept-rules the projector emits but this schema omits would be silently
+  // stripped at the wire boundary and never reach the sidecar. The accept-rules
+  // are part of the hashed surface, so a stripped field would also desync the
+  // sidecar's re-verify from the hub-approved hash.
+  "mailAccept?": MailAccept,
   "+": "delete",
 }).narrow((value, ctx) => {
   // Every `stepOrder` entry must name a defined step. A legitimately projected

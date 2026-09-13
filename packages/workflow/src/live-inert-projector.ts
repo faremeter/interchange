@@ -38,7 +38,7 @@ import type {
 } from "@intx/agent";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { CredentialBinding, SidecarCapabilityPolicy } from "@intx/types";
-import type { InboundMailPolicy } from "@intx/types/runtime";
+import type { InboundMailPolicy, MailAccept } from "@intx/types/runtime";
 import type {
   ActionPrimitive,
   AwaitSignalPrimitive,
@@ -223,6 +223,14 @@ export interface InertWorkflowDefinition {
   // Sparse -- an outcome the author left unset stays unset in the projection,
   // so the hash covers only the declared keys.
   readonly inboundMailPolicy?: InboundMailPolicy;
+  // The author-declared relational accept-rules, projected verbatim (already
+  // pure plain data). Part of the hashed surface for the same reason as
+  // inboundMailPolicy: the accept-rules govern which senders mail addressed to
+  // the deployment is accepted from, so a changed or tampered rule set must
+  // move the content hash and fail re-verify. Sparse -- a relation the author
+  // left unset stays unset in the projection, so the hash covers only the
+  // declared keys.
+  readonly mailAccept?: MailAccept;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +309,13 @@ function projectDefinition(
     // inside the content hash (see `InertWorkflowDefinition`).
     ...(definition.inboundMailPolicy !== undefined
       ? { inboundMailPolicy: { ...definition.inboundMailPolicy } }
+      : {}),
+    // The relational accept-rules are pure plain data, so they project verbatim
+    // like the admission policy. Keeping them in the projection puts the
+    // author-approved accept surface inside the content hash (see
+    // `InertWorkflowDefinition`).
+    ...(definition.mailAccept !== undefined
+      ? { mailAccept: { ...definition.mailAccept } }
       : {}),
   };
 }

@@ -268,6 +268,56 @@ describe("workflowDefinitionEnvelopeSchema", () => {
     expect(validated.inboundMailPolicy).not.toHaveProperty("invalid");
     expect(validated.inboundMailPolicy).not.toHaveProperty("unknown");
   });
+
+  // Same property for mailAccept: declaring it on the envelope makes a malformed
+  // rule set fail at the deploy boundary. The rules key on a fixed set of
+  // relations, so an unknown relation key (a typo) must be rejected here rather
+  // than ride through to later admission resolution. The rejection test fails if
+  // the `mailAccept?` line is removed from the schema.
+  test("rejects a declared mailAccept carrying an unknown relation key", () => {
+    const validated = workflowDefinitionEnvelopeSchema({
+      id: "my-workflow",
+      triggers: [{ type: "mail", to: "wf@acme.test" }],
+      steps: { first: { kind: "step", id: "first" } },
+      stepOrder: ["first"],
+      mailAccept: { parrent: true },
+    });
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a declared mailAccept carrying a non-boolean toggle", () => {
+    const validated = workflowDefinitionEnvelopeSchema({
+      id: "my-workflow",
+      triggers: [{ type: "mail", to: "wf@acme.test" }],
+      steps: { first: { kind: "step", id: "first" } },
+      stepOrder: ["first"],
+      mailAccept: { invoker: "yes" },
+    });
+    expect(validated instanceof type.errors).toBe(true);
+  });
+
+  test("accepts and preserves a well-formed sparse mailAccept", () => {
+    const blob = {
+      id: "my-workflow",
+      triggers: [{ type: "mail", to: "wf@acme.test" }],
+      steps: { first: { kind: "step", id: "first" } },
+      stepOrder: ["first"],
+      mailAccept: {
+        invoker: true,
+        child: false,
+        principals: ["principal-1"],
+      },
+    };
+    const validated = workflowDefinitionEnvelopeSchema(blob);
+    if (validated instanceof type.errors) {
+      throw new Error(`unexpected validation error: ${validated.summary}`);
+    }
+    expect(validated.mailAccept).toEqual(blob.mailAccept);
+    // The unset relations stay absent -- the envelope does not populate a
+    // default for a relation the author omitted.
+    expect(validated.mailAccept).not.toHaveProperty("parent");
+    expect(validated.mailAccept).not.toHaveProperty("tenant");
+  });
 });
 
 describe("workflowKindHandler metadata", () => {
