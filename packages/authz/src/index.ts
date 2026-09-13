@@ -4,6 +4,14 @@ export { authorizeAction } from "./authorize-action";
 export type { AuthorizeDecision } from "./authorize-action";
 export { matchPattern } from "./patterns";
 export { patternSpecificity, grantSpecificity } from "./specificity";
+export {
+  isCoordType,
+  mailAcceptResource,
+  parseMailAcceptResource,
+  MAIL_ACCEPT_NAMESPACE,
+  MAIL_ACCEPT_ACTION,
+} from "./coord";
+export type { CoordType, MailAcceptCoordinate } from "./coord";
 export { evaluateConditions } from "./conditions";
 export { timeWindowEvaluator } from "./time-window";
 export {
