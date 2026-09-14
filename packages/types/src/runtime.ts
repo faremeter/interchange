@@ -310,6 +310,18 @@ export const InboundMailPolicy = type({
 export type InboundMailPolicy = typeof InboundMailPolicy.infer;
 
 /**
+ * A `mail.accept` coordinate id is valid when it is a non-empty string with no
+ * `:`. The colon is the segment separator of the `mail.accept:<type>:<id>`
+ * resource, so an id that carries one would split into extra segments and make
+ * the shape ambiguous. This owns that rule: the resource builder in `@intx/authz`
+ * imports it, and the `MailAccept` schema narrows on it, so the authoring
+ * boundary and the resource builder share one definition.
+ */
+export function isValidCoordId(id: string): boolean {
+  return id.length > 0 && !id.includes(":");
+}
+
+/**
  * A per-workflow relational accept-rule set: the author's declaration of which
  * senders a deployment accepts inbound mail from, keyed by the sender's relation
  * to the deployment. The relational toggles admit a sender the deployment stands
@@ -346,18 +358,6 @@ export type InboundMailPolicy = typeof InboundMailPolicy.infer;
  * rejected so a typo such as `parrent` or `principal` fails at the wire boundary
  * rather than riding through as an inert unknown key.
  */
-/**
- * A `mail.accept` coordinate id is valid when it is a non-empty string with no
- * `:`. The colon is the segment separator of the `mail.accept:<type>:<id>`
- * resource, so an id that carries one would split into extra segments and make
- * the shape ambiguous. This owns that rule: the resource builder in `@intx/authz`
- * imports it, and the `MailAccept` schema narrows on it, so the authoring
- * boundary and the resource builder share one definition.
- */
-export function isValidCoordId(id: string): boolean {
-  return id.length > 0 && !id.includes(":");
-}
-
 export const MailAccept = type({
   "invoker?": "boolean",
   "self?": "boolean",
