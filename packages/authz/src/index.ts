@@ -20,6 +20,8 @@ export type {
   MailAcceptRelation,
   AuthoredMailAccept,
 } from "./mail-accept-relation";
+export { evaluateMailAdmission } from "./mail-admission";
+export type { MailAdmissionResult } from "./mail-admission";
 export { evaluateConditions } from "./conditions";
 export { timeWindowEvaluator } from "./time-window";
 export {
