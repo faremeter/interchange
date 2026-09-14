@@ -43,6 +43,13 @@ import { RunGrantsFrame } from "@intx/types/sidecar";
 import { ToolDefinition } from "@intx/types/runtime";
 import { type MailTriggeredRunGrantsResult } from "@intx/hub-sessions";
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
+import {
+  MAIL_ACCEPT_ACTION,
+  MAIL_ACCEPT_NAMESPACE,
+  mailAcceptRelationToken,
+  mailAcceptResource,
+  parseMailAcceptResource,
+} from "@intx/authz";
 
 import {
   resolveGrantMaterialization,
@@ -144,6 +151,134 @@ export function deriveRunRuntimeGrantRows(
   return rows;
 }
 
+// The id-less `mail.accept:<relation>` marker strings the capability walk
+// (`collectMailAcceptGrants`) emits for a definition's declared accept-policy.
+// There is deliberately no relation-token parser in `@intx/authz`; a marker is
+// matched by comparing it against the shared `mailAcceptRelationToken`
+// formatter for each known relation. These are computed once so the derivation
+// below compares against constants.
+const MAIL_ACCEPT_INVOKER_MARKER = mailAcceptRelationToken("invoker");
+const MAIL_ACCEPT_SELF_MARKER = mailAcceptRelationToken("self");
+const MAIL_ACCEPT_TENANT_MARKER = mailAcceptRelationToken("tenant");
+const MAIL_ACCEPT_PARENT_MARKER = mailAcceptRelationToken("parent");
+const MAIL_ACCEPT_CHILD_MARKER = mailAcceptRelationToken("child");
+const MAIL_ACCEPT_CORRESPONDENT_MARKER =
+  mailAcceptRelationToken("correspondent");
+
+const MAIL_ACCEPT_MARKER_PREFIX = `${MAIL_ACCEPT_NAMESPACE}:`;
+
+/**
+ * The launch context a run's `mail.accept` accept-grants resolve against. The
+ * relational markers name a coordinate that is only concrete at launch: the run
+ * itself (`self` -> the deployment's definition), the launching principal
+ * (`invoker`), or the run's tenant. `invokerPrincipalId` is null when no invoker
+ * principal resolved (e.g. an unresolvable mail sender), in which case no
+ * invoker row is emitted.
+ */
+export type MailAcceptGrantContext = {
+  invokerPrincipalId: string | null;
+  definitionId: string;
+  tenantId: string;
+  runPrincipalId: string;
+};
+
+/**
+ * Resolve one `mail.accept:*` snapshot marker to the concrete
+ * `mail.accept:<coord-type>:<id>` resource string it materializes as, or `null`
+ * when it must not emit a launch row. Throws on an unrecognized `mail.accept:`
+ * marker so a corrupt snapshot fails loudly rather than silently dropping an
+ * accept-grant.
+ */
+function resolveMailAcceptMarker(
+  marker: string,
+  ctx: MailAcceptGrantContext,
+): string | null {
+  // An explicit concrete coordinate (`mail.accept:principal:<id>` /
+  // `mail.accept:definition:<id>`) is already resolved at deploy time; pass it
+  // through unchanged.
+  if (parseMailAcceptResource(marker) !== null) {
+    return marker;
+  }
+  switch (marker) {
+    case MAIL_ACCEPT_INVOKER_MARKER:
+      // No invoker principal resolved (an unresolvable mail sender threads a
+      // null invoker). Emit no invoker row rather than invent a coordinate.
+      return ctx.invokerPrincipalId === null
+        ? null
+        : mailAcceptResource("principal", ctx.invokerPrincipalId);
+    case MAIL_ACCEPT_SELF_MARKER:
+      return mailAcceptResource("definition", ctx.definitionId);
+    case MAIL_ACCEPT_TENANT_MARKER:
+      return mailAcceptResource("tenant", ctx.tenantId);
+    case MAIL_ACCEPT_PARENT_MARKER:
+    case MAIL_ACCEPT_CHILD_MARKER:
+    case MAIL_ACCEPT_CORRESPONDENT_MARKER:
+      // Dynamic relations: the counterparty (a parent, a child, or an
+      // established correspondent) is not known from the frozen definition at
+      // launch -- it is determined per inbound message (a spawn or a send).
+      // Their run-time resolution and enforcement are deferred to their own
+      // issues; they are neither materialized here nor evaluated by the gate
+      // yet, so declaring one today is inert. Skipped here without error.
+      return null;
+    default:
+      throw new Error(
+        `deriveMailAcceptGrantRows: unrecognized mail.accept marker ${JSON.stringify(marker)}; the grant-walk snapshot must emit only known relation tokens or concrete coordinates`,
+      );
+  }
+}
+
+/**
+ * Project the frozen grant-walk snapshot's `mail.accept:*` markers into the
+ * run's concrete accept-grant rows -- the launch-time half of INTR-510's slim
+ * core. This rides the SAME materialization path as
+ * `deriveRunRuntimeGrantRows` (which stays pure over `tool:`/`effect:`): a
+ * definition's declared accept-relations become concrete
+ * `mail.accept:<coord-type>:<id>` grant rows on the run principal so later
+ * inbound mail transport can authorize delivery against them.
+ *
+ * `invoker` resolves to `mail.accept:principal:<invokerPrincipalId>` (skipped
+ * when no invoker resolved), `self` to `mail.accept:definition:<definitionId>`,
+ * and `tenant` to `mail.accept:tenant:<tenantId>`. Explicit concrete
+ * coordinates pass through. `parent`/`child`/`correspondent` are dynamic and
+ * not materializable at launch, so they are skipped. Rows are deduplicated by
+ * resolved resource string (markers repeat per step, and `self`/`invoker` may
+ * collide with an explicit coordinate), mirroring the runtime derivation's
+ * per-resource dedup. Every emitted row is a creator-origin `accept`/`allow`
+ * grant with no conditions and no expiry.
+ */
+export function deriveMailAcceptGrantRows(
+  snapshot: GrantWalkSnapshot,
+  ctx: MailAcceptGrantContext,
+  now: Date,
+): MaterializedGrantRow[] {
+  const resources = new Set<string>();
+  for (const step of snapshot.perStep) {
+    for (const grant of step.grants) {
+      if (!grant.startsWith(MAIL_ACCEPT_MARKER_PREFIX)) continue;
+      const resolved = resolveMailAcceptMarker(grant, ctx);
+      if (resolved !== null) resources.add(resolved);
+    }
+  }
+
+  const rows: MaterializedGrantRow[] = [];
+  for (const resource of resources) {
+    rows.push({
+      id: generateId("grant"),
+      tenantId: ctx.tenantId,
+      principalId: ctx.runPrincipalId,
+      resource,
+      action: MAIL_ACCEPT_ACTION,
+      effect: "allow",
+      conditions: null,
+      origin: "creator",
+      expiresAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  return rows;
+}
+
 /**
  * Project a materialized run grant row into the `run.grants` wire shape --
  * the same `WireGrantRule` encoding the `agent.deploy` frame's
@@ -177,6 +312,18 @@ export type StageRunGrantsFromSnapshotArgs = {
   tenantId: string;
   runPrincipalId: string;
   now: Date;
+  /**
+   * The launching principal's id -- the run's invoker. Resolves the snapshot's
+   * `mail.accept:invoker` marker to `mail.accept:principal:<id>`. Null when no
+   * invoker principal resolved (e.g. an unresolvable mail sender); then no
+   * invoker accept-grant row is emitted.
+   */
+  invokerPrincipalId: string | null;
+  /**
+   * The deployment's own definition id -- resolves the snapshot's
+   * `mail.accept:self` marker to `mail.accept:definition:<definitionId>`.
+   */
+  definitionId: string;
   /**
    * Declared invoker grants resolved against the launching principal's
    * authority. The external trigger route passes the caller's grants; the mail
@@ -224,6 +371,20 @@ export async function stageRunGrantsFromSnapshot(
     args.now,
   );
 
+  // Ride the same path to project the run's `mail.accept:*` accept-grants from
+  // the snapshot's declared relation markers. Kept separate from
+  // `deriveRunRuntimeGrantRows`, which stays pure over `tool:`/`effect:`.
+  const mailAcceptGrantRows = deriveMailAcceptGrantRows(
+    args.snapshot,
+    {
+      invokerPrincipalId: args.invokerPrincipalId,
+      definitionId: args.definitionId,
+      tenantId: args.tenantId,
+      runPrincipalId: args.runPrincipalId,
+    },
+    args.now,
+  );
+
   const materialization = await resolveGrantMaterialization({
     tenantId: args.tenantId,
     targetPrincipalId: args.runPrincipalId,
@@ -237,7 +398,11 @@ export async function stageRunGrantsFromSnapshot(
     return { ok: false, rejection: materialization.rejection };
   }
 
-  const grantRows = [...runtimeGrantRows, ...materialization.grantRows];
+  const grantRows = [
+    ...runtimeGrantRows,
+    ...mailAcceptGrantRows,
+    ...materialization.grantRows,
+  ];
   const stepGrants = grantRows.map((g) => runGrantToWire(g));
   return { ok: true, grantRows, stepGrants };
 }
@@ -737,6 +902,11 @@ export function createMailTriggeredRunGrantsMaterializer(
       tenantId: tenantId,
       runPrincipalId,
       now,
+      // The authenticated mail sender is the run's invoker; the receiving
+      // deployment's definition is `self`. Both resolve the run's declared
+      // `mail.accept` relation markers to concrete accept-grant rows.
+      invokerPrincipalId: senderPrincipalId,
+      definitionId,
       invokerGrants,
       creatorGrants,
       grantRequirements: declaredGrantRequirements,

@@ -9,7 +9,11 @@ import {
 } from "@intx/db/schema";
 import type { PrincipalKeyStore } from "@intx/db";
 
-import { createMailTriggeredRunGrantsMaterializer } from "./run-grant-materialization";
+import {
+  createMailTriggeredRunGrantsMaterializer,
+  deriveMailAcceptGrantRows,
+  type MailAcceptGrantContext,
+} from "./run-grant-materialization";
 
 // This suite exercises grant materialization, not key minting. The key store is
 // a no-op stub so the winning-reservation path does not try to insert into
@@ -399,6 +403,135 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
         ...senderArgs,
       }),
     ).rejects.toThrow(/no approved grant snapshot/);
+  });
+});
+
+describe("deriveMailAcceptGrantRows", () => {
+  const CTX: MailAcceptGrantContext = {
+    invokerPrincipalId: "prn_invoker",
+    definitionId: "wfd_self",
+    tenantId: "tenant-1",
+    runPrincipalId: "prn_run",
+  };
+  const NOW = new Date("2026-01-01T00:00:00.000Z");
+
+  // Build a snapshot whose single step carries the given `mail.accept:*`
+  // markers plus an inert non-mail grant, so the derivation must ignore
+  // `tool:`/`effect:` rows.
+  function mailSnapshot(markers: string[]): GrantWalkSnapshot {
+    return {
+      perStep: [
+        {
+          stepId: "work",
+          grants: ["tool:read_file", ...markers],
+          grantEffects: { "tool:read_file": "allow" },
+        },
+      ],
+      grantRequirements: [],
+    };
+  }
+
+  function resources(markers: string[], ctx = CTX): string[] {
+    return deriveMailAcceptGrantRows(mailSnapshot(markers), ctx, NOW)
+      .map((row) => row.resource)
+      .sort();
+  }
+
+  test("resolves invoker/self/tenant relation markers to concrete coordinates", () => {
+    expect(
+      resources([
+        "mail.accept:invoker",
+        "mail.accept:self",
+        "mail.accept:tenant",
+      ]),
+    ).toEqual([
+      "mail.accept:definition:wfd_self",
+      "mail.accept:principal:prn_invoker",
+      "mail.accept:tenant:tenant-1",
+    ]);
+  });
+
+  test("passes explicit concrete coordinates through unchanged", () => {
+    expect(
+      resources([
+        "mail.accept:principal:prn_explicit",
+        "mail.accept:definition:wfd_explicit",
+      ]),
+    ).toEqual([
+      "mail.accept:definition:wfd_explicit",
+      "mail.accept:principal:prn_explicit",
+    ]);
+  });
+
+  test("skips parent/child/correspondent markers without error", () => {
+    expect(
+      resources([
+        "mail.accept:parent",
+        "mail.accept:child",
+        "mail.accept:correspondent",
+      ]),
+    ).toEqual([]);
+  });
+
+  test("emits no invoker row when no invoker principal resolved", () => {
+    expect(
+      resources(["mail.accept:invoker", "mail.accept:tenant"], {
+        ...CTX,
+        invokerPrincipalId: null,
+      }),
+    ).toEqual(["mail.accept:tenant:tenant-1"]);
+  });
+
+  test("deduplicates a relation that resolves to an explicit coordinate", () => {
+    // `self` resolves to the definition coordinate an explicit entry already
+    // names, and the markers repeat across nothing here -- one row survives.
+    expect(
+      resources(["mail.accept:self", "mail.accept:definition:wfd_self"]),
+    ).toEqual(["mail.accept:definition:wfd_self"]);
+  });
+
+  test("deduplicates a marker repeated across steps", () => {
+    const snapshot: GrantWalkSnapshot = {
+      perStep: [
+        { stepId: "a", grants: ["mail.accept:tenant"], grantEffects: {} },
+        { stepId: "b", grants: ["mail.accept:tenant"], grantEffects: {} },
+      ],
+      grantRequirements: [],
+    };
+    const rows = deriveMailAcceptGrantRows(snapshot, CTX, NOW);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.resource).toBe("mail.accept:tenant:tenant-1");
+  });
+
+  test("stamps each row as a creator-origin accept/allow grant on the run principal", () => {
+    const rows = deriveMailAcceptGrantRows(
+      mailSnapshot(["mail.accept:tenant"]),
+      CTX,
+      NOW,
+    );
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row).toMatchObject({
+      action: "accept",
+      effect: "allow",
+      origin: "creator",
+      conditions: null,
+      expiresAt: null,
+      principalId: "prn_run",
+      tenantId: "tenant-1",
+    });
+    expect(row?.createdAt).toEqual(NOW);
+    expect(row?.updatedAt).toEqual(NOW);
+  });
+
+  test("emits no rows for a snapshot with no mail.accept markers", () => {
+    expect(resources([])).toEqual([]);
+  });
+
+  test("throws on an unrecognized mail.accept marker", () => {
+    expect(() =>
+      deriveMailAcceptGrantRows(mailSnapshot(["mail.accept:bogus"]), CTX, NOW),
+    ).toThrow(/unrecognized mail.accept marker/);
   });
 });
 
