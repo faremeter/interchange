@@ -28,6 +28,8 @@ import {
   createWorkflowAllocationService,
   createWorkflowDispatchService,
   createReconciliationScheduler,
+  createWorkflowLifecycleService,
+  createWorkflowRunReader,
   recoverSenderDeploy,
   DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
   pushCredentialReconcile,
@@ -371,6 +373,10 @@ export async function createHubServer({
       : {}),
   });
   const sidecarAllocationStore = createSidecarAllocationStore(db);
+  const workflowLifecycleService = createWorkflowLifecycleService({
+    db,
+    runReader: createWorkflowRunReader(agentRepoStore.repoStore),
+  });
   const workflowDispatchService = createWorkflowDispatchService({
     dispatchStore: createWorkflowRunDispatchStore(db),
     allocationStore: sidecarAllocationStore,
@@ -437,6 +443,14 @@ export async function createHubServer({
       return false;
     },
   });
+  const lifecycleScheduler = createReconciliationScheduler({
+    name: "Workflow lifecycle",
+    concurrency: 1,
+    reconcileNext: async () => {
+      await workflowLifecycleService.reconcile();
+      return false;
+    },
+  });
   const dispatchScheduler = createReconciliationScheduler({
     name: "Workflow dispatch",
     concurrency: 1,
@@ -462,6 +476,7 @@ export async function createHubServer({
   // Initial polls run on the next timer turn, after the websocket endpoint is assembled.
   allocationScheduler.start();
   probeCleanupScheduler.start();
+  lifecycleScheduler.start();
   dispatchScheduler.start();
   connectionRepairScheduler.start();
 

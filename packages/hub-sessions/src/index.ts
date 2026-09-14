@@ -1,4 +1,9 @@
 export {
+  createWorkflowLifecycleService,
+  type WorkflowLifecycleService,
+  type WorkflowLifecycleServiceDeps,
+} from "./workflow-lifecycle-service";
+export {
   createAgentRepoStore,
   type AgentRepoStore,
   type DeployContent,

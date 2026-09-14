@@ -1,4 +1,5 @@
 import { type } from "arktype";
+import { sidecarAllocationStatuses } from "./sidecar-allocation";
 
 function parseDuration(value: string): number | null {
   const match = /^(0|[1-9][0-9]*)(s|m|h|d)$/.exec(value);
@@ -59,6 +60,21 @@ export const WorkflowLifecyclePolicy = type({
   }).onUndeclaredKey("reject"),
 }).onUndeclaredKey("reject");
 export type WorkflowLifecyclePolicy = typeof WorkflowLifecyclePolicy.infer;
+
+export const WorkflowLifecycleResponse = type({
+  runId: "string",
+  status: "'deployed' | 'running' | 'completed' | 'failed' | 'cancelled'",
+  policy: WorkflowLifecyclePolicy,
+  expiresAt: "string | null",
+  cancellationRequestedAt: "string | null",
+  capacityReleaseAt: "string | null",
+  allocation: type({
+    id: "string",
+    status: type.enumerated(...sidecarAllocationStatuses),
+    failureCode: "string | null",
+    failureMessage: "string | null",
+  }).or("null"),
+});
 
 export type WorkflowLifecyclePolicyResolution =
   | { ok: true; policy: WorkflowLifecyclePolicy }
