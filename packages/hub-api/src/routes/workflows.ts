@@ -37,6 +37,7 @@ import {
   type WorkflowAllocationService,
   type WorkflowDispatchService,
   WorkflowProvisioningError,
+  WORKFLOW_RUN_REF,
 } from "@intx/hub-sessions";
 import { generateId } from "@intx/hub-common";
 import {
@@ -56,7 +57,6 @@ import { WorkflowRunEventsResponse, formatRunEvent } from "./run-events-view";
 import {
   readDurableWorkflowRunLifecycle,
   workflowRunRepoId,
-  WORKFLOW_RUN_REF,
 } from "../workflow-run-lifecycle";
 import {
   createWorkflowRunTrigger,

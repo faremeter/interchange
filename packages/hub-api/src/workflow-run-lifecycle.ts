@@ -1,24 +1,12 @@
 import {
   readCommittedWorkflowRunLifecycle,
+  workflowRunRepoIdForAddress,
+  WORKFLOW_RUN_REF,
   type RepoId,
   type RepoStore,
   type WorkflowRunLifecycle,
 } from "@intx/hub-sessions";
-import {
-  deriveRunAddress,
-  deriveWorkflowRunRepoId,
-} from "@intx/workflow-deploy";
-
-// Workflow-run events commit on the substrate's default branch; the
-// supervisor wires the workflow-process child against this ref.
-export const WORKFLOW_RUN_REF = "refs/heads/main";
-
-export function workflowRunRepoIdForAddress(agentAddress: string): RepoId {
-  return {
-    kind: "workflow-run",
-    id: deriveWorkflowRunRepoId(agentAddress),
-  };
-}
+import { deriveRunAddress } from "@intx/workflow-deploy";
 
 // The workflow-run repo that holds a top-level run's committed event log,
 // addressed by the run's own id and the tenant's domain. The sidecar's deploy

@@ -138,7 +138,103 @@ describe("WorkflowRunReader", () => {
       "SignalAwaited",
       "RunCompleted",
     ]);
+    expect(
+      (
+        await reader.readLatestRunEvents(REPO_ID, REF, (id) => id === "run-b")
+      ).events.get("run-b"),
+    ).toMatchObject({
+      seq: 2,
+      type: "RunCompleted",
+    });
   });
+
+  test("separates a repository without a ref from a missing repository", async () => {
+    // `beforeEach` initializes the repository without committing, which is the
+    // state an interrupted genesis leaves behind.
+    expect(
+      (await reader.readLatestRunEvents(REPO_ID, REF, () => true)).tip,
+    ).toBeNull();
+    expect(await reader.hasRepository(REPO_ID)).toBe(true);
+
+    const missing = createWorkflowRunReader(
+      repoStoreFor(new Map([[REPO_ID.id, path.join(dir, "unmounted")]])),
+    );
+    expect(
+      (await missing.readLatestRunEvents(REPO_ID, REF, () => true)).tip,
+    ).toBeNull();
+    expect(await missing.hasRepository(REPO_ID)).toBe(false);
+  });
+
+  test("pins the ref and reads only the latest blob of selected runs", async () => {
+    await commitFiles(dir, {
+      "runs/run-1/events/0.json": "{ unreadable older event",
+      "runs/run-1/events/1.json": JSON.stringify({
+        seq: 1,
+        type: "SignalAwaited",
+      }),
+      "runs/run-skipped/events/0.json": "{ unreadable unselected event",
+    });
+    const snapshot = await reader.readLatestRunEvents(
+      REPO_ID,
+      REF,
+      (id) => id !== "run-skipped",
+    );
+    expect([...snapshot.events.keys()]).toEqual(["run-1"]);
+    expect(snapshot.events.get("run-1")).toMatchObject({
+      seq: 1,
+      type: "SignalAwaited",
+    });
+    expect(snapshot.tip).toBe(await reader.resolveRefTip(REPO_ID, REF));
+
+    await commitFiles(dir, {
+      "runs/run-1/events/2.json": JSON.stringify({
+        seq: 2,
+        type: "RunCompleted",
+      }),
+    });
+    expect(await reader.resolveRefTip(REPO_ID, REF)).not.toBe(snapshot.tip);
+    expect(
+      (
+        await reader.readLatestRunEvents(REPO_ID, REF, (id) => id === "run-1")
+      ).events.get("run-1"),
+    ).toMatchObject({
+      seq: 2,
+      type: "RunCompleted",
+    });
+  });
+
+  test("reads a tip without a runs tree as empty history", async () => {
+    await commitFiles(dir, { README: "no runs yet" });
+    const snapshot = await reader.readLatestRunEvents(REPO_ID, REF, () => true);
+    expect(snapshot.tip).not.toBeNull();
+    expect(snapshot.events.size).toBe(0);
+  });
+
+  test.each(["runs", "runs/run-1", "runs/run-1/events"])(
+    "propagates a missing %s tree object instead of reading empty history",
+    async (treePath) => {
+      await commitFiles(dir, {
+        "runs/run-1/events/0.json": JSON.stringify({
+          seq: 0,
+          type: "RunCompleted",
+        }),
+      });
+      const tip = await git.resolveRef({ fs, dir, ref: REF });
+      const { oid } = await git.readTree({
+        fs,
+        dir,
+        oid: tip,
+        filepath: treePath,
+      });
+      await fs.promises.rm(
+        path.join(dir, ".git", "objects", oid.slice(0, 2), oid.slice(2)),
+      );
+
+      await expect(
+        reader.readLatestRunEvents(REPO_ID, REF, () => true),
+      ).rejects.toBeInstanceOf(git.Errors.NotFoundError);
+    },
+  );
 
   test("rejects an illegal event filename in the events dir", async () => {
     // Only `<seq>.json` may land under `events/`; validatePush enforces

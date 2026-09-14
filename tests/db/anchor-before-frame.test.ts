@@ -43,6 +43,7 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import {
+  createWorkflowHistoryReceiveTracker,
   createAgentRepoStore,
   createHubSessionLookups,
   createSessionService,
@@ -229,7 +230,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ...createAgentRepoStore({ dataDir, signingKey }),
         receiveWorkflowRunPack: async () => [],
       };
-      return createHubSessionLookups({ db: h.db, agentRepoStore });
+      return createHubSessionLookups({
+        db: h.db,
+        agentRepoStore,
+        historyReceives: createWorkflowHistoryReceiveTracker(),
+      });
     }
 
     async function probePack(

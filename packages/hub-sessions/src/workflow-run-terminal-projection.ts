@@ -3,10 +3,13 @@ import { and, eq } from "drizzle-orm";
 import type { DBExecutor, WorkflowRunStore } from "@intx/db";
 import { principal, workflowRun } from "@intx/db/schema";
 
+import { getWorkflowRunEndedAt } from "./workflow-run-ended-at";
+
 export type TerminalProjectionAnchor = {
   id: string;
   tenantId: string;
   definitionId: string;
+  createdAt: Date;
 };
 
 /**
@@ -17,9 +20,9 @@ export type TerminalProjectionAnchor = {
 export type TerminalProjectionOutcome = "projected" | "settled" | "foreign";
 
 /**
- * Project one accepted terminal event onto its `workflow_run` row: settle the
- * run and deactivate its principal, minting the row first when the event is
- * the first the Hub sees of the run.
+ * Project one accepted terminal event onto its `workflow_run` row. Pack
+ * ingestion and lifecycle recovery both settle runs through this, so a run's
+ * status, end time, and principal follow the same rules on either path.
  */
 export async function projectTerminalRun(
   tx: DBExecutor,
@@ -28,10 +31,11 @@ export async function projectTerminalRun(
     anchor: TerminalProjectionAnchor;
     runId: string;
     status: "completed" | "failed" | "cancelled";
+    terminalEvent: unknown;
     now: Date;
   },
 ): Promise<TerminalProjectionOutcome> {
-  const { anchor, runId, status, now } = args;
+  const { anchor, runId, status, terminalEvent, now } = args;
   // Lazily anchor the run before settling it. An internal run that parks only
   // on a plain signal gate never reaches `registerSignalCorrelation`, the sole
   // other path that mints an internal run row, so its terminal event can be the
@@ -53,6 +57,10 @@ export async function projectTerminalRun(
   // constraining the anchor or the tenant. The insert cannot take a row away
   // from another deployment; the worst it does is create one for an id that
   // deployment would otherwise have created later.
+  //
+  // A row minted here may be written long after the run ended, so it starts
+  // at the terminal event's time rather than now; otherwise the end time
+  // below would be clamped forward to the mint.
   await runs.createIfAbsent(
     {
       id: runId,
@@ -61,16 +69,21 @@ export async function projectTerminalRun(
       tenantId: anchor.tenantId,
       principalId: null,
       status: "running",
+      createdAt: getWorkflowRunEndedAt(terminalEvent, anchor.createdAt, now),
     },
     tx,
   );
   const [ownedRun] = await tx
-    .select({ anchorRunId: workflowRun.anchorRunId })
+    .select({
+      anchorRunId: workflowRun.anchorRunId,
+      createdAt: workflowRun.createdAt,
+    })
     .from(workflowRun)
     .where(eq(workflowRun.id, runId))
     .limit(1);
   if (ownedRun?.anchorRunId !== anchor.id) return "foreign";
-  const won = await runs.markTerminal(runId, status, now, tx);
+  const endedAt = getWorkflowRunEndedAt(terminalEvent, ownedRun.createdAt, now);
+  const won = await runs.markTerminal(runId, status, endedAt, tx);
   // The row exists (the mint above guarantees it) and belongs to this
   // deployment (the guard above), so no live row matched only because the run
   // is already terminal. Leave its settled status and `endedAt` alone.

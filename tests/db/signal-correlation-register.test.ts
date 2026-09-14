@@ -25,6 +25,7 @@ import {
 } from "@intx/db/schema";
 import { generateId } from "@intx/hub-common";
 import {
+  createWorkflowHistoryReceiveTracker,
   createHubSessionLookups,
   createSidecarRouter,
   type AgentRepoStore,
@@ -217,6 +218,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const lookups = createHubSessionLookups({
         db: h.db,
         agentRepoStore: stubRepoStore,
+        historyReceives: createWorkflowHistoryReceiveTracker(),
       });
       return createSidecarRouter({
         authenticateSidecar: acceptAnySidecar,
@@ -401,6 +403,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const lookups = createHubSessionLookups({
         db: h.db,
         agentRepoStore: stubRepoStore,
+        historyReceives: createWorkflowHistoryReceiveTracker(),
       });
 
       // Call the co-write directly with the real-shaped frame: the raw-id
@@ -615,6 +618,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const lookups = createHubSessionLookups({
           db: registerHandle.db,
           agentRepoStore: stubRepoStore,
+          historyReceives: createWorkflowHistoryReceiveTracker(),
         });
 
         let outcome: unknown;

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import git from "isomorphic-git";
 
 import type { RepoId } from "./repo-store/types";
@@ -61,6 +62,28 @@ export interface WorkflowRunReader {
     ref: string,
     runId: string,
   ): Promise<WorkflowRunEvent[]>;
+  /**
+   * List the runs present under `runs/` at one pinned ref tip and read the
+   * latest event of each run `include` selects, without reading prior blobs.
+   * The returned map holds exactly the selected runs, with `null` for a run
+   * directory that has no events yet. A missing Git object propagates
+   * rather than reading as absent history.
+   */
+  readLatestRunEvents(
+    repoId: RepoId,
+    ref: string,
+    include: (runId: string) => boolean,
+  ): Promise<{
+    tip: string | null;
+    events: Map<string, WorkflowRunEvent | null>;
+  }>;
+  /** Recheck the ref after taking the allocation lock. */
+  resolveRefTip(repoId: RepoId, ref: string): Promise<string | null>;
+  /**
+   * Whether the repository exists on disk, separating a repository whose ref
+   * was never written from one that is missing entirely.
+   */
+  hasRepository(repoId: RepoId): Promise<boolean>;
 }
 
 export function createWorkflowRunReader(
@@ -203,6 +226,120 @@ export function createWorkflowRunReader(
     return events;
   }
 
+  async function resolveRefTip(
+    repoId: RepoId,
+    ref: string,
+  ): Promise<string | null> {
+    const dir = repoDirOrNull(repoId);
+    return dir === null ? null : resolveRefOrNull(dir, ref);
+  }
+
+  async function hasRepository(repoId: RepoId): Promise<boolean> {
+    const dir = repoDirOrNull(repoId);
+    if (dir === null) return false;
+    try {
+      await fs.promises.stat(path.join(dir, ".git"));
+      return true;
+    } catch (cause) {
+      if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
+        return false;
+      throw cause;
+    }
+  }
+
+  async function readLatestRunEvents(
+    repoId: RepoId,
+    ref: string,
+    include: (runId: string) => boolean,
+  ): Promise<{
+    tip: string | null;
+    events: Map<string, WorkflowRunEvent | null>;
+  }> {
+    const events = new Map<string, WorkflowRunEvent | null>();
+    const dir = repoDirOrNull(repoId);
+    if (dir === null) return { tip: null, events };
+    const tip = await resolveRefOrNull(dir, ref);
+    if (tip === null) return { tip, events };
+    // Walk trees by oid rather than by filepath: isomorphic-git reports an
+    // absent path and a missing object with the same NotFoundError, and
+    // callers act on an empty result, so only a path absent from a readable
+    // parent tree may read as "no history".
+    const root = await git.readTree({ fs, dir, oid: tip });
+    const runsEntry = root.tree.find(
+      (entry) => entry.path === WORKFLOW_RUN_RUNS_PREFIX,
+    );
+    if (runsEntry === undefined) return { tip, events };
+    const runsTree = await git.readTree({ fs, dir, oid: runsEntry.oid });
+    for (const entry of runsTree.tree) {
+      if (entry.type !== "tree" || !include(entry.path)) continue;
+      events.set(
+        entry.path,
+        await readLatestEventAt(dir, entry.path, entry.oid),
+      );
+    }
+    return { tip, events };
+  }
+
+  async function readLatestEventAt(
+    dir: string,
+    runId: string,
+    runTreeOid: string,
+  ): Promise<WorkflowRunEvent | null> {
+    const runDir = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
+    const runTree = await git.readTree({ fs, dir, oid: runTreeOid });
+    const combined = runTree.tree.find(
+      (entry) =>
+        entry.type === "blob" && entry.path === WORKFLOW_RUN_EVENTS_FILE,
+    );
+    const perEventDir = runTree.tree.find(
+      (entry) =>
+        entry.type === "tree" && entry.path === WORKFLOW_RUN_EVENTS_DIR,
+    );
+    if (combined !== undefined && perEventDir !== undefined) {
+      throw new Error(
+        `workflow-run reader: run ${runId} carries both a combined ${WORKFLOW_RUN_EVENTS_FILE} and a per-event ${WORKFLOW_RUN_EVENTS_DIR}/ directory`,
+      );
+    }
+    if (combined !== undefined) {
+      const blob = await git.readBlob({ fs, dir, oid: combined.oid });
+      const source = `${runDir}/${WORKFLOW_RUN_EVENTS_FILE}`;
+      const last = splitCombinedEventLog(
+        new TextDecoder().decode(blob.blob),
+      ).at(-1);
+      return last === undefined ? null : parseRunEventLine(last, source);
+    }
+    if (perEventDir === undefined) return null;
+    const eventsDir = `${runDir}/${WORKFLOW_RUN_EVENTS_DIR}`;
+    const tree = await git.readTree({ fs, dir, oid: perEventDir.oid });
+    let latest: { seq: number; oid: string; path: string } | undefined;
+    for (const entry of tree.tree) {
+      if (entry.type !== "blob") continue;
+      const path = `${eventsDir}/${entry.path}`;
+      const seq = requireEventSeq(entry.path, path);
+      if (latest === undefined || seq > latest.seq)
+        latest = { seq, oid: entry.oid, path };
+    }
+    if (latest === undefined) return null;
+    const blob = await git.readBlob({ fs, dir, oid: latest.oid });
+    const parsed = parseEventObject(
+      new TextDecoder().decode(blob.blob),
+      latest.path,
+    );
+    const eventType = parsed["type"];
+    if (typeof eventType !== "string") {
+      throw new Error(
+        `workflow-run reader: event at ${latest.path} is missing a string \`type\` field`,
+      );
+    }
+    const bodySeq = parsed["seq"];
+    if (typeof bodySeq === "number" && bodySeq !== latest.seq) {
+      throw new Error(
+        `workflow-run reader: event at ${latest.path} body seq ${String(bodySeq)} does not match filename seq ${String(latest.seq)}`,
+      );
+    }
+    return { seq: latest.seq, type: eventType, body: parsed };
+  }
+
   // Parse one combined-log line (the verbatim text of a former
   // `events/<seq>.json` blob): the seq is read from the body, since the
   // combined form drops the per-event filename that carried it.
@@ -240,5 +377,11 @@ export function createWorkflowRunReader(
     return { ...parsed };
   }
 
-  return { listRunIds, readRunEvents };
+  return {
+    listRunIds,
+    readRunEvents,
+    readLatestRunEvents,
+    resolveRefTip,
+    hasRepository,
+  };
 }

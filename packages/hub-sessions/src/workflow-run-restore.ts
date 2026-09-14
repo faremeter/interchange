@@ -1,13 +1,15 @@
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
-
 import type { AgentRepoStore } from "./agent-repo";
+import {
+  workflowRunRepoIdForAddress,
+  WORKFLOW_RUN_REF,
+} from "./workflow-run-kind";
 import type {
   AllocatedSidecarTarget,
   SidecarAllocationRouter,
 } from "./ws/sidecar-handler";
 
 export const WORKFLOW_RUN_RESTORE_REFS = [
-  "refs/heads/main",
+  WORKFLOW_RUN_REF,
   "refs/heads/events",
 ] as const;
 
@@ -30,10 +32,7 @@ export async function restoreWorkflowRunToAllocation(args: {
   const { agentRepoStore, allocationRouter, allocationTarget, agentAddress } =
     args;
   const principal = { kind: "hub" } as const;
-  const repoId = {
-    kind: "workflow-run" as const,
-    id: deriveWorkflowRunRepoId(agentAddress),
-  };
+  const repoId = workflowRunRepoIdForAddress(agentAddress);
 
   for (const ref of WORKFLOW_RUN_RESTORE_REFS) {
     args.signal?.throwIfAborted();

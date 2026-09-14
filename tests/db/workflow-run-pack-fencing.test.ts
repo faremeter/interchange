@@ -15,8 +15,13 @@ import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 
 import { generateKeyPair } from "@intx/crypto";
-import { sidecarAllocation, workflowPendingProjection } from "@intx/db/schema";
 import {
+  sidecarAllocation,
+  workflowPendingProjection,
+  workflowRun,
+} from "@intx/db/schema";
+import {
+  createWorkflowHistoryReceiveTracker,
   createAgentRepoStore,
   createHubSessionLookups,
   type AgentRepoStore,
@@ -102,6 +107,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return createHubSessionLookups({
         db: h.db,
         agentRepoStore,
+        historyReceives: createWorkflowHistoryReceiveTracker(),
       }).receiveWorkflowRunPack(
         { kind: "workflow-run", id: WORKFLOW_RUN_REPO_ID },
         new Uint8Array(),
@@ -295,6 +301,53 @@ describe.skipIf(!harnessDbEnvAvailable())(
           .select({ anchorRunId: workflowPendingProjection.anchorRunId })
           .from(workflowPendingProjection),
       ).toEqual([{ anchorRunId: ANCHOR_RUN_ID }]);
+      // The failure preceded any Git write, so the repository must already
+      // exist for recovery to read it as never advanced, not as lost.
+      const repoDir = agentRepoStore.repoStore.getRepoDir({
+        kind: "workflow-run",
+        id: WORKFLOW_RUN_REPO_ID,
+      });
+      expect(fs.existsSync(path.join(repoDir, ".git"))).toBe(true);
+    });
+
+    test("a pack waiting behind a recorded stop is rejected", async () => {
+      let receiveCalls = 0;
+      const agentRepoStore = await createRepoStore(async () => {
+        receiveCalls += 1;
+        return [];
+      });
+      const stopHolding = Promise.withResolvers<number>();
+      const releaseStop = Promise.withResolvers<boolean>();
+      const stopPromise = h.db.transaction(async (tx) => {
+        await tx
+          .select({ id: sidecarAllocation.id })
+          .from(sidecarAllocation)
+          .where(eq(sidecarAllocation.id, ALLOCATION_ID))
+          .limit(1)
+          .for("update");
+        await tx
+          .update(workflowRun)
+          .set({ status: "cancelled", endedAt: new Date() })
+          .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+        stopHolding.resolve(await getBackendPid(tx));
+        await releaseStop.promise;
+      });
+
+      const stopPid = await stopHolding.promise;
+      const receivePromise = receivePack(agentRepoStore);
+      try {
+        await waitForBackendBlockedBy(stopPid, settleReporter(receivePromise));
+      } finally {
+        releaseStop.resolve(true);
+      }
+
+      await stopPromise;
+      expect(await receivePromise).toEqual({
+        accepted: false,
+        reason: "path_violation",
+      });
+      expect(receiveCalls).toBe(0);
+      expect(await h.db.select().from(workflowPendingProjection)).toEqual([]);
     });
   },
 );

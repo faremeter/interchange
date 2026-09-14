@@ -8,7 +8,8 @@ import { workflowRun } from "./workflow-run";
  * acceptance and the `workflow_run` projection are not atomic: a projection that
  * fails after the ref advances leaves no other durable trace. The receive
  * deletes its row once every run it carried reached a final decision, or when
- * it provably left Git unchanged. While any row exists for a deployment, its
+ * it provably left Git unchanged; lifecycle recovery deletes rows it has
+ * reconciled from Git. While any row exists for a deployment, its
  * `workflow_run` rows may disagree with accepted history.
  */
 export const workflowPendingProjection = pgTable(
