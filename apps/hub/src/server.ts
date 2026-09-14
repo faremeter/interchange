@@ -6,7 +6,7 @@ import {
   createWorkflowRunDispatchStore,
   resolveFrameSenderKey,
   resolveSenderKey,
-  senderCoordinates,
+  resolveSenderPrincipal,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
@@ -260,25 +260,12 @@ export async function createHubServer({
       (await resolveSenderKey(db, principalKeyStore, address))?.publicKey ??
       null,
     // The strict, coordinate-carrying resolution the mail-triggered run's
-    // invoker binding needs. It consumes the same strict `resolveSenderKey` as
-    // above but does NOT unwrap to the key: it keeps the widened resolution so
-    // the sender's principal, tenant, and admission coordinates carry through.
-    // `senderCoordinates` returns null for a principal-less run (an acked anchor
-    // before its first trigger mints a principal), which fails the invoker
-    // binding closed. `resolveSenderKey`'s own throw on an ambiguous address or
-    // a keyless-principal invariant is preserved (the seam catches it and binds
-    // no invoker), so a fault never silently binds a partial identity.
-    resolveSenderPrincipal: async (address) => {
-      const resolution = await resolveSenderKey(db, principalKeyStore, address);
-      if (resolution === null) return null;
-      const coordinates = senderCoordinates(resolution);
-      if (coordinates === null || resolution.principalId === null) return null;
-      return {
-        principalId: resolution.principalId,
-        tenantId: resolution.tenantId,
-        coordinates,
-      };
-    },
+    // invoker binding needs. It keeps the widened resolution rather than
+    // unwrapping to the key, so the sender's principal, tenant, and admission
+    // coordinates carry through; a principal-less run and the strict resolver's
+    // throw both fail the binding closed (see `resolveSenderPrincipal`).
+    resolveSenderPrincipal: (address) =>
+      resolveSenderPrincipal(db, principalKeyStore, address),
   };
 
   const sidecarCredentials = createSidecarCredentialResolver({ db });

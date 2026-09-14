@@ -180,6 +180,47 @@ export async function resolveSenderKey(
 }
 
 /**
+ * The strict, coordinate-carrying resolution a mail-triggered run's invoker
+ * binding needs: the sender's durable `principalId`, its `tenantId`, and its
+ * admission `coordinates`.
+ */
+export type ResolvedSenderPrincipal = {
+  principalId: string;
+  tenantId: string;
+  coordinates: MailAcceptCoordinate[];
+};
+
+/**
+ * Resolve a signed mail sender to the durable identity a mail-triggered run
+ * binds as its invoker. Consumes the strict {@link resolveSenderKey} and keeps
+ * the widened resolution rather than unwrapping to the key, so the sender's
+ * principal, tenant, and admission coordinates carry through.
+ *
+ * Returns `null` when there is no durable identity to bind: an unresolvable
+ * address, or a principal-less run (an acked anchor before its first trigger
+ * mints a principal, for which `senderCoordinates` returns `null`). A `null`
+ * fails the invoker binding closed rather than binding a partial identity. The
+ * strict resolver's throw on an ambiguous address or a keyless-principal
+ * invariant break is preserved for the caller to catch, so a fault never
+ * silently binds an identity.
+ */
+export async function resolveSenderPrincipal(
+  db: DBExecutor,
+  principalKeyStore: PrincipalKeyStore,
+  address: string,
+): Promise<ResolvedSenderPrincipal | null> {
+  const resolution = await resolveSenderKey(db, principalKeyStore, address);
+  if (resolution === null) return null;
+  const coordinates = senderCoordinates(resolution);
+  if (coordinates === null || resolution.principalId === null) return null;
+  return {
+    principalId: resolution.principalId,
+    tenantId: resolution.tenantId,
+    coordinates,
+  };
+}
+
+/**
  * Resolve the hex-encoded public key to stamp on an outbound mail frame, as a
  * BEST-EFFORT value that never blocks delivery. Returns the key, or `null` when
  * the sender has no resolvable key -- OR when resolution FAILS.

@@ -30,9 +30,11 @@ export { lookupLocalPrincipalSigner } from "./signer-identity";
 export {
   resolveSenderKey,
   resolveFrameSenderKey,
+  resolveSenderPrincipal,
   auditSenderKeys,
   senderCoordinates,
   type SenderKeyResolution,
+  type ResolvedSenderPrincipal,
   type SenderKeyAuditReport,
 } from "./sender-key-resolver";
 // Re-exported from `@intx/authz` alongside `senderCoordinates`, which produces

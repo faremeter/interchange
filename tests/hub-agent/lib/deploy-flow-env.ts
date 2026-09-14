@@ -91,7 +91,7 @@ import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import {
   resolveFrameSenderKey,
   resolveSenderKey,
-  senderCoordinates,
+  resolveSenderPrincipal,
   type DBExecutor,
   type PrincipalKeyStore,
 } from "@intx/db";
@@ -854,26 +854,14 @@ export async function startHub(
               )?.publicKey ?? null,
             // The strict, coordinate-carrying resolution the mail-triggered
             // run's invoker binding needs, wired exactly as production
-            // (apps/hub/src/server.ts): keep the widened resolution rather than
-            // unwrapping to the key so the sender's principal/tenant thread into
-            // the materializer as the run's invoker identity.
-            resolveSenderPrincipal: async (address: string) => {
-              const resolution = await resolveSenderKey(
+            // (apps/hub/src/server.ts) through the shared `resolveSenderPrincipal`
+            // so the harness exercises the real resolution rather than a copy.
+            resolveSenderPrincipal: (address: string) =>
+              resolveSenderPrincipal(
                 senderKeyResolution.db,
                 senderKeyResolution.principalKeyStore,
                 address,
-              );
-              if (resolution === null) return null;
-              const coordinates = senderCoordinates(resolution);
-              if (coordinates === null || resolution.principalId === null) {
-                return null;
-              }
-              return {
-                principalId: resolution.principalId,
-                tenantId: resolution.tenantId,
-                coordinates,
-              };
-            },
+              ),
           }
         : {}),
     },
