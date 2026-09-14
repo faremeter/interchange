@@ -347,7 +347,12 @@ export function mountHubRoutes(
   // `/:runId` patterns, so this ordering is belt-and-suspenders.
   app.route(
     "/api/tenants/:tenantId/workflows/definitions",
-    createWorkflowDefinitionRoutes({ db, requireGrant }),
+    createWorkflowDefinitionRoutes({
+      db,
+      requireGrant,
+      grantStore,
+      conditionRegistry,
+    }),
   );
 
   // The workflow deploy + signal + listing surface reads the workflow-run

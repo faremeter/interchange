@@ -69,6 +69,7 @@ export const workflowDefinition = pgTable(
     // Validated as CredentialBinding[] at parse time. A binding is a request
     // the launch-time grant gate authorizes; it consents to nothing on its own.
     credentialBindings: jsonb("credential_bindings"),
+    lifecyclePolicy: jsonb("lifecycle_policy"),
     currentVersion: text("current_version").notNull().default("1"),
     status: text("status", {
       enum: ["deployed", "stopped"],

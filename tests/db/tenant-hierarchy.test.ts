@@ -12,6 +12,7 @@ import {
   getAncestorChain,
   getDescendantTenants,
   resolveTenantSidecarCapabilityPolicies,
+  TenantConfigInvalidError,
 } from "@intx/db";
 import { tenant } from "@intx/db/schema";
 import {
@@ -221,7 +222,7 @@ describe.skipIf(!harnessDbEnvAvailable())("tenant-hierarchy (real DB)", () => {
 
       await expect(
         resolveTenantSidecarCapabilityPolicies(h.db, "root"),
-      ).rejects.toThrow(/invalid configuration/);
+      ).rejects.toThrow(TenantConfigInvalidError);
     });
   });
 });

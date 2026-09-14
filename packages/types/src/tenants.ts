@@ -1,8 +1,10 @@
 import { type } from "arktype";
 
 import { SidecarCapabilityPolicy } from "./sidecar-capabilities";
+import { WorkflowLifecyclePolicy } from "./workflow-lifecycle";
 
 export const TenantConfig = type({
+  "lifecycle?": WorkflowLifecyclePolicy,
   "sidecarPlacement?": SidecarCapabilityPolicy,
   "[string]": "unknown",
 });
@@ -22,6 +24,14 @@ export const TenantSlug = type(
 ).and("string<=63");
 export type TenantSlug = typeof TenantSlug.infer;
 
+/** Top-level `config` keys to change; `null` removes a key. */
+export const TenantConfigPatch = type({
+  "lifecycle?": WorkflowLifecyclePolicy.or("null"),
+  "sidecarPlacement?": SidecarCapabilityPolicy.or("null"),
+  "[string]": "unknown",
+});
+export type TenantConfigPatch = typeof TenantConfigPatch.infer;
+
 export const CreateTenant = type({
   name: "string",
   slug: TenantSlug,
@@ -30,7 +40,7 @@ export const CreateTenant = type({
 
 export const UpdateTenant = type({
   "name?": "string",
-  "config?": TenantConfig,
+  "config?": TenantConfigPatch,
 });
 
 export const TenantResponse = type({
