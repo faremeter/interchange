@@ -22,6 +22,8 @@ export {
 export { createGrantStore } from "./grant-store";
 export {
   loadTenantLifecyclePolicies,
+  canExecuteWorkflowRun,
+  workflowRunExecutability,
   resolveDeploymentLifecyclePolicy,
   validateLifecyclePolicyEdit,
 } from "./workflow-lifecycle-policy";

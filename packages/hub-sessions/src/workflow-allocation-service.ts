@@ -7,6 +7,7 @@ import {
   createWorkflowRunLaunchSpecStore,
   resolveTenantSidecarCapabilityPolicies,
   resolveDeploymentLifecyclePolicy,
+  canExecuteWorkflowRun,
   resolveSourcesByOfferingIds,
   type DB,
   type SidecarAllocation,
@@ -732,11 +733,18 @@ export function createWorkflowAllocationService({
     };
     const anchor = await db.query.workflowRun.findFirst({
       where: eq(workflowRun.id, allocation.anchorRunId),
-      columns: { publicKey: true, definitionId: true },
+      columns: {
+        publicKey: true,
+        definitionId: true,
+        status: true,
+        expiresAt: true,
+        cancellationRequestedAt: true,
+      },
     });
     if (anchor === undefined) {
       throw new Error(`Allocation ${allocation.id} has no workflow anchor run`);
     }
+    if (!canExecuteWorkflowRun(anchor, now())) return null;
     if (await allocationRouter.isAllocatedWorkflowActive(allocationTarget)) {
       if (anchor.publicKey !== null) return null;
       throw new SessionLaunchError(

@@ -308,6 +308,7 @@ function makeWorkflowRunRow(
     lifecyclePolicy: null,
     expiresAt: null,
     cancellationRequestedAt: null,
+    cancellationReason: null,
     cancellationDeadline: null,
     capacityReleaseAt: null,
     createdAt: now,

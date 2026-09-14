@@ -428,6 +428,8 @@ export async function createHubServer({
     db,
     runReader: createWorkflowRunReader(agentRepoStore.repoStore),
     historyReceives: workflowHistoryReceives,
+    sendControl: (target, command, timeoutMs) =>
+      sidecarRouter.sendWorkflowControl(target, command, timeoutMs),
   });
   const workflowDispatchService = createWorkflowDispatchService({
     dispatchStore: createWorkflowRunDispatchStore(db),

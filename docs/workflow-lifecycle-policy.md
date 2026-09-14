@@ -1,14 +1,12 @@
 # Workflow lifetime and capacity retention
 
-Draft proposal.
+A lifecycle policy releases capacity when a workflow finishes, keeps a failed
+environment around for inspection, and stops deployments that have lived too
+long. Tenant and installed-workflow policy decide when those things happen.
+These settings belong to the deployment configuration, outside the workflow's
+executable definition.
 
-We should support releasing capacity as soon as a workflow finishes, keeping a
-failed environment around for inspection, and stopping deployments that have
-lived too long. Tenant and installed-workflow policy should decide when those
-things happen. These settings belong to the deployment configuration, outside
-the workflow's executable definition.
-
-The proposed policy shape, shown as TypeScript:
+The policy shape, shown as TypeScript:
 
 ```typescript
 type LifecycleDuration = `${number}${"s" | "m" | "h" | "d"}`;
@@ -23,14 +21,15 @@ type WorkflowLifecyclePolicy = {
 };
 ```
 
-Both tenants and installed workflows would accept a `lifecycle` field with this
-shape. Validate durations at the API boundary as non-negative whole numbers
-with a unit, at most `36500d` (the same limit applies in seconds, minutes, or
-hours); `maxLifetime` must be greater than zero. This fixed range leaves room
-for adding deployment and terminal timestamps. Omit a field to inherit it, or
-to take the platform default when it is absent throughout the hierarchy.
+Both tenants and installed workflows accept a `lifecycle` field with this
+shape. The API validates durations as non-negative whole numbers with a unit,
+at most `36500d` (the same limit applies in seconds, minutes, or hours);
+`maxLifetime` must be greater than zero. This fixed range leaves headroom when
+a duration is added to a deployment or terminal timestamp. Omit a field to
+inherit it, or to take the platform default when it is absent throughout the
+hierarchy.
 
-A tenant could set:
+A tenant config can contain:
 
 ```json
 {
@@ -45,7 +44,7 @@ A tenant could set:
 }
 ```
 
-An installed workflow could shorten those limits:
+An installed workflow can shorten those limits:
 
 ```json
 {
@@ -57,6 +56,25 @@ An installed workflow could shorten those limits:
   }
 }
 ```
+
+Tenant policy is set through `PATCH /api/tenants/:tenantId` as `config.lifecycle`.
+That request merges `config` by top-level key, so it keeps other keys such as
+`sidecarPlacement`; a `null` value removes a key. A stored key that fails
+validation, such as a `lifecycle` key saved before lifecycle policies existed,
+must be replaced or removed. Until then, reading the tenant, and deploying or
+editing a lifecycle policy anywhere in its subtree, fail with
+`409 invalid_tenant_config`, and updates that leave the key in place are
+rejected. Errors involving inherited config omit its values from the response;
+the server logs retain the validation details for administrators.
+Installed-workflow overrides are replaced through
+`PATCH /api/tenants/:tenantId/workflows/definitions/:definitionId/lifecycle`
+with a `{ "lifecycle": ... }` body. Both require management permission. Each
+revision of a workflow asset is a separate definition; an override covers every
+revision of the definition's asset, including revisions deployed later, so it
+requires management permission on every existing revision.
+
+The effective policy and deadlines are saved when the deployment is created.
+Later policy edits apply only to new deployments.
 
 Omitted fields inherit through the tenant hierarchy. Tenant values are defaults
 and ceilings: descendants and installed workflows can shorten them; values above
@@ -83,24 +101,29 @@ longer duration. To effectively disable an action, set its field to `36500d`.
 run. Provisioning and waiting count; restarts, replacement workers, and any
 future hibernation do not reset the clock. This also covers deployments that
 never receive their first trigger. If still live at expiry, the Hub stops the
-deployment as `cancelled`, using a bounded cancellation grace period followed by
-enforced termination if needed.
+deployment as `cancelled`, allowing a 30-second cancellation grace period before stopping the process.
 Cancellation also removes the restart record before acknowledgement when no
 supervisor remains, preventing a later sidecar restart from reviving the run.
+If the worker cannot confirm its stop, the Hub releases its allocation and waits
+for confirmed destruction before recording cancellation. Enforcement resumes
+after a Hub outage; the deadline does not promise an exact destruction time.
 
 `capacityRetention` starts when the top-level run becomes terminal. Here, failure
 retains the environment for 15 minutes; success and cancellation request
 immediate release. A child run finishing does not release the deployment's
-allocation. Retained Hub history has a separate lifetime.
+allocation. Top-level scratch survives termination for inspection until
+allocation cleanup. Retained Hub history has a separate lifetime.
 
 The Hub uses the terminal event's timestamp, bounded by run creation and Hub
 observation time. Missing or invalid timestamps use observation time. Once saved,
 the run's end time is not changed by retries.
 
-The Hub should persist deadlines and reconcile due actions from durable state.
+The Hub persists deadlines and reconciles due actions independently of provisioner
+calls. Expired or cancelling runs cannot start, restore, or accept new work.
 An accepted terminal event must remain discoverable for cleanup after a restart
 or a failed status projection. Cancellation and release must tolerate retries,
-and a release is complete only when the provisioner confirms it. A failed
+and a release is complete only when the provisioner confirms it. Forced termination can leave a partial event log; the Hub records the confirmed
+outcome in the run row without fabricating workflow events. A failed
 cleanup remains visible and must not make the capacity available for reuse.
 
 Before a workflow-run pack can advance Git, the Hub records a pending projection
@@ -110,13 +133,15 @@ behind, for a live or finished deployment, is reconciled from Git after a
 30-second grace: the Hub records the accepted terminal outcome of every run,
 including child runs it never recorded, and then clears it. A receive still in
 progress is never reconciled, because it may advance Git after the read. A
-missing repository under a receive's pending projection is treated as unreadable
-history, never as empty history; a repository whose ref was never written
-provably accepted nothing. Reconciliation that cannot read Git backs off and
-retries; an explicit release retries the read and answers 503 while accepted
-history remains unreconciled.
+forced stop records `cancelled` only while no pending projection remains; until
+then the worker is still stopped but the outcome waits. A missing repository
+under a receive's pending projection is treated as unreadable history, never as
+empty history; a repository whose ref was never written provably accepted
+nothing. Reconciliation that cannot read Git backs off and retries; an explicit
+release retries the read and answers 503 while accepted history remains
+unreconciled.
 
-An explicit release request would use the same path:
+An explicit release request uses the same path:
 
 ```http
 POST /api/tenants/:tenantId/workflows/runs/:runId/capacity/release
@@ -126,9 +151,14 @@ The caller needs `manage` on `workflow-run:<runId>`, matching the existing stop
 route, and the run must belong to the tenant in the path. Deployment creation's
 `workflow:*/create` grant alone does not authorize release.
 
-This proposed endpoint accepts a terminal top-level run: `202` for pending
-release, `204` if already released, and `409` for a live run. Release status is
-observable separately from the run's terminal status.
+This endpoint accepts a terminal top-level run: `202` for pending
+release, `204` if already released, `409` for a live run, and `503` while the
+run's accepted history is not reconciled yet. Release status is
+available at `GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle`,
+alongside the saved policy, deadlines, and cleanup errors. Permanent cleanup
+failure returns `409` on a new release request and requires operator intervention.
+`DELETE /api/tenants/:tenantId/workflows/runs/:runId` requests cancellation of a
+live run and returns `202`; its cancellation retention policy then applies.
 
 Releasing the allocation gives up the deployment's claim on capacity. The
 provisioner decides whether to destroy the backing resources or prepare them for
@@ -136,7 +166,9 @@ reuse. This fits the work on provisioning pre-existing capacity: another
 deployment could claim it when the provisioner binding, capabilities, and
 placement requirements match. The previous assignment, credentials, and local
 state must be retired or reset before it becomes available. Capacity retained
-for inspecting a failed run is still reserved to that run.
+for inspecting a failed run is still reserved to that run. Retention is a cleanup
+deadline, not a minimum preservation guarantee: manual release or infrastructure
+failure can end it earlier.
 
 The provisioner owns how long unused backing capacity stays available before
 being destroyed. The Hub's allocation reconciler performs cleanup by calling

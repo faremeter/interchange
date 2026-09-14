@@ -30,6 +30,7 @@ import type { DB, DBExecutor, PrincipalKeyStore } from "@intx/db";
 import {
   createPrincipalStore,
   createWorkflowRunStore,
+  workflowRunExecutability,
   loadFrozenGrantSnapshot,
 } from "@intx/db";
 import type { GrantStore, GrantRule } from "@intx/types/authz";
@@ -304,16 +305,21 @@ export type CommittedRunGrants = {
 /**
  * Lock and classify one run row owned by a deployment. A live run -- a
  * "deployed" anchor in its pre-trigger window or a "running" run -- classifies
- * as "running"; the started-vs-not distinction is owned by the durable
- * lifecycle, not this status axis.
+ * as "running" while it accepts work and "stopping" once cancellation is
+ * requested or its deadline passes; the started-vs-not distinction is owned by
+ * the durable lifecycle, not this status axis.
  */
 export async function lockWorkflowRunState(
   tx: DBExecutor,
   anchorRunId: string,
   runId: string,
-): Promise<"absent" | "running" | "terminal"> {
+): Promise<"absent" | "running" | "stopping" | "terminal"> {
   const [run] = await tx
-    .select({ status: workflowRun.status })
+    .select({
+      status: workflowRun.status,
+      expiresAt: workflowRun.expiresAt,
+      cancellationRequestedAt: workflowRun.cancellationRequestedAt,
+    })
     .from(workflowRun)
     .where(
       and(eq(workflowRun.id, runId), eq(workflowRun.anchorRunId, anchorRunId)),
@@ -321,7 +327,21 @@ export async function lockWorkflowRunState(
     .limit(1)
     .for("update");
   if (run === undefined) return "absent";
-  return isLiveWorkflowRunStatus(run.status) ? "running" : "terminal";
+  const state = workflowRunExecutability(run);
+  return state === "executable" ? "running" : state;
+}
+
+function unavailableRunResult(
+  runId: string,
+  state: "stopping" | "terminal",
+): MailTriggeredRunGrantsResult {
+  return {
+    outcome: "rejected",
+    status: 409,
+    code:
+      state === "stopping" ? "workflow_run_stopping" : "workflow_run_terminal",
+    message: `Workflow run ${runId} is ${state} and cannot receive more mail`,
+  };
 }
 
 /**
@@ -610,6 +630,8 @@ export function createMailTriggeredRunGrantsMaterializer(
         definitionId: workflowRun.definitionId,
         definitionAssetId: workflowDefinition.assetId,
         anchorStatus: workflowRun.status,
+        anchorExpiresAt: workflowRun.expiresAt,
+        anchorCancellationRequestedAt: workflowRun.cancellationRequestedAt,
         topLevelRunStatus: topLevelRun.status,
       })
       .from(workflowRun)
@@ -630,26 +652,26 @@ export function createMailTriggeredRunGrantsMaterializer(
     // A "deployed" anchor is live: mail-triggering it IS its first trigger, so
     // it must not be rejected as terminal here.
     //
-    // This preflight inspects only the workflow_run.status column and omits the
-    // durable-lifecycle terminal check that the HTTP trigger route in
-    // workflow-run-trigger.ts applies. The supervisor's durable run-ref guard
+    // This preflight inspects the anchor row's status, cancellation, and
+    // deadline, and omits the durable-lifecycle terminal check that the HTTP
+    // trigger route in workflow-run-trigger.ts applies. The supervisor's durable run-ref guard
     // (rejectTerminalRun / readWorkflowRunLifecycle in supervisor.ts) is the
     // fired/not-fired authority and never re-fires a durably-settled run, so
     // this status check is a lagging fast-fail only. The two preflights diverge
     // inside the status-flip lag window; that asymmetry is tolerable and is
     // tracked for unification in INTR-456.
+    const anchorState = workflowRunExecutability({
+      status: anchor.anchorStatus,
+      expiresAt: anchor.anchorExpiresAt,
+      cancellationRequestedAt: anchor.anchorCancellationRequestedAt,
+    });
+    if (anchorState !== "executable")
+      return unavailableRunResult(runId, anchorState);
     if (
-      !isLiveWorkflowRunStatus(anchor.anchorStatus) ||
-      (anchor.topLevelRunStatus !== null &&
-        !isLiveWorkflowRunStatus(anchor.topLevelRunStatus))
-    ) {
-      return {
-        outcome: "rejected",
-        status: 409,
-        code: "workflow_run_terminal",
-        message: `Workflow run ${runId} is terminal and cannot receive more mail`,
-      };
-    }
+      anchor.topLevelRunStatus !== null &&
+      !isLiveWorkflowRunStatus(anchor.topLevelRunStatus)
+    )
+      return unavailableRunResult(runId, "terminal");
     if (anchor.definitionAssetId === null) {
       throw new Error(
         `mail-triggered run ${runId} for ${agentAddress}: anchor run's definition has no asset`,
@@ -734,14 +756,16 @@ export function createMailTriggeredRunGrantsMaterializer(
       };
     }
 
-    const stepGrants = await deps.db.transaction(async (tx) => {
-      if (
-        (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !==
-          "running" ||
-        (await lockWorkflowRunState(tx, anchorRunId, runId)) === "terminal"
-      ) {
-        return null;
-      }
+    const reserved = await deps.db.transaction(async (tx) => {
+      const anchorState = await lockWorkflowRunState(
+        tx,
+        anchorRunId,
+        anchorRunId,
+      );
+      if (anchorState !== "running")
+        return anchorState === "stopping" ? anchorState : "terminal";
+      const runState = await lockWorkflowRunState(tx, anchorRunId, runId);
+      if (runState === "stopping" || runState === "terminal") return runState;
       return commitRunGrants(
         {
           db: deps.db,
@@ -757,17 +781,11 @@ export function createMailTriggeredRunGrantsMaterializer(
         tx,
       );
     });
-    if (stepGrants === null) {
-      return {
-        outcome: "rejected",
-        status: 409,
-        code: "workflow_run_terminal",
-        message: `Workflow run ${runId} is terminal and cannot receive more mail`,
-      };
-    }
+    if (reserved === "stopping" || reserved === "terminal")
+      return unavailableRunResult(runId, reserved);
     return {
       outcome: "materialized",
-      stepGrants,
+      stepGrants: reserved,
     };
   };
 }

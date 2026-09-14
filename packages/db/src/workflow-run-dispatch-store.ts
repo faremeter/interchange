@@ -4,6 +4,8 @@ import {
   and,
   asc,
   eq,
+  exists,
+  gt,
   inArray,
   isNull,
   lte,
@@ -22,7 +24,12 @@ import {
 
 import type { DB, DBExecutor } from "./client";
 import { parseWorkflowRunDispatchRow } from "./parse-row";
-import { sidecarAllocation, workflowRun, workflowRunDispatch } from "./schema";
+import {
+  liveWorkflowRunStatuses,
+  sidecarAllocation,
+  workflowRun,
+  workflowRunDispatch,
+} from "./schema";
 
 type DBHandle = DB["db"];
 type ParsedDispatch = ReturnType<typeof parseWorkflowRunDispatchRow>;
@@ -286,6 +293,22 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
           .where(
             and(
               eq(workflowRunDispatch.status, "pending"),
+              exists(
+                tx
+                  .select({ id: workflowRun.id })
+                  .from(workflowRun)
+                  .where(
+                    and(
+                      eq(workflowRun.id, workflowRunDispatch.anchorRunId),
+                      inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+                      isNull(workflowRun.cancellationRequestedAt),
+                      or(
+                        isNull(workflowRun.expiresAt),
+                        gt(workflowRun.expiresAt, sql`now()`),
+                      ),
+                    ),
+                  ),
+              ),
               lte(workflowRunDispatch.nextAttemptAt, sql`now()`),
               ...(args.excludedDispatchIds !== undefined &&
               args.excludedDispatchIds.length > 0
