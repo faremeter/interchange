@@ -54,6 +54,7 @@ export {
   SidecarIdentityValidationError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
+  WorkflowControlUnconfirmedError,
   WorkflowControlUnreachableError,
   createSidecarCredentialResolver,
   createSidecarTokenAuthenticator,

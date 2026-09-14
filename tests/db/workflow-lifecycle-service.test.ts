@@ -29,6 +29,10 @@ import {
   createSidecarPluginRegistry,
   createWorkflowHistoryReceiveTracker,
   createWorkflowLifecycleService,
+  SidecarIdentityValidationError,
+  WorkflowControlTimeoutError,
+  WorkflowControlUnconfirmedError,
+  WorkflowControlUnreachableError,
   type WorkflowRunEvent,
   type WorkflowLifecycleServiceDeps,
   type WorkflowRunReader,
@@ -49,7 +53,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     function service(
       options: Partial<
-        Pick<WorkflowLifecycleServiceDeps, "historyReceives">
+        Pick<WorkflowLifecycleServiceDeps, "sendControl" | "historyReceives">
       > & {
         runReader?: Partial<WorkflowRunReader>;
       } = {},
@@ -61,6 +65,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ...options.runReader,
       };
       return createWorkflowLifecycleService({
+        ...options,
         db: h.db,
         historyReceives:
           options.historyReceives ?? createWorkflowHistoryReceiveTracker(),
@@ -87,6 +92,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             options.runReader?.hasRepository ?? (async () => false),
         },
         now: () => current,
+        cancelGraceMs: 1_000,
       });
     }
 
@@ -688,6 +694,570 @@ describe.skipIf(!harnessDbEnvAvailable())(
         (await createSidecarAllocationStore(h.db).findById(allocationId))
           ?.generation,
       ).toBe(1);
+    });
+
+    test.each([
+      [
+        "unreachable",
+        () => new WorkflowControlUnreachableError("Not connected here"),
+      ],
+      [
+        "unvalidated",
+        () => new SidecarIdentityValidationError(allocationId, 1),
+      ],
+    ] as const)(
+      "an %s stop is retried instead of destroying the worker",
+      async (_kind, failure) => {
+        await expire();
+        let reachable = false;
+        const actions: string[] = [];
+        const lifecycle = service({
+          sendControl: async (_target, command) => {
+            actions.push(command.action);
+            if (command.action === "stop" && !reachable) throw failure();
+          },
+        });
+
+        await lifecycle.reconcile();
+        current = new Date(current.getTime() + 1_000);
+        await lifecycle.reconcile();
+        expect(await lifecycle.getStatus(tenantId, runId)).toMatchObject({
+          status: "running",
+          allocation: { status: "allocated" },
+        });
+
+        reachable = true;
+        current = new Date(current.getTime() + 1_000);
+        await lifecycle.reconcile();
+        expect(actions).toEqual(["cancel", "stop", "stop"]);
+        expect(await lifecycle.getStatus(tenantId, runId)).toMatchObject({
+          status: "cancelled",
+          allocation: { status: "allocated" },
+        });
+      },
+    );
+
+    test("records cancellation for a run whose Git tip keeps moving", async () => {
+      await leavePending();
+      let reads = 0;
+      const lifecycle = service({
+        runReader: {
+          readLatestRunEvents: async () => {
+            reads += 1;
+            return { tip: "old-tip", events: new Map([[runId, null]]) };
+          },
+          resolveRefTip: async () => "new-tip",
+        },
+      });
+
+      expect(await lifecycle.requestCancellation(tenantId, runId, "Stop")).toBe(
+        "pending",
+      );
+      expect(reads).toBe(3);
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, runId),
+        }),
+      ).toMatchObject({
+        status: "running",
+        cancellationReason: "Stop",
+      });
+    });
+
+    test("a run whose Git tip keeps moving still receives cancel and a forced stop", async () => {
+      await expire();
+      await leavePending();
+      const actions: string[] = [];
+      const lifecycle = service({
+        runReader: {
+          readLatestRunEvents: async () => ({
+            tip: "old-tip",
+            events: new Map([[runId, null]]),
+          }),
+          resolveRefTip: async () => "new-tip",
+        },
+        sendControl: async (_target, command) => {
+          actions.push(command.action);
+          if (command.action === "stop")
+            throw new WorkflowControlTimeoutError("Stop timed out");
+        },
+      });
+
+      await lifecycle.reconcile();
+      current = new Date(current.getTime() + 1_000);
+      await lifecycle.reconcile();
+      expect(actions).toEqual(["cancel", "stop"]);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("releasing");
+    });
+
+    test("a confirmed stop is recorded only once its Git tip settles", async () => {
+      await expire();
+      await leavePending();
+      let moving = true;
+      const actions: string[] = [];
+      const lifecycle = service({
+        runReader: {
+          readLatestRunEvents: async () => ({
+            tip: moving ? "old-tip" : "settled-tip",
+            events: new Map([[runId, null]]),
+          }),
+          resolveRefTip: async () => (moving ? "new-tip" : "settled-tip"),
+        },
+        sendControl: async (_target, command) => {
+          actions.push(command.action);
+        },
+      });
+
+      await lifecycle.reconcile();
+      current = new Date(current.getTime() + 1_000);
+      await lifecycle.reconcile();
+      expect(actions).toEqual(["cancel", "stop"]);
+      expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
+        "running",
+      );
+
+      moving = false;
+      current = new Date(current.getTime() + 1_000);
+      await lifecycle.reconcile();
+      expect(actions).toEqual(["cancel", "stop", "stop"]);
+      expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
+        "cancelled",
+      );
+    });
+
+    test.each(["unreachable", "unconfirmed"] as const)(
+      "a worker that stays %s is force-released after a short grace",
+      async (condition) => {
+        await expire();
+        const options = {
+          sendControl: async (
+            _target: unknown,
+            command: { action: "cancel" | "stop" },
+          ) => {
+            if (command.action !== "stop") return;
+            if (condition === "unconfirmed")
+              throw new WorkflowControlUnconfirmedError("Queued behind a pack");
+            throw new WorkflowControlUnreachableError("Reconnecting again");
+          },
+        };
+        const lifecycle = service(options);
+        await lifecycle.reconcile();
+        current = new Date(current.getTime() + 1_000);
+        await lifecycle.reconcile();
+        expect(
+          (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+        ).toBe("allocated");
+
+        current = new Date(current.getTime() + 59_000);
+        await lifecycle.reconcile();
+        expect(
+          (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+        ).toBe("allocated");
+
+        current = new Date(current.getTime() + 1_000);
+        await lifecycle.reconcile();
+        expect(await lifecycle.getStatus(tenantId, runId)).toMatchObject({
+          status: "running",
+          allocation: {
+            status: "releasing",
+            failureCode: "workflow_stop_failed",
+          },
+        });
+      },
+    );
+
+    test("a restarted Hub gives an unreachable worker the full grace", async () => {
+      await expire();
+      const options = {
+        sendControl: async (
+          _target: unknown,
+          command: { action: "cancel" | "stop" },
+        ) => {
+          if (command.action === "stop")
+            throw new WorkflowControlUnreachableError("Not connected yet");
+        },
+      };
+      await service(options).reconcile();
+      current = new Date(current.getTime() + 600_000);
+      const restarted = service(options);
+      await restarted.reconcile();
+      expect(
+        (await restarted.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("allocated");
+
+      current = new Date(current.getTime() + 60_000);
+      await restarted.reconcile();
+      expect(
+        (await restarted.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("releasing");
+    });
+
+    async function expire() {
+      await h.db
+        .update(workflowRun)
+        .set({
+          expiresAt: current,
+          lifecyclePolicy: {
+            maxLifetime: "1s",
+            capacityRetention: { cancelled: "0s" },
+          },
+        })
+        .where(eq(workflowRun.id, runId));
+    }
+
+    test("expires a hung run, confirms process stop, and then applies cancellation retention", async () => {
+      await expire();
+      const actions: string[] = [];
+      const options = {
+        sendControl: async (_target: unknown, command: { action: string }) => {
+          actions.push(command.action);
+        },
+      };
+      await service(options).reconcile();
+      const first = await service().getStatus(tenantId, runId);
+      expect(first?.status).toBe("running");
+      expect(first?.cancellationRequestedAt).toBe(current.toISOString());
+      expect(actions).toEqual(["cancel"]);
+      current = new Date(current.getTime() + 1_000);
+      await service(options).reconcile();
+      expect(actions).toEqual(["cancel", "stop"]);
+      expect((await service().getStatus(tenantId, runId))?.status).toBe(
+        "cancelled",
+      );
+      await service(options).reconcile();
+      expect(
+        (await service().getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("releasing");
+    });
+
+    test("accepts cooperative cancellation without forcing the worker down", async () => {
+      await expire();
+      const actions: string[] = [];
+      await service({
+        sendControl: async (_target, command) => {
+          actions.push(command.action);
+          events = [
+            {
+              seq: 1,
+              type: "RunCancelled",
+              body: { at: current.toISOString() },
+            },
+          ];
+          await leavePending();
+        },
+      }).reconcile();
+      await service().reconcile();
+      expect(actions).toEqual(["cancel"]);
+      expect((await service().getStatus(tenantId, runId))?.status).toBe(
+        "cancelled",
+      );
+      expect(
+        (await service().getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("releasing");
+    });
+
+    test("forced stop keeps a child's accepted terminal outcome and cancels only live children", async () => {
+      await expire();
+      await leavePending();
+      await addChild("run_child_done");
+      await addChild("run_child_live");
+      const actions: string[] = [];
+      const options = {
+        runReader: childHistory({
+          run_child_done: [
+            {
+              seq: 1,
+              type: "RunCompleted",
+              body: { type: "RunCompleted", at: current.toISOString() },
+            },
+          ],
+        }),
+        sendControl: async (_target: unknown, command: { action: string }) => {
+          actions.push(command.action);
+        },
+      };
+      await service(options).reconcile();
+      current = new Date(current.getTime() + 1_000);
+      await service(options).reconcile();
+      expect(actions).toEqual(["cancel", "stop"]);
+      expect(await runStates()).toEqual({
+        [runId]: "cancelled",
+        run_child_done: "completed",
+        run_child_live: "cancelled",
+      });
+      const principals = await h.db
+        .select({ id: principal.id, status: principal.status })
+        .from(principal);
+      expect(principals.every((row) => row.status === "deactivated")).toBe(
+        true,
+      );
+    });
+
+    test("an unresponsive worker is not declared stopped until capacity destruction is confirmed", async () => {
+      await expire();
+      const options = {
+        sendControl: async () => {
+          throw new WorkflowControlTimeoutError("Worker did not answer");
+        },
+      };
+      await service(options).reconcile();
+      current = new Date(current.getTime() + 1_000);
+      await service(options).reconcile();
+      expect((await service().getStatus(tenantId, runId))?.status).toBe(
+        "running",
+      );
+      expect(
+        (await service().getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("releasing");
+      await h.db
+        .update(sidecarAllocation)
+        .set({ status: "released" })
+        .where(eq(sidecarAllocation.id, allocationId));
+      await service(options).reconcile();
+      expect((await service().getStatus(tenantId, runId))?.status).toBe(
+        "cancelled",
+      );
+    });
+
+    test("unreadable workflow history stops the worker but defers its recorded outcome", async () => {
+      await expire();
+      await addChild("run_child_done");
+      await leavePending();
+      let unreadable = true;
+      const actions: string[] = [];
+      const options = {
+        runReader: {
+          readRunEvents: async (
+            _repo: unknown,
+            _ref: string,
+            id: string,
+          ): Promise<WorkflowRunEvent[]> => {
+            if (unreadable) throw new Error("Unreadable repository");
+            return id === "run_child_done"
+              ? [
+                  {
+                    seq: 1,
+                    type: "RunCompleted",
+                    body: { type: "RunCompleted", at: current.toISOString() },
+                  },
+                ]
+              : [];
+          },
+        },
+        sendControl: async (_target: unknown, command: { action: string }) => {
+          actions.push(command.action);
+        },
+      };
+      const lifecycle = service(options);
+      await lifecycle.reconcile();
+      current = new Date(current.getTime() + 1_000);
+      await lifecycle.reconcile();
+      expect(actions).toEqual(["cancel", "stop"]);
+      expect(await runStates()).toEqual({
+        [runId]: "running",
+        run_child_done: "running",
+      });
+
+      unreadable = false;
+      current = new Date(current.getTime() + 5_000);
+      await lifecycle.reconcile();
+      expect(actions).toEqual(["cancel", "stop", "stop"]);
+      expect(await runStates()).toEqual({
+        [runId]: "cancelled",
+        run_child_done: "completed",
+      });
+    });
+
+    test("released capacity with unreadable history defers the recorded outcome", async () => {
+      await expire();
+      await leavePending();
+      await h.db
+        .update(sidecarAllocation)
+        .set({ status: "released" })
+        .where(eq(sidecarAllocation.id, allocationId));
+      let unreadable = true;
+      const lifecycle = service({
+        runReader: {
+          readRunEvents: async () => {
+            if (unreadable) throw new Error("Unreadable repository");
+            return [];
+          },
+        },
+      });
+      await lifecycle.reconcile();
+      expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
+        "running",
+      );
+
+      unreadable = false;
+      current = new Date(current.getTime() + 5_000);
+      await lifecycle.reconcile();
+      expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
+        "cancelled",
+      );
+    });
+
+    test("a missing ref keeps a receive's pending projection and defers the stop", async () => {
+      await expire();
+      await leavePending();
+      const missingRepo = {
+        runReader: {
+          readLatestRunEvents: async () => ({ tip: null, events: new Map() }),
+          resolveRefTip: async () => null,
+        },
+        sendControl: async () => undefined,
+      };
+      const lifecycle = service(missingRepo);
+      await lifecycle.reconcile();
+      current = new Date(current.getTime() + 1_000);
+      await lifecycle.reconcile();
+      expect(await pendingIds()).toEqual([`wpp_${runId}`]);
+      expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
+        "running",
+      );
+    });
+
+    test("a deployment with nothing pending records a forced stop without reading Git", async () => {
+      await expire();
+      let reads = 0;
+      const options = {
+        runReader: {
+          readRunEvents: async () => {
+            reads += 1;
+            throw new Error("Unreadable repository");
+          },
+        },
+        sendControl: async () => undefined,
+      };
+      await service(options).reconcile();
+      current = new Date(current.getTime() + 1_000);
+      await service(options).reconcile();
+      expect(reads).toBe(0);
+      expect((await service().getStatus(tenantId, runId))?.status).toBe(
+        "cancelled",
+      );
+    });
+
+    test("repeated manual cancellation keeps the first reason and deadline", async () => {
+      expect(
+        await service().requestCancellation(
+          tenantId,
+          runId,
+          "Operator request",
+        ),
+      ).toBe("pending");
+      const first = await service().getStatus(tenantId, runId);
+      current = new Date(current.getTime() + 500);
+      expect(
+        await service().requestCancellation(tenantId, runId, "Another request"),
+      ).toBe("pending");
+      const second = await service().getStatus(tenantId, runId);
+      expect(second?.cancellationDeadline).toBe(first?.cancellationDeadline);
+      expect(second?.cancellationReason).toBe("Operator request");
+    });
+
+    test("later policy edits do not change a deployment's saved retention", async () => {
+      complete("RunFailed");
+      await leavePending();
+      await h.db
+        .update(workflowDefinition)
+        .set({ lifecyclePolicy: { capacityRetention: { failed: "0s" } } })
+        .where(eq(workflowDefinition.id, "definition"));
+      await service().reconcile();
+      expect(
+        (await service().getStatus(tenantId, runId))?.capacityReleaseAt,
+      ).toBe(new Date(current.getTime() + 900_000).toISOString());
+      expect(
+        (await service().getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("allocated");
+    });
+
+    test("expiry waits for the active ensure lease before releasing capacity", async () => {
+      await h.db
+        .update(sidecarAllocation)
+        .set({
+          status: "pending",
+          generation: 0,
+          sidecarId: null,
+          ensureAcceptedGeneration: null,
+          nextAttemptAt: new Date(0),
+        })
+        .where(eq(sidecarAllocation.id, allocationId));
+      const started = Promise.withResolvers<undefined>();
+      const finishEnsure = Promise.withResolvers<{
+        kind: "accepted";
+        externalRef: string;
+      }>();
+      let destroyed = false;
+      const allocationStore = createSidecarAllocationStore(h.db);
+      const reconciler = createSidecarAllocationReconciler({
+        allocationStore,
+        plugins: createSidecarPluginRegistry({
+          provisioners: [
+            {
+              id: "test",
+              apiVersion: 1,
+              bindingFingerprint: "test:1",
+              capabilities: [],
+              ensure: async () => {
+                started.resolve(undefined);
+                return finishEnsure.promise;
+              },
+              destroy: async (request) => {
+                expect(request.externalRef).toBe("vm-1");
+                destroyed = true;
+                return { kind: "destroyed" };
+              },
+            },
+          ],
+        }),
+        router: {
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          isAllocatedSidecarReady: async () => false,
+          waitForAllocatedSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "ws://hub.example/ws",
+        now: () => current,
+      });
+      const ensuring = reconciler.reconcileNext();
+      await started.promise;
+      try {
+        const provisioning = await allocationStore.findById(allocationId);
+        expect(provisioning?.status).toBe("provisioning");
+        expect(provisioning?.reconciliationLeaseId).toBeDefined();
+        await expire();
+        await service().reconcile();
+        expect(await allocationStore.findById(allocationId)).toMatchObject({
+          status: "provisioning",
+          generation: provisioning?.generation,
+          reconciliationLeaseId: provisioning?.reconciliationLeaseId,
+        });
+        expect(destroyed).toBe(false);
+      } finally {
+        finishEnsure.resolve({ kind: "accepted", externalRef: "vm-1" });
+        await ensuring;
+      }
+      expect(await allocationStore.findById(allocationId)).toMatchObject({
+        status: "allocated",
+        externalRef: "vm-1",
+      });
+      expect(
+        (await allocationStore.findById(allocationId))?.reconciliationLeaseId,
+      ).toBeUndefined();
+      current = new Date(current.getTime() + 1_000);
+      await service().reconcile();
+      expect((await allocationStore.findById(allocationId))?.status).toBe(
+        "releasing",
+      );
+      await reconciler.reconcileNext();
+      expect(destroyed).toBe(true);
+      await service().reconcile();
+      expect((await service().getStatus(tenantId, runId))?.status).toBe(
+        "cancelled",
+      );
     });
   },
 );

@@ -18,6 +18,7 @@ import {
   type RepoStore,
   type SessionService,
   type SidecarRouter,
+  type WorkflowLifecycleService,
 } from "@intx/hub-sessions";
 import type { GetSession } from "../session";
 
@@ -423,6 +424,7 @@ function createThrowingAssetService(): AssetService {
 }
 
 type TestAppOpts = {
+  lifecycleService?: WorkflowLifecycleService;
   db?: MockDBOpts;
   grants?: GrantRule[];
   routableAddresses?: string[];
@@ -460,6 +462,9 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.connectorStates,
     ),
     sessionService: opts.sessionService ?? createMockSessionService(),
+    ...(opts.lifecycleService !== undefined
+      ? { workflowLifecycleService: opts.lifecycleService }
+      : {}),
     eventCollectors: createMockEventCollectors(opts.collectorStatuses),
     assetService,
     repoStore,
@@ -1007,14 +1012,14 @@ describe("mail send delegates to the trigger; stop and mail history stay gated",
     });
   });
 
-  test("DELETE stop answers 501 not_implemented", async () => {
+  test("DELETE stop requires lifecycle storage", async () => {
     const app = createTestApp({
       grants: [manageGrant()],
     });
     const res = await app.request(runURL(), { method: "DELETE" });
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({
-      error: { code: "not_implemented" },
+      error: { code: "unavailable" },
     });
   });
 });
@@ -1142,5 +1147,105 @@ describe("GET /workflows/runs/blobs/:blobId", () => {
     expect(res.status).toBe(400);
     const body: unknown = await res.json();
     expect(body).toMatchObject({ error: { code: "bad_request" } });
+  });
+});
+
+function lifecycleService(
+  overrides: Partial<WorkflowLifecycleService> = {},
+): WorkflowLifecycleService {
+  return {
+    getStatus: async () => ({
+      runId: RUN_ID,
+      status: "completed",
+      policy: {},
+      expiresAt: null,
+      cancellationRequestedAt: null,
+      cancellationDeadline: null,
+      cancellationReason: null,
+      capacityReleaseAt: null,
+      allocation: null,
+    }),
+    releaseCapacity: async () => "pending",
+    requestCancellation: async () => "pending",
+    reconcile: async () => undefined,
+    ...overrides,
+  };
+}
+
+describe("workflow lifecycle endpoints", () => {
+  test("creating workflows does not grant permission to release their capacity", async () => {
+    let called = false;
+    const app = createTestApp({
+      grants: [makeGrant({ resource: "workflow:*", action: "create" })],
+      lifecycleService: lifecycleService({
+        releaseCapacity: async () => {
+          called = true;
+          return "pending";
+        },
+      }),
+    });
+    expect(
+      (await app.request(`${runURL()}/capacity/release`, { method: "POST" }))
+        .status,
+    ).toBe(403);
+    expect(called).toBe(false);
+  });
+
+  test("release is scoped to the managed run and advertises its status endpoint", async () => {
+    const calls: string[][] = [];
+    const app = createTestApp({
+      grants: [
+        makeGrant({ resource: `workflow-run:${RUN_ID}`, action: "manage" }),
+      ],
+      lifecycleService: lifecycleService({
+        releaseCapacity: async (tenantId, runId) => {
+          calls.push([tenantId, runId]);
+          return "pending";
+        },
+      }),
+    });
+    const response = await app.request(`${runURL()}/capacity/release`, {
+      method: "POST",
+    });
+    expect(response.status).toBe(202);
+    expect(response.headers.get("Location")).toBe(`${runURL()}/lifecycle`);
+    expect(calls).toEqual([[TENANT_ID, RUN_ID]]);
+  });
+
+  test("permanent cleanup failure is visible rather than accepted as a retry", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "manage" })],
+      lifecycleService: lifecycleService({
+        releaseCapacity: async () => "cleanup_failed",
+      }),
+    });
+    expect(
+      (await app.request(`${runURL()}/capacity/release`, { method: "POST" }))
+        .status,
+    ).toBe(409);
+  });
+
+  test("read access can observe policy and deadlines without management access", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "read" })],
+      lifecycleService: lifecycleService(),
+    });
+    const response = await app.request(`${runURL()}/lifecycle`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      runId: RUN_ID,
+      status: "completed",
+      expiresAt: null,
+    });
+  });
+
+  test("tenant membership alone cannot change lifecycle limits", async () => {
+    const app = createTestApp({ grants: [makeGrant({ action: "read" })] });
+    const response = await app.request(`/api/tenants/${TENANT_ID}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ config: { lifecycle: { maxLifetime: "1h" } } }),
+    });
+    expect(response.status).toBe(403);
   });
 });

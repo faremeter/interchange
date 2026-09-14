@@ -15,6 +15,34 @@ import {
 import { getAncestorChain } from "./tenant-hierarchy";
 import { tenant } from "./schema/tenants";
 import { workflowDefinition } from "./schema/workflow-definitions";
+import { isLiveWorkflowRunStatus } from "./schema/workflow-run";
+
+/**
+ * A live run is stopping once cancellation is requested or its deadline
+ * passes, before its status leaves the live set. Admission uses the original
+ * deadline, including before the expiry sweep runs.
+ */
+export function workflowRunExecutability(
+  run: {
+    status: string;
+    expiresAt: Date | null;
+    cancellationRequestedAt: Date | null;
+  },
+  now = new Date(),
+): "executable" | "stopping" | "terminal" {
+  if (!isLiveWorkflowRunStatus(run.status)) return "terminal";
+  return run.cancellationRequestedAt == null &&
+    (run.expiresAt == null || run.expiresAt > now)
+    ? "executable"
+    : "stopping";
+}
+
+export function canExecuteWorkflowRun(
+  run: Parameters<typeof workflowRunExecutability>[0],
+  now = new Date(),
+): boolean {
+  return workflowRunExecutability(run, now) === "executable";
+}
 
 export async function loadTenantLifecyclePolicies(
   db: DBExecutor,

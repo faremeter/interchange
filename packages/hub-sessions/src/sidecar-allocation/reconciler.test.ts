@@ -53,6 +53,7 @@ function fakeStore(overrides: Partial<AllocationStore> = {}): AllocationStore {
   };
   return {
     beginReplacement: notUsed("beginReplacement"),
+    beginRelease: notUsed("beginRelease"),
     beginUnrecoverableRelease: notUsed("beginUnrecoverableRelease"),
     bindInitialSidecar: notUsed("bindInitialSidecar"),
     bindReplacementSidecar: notUsed("bindReplacementSidecar"),
@@ -61,6 +62,7 @@ function fakeStore(overrides: Partial<AllocationStore> = {}): AllocationStore {
     failWithoutInfrastructure: notUsed("failWithoutInfrastructure"),
     listActive: async () => [],
     isReconciliationLeaseCurrent: async () => true,
+    hasRunnableAnchor: async () => true,
     markAllocated: notUsed("markAllocated"),
     markConnectionLost: notUsed("markConnectionLost"),
     markConnectionReady: notUsed("markConnectionReady"),
@@ -134,6 +136,35 @@ function deps(args: {
 }
 
 describe("createSidecarAllocationReconciler", () => {
+  test("releases an expired or terminal anchor before provisioning another worker", async () => {
+    let claimed = false;
+    let releaseRequested = false;
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocation();
+      },
+      hasRunnableAnchor: async () => false,
+      beginRelease: async () => {
+        releaseRequested = true;
+        return allocation({ status: "releasing", generation: 1 });
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        provisioner: testProvisioner({
+          ensure: async () => {
+            throw new Error("must not provision an expired workflow");
+          },
+        }),
+      }),
+    );
+    expect(await reconciler.reconcileNext()).toBe(true);
+    expect(releaseRequested).toBe(true);
+  });
+
   test("persists identity and fence before ensuring infrastructure", async () => {
     const pending = allocation();
     const provisioning = allocation({

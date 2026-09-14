@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { WorkflowControlFrame } from "@intx/types/sidecar";
+
+import { chunkPack } from "@intx/pack-transport";
+import { type RepoId, WorkflowControlFrame } from "@intx/types/sidecar";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import {
   SidecarIdentityValidationError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
+  WorkflowControlUnconfirmedError,
   WorkflowControlUnreachableError,
 } from "./sidecar-handler";
 import {
@@ -28,6 +32,51 @@ function framesOfType(ws: { sent: string[] }, type: string) {
 // Longer than the runner's budget, so an acknowledgement, not the clock,
 // settles each request.
 const CONTROL_TIMEOUT_MS = 60_000;
+
+const workflowRunRepoId: RepoId = {
+  kind: "workflow-run",
+  id: deriveWorkflowRunRepoId(TEST_IDENTITY.workflowRunAddress),
+};
+
+function pushPack(
+  router: ReturnType<typeof createAllocatedRouter>,
+  ws: Parameters<ReturnType<typeof createAllocatedRouter>["handleMessage"]>[0],
+  transferId: string,
+) {
+  for (const chunk of chunkPack(new Uint8Array([1]))) {
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "repo.pack.push",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        repoId: workflowRunRepoId,
+        transferId,
+        seq: chunk.seq,
+        data: chunk.data,
+      }),
+    );
+  }
+  router.handleMessage(
+    ws,
+    JSON.stringify({
+      type: "repo.pack.done",
+      agentAddress: TEST_IDENTITY.workflowRunAddress,
+      repoId: workflowRunRepoId,
+      transferId,
+      ref: "refs/heads/main",
+      commitSha: "a".repeat(40),
+    }),
+  );
+}
+
+function stopCommand() {
+  return {
+    agentAddress: TEST_IDENTITY.workflowRunAddress,
+    runId: TEST_IDENTITY.anchorRunId,
+    action: "stop",
+    reason: "Lifetime expired",
+  } as const;
+}
 
 const approvalSnapshot = {
   name: "charge_card",
@@ -163,6 +212,178 @@ describe("SidecarRouter allocation control protocols", () => {
       }),
     );
     await expect(refused).rejects.toBeInstanceOf(WorkflowControlRejectedError);
+  });
+
+  test("a stop acknowledgement resolves only after the packs sent before it", async () => {
+    const packEntered = Promise.withResolvers<undefined>();
+    const releasePack = Promise.withResolvers<undefined>();
+    const received: string[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async receiveWorkflowRunPack(_repoId, _pack, ref) {
+          packEntered.resolve(undefined);
+          await releasePack.promise;
+          received.push(ref);
+          return { accepted: true };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.sendWorkflowControl(
+      TEST_IDENTITY,
+      stopCommand(),
+      CONTROL_TIMEOUT_MS,
+    );
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await tick();
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control")[0],
+    );
+
+    pushPack(router, ws, "transfer-before-ack");
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+      }),
+    );
+    await packEntered.promise;
+    await tick();
+    expect(settled).toBe(false);
+
+    releasePack.resolve(undefined);
+    await pending;
+    expect(received).toEqual(["refs/heads/main"]);
+    expect(framesOfType(ws, "repo.pack.ack")).toHaveLength(1);
+  });
+
+  test.each(["processed", "stalled"] as const)(
+    "a stop acknowledgement queued behind a slow pack is not a silent worker (%s)",
+    async (outcome) => {
+      const timers: { ms: number; handler: () => void; cancelled: boolean }[] =
+        [];
+      const packEntered = Promise.withResolvers<undefined>();
+      const releasePack = Promise.withResolvers<undefined>();
+      const router = createAllocatedRouter({
+        scheduleTimeout: (handler, ms) => {
+          const timer = { ms, handler, cancelled: false };
+          timers.push(timer);
+          return () => {
+            timer.cancelled = true;
+          };
+        },
+        lookups: {
+          async receiveWorkflowRunPack() {
+            packEntered.resolve(undefined);
+            await releasePack.promise;
+            return { accepted: true };
+          },
+        },
+      });
+      const ws = await connectAllocated(router, [
+        TEST_IDENTITY.workflowRunAddress,
+      ]);
+      const pending = router.sendWorkflowControl(
+        TEST_IDENTITY,
+        stopCommand(),
+        7_000,
+      );
+      await tick();
+      const frame = WorkflowControlFrame.assert(
+        framesOfType(ws, "workflow.control")[0],
+      );
+      pushPack(router, ws, "transfer-slow");
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "workflow.control.ack",
+          requestId: frame.requestId,
+        }),
+      );
+      await packEntered.promise;
+
+      const [response, processing] = timers.filter(
+        (timer) => timer.ms === 7_000,
+      );
+      if (response === undefined || processing === undefined)
+        throw new Error("Expected response and processing timers");
+      expect(response.cancelled).toBe(true);
+      expect(processing.cancelled).toBe(false);
+
+      if (outcome === "processed") {
+        releasePack.resolve(undefined);
+        await pending;
+        expect(processing.cancelled).toBe(true);
+        return;
+      }
+      processing.handler();
+      await expect(pending).rejects.toBeInstanceOf(
+        WorkflowControlUnconfirmedError,
+      );
+      releasePack.resolve(undefined);
+    },
+  );
+
+  test("refuses workflow-run packs after a stop acknowledgement, including after a reconnect", async () => {
+    let received = 0;
+    const router = createAllocatedRouter({
+      lookups: {
+        async receiveWorkflowRunPack() {
+          received += 1;
+          return { accepted: true };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.sendWorkflowControl(
+      TEST_IDENTITY,
+      stopCommand(),
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control")[0],
+    );
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+      }),
+    );
+    await pending;
+
+    pushPack(router, ws, "transfer-after-ack");
+    await tick();
+    expect(framesOfType(ws, "repo.pack.reject")).toEqual([
+      expect.objectContaining({
+        transferId: "transfer-after-ack",
+        reason: "path_violation",
+      }),
+      expect.objectContaining({
+        transferId: "transfer-after-ack",
+        reason: "path_violation",
+      }),
+    ]);
+
+    router.handleClose(ws);
+    const reconnected = await connectAllocated(
+      router,
+      [TEST_IDENTITY.workflowRunAddress],
+      "reconnect",
+    );
+    pushPack(router, reconnected, "transfer-after-reconnect");
+    await tick();
+    expect(framesOfType(reconnected, "repo.pack.reject")).not.toHaveLength(0);
+    expect(received).toBe(0);
   });
 
   test("an acknowledgement that cannot be validated leaves the stop unknown", async () => {

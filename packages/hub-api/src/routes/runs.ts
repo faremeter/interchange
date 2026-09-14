@@ -69,13 +69,7 @@ import {
 } from "../pagination";
 import { jsonResponse } from "../openapi";
 
-// Stop and mail history are not yet wired onto a workflow (anchor) run. They
-// were built for the retired folded-launch surface and need genuinely new
-// backing (INTR-454): stop is a forced early-cancel with no author yet, and a
-// run has no durable mail archive. Each such route returns this not-implemented
-// signal (kept mounted, not 404, so the admin UI gets a clean answer) until its
-// mapping lands. Mail SEND is wired: it routes through the run's workflow-native
-// Trigger path.
+// Durable workflow mail history is not implemented on this route yet.
 function workflowRunOperationUnsupported(
   c: Context<TenantEnv>,
   operation: string,
@@ -744,24 +738,40 @@ export function createRunRoutes({
       tags: ["Runs"],
       summary: "Stop a run",
       description:
-        "Stops a live workflow run and releases its sidecar allocation.",
+        "Durably requests cancellation of a live top-level run. Its saved cancellation retention policy controls subsequent capacity release. Poll the Location header for progress.",
       responses: {
-        204: {
-          description: "Run stopped",
-        },
+        202: { description: "Cancellation requested" },
         404: jsonResponse("Run not found", ErrorResponse),
-        409: jsonResponse("Run already stopped", ErrorResponse),
-        502: jsonResponse("Sidecar unavailable", ErrorResponse),
+        409: jsonResponse("Run is already terminal", ErrorResponse),
+        503: jsonResponse(
+          "Workflow lifecycle service unavailable",
+          ErrorResponse,
+        ),
       },
     }),
     async (c) => {
-      // Stopping a run is a forced early-cancel that a workflow (anchor) run
-      // has no backing for yet -- it needs a hub-side CancelRequested author
-      // and a lease-free allocation-release seam. The stop is gated to
-      // not-implemented until that mapping lands (tracked as INTR-454). A
-      // `markTerminal`-only stop would lie -- it would desync the child and its
-      // allocation -- so no partial stop is shipped.
-      return workflowRunOperationUnsupported(c, "Stopping a run");
+      if (lifecycleService === null)
+        return errorResponse(
+          c,
+          "unavailable",
+          "Workflow lifecycle service unavailable",
+        );
+      const tenantId = c.get("tenant").id;
+      const runId = c.req.param("runId");
+      const result = await lifecycleService.requestCancellation(
+        tenantId,
+        runId,
+        `Cancellation requested by ${c.get("principal").id}`,
+      );
+      if (result === "not_found")
+        return errorResponse(c, "not_found", "Run not found");
+      if (result === "terminal")
+        return errorResponse(c, "conflict", "Run is already terminal");
+      c.header(
+        "Location",
+        `/api/tenants/${tenantId}/workflows/runs/${runId}/lifecycle`,
+      );
+      return c.body(null, 202);
     },
   );
 
@@ -801,7 +811,7 @@ export function createRunRoutes({
         ),
         404: jsonResponse("Run not found", ErrorResponse),
         409: jsonResponse(
-          "Run address is not routable, its allocation is no longer active, or the run is terminal",
+          "Run address is not routable, its allocation is no longer active, or the run is stopping or terminal",
           ErrorResponse,
         ),
         413: jsonResponse(
