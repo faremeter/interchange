@@ -44,11 +44,13 @@ import { ToolDefinition } from "@intx/types/runtime";
 import { type MailTriggeredRunGrantsResult } from "@intx/hub-sessions";
 import { deriveRunPrincipalId, generateId } from "@intx/hub-common";
 import {
+  evaluateMailAdmission,
   MAIL_ACCEPT_ACTION,
   MAIL_ACCEPT_NAMESPACE,
   mailAcceptRelationToken,
   mailAcceptResource,
   parseMailAcceptResource,
+  type MailAcceptCoordinate,
 } from "@intx/authz";
 
 import {
@@ -730,6 +732,33 @@ type FrozenRunGrantBasis = {
   readonly snapshot: GrantWalkSnapshot;
 };
 
+// The code a mail-transport admission denial rejects under. Distinct from
+// `insufficient_grants` (a declared requirement's authority is missing) and
+// `workflow_run_terminal` (the run is settled): this one means the run's
+// accept-policy does not admit the authenticated sender.
+const MAIL_ADMISSION_DENIED_CODE = "mail_admission_denied";
+
+/**
+ * Adapt a staged `MaterializedGrantRow` to the `GrantRule` shape
+ * `evaluateMailAdmission` reads. A staged run grant is always a direct
+ * principal grant, so `roleId` is null. Only the `mail.accept:*` rows drive
+ * the decision; `evaluateMailAdmission` filters to that namespace itself, so
+ * the full staged set can be passed through unchanged.
+ */
+function materializedRowToGrantRule(row: MaterializedGrantRow): GrantRule {
+  return {
+    id: row.id,
+    resource: row.resource,
+    action: row.action,
+    effect: row.effect,
+    origin: row.origin,
+    conditions: row.conditions,
+    expiresAt: row.expiresAt,
+    roleId: null,
+    principalId: row.principalId,
+  };
+}
+
 /**
  * Build the mail-triggered run-grants materializer the sidecar router's
  * `mail.outbound` handler invokes for each workflow-deployment recipient.
@@ -758,6 +787,7 @@ export function createMailTriggeredRunGrantsMaterializer(
   runId: string;
   senderPrincipalId: string | null;
   senderTenantId: string | null;
+  senderCoordinates: MailAcceptCoordinate[] | null;
 }) => Promise<MailTriggeredRunGrantsResult> {
   // Closure-level cache of each deployment's deploy-approved snapshot, keyed by
   // the workflow definition's identity. A definition id is content-addressed --
@@ -771,7 +801,13 @@ export function createMailTriggeredRunGrantsMaterializer(
   // snapshot, never a live re-hydrate or re-walk.
   const frozenBasisByDefinition = new Map<string, FrozenRunGrantBasis>();
 
-  return async ({ agentAddress, runId, senderPrincipalId, senderTenantId }) => {
+  return async ({
+    agentAddress,
+    runId,
+    senderPrincipalId,
+    senderTenantId,
+    senderCoordinates,
+  }) => {
     const topLevelRun = alias(workflowRun, "mail_triggered_top_level_run");
     const [anchor] = await deps.db
       .select({
@@ -832,6 +868,32 @@ export function createMailTriggeredRunGrantsMaterializer(
 
     const committed = await loadCommittedRunGrants(deps.db, tenantId, runId);
     if (committed !== null) {
+      // Deliver-to-existing admission. Gate the sender against the run's
+      // COLLECTED grants (not `loadCommittedRunGrants`, which reads only the run
+      // principal's direct rows): `collectGrants` also unions any role-owned
+      // grants, so an inherited role-/tenant-scoped operator `deny mail.accept:…`
+      // is honored by the helper's deny-wins. A `null` sender coordinate set (an
+      // unresolvable/ambiguous sender) is never admitted. Same-tenant scoping is
+      // inherent in the coordinate ids: a `principal`/`definition` coordinate
+      // carries a globally-unique id, and the `tenant` coordinate carries the
+      // sender's own tenant, so a cross-tenant sender only matches a rule that
+      // explicitly names its ids.
+      const recipientGrants = await deps.grantStore.collectGrants(
+        committed.runPrincipalId,
+        tenantId,
+      );
+      const admission = await evaluateMailAdmission({
+        senderCoordinates,
+        recipientGrants,
+      });
+      if (!admission.admit) {
+        return {
+          outcome: "rejected",
+          status: 403,
+          code: MAIL_ADMISSION_DENIED_CODE,
+          message: `Workflow run ${runId} does not admit mail from this sender`,
+        };
+      }
       return {
         outcome: "materialized",
         stepGrants: committed.stepGrants,
@@ -917,6 +979,30 @@ export function createMailTriggeredRunGrantsMaterializer(
         status: staged.rejection.status,
         code: staged.rejection.code,
         message: staged.rejection.message,
+      };
+    }
+
+    // Start (first-fire) admission. Gate the sender against the run's STAGED
+    // `mail.accept` rows BEFORE committing: an un-admitted sender must not
+    // create or fire the run. The staged rows are the definition's declared
+    // accept-allows resolved onto this run (`invoker`->the sender's principal,
+    // `self`->the definition, `tenant`->the run tenant, plus explicit
+    // coordinates); `evaluateMailAdmission` filters them to the `mail.accept`
+    // namespace, applies deny-wins, and default-denies when none match. A `null`
+    // sender coordinate set is never admitted. (An operator deny applied BEFORE
+    // the run principal exists cannot bind here -- first-fire admission is
+    // governed by the definition's declared accept-allows; a first-fire operator
+    // deny mechanism is a follow-up.)
+    const admission = await evaluateMailAdmission({
+      senderCoordinates,
+      recipientGrants: staged.grantRows.map(materializedRowToGrantRule),
+    });
+    if (!admission.admit) {
+      return {
+        outcome: "rejected",
+        status: 403,
+        code: MAIL_ADMISSION_DENIED_CODE,
+        message: `Workflow run ${runId} does not admit mail from this sender`,
       };
     }
 

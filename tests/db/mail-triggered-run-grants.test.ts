@@ -18,6 +18,7 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { GrantWalkSnapshot } from "@intx/types";
+import type { MailAcceptCoordinate } from "@intx/authz";
 import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
 import {
   createTestDb,
@@ -42,15 +43,16 @@ const RUN_ID = "<mail-run-1@tenant.example>";
 const HASH = "a".repeat(64);
 
 // The deploy-approved grant-walk snapshot a source-ref deployment persists at
-// approval: one `tool:read_file` runtime grant plus a creator-sourced
-// requirement. The mail path materializes grants from THIS, never from a
-// workflow.json blob.
+// approval: one `tool:read_file` runtime grant, a `mail.accept:tenant` accept
+// marker so the mail-transport admission gate admits a same-tenant sender, plus
+// a creator-sourced requirement. The mail path materializes grants from THIS,
+// never from a workflow.json blob.
 function snapshot(creatorRequirementResource: string): GrantWalkSnapshot {
   return {
     perStep: [
       {
         stepId: "work",
-        grants: ["tool:read_file"],
+        grants: ["tool:read_file", "mail.accept:tenant"],
         grantEffects: { "tool:read_file": "allow" },
       },
     ],
@@ -63,6 +65,19 @@ function snapshot(creatorRequirementResource: string): GrantWalkSnapshot {
     ],
   };
 }
+
+// The sender the admission gate matches against the run's accept-policy. A
+// same-tenant sender's `tenant` coordinate matches the `mail.accept:tenant`
+// marker the snapshot declares, so the gate admits.
+const ADMITTED_SENDER: {
+  senderPrincipalId: string | null;
+  senderTenantId: string | null;
+  senderCoordinates: MailAcceptCoordinate[] | null;
+} = {
+  senderPrincipalId: null,
+  senderTenantId: TENANT,
+  senderCoordinates: [{ coordType: "tenant", id: TENANT }],
+};
 
 describe.skipIf(!harnessDbEnvAvailable())(
   "createMailTriggeredRunGrantsMaterializer (real DB)",
@@ -142,7 +157,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       sender: {
         senderPrincipalId: string | null;
         senderTenantId: string | null;
-      } = { senderPrincipalId: null, senderTenantId: null },
+        senderCoordinates: MailAcceptCoordinate[] | null;
+      } = ADMITTED_SENDER,
     ): ReturnType<ReturnType<typeof createMailTriggeredRunGrantsMaterializer>> {
       const materialize = createMailTriggeredRunGrantsMaterializer({
         db: h.db,
@@ -327,6 +343,42 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // The only grant present is the creator's seeded grant; no run grants
       // were written.
+      const runGrants = await h.db
+        .select()
+        .from(grant)
+        .where(eq(grant.resource, "tool:read_file"));
+      expect(runGrants).toHaveLength(0);
+    });
+
+    test("an unadmitted sender is dropped and writes zero rows", async () => {
+      // The definition accepts only its own tenant; a sender whose coordinates
+      // name a DIFFERENT tenant is not admitted. The start gate rejects before
+      // commit, so no run principal, run row, or run grants are written.
+      await seedFrozenSnapshot(snapshot("secret:vault"));
+      const result = await materializeOnce(RUN_ID, {
+        senderPrincipalId: "prn_outsider",
+        senderTenantId: "tnt_other",
+        senderCoordinates: [
+          { coordType: "principal", id: "prn_outsider" },
+          { coordType: "tenant", id: "tnt_other" },
+        ],
+      });
+      expect(result.outcome).toBe("rejected");
+      if (result.outcome === "rejected") {
+        expect(result.status).toBe(403);
+        expect(result.code).toBe("mail_admission_denied");
+      }
+
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, RUN_ID));
+      expect(principals).toHaveLength(0);
+      const runs = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, RUN_ID));
+      expect(runs).toHaveLength(0);
       const runGrants = await h.db
         .select()
         .from(grant)

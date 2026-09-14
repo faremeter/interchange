@@ -368,12 +368,22 @@ export type SidecarLookups = {
    * principal's grants and resolves the definition's invoker-sourced
    * requirements against them. Both are `null` when the sender did not resolve to
    * a concrete invoker principal, in which case no invoker grants are collected
-   * and any invoker-sourced requirement fails closed. */
+   * and any invoker-sourced requirement fails closed.
+   *
+   * `senderCoordinates` are the same sender rendered as the `mail.accept`
+   * admission coordinates, resolved on the same `resolveSenderPrincipal` call.
+   * The materializer gates delivery on them: a start (first fire) is admitted
+   * only when the run's staged `mail.accept` rows admit the sender, and a
+   * delivery to an already-committed run is admitted only when the run's
+   * collected grants do. `null` means the sender did not resolve to a concrete
+   * principal, which the admission gate treats as an unknown sender and never
+   * admits. */
   materializeMailTriggeredRunGrants?: (args: {
     agentAddress: string;
     runId: string;
     senderPrincipalId: string | null;
     senderTenantId: string | null;
+    senderCoordinates: MailAcceptCoordinate[] | null;
   }) => Promise<MailTriggeredRunGrantsResult>;
 
   /** Ingests a received agent-state pack and returns whether the wire

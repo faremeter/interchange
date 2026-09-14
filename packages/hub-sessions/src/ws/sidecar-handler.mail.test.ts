@@ -692,6 +692,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
         runId: TEST_IDENTITY.anchorRunId,
         senderPrincipalId: "prn_sender",
         senderTenantId: "tenant-x",
+        senderCoordinates: [],
       },
     ]);
     expect(
@@ -744,6 +745,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
         runId: TEST_IDENTITY.anchorRunId,
         senderPrincipalId: null,
         senderTenantId: null,
+        senderCoordinates: null,
       },
     ]);
   });

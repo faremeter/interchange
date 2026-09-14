@@ -1938,6 +1938,11 @@ export function createSidecarRouter(
         runId,
         senderPrincipalId: senderPrincipal?.principalId ?? null,
         senderTenantId: senderPrincipal?.tenantId ?? null,
+        // The same resolved sender rendered as admission coordinates. The
+        // materializer gates the mail-transport start and deliver-to-existing
+        // paths on them; a null (unresolvable/ambiguous sender) is never
+        // admitted.
+        senderCoordinates: senderPrincipal?.coordinates ?? null,
       });
       if (result.outcome === "rejected") {
         // The run's grants could not be materialized with sufficient

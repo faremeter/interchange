@@ -51,9 +51,14 @@ import {
   test,
 } from "bun:test";
 
+import { eq } from "drizzle-orm";
+
 import { createGrantStore, createPrincipalKeyStore } from "@intx/db";
 import { createTestCredentialCipher } from "@intx/test-harness/crypto";
-import { tenant as tenantTable } from "@intx/db/schema";
+import {
+  tenant as tenantTable,
+  workflowRun as workflowRunTable,
+} from "@intx/db/schema";
 import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
@@ -105,6 +110,13 @@ const SENDER_TENANT_ID = "tnt_fed_mail_sender";
 const SENDER_CREATOR_PRINCIPAL_ID = "prn_fed_mail_sender_creator";
 const SENDER_ASSET_ID = "ast_fed_mail_sender_wf";
 const SENDER_STEP_ID = "send";
+// The sender's run principal. A sender triggered through fireMailTrigger reserves
+// no run principal (it hand-delivers grants and routes without the commit path),
+// so its anchor is left principal-less and resolveSenderPrincipal would fail the
+// admission coordinates closed. Mint one and attach it to the sender anchor so
+// the sender resolves to concrete coordinates the receiver's accept-policy can
+// admit.
+const SENDER_RUN_PRINCIPAL_ID = "prn_fed_mail_sender_run";
 
 const receiverAddress = deriveRunAddress({
   runId: RECEIVER_ID,
@@ -277,6 +289,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         systemPrompt: "You are the federated-mail receiver agent.",
         address: receiverAddress,
         agentId: `agent_${RECEIVER_ID}`,
+        // Accept mail from the triggering sender: the mail-transport admission
+        // gate stages `mail.accept:principal:<sender>` from this and admits the
+        // sender bound as the run's invoker.
+        mailAccept: { invoker: true },
       });
       await deployWorkflowSourceForTest(env, {
         entryModule: receiverEntry,
@@ -349,6 +365,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
         config: buildConfig(SENDER_ID, senderAddress, "sk-mock-sender"),
         sources: { [SENDER_STEP_ID]: [inferenceSource("sk-mock-sender")] },
       });
+
+      // Attach a run principal to the sender's anchor so it resolves to concrete
+      // admission coordinates. The sender fires through fireMailTrigger, which
+      // never runs the commit path that would mint one, so without this the
+      // sender resolves principal-less and the receiver's start gate would drop
+      // its mail as an unknown sender.
+      await seedPrincipal(h.db, {
+        id: SENDER_RUN_PRINCIPAL_ID,
+        tenantId: SENDER_TENANT_ID,
+        kind: "workflow",
+        refId: SENDER_ID,
+        status: "active",
+      });
+      await h.db
+        .update(workflowRunTable)
+        .set({ principalId: SENDER_RUN_PRINCIPAL_ID })
+        .where(eq(workflowRunTable.id, SENDER_ID));
 
       // Wait for sidecar 1 (the receiver) to reconnect so the receiver is
       // routable again before the sender's mail can arrive, then trigger the
