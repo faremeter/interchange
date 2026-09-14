@@ -7,6 +7,7 @@ import { type, type Type } from "arktype";
 
 import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
 import {
+  TenantConfigInvalidError,
   WorkflowRunDispatchPayloadConflictError,
   type PrincipalKeyStore,
 } from "@intx/db";
@@ -1190,6 +1191,31 @@ describe("POST /workflows/deployments", () => {
     );
     expect(res.status).toBe(409);
     expect(await errorCode(res)).toBe("invalid_workflow");
+  });
+
+  test("reports invalid inherited tenant config without exposing its values", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          throw new TenantConfigInvalidError(
+            "tnt_parent",
+            'lifecycle.maxLifetime must be a non-negative whole duration (was "1w")',
+          );
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "invalid_tenant_config",
+        message: "The tenant or an ancestor has invalid configuration",
+      },
+    });
   });
 
   test("reports a missing post-deploy anchor run as 500, not 502", async () => {

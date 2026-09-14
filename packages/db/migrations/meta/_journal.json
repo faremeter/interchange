@@ -652,6 +652,13 @@
       "when": 1789466440782,
       "tag": "0093_sidecar_initialization",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1789653359296,
+      "tag": "0094_workflow_lifecycle",
+      "breakpoints": true
     }
   ]
 }

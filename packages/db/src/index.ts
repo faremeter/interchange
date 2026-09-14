@@ -20,6 +20,11 @@ export {
   type BackfillPrincipalKeysReport,
 } from "./backfill-principal-keys";
 export { createGrantStore } from "./grant-store";
+export {
+  loadTenantLifecyclePolicies,
+  resolveDeploymentLifecyclePolicy,
+  validateLifecyclePolicyEdit,
+} from "./workflow-lifecycle-policy";
 export { createPrincipalStore, type PrincipalStore } from "./principal-store";
 export {
   createPrincipalKeyStore,
@@ -163,6 +168,7 @@ export {
   parseCredentialRow,
   parseProviderRow,
   parseTenantRow,
+  TenantConfigInvalidError,
   parseWalletRow,
   parseTransactionRow,
   parseOAuthClientRow,
