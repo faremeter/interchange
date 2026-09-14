@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 
 import type { DB, DBExecutor } from "./client";
 import { workflowPendingProjection } from "./schema/workflow-pending-projection";
@@ -20,6 +20,46 @@ export function createWorkflowPendingProjectionStore(db: DBHandle) {
       await (tx ?? db)
         .delete(workflowPendingProjection)
         .where(eq(workflowPendingProjection.id, id));
+    },
+
+    async list(
+      anchorRunId: string,
+      tx?: DBExecutor,
+    ): Promise<{ id: string; createdAt: Date; historyRequired: boolean }[]> {
+      return (tx ?? db)
+        .select({
+          id: workflowPendingProjection.id,
+          createdAt: workflowPendingProjection.createdAt,
+          historyRequired: workflowPendingProjection.historyRequired,
+        })
+        .from(workflowPendingProjection)
+        .where(eq(workflowPendingProjection.anchorRunId, anchorRunId))
+        .orderBy(asc(workflowPendingProjection.createdAt));
+    },
+
+    async hasAny(anchorRunId: string, tx?: DBExecutor): Promise<boolean> {
+      const [row] = await (tx ?? db)
+        .select({ id: workflowPendingProjection.id })
+        .from(workflowPendingProjection)
+        .where(eq(workflowPendingProjection.anchorRunId, anchorRunId))
+        .limit(1);
+      return row !== undefined;
+    },
+
+    async claim(
+      anchorRunId: string,
+      ids: readonly string[],
+      tx: DBExecutor,
+    ): Promise<void> {
+      if (ids.length === 0) return;
+      await tx
+        .delete(workflowPendingProjection)
+        .where(
+          and(
+            eq(workflowPendingProjection.anchorRunId, anchorRunId),
+            inArray(workflowPendingProjection.id, [...ids]),
+          ),
+        );
     },
   };
 }

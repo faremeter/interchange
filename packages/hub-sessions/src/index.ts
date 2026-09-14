@@ -1,4 +1,13 @@
 export {
+  createWorkflowLifecycleService,
+  type WorkflowLifecycleService,
+  type WorkflowLifecycleServiceDeps,
+} from "./workflow-lifecycle-service";
+export {
+  createWorkflowHistoryReceiveTracker,
+  type WorkflowHistoryReceiveTracker,
+} from "./workflow-history-receives";
+export {
   createAgentRepoStore,
   type AgentRepoStore,
   type DeployContent,
@@ -173,6 +182,8 @@ export {
   scanRunsForBoot,
   readCommittedWorkflowRunLifecycle,
   readWorkflowRunLifecycle,
+  workflowRunRepoIdForAddress,
+  WORKFLOW_RUN_REF,
   replayProcessingToInbox,
   WORKFLOW_RUN_GITIGNORE_PATH,
   WORKFLOW_RUN_RUNS_PREFIX,

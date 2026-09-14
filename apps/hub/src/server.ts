@@ -34,6 +34,9 @@ import {
   createWorkflowAllocationService,
   createWorkflowDispatchService,
   createReconciliationScheduler,
+  createWorkflowLifecycleService,
+  createWorkflowRunReader,
+  createWorkflowHistoryReceiveTracker,
   recoverSenderDeploy,
   DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
   pushCredentialReconcile,
@@ -285,13 +288,20 @@ export async function createHubServer({
     reservedPackageRegistryNames: new Set(httpRegistries.keys()),
   });
 
+  // Shared by pack ingestion and lifecycle recovery so recovery never claims a
+  // pending projection whose receive can still advance Git.
+  const workflowHistoryReceives = createWorkflowHistoryReceiveTracker();
   // Materialize a mail-triggered workflow run's grants from the receiving
   // deployment's definition, so a workflow->workflow mail run is born with
   // the same authorization an externally-triggered run gets. Threaded into
   // the sidecar router as a lookup its `mail.outbound` handler invokes for
   // each workflow-deployment recipient.
   const lookups: SidecarLookups = {
-    ...createHubSessionLookups({ db, agentRepoStore }),
+    ...createHubSessionLookups({
+      db,
+      agentRepoStore,
+      historyReceives: workflowHistoryReceives,
+    }),
     materializeMailTriggeredRunGrants: createMailTriggeredRunGrantsMaterializer(
       {
         db,
@@ -414,6 +424,11 @@ export async function createHubServer({
       : {}),
   });
   const sidecarAllocationStore = createSidecarAllocationStore(db);
+  const workflowLifecycleService = createWorkflowLifecycleService({
+    db,
+    runReader: createWorkflowRunReader(agentRepoStore.repoStore),
+    historyReceives: workflowHistoryReceives,
+  });
   const workflowDispatchService = createWorkflowDispatchService({
     dispatchStore: createWorkflowRunDispatchStore(db),
     allocationStore: sidecarAllocationStore,
@@ -480,6 +495,14 @@ export async function createHubServer({
       return false;
     },
   });
+  const lifecycleScheduler = createReconciliationScheduler({
+    name: "Workflow lifecycle",
+    concurrency: 1,
+    reconcileNext: async () => {
+      await workflowLifecycleService.reconcile();
+      return false;
+    },
+  });
   const dispatchScheduler = createReconciliationScheduler({
     name: "Workflow dispatch",
     concurrency: 1,
@@ -505,6 +528,7 @@ export async function createHubServer({
   // Initial polls run on the next timer turn, after the websocket endpoint is assembled.
   allocationScheduler.start();
   probeCleanupScheduler.start();
+  lifecycleScheduler.start();
   dispatchScheduler.start();
   connectionRepairScheduler.start();
 
@@ -519,6 +543,7 @@ export async function createHubServer({
     sessionService,
     workflowAllocationService,
     workflowDispatchService,
+    workflowLifecycleService,
     eventCollectors,
     credentialCipher,
     principalKeyStore,

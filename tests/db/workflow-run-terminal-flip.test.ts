@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 
 import git from "isomorphic-git";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 import { generateKeyPair } from "@intx/crypto";
 import { configureSync, getConfig } from "@intx/log";
@@ -31,8 +31,11 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import {
+  createWorkflowRunReader,
+  createWorkflowHistoryReceiveTracker,
   createAgentRepoStore,
   createHubSessionLookups,
+  createWorkflowLifecycleService,
   WORKFLOW_RUN_RUNS_PREFIX,
 } from "@intx/hub-sessions";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
@@ -57,10 +60,10 @@ const DEPLOYMENT_REPO_ID = deriveWorkflowRunRepoId(DEPLOYMENT_ADDRESS);
 // offered to this deployment's pack-receive seam.
 const FOREIGN_DEPLOYMENT = "dep-foreign";
 const FOREIGN_DEPLOYMENT_ADDRESS = "run_dep_foreign@tnt.example";
-const WFR_REF = "refs/heads/events";
+const WFR_REF = "refs/heads/main";
 
-function eventBody(seq: number, type: string): string {
-  return JSON.stringify({ seq, type });
+function eventBody(seq: number, type: string, at?: string): string {
+  return JSON.stringify({ seq, type, ...(at !== undefined ? { at } : {}) });
 }
 
 // Route the package logger's error-level records into `sink` until the
@@ -168,6 +171,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       runs: {
         runId: string;
         terminalType?: string;
+        terminalAt?: string;
         signalId?: string;
         // When true, omit the seq-0 RunStarted and emit the terminal event
         // alone at seq 1 -- the exact artifact the crash-loop guard's
@@ -177,7 +181,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }[],
     ): Promise<{ pack: Uint8Array; tip: string }> {
       const srcDir = await makeTempDir("wfr-terminal-src-");
-      await git.init({ fs, dir: srcDir, defaultBranch: "events" });
+      await git.init({ fs, dir: srcDir, defaultBranch: "main" });
 
       const author = { name: "probe", email: "probe@example.com" };
       await fs.promises.writeFile(path.join(srcDir, ".gitignore"), "");
@@ -194,6 +198,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       for (const {
         runId,
         terminalType,
+        terminalAt,
         signalId,
         terminalOnlyAtSeq1,
       } of runs) {
@@ -207,7 +212,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             );
           }
           files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/1.json`] =
-            eventBody(1, terminalType);
+            eventBody(1, terminalType, terminalAt);
           continue;
         }
         files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/0.json`] = eventBody(
@@ -224,7 +229,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         if (terminalType !== undefined) {
           files[
             `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`
-          ] = eventBody(seq, terminalType);
+          ] = eventBody(seq, terminalType, terminalAt);
         }
       }
       for (const [rel, body] of Object.entries(files)) {
@@ -269,12 +274,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       db: DB["db"],
       pack: Uint8Array,
       tip: string,
+      repoStore?: ReturnType<typeof createAgentRepoStore>,
     ): Promise<{ accepted: true } | { accepted: false; reason: string }> {
-      const dataDir = await makeTempDir("wfr-terminal-data-");
-      const repoStore = createAgentRepoStore({ dataDir, signingKey });
+      repoStore ??= createAgentRepoStore({
+        dataDir: await makeTempDir("wfr-terminal-data-"),
+        signingKey,
+      });
+      await repoStore.repoStore.initRepo({
+        kind: "workflow-run",
+        id: DEPLOYMENT_REPO_ID,
+      });
       const lookups = createHubSessionLookups({
         db,
         agentRepoStore: repoStore,
+        historyReceives: createWorkflowHistoryReceiveTracker(),
       });
       return lookups.receiveWorkflowRunPack(
         { kind: "workflow-run", id: DEPLOYMENT_REPO_ID },
@@ -330,6 +343,90 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .where(eq(principal.id, "prn-run"));
       expect(prn?.status).toBe("deactivated");
       expect(await h.db.select().from(workflowPendingProjection)).toEqual([]);
+    });
+
+    test("delayed terminal delivery uses the same retention deadline as projection recovery", async () => {
+      const createdAt = new Date("2026-01-01T11:00:00.000Z");
+      const terminalAt = "2026-01-01T12:00:00.000Z";
+      const observedAt = new Date("2026-01-01T12:10:00.000Z");
+      const releaseAt = "2026-01-01T12:15:00.000Z";
+      await h.db
+        .update(workflowRun)
+        .set({
+          createdAt,
+          lifecyclePolicy: { capacityRetention: { failed: "15m" } },
+        })
+        .where(eq(workflowRun.id, DEPLOYMENT));
+      const { pack, tip } = await buildPack([
+        { runId: DEPLOYMENT, terminalType: "RunFailed", terminalAt },
+      ]);
+      expect(await receiveWith(h.db, pack, tip)).toEqual({ accepted: true });
+      const projected = await h.db.query.workflowRun.findFirst({
+        where: eq(workflowRun.id, DEPLOYMENT),
+      });
+      expect(projected?.endedAt?.toISOString()).toBe(terminalAt);
+
+      let current = observedAt;
+      const lifecycle = createWorkflowLifecycleService({
+        db: h.db,
+        historyReceives: createWorkflowHistoryReceiveTracker(),
+        now: () => current,
+        runReader: {
+          listRunIds: async () => [DEPLOYMENT],
+          readRunEvents: async () => [
+            {
+              seq: 1,
+              type: "RunFailed",
+              body: { at: terminalAt },
+            },
+          ],
+          readLatestRunEvents: async () => ({
+            tip: "test-tip",
+            events: new Map([
+              [
+                DEPLOYMENT,
+                { seq: 1, type: "RunFailed", body: { at: terminalAt } },
+              ],
+            ]),
+          }),
+          resolveRefTip: async () => "test-tip",
+          hasRepository: async () => true,
+        },
+      });
+      await lifecycle.reconcile();
+      expect(
+        (await lifecycle.getStatus(TENANT, DEPLOYMENT))?.capacityReleaseAt,
+      ).toBe(releaseAt);
+
+      // Recreate an accepted pack whose database projection failed.
+      await h.db
+        .update(workflowRun)
+        .set({ status: "running", endedAt: null, capacityReleaseAt: null })
+        .where(eq(workflowRun.id, DEPLOYMENT));
+      await h.db.insert(workflowPendingProjection).values({
+        id: "wpp_failed_projection",
+        anchorRunId: DEPLOYMENT,
+        createdAt: new Date(current.getTime() - 60_000),
+      });
+      await lifecycle.reconcile();
+      const recovered = await h.db.query.workflowRun.findFirst({
+        where: eq(workflowRun.id, DEPLOYMENT),
+      });
+      expect(recovered?.endedAt).toEqual(projected?.endedAt);
+      expect(
+        (await lifecycle.getStatus(TENANT, DEPLOYMENT))?.capacityReleaseAt,
+      ).toBe(releaseAt);
+
+      current = new Date("2026-01-01T12:14:00.000Z");
+      await lifecycle.reconcile();
+      expect(
+        (await lifecycle.getStatus(TENANT, DEPLOYMENT))?.capacityReleaseAt,
+      ).toBe(releaseAt);
+      current = new Date(releaseAt);
+      await lifecycle.reconcile();
+      expect(
+        (await lifecycle.getStatus(TENANT, DEPLOYMENT))?.allocation?.status,
+      ).toBe("releasing");
     });
 
     test("maps RunFailed and RunCancelled to their statuses", async () => {
@@ -708,7 +805,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { runId: "run-a", terminalType: "RunCompleted" },
         { runId: "run-b", terminalType: "RunCompleted" },
       ]);
-      const verdict = await receiveWith(failFirstTxDb, pack, tip);
+      const repoStore = createAgentRepoStore({
+        dataDir: await makeTempDir("wfr-failed-flip-"),
+        signingKey,
+      });
+      const verdict = await receiveWith(failFirstTxDb, pack, tip, repoStore);
 
       // The pack was acked despite the mid-loop throw.
       expect(verdict).toEqual({ accepted: true });
@@ -742,10 +843,34 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }
       }
 
-      // The failed flip leaves a durable record that its projection is owed.
+      // The failed flip left a durable record, and recovery settles the stuck
+      // run from the accepted history instead of a manual flip.
       expect(await h.db.select().from(workflowPendingProjection)).toHaveLength(
         1,
       );
+      const lifecycle = createWorkflowLifecycleService({
+        db: h.db,
+        historyReceives: createWorkflowHistoryReceiveTracker(),
+        runReader: createWorkflowRunReader(repoStore.repoStore),
+      });
+      expect(await lifecycle.releaseCapacity(TENANT, DEPLOYMENT)).toBe("live");
+      const recovered = await h.db
+        .select({ id: workflowRun.id, status: workflowRun.status })
+        .from(workflowRun)
+        .where(inArray(workflowRun.id, ["run-a", "run-b"]));
+      expect(recovered.map((row) => row.status)).toEqual([
+        "completed",
+        "completed",
+      ]);
+      const runPrincipals = await h.db
+        .select({ status: principal.status })
+        .from(principal)
+        .where(inArray(principal.id, ["prn-run-a", "prn-run-b"]));
+      expect(runPrincipals.map((row) => row.status)).toEqual([
+        "deactivated",
+        "deactivated",
+      ]);
+      expect(await h.db.select().from(workflowPendingProjection)).toEqual([]);
     });
   },
 );

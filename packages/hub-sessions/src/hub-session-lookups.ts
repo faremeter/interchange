@@ -30,6 +30,7 @@ import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import type { AgentRepoStore } from "./agent-repo";
 import { generateId } from "@intx/hub-common";
 import type { SidecarLookups } from "./ws/sidecar-events";
+import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
 import {
   listAcceptedWorkflowDispatches,
   listConsumedWorkflowDispatches,
@@ -42,6 +43,7 @@ const logger = getLogger(["hub", "lookups"]);
 export type HubSessionLookupsDeps = {
   db: DB["db"];
   agentRepoStore: AgentRepoStore;
+  historyReceives: WorkflowHistoryReceiveTracker;
 };
 
 export function createHubSessionLookups(
@@ -55,7 +57,7 @@ export function createHubSessionLookups(
     | "resolveSenderKeyStrict"
   >
 > {
-  const { db, agentRepoStore } = deps;
+  const { db, agentRepoStore, historyReceives } = deps;
 
   const signalCorrelationStore = createSignalCorrelationStore(db);
   const approvalStore = createApprovalStore(db);
@@ -347,6 +349,7 @@ export function createHubSessionLookups(
           anchorRunId: workflowRun.anchorRunId,
           tenantId: workflowRun.tenantId,
           definitionId: workflowRun.definitionId,
+          createdAt: workflowRun.createdAt,
         })
         .from(workflowRun)
         .where(
@@ -366,12 +369,25 @@ export function createHubSessionLookups(
         return { accepted: false, reason: "path_violation" as const };
       }
       const anchorAddress = anchor.address;
+      // The repository must exist before the row does. Recovery reads a
+      // missing repository as lost history and a ref-less one as a receive
+      // that never advanced Git, so a crash between the two must leave the
+      // latter.
+      try {
+        await agentRepoStore.repoStore.initRepo(repoId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: cannot initialize repository: ${msg}`;
+        return { accepted: false, reason: "corrupt" as const };
+      }
       // Recorded before Git can advance: Git acceptance and the run-status
       // projection below are not atomic, and this row is the only durable
       // trace of a projection that fails after the ref moves. It is removed
       // here only when the receive provably left Git unchanged or every run
-      // reached a final decision.
+      // reached a final decision; otherwise lifecycle recovery reconciles the
+      // deployment from Git and removes it.
       const pendingId = generateId("workflowPendingProjection");
+      historyReceives.begin(pendingId);
       let newlyTerminalRuns;
       let reachedGit = false;
       try {
@@ -402,6 +418,25 @@ export function createHubSessionLookups(
             return {
               rejected:
                 "source connection does not own the deployment's current allocation",
+            } as const;
+          }
+          // Recheck under the lock: the lifecycle service records a run's
+          // outcome while holding this row, and history accepted after that
+          // would contradict the recorded outcome.
+          const [live] = await tx
+            .select({ id: workflowRun.id })
+            .from(workflowRun)
+            .where(
+              and(
+                eq(workflowRun.id, anchor.id),
+                inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+              ),
+            )
+            .limit(1);
+          if (live === undefined) {
+            await pendingProjections.close(pendingId, tx);
+            return {
+              rejected: `workflow run ${anchor.id} is no longer live`,
             } as const;
           }
 
@@ -444,6 +479,8 @@ export function createHubSessionLookups(
         // side.
         logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: ${msg}`;
         return { accepted: false, reason: "corrupt" as const };
+      } finally {
+        historyReceives.end(pendingId);
       }
 
       // The substrate has already durably advanced the git ref by the time it
@@ -452,17 +489,18 @@ export function createHubSessionLookups(
       // effect of that durable advance, not part of accepting the pack, so the
       // verdict stays accepted and the sidecar does not wedge re-pushing a pack
       // that already landed. A redelivery of the same durable tip produces no
-      // newly-terminal signal, so a failed flip is not retried here; its
-      // pending row stays as the durable record that the projection is owed.
+      // newly-terminal signal, so a failed flip is not retried here; the
+      // pending row stays and lifecycle recovery projects the run from Git.
       const now = new Date();
       let decided = true;
-      for (const { runId, status } of newlyTerminalRuns) {
+      for (const { runId, status, terminalEventJson } of newlyTerminalRuns) {
         try {
           const outcome = await db.transaction((tx) =>
             projectTerminalRun(tx, workflowRunStore, {
               anchor,
               runId,
               status,
+              terminalEvent: JSON.parse(terminalEventJson) as unknown,
               now,
             }),
           );

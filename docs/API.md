@@ -43,6 +43,8 @@
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/approvals | List run approvals |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/health | Get run health |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/offerings | List run offerings |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/lifecycle | Get workflow lifecycle status |
+| POST | /api/tenants/:tenantId/workflows/runs/:runId/capacity/release | Release workflow capacity |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/events | Read a run's event log |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/mail | Send mail to a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/mail | List mail for a run |
@@ -516,6 +518,26 @@ Returns the offerings associated with the run's workflow definition. These repre
 
 200: OfferingDetail[] -- List of offerings
 404: ErrorResponse -- Run not found
+
+### GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle
+Get workflow lifecycle status
+
+Returns the deployment's saved policy, deadlines, and allocation cleanup status. Policy edits apply to new deployments.
+
+200: WorkflowLifecycleResponse -- Lifecycle status
+404: ErrorResponse -- Run not found
+503: ErrorResponse -- Workflow lifecycle service unavailable
+
+### POST /api/tenants/:tenantId/workflows/runs/:runId/capacity/release
+Release workflow capacity
+
+Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Permanent cleanup failures require operator intervention and return 409. Returns 503 while accepted run history cannot yet be reconciled; retry later.
+
+202: (no content) -- Release requested
+204: (no content) -- Capacity already released or absent
+404: ErrorResponse -- Run not found
+409: ErrorResponse -- Run is live or cleanup requires operator intervention
+503: ErrorResponse -- Workflow lifecycle service or run history unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/events
 Read a run's event log
@@ -1659,6 +1681,10 @@ Source: packages/types/src/workflows.ts
 Source: packages/types/src/workflows.ts
 
 **status**: Deployment lifecycle status. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.
+
+### WorkflowLifecycleResponse
+`{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
+Source: packages/types/src/workflow-lifecycle.ts
 
 ### WorkflowRollbackRequest
 `{ version: string }`

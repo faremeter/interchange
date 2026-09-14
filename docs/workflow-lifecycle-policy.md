@@ -91,11 +91,28 @@ retains the environment for 15 minutes; success and cancellation request
 immediate release. A child run finishing does not release the deployment's
 allocation. Retained Hub history has a separate lifetime.
 
+The Hub uses the terminal event's timestamp, bounded by run creation and Hub
+observation time. Missing or invalid timestamps use observation time. Once saved,
+the run's end time is not changed by retries.
+
 The Hub should persist deadlines and reconcile due actions from durable state.
 An accepted terminal event must remain discoverable for cleanup after a restart
 or a failed status projection. Cancellation and release must tolerate retries,
 and a release is complete only when the provisioner confirms it. A failed
 cleanup remains visible and must not make the capacity available for reuse.
+
+Before a workflow-run pack can advance Git, the Hub records a pending projection
+for its deployment, and removes it once every run in the pack has its status
+recorded or the receive provably left Git unchanged. Any pending projection left
+behind, for a live or finished deployment, is reconciled from Git after a
+30-second grace: the Hub records the accepted terminal outcome of every run,
+including child runs it never recorded, and then clears it. A receive still in
+progress is never reconciled, because it may advance Git after the read. A
+missing repository under a receive's pending projection is treated as unreadable
+history, never as empty history; a repository whose ref was never written
+provably accepted nothing. Reconciliation that cannot read Git backs off and
+retries; an explicit release retries the read and answers 503 while accepted
+history remains unreconciled.
 
 An explicit release request would use the same path:
 
