@@ -3446,6 +3446,12 @@ export function createWorkflowSupervisor(
       at: opts.at,
       signAsPrincipal: bindings.signAsPrincipal,
     });
+    if (state.phase === "running") {
+      await state.controlSender.send({
+        type: "cancel.committed",
+        data: { runId: opts.runId, reason: opts.reason },
+      });
+    }
     return { commitSha: result.commitSha, seq: result.seq };
   }
 

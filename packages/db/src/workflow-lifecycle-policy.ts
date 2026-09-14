@@ -10,6 +10,23 @@ import type { DBExecutor } from "./client";
 import { getAncestorChain } from "./tenant-hierarchy";
 import { tenant } from "./schema/tenants";
 import { workflowDefinition } from "./schema/workflow-definitions";
+import { isLiveWorkflowRunStatus } from "./schema/workflow-run";
+
+/** Admission uses the original deadline, including before the expiry sweep runs. */
+export function canExecuteWorkflowRun(
+  run: {
+    status: string;
+    expiresAt: Date | null;
+    cancellationRequestedAt: Date | null;
+  },
+  now = new Date(),
+): boolean {
+  return (
+    isLiveWorkflowRunStatus(run.status) &&
+    run.cancellationRequestedAt == null &&
+    (run.expiresAt == null || run.expiresAt > now)
+  );
+}
 
 export async function loadTenantLifecyclePolicies(
   db: DBExecutor,

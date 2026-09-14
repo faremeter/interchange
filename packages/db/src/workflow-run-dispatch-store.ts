@@ -4,6 +4,8 @@ import {
   and,
   asc,
   eq,
+  exists,
+  gt,
   inArray,
   isNull,
   lte,
@@ -286,6 +288,22 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
           .where(
             and(
               eq(workflowRunDispatch.status, "pending"),
+              exists(
+                tx
+                  .select({ id: workflowRun.id })
+                  .from(workflowRun)
+                  .where(
+                    and(
+                      eq(workflowRun.id, workflowRunDispatch.anchorRunId),
+                      inArray(workflowRun.status, ["deployed", "running"]),
+                      isNull(workflowRun.cancellationRequestedAt),
+                      or(
+                        isNull(workflowRun.expiresAt),
+                        gt(workflowRun.expiresAt, sql`now()`),
+                      ),
+                    ),
+                  ),
+              ),
               lte(workflowRunDispatch.nextAttemptAt, sql`now()`),
               ...(args.excludedDispatchIds !== undefined &&
               args.excludedDispatchIds.length > 0

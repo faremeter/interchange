@@ -38,6 +38,9 @@ see [`LAYOUT.md`](../LAYOUT.md).
 - [`SIDECAR_PLACEMENT.md`](./SIDECAR_PLACEMENT.md) — capability-based
   workflow placement and provisioner selection.
 
+- [`workflow-lifecycle-policy.md`](./workflow-lifecycle-policy.md) — deployment
+  lifetime, capacity retention, and cancellation/release APIs.
+
 ## HTTP API
 
 - [`ROUTES.md`](./ROUTES.md) — routing conventions and the _why_

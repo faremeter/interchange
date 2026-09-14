@@ -29,6 +29,7 @@ import {
 import type { DB, DBExecutor, PrincipalKeyStore } from "@intx/db";
 import {
   createPrincipalStore,
+  canExecuteWorkflowRun,
   createWorkflowRunStore,
   loadFrozenGrantSnapshot,
 } from "@intx/db";
@@ -313,7 +314,11 @@ export async function lockWorkflowRunState(
   runId: string,
 ): Promise<"absent" | "running" | "terminal"> {
   const [run] = await tx
-    .select({ status: workflowRun.status })
+    .select({
+      status: workflowRun.status,
+      expiresAt: workflowRun.expiresAt,
+      cancellationRequestedAt: workflowRun.cancellationRequestedAt,
+    })
     .from(workflowRun)
     .where(
       and(eq(workflowRun.id, runId), eq(workflowRun.anchorRunId, anchorRunId)),
@@ -321,7 +326,7 @@ export async function lockWorkflowRunState(
     .limit(1)
     .for("update");
   if (run === undefined) return "absent";
-  return isLiveWorkflowRunStatus(run.status) ? "running" : "terminal";
+  return canExecuteWorkflowRun(run) ? "running" : "terminal";
 }
 
 /**
@@ -348,7 +353,8 @@ export async function lockDispatchableAllocation(
     .for("update");
   return (
     allocation !== undefined &&
-    isSidecarAllocationDispatchable(allocation.status)
+    isSidecarAllocationDispatchable(allocation.status) &&
+    (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) === "running"
   );
 }
 

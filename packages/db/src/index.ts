@@ -22,6 +22,7 @@ export {
 export { createGrantStore } from "./grant-store";
 export {
   loadTenantLifecyclePolicies,
+  canExecuteWorkflowRun,
   resolveDeploymentLifecyclePolicy,
 } from "./workflow-lifecycle-policy";
 export { createPrincipalStore, type PrincipalStore } from "./principal-store";

@@ -226,7 +226,7 @@ Placement can only be strengthened. Each ancestor policy is enforced independent
 
 When replacement recovery is explicitly enabled, a provisioned deployment keeps the same durable identity across worker loss: the same deployment id, anchor `workflow_run`, mail address, workflow-run Git repository, and sidecar allocation. Replacement advances the allocation generation and rehydrates that deployment on new capacity from Hub-owned state. A replacement worker is therefore a continuation of the existing deployment, not a new workflow run. Replacement recovery is disabled by default because Hub-owned state does not include arbitrary files created in the sidecar or its isolation containers.
 
-Provisioners own backing-capacity reuse policy. At the Hub layer, explicitly enabled recovery replacement is the currently supported reuse case; deployment teardown does not yet initiate allocation release through the workflow API.
+Tenant and installed-workflow lifecycle policies set deployment lifetime and capacity retention. The Hub saves the effective policy at deployment creation, enforces deadlines, and releases terminal allocations through the provisioner. Provisioners own backing-capacity reuse policy. See [Workflow lifetime and capacity retention](./workflow-lifecycle-policy.md) for inheritance, cancellation, and release semantics.
 
 ### Trust Boundary
 

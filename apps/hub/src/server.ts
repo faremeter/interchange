@@ -376,6 +376,8 @@ export async function createHubServer({
   const workflowLifecycleService = createWorkflowLifecycleService({
     db,
     runReader: createWorkflowRunReader(agentRepoStore.repoStore),
+    sendControl: (target, command, timeoutMs) =>
+      sidecarRouter.sendWorkflowControl(target, command, timeoutMs),
   });
   const workflowDispatchService = createWorkflowDispatchService({
     dispatchStore: createWorkflowRunDispatchStore(db),
@@ -491,6 +493,7 @@ export async function createHubServer({
     sessionService,
     workflowAllocationService,
     workflowDispatchService,
+    workflowLifecycleService,
     eventCollectors,
     credentialCipher,
     principalKeyStore,

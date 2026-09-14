@@ -58,6 +58,7 @@ import {
   type CredentialProviderRegistry,
 } from "@intx/harness";
 import { createSSHSignature } from "@intx/crypto";
+import { parseRunAddress } from "@intx/types";
 import {
   createAgentRepoStore,
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
@@ -2727,36 +2728,16 @@ export function createSidecarSubstrateFactory(
     const runSuspendableChild =
       createSidecarSpawnSuspendableChild(childRunDeps);
 
-    // Per-run scratch reclamation for the cold (multi-step) path. The
-    // run-loop fires this once each run reaches its terminal status; it
-    // drops the run's whole `workflow-step-state/<repoId>/runs/<runId>/`
-    // subtree (every step/attempt the run produced), which nothing
-    // reopens after terminal (resume reads the substrate run log, not
-    // local step state).
-    //
-    // Parked-step safety: reclamation keys on the RUN's terminal status,
-    // and a step parked on a signal (`awaiting-signal`) keeps the run
-    // non-terminal, so this never fires while a suspended step's
-    // `attempt-N` store still holds a live pending-op the resume path must
-    // reopen. Any future per-STEP reclamation must preserve that invariant
-    // -- it MUST exclude an `awaiting-signal` step, whose `attempt-N` store
-    // is the exact store a later crash-resume reopens to rehydrate the
-    // gate; dropping it would reproduce the empty-store hang the
-    // resume-attempt recovery closes.
-    //
-    // Built only for the cold path: a warm deploy
-    // roots its single agent's scratch per agent under the disjoint
-    // `warm/` sub-root (reclaimed on undeploy), and the run-loop's own
-    // `warmKeep` gate already suppresses the per-run call there, so
-    // leaving this undefined for warm deploys keeps the path-owning
-    // module's intent explicit. `rm -rf` semantics via `recursive +
-    // force` so a run that never wrote scratch (no buildEnv reached) is
-    // a no-op rather than an ENOENT throw.
+    // The top-level run's scratch belongs to the deployment and survives
+    // termination for inspection until allocation cleanup. Internal cold runs
+    // can reclaim their own scratch once they finish.
+    const topLevelRunId = parseRunAddress(env.spawn.mailboxAddress)?.runId;
     const cleanupRunStorage: ((runId: string) => Promise<void>) | undefined =
       env.spawn.warmKeep
         ? undefined
-        : (runId: string) =>
-            fs.promises.rm(
+        : async (runId) => {
+            if (runId === topLevelRunId) return;
+            await fs.promises.rm(
               runStepStorageRoot({
                 dataDir: validated.SIDECAR_DATA_DIR,
                 workflowRunRepoId,
@@ -2764,6 +2745,7 @@ export function createSidecarSubstrateFactory(
               }),
               { recursive: true, force: true },
             );
+          };
 
     // Recover a parked correlation's approval snapshot for the child's
     // re-registration enumeration. Wired unconditionally (unlike

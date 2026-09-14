@@ -475,12 +475,12 @@ Returns workflow run state including status, public key, and sidecar assignment.
 ### DELETE /api/tenants/:tenantId/workflows/runs/:runId
 Stop a run
 
-Stops a live workflow run and releases its sidecar allocation.
+Durably requests cancellation of a live top-level run. Its saved cancellation retention policy controls subsequent capacity release. Poll the Location header for progress.
 
-204: (no content) -- Run stopped
+202: (no content) -- Cancellation requested
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run already stopped
-502: ErrorResponse -- Sidecar unavailable
+409: ErrorResponse -- Run is already terminal
+503: ErrorResponse -- Workflow lifecycle service unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/authorization
 Get run authorization
@@ -1677,7 +1677,7 @@ Source: packages/types/src/workflows.ts
 **status**: Deployment lifecycle status. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.
 
 ### WorkflowLifecycleResponse
-`{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
+`{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
 Source: packages/types/src/workflow-lifecycle.ts
 
 ### WorkflowRollbackRequest

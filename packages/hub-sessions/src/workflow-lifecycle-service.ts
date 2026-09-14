@@ -3,6 +3,7 @@ import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
 import {
   createSidecarAllocationStore,
   createWorkflowRunStore,
+  createWorkflowRunDispatchStore,
   parseWorkflowRunRow,
   type DB,
   type DBExecutor,
@@ -18,7 +19,10 @@ import { lifecycleDeadline } from "@intx/types";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import type { WorkflowRunReader } from "./workflow-run-reader";
-import type { AllocatedSidecarTarget } from "./ws/sidecar-handler";
+import type {
+  AllocatedSidecarTarget,
+  SidecarAllocationRouter,
+} from "./ws/sidecar-handler";
 import { classifyTerminalEvent } from "./workflow-run-kind";
 
 const logger = getLogger(["hub", "workflow-lifecycle"]);
@@ -36,14 +40,21 @@ export type WorkflowLifecycleServiceDeps = {
   db: DB["db"];
   runReader: WorkflowRunReader;
   now?: () => Date;
+  cancelGraceMs?: number;
+  sendControl?: SidecarAllocationRouter["sendWorkflowControl"];
 };
 
 export function createWorkflowLifecycleService({
   db,
   runReader,
   now = () => new Date(),
+  cancelGraceMs = 30_000,
+  sendControl,
 }: WorkflowLifecycleServiceDeps) {
+  if (cancelGraceMs < 0 || !Number.isFinite(cancelGraceMs))
+    throw new Error("Cancellation grace must be finite and non-negative");
   const allocations = createSidecarAllocationStore(db);
+  const dispatches = createWorkflowRunDispatchStore(db);
   const runs = createWorkflowRunStore(db);
 
   async function withRun<T>(
@@ -61,7 +72,12 @@ export function createWorkflowLifecycleService({
       const [allocation] = await tx
         .select()
         .from(sidecarAllocation)
-        .where(eq(sidecarAllocation.anchorRunId, runId))
+        .where(
+          and(
+            eq(sidecarAllocation.anchorRunId, runId),
+            eq(sidecarAllocation.tenantId, tenantId),
+          ),
+        )
         .for("update");
       const [row] = await tx
         .select()
@@ -141,6 +157,8 @@ export function createWorkflowLifecycleService({
       expiresAt: run.expiresAt?.toISOString() ?? null,
       cancellationRequestedAt:
         run.cancellationRequestedAt?.toISOString() ?? null,
+      cancellationDeadline: run.cancellationDeadline?.toISOString() ?? null,
+      cancellationReason: run.cancellationReason ?? null,
       capacityReleaseAt: run.capacityReleaseAt?.toISOString() ?? null,
       allocation:
         allocation === null
@@ -187,15 +205,195 @@ export function createWorkflowLifecycleService({
     return result ?? "not_found";
   }
 
-  async function reconcileRun(tenantId: string, runId: string): Promise<void> {
+  async function projectTerminalForStop(
+    tx: DBExecutor,
+    run: Run,
+  ): Promise<Run> {
+    try {
+      return await projectTerminal(tx, run);
+    } catch (error) {
+      logger.warn`Cannot read terminal state for ${run.id}; proceeding with requested cancellation: ${error instanceof Error ? error.message : String(error)}`;
+      return run;
+    }
+  }
+
+  async function beginCancellation(
+    tx: DBExecutor,
+    run: Run,
+    reason: string,
+  ): Promise<Run> {
+    if (run.cancellationRequestedAt !== null) return run;
+    const requestedAt = now();
+    const deadline = new Date(requestedAt.getTime() + cancelGraceMs);
+    await tx
+      .update(workflowRun)
+      .set({
+        cancellationRequestedAt: requestedAt,
+        cancellationDeadline: deadline,
+        cancellationReason: reason,
+      })
+      .where(eq(workflowRun.id, run.id));
+    return {
+      ...run,
+      cancellationRequestedAt: requestedAt,
+      cancellationDeadline: deadline,
+      cancellationReason: reason,
+    };
+  }
+
+  async function requestCancellation(
+    tenantId: string,
+    runId: string,
+    reason: string,
+  ): Promise<"pending" | "terminal" | "not_found"> {
+    const result = await withRun(tenantId, runId, async (tx, original) => {
+      const run = await projectTerminalForStop(tx, original);
+      if (!isLiveWorkflowRunStatus(run.status)) return "terminal" as const;
+      await beginCancellation(tx, run, reason);
+      return "pending" as const;
+    });
+    return result ?? "not_found";
+  }
+
+  async function markStopped(tx: DBExecutor, run: Run): Promise<void> {
+    // Forced termination may leave only a partial event log. The Hub records
+    // the outcome after the worker confirms its stop or the provisioner confirms
+    // destruction; it never reports cancellation while an unfenced worker lives.
+    const endedAt = now();
+    const stopped = await tx
+      .update(workflowRun)
+      .set({ status: "cancelled", endedAt })
+      .where(
+        and(
+          eq(workflowRun.anchorRunId, run.id),
+          inArray(workflowRun.status, ["deployed", "running"]),
+        ),
+      )
+      .returning({ principalId: workflowRun.principalId });
+    const principalIds = stopped.flatMap((row) =>
+      row.principalId === null ? [] : [row.principalId],
+    );
+    if (principalIds.length > 0)
+      await tx
+        .update(principal)
+        .set({ status: "deactivated", updatedAt: endedAt })
+        .where(inArray(principal.id, principalIds));
+    await dispatches.failUnsettled(
+      run.id,
+      "workflow_cancelled",
+      run.cancellationReason ?? "Workflow cancelled",
+      endedAt,
+      tx,
+    );
+  }
+
+  type ControlRequest = {
+    target: AllocatedSidecarTarget;
+    tenantId: string;
+    runId: string;
+    agentAddress: string;
+    action: "cancel" | "stop";
+    reason: string;
+    timeoutMs: number;
+  };
+
+  async function forceRelease(command: ControlRequest): Promise<void> {
     await withRun(
+      command.tenantId,
+      command.runId,
+      async (tx, original, allocation) => {
+        const run = await projectTerminalForStop(tx, original);
+        if (
+          !isLiveWorkflowRunStatus(run.status) ||
+          allocation === undefined ||
+          allocation.generation !== command.target.generation ||
+          allocation.status === "releasing" ||
+          allocation.status === "released" ||
+          allocation.status === "failed" ||
+          allocation.status === "destroy_failed"
+        )
+          return;
+        await allocations.beginRelease(
+          {
+            allocationId: allocation.id,
+            expectedGeneration: allocation.generation,
+            expectedStatus: allocation.status,
+            failureCode: "workflow_stop_failed",
+            failureMessage:
+              "Workflow stop could not be confirmed; reclaiming capacity",
+            now: now(),
+          },
+          tx,
+        );
+      },
+    );
+  }
+
+  async function reconcileRun(tenantId: string, runId: string): Promise<void> {
+    const command = await withRun(
       tenantId,
       runId,
-      async (
-        tx,
-        original,
-        allocation,
-      ): Promise<AllocatedSidecarTarget | null> => {
+      async (tx, original, allocation): Promise<ControlRequest | null> => {
+        const stopping =
+          original.cancellationRequestedAt !== null ||
+          (original.expiresAt !== null && original.expiresAt <= now());
+        let run = stopping
+          ? await projectTerminalForStop(tx, original)
+          : await projectTerminal(tx, original);
+        if (isLiveWorkflowRunStatus(run.status)) {
+          if (run.expiresAt !== null && run.expiresAt <= now()) {
+            run = await beginCancellation(
+              tx,
+              run,
+              "Maximum deployment lifetime exceeded",
+            );
+          }
+          if (run.cancellationRequestedAt === null) return null;
+          if (
+            allocation === undefined ||
+            allocation.status === "released" ||
+            allocation.status === "failed"
+          ) {
+            await markStopped(tx, run);
+            return null;
+          }
+          if (
+            allocation.status === "releasing" ||
+            allocation.status === "destroy_failed"
+          )
+            return null;
+          if (
+            allocation.status !== "allocated" ||
+            allocation.sidecarId === null ||
+            run.address === null
+          ) {
+            await allocations.beginRelease(
+              {
+                allocationId: allocation.id,
+                expectedStatus: allocation.status,
+                expectedGeneration: allocation.generation,
+                now: now(),
+              },
+              tx,
+            );
+            return null;
+          }
+          const remaining =
+            (run.cancellationDeadline ?? now()).getTime() - now().getTime();
+          return {
+            target: {
+              allocationId: allocation.id,
+              generation: allocation.generation,
+            },
+            tenantId,
+            runId,
+            agentAddress: run.address,
+            action: remaining > 0 ? "cancel" : "stop",
+            reason: run.cancellationReason ?? "Workflow cancelled",
+            timeoutMs:
+              remaining > 0 ? Math.max(1, Math.min(5_000, remaining)) : 10_000,
+          };
+        }
         if (
           allocation === undefined ||
           allocation.status === "released" ||
@@ -204,7 +402,6 @@ export function createWorkflowLifecycleService({
           allocation.status === "releasing"
         )
           return null;
-        const run = await projectTerminal(tx, original);
         if (run.status === "deployed" || run.status === "running") return null;
         const retention = run.lifecyclePolicy?.capacityRetention?.[run.status];
         const releaseAt =
@@ -213,14 +410,13 @@ export function createWorkflowLifecycleService({
             ? null
             : lifecycleDeadline(run.endedAt, retention));
         if (releaseAt === null) return null;
-        if (run.capacityReleaseAt === null) {
+        if (run.capacityReleaseAt === null)
           await tx
             .update(workflowRun)
             .set({ capacityReleaseAt: releaseAt })
             .where(eq(workflowRun.id, runId));
-        }
         if (releaseAt > now()) return null;
-        const releasing = await allocations.beginRelease(
+        await allocations.beginRelease(
           {
             allocationId: allocation.id,
             expectedStatus: allocation.status,
@@ -229,18 +425,44 @@ export function createWorkflowLifecycleService({
           },
           tx,
         );
-        return releasing === null
-          ? null
-          : { allocationId: releasing.id, generation: releasing.generation };
+        return null;
       },
     );
+    if (command === null) return;
+    try {
+      if (sendControl === undefined)
+        throw new Error("Workflow control is unavailable");
+      await sendControl(
+        command.target,
+        {
+          runId,
+          agentAddress: command.agentAddress,
+          action: command.action,
+          reason: command.reason,
+        },
+        command.timeoutMs,
+      );
+      if (command.action === "stop") {
+        await withRun(tenantId, runId, async (tx, original, allocation) => {
+          const run = await projectTerminalForStop(tx, original);
+          if (
+            allocation?.generation === command.target.generation &&
+            isLiveWorkflowRunStatus(run.status)
+          )
+            await markStopped(tx, run);
+        });
+      }
+    } catch (error) {
+      logger.warn`Workflow ${command.action} failed for ${runId}: ${error instanceof Error ? error.message : String(error)}`;
+      if (command.action === "stop") await forceRelease(command);
+    }
   }
 
   async function reconcile(): Promise<void> {
     const candidates = await db
       .select({ id: workflowRun.id, tenantId: workflowRun.tenantId })
       .from(workflowRun)
-      .innerJoin(
+      .leftJoin(
         sidecarAllocation,
         eq(sidecarAllocation.anchorRunId, workflowRun.id),
       )
@@ -250,25 +472,38 @@ export function createWorkflowLifecycleService({
           or(
             isNotNull(workflowRun.lifecyclePolicy),
             isNotNull(workflowRun.capacityReleaseAt),
+            isNotNull(workflowRun.cancellationRequestedAt),
+            isNotNull(workflowRun.expiresAt),
           ),
-          inArray(sidecarAllocation.status, [
-            "pending",
-            "provisioning",
-            "allocated",
-            "replacing",
-          ]),
+          or(
+            inArray(sidecarAllocation.status, [
+              "pending",
+              "provisioning",
+              "allocated",
+              "replacing",
+            ]),
+            and(
+              inArray(workflowRun.status, ["deployed", "running"]),
+              or(
+                isNotNull(workflowRun.cancellationRequestedAt),
+                isNotNull(workflowRun.expiresAt),
+              ),
+            ),
+          ),
         ),
       );
-    for (const run of candidates) {
-      try {
-        await reconcileRun(run.tenantId, run.id);
-      } catch (error) {
-        logger.error`Lifecycle reconciliation failed for ${run.id}: ${error instanceof Error ? error.message : String(error)}`;
-      }
-    }
+    await Promise.all(
+      candidates.map(async (run) => {
+        try {
+          await reconcileRun(run.tenantId, run.id);
+        } catch (error) {
+          logger.error`Lifecycle reconciliation failed for ${run.id}: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }),
+    );
   }
 
-  return { getStatus, releaseCapacity, reconcile };
+  return { getStatus, releaseCapacity, requestCancellation, reconcile };
 }
 
 export type WorkflowLifecycleService = ReturnType<

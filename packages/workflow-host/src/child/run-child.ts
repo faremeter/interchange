@@ -1356,6 +1356,19 @@ async function handleControlPayload(
       })();
       return false;
     }
+    case "cancel.committed": {
+      const run = ctx.runsInFlight.get(payload.data.runId);
+      // Keep draining control replies while cancellation commits its cascade
+      // through the supervisor's substrate-write bridge.
+      if (run !== undefined) {
+        void run
+          .cancel("supervisor-operator", payload.data.reason)
+          .catch((error: unknown) => {
+            logger.error`Failed to apply committed cancellation for ${payload.data.runId}: ${error instanceof Error ? error.message : String(error)}`;
+          });
+      }
+      return false;
+    }
     case "drain": {
       // The supervisor's `drain` control mail flips the controller's
       // signal. The runtime body's four observation points read the

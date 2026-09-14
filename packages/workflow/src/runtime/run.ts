@@ -238,7 +238,9 @@ export function runtimeRun(
         // mid-cancel does not lose the request. `commitDurable` flushes
         // any pending run-body buffer first, keeping the durable tip
         // contiguous.
-        await commitDurable(env, runId, event);
+        // A supervisor may already have committed the signed request. Apply
+        // that request without attempting a second, unsigned cancellation.
+        if (live.phase !== "cancelling") await commitDurable(env, runId, event);
         // Emit ChildCancelRequested for any live children before the
         // abort listener fires. Without this here, the parent's main
         // loop might settle the spawn step (the child terminates

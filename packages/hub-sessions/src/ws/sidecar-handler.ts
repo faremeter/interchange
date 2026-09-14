@@ -717,7 +717,8 @@ export function createSidecarRouter(
   const pendingWorkflowControls = new PendingTracker<
     string,
     void,
-    AllocatedSidecarTarget
+    AllocatedSidecarTarget &
+      Pick<WorkflowControlFrame, "agentAddress" | "action">
   >();
 
   // requestId → pending workflow probe (resolved by workflow.probe.result,
@@ -3513,7 +3514,15 @@ export function createSidecarRouter(
     }
     if (frame.error !== undefined)
       pendingWorkflowControls.reject(frame.requestId, frame.error);
-    else pendingWorkflowControls.resolve(frame.requestId, undefined);
+    else {
+      if (entry.meta.action === "stop") {
+        const conn = connections.get(ws);
+        for (const address of conn?.agentAddresses ?? [])
+          removeAgentAddress(ws, address);
+        removeAgentAddress(ws, entry.meta.agentAddress);
+      }
+      pendingWorkflowControls.resolve(frame.requestId, undefined);
+    }
   }
 
   async function sendWorkflowControl(
@@ -3541,7 +3550,11 @@ export function createSidecarRouter(
           resolve,
           reject: (error) => reject(new Error(error)),
         },
-        target,
+        {
+          ...target,
+          agentAddress: command.agentAddress,
+          action: command.action,
+        },
       );
       try {
         conn.send({ type: "workflow.control", requestId, ...command });
@@ -3605,6 +3618,7 @@ export function createSidecarRouter(
     const conn = connections.get(ws);
     if (conn !== undefined) {
       conn.agentAddresses.delete(agentAddress);
+      conn.workflowAddresses.delete(agentAddress);
     }
   }
 

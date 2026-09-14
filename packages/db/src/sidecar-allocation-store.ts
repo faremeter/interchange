@@ -19,6 +19,7 @@ import {
 
 import type { DB, DBExecutor } from "./client";
 import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
+import { canExecuteWorkflowRun } from "./workflow-lifecycle-policy";
 import {
   isLiveWorkflowRunStatus,
   liveWorkflowRunStatuses,
@@ -1059,6 +1060,24 @@ export function createSidecarAllocationStore(db: DBHandle) {
         return parseSidecarAllocationRow(updated);
       };
       return tx === undefined ? db.transaction(fail) : fail(tx);
+    },
+
+    async hasRunnableAnchor(
+      anchorRunId: string,
+      now = new Date(),
+    ): Promise<boolean> {
+      const run = await db.query.workflowRun.findFirst({
+        where: and(
+          eq(workflowRun.id, anchorRunId),
+          eq(workflowRun.anchorRunId, anchorRunId),
+        ),
+        columns: {
+          status: true,
+          expiresAt: true,
+          cancellationRequestedAt: true,
+        },
+      });
+      return run !== undefined && canExecuteWorkflowRun(run, now);
     },
 
     async findById(id: string): Promise<SidecarAllocation | null> {
