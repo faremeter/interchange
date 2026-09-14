@@ -5,8 +5,12 @@
  * a principal, a definition, or a tenant. The resource string is exactly three
  * colon-separated segments (`mail.accept`, the coord type, and the id), so the
  * id may not contain a `:` — an id with a colon would split into extra
- * segments and make the three-segment shape ambiguous.
+ * segments and make the three-segment shape ambiguous. `isValidCoordId` (from
+ * `@intx/types`, where the authored `MailAccept` shape lives) owns that id rule
+ * so the authoring boundary and this resource builder share one definition.
  */
+
+import { isValidCoordId } from "@intx/types/runtime";
 
 export type CoordType = "principal" | "definition" | "tenant";
 
@@ -26,12 +30,9 @@ export function isCoordType(value: string): value is CoordType {
 }
 
 export function mailAcceptResource(coordType: CoordType, id: string): string {
-  if (id.length === 0) {
-    throw new Error("mailAcceptResource: id must not be empty");
-  }
-  if (id.includes(":")) {
+  if (!isValidCoordId(id)) {
     throw new Error(
-      `mailAcceptResource: id must not contain ":" (received ${JSON.stringify(id)})`,
+      `mailAcceptResource: id must be a non-empty string without ":" (received ${JSON.stringify(id)})`,
     );
   }
   return `${MAIL_ACCEPT_NAMESPACE}:${coordType}:${id}`;

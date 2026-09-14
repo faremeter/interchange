@@ -346,6 +346,18 @@ export type InboundMailPolicy = typeof InboundMailPolicy.infer;
  * rejected so a typo such as `parrent` or `principal` fails at the wire boundary
  * rather than riding through as an inert unknown key.
  */
+/**
+ * A `mail.accept` coordinate id is valid when it is a non-empty string with no
+ * `:`. The colon is the segment separator of the `mail.accept:<type>:<id>`
+ * resource, so an id that carries one would split into extra segments and make
+ * the shape ambiguous. This owns that rule: the resource builder in `@intx/authz`
+ * imports it, and the `MailAccept` schema narrows on it, so the authoring
+ * boundary and the resource builder share one definition.
+ */
+export function isValidCoordId(id: string): boolean {
+  return id.length > 0 && !id.includes(":");
+}
+
 export const MailAccept = type({
   "invoker?": "boolean",
   "self?": "boolean",
@@ -355,7 +367,27 @@ export const MailAccept = type({
   "child?": "boolean",
   "principals?": "string[]",
   "definitions?": "string[]",
-}).onUndeclaredKey("reject");
+})
+  .onUndeclaredKey("reject")
+  // A raw wire definition reaches this schema without passing through
+  // `defineWorkflow`, so an authored id that violates the coordinate grammar is
+  // untrusted input that must be rejected here rather than throwing later in the
+  // capability walk. Reject an explicit `principals`/`definitions` id that could
+  // not compose into a `mail.accept:<type>:<id>` resource.
+  .narrow((accept, ctx) => {
+    for (const key of ["principals", "definitions"] as const) {
+      const ids = accept[key];
+      if (ids === undefined) continue;
+      for (const id of ids) {
+        if (!isValidCoordId(id)) {
+          return ctx.mustBe(
+            `a non-empty ${key} id without ":" (received ${JSON.stringify(id)})`,
+          );
+        }
+      }
+    }
+    return true;
+  });
 export type MailAccept = typeof MailAccept.infer;
 
 /**
