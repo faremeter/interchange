@@ -101,6 +101,11 @@ export {
 export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 export { workflowSourceAssetMountPath } from "./workflow-closure-resolution";
 export {
+  createReconciliationScheduler,
+  DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
+  type ReconciliationSchedulerOptions,
+} from "./reconciliation-scheduler";
+export {
   createWorkflowAllocationService,
   WorkflowProvisioningError,
   type PrepareProvisionedWorkflowDeploymentArgs,
