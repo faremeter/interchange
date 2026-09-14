@@ -3,6 +3,8 @@ import { type } from "arktype";
 import type { SidecarCapabilityDeclaration } from "@intx/types";
 
 export type EnsureSidecarRequest = {
+  /** Cancellation is best effort; a cancelled ensure has an uncertain outcome. */
+  readonly signal?: AbortSignal;
   readonly allocationId: string;
   readonly generation: number;
   readonly tenantId: string;
@@ -13,6 +15,8 @@ export type EnsureSidecarRequest = {
 };
 
 export type DestroySidecarRequest = {
+  /** Cancellation never confirms destruction; the Hub may retry cleanup. */
+  readonly signal?: AbortSignal;
   readonly allocationId: string;
   readonly generation: number;
   readonly sidecarId: string;
@@ -65,6 +69,8 @@ export interface SidecarProvisioner {
   /**
    * Converges infrastructure for this generation. Implementations must be
    * idempotent and reject generations older than one they have observed.
+   * Honour the request signal where possible. A late completion must still
+   * respect a concurrent destroy's fence, even if cancellation was ignored.
    */
   ensure(request: EnsureSidecarRequest): Promise<EnsureSidecarResult>;
   /**

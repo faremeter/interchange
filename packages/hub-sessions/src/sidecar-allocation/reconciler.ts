@@ -16,6 +16,10 @@ import {
   type SidecarProvisioner,
 } from "./contracts";
 import type { SidecarPluginRegistry } from "./plugin-registry";
+import {
+  DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
+  runSidecarOperation,
+} from "./operation";
 
 const logger = getLogger(["hub", "sidecar-allocation"]);
 
@@ -62,6 +66,7 @@ export type SidecarAllocationReconcilerDeps = {
   readonly enableAutomaticReplacementRecovery?: boolean;
   readonly leaseDurationMs?: number;
   readonly connectTimeoutMs?: number;
+  readonly operationTimeoutMs?: number;
   readonly retryDelayMs?: (attempt: number) => number;
   readonly now?: () => Date;
   readonly createSidecarId?: () => string;
@@ -128,6 +133,7 @@ export function createSidecarAllocationReconciler({
   enableAutomaticReplacementRecovery = false,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
   connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
+  operationTimeoutMs = DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
   retryDelayMs = defaultRetryDelay,
   now = () => new Date(),
   createSidecarId = () => `sc_${randomHex(16)}`,
@@ -137,6 +143,9 @@ export function createSidecarAllocationReconciler({
   if (leaseDurationMs <= 0) throw new Error("leaseDurationMs must be positive");
   if (connectTimeoutMs <= 0) {
     throw new Error("connectTimeoutMs must be positive");
+  }
+  if (!Number.isSafeInteger(operationTimeoutMs) || operationTimeoutMs <= 0) {
+    throw new Error("operationTimeoutMs must be a positive integer");
   }
 
   function provisionerFor(
@@ -307,15 +316,18 @@ export function createSidecarAllocationReconciler({
     try {
       result = parseEnsureResult(
         await withLeaseHeartbeat(allocation, leaseId, () =>
-          provisioner.ensure({
-            allocationId: allocation.id,
-            generation: allocation.generation,
-            tenantId: allocation.tenantId,
-            anchorRunId: allocation.anchorRunId,
-            sidecarId,
-            token,
-            hubWebSocketUrl,
-          }),
+          runSidecarOperation("Sidecar ensure", operationTimeoutMs, (signal) =>
+            provisioner.ensure({
+              signal,
+              allocationId: allocation.id,
+              generation: allocation.generation,
+              tenantId: allocation.tenantId,
+              anchorRunId: allocation.anchorRunId,
+              sidecarId,
+              token,
+              hubWebSocketUrl,
+            }),
+          ),
         ),
       );
     } catch (error) {
@@ -452,14 +464,17 @@ export function createSidecarAllocationReconciler({
     try {
       result = parseDestroyResult(
         await withLeaseHeartbeat(allocation, leaseId, () =>
-          provisioner.destroy({
-            allocationId: allocation.id,
-            generation: allocation.generation,
-            sidecarId,
-            ...(allocation.externalRef !== undefined
-              ? { externalRef: allocation.externalRef }
-              : {}),
-          }),
+          runSidecarOperation("Sidecar destroy", operationTimeoutMs, (signal) =>
+            provisioner.destroy({
+              signal,
+              allocationId: allocation.id,
+              generation: allocation.generation,
+              sidecarId,
+              ...(allocation.externalRef !== undefined
+                ? { externalRef: allocation.externalRef }
+                : {}),
+            }),
+          ),
         ),
       );
     } catch (error) {

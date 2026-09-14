@@ -4,7 +4,7 @@ import type { SidecarAllocation, SidecarAllocationStore } from "@intx/db";
 import { hexEncode } from "@intx/types";
 
 import { SessionLaunchError } from "../session-service";
-import type { SidecarProvisioner } from "./contracts";
+import type { EnsureSidecarResult, SidecarProvisioner } from "./contracts";
 import {
   createSidecarAllocationReconciler,
   type SidecarAllocationReconcilerDeps,
@@ -1155,5 +1155,97 @@ describe("createSidecarAllocationReconciler", () => {
     await reconciler.repairUnscheduledConnections();
 
     expect(repairs).toEqual([]);
+  });
+});
+
+describe("provisioner operation deadlines", () => {
+  test("fences a timed out ensure and ignores its late acceptance", async () => {
+    const provisioning = allocation({
+      status: "provisioning",
+      generation: 1,
+      sidecarId: "sc-new",
+    });
+    const completion = Promise.withResolvers<EnsureSidecarResult>();
+    let signal: AbortSignal | undefined;
+    let accepted = false;
+    let replaced = false;
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => allocation(),
+      bindInitialSidecar: async () => provisioning,
+      markAllocated: async () => {
+        accepted = true;
+        return null;
+      },
+      beginReplacement: async (args) => {
+        replaced = true;
+        expect(args.expectedGeneration).toBe(1);
+        expect(args.expectedLeaseId).toBe("lease-1");
+        return allocation({ status: "replacing", generation: 2 });
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store,
+        fences,
+        provisioner: testProvisioner({
+          ensure(request) {
+            signal = request.signal;
+            return completion.promise;
+          },
+        }),
+      }),
+      operationTimeoutMs: 10,
+    });
+
+    await reconciler.reconcileNext();
+    expect(signal?.aborted).toBe(true);
+    expect(replaced).toBe(true);
+    expect(fences).toContainEqual(["alloc-1", 2]);
+    completion.resolve({ kind: "accepted", externalRef: "late-worker" });
+    await completion.promise;
+    expect(accepted).toBe(false);
+  });
+
+  test("keeps replacement pending when destruction times out", async () => {
+    let retried = false;
+    let ensured = false;
+    let signal: AbortSignal | undefined;
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: async () =>
+            allocation({
+              status: "replacing",
+              generation: 2,
+              sidecarId: "sc-old",
+            }),
+          scheduleRetry: async (args) => {
+            expect(args.expectedStatus).toBe("replacing");
+            expect(args.attempt).toBe("destroy");
+            retried = true;
+            return null;
+          },
+        }),
+        provisioner: testProvisioner({
+          destroy(request) {
+            signal = request.signal;
+            return new Promise(() => {
+              // This provider never acknowledges cancellation or destruction.
+            });
+          },
+          async ensure() {
+            ensured = true;
+            return { kind: "accepted" };
+          },
+        }),
+      }),
+      operationTimeoutMs: 10,
+    });
+
+    await reconciler.reconcileNext();
+    expect(signal?.aborted).toBe(true);
+    expect(retried).toBe(true);
+    expect(ensured).toBe(false);
   });
 });

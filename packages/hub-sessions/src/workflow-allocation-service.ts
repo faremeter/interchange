@@ -50,6 +50,10 @@ import type {
 } from "./ws/sidecar-handler";
 import type { InstallAndApproveResult } from "./workflow-probe-gate";
 import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
+import {
+  DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
+  runSidecarOperation,
+} from "./sidecar-allocation/operation";
 
 const logger = getLogger(["hub", "workflow-allocation"]);
 
@@ -125,6 +129,7 @@ export type WorkflowAllocationServiceDeps = {
   readonly createSidecarId?: () => string;
   readonly createToken?: () => string;
   readonly connectTimeoutMs?: number;
+  readonly operationTimeoutMs?: number;
   readonly now?: () => Date;
 };
 
@@ -210,6 +215,7 @@ export function createWorkflowAllocationService({
   createSidecarId = randomSidecarId,
   createToken = randomToken,
   connectTimeoutMs = 120_000,
+  operationTimeoutMs = DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
   now = () => new Date(),
 }: WorkflowAllocationServiceDeps): WorkflowAllocationService {
   const allocationStore = createSidecarAllocationStore(db);
@@ -229,6 +235,9 @@ export function createWorkflowAllocationService({
 
   if (connectTimeoutMs <= 0) {
     throw new Error("connectTimeoutMs must be positive");
+  }
+  if (!Number.isSafeInteger(operationTimeoutMs) || operationTimeoutMs <= 0) {
+    throw new Error("operationTimeoutMs must be a positive integer");
   }
 
   function matchingProvisioner(
@@ -267,7 +276,8 @@ export function createWorkflowAllocationService({
     releasing: WorkflowProbe,
     finalStatus: "succeeded" | "failed",
   ): Promise<void> {
-    if (releasing.sidecarId !== null) {
+    const sidecarId = releasing.sidecarId;
+    if (sidecarId !== null) {
       const provisioner = matchingProvisioner(releasing);
       if (provisioner === null) {
         throw new Error(
@@ -275,14 +285,20 @@ export function createWorkflowAllocationService({
         );
       }
       const destroyed = parseDestroyResult(
-        await provisioner.destroy({
-          allocationId: releasing.id,
-          generation: releasing.generation,
-          sidecarId: releasing.sidecarId,
-          ...(releasing.externalRef !== null
-            ? { externalRef: releasing.externalRef }
-            : {}),
-        }),
+        await runSidecarOperation(
+          "Probe destroy",
+          operationTimeoutMs,
+          (signal) =>
+            provisioner.destroy({
+              signal,
+              allocationId: releasing.id,
+              generation: releasing.generation,
+              sidecarId,
+              ...(releasing.externalRef !== null
+                ? { externalRef: releasing.externalRef }
+                : {}),
+            }),
+        ),
       );
       if (destroyed.kind === "rejected") {
         throw new Error(
@@ -532,17 +548,23 @@ export function createWorkflowAllocationService({
       };
       allocationRouter.fenceAllocation(probe.id, probe.generation);
       const ensured = parseEnsureResult(
-        await probeProvisioner.ensure({
-          allocationId: probe.id,
-          generation: probe.generation,
-          tenantId: probe.tenantId,
-          // The provisioner contract treats this as an opaque owner id. A
-          // probe has no workflow run, so its own id is the honest owner.
-          anchorRunId: probe.id,
-          sidecarId,
-          token,
-          hubWebSocketUrl,
-        }),
+        await runSidecarOperation(
+          "Probe ensure",
+          operationTimeoutMs,
+          (signal) =>
+            probeProvisioner.ensure({
+              signal,
+              allocationId: probe.id,
+              generation: probe.generation,
+              tenantId: probe.tenantId,
+              // The provisioner contract treats this as an opaque owner id. A
+              // probe has no workflow run, so its own id is the honest owner.
+              anchorRunId: probe.id,
+              sidecarId,
+              token,
+              hubWebSocketUrl,
+            }),
+        ),
       );
       if (ensured.kind === "rejected") {
         throw new WorkflowProvisioningError(ensured.code, ensured.message);
