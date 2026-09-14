@@ -310,12 +310,23 @@ function projectDefinition(
     ...(definition.inboundMailPolicy !== undefined
       ? { inboundMailPolicy: { ...definition.inboundMailPolicy } }
       : {}),
-    // The relational accept-rules are pure plain data, so they project verbatim
-    // like the admission policy. Keeping them in the projection puts the
-    // author-approved accept surface inside the content hash (see
-    // `InertWorkflowDefinition`).
+    // The relational accept-rules project into the content hash like the
+    // admission policy (see `InertWorkflowDefinition`). Unlike the flat policy,
+    // `mailAccept` carries nested `principals`/`definitions` arrays, so copy
+    // those fresh rather than aliasing the live definition's arrays, matching
+    // how every other array field above is projected.
     ...(definition.mailAccept !== undefined
-      ? { mailAccept: { ...definition.mailAccept } }
+      ? {
+          mailAccept: {
+            ...definition.mailAccept,
+            ...(definition.mailAccept.principals !== undefined
+              ? { principals: [...definition.mailAccept.principals] }
+              : {}),
+            ...(definition.mailAccept.definitions !== undefined
+              ? { definitions: [...definition.mailAccept.definitions] }
+              : {}),
+          },
+        }
       : {}),
   };
 }
