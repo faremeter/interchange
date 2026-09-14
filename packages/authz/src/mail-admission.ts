@@ -41,11 +41,13 @@ export type MailAdmissionResult = {
  *   no alternation, so coordinates are evaluated independently and combined
  *   with deny-wins semantics.
  *
- * Conditioned `mail.accept` grants are only honored when a condition
- * `registry` is supplied; `evaluateGrants` skips conditioned grants without
- * one. A skipped conditioned deny would fail OPEN, so callers that rely on
- * conditioned denies MUST pass a registry. When no registry is passed,
- * `mail.accept` denies must be unconditioned.
+ * Conditioned `mail.accept` grants require a condition `registry`:
+ * `evaluateGrants` skips conditioned grants without one, and a skipped
+ * conditioned DENY would fail OPEN. So when no registry is supplied and any
+ * matched-namespace grant carries conditions, this helper THROWS rather than
+ * evaluating past a deny it cannot honor; the delivery seam turns that throw
+ * into a fail-closed drop and the misconfiguration surfaces loudly. Callers
+ * that legitimately use conditioned `mail.accept` grants MUST pass a registry.
  */
 export async function evaluateMailAdmission(args: {
   senderCoordinates: MailAcceptCoordinate[] | null;
@@ -63,6 +65,21 @@ export async function evaluateMailAdmission(args: {
       g.resource === MAIL_ACCEPT_NAMESPACE ||
       g.resource.startsWith(`${MAIL_ACCEPT_NAMESPACE}:`),
   );
+
+  // Without a registry, evaluateGrants silently skips conditioned grants -- a
+  // skipped conditioned DENY would fail OPEN. Refuse to evaluate rather than
+  // admit past a deny we cannot honor; fail loud so the misconfiguration is
+  // fixed instead of silently swallowed.
+  if (registry === undefined) {
+    const conditioned = acceptGrants.find(
+      (g) => g.conditions !== null && Object.keys(g.conditions).length > 0,
+    );
+    if (conditioned !== undefined) {
+      throw new Error(
+        `evaluateMailAdmission: mail.accept grant ${JSON.stringify(conditioned.resource)} carries conditions but no condition registry was supplied; pass a registry or author mail.accept grants unconditioned`,
+      );
+    }
+  }
 
   const opts = registry ? { registry } : undefined;
 

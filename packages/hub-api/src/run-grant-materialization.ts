@@ -32,7 +32,11 @@ import {
   createWorkflowRunStore,
   loadFrozenGrantSnapshot,
 } from "@intx/db";
-import type { GrantStore, GrantRule } from "@intx/types/authz";
+import type {
+  GrantStore,
+  GrantRule,
+  ConditionRegistry,
+} from "@intx/types/authz";
 import {
   isSidecarAllocationDispatchable,
   type GrantEffect,
@@ -718,6 +722,11 @@ export type MailTriggeredRunGrantsDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
   grantStore: GrantStore;
+  // The hub's condition registry, passed to the admission evaluator so a
+  // conditioned operator `mail.accept` deny (collected on the deliver path) is
+  // honored rather than skipped. Omitted here means the evaluator throws (fails
+  // closed) if it ever meets a conditioned grant; production supplies it.
+  registry?: ConditionRegistry;
 };
 
 /**
@@ -885,6 +894,7 @@ export function createMailTriggeredRunGrantsMaterializer(
       const admission = await evaluateMailAdmission({
         senderCoordinates,
         recipientGrants,
+        ...(deps.registry ? { registry: deps.registry } : {}),
       });
       if (!admission.admit) {
         return {
@@ -996,6 +1006,7 @@ export function createMailTriggeredRunGrantsMaterializer(
     const admission = await evaluateMailAdmission({
       senderCoordinates,
       recipientGrants: staged.grantRows.map(materializedRowToGrantRule),
+      ...(deps.registry ? { registry: deps.registry } : {}),
     });
     if (!admission.admit) {
       return {

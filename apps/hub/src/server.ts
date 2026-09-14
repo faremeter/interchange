@@ -10,6 +10,7 @@ import {
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
+import { timeWindowEvaluator } from "@intx/authz";
 import {
   createApp,
   createAuth,
@@ -243,6 +244,10 @@ export async function createHubServer({
         db,
         principalKeyStore,
         grantStore: createGrantStore(db),
+        // The hub's standard condition registry (mirrors createHubApp), so a
+        // conditioned operator mail.accept deny is evaluated, not skipped, by
+        // the admission gate.
+        registry: { time_window: timeWindowEvaluator },
       },
     ),
     resolveSenderKey: (address) =>

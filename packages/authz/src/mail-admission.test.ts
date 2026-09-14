@@ -57,6 +57,38 @@ describe("evaluateMailAdmission", () => {
     expect(result.effect).toBeNull();
   });
 
+  test("throws on a conditioned mail.accept grant when no registry is passed", async () => {
+    // A conditioned grant with no registry would be silently skipped by
+    // evaluateGrants; for a deny that fails OPEN. The helper must refuse to
+    // evaluate and fail loud instead of admitting past an unevaluable deny.
+    await expect(
+      evaluateMailAdmission({
+        senderCoordinates: [PRINCIPAL],
+        recipientGrants: [
+          acceptGrant(PRINCIPAL, "deny", {
+            conditions: { time_window: { after: "2020-01-01T00:00:00Z" } },
+          }),
+        ],
+      }),
+    ).rejects.toThrow(/condition registry/);
+  });
+
+  test("a conditioned grant with a registry supplied does not throw", async () => {
+    const registry: ConditionRegistry = { time_window: () => true };
+    const result = await evaluateMailAdmission({
+      senderCoordinates: [PRINCIPAL],
+      recipientGrants: [
+        acceptGrant(PRINCIPAL, "deny", {
+          conditions: { time_window: { after: "2020-01-01T00:00:00Z" } },
+        }),
+      ],
+      registry,
+    });
+
+    expect(result.admit).toBe(false);
+    expect(result.effect).toBe("deny");
+  });
+
   test("principal coordinate matching an allow accept-grant is admitted", async () => {
     const result = await evaluateMailAdmission({
       senderCoordinates: [PRINCIPAL],
@@ -195,22 +227,5 @@ describe("evaluateMailAdmission", () => {
 
     expect(result.admit).toBe(false);
     expect(result.effect).toBe("deny");
-  });
-
-  test("a conditioned deny is skipped without a registry (documented caveat)", async () => {
-    // Without a registry evaluateGrants skips conditioned grants, so a
-    // conditioned deny does not apply and the unconditioned allow admits.
-    // This is why mail.accept denies must be unconditioned when no registry
-    // is supplied.
-    const result = await evaluateMailAdmission({
-      senderCoordinates: [PRINCIPAL, TENANT],
-      recipientGrants: [
-        acceptGrant(PRINCIPAL, "allow"),
-        acceptGrant(TENANT, "deny", { conditions: { always: true } }),
-      ],
-    });
-
-    expect(result.admit).toBe(true);
-    expect(result.effect).toBe("allow");
   });
 });
