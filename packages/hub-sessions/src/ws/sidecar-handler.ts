@@ -1963,7 +1963,7 @@ export function createSidecarRouter(
         // The run's grants could not be materialized with sufficient
         // authority or it is already terminal. Fail the mail closed for this
         // recipient: routing or external relay would bypass that decision.
-        logger.error`Refusing mail-triggered run ${runId} for ${recipient}: grant materialization rejected (${result.code}): ${result.message}`;
+        logger.error`Refusing mail-triggered run ${runId} for ${recipient} from sender ${authenticatedSender} (principal ${senderPrincipal?.principalId ?? "unresolved"}): grant materialization rejected (${result.code}): ${result.message}`;
         return "failed-closed";
       }
       if (result.outcome === "materialized") {
