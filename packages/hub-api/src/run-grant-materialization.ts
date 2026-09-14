@@ -1003,6 +1003,17 @@ export function createMailTriggeredRunGrantsMaterializer(
     // the run principal exists cannot bind here -- first-fire admission is
     // governed by the definition's declared accept-allows; a first-fire operator
     // deny mechanism is a follow-up.)
+    // First-fire admission evaluates against the caller's own staged rows
+    // before the commit transaction. Two senders racing the first fire of the
+    // same run each stage a row naming their own principal as `invoker` and so
+    // each admit themselves; one wins the run-principal commit, but the loser's
+    // single first mail still delivers even though the committed run binds the
+    // winner. The blast radius is bounded -- only the self-referential `invoker`
+    // relation, one mail, no authority gained, and every later delivery from the
+    // loser hits the deliver-to-existing path gated on the committed grants.
+    // Making first-fire admission and the run-principal commit mutually
+    // exclusive, so a losing concurrent sender re-enters via deliver-to-existing,
+    // is a follow-up.
     const admission = await evaluateMailAdmission({
       senderCoordinates,
       recipientGrants: staged.grantRows.map(materializedRowToGrantRule),
