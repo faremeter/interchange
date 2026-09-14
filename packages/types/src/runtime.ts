@@ -331,40 +331,33 @@ export function isValidCoordId(id: string): boolean {
  * - `self` -- a sibling deployment of the same definition.
  * - `tenant` -- any deployment in the same tenant.
  * - `correspondent` -- a party the deployment has already exchanged mail with.
- * - `parent` -- the deployment that spawned this one.
- * - `child` -- a deployment this one spawned. `parent` and `child` are two
- *   independent relations with two independent toggles.
  *
  * `principals` and `definitions` name explicit senders by id: a principal id
  * the deployment accepts regardless of relation, and a definition id whose
  * deployments the author accepts.
  *
- * Enforcement status (v1): `invoker`, `self`, `tenant`, and the explicit
+ * Enforcement: `invoker`, `self`, `tenant`, and the explicit
  * `principals`/`definitions` are resolved at launch into `mail.accept` grant
- * rows and enforced by the inbound admission gate. `parent`, `child`, and
- * `correspondent` are declarable and pass operator approval, but are NOT yet
- * enforced -- they resolve only after launch (a spawn or a send) and their
- * materialization/enforcement is deferred to their own issues; declaring one
- * today is inert. Note the shared resolver defaults `parent` and `child` ON, so
- * when their enforcement lands a deployment that never opted out begins
- * accepting parent/child mail -- that enforcement change must account for it.
+ * rows; `correspondent` is minted at the send instant when the deployment mails
+ * a party, so that party's reply is admitted. Every relation the schema accepts
+ * is enforced by the inbound admission gate -- there is no declarable-but-inert
+ * relation.
  *
  * The object is SPARSE: every key is optional, and an omitted key is NOT a
- * default of any kind here. The default resolution (an absent relational toggle
- * resolving on or off) lives in the shared accept-rule resolver, NOT in this
- * stored shape. Keeping it sparse means the content hash covers only what the
- * author actually declared, so a definition that omits the field hashes
- * identically to one authored before the field existed. Undeclared keys are
- * rejected so a typo such as `parrent` or `principal` fails at the wire boundary
- * rather than riding through as an inert unknown key.
+ * default of any kind here. Each relation is opt-in: an absent toggle resolves
+ * OFF in the shared accept-rule resolver, so a definition accepts nothing on the
+ * relational axis unless it declares a relation. Keeping the field sparse means
+ * the content hash covers only what the author actually declared, so a
+ * definition that omits the field hashes identically to one authored before the
+ * field existed. Undeclared keys are rejected so a typo such as `invokr` or
+ * `principal` fails at the wire boundary rather than riding through as an inert
+ * unknown key.
  */
 export const MailAccept = type({
   "invoker?": "boolean",
   "self?": "boolean",
   "tenant?": "boolean",
   "correspondent?": "boolean",
-  "parent?": "boolean",
-  "child?": "boolean",
   "principals?": "string[]",
   "definitions?": "string[]",
 })

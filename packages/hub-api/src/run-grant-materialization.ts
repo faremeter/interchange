@@ -168,8 +168,6 @@ export function deriveRunRuntimeGrantRows(
 const MAIL_ACCEPT_INVOKER_MARKER = mailAcceptRelationToken("invoker");
 const MAIL_ACCEPT_SELF_MARKER = mailAcceptRelationToken("self");
 const MAIL_ACCEPT_TENANT_MARKER = mailAcceptRelationToken("tenant");
-const MAIL_ACCEPT_PARENT_MARKER = mailAcceptRelationToken("parent");
-const MAIL_ACCEPT_CHILD_MARKER = mailAcceptRelationToken("child");
 const MAIL_ACCEPT_CORRESPONDENT_MARKER =
   mailAcceptRelationToken("correspondent");
 
@@ -218,15 +216,13 @@ function resolveMailAcceptMarker(
       return mailAcceptResource("definition", ctx.definitionId);
     case MAIL_ACCEPT_TENANT_MARKER:
       return mailAcceptResource("tenant", ctx.tenantId);
-    case MAIL_ACCEPT_PARENT_MARKER:
-    case MAIL_ACCEPT_CHILD_MARKER:
     case MAIL_ACCEPT_CORRESPONDENT_MARKER:
-      // Dynamic relations: the counterparty (a parent, a child, or an
-      // established correspondent) is not known from the frozen definition at
-      // launch -- it is determined per inbound message (a spawn or a send).
-      // Their run-time resolution and enforcement are deferred to their own
-      // issues; they are neither materialized here nor evaluated by the gate
-      // yet, so declaring one today is inert. Skipped here without error.
+      // `correspondent` is dynamic: the counterparty is not known from the
+      // frozen definition at launch -- it is the party the run mails, resolved
+      // and minted at the send instant (see `createCorrespondentGrantMinter`).
+      // So it materializes no launch row; skipped here without error. Its
+      // presence in the snapshot is the deploy-time approval the send-time mint
+      // gates on.
       return null;
     default:
       throw new Error(
@@ -247,8 +243,9 @@ function resolveMailAcceptMarker(
  * `invoker` resolves to `mail.accept:principal:<invokerPrincipalId>` (skipped
  * when no invoker resolved), `self` to `mail.accept:definition:<definitionId>`,
  * and `tenant` to `mail.accept:tenant:<tenantId>`. Explicit concrete
- * coordinates pass through. `parent`/`child`/`correspondent` are dynamic and
- * not materializable at launch, so they are skipped. Rows are deduplicated by
+ * coordinates pass through. `correspondent` is dynamic and not materializable
+ * at launch (it is minted at the send instant), so it is skipped. Rows are
+ * deduplicated by
  * resolved resource string (markers repeat per step, and `self`/`invoker` may
  * collide with an explicit coordinate), mirroring the runtime derivation's
  * per-resource dedup. Every emitted row is a creator-origin `accept`/`allow`

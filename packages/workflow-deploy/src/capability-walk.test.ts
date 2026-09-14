@@ -632,23 +632,24 @@ describe("walkCapabilities", () => {
     return new Set(declarations.grants);
   }
 
-  test("authored relational toggles emit relation tokens with defaults filled", () => {
+  test("authored relational toggles emit relation tokens", () => {
     const workflow = defineWorkflow({
       id: "wf_accept_relational",
       agent: makeTrivialAgent(),
       trigger: { type: "mail", to: "run_test-agent@integration.interchange" },
-      mailAccept: { invoker: true, parent: false },
+      mailAccept: { invoker: true, tenant: true },
     });
 
     const grants = mailAcceptGrantsOf(workflow);
 
-    // invoker authored on, child defaults on, parent explicitly off.
+    // Authored-on relations emit their token; omitted relations do not.
     expect(grants.has("mail.accept:invoker")).toBe(true);
-    expect(grants.has("mail.accept:child")).toBe(true);
-    expect(grants.has("mail.accept:parent")).toBe(false);
+    expect(grants.has("mail.accept:tenant")).toBe(true);
+    expect(grants.has("mail.accept:self")).toBe(false);
+    expect(grants.has("mail.accept:correspondent")).toBe(false);
   });
 
-  test("a mail trigger with no mailAccept emits the parent/child defaults", () => {
+  test("a mail trigger with no mailAccept emits no relation markers", () => {
     const workflow = defineWorkflow({
       id: "wf_accept_default",
       agent: makeTrivialAgent(),
@@ -657,9 +658,7 @@ describe("walkCapabilities", () => {
 
     const grants = mailAcceptGrantsOf(workflow);
 
-    expect(grants.has("mail.accept:parent")).toBe(true);
-    expect(grants.has("mail.accept:child")).toBe(true);
-    // No relation was authored on beyond the defaults.
+    // Every relation is opt-in: an absent mailAccept accepts nothing.
     expect(grants.has("mail.accept:invoker")).toBe(false);
     expect(grants.has("mail.accept:self")).toBe(false);
     expect(grants.has("mail.accept:tenant")).toBe(false);
@@ -667,11 +666,8 @@ describe("walkCapabilities", () => {
   });
 
   test("a definition with no mail trigger emits no mail.accept grants", () => {
-    // The guard: `resolveMailAcceptRelations` defaults to {parent, child} for an
-    // absent field, so an unguarded fold would stamp accept markers onto every
-    // non-mail workflow. `defineWorkflow` rejects a `mailAccept` without a mail
-    // trigger, so attach one directly to prove the walk drops it even when
-    // declared.
+    // `defineWorkflow` rejects a `mailAccept` without a mail trigger, so attach
+    // one directly to prove the walk drops it even when declared.
     const base = defineWorkflow({
       id: "wf_accept_nomail",
       agent: makeTrivialAgent(),
@@ -679,7 +675,7 @@ describe("walkCapabilities", () => {
     });
     const workflow: WorkflowDefinition = {
       ...base,
-      mailAccept: { invoker: true, parent: false, principals: ["prn_x"] },
+      mailAccept: { invoker: true, principals: ["prn_x"] },
     };
 
     const grants = mailAcceptGrantsOf(workflow);

@@ -3,7 +3,7 @@
  *
  * A relation names one class of counterparty that a `mail.accept` policy may
  * approve at deploy time: the workflow invoker, the workflow itself, the
- * tenant, an established correspondent, a parent, or a child. The deploy-time
+ * tenant, or an established correspondent. The deploy-time
  * marker string is OPAQUE: the approval gate compares it by exact set
  * membership and nothing parses it. Only the concrete coordinate grammar in
  * `./coord` (`mail.accept:<coord-type>:<id>`) is parsed and matched at run
@@ -24,9 +24,7 @@ export type MailAcceptRelation =
   | "invoker"
   | "self"
   | "tenant"
-  | "correspondent"
-  | "parent"
-  | "child";
+  | "correspondent";
 
 export type AuthoredMailAccept =
   | {
@@ -34,8 +32,6 @@ export type AuthoredMailAccept =
       self?: boolean;
       tenant?: boolean;
       correspondent?: boolean;
-      parent?: boolean;
-      child?: boolean;
     }
   | undefined
   | null;
@@ -45,10 +41,11 @@ export function mailAcceptRelationToken(relation: MailAcceptRelation): string {
 }
 
 /**
- * The single authoritative home for the relational default-on rule. Callers
- * must never re-derive it: `parent` and `child` are enabled unless authored
- * `false`; `invoker`, `self`, `tenant`, and `correspondent` are disabled unless
- * authored `true`. A wholly absent authored value yields `{parent, child}`.
+ * The single authoritative home for the relational enablement rule. Callers
+ * must never re-derive it: a relation is enabled only when authored `true`. A
+ * wholly absent authored value yields the empty set -- a definition accepts
+ * nothing on the relational axis unless it opts in, matching the admission
+ * gate's default-deny.
  */
 export function resolveMailAcceptRelations(
   authored: AuthoredMailAccept,
@@ -59,8 +56,6 @@ export function resolveMailAcceptRelations(
   if (authored?.self === true) enabled.add("self");
   if (authored?.tenant === true) enabled.add("tenant");
   if (authored?.correspondent === true) enabled.add("correspondent");
-  if (authored?.parent !== false) enabled.add("parent");
-  if (authored?.child !== false) enabled.add("child");
 
   return enabled;
 }

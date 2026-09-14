@@ -811,14 +811,10 @@ describe("deriveMailAcceptGrantRows", () => {
     ]);
   });
 
-  test("skips parent/child/correspondent markers without error", () => {
-    expect(
-      resources([
-        "mail.accept:parent",
-        "mail.accept:child",
-        "mail.accept:correspondent",
-      ]),
-    ).toEqual([]);
+  test("skips the correspondent marker without error", () => {
+    // `correspondent` is dynamic -- minted at the send instant, never at launch
+    // -- so it materializes no launch row.
+    expect(resources(["mail.accept:correspondent"])).toEqual([]);
   });
 
   test("emits no invoker row when no invoker principal resolved", () => {

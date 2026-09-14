@@ -1179,20 +1179,20 @@ describe("wire validator preserves mailAccept", () => {
     // silently, with no error. Round-trip a projected definition through the
     // schema and assert the accept-rules survive with only the declared keys.
     const projection = projectLiveToInert(
-      acceptWorkflow({ invoker: true, child: false }),
+      acceptWorkflow({ invoker: true, tenant: false }),
     );
-    expect(projection.mailAccept).toEqual({ invoker: true, child: false });
+    expect(projection.mailAccept).toEqual({ invoker: true, tenant: false });
     const validated = WorkflowProjectionDefinition(projection);
     if (validated instanceof type.errors) {
       throw new Error(
         `projection failed the wire schema: ${validated.summary}`,
       );
     }
-    expect(validated.mailAccept).toEqual({ invoker: true, child: false });
+    expect(validated.mailAccept).toEqual({ invoker: true, tenant: false });
     // A relation the author left unset stays absent through the wire boundary
     // rather than being materialized to a default.
-    expect(validated.mailAccept).not.toHaveProperty("parent");
-    expect(validated.mailAccept).not.toHaveProperty("tenant");
+    expect(validated.mailAccept).not.toHaveProperty("self");
+    expect(validated.mailAccept).not.toHaveProperty("correspondent");
   });
 
   test("malformed accept-rules are rejected, not silently stripped, at the wire boundary", () => {

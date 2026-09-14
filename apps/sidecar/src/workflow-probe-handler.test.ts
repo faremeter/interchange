@@ -207,27 +207,19 @@ describe("createWorkflowProbeExecutor", () => {
       expect(result.projection.id).toBe("probe-fixture");
       expect(result.projection.stepOrder).toEqual(["wait"]);
       expect(result.grants).toEqual([
-        "mail.accept:child",
-        "mail.accept:parent",
         "mail.address:probe@example.com",
         "mail.send:example.com",
       ]);
       // The un-flattened snapshot preserves the per-step grouping and the
       // (here empty) tool-grant effect map the flattened `grants` discards.
-      // The `wait` step carries the deployment-wide trigger grants plus the
-      // default-on parent/child relational accept markers (the fixture
-      // declares a mail trigger but no explicit mailAccept, so parent and
-      // child default on).
+      // The `wait` step carries the deployment-wide trigger grants and no
+      // relational accept markers: every relation is opt-in, and the fixture
+      // declares a mail trigger but no explicit mailAccept, so none resolve.
       expect(result.grantWalkSnapshot).toEqual({
         perStep: [
           {
             stepId: "wait",
-            grants: [
-              "mail.address:probe@example.com",
-              "mail.send:example.com",
-              "mail.accept:parent",
-              "mail.accept:child",
-            ],
+            grants: ["mail.address:probe@example.com", "mail.send:example.com"],
             grantEffects: {},
           },
         ],

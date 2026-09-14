@@ -34,10 +34,10 @@
 //                                        send mail as that domain)
 //   - `mail.accept:<relation>`       -- a relational accept marker
 //                                        (`invoker`/`self`/`tenant`/
-//                                        `correspondent`/`parent`/`child`)
+//                                        `correspondent`)
 //                                        resolved from the definition's
 //                                        authored `mailAccept` via the
-//                                        shared default resolver
+//                                        shared relation resolver
 //   - `mail.accept:principal:<id>`   -- an explicit principal coordinate
 //                                        from `mailAccept.principals[]`
 //   - `mail.accept:definition:<id>`  -- an explicit definition coordinate
@@ -477,18 +477,14 @@ function collectTriggerGrants(workflow: WorkflowDefinition): string[] {
  * definition's authored `mailAccept` field.
  *
  * GUARD: emit accept markers ONLY when the definition declares a mail
- * trigger -- the same condition `collectTriggerGrants` gates its axis on.
- * `resolveMailAcceptRelations` returns the `{parent, child}` default set for
- * an ABSENT `mailAccept`, so an unguarded fold would stamp
- * `mail.accept:parent`/`mail.accept:child` onto EVERY definition, including
- * non-mail workflows that can never receive inbound mail. That would grow
- * every deployment's approval surface with markers it can never exercise and
- * force needless re-approval on re-probe. A definition with no mail trigger
- * therefore emits NO `mail.accept:*` strings, regardless of its `mailAccept`
- * field.
+ * trigger -- the same condition `collectTriggerGrants` gates its axis on. Every
+ * relation is opt-in (`resolveMailAcceptRelations` enables one only when
+ * authored `true`), so an absent `mailAccept` already emits nothing; the guard
+ * is defense in depth so a non-mail workflow -- which can never receive inbound
+ * mail -- emits NO `mail.accept:*` strings regardless of its `mailAccept` field.
  *
  * Relational toggles resolve through the shared `resolveMailAcceptRelations`
- * resolver (the single home of the default-on rule -- not re-derived here) and
+ * resolver (the single home of the enablement rule -- not re-derived here) and
  * emit id-less relation tokens. Explicit `principals`/`definitions` ids emit
  * concrete coordinates known at deploy time. Both feed the same approval-gate
  * set membership check, which treats every grant string as opaque.

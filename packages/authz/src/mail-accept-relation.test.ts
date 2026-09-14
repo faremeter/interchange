@@ -13,8 +13,6 @@ describe("mailAcceptRelationToken", () => {
       { relation: "self", token: "mail.accept:self" },
       { relation: "tenant", token: "mail.accept:tenant" },
       { relation: "correspondent", token: "mail.accept:correspondent" },
-      { relation: "parent", token: "mail.accept:parent" },
-      { relation: "child", token: "mail.accept:child" },
     ];
 
     for (const { relation, token } of cases) {
@@ -24,39 +22,42 @@ describe("mailAcceptRelationToken", () => {
 });
 
 describe("resolveMailAcceptRelations", () => {
-  test("defaults parent and child on when the authored value is absent", () => {
+  test("yields the empty set when the authored value is absent", () => {
+    // Every relation is opt-in: an absent policy accepts nothing on the
+    // relational axis, matching the admission gate's default-deny.
     expect(resolveMailAcceptRelations(undefined)).toEqual(
-      new Set<MailAcceptRelation>(["parent", "child"]),
+      new Set<MailAcceptRelation>(),
     );
     expect(resolveMailAcceptRelations(null)).toEqual(
-      new Set<MailAcceptRelation>(["parent", "child"]),
+      new Set<MailAcceptRelation>(),
     );
     expect(resolveMailAcceptRelations({})).toEqual(
-      new Set<MailAcceptRelation>(["parent", "child"]),
+      new Set<MailAcceptRelation>(),
     );
   });
 
-  test("an explicit false disables a default-on relation", () => {
-    expect(resolveMailAcceptRelations({ parent: false })).toEqual(
-      new Set<MailAcceptRelation>(["child"]),
+  test("enables only the relations authored true", () => {
+    expect(resolveMailAcceptRelations({ invoker: true })).toEqual(
+      new Set<MailAcceptRelation>(["invoker"]),
+    );
+    expect(
+      resolveMailAcceptRelations({ tenant: true, correspondent: true }),
+    ).toEqual(new Set<MailAcceptRelation>(["tenant", "correspondent"]));
+  });
+
+  test("an explicit false is the same as absent (off)", () => {
+    expect(resolveMailAcceptRelations({ invoker: false })).toEqual(
+      new Set<MailAcceptRelation>(),
     );
   });
 
-  test("mixes an explicit enable with an explicit disable", () => {
-    expect(resolveMailAcceptRelations({ invoker: true, child: false })).toEqual(
-      new Set<MailAcceptRelation>(["invoker", "parent"]),
-    );
-  });
-
-  test("enables all six relations when every relation is authored true", () => {
+  test("enables all relations when every relation is authored true", () => {
     expect(
       resolveMailAcceptRelations({
         invoker: true,
         self: true,
         tenant: true,
         correspondent: true,
-        parent: true,
-        child: true,
       }),
     ).toEqual(
       new Set<MailAcceptRelation>([
@@ -64,15 +65,7 @@ describe("resolveMailAcceptRelations", () => {
         "self",
         "tenant",
         "correspondent",
-        "parent",
-        "child",
       ]),
-    );
-  });
-
-  test("leaves the default-off relations off when they are absent", () => {
-    expect(resolveMailAcceptRelations({ tenant: true })).toEqual(
-      new Set<MailAcceptRelation>(["tenant", "parent", "child"]),
     );
   });
 });

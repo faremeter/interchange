@@ -526,15 +526,13 @@ describe("mailAccept", () => {
       id: "w",
       trigger: { type: "mail", to: "s@x.example" },
       steps: { a: step({ agent: makeAgent("a") }) },
-      mailAccept: { invoker: true, child: false },
+      mailAccept: { invoker: true, tenant: false },
     });
-    expect(def.mailAccept).toEqual({ invoker: true, child: false });
+    expect(def.mailAccept).toEqual({ invoker: true, tenant: false });
     // The relations the author omitted stay unset rather than defaulted -- the
     // field is sparse and no key is populated for a relation the author omitted.
-    // The default-on resolution lives in the shared resolver, not here.
-    expect(def.mailAccept).not.toHaveProperty("parent");
+    // The opt-in resolution lives in the shared resolver, not here.
     expect(def.mailAccept).not.toHaveProperty("self");
-    expect(def.mailAccept).not.toHaveProperty("tenant");
     expect(def.mailAccept).not.toHaveProperty("correspondent");
   });
 

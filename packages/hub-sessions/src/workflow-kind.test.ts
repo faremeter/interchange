@@ -304,7 +304,7 @@ describe("workflowDefinitionEnvelopeSchema", () => {
       stepOrder: ["first"],
       mailAccept: {
         invoker: true,
-        child: false,
+        tenant: false,
         principals: ["principal-1"],
       },
     };
@@ -315,8 +315,8 @@ describe("workflowDefinitionEnvelopeSchema", () => {
     expect(validated.mailAccept).toEqual(blob.mailAccept);
     // The unset relations stay absent -- the envelope does not populate a
     // default for a relation the author omitted.
-    expect(validated.mailAccept).not.toHaveProperty("parent");
-    expect(validated.mailAccept).not.toHaveProperty("tenant");
+    expect(validated.mailAccept).not.toHaveProperty("self");
+    expect(validated.mailAccept).not.toHaveProperty("correspondent");
   });
 });
 
