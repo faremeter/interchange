@@ -49,6 +49,7 @@ export function createHubSessionLookups(
   Omit<
     SidecarLookups,
     | "materializeMailTriggeredRunGrants"
+    | "mintCorrespondentGrant"
     | "resyncCredentials"
     | "resolveSenderKey"
     | "resolveSenderKeyStrict"

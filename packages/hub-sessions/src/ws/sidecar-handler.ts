@@ -1861,6 +1861,21 @@ export function createSidecarRouter(
     // Route to locally connected sidecars first, then try disconnect queues.
     const unrouted: string[] = [];
     for (const recipient of recipients) {
+      // Record the recipient as a correspondent of the sending run so its reply
+      // is admitted (the dynamic `correspondent` relation). Minted on the send
+      // ACT, independent of the routing outcome below, and only when the sender
+      // is one of our runs. The minter no-ops unless the sending definition
+      // authored `correspondent` and the run is live, and never throws, so it
+      // cannot break delivery for this recipient or its co-recipients.
+      if (
+        lookups.mintCorrespondentGrant !== undefined &&
+        isRunAddress(authenticatedSender)
+      ) {
+        await lookups.mintCorrespondentGrant({
+          senderAddress: authenticatedSender,
+          recipientAddress: recipient,
+        });
+      }
       // Each recipient is isolated: a materialization failure or a
       // fail-closed rejection for one must not drop the mail for its
       // co-recipients. The catch fails THIS recipient closed (its run never

@@ -14,6 +14,7 @@ import { timeWindowEvaluator } from "@intx/authz";
 import {
   createApp,
   createAuth,
+  createCorrespondentGrantMinter,
   createMailTriggeredRunGrantsMaterializer,
 } from "@intx/hub-api";
 import {
@@ -266,6 +267,14 @@ export async function createHubServer({
     // throw both fail the binding closed (see `resolveSenderPrincipal`).
     resolveSenderPrincipal: (address) =>
       resolveSenderPrincipal(db, principalKeyStore, address),
+    // Records a correspondent at the send seam: when a live run mails a party,
+    // the sending run gains a `mail.accept:principal:<recipient>` grant so that
+    // party's reply is admitted. Gated on the sending definition having
+    // authored the `correspondent` relation; best-effort, never breaks a send.
+    mintCorrespondentGrant: createCorrespondentGrantMinter({
+      db,
+      principalKeyStore,
+    }),
   };
 
   const sidecarCredentials = createSidecarCredentialResolver({ db });

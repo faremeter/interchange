@@ -27,8 +27,10 @@ export {
 } from "./routes/workflow-principal-name";
 export {
   createMailTriggeredRunGrantsMaterializer,
+  createCorrespondentGrantMinter,
   setRunToolGrantEffect,
   type MailTriggeredRunGrantsDeps,
+  type CorrespondentGrantMinterDeps,
 } from "./run-grant-materialization";
 export {
   resolveDefinitionSources,

@@ -18,8 +18,11 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { GrantWalkSnapshot } from "@intx/types";
-import type { MailAcceptCoordinate } from "@intx/authz";
-import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
+import { mailAcceptResource, type MailAcceptCoordinate } from "@intx/authz";
+import {
+  createCorrespondentGrantMinter,
+  createMailTriggeredRunGrantsMaterializer,
+} from "@intx/hub-api";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -384,6 +387,163 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(grant)
         .where(eq(grant.resource, "tool:read_file"));
       expect(runGrants).toHaveLength(0);
+    });
+
+    describe("createCorrespondentGrantMinter (send-seam)", () => {
+      const SENDER_PRINCIPAL = "prn_sender_run";
+      const RECIPIENT_RUN_ID = "run_recipient";
+      const RECIPIENT_ADDRESS = "run_recipient@tenant.example";
+      const RECIPIENT_PRINCIPAL = "prn_recipient";
+      const CORRESPONDENT_RESOURCE = mailAcceptResource(
+        "principal",
+        RECIPIENT_PRINCIPAL,
+      );
+
+      // A frozen snapshot that authored the `correspondent` relation: the deploy
+      // marker is present, so the send-time mint is authorized.
+      function correspondentSnapshot(): GrantWalkSnapshot {
+        return {
+          perStep: [
+            {
+              stepId: "work",
+              grants: ["mail.accept:correspondent"],
+              grantEffects: {},
+            },
+          ],
+          grantRequirements: [],
+        };
+      }
+
+      // Give the seeded deployment run a principal and a live/terminal status:
+      // the send-seam mint hangs the correspondent grant off the SENDING run's
+      // principal and only mints for a live run.
+      async function makeSenderRun(status: "running" | "completed") {
+        await seedPrincipal(h.db, {
+          id: SENDER_PRINCIPAL,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: DEPLOYMENT,
+        });
+        await h.db
+          .update(workflowRun)
+          .set({ principalId: SENDER_PRINCIPAL, status })
+          .where(eq(workflowRun.id, DEPLOYMENT));
+      }
+
+      // A recipient run that resolves to a durable principal: `resolveSenderKey`
+      // reads its `public_key`/`principal_id` off the run row, so the reply's
+      // coordinate the gate later matches is exactly this principal.
+      async function seedRecipientRun() {
+        await seedPrincipal(h.db, {
+          id: RECIPIENT_PRINCIPAL,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: RECIPIENT_RUN_ID,
+        });
+        await h.db.insert(workflowRun).values({
+          id: RECIPIENT_RUN_ID,
+          tenantId: TENANT,
+          anchorRunId: RECIPIENT_RUN_ID,
+          definitionId: DEFINITION,
+          address: RECIPIENT_ADDRESS,
+          status: "running",
+          principalId: RECIPIENT_PRINCIPAL,
+          publicKey: "ab".repeat(32),
+        });
+      }
+
+      function mint() {
+        return createCorrespondentGrantMinter({
+          db: h.db,
+          principalKeyStore: createPrincipalKeyStore({
+            db: h.db,
+            cipher: createTestCredentialCipher(),
+          }),
+        });
+      }
+
+      async function correspondentRows() {
+        return h.db
+          .select()
+          .from(grant)
+          .where(eq(grant.resource, CORRESPONDENT_RESOURCE));
+      }
+
+      test("mints a correspondent accept-grant on the sending run when the definition authored correspondent", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        await seedRecipientRun();
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddress: RECIPIENT_ADDRESS,
+        });
+
+        const rows = await correspondentRows();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.principalId).toBe(SENDER_PRINCIPAL);
+        expect(rows[0]?.action).toBe("accept");
+        expect(rows[0]?.effect).toBe("allow");
+        expect(rows[0]?.origin).toBe("creator");
+      });
+
+      test("mints nothing when the sending definition did not author correspondent", async () => {
+        // The base snapshot declares `mail.accept:tenant`, never correspondent.
+        await seedFrozenSnapshot(snapshot("secret:vault"));
+        await makeSenderRun("running");
+        await seedRecipientRun();
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddress: RECIPIENT_ADDRESS,
+        });
+
+        expect(await correspondentRows()).toHaveLength(0);
+      });
+
+      test("mints nothing when the sending run is terminal", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("completed");
+        await seedRecipientRun();
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddress: RECIPIENT_ADDRESS,
+        });
+
+        expect(await correspondentRows()).toHaveLength(0);
+      });
+
+      test("is idempotent: a repeat mail to the same recipient does not accrue a second row", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        await seedRecipientRun();
+
+        const minter = mint();
+        await minter({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddress: RECIPIENT_ADDRESS,
+        });
+        await minter({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddress: RECIPIENT_ADDRESS,
+        });
+
+        expect(await correspondentRows()).toHaveLength(1);
+      });
+
+      test("mints nothing when the recipient does not resolve to a principal", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        // No recipient run seeded: the address resolves to no durable principal.
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddress: RECIPIENT_ADDRESS,
+        });
+
+        expect(await correspondentRows()).toHaveLength(0);
+      });
     });
   },
 );

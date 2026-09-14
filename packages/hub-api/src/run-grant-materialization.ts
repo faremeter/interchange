@@ -14,7 +14,7 @@
 // transport, so each orchestrates delivery itself around the shared
 // staging and commit below.
 
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import {
@@ -31,7 +31,9 @@ import {
   createPrincipalStore,
   createWorkflowRunStore,
   loadFrozenGrantSnapshot,
+  resolveSenderPrincipal,
 } from "@intx/db";
+import { getLogger } from "@intx/log";
 import type {
   GrantStore,
   GrantRule,
@@ -1063,5 +1065,124 @@ export function createMailTriggeredRunGrantsMaterializer(
       outcome: "materialized",
       stepGrants,
     };
+  };
+}
+
+const correspondentLogger = getLogger(["hub-api", "correspondent-grant"]);
+
+export type CorrespondentGrantMinterDeps = {
+  db: DB["db"];
+  principalKeyStore: PrincipalKeyStore;
+};
+
+/**
+ * Mint the accept-grant that admits a reply from a party a run mails -- the
+ * dynamic `correspondent` relation (design-of-record v4 §D/R3/§H). Launch
+ * materialization cannot enumerate future correspondents, so the grant is
+ * committed at the send instant instead: when a live run mails a party, a
+ * `mail.accept:principal:<recipient>` allow row is added to the SENDING run's
+ * principal, so the reply (recipient -> sender) is admitted by the ordinary
+ * deliver-to-existing gate with no new admission path. The recipient is
+ * resolved through the SAME `resolveSenderPrincipal` the reply resolves
+ * through, so the minted principal id is byte-identical to the coordinate the
+ * reply presents.
+ *
+ * Fail-closed and bounded:
+ * - The sending definition must carry the approved `mail.accept:correspondent`
+ *   marker in its frozen snapshot; absent it, nothing is minted.
+ * - A terminal or absent sending run mints nothing (§H terminal-inertness); the
+ *   row is only reachable while the run is live, and a re-execution mints a new
+ *   principal that cannot inherit it.
+ * - A principal-less sending run or an unresolvable/external recipient mints
+ *   nothing.
+ * - The insert is deduplicated under a `FOR UPDATE` lock on the sending run, so
+ *   a repeat mail to the same recipient does not accrue a second row.
+ *
+ * Best-effort: minting is a side effect of sending and MUST NOT break delivery,
+ * so any fault degrades to no grant and is logged, mirroring the send path's
+ * frame-key resolver.
+ */
+export function createCorrespondentGrantMinter(
+  deps: CorrespondentGrantMinterDeps,
+): (args: {
+  senderAddress: string;
+  recipientAddress: string;
+}) => Promise<void> {
+  return async (args) => {
+    const senderAddress = args.senderAddress.toLowerCase();
+    try {
+      await deps.db.transaction(async (tx) => {
+        // Lock the SENDING run row. A terminal/absent run mints nothing, and
+        // the lock serializes concurrent sends from the same run so the dedup
+        // below cannot be raced.
+        const [sender] = await tx
+          .select({
+            status: workflowRun.status,
+            principalId: workflowRun.principalId,
+            definitionId: workflowRun.definitionId,
+            tenantId: workflowRun.tenantId,
+          })
+          .from(workflowRun)
+          .where(eq(sql`lower(${workflowRun.address})`, senderAddress))
+          .limit(1)
+          .for("update");
+        if (sender === undefined) return;
+        if (!isLiveWorkflowRunStatus(sender.status)) return;
+        if (sender.principalId === null) return;
+
+        // Gate: the sending definition must have been approved for the
+        // `correspondent` relation (the marker in its frozen snapshot).
+        const snapshot = await loadFrozenGrantSnapshot(tx, sender.definitionId);
+        if (snapshot === null) return;
+        const authorized = snapshot.perStep.some((step) =>
+          step.grants.includes(MAIL_ACCEPT_CORRESPONDENT_MARKER),
+        );
+        if (!authorized) return;
+
+        const recipient = await resolveSenderPrincipal(
+          tx,
+          deps.principalKeyStore,
+          args.recipientAddress,
+        );
+        if (recipient === null) return;
+
+        const resource = mailAcceptResource("principal", recipient.principalId);
+        // No unique constraint exists on `(principalId, resource, action)` (a
+        // principal may hold both an allow and a deny), so dedup with a guarded
+        // insert under the run lock rather than an ON CONFLICT.
+        const [existing] = await tx
+          .select({ id: grantTable.id })
+          .from(grantTable)
+          .where(
+            and(
+              eq(grantTable.principalId, sender.principalId),
+              eq(grantTable.resource, resource),
+              eq(grantTable.action, MAIL_ACCEPT_ACTION),
+            ),
+          )
+          .limit(1);
+        if (existing !== undefined) return;
+
+        const now = new Date();
+        await tx.insert(grantTable).values({
+          id: generateId("grant"),
+          tenantId: sender.tenantId,
+          principalId: sender.principalId,
+          resource,
+          action: MAIL_ACCEPT_ACTION,
+          effect: "allow",
+          conditions: null,
+          // A correspondent grant materializes the definition's creator-declared
+          // `correspondent` policy, so it shares the `creator` provenance of the
+          // launch-time `mail.accept` rows.
+          origin: "creator",
+          expiresAt: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+      });
+    } catch (cause) {
+      correspondentLogger.error`Failed to mint a correspondent accept-grant (sender ${args.senderAddress} -> recipient ${args.recipientAddress}): ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
   };
 }
