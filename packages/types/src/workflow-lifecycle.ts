@@ -1,4 +1,5 @@
 import { type } from "arktype";
+import { sidecarAllocationStatuses } from "./sidecar-allocation";
 
 // Fixed policy range with ample headroom for deployment and terminal timestamps.
 const MAX_LIFECYCLE_DURATION_MS = 36_500 * 86_400_000;
@@ -72,6 +73,21 @@ export type ResolvedWorkflowLifecyclePolicy = {
     NonNullable<WorkflowLifecyclePolicy["capacityRetention"]>
   >;
 };
+
+export const WorkflowLifecycleResponse = type({
+  runId: "string",
+  status: "'deployed' | 'running' | 'completed' | 'failed' | 'cancelled'",
+  policy: WorkflowLifecyclePolicy,
+  expiresAt: "string | null",
+  cancellationRequestedAt: "string | null",
+  capacityReleaseAt: "string | null",
+  allocation: type({
+    id: "string",
+    status: type.enumerated(...sidecarAllocationStatuses),
+    failureCode: "string | null",
+    failureMessage: "string | null",
+  }).or("null"),
+});
 
 export type WorkflowLifecyclePolicyResolution =
   | { ok: true; policy: WorkflowLifecyclePolicy }

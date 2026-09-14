@@ -12,9 +12,14 @@ export const sidecarAllocationStatuses = [
 export type SidecarAllocationStatus =
   (typeof sidecarAllocationStatuses)[number];
 
+export type DispatchableSidecarAllocationStatus = Extract<
+  SidecarAllocationStatus,
+  "pending" | "provisioning" | "allocated" | "replacing"
+>;
+
 export function isSidecarAllocationDispatchable(
   status: SidecarAllocationStatus,
-): boolean {
+): status is DispatchableSidecarAllocationStatus {
   switch (status) {
     case "pending":
     case "provisioning":

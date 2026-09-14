@@ -16,6 +16,7 @@ import { extractPartByPath } from "@intx/mime";
 
 import {
   WorkflowRunResponse,
+  WorkflowLifecycleResponse,
   ErrorResponse,
   WorkflowRunHealth,
   RunAuthorizationResponse,
@@ -27,6 +28,7 @@ import {
 } from "@intx/types";
 import {
   createWorkflowRunReader,
+  type WorkflowLifecycleService,
   findRoutableById,
   resolveRunIdForSession,
   runRowToRoutableRecord,
@@ -36,6 +38,7 @@ import {
   type SessionService,
   type SidecarRouter,
   type WorkflowDispatchService,
+  WORKFLOW_RUN_REF,
 } from "@intx/hub-sessions";
 import { formatOffering } from "./offerings";
 import { formatApproval } from "./approvals";
@@ -51,7 +54,7 @@ import { errorResponse } from "../error-response";
 import { idResource } from "../middleware/grant";
 import type { RequireGrant } from "../middleware/grant";
 import { loadCommittedRunGrants } from "../run-grant-materialization";
-import { workflowRunRepoId, WORKFLOW_RUN_REF } from "../workflow-run-lifecycle";
+import { workflowRunRepoId } from "../workflow-run-lifecycle";
 import {
   createWorkflowRunTrigger,
   MAX_MAIL_BODY_BYTES,
@@ -162,6 +165,7 @@ export type CreateRunRoutesDeps = {
   // Absent when the hub runs without durable dispatch; the trigger then 503s a
   // provisioned send, exactly as the deployment Trigger route does.
   workflowDispatchService?: WorkflowDispatchService;
+  workflowLifecycleService?: WorkflowLifecycleService;
   grantStore: GrantStore;
   conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
@@ -176,6 +180,7 @@ export function createRunRoutes({
   eventCollectors,
   repoStore,
   workflowDispatchService,
+  workflowLifecycleService,
   grantStore,
   conditionRegistry,
   requireGrant,
@@ -188,6 +193,7 @@ export function createRunRoutes({
   // log masquerading as real state.
   const runReader =
     repoStore !== null ? createWorkflowRunReader(repoStore) : null;
+  const lifecycleService = workflowLifecycleService ?? null;
 
   // The mail-send trigger fires the run through its workflow-native Trigger
   // path. It needs the run-event substrate (terminal-state read), so a null
@@ -629,6 +635,105 @@ export function createRunRoutes({
       return c.json(
         offerings.map((o) => formatOffering(o, definitionRow.name)),
       );
+    },
+  );
+
+  app.get(
+    "/:runId/lifecycle",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
+    describeRoute({
+      tags: ["Runs"],
+      summary: "Get workflow lifecycle status",
+      description:
+        "Returns the deployment's saved policy, deadlines, and allocation cleanup status. Policy edits apply to new deployments.",
+      responses: {
+        200: jsonResponse("Lifecycle status", WorkflowLifecycleResponse),
+        404: jsonResponse("Run not found", ErrorResponse),
+        503: jsonResponse(
+          "Workflow lifecycle service unavailable",
+          ErrorResponse,
+        ),
+      },
+    }),
+    async (c) => {
+      if (lifecycleService === null)
+        return errorResponse(
+          c,
+          "unavailable",
+          "Workflow lifecycle service unavailable",
+        );
+      const status = await lifecycleService.getStatus(
+        c.get("tenant").id,
+        c.req.param("runId"),
+      );
+      if (status === null)
+        return errorResponse(c, "not_found", "Run not found");
+      return c.json(status);
+    },
+  );
+
+  app.post(
+    "/:runId/capacity/release",
+    requireGrant(idResource("workflow-run", "runId"), "manage"),
+    describeRoute({
+      tags: ["Runs"],
+      summary: "Release workflow capacity",
+      description:
+        "Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Permanent cleanup failures require operator intervention and return 409. Returns 503 while accepted run history cannot yet be reconciled; retry later.",
+      responses: {
+        202: { description: "Release requested" },
+        204: { description: "Capacity already released or absent" },
+        404: jsonResponse("Run not found", ErrorResponse),
+        409: jsonResponse(
+          "Run is live or cleanup requires operator intervention",
+          ErrorResponse,
+        ),
+        503: jsonResponse(
+          "Workflow lifecycle service or run history unavailable",
+          ErrorResponse,
+        ),
+      },
+    }),
+    async (c) => {
+      if (lifecycleService === null)
+        return errorResponse(
+          c,
+          "unavailable",
+          "Workflow lifecycle service unavailable",
+        );
+      const tenantId = c.get("tenant").id;
+      const runId = c.req.param("runId");
+      const result = await lifecycleService.releaseCapacity(tenantId, runId);
+      switch (result) {
+        case "not_found":
+          return errorResponse(c, "not_found", "Run not found");
+        case "live":
+          return errorResponse(
+            c,
+            "conflict",
+            "Only terminal top-level runs can release their allocation",
+          );
+        case "history_pending":
+          return errorResponse(
+            c,
+            "unavailable",
+            "The run's accepted history is not reconciled yet; retry later",
+          );
+        case "cleanup_failed":
+          return errorResponse(
+            c,
+            "conflict",
+            "Capacity cleanup failed permanently; operator intervention is required",
+          );
+        case "released":
+          return c.body(null, 204);
+        case "pending":
+          c.header(
+            "Location",
+            `/api/tenants/${tenantId}/workflows/runs/${runId}/lifecycle`,
+          );
+          return c.body(null, 202);
+      }
     },
   );
 

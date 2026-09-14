@@ -32,6 +32,7 @@ import type {
   SidecarRouter,
   WorkflowAllocationService,
   WorkflowDispatchService,
+  WorkflowLifecycleService,
 } from "@intx/hub-sessions";
 
 import { createMeRoutes } from "./routes/me";
@@ -136,6 +137,7 @@ export type MountHubRoutesDeps = {
   sessionService: SessionService;
   workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
+  workflowLifecycleService?: WorkflowLifecycleService;
   eventCollectors: EventCollectorRegistry;
   /**
    * Encrypts credential secrets at rest on the credential/oauth write paths.
@@ -199,6 +201,7 @@ export function mountHubRoutes(
     sessionService,
     workflowAllocationService,
     workflowDispatchService,
+    workflowLifecycleService,
     eventCollectors,
     sidecarWsHandler,
     assetService,
@@ -331,6 +334,9 @@ export function mountHubRoutes(
       repoStore,
       ...(workflowDispatchService !== undefined
         ? { workflowDispatchService }
+        : {}),
+      ...(workflowLifecycleService !== undefined
+        ? { workflowLifecycleService }
         : {}),
       grantStore,
       conditionRegistry,
@@ -544,6 +550,7 @@ export type CreateAppOpts = {
   sessionService: SessionService;
   workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
+  workflowLifecycleService?: WorkflowLifecycleService;
   eventCollectors: EventCollectorRegistry;
   /**
    * Encrypts credential secrets at rest on the credential/oauth write paths.
@@ -582,6 +589,7 @@ export function createApp({
   sessionService,
   workflowAllocationService,
   workflowDispatchService,
+  workflowLifecycleService,
   eventCollectors,
   credentialCipher,
   principalKeyStore,
@@ -616,6 +624,9 @@ export function createApp({
       : {}),
     ...(workflowDispatchService !== undefined
       ? { workflowDispatchService }
+      : {}),
+    ...(workflowLifecycleService !== undefined
+      ? { workflowLifecycleService }
       : {}),
     eventCollectors,
     ...(credentialCipher ? { credentialCipher } : {}),

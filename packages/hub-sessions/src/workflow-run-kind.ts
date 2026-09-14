@@ -166,6 +166,7 @@ import fs from "node:fs";
 import git from "isomorphic-git";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import {
   authorizeUserPrincipal,
   type AuthorizeFn,
@@ -185,6 +186,17 @@ import {
 } from "./workflow-run-event-log";
 
 const logger = getLogger(["hub-sessions", "workflow-run-kind"]);
+
+// Workflow-run events commit on the substrate's default branch; the
+// supervisor wires the workflow-process child against this ref.
+export const WORKFLOW_RUN_REF = "refs/heads/main";
+
+export function workflowRunRepoIdForAddress(agentAddress: string) {
+  return {
+    kind: "workflow-run",
+    id: deriveWorkflowRunRepoId(agentAddress),
+  } as const satisfies RepoId;
+}
 
 export type WorkflowRunHubPrincipal = { readonly kind: "hub" };
 
