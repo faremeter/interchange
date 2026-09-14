@@ -70,6 +70,7 @@ import type { AuthzCallResult } from "@intx/inference";
 import type {
   ActionHandler,
   RunResult,
+  RuntimeWorkflowRun,
   Scheduler,
   ReadParkedApprovalOps,
   StepInvokeRequest,
@@ -81,7 +82,6 @@ import type {
   WorkflowAuthorizeFn,
   WorkflowDefinition,
   WorkflowPark,
-  WorkflowRun,
   WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import {
@@ -913,7 +913,7 @@ export async function runWorkflowChild(
   // race to settle the same residual and the loser throws an uncaught
   // TransitionError into its fire-and-forget continuation. Each site
   // removes its entry when the run reaches terminal.
-  const runsInFlight = new Map<string, WorkflowRun>();
+  const runsInFlight = new Map<string, RuntimeWorkflowRun>();
   for (const run of discovered) {
     const env = buildRuntimeEnv({
       runId: run.runId,
@@ -1150,7 +1150,7 @@ async function handleControlPayload(
     upstreamSender: ControlChannelSender;
     drainController: DrainController;
     triggeredRunIds: string[];
-    runsInFlight: Map<string, WorkflowRun>;
+    runsInFlight: Map<string, RuntimeWorkflowRun>;
     warmCache: WarmAgentCache | undefined;
     sourcesRef: SourcesSnapshotRef;
     credentialMaterialRef: CredentialMaterialRef;
@@ -1216,7 +1216,7 @@ async function handleControlPayload(
         },
         upstreamSender: ctx.upstreamSender,
       });
-      const handle: WorkflowRun = runtimeRun(ctx.definition, env, {
+      const handle = runtimeRun(ctx.definition, env, {
         runId: payload.data.runId,
         consumedMessageId: payload.data.messageId,
         triggerPayload,
@@ -1354,6 +1354,17 @@ async function handleControlPayload(
           await transientSignalChannel.stop();
         }
       })();
+      return false;
+    }
+    case "cancel.committed": {
+      const run = ctx.runsInFlight.get(payload.data.runId);
+      // Keep draining control replies while cancellation commits its cascade
+      // through the supervisor's substrate-write bridge.
+      if (run !== undefined) {
+        void run.applyCommittedCancellation().catch((error: unknown) => {
+          logger.error`Failed to apply committed cancellation for ${payload.data.runId}: ${error instanceof Error ? error.message : String(error)}`;
+        });
+      }
       return false;
     }
     case "drain": {

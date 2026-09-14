@@ -111,6 +111,18 @@ export class WorkflowControlUnreachableError extends Error {
   }
 }
 
+/**
+ * The worker acknowledged the control command, but the Hub could not process
+ * the acknowledgement in time. The worker answered, so this never counts as
+ * the worker failing to comply.
+ */
+export class WorkflowControlUnconfirmedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkflowControlUnconfirmedError";
+  }
+}
+
 /** A live worker connection did not answer the control command in time. */
 export class WorkflowControlTimeoutError extends Error {
   constructor(message: string) {
@@ -643,6 +655,9 @@ export function createSidecarRouter(
     }
   >();
   const allocationFences = new Map<string, number>();
+  // allocationId -> generation whose worker acknowledged a workflow stop. Its
+  // later workflow-run packs are refused, including after a reconnect.
+  const stoppedAllocations = new Map<string, number>();
   type AllocationWaiter = {
     generation: number;
     resolve(): void;
@@ -778,8 +793,12 @@ export function createSidecarRouter(
   const pendingWorkflowControls = new PendingTracker<
     string,
     void,
-    AllocatedSidecarTarget & { fail(error: Error): void }
-  >();
+    AllocatedSidecarTarget &
+      Pick<WorkflowControlFrame, "agentAddress" | "action"> & {
+        fail(error: Error): void;
+        received(): void;
+      }
+  >(scheduleTimeout);
 
   // requestId → pending workflow probe (resolved by workflow.probe.result,
   // rejected by workflow.probe.error). Result-carrying, unlike the other
@@ -1209,6 +1228,12 @@ export function createSidecarRouter(
     // Bypass frames (liveness + terminal responses to outbound requests)
     // dispatch immediately: they resolve the very promises a queued handler
     // may be blocked on, so queuing them would deadlock the round-trip.
+    // A queued stop acknowledgement may wait behind slow pack ingestion. The
+    // worker has answered, so its silence timeout stops here.
+    if (frame.type === "workflow.control.ack") {
+      const entry = pendingWorkflowControls.get(frame.requestId);
+      if (entry?.ws === ws) entry.meta.received();
+    }
     if (frameBypassesQueue(frame)) {
       // Guard so a bypass handler's failure -- a synchronous throw or an async
       // ack handler's rejection -- is logged rather than floating out of the
@@ -1242,9 +1267,12 @@ export function createSidecarRouter(
   // (a response cannot resolve "too early" for a request that already went
   // out), and it is exactly what in-flight queued handlers block on, so it MUST
   // run out of band. Every other frame establishes or reads routing, or carries
-  // an inbound payload whose order matters, so it queues. The exhaustive switch
-  // + assertNever makes adding a SidecarFrame variant without classifying it a
-  // compile error, not a latent deadlock or a silent bypass hole.
+  // an inbound payload whose order matters, so it queues. A workflow stop
+  // acknowledgement queues too: it ends the worker's history, so the packs the
+  // worker sent before it must land before the stop resolves and later packs
+  // are fenced. The exhaustive switch + assertNever makes adding a SidecarFrame
+  // variant without classifying it a compile error, not a latent deadlock or a
+  // silent bypass hole.
   function frameBypassesQueue(frame: SidecarFrame): boolean {
     switch (frame.type) {
       case "ping":
@@ -1253,7 +1281,6 @@ export function createSidecarRouter(
       case "agent.deploy.ack":
       case "agent.error":
       case "agent.undeploy.ack":
-      case "workflow.control.ack":
       case "repo.pack.ack":
       case "repo.pack.reject":
       case "workflow.probe.result":
@@ -1266,6 +1293,7 @@ export function createSidecarRouter(
       case "connector.state.changed":
       case "mail.inbound.ack":
       case "signal.correlation.register":
+      case "workflow.control.ack":
       case "repo.pack.push":
       case "repo.pack.done":
         return false;
@@ -2538,9 +2566,32 @@ export function createSidecarRouter(
     }
   }
 
+  function rejectStoppedWorkflowRunPack(
+    conn: SidecarConnection,
+    frame: PackPushFrame | PackDoneFrame,
+  ): boolean {
+    if (
+      frame.repoId.kind !== "workflow-run" ||
+      conn.identity.kind !== "allocated" ||
+      stoppedAllocations.get(conn.identity.allocationId) !==
+        conn.identity.generation
+    )
+      return false;
+    logger.warn`Rejected ${frame.type} from allocation ${conn.identity.allocationId} after its workflow stop`;
+    conn.send({
+      type: "repo.pack.reject",
+      agentAddress: frame.agentAddress,
+      repoId: frame.repoId,
+      transferId: frame.transferId,
+      reason: "path_violation",
+    });
+    return true;
+  }
+
   function handlePackPush(ws: WsHandle, frame: PackPushFrame): void {
     const conn = connections.get(ws);
     if (conn === undefined) return;
+    if (rejectStoppedWorkflowRunPack(conn, frame)) return;
     if (!connOwnsAddress(conn, frame.agentAddress)) {
       logger.warn`Received repo.pack.push for unrouted agent ${frame.agentAddress}`;
       return;
@@ -2589,6 +2640,7 @@ export function createSidecarRouter(
   ): Promise<void> {
     const conn = connections.get(ws);
     if (conn === undefined) return;
+    if (rejectStoppedWorkflowRunPack(conn, frame)) return;
     if (!connOwnsAddress(conn, frame.agentAddress)) {
       logger.warn`Received repo.pack.done for unrouted agent ${frame.agentAddress}`;
       return;
@@ -2701,6 +2753,9 @@ export function createSidecarRouter(
       );
     }
     allocationFences.set(allocationId, generation);
+    const stopped = stoppedAllocations.get(allocationId);
+    if (stopped !== undefined && stopped < generation)
+      stoppedAllocations.delete(allocationId);
 
     // A durable generation advance resolves unfinished initialization as failed.
     // This also covers a cleanup transaction whose response was lost: the next
@@ -2742,6 +2797,7 @@ export function createSidecarRouter(
 
     disconnectAllocation(target);
     allocationFences.delete(target.allocationId);
+    stoppedAllocations.delete(target.allocationId);
 
     // The fence is gone, so a lingering attempt can never settle normally.
     // Fail it here rather than leaving a marker that blocks the address.
@@ -3588,8 +3644,8 @@ export function createSidecarRouter(
       const current = await getAllocatedConnection(entry.meta, "routing");
       if (current.ws !== ws) return;
     } catch (cause) {
-      // A failed lookup leaves the command unknown, not refused. The caller
-      // retries, and the worker acknowledges a repeated command.
+      // A failed lookup leaves the stop unknown, not refused. The caller
+      // retries, and the worker acknowledges a repeated stop.
       fail(
         cause instanceof SidecarIdentityValidationError
           ? cause
@@ -3602,7 +3658,13 @@ export function createSidecarRouter(
     }
     if (frame.error !== undefined)
       fail(new WorkflowControlRejectedError(frame.error));
-    else pendingWorkflowControls.resolve(frame.requestId, undefined);
+    else {
+      if (entry.meta.action === "stop") {
+        stoppedAllocations.set(entry.meta.allocationId, entry.meta.generation);
+        removeAgentAddress(ws, entry.meta.agentAddress);
+      }
+      pendingWorkflowControls.resolve(frame.requestId, undefined);
+    }
   }
 
   async function sendWorkflowControl(
@@ -3631,24 +3693,53 @@ export function createSidecarRouter(
     }
     const requestId = nextRequestId();
     const timeoutMessage = `Workflow control ${requestId} timed out`;
+    const unconfirmedMessage = `Workflow control ${requestId} was acknowledged but not processed in time`;
     return new Promise<void>((resolve, reject) => {
+      let cancelProcessing: (() => void) | undefined;
+      const settle = () => {
+        cancelProcessing?.();
+      };
       pendingWorkflowControls.register(
         requestId,
         ws,
         {
           timeoutMs,
           timeoutMessage,
-          resolve,
-          // The tracker reports timeouts, disconnect sweeps, and send failures
-          // as strings. Only a timeout shows the live connection stayed silent.
-          reject: (error) =>
+          resolve: () => {
+            settle();
+            resolve();
+          },
+          // The tracker reports timeouts, disconnect sweeps, send failures,
+          // and the processing limit as strings. Only a timeout shows the live
+          // connection stayed silent.
+          reject: (error) => {
+            settle();
             reject(
               error === timeoutMessage
                 ? new WorkflowControlTimeoutError(error)
-                : new WorkflowControlUnreachableError(error),
-            ),
+                : error === unconfirmedMessage
+                  ? new WorkflowControlUnconfirmedError(error)
+                  : new WorkflowControlUnreachableError(error),
+            );
+          },
         },
-        { ...target, fail: reject },
+        {
+          ...target,
+          agentAddress: command.agentAddress,
+          action: command.action,
+          fail: (error) => {
+            settle();
+            reject(error);
+          },
+          received: () => {
+            const entry = pendingWorkflowControls.get(requestId);
+            if (entry === undefined || cancelProcessing !== undefined) return;
+            entry.cancelTimeout();
+            cancelProcessing = scheduleTimeout(() => {
+              pendingWorkflowControls.reject(requestId, unconfirmedMessage);
+            }, timeoutMs);
+          },
+        },
       );
       try {
         conn.send({ type: "workflow.control", requestId, ...command });
@@ -3712,6 +3803,7 @@ export function createSidecarRouter(
     const conn = connections.get(ws);
     if (conn !== undefined) {
       conn.agentAddresses.delete(agentAddress);
+      conn.workflowAddresses.delete(agentAddress);
     }
   }
 

@@ -245,6 +245,10 @@ export const ControlPayload = type.or(
     },
   },
   {
+    type: "'cancel.committed'",
+    data: { runId: "string", reason: "string" },
+  },
+  {
     type: "'grants-updated'",
     data: {
       /**

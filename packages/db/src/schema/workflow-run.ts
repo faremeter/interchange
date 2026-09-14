@@ -108,6 +108,7 @@ export const workflowRun = pgTable(
     lifecyclePolicy: jsonb("lifecycle_policy"),
     expiresAt: timestamp("expires_at"),
     cancellationRequestedAt: timestamp("cancellation_requested_at"),
+    cancellationReason: text("cancellation_reason"),
     cancellationDeadline: timestamp("cancellation_deadline"),
     capacityReleaseAt: timestamp("capacity_release_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),

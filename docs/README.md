@@ -42,6 +42,9 @@ see [`LAYOUT.md`](../LAYOUT.md).
   know to write and deploy a workflow, each naming the symbol that is
   currently its home in the source tree. Not yet a written guide.
 
+- [`workflow-lifecycle-policy.md`](./workflow-lifecycle-policy.md) — deployment
+  lifetime, capacity retention, and cancellation/release APIs.
+
 ## HTTP API
 
 - [`ROUTES.md`](./ROUTES.md) — routing conventions and the _why_

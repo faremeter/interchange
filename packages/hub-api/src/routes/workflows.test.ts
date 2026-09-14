@@ -291,6 +291,8 @@ type MockDBOpts = {
   lockedAllocationStatus?: SidecarAllocationStatus;
   anchorStatus?: "running" | "completed" | "failed" | "cancelled";
   topLevelRunStatus?: "running" | "completed" | "failed" | "cancelled" | null;
+  cancellationRequestedAt?: Date;
+  expiresAt?: Date;
   // The deploy-approved grant-walk snapshot the trigger route reads from the
   // definition's version row. `null` models the "not yet approved" state
   // (fail-closed); `undefined` returns no version row (also fail-closed).
@@ -395,6 +397,8 @@ function createMockDB(opts: MockDBOpts) {
                     : (opts.allocationStatus ?? "allocated"),
                 status:
                   opts.topLevelRunStatus ?? opts.anchorStatus ?? "running",
+                cancellationRequestedAt: opts.cancellationRequestedAt ?? null,
+                expiresAt: opts.expiresAt ?? null,
               },
             ];
       };
@@ -1447,6 +1451,35 @@ describe("POST /workflows/:anchorRunId/signals", () => {
     expect(lifecycleRead).toBe(2);
   });
 
+  test.each(["cancelled", "expired"] as const)(
+    "reports a %s anchor as not running while its allocation is healthy",
+    async (condition) => {
+      const signalEnqueues: WorkflowSignalDispatchEnqueue[] = [];
+      const app = createTestApp({
+        grants: [manageGrant()],
+        workflowSignalDispatchEnqueues: signalEnqueues,
+        db: {
+          deploymentRow,
+          allocationId: "allocation-1",
+          ...(condition === "cancelled"
+            ? { cancellationRequestedAt: new Date() }
+            : { expiresAt: new Date(0) }),
+        },
+      });
+
+      const res = await app.fetch(
+        authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
+          runId: RUN_ID,
+          signalName: "go",
+          signalId: `sig-${condition}-anchor`,
+        }),
+      );
+      expect(res.status).toBe(409);
+      expect(await errorCode(res)).toBe("workflow_run_not_running");
+      expect(signalEnqueues).toEqual([]);
+    },
+  );
+
   test("returns 503 when durable signal dispatch is unavailable", async () => {
     const signalCalls: SignalCall[] = [];
     const app = createTestApp({
@@ -1802,6 +1835,32 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     expect(await errorCode(res)).toBe("workflow_run_terminal");
     expect(routeMailCalls).toEqual([]);
   });
+
+  test.each(["cancelled", "expired"] as const)(
+    "reports a %s deployment as stopping rather than terminal",
+    async (condition) => {
+      const routeMailCalls: RouteMailCall[] = [];
+      const app = createTestApp({
+        grants: [manageGrant()],
+        routeMailCalls,
+        db: {
+          deploymentRow,
+          assetRow: workflowAssetRow,
+          ...(condition === "cancelled"
+            ? { cancellationRequestedAt: new Date() }
+            : { expiresAt: new Date(0) }),
+        },
+      });
+
+      const res = await app.fetch(
+        authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "again" }),
+      );
+
+      expect(res.status).toBe(409);
+      expect(await errorCode(res)).toBe("workflow_run_stopping");
+      expect(routeMailCalls).toEqual([]);
+    },
+  );
 
   test("uses terminal Git history even if the SQL terminal projection lags", async () => {
     const routeMailCalls: RouteMailCall[] = [];

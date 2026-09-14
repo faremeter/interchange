@@ -30,6 +30,7 @@ const logger = getLogger(["hub", "sidecar-allocation"]);
 type AllocationStore = Pick<
   SidecarAllocationStore,
   | "beginReplacement"
+  | "beginRelease"
   | "beginUnrecoverableRelease"
   | "bindInitialSidecar"
   | "bindReplacementSidecar"
@@ -38,6 +39,7 @@ type AllocationStore = Pick<
   | "failWithoutInfrastructure"
   | "listActive"
   | "isReconciliationLeaseCurrent"
+  | "hasRunnableAnchor"
   | "markAllocated"
   | "markConnectionLost"
   | "markConnectionReady"
@@ -660,6 +662,20 @@ export function createSidecarAllocationReconciler({
     provisioner: SidecarProvisioner,
     replacement: boolean,
   ): Promise<void> {
+    if (
+      !(await allocationStore.hasRunnableAnchor(allocation.anchorRunId, now()))
+    ) {
+      const releasing = await allocationStore.beginRelease({
+        allocationId: allocation.id,
+        expectedStatus: replacement ? "replacing" : "pending",
+        expectedGeneration: allocation.generation,
+        expectedLeaseId: leaseId,
+        now: now(),
+      });
+      if (releasing !== null)
+        router.fenceAllocation(releasing.id, releasing.generation);
+      return;
+    }
     const token = createToken();
     const sidecarId = createSidecarId();
     const connectDeadline = new Date(now().getTime() + connectTimeoutMs);

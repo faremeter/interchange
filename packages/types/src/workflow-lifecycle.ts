@@ -80,6 +80,8 @@ export const WorkflowLifecycleResponse = type({
   policy: WorkflowLifecyclePolicy,
   expiresAt: "string | null",
   cancellationRequestedAt: "string | null",
+  cancellationDeadline: "string | null",
+  cancellationReason: "string | null",
   capacityReleaseAt: "string | null",
   allocation: type({
     id: "string",

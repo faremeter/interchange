@@ -666,6 +666,13 @@
       "when": 1790184045154,
       "tag": "0095_workflow_pending_projection",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1790185304332,
+      "tag": "0096_workflow_cancellation_reason",
+      "breakpoints": true
     }
   ]
 }

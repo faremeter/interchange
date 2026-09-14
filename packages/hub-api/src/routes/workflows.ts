@@ -683,7 +683,7 @@ export function createWorkflowRoutes({
         ),
         404: jsonResponse("Workflow deployment not found", ErrorResponse),
         409: jsonResponse(
-          "Deployment address is not routable, its allocation is no longer active, or its top-level run is terminal",
+          "Deployment address is not routable, its allocation is no longer active, or its top-level run is stopping or terminal",
           ErrorResponse,
         ),
         413: jsonResponse(

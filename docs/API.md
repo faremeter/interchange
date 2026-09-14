@@ -479,12 +479,12 @@ Returns workflow run state including status, public key, and sidecar assignment.
 ### DELETE /api/tenants/:tenantId/workflows/runs/:runId
 Stop a run
 
-Stops a live workflow run and releases its sidecar allocation.
+Durably requests cancellation of a live top-level run. Its saved cancellation retention policy controls subsequent capacity release. Poll the Location header for progress.
 
-204: (no content) -- Run stopped
+202: (no content) -- Cancellation requested
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run already stopped
-502: ErrorResponse -- Sidecar unavailable
+409: ErrorResponse -- Run is already terminal
+503: ErrorResponse -- Workflow lifecycle service unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/authorization
 Get run authorization
@@ -558,7 +558,7 @@ Body: SendMessage
 202: unknown -- Trigger accepted for delivery
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run address is not routable, its allocation is no longer active, or the run is terminal
+409: ErrorResponse -- Run address is not routable, its allocation is no longer active, or the run is stopping or terminal
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Run trigger substrate unavailable
 
@@ -672,7 +672,7 @@ Body: SendMessage
 202: unknown -- Trigger accepted for delivery
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Workflow deployment not found
-409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, or its top-level run is terminal
+409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, or its top-level run is stopping or terminal
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Durable workflow dispatch unavailable
 
@@ -1683,7 +1683,7 @@ Source: packages/types/src/workflows.ts
 **status**: Deployment lifecycle status. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.
 
 ### WorkflowLifecycleResponse
-`{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
+`{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
 Source: packages/types/src/workflow-lifecycle.ts
 
 ### WorkflowRollbackRequest

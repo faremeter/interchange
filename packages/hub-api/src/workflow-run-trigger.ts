@@ -108,6 +108,25 @@ export type TriggerWorkflowRunResult =
     }
   | { ok: false; status: 400 | 403 | 404 | 409 | 503; body: TriggerErrorBody };
 
+function runUnavailable(
+  runId: string,
+  state: "stopping" | "terminal",
+): TriggerWorkflowRunResult {
+  return {
+    ok: false,
+    status: 409,
+    body: {
+      error: {
+        code:
+          state === "stopping"
+            ? "workflow_run_stopping"
+            : "workflow_run_terminal",
+        message: `Workflow run ${runId} is ${state} and cannot receive more mail`,
+      },
+    },
+  };
+}
+
 /**
  * Build the workflow-run trigger over its stable per-app dependencies. The
  * returned function fires one trigger occurrence per call: it validates the
@@ -246,16 +265,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         !isLiveWorkflowRunStatus(anchor.runStatus)) ||
       durableLifecycle === "terminal"
     ) {
-      return {
-        ok: false,
-        status: 409,
-        body: {
-          error: {
-            code: "workflow_run_terminal",
-            message: `Workflow run ${runId} is terminal and cannot receive more mail`,
-          },
-        },
-      };
+      return runUnavailable(runId, "terminal");
     }
     if (
       anchor.allocationStatus !== null &&
@@ -448,12 +458,13 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         ) {
           return "run-terminal" as const;
         }
-        if (
-          (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !==
-          "running"
-        ) {
-          return "run-terminal" as const;
-        }
+        const anchorState = await lockWorkflowRunState(
+          tx,
+          anchorRunId,
+          anchorRunId,
+        );
+        if (anchorState === "stopping") return "run-stopping" as const;
+        if (anchorState !== "running") return "run-terminal" as const;
         const canonicalStepGrants = await commitRunGrants(
           {
             db,
@@ -482,20 +493,18 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         );
         return "committed" as const;
       });
+      if (committed === "run-terminal")
+        return runUnavailable(runId, "terminal");
+      if (committed === "run-stopping")
+        return runUnavailable(runId, "stopping");
       if (committed !== "committed") {
         return {
           ok: false,
           status: 409,
           body: {
             error: {
-              code:
-                committed === "run-terminal"
-                  ? "workflow_run_terminal"
-                  : "deployment_unreachable",
-              message:
-                committed === "run-terminal"
-                  ? `Workflow run ${runId} is terminal and cannot receive more mail`
-                  : "Workflow deployment allocation is no longer active",
+              code: "deployment_unreachable",
+              message: "Workflow deployment allocation is no longer active",
             },
           },
         };
@@ -510,11 +519,13 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     }
 
     const reserved = await db.transaction(async (tx) => {
-      if (
-        (await lockWorkflowRunState(tx, anchorRunId, anchorRunId)) !== "running"
-      ) {
-        return null;
-      }
+      const anchorState = await lockWorkflowRunState(
+        tx,
+        anchorRunId,
+        anchorRunId,
+      );
+      if (anchorState !== "running")
+        return anchorState === "stopping" ? anchorState : "terminal";
       return commitRunGrants(
         {
           db,
@@ -530,18 +541,8 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         tx,
       );
     });
-    if (reserved === null) {
-      return {
-        ok: false,
-        status: 409,
-        body: {
-          error: {
-            code: "workflow_run_terminal",
-            message: `Workflow run ${runId} is terminal and cannot receive more mail`,
-          },
-        },
-      };
-    }
+    if (reserved === "stopping" || reserved === "terminal")
+      return runUnavailable(runId, reserved);
     stepGrants = reserved;
 
     // Stamp the hub-verified principal address (fromAddr, the address the

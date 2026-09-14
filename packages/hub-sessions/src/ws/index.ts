@@ -3,6 +3,7 @@ export {
   SidecarIdentityValidationError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
+  WorkflowControlUnconfirmedError,
   WorkflowControlUnreachableError,
   type SidecarRouter,
   type SidecarRouterConfig,

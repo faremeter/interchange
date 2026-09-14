@@ -77,6 +77,8 @@ function mockDb(opts: {
   snapshotReads?: { count: number };
   topLevelRunStatus?: "running" | "completed" | "failed" | "cancelled" | null;
   lockedRunStatus?: "running" | "completed" | "failed" | "cancelled";
+  anchorCancellationRequestedAt?: Date;
+  lockedCancellationRequestedAt?: Date;
 }) {
   function rows(table: unknown, joined: boolean): unknown[] {
     if (table === workflowRunTable && opts.deploymentRow) {
@@ -88,6 +90,9 @@ function mockDb(opts: {
               definitionId: `wfd_${opts.deploymentRow.id}`,
               definitionAssetId: opts.deploymentRow.definitionAssetId,
               anchorStatus: "running",
+              anchorExpiresAt: null,
+              anchorCancellationRequestedAt:
+                opts.anchorCancellationRequestedAt ?? null,
               topLevelRunStatus: opts.topLevelRunStatus ?? null,
             },
           ]
@@ -117,7 +122,14 @@ function mockDb(opts: {
               for: () =>
                 Promise.resolve(
                   table === workflowRunTable && opts.deploymentRow
-                    ? [{ status: opts.lockedRunStatus ?? "running" }]
+                    ? [
+                        {
+                          status: opts.lockedRunStatus ?? "running",
+                          expiresAt: null,
+                          cancellationRequestedAt:
+                            opts.lockedCancellationRequestedAt ?? null,
+                        },
+                      ]
                     : [],
                 ),
             }),
@@ -251,6 +263,58 @@ describe("createMailTriggeredRunGrantsMaterializer staging", () => {
       outcome: "rejected",
       status: 409,
       code: "workflow_run_terminal",
+    });
+  });
+
+  test("rejects mail for a stopping deployment before reading its snapshot", async () => {
+    const reads = { count: 0 };
+    const materialize = createMailTriggeredRunGrantsMaterializer({
+      db: mockDb({
+        deploymentRow,
+        assetRow,
+        grantSnapshot: snapshot(),
+        snapshotReads: reads,
+        anchorCancellationRequestedAt: new Date(),
+      }),
+      principalKeyStore: stubPrincipalKeyStore,
+      grantStore: createInMemoryGrantStore([creatorGrant()]),
+    });
+
+    await expect(
+      materialize({
+        agentAddress: WORKFLOW_ADDRESS,
+        runId: WORKFLOW_ADDRESS,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "rejected",
+      status: 409,
+      code: "workflow_run_stopping",
+    });
+    expect(reads.count).toBe(0);
+  });
+
+  test("revalidates under lock before reserving a run that started stopping", async () => {
+    const materialize = createMailTriggeredRunGrantsMaterializer({
+      db: mockDb({
+        deploymentRow,
+        assetRow,
+        grantSnapshot: snapshot(),
+        topLevelRunStatus: null,
+        lockedCancellationRequestedAt: new Date(),
+      }),
+      principalKeyStore: stubPrincipalKeyStore,
+      grantStore: createInMemoryGrantStore([creatorGrant()]),
+    });
+
+    await expect(
+      materialize({
+        agentAddress: WORKFLOW_ADDRESS,
+        runId: WORKFLOW_ADDRESS,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "rejected",
+      status: 409,
+      code: "workflow_run_stopping",
     });
   });
 

@@ -12,6 +12,7 @@ export type {
   ReadParkedApprovalOps,
   RepoStore,
   RunResult,
+  RuntimeWorkflowRun,
   Scheduler,
   SignalChannel,
   SpawnChildWorkflow,

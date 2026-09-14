@@ -1377,6 +1377,7 @@ export function createSidecarDeployRouter(deps: {
   // map to call `supervisor.shutdown()` so the child's lifetime ends
   // with the deployment.
   const activeSupervisors = new Map<string, SidecarWorkflowSupervisor>();
+  const workflowControlTasks = new Map<string, Promise<void>>();
 
   // Synchronous single-flight guard for the deploy path. The real supervisor
   // does not exist until inside `spawnWorkflowRun`, so `deployMultiStep`
@@ -2496,37 +2497,50 @@ export function createSidecarDeployRouter(deps: {
       );
     },
     async control(frame): Promise<void> {
-      if (parseAgentId(frame.agentAddress) !== frame.runId) {
-        throw new Error(
-          "Workflow control run does not match the deployment address",
-        );
-      }
-      if (reservingDeployAddresses.has(frame.agentAddress)) {
-        throw new Error("Workflow deployment is still being initialized");
-      }
-      const wired = activeSupervisors.get(frame.agentAddress);
-      if (frame.action === "cancel" && wired !== undefined) {
-        await wired.supervisor.requestCancel({
-          runId: frame.runId,
-          origin: "supervisor-operator",
-          reason: frame.reason,
-          at: new Date().toISOString(),
+      const previous =
+        workflowControlTasks.get(frame.agentAddress) ?? Promise.resolve();
+      const pending = previous
+        .catch(() => undefined)
+        .then(async () => {
+          if (parseAgentId(frame.agentAddress) !== frame.runId) {
+            throw new Error(
+              "Workflow control run does not match the deployment address",
+            );
+          }
+          if (reservingDeployAddresses.has(frame.agentAddress)) {
+            throw new Error("Workflow deployment is still being initialized");
+          }
+          const wired = activeSupervisors.get(frame.agentAddress);
+          if (frame.action === "cancel" && wired !== undefined) {
+            await wired.supervisor.requestCancel({
+              runId: frame.runId,
+              origin: "supervisor-operator",
+              reason: frame.reason,
+              at: new Date().toISOString(),
+            });
+            return;
+          }
+          // Cancellation without a supervisor must still retire its restart record.
+          if (wired !== undefined) await wired.supervisor.shutdown();
+          reclaimSelfTerminatedSupervisor({
+            runId: deriveDeploymentId(frame.agentAddress),
+            agentAddress: frame.agentAddress,
+          });
+          // A stopped terminal deployment must not respawn on sidecar restart.
+          // Keep its scratch and source material for the allocation's retention period.
+          if (stepStateDataDir !== undefined) {
+            await deleteWorkflowRunRecord(
+              stepStateDataDir,
+              deriveDeploymentId(frame.agentAddress),
+            );
+          }
         });
-        return;
-      }
-      // Cancellation without a supervisor must still retire its restart record.
-      if (wired !== undefined) await wired.supervisor.shutdown();
-      reclaimSelfTerminatedSupervisor({
-        runId: deriveDeploymentId(frame.agentAddress),
-        agentAddress: frame.agentAddress,
-      });
-      // A stopped terminal deployment must not respawn on sidecar restart.
-      // Keep its scratch and source material for the allocation's retention period.
-      if (stepStateDataDir !== undefined) {
-        await deleteWorkflowRunRecord(
-          stepStateDataDir,
-          deriveDeploymentId(frame.agentAddress),
-        );
+      workflowControlTasks.set(frame.agentAddress, pending);
+      try {
+        await pending;
+      } finally {
+        if (workflowControlTasks.get(frame.agentAddress) === pending)
+          workflowControlTasks.delete(frame.agentAddress);
       }
     },
     async undeploy(frame): Promise<void> {

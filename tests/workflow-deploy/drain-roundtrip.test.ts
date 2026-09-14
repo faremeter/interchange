@@ -39,6 +39,8 @@
 // takes the workflow-process spawn path.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
@@ -73,6 +75,10 @@ import { signalGateEntry } from "./fixtures/signal-gate";
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_drain-roundtrip-1";
 const WAIT_DEPLOYMENT_ID = "run_drain-roundtrip-wait-1";
+const CONTROL_DEPLOYMENT_ID = "run_control-roundtrip";
+// Longer than the test's budget, so the worker's acknowledgement, not the
+// clock, settles the control request.
+const CONTROL_TIMEOUT_MS = 120_000;
 
 // Wire `deadlineMs` carried on the drain.deliver frame. The child
 // echoes this in its drain log; the supervisor-side accumulator runs
@@ -90,6 +96,7 @@ const DRAIN_DEADLINE_MS = 1_000;
 const TENANT_ID = "tnt_drain_roundtrip";
 const CALLER_PRINCIPAL_ID = "prn_drain_roundtrip";
 const DEFINITION_ASSET_IDS: Record<string, string> = {
+  [CONTROL_DEPLOYMENT_ID]: "ast_control_roundtrip",
   [DEPLOYMENT_ID]: "ast_drain_roundtrip_cancel_wf",
   [WAIT_DEPLOYMENT_ID]: "ast_drain_roundtrip_wait_wf",
 };
@@ -457,6 +464,124 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
     expect(typesDuring).not.toContain("RunCancelled");
   }, 30_000);
 });
+
+test.skipIf(!harnessDbEnvAvailable())(
+  "Hub workflow control cancels a real child parked on a signal",
+  async () => {
+    const address = deriveRunAddress({
+      runId: CONTROL_DEPLOYMENT_ID,
+      domain: DEPLOYMENT_DOMAIN,
+    });
+    const source: InferenceSource = {
+      id: "anthropic:mock-model",
+      provider: "anthropic",
+      model: "mock-model",
+      baseURL: `http://localhost:${env.inference.server.port}`,
+      credentialId: "sk-mock",
+    };
+    const handle = await deployWorkflowSourceForTest(env, {
+      entryModule: signalGateEntry({
+        address,
+        signalName: "never-arrives",
+        drainBehavior: "wait",
+        systemPrompt1: "Wait for the signal.",
+        workflowId: "control-workflow",
+      }),
+      db: h.db,
+      tenantId: TENANT_ID,
+      definitionAssetId: "ast_control_roundtrip",
+      anchorRunId: CONTROL_DEPLOYMENT_ID,
+      deploymentDomain: DEPLOYMENT_DOMAIN,
+      agentAddress: address,
+      approvals: createApprovalSet([
+        "inference.source:anthropic:mock-model",
+        "director:@intx/agent/default",
+        `mail.address:${address}`,
+        `mail.send:${DEPLOYMENT_DOMAIN}`,
+      ]),
+      config: {
+        sessionId: SESSION_ID,
+        agentId: CONTROL_DEPLOYMENT_ID,
+        tenantId: "tenant-1",
+        principalId: "prin_integration-1",
+        agentAddress: address,
+        systemPrompt: "Wait for the signal.",
+        tools: [],
+        grants: [],
+        sources: [source],
+        defaultSource: source.id,
+      },
+      sources: { step1: [source], gate: [source] },
+    });
+    const inspectionFile = path.join(
+      env.sidecar.dataDir,
+      "workflow-step-state",
+      handle.workflowRunRepoId.id,
+      "runs",
+      CONTROL_DEPLOYMENT_ID,
+      "inspection.txt",
+    );
+    await mkdir(path.dirname(inspectionFile), { recursive: true });
+    await writeFile(inspectionFile, "retain for inspection");
+    await waitFor(
+      () => env.hub.router.getRoutableAddresses().includes(address),
+      { diagnostics: env.sidecarDiagnostics },
+    );
+    await fireMailTrigger(env, address, {
+      messageId: "<control-roundtrip@integration.interchange>",
+    });
+    await waitFor(
+      async () =>
+        (
+          await readWorkflowRunEventsForAnyRun(
+            env,
+            CONTROL_DEPLOYMENT_ID,
+            handle.workflowRunRepoId,
+          )
+        ).some((event) => event.type === "SignalAwaited"),
+      { diagnostics: env.sidecarDiagnostics },
+    );
+    await env.hub.router.sendWorkflowControl(
+      env.hub.prepareAllocationIdentity(CONTROL_DEPLOYMENT_ID, address),
+      {
+        action: "cancel",
+        agentAddress: address,
+        runId: CONTROL_DEPLOYMENT_ID,
+        reason: "Maximum deployment lifetime exceeded",
+      },
+      CONTROL_TIMEOUT_MS,
+    );
+    await waitFor(
+      async () =>
+        (
+          await readWorkflowRunEventsForAnyRun(
+            env,
+            CONTROL_DEPLOYMENT_ID,
+            handle.workflowRunRepoId,
+          )
+        ).some((event) => event.type === "RunCancelled"),
+      { diagnostics: env.sidecarDiagnostics },
+    );
+    expect(await readFile(inspectionFile, "utf8")).toBe(
+      "retain for inspection",
+    );
+    const events = await readWorkflowRunEvents(
+      env,
+      CONTROL_DEPLOYMENT_ID,
+      CONTROL_DEPLOYMENT_ID,
+    );
+    expect(
+      events.filter((event) => event.type === "RunCancelled"),
+    ).toHaveLength(1);
+    expect(
+      events.filter((event) => event.type === "CancelRequested"),
+    ).toHaveLength(1);
+    expect(
+      events.find((event) => event.type === "CancelRequested")?.body["origin"],
+    ).toBe("supervisor-operator");
+  },
+  30_000,
+);
 
 /**
  * Read every workflow-run event under any `runs/<runId>/events/`
