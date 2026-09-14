@@ -372,8 +372,12 @@ export async function createHubServer({
     plugins: sidecarPlugins,
     router: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,
-    onReady: async (allocation) => {
-      await workflowAllocationService.deployReadyAllocation(allocation);
+    onReady: async (allocation, reconciliation) => {
+      await workflowAllocationService.deployReadyAllocation(
+        allocation,
+        reconciliation,
+      );
+      reconciliation.signal.throwIfAborted();
       await workflowDispatchService.requeueForReadyAllocation(
         allocation.anchorRunId,
       );

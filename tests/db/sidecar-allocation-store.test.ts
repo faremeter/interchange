@@ -13,7 +13,11 @@ import {
   createWorkflowRunDispatchStore,
   createWorkflowRunLaunchSpecStore,
 } from "@intx/db";
-import { workflowDefinition, workflowRun } from "@intx/db/schema";
+import {
+  sidecarAllocation,
+  workflowDefinition,
+  workflowRun,
+} from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -91,6 +95,35 @@ describe.skipIf(!harnessDbEnvAvailable())(
         deployContent: { systemPrompt: "" },
       });
     });
+
+    async function createClaimedAllocation(id: string) {
+      const store = createSidecarAllocationStore(h.db);
+      await store.createPending({
+        id,
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      const leaseId = `${id}-lease`;
+      await store.claimNextReconcilable({ leaseId, leaseDurationMs: 60_000 });
+      await store.bindInitialSidecar({
+        allocationId: id,
+        expectedGeneration: 0,
+        sidecarId: `${id}-sidecar`,
+        tokenHashSha256: new Uint8Array([1, 2, 3]),
+        connectDeadline: new Date(Date.now() + 60_000),
+        expectedLeaseId: leaseId,
+      });
+      const allocation = await store.markAllocated({
+        allocationId: id,
+        generation: 1,
+        expectedLeaseId: leaseId,
+      });
+      if (allocation === null) throw new Error("Failed to create allocation");
+      return { store, allocation, leaseId };
+    }
 
     test("fences replacement before binding a new physical sidecar", async () => {
       const store = createSidecarAllocationStore(h.db);
@@ -251,6 +284,71 @@ describe.skipIf(!harnessDbEnvAvailable())(
           leaseDurationMs: 60_000,
         }),
       ).toBeNull();
+    });
+
+    test("excludes due allocations without claiming or changing them", async () => {
+      const secondAnchorRunId = "anchor-exclusion-second";
+      await seedWorkflowRun(h.db, {
+        id: secondAnchorRunId,
+        anchorRunId: secondAnchorRunId,
+        tenantId: TENANT_ID,
+        definitionId: DEFINITION_ID,
+      });
+      const launchSpecStore = createWorkflowRunLaunchSpecStore(h.db);
+      const launchSpec = await launchSpecStore.get(ANCHOR_RUN_ID);
+      if (launchSpec === null) throw new Error("Expected launch specification");
+      await launchSpecStore.create({
+        ...launchSpec,
+        anchorRunId: secondAnchorRunId,
+        sessionId: "ses-exclusion-second",
+      });
+      const store = createSidecarAllocationStore(h.db);
+      const common = {
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      } as const;
+      const first = await store.createPending({
+        ...common,
+        id: "alloc-excluded",
+        anchorRunId: ANCHOR_RUN_ID,
+        now: new Date(0),
+      });
+      const second = await store.createPending({
+        ...common,
+        id: "alloc-eligible",
+        anchorRunId: secondAnchorRunId,
+        now: new Date(1),
+      });
+
+      expect(
+        await store.claimNextReconcilable({
+          excludedAllocationIds: [first.id],
+          leaseId: "lease-eligible",
+          leaseDurationMs: 60_000,
+        }),
+      ).toMatchObject({
+        id: second.id,
+        reconciliationLeaseId: "lease-eligible",
+      });
+      expect(await store.findById(first.id)).toEqual(first);
+      expect(
+        await store.claimNextReconcilable({
+          excludedAllocationIds: [first.id],
+          leaseId: "lease-none",
+          leaseDurationMs: 60_000,
+        }),
+      ).toBeNull();
+      expect(
+        await store.claimNextReconcilable({
+          leaseId: "lease-previously-excluded",
+          leaseDurationMs: 60_000,
+        }),
+      ).toMatchObject({
+        id: first.id,
+        reconciliationLeaseId: "lease-previously-excluded",
+      });
     });
 
     test("parks an unscheduled allocation at a fenced fallback retry", async () => {
@@ -444,6 +542,115 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(ready?.reconciliationLeaseId).toBeUndefined();
       expect(ready?.connectDeadline).toBeUndefined();
       expect(ready?.nextAttemptAt).toBeUndefined();
+    });
+
+    test("expired owners cannot renew or commit lifecycle transitions", async () => {
+      const { store, allocation, leaseId } = await createClaimedAllocation(
+        "alloc-expired-owner",
+      );
+      expect(
+        await store.isReconciliationLeaseCurrent(
+          allocation.id,
+          allocation.generation,
+          leaseId,
+        ),
+      ).toBe(true);
+      await h.db
+        .update(sidecarAllocation)
+        .set({
+          reconciliationLeaseExpiresAt: new Date(0),
+          nextAttemptAt: new Date(0),
+        })
+        .where(eq(sidecarAllocation.id, allocation.id));
+      expect(
+        await store.isReconciliationLeaseCurrent(
+          allocation.id,
+          allocation.generation,
+          leaseId,
+        ),
+      ).toBe(false);
+      expect(
+        await store.extendReconciliationLease(allocation.id, leaseId, 60_000),
+      ).toBe(false);
+      expect(
+        await store.markConnectionReady({
+          allocationId: allocation.id,
+          generation: allocation.generation,
+          expectedLeaseId: leaseId,
+        }),
+      ).toBeNull();
+      expect(
+        await store.scheduleRetry({
+          allocationId: allocation.id,
+          expectedStatus: "allocated",
+          expectedGeneration: allocation.generation,
+          expectedLeaseId: leaseId,
+          nextAttemptAt: new Date(Date.now() + 300_000),
+        }),
+      ).toBeNull();
+      expect(
+        await store.parkReconciliation(allocation.id, leaseId, {
+          kind: "retry-after-error",
+          notBefore: new Date(Date.now() + 300_000),
+        }),
+      ).toBe(false);
+      expect(
+        await store.beginReplacement({
+          allocationId: allocation.id,
+          expectedStatus: "allocated",
+          expectedGeneration: allocation.generation,
+          expectedLeaseId: leaseId,
+          nextAttemptAt: new Date(0),
+          failureCode: "stale_initializer",
+          failureMessage: "The initializer lost its lease",
+        }),
+      ).toBeNull();
+
+      const claimed = await store.claimNextReconcilable({
+        leaseId: "replacement-owner",
+        leaseDurationMs: 60_000,
+      });
+      expect(claimed?.id).toBe(allocation.id);
+      expect(claimed?.generation).toBe(allocation.generation);
+      expect(claimed?.reconciliationLeaseId).toBe("replacement-owner");
+    });
+
+    test("disconnect invalidates the lease before an old initializer can finish", async () => {
+      const { store, allocation, leaseId } = await createClaimedAllocation(
+        "alloc-disconnected-owner",
+      );
+      const deadline = new Date(Date.now() + 60_000);
+      const disconnected = await store.markConnectionLost({
+        allocationId: allocation.id,
+        generation: allocation.generation,
+        connectDeadline: deadline,
+      });
+      expect(disconnected?.reconciliationLeaseId).toBeUndefined();
+      expect(
+        await store.markConnectionReady({
+          allocationId: allocation.id,
+          generation: allocation.generation,
+          expectedLeaseId: leaseId,
+        }),
+      ).toBeNull();
+      expect(
+        await store.scheduleRetry({
+          allocationId: allocation.id,
+          expectedGeneration: allocation.generation,
+          expectedStatus: "allocated",
+          expectedLeaseId: leaseId,
+          nextAttemptAt: new Date(0),
+        }),
+      ).toBeNull();
+      expect(
+        await store.parkReconciliation(allocation.id, leaseId, {
+          kind: "retry-after-error",
+          notBefore: new Date(0),
+        }),
+      ).toBe(false);
+      const stored = await store.findById(allocation.id);
+      expect(stored?.connectDeadline).toEqual(deadline);
+      expect(stored?.nextAttemptAt).toEqual(deadline);
     });
 
     test("persists reconnect grace only for the accepted generation", async () => {

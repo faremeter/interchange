@@ -27,3 +27,5 @@ export {
   type SidecarAllocationReconciler,
   type SidecarAllocationReconcilerDeps,
 } from "./reconciler";
+
+export type { SidecarReconciliationContext } from "./operation";

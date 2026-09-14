@@ -346,7 +346,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).findByAnchorRunId(prepared.anchorRunId);
       if (allocation === null) throw new Error("expected adopted allocation");
 
-      await service.deployReadyAllocation(allocation);
+      await service.deployReadyAllocation(allocation, {
+        signal: new AbortController().signal,
+        leaseId: "initialization-test",
+      });
 
       expect(anchorVisibleDuringDeploy).toBe(true);
     });

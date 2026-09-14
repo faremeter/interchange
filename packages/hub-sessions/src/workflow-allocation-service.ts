@@ -53,6 +53,7 @@ import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
 import {
   DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
   runSidecarOperation,
+  type SidecarReconciliationContext,
 } from "./sidecar-allocation/operation";
 
 const logger = getLogger(["hub", "workflow-allocation"]);
@@ -104,6 +105,7 @@ export type WorkflowAllocationService = {
   ): Promise<PreparedProvisionedWorkflowDeployment>;
   deployReadyAllocation(
     allocation: SidecarAllocation,
+    reconciliation: SidecarReconciliationContext,
   ): Promise<DeployWorkflowDefinitionResult | null>;
 };
 
@@ -674,7 +676,9 @@ export function createWorkflowAllocationService({
 
   async function deployReadyAllocation(
     allocation: SidecarAllocation,
+    reconciliation: SidecarReconciliationContext,
   ): Promise<DeployWorkflowDefinitionResult | null> {
+    reconciliation.signal.throwIfAborted();
     if (
       allocation.status !== "allocated" ||
       allocation.ensureAcceptedGeneration !== allocation.generation
@@ -762,7 +766,9 @@ export function createWorkflowAllocationService({
       defaultSource: defaultSource.id,
     });
 
+    reconciliation.signal.throwIfAborted();
     return preparedDeployer.deployPreparedCodeSourcedWorkflow({
+      reconciliation,
       tenantId: allocation.tenantId,
       anchorRunId: allocation.anchorRunId,
       deploymentDomain: spec.deploymentDomain,

@@ -378,6 +378,7 @@ export type SidecarAllocationRouter = {
     agentAddress: string,
     config: HarnessConfig,
     workflow?: AgentDeployFrame["workflow"],
+    signal?: AbortSignal,
   ): Promise<{ publicKey: string }>;
   sendPackToAllocation(
     target: AllocatedSidecarTarget,
@@ -397,6 +398,7 @@ export type SidecarAllocationRouter = {
     pack: Uint8Array,
     ref: string,
     commitSha: string,
+    signal?: AbortSignal,
   ): Promise<void>;
   bindAllocatedStepRoute(
     target: AllocatedSidecarTarget,
@@ -2801,8 +2803,11 @@ export function createSidecarRouter(
     pack: Uint8Array,
     ref: string,
     commitSha: string,
+    signal?: AbortSignal,
   ): Promise<void> {
+    signal?.throwIfAborted();
     const { ws, conn } = await getAllocatedConnection(target, "routing");
+    signal?.throwIfAborted();
     if (agentAddress !== conn.identity.workflowRunAddress) {
       throw new Error(
         `Allocation ${target.allocationId} cannot restore unrelated address ${agentAddress}`,
@@ -3125,8 +3130,11 @@ export function createSidecarRouter(
     agentAddress: string,
     harnessConfig: HarnessConfig,
     workflow?: AgentDeployFrame["workflow"],
+    signal?: AbortSignal,
   ): Promise<{ publicKey: string }> {
+    signal?.throwIfAborted();
     const { ws, conn } = await getAllocatedConnection(target, "routing");
+    signal?.throwIfAborted();
     if (agentAddress !== conn.identity.workflowRunAddress) {
       throw new Error(
         `Allocation ${target.allocationId} cannot deploy unrelated address ${agentAddress}`,

@@ -25,6 +25,7 @@ export async function restoreWorkflowRunToAllocation(args: {
   >;
   allocationTarget: AllocatedSidecarTarget;
   agentAddress: string;
+  signal?: AbortSignal;
 }): Promise<void> {
   const { agentRepoStore, allocationRouter, allocationTarget, agentAddress } =
     args;
@@ -35,11 +36,13 @@ export async function restoreWorkflowRunToAllocation(args: {
   };
 
   for (const ref of WORKFLOW_RUN_RESTORE_REFS) {
+    args.signal?.throwIfAborted();
     const tip = await agentRepoStore.repoStore.resolveRef(
       principal,
       repoId,
       ref,
     );
+    args.signal?.throwIfAborted();
     if (tip === null) continue;
 
     const pack = await agentRepoStore.repoStore.createPack(
@@ -47,12 +50,15 @@ export async function restoreWorkflowRunToAllocation(args: {
       repoId,
       ref,
     );
+    args.signal?.throwIfAborted();
     await allocationRouter.sendWorkflowRunPackToAllocation(
       allocationTarget,
       agentAddress,
       pack.pack,
       pack.ref,
       pack.commitSha,
+      args.signal,
     );
   }
+  args.signal?.throwIfAborted();
 }

@@ -1367,12 +1367,126 @@ describe("deployCodeSourcedWorkflow", () => {
         approved: { approval, projection, closure },
         config: CONFIG,
         allocationTarget: { allocationId: "alloc-test", generation: 1 },
+        reconciliation: {
+          leaseId: "lease-test",
+          signal: new AbortController().signal,
+        },
         credentialCipher: createNoopCredentialCipher(),
       })
       .catch((error: unknown) => error);
   }
 
   describe("deployPreparedCodeSourcedWorkflow", () => {
+    test("does not restore, deploy, or publish after cancellation while building a restore pack", async () => {
+      const controller = new AbortController();
+      const cancelled = new Error("Initialization cancelled");
+      const allocationRouter = createMockAllocationRouter();
+      const preparedRepoStore = createMockRepoStore();
+      preparedRepoStore.repoStore.resolveRef = async () => "a".repeat(40);
+      preparedRepoStore.repoStore.createPack = async () => {
+        controller.abort(cancelled);
+        return {
+          pack: new Uint8Array([1, 2, 3]),
+          ref: "refs/heads/main",
+          commitSha: "a".repeat(40),
+        };
+      };
+      const service = createSessionService({
+        sidecarRouter: createMockRouter(),
+        sidecarAllocationRouter: allocationRouter,
+        agentRepoStore: preparedRepoStore,
+        db: CAPTURING_DB,
+      });
+      const { approval, projection, closure } = await makeApproveOutput([
+        "inference.source:anthropic:mock-model",
+      ]);
+      capturedAnchorUpdate = undefined;
+
+      const error = await service
+        .deployPreparedCodeSourcedWorkflow({
+          tenantId: TENANT,
+          anchorRunId: ANCHOR_RUN_ID,
+          deploymentDomain: DEPLOYMENT_DOMAIN,
+          agentAddress: DEPLOY_ADDRESS,
+          source: SOURCE,
+          approved: { approval, projection, closure },
+          config: CONFIG,
+          allocationTarget: { allocationId: "alloc-test", generation: 1 },
+          reconciliation: {
+            leaseId: "lease-test",
+            signal: controller.signal,
+          },
+          credentialCipher: createNoopCredentialCipher(),
+        })
+        .catch((cause: unknown) => cause);
+
+      expect(error).toBe(cancelled);
+      expect(allocationRouter.calls).toEqual([]);
+      expect(capturedAnchorUpdate).toBeUndefined();
+    });
+
+    test("a cancelled deploy cannot publish its late key or settle a newer attempt", async () => {
+      const controller = new AbortController();
+      const cancelled = new Error("Initialization cancelled");
+      const allocationRouter = createMockAllocationRouter();
+      const sidecarRouter = createMockRouter();
+      allocationRouter.sendAgentDeployToAllocation = async (
+        _target,
+        _address,
+        _config,
+        _workflow,
+        signal,
+      ) => {
+        expect(signal).toBe(controller.signal);
+        controller.abort(cancelled);
+        sidecarRouter.noteSenderDeployStarted(DEPLOY_ADDRESS);
+        return { publicKey: "late-public-key" };
+      };
+      const preparedRepoStore = createMockRepoStore();
+      preparedRepoStore.repoStore.resolveRef = async () => null;
+      const service = createSessionService({
+        sidecarRouter,
+        sidecarAllocationRouter: allocationRouter,
+        agentRepoStore: preparedRepoStore,
+        db: CAPTURING_DB,
+      });
+      const { approval, projection, closure } = await makeApproveOutput([
+        "inference.source:anthropic:mock-model",
+      ]);
+      capturedAnchorUpdate = undefined;
+
+      const error = await service
+        .deployPreparedCodeSourcedWorkflow({
+          tenantId: TENANT,
+          anchorRunId: ANCHOR_RUN_ID,
+          deploymentDomain: DEPLOYMENT_DOMAIN,
+          agentAddress: DEPLOY_ADDRESS,
+          source: SOURCE,
+          approved: { approval, projection, closure },
+          config: CONFIG,
+          allocationTarget: { allocationId: "alloc-test", generation: 1 },
+          reconciliation: {
+            leaseId: "lease-test",
+            signal: controller.signal,
+          },
+          credentialCipher: createNoopCredentialCipher(),
+        })
+        .catch((cause: unknown) => cause);
+
+      expect(error).toBeInstanceOf(SessionLaunchError);
+      if (!(error instanceof SessionLaunchError)) {
+        throw new Error("expected SessionLaunchError");
+      }
+      expect(error.leakedAgent).toBe(true);
+      expect(error.cause).toBe(cancelled);
+      expect(capturedAnchorUpdate).toBeUndefined();
+      expect(sidecarRouter.calls.map((call) => call.method)).toEqual([
+        "noteSenderDeployStarted",
+        "noteSenderDeploySettled",
+        "noteSenderDeployStarted",
+      ]);
+    });
+
     for (const frameSent of [false, true]) {
       test(`preserves frameSent=${String(frameSent)} for allocation recovery`, async () => {
         const failure = Object.assign(new Error("deploy failed"), {

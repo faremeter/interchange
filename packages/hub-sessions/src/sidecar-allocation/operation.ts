@@ -1,5 +1,10 @@
 export const DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS = 120_000;
 
+export type SidecarReconciliationContext = {
+  readonly signal: AbortSignal;
+  readonly leaseId: string;
+};
+
 export class SidecarOperationTimeoutError extends Error {
   constructor(operation: string, timeoutMs: number) {
     super(`${operation} timed out after ${String(timeoutMs)}ms`);
@@ -7,14 +12,17 @@ export class SidecarOperationTimeoutError extends Error {
   }
 }
 
-/** Bounds the caller's wait even when a provisioner ignores cancellation. */
+/** Stops waiting on cancellation or an optional deadline, even if work ignores the signal. */
 export async function runSidecarOperation<T>(
   operation: string,
-  timeoutMs: number,
+  timeoutMs: number | undefined,
   run: (signal: AbortSignal) => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+  if (
+    timeoutMs !== undefined &&
+    (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
+  ) {
     throw new Error("Sidecar operation timeout must be a positive integer");
   }
   signal?.throwIfAborted();
@@ -34,9 +42,14 @@ export async function runSidecarOperation<T>(
     };
     controller.signal.addEventListener("abort", rejectAborted, { once: true });
   });
-  const timer = setTimeout(() => {
-    controller.abort(new SidecarOperationTimeoutError(operation, timeoutMs));
-  }, timeoutMs);
+  const timer =
+    timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          controller.abort(
+            new SidecarOperationTimeoutError(operation, timeoutMs),
+          );
+        }, timeoutMs);
   try {
     return await Promise.race([
       Promise.resolve().then(() => {

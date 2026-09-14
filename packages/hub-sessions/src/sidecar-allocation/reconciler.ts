@@ -19,6 +19,7 @@ import type { SidecarPluginRegistry } from "./plugin-registry";
 import {
   DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
   runSidecarOperation,
+  type SidecarReconciliationContext,
 } from "./operation";
 
 const logger = getLogger(["hub", "sidecar-allocation"]);
@@ -33,6 +34,7 @@ type AllocationStore = Pick<
   | "extendReconciliationLease"
   | "failWithoutInfrastructure"
   | "listActive"
+  | "isReconciliationLeaseCurrent"
   | "markAllocated"
   | "markConnectionLost"
   | "markConnectionReady"
@@ -56,7 +58,10 @@ export type SidecarAllocationReconcilerDeps = {
   >;
   readonly hubWebSocketUrl: string;
   /** Idempotently restores and deploys one connected allocation generation. */
-  readonly onReady?: (allocation: SidecarAllocation) => Promise<void>;
+  readonly onReady?: (
+    allocation: SidecarAllocation,
+    reconciliation: SidecarReconciliationContext,
+  ) => Promise<void>;
   /**
    * Replace an allocated worker after its reconnect grace expires. Disabled by
    * default because Hub recovery does not restore arbitrary sidecar or
@@ -88,6 +93,15 @@ export type SidecarAllocationReconciler = {
   /** Drain the currently due queue, bounded to catch accidental hot loops. */
   reconcileUntilIdle(maxIterations?: number): Promise<number>;
 };
+
+class ReconciliationLeaseLostError extends Error {
+  constructor(allocationId: string, cause?: unknown) {
+    super(`Reconciliation lease lost for allocation ${allocationId}`, {
+      cause,
+    });
+    this.name = "ReconciliationLeaseLostError";
+  }
+}
 
 const DEFAULT_LEASE_DURATION_MS = 60_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 120_000;
@@ -148,6 +162,41 @@ export function createSidecarAllocationReconciler({
     throw new Error("operationTimeoutMs must be a positive integer");
   }
 
+  const activeAllocations = new Map<
+    string,
+    {
+      allocation: SidecarAllocation;
+      controller: AbortController;
+      leaseDeadline: number;
+      pendingConnect: AllocatedSidecarTarget | null;
+    }
+  >();
+
+  function trackAllocation(allocation: SidecarAllocation): void {
+    const active = activeAllocations.get(allocation.id);
+    if (active === undefined) return;
+    if (active.allocation.generation !== allocation.generation)
+      active.pendingConnect = null;
+    active.allocation = allocation;
+  }
+
+  async function finishReconciliation(
+    allocationId: string,
+    apply: (pendingConnect: boolean) => Promise<unknown>,
+  ): Promise<void> {
+    const active = activeAllocations.get(allocationId);
+    if (active === undefined)
+      throw new ReconciliationLeaseLostError(allocationId);
+    const target = { allocationId, generation: active.allocation.generation };
+    await queueConnectionEvent(target, async () => {
+      active.controller.signal.throwIfAborted();
+      await apply(
+        active.pendingConnect?.generation === target.generation &&
+          active.allocation.status === "allocated",
+      );
+    });
+  }
+
   function provisionerFor(
     allocation: SidecarAllocation,
   ): SidecarProvisioner | null {
@@ -170,22 +219,97 @@ export function createSidecarAllocationReconciler({
   async function withLeaseHeartbeat<T>(
     allocation: SidecarAllocation,
     leaseId: string,
-    operation: () => Promise<T>,
+    operationName: string,
+    operation: (context: SidecarReconciliationContext) => Promise<T>,
+    timeoutMs?: number,
   ): Promise<T> {
+    trackAllocation(allocation);
+    const active = activeAllocations.get(allocation.id);
+    if (active === undefined)
+      throw new ReconciliationLeaseLostError(allocation.id);
+    const controller = active.controller;
+    let finished = false;
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    const checkLeaseExpiry = (): void => {
+      if (finished || controller.signal.aborted) return;
+      const remaining = active.leaseDeadline - performance.now();
+      if (remaining <= 0) {
+        controller.abort(new ReconciliationLeaseLostError(allocation.id));
+      } else {
+        expiryTimer = setTimeout(checkLeaseExpiry, Math.ceil(remaining));
+      }
+    };
+    let renewing = false;
+    const renew = async (): Promise<void> => {
+      if (renewing || controller.signal.aborted) return;
+      renewing = true;
+      const startedAt = performance.now();
+      try {
+        const renewed = await allocationStore.extendReconciliationLease(
+          allocation.id,
+          leaseId,
+          leaseDurationMs,
+        );
+        if (finished || controller.signal.aborted) return;
+        if (!renewed || performance.now() >= active.leaseDeadline) {
+          controller.abort(new ReconciliationLeaseLostError(allocation.id));
+        } else {
+          // The database grants the lease during the request. Counting from its
+          // start avoids extending ownership by the response's transit time.
+          active.leaseDeadline = startedAt + leaseDurationMs;
+        }
+      } catch (error) {
+        if (!finished) {
+          controller.abort(
+            new ReconciliationLeaseLostError(allocation.id, error),
+          );
+        }
+      } finally {
+        renewing = false;
+      }
+    };
     const interval = setInterval(
       () => {
-        void allocationStore
-          .extendReconciliationLease(allocation.id, leaseId, leaseDurationMs)
-          .catch((error: unknown) => {
-            logger.warn`Failed to extend allocation ${allocation.id} lease: ${error instanceof Error ? error.message : String(error)}`;
-          });
+        void renew();
       },
       Math.max(1, Math.floor(leaseDurationMs / 3)),
     );
+    checkLeaseExpiry();
     try {
-      return await operation();
+      return await runSidecarOperation(
+        operationName,
+        timeoutMs,
+        async (signal) => {
+          if (
+            !(await runSidecarOperation(
+              "Reconciliation lease validation",
+              operationTimeoutMs,
+              () =>
+                allocationStore.isReconciliationLeaseCurrent(
+                  allocation.id,
+                  allocation.generation,
+                  leaseId,
+                ),
+              signal,
+            ))
+          ) {
+            throw new ReconciliationLeaseLostError(allocation.id);
+          }
+          if (performance.now() >= active.leaseDeadline) {
+            controller.abort(new ReconciliationLeaseLostError(allocation.id));
+          }
+          signal.throwIfAborted();
+          return operation({ signal, leaseId });
+        },
+        controller.signal,
+      );
+    } catch (error) {
+      controller.signal.throwIfAborted();
+      throw error;
     } finally {
+      finished = true;
       clearInterval(interval);
+      clearTimeout(expiryTimer);
     }
   }
 
@@ -247,11 +371,16 @@ export function createSidecarAllocationReconciler({
         !connectionAlreadyReady &&
         !(await router.isAllocatedSidecarReady(target))
       ) {
-        await withLeaseHeartbeat(allocation, leaseId, () =>
-          router.waitForAllocatedSidecar(target, Math.max(0, remaining)),
+        await withLeaseHeartbeat(
+          allocation,
+          leaseId,
+          "Sidecar connection",
+          () => router.waitForAllocatedSidecar(target, Math.max(0, remaining)),
+          operationTimeoutMs,
         );
       }
     } catch (error) {
+      if (error instanceof ReconciliationLeaseLostError) throw error;
       await replaceAfterFailure(
         allocation,
         leaseId,
@@ -261,12 +390,24 @@ export function createSidecarAllocationReconciler({
       return;
     }
 
+    await queueConnectionEvent(target, async () => {
+      const active = activeAllocations.get(allocation.id);
+      if (active?.allocation.generation !== allocation.generation)
+        throw new ReconciliationLeaseLostError(allocation.id);
+      active.controller.signal.throwIfAborted();
+      active.pendingConnect = null;
+    });
+
     if (onReady !== undefined) {
       try {
-        await withLeaseHeartbeat(allocation, leaseId, () =>
-          onReady(allocation),
+        await withLeaseHeartbeat(
+          allocation,
+          leaseId,
+          "Workflow initialization",
+          (context) => onReady(allocation, context),
         );
       } catch (error) {
+        if (error instanceof ReconciliationLeaseLostError) throw error;
         if (error instanceof SessionLaunchError && error.leakedAgent) {
           await replaceAfterFailure(
             allocation,
@@ -276,30 +417,43 @@ export function createSidecarAllocationReconciler({
           );
           return;
         }
-        await allocationStore.scheduleRetry({
-          allocationId: allocation.id,
-          expectedStatus: "allocated",
-          expectedGeneration: allocation.generation,
-          // Initialization has no separate durable attempt counter. Use the
-          // capped delay so a persistent launch error cannot create a hot loop.
-          nextAttemptAt: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
-          expectedLeaseId: leaseId,
-          failure: {
-            code: "sidecar_initialization_failed",
-            message: error instanceof Error ? error.message : String(error),
-          },
-          now: now(),
-        });
+        await finishReconciliation(allocation.id, () =>
+          allocationStore.scheduleRetry({
+            allocationId: allocation.id,
+            expectedStatus: "allocated",
+            expectedGeneration: allocation.generation,
+            // Initialization has no separate durable attempt counter. Use the
+            // capped delay so a persistent launch error cannot create a hot loop.
+            nextAttemptAt: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
+            expectedLeaseId: leaseId,
+            failure: {
+              code: "sidecar_initialization_failed",
+              message: error instanceof Error ? error.message : String(error),
+            },
+            now: now(),
+          }),
+        );
         return;
       }
     }
 
-    await allocationStore.markConnectionReady({
-      allocationId: allocation.id,
-      generation: allocation.generation,
-      expectedLeaseId: leaseId,
-      now: now(),
-    });
+    await finishReconciliation(allocation.id, (pendingConnect) =>
+      pendingConnect
+        ? allocationStore.scheduleRetry({
+            allocationId: allocation.id,
+            expectedStatus: "allocated",
+            expectedGeneration: allocation.generation,
+            expectedLeaseId: leaseId,
+            nextAttemptAt: now(),
+            now: now(),
+          })
+        : allocationStore.markConnectionReady({
+            allocationId: allocation.id,
+            generation: allocation.generation,
+            expectedLeaseId: leaseId,
+            now: now(),
+          }),
+    );
   }
 
   async function acceptEnsure(
@@ -315,8 +469,11 @@ export function createSidecarAllocationReconciler({
     let result: EnsureSidecarResult;
     try {
       result = parseEnsureResult(
-        await withLeaseHeartbeat(allocation, leaseId, () =>
-          runSidecarOperation("Sidecar ensure", operationTimeoutMs, (signal) =>
+        await withLeaseHeartbeat(
+          allocation,
+          leaseId,
+          "Sidecar ensure",
+          ({ signal }) =>
             provisioner.ensure({
               signal,
               allocationId: allocation.id,
@@ -327,10 +484,11 @@ export function createSidecarAllocationReconciler({
               token,
               hubWebSocketUrl,
             }),
-          ),
+          operationTimeoutMs,
         ),
       );
     } catch (error) {
+      if (error instanceof ReconciliationLeaseLostError) throw error;
       await replaceAfterFailure(
         allocation,
         leaseId,
@@ -377,6 +535,7 @@ export function createSidecarAllocationReconciler({
       now: now(),
     });
     if (allocated !== null) {
+      trackAllocation(allocated);
       const target = {
         allocationId: allocated.id,
         generation: allocated.generation,
@@ -389,10 +548,21 @@ export function createSidecarAllocationReconciler({
       // transitions. Do not hold the single reconciliation loop for the full
       // connection timeout: park this lease at its persisted deadline and let
       // sidecar.allocated.connected wake it immediately when the worker arrives.
-      await allocationStore.parkReconciliation(allocated.id, leaseId, {
-        kind: "await-connection",
-        fallbackNextAttemptAt: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
-      });
+      await finishReconciliation(allocated.id, (pendingConnect) =>
+        pendingConnect
+          ? allocationStore.scheduleRetry({
+              allocationId: allocated.id,
+              expectedStatus: "allocated",
+              expectedGeneration: allocated.generation,
+              expectedLeaseId: leaseId,
+              nextAttemptAt: now(),
+              now: now(),
+            })
+          : allocationStore.parkReconciliation(allocated.id, leaseId, {
+              kind: "await-connection",
+              fallbackNextAttemptAt: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
+            }),
+      );
     }
   }
 
@@ -426,6 +596,7 @@ export function createSidecarAllocationReconciler({
         });
     if (bound === null) return;
 
+    trackAllocation(bound);
     router.fenceAllocation(bound.id, bound.generation);
     await acceptEnsure(bound, leaseId, provisioner, token);
   }
@@ -442,15 +613,18 @@ export function createSidecarAllocationReconciler({
         `Cannot retry destroy while allocation ${allocation.id} is ${allocation.status}`,
       );
     }
-    await allocationStore.scheduleRetry({
-      allocationId: allocation.id,
-      expectedStatus: allocation.status,
-      expectedGeneration: allocation.generation,
-      nextAttemptAt: retryAt(allocation.destroyAttempts),
-      expectedLeaseId: leaseId,
-      attempt: "destroy",
-      now: now(),
-    });
+    const status = allocation.status;
+    await finishReconciliation(allocation.id, () =>
+      allocationStore.scheduleRetry({
+        allocationId: allocation.id,
+        expectedStatus: status,
+        expectedGeneration: allocation.generation,
+        nextAttemptAt: retryAt(allocation.destroyAttempts),
+        expectedLeaseId: leaseId,
+        attempt: "destroy",
+        now: now(),
+      }),
+    );
   }
 
   async function destroyCurrent(
@@ -463,8 +637,11 @@ export function createSidecarAllocationReconciler({
     let result: DestroySidecarResult;
     try {
       result = parseDestroyResult(
-        await withLeaseHeartbeat(allocation, leaseId, () =>
-          runSidecarOperation("Sidecar destroy", operationTimeoutMs, (signal) =>
+        await withLeaseHeartbeat(
+          allocation,
+          leaseId,
+          "Sidecar destroy",
+          ({ signal }) =>
             provisioner.destroy({
               signal,
               allocationId: allocation.id,
@@ -474,10 +651,11 @@ export function createSidecarAllocationReconciler({
                 ? { externalRef: allocation.externalRef }
                 : {}),
             }),
-          ),
+          operationTimeoutMs,
         ),
       );
     } catch (error) {
+      if (error instanceof ReconciliationLeaseLostError) throw error;
       logger.warn`Destroy failed for allocation ${allocation.id}: ${error instanceof Error ? error.message : String(error)}`;
       await retryDestroy(allocation, leaseId);
       return false;
@@ -535,16 +713,19 @@ export function createSidecarAllocationReconciler({
           });
         }
       } else {
-        await allocationStore.scheduleRetry({
-          allocationId: allocation.id,
-          expectedStatus: allocation.status,
-          expectedGeneration: allocation.generation,
-          nextAttemptAt: retryAt(
-            allocation.ensureAttempts + allocation.destroyAttempts,
-          ),
-          expectedLeaseId: leaseId,
-          now: now(),
-        });
+        const status = allocation.status;
+        await finishReconciliation(allocation.id, () =>
+          allocationStore.scheduleRetry({
+            allocationId: allocation.id,
+            expectedStatus: status,
+            expectedGeneration: allocation.generation,
+            nextAttemptAt: retryAt(
+              allocation.ensureAttempts + allocation.destroyAttempts,
+            ),
+            expectedLeaseId: leaseId,
+            now: now(),
+          }),
+        );
       }
       return;
     }
@@ -619,24 +800,66 @@ export function createSidecarAllocationReconciler({
     }
   }
 
-  async function handleDisconnect(
+  const connectionEvents = new Map<string, Promise<void>>();
+
+  function queueConnectionEvent(
     target: AllocatedSidecarTarget,
+    apply: () => Promise<void>,
   ): Promise<void> {
-    await allocationStore.markConnectionLost({
-      allocationId: target.allocationId,
-      generation: target.generation,
-      connectDeadline: new Date(now().getTime() + connectTimeoutMs),
-      now: now(),
+    const previous =
+      connectionEvents.get(target.allocationId) ?? Promise.resolve();
+    const pending = previous.catch(() => undefined).then(apply);
+    connectionEvents.set(target.allocationId, pending);
+    const settled = () => {
+      if (connectionEvents.get(target.allocationId) === pending)
+        connectionEvents.delete(target.allocationId);
+    };
+    void pending.then(settled, settled);
+    return pending;
+  }
+
+  function noteDisconnect(
+    target: AllocatedSidecarTarget,
+    leaseInvalidated = false,
+  ): void {
+    const active = activeAllocations.get(target.allocationId);
+    if (active?.allocation.generation !== target.generation) return;
+    active.pendingConnect = null;
+    if (leaseInvalidated || active.allocation.status === "allocated") {
+      active.controller.abort(
+        new ReconciliationLeaseLostError(target.allocationId),
+      );
+    }
+  }
+
+  function noteConnect(target: AllocatedSidecarTarget): void {
+    const active = activeAllocations.get(target.allocationId);
+    if (active?.allocation.generation === target.generation)
+      active.pendingConnect = target;
+  }
+
+  function handleDisconnect(target: AllocatedSidecarTarget): Promise<void> {
+    noteDisconnect(target);
+    return queueConnectionEvent(target, async () => {
+      const disconnected = await allocationStore.markConnectionLost({
+        allocationId: target.allocationId,
+        generation: target.generation,
+        connectDeadline: new Date(now().getTime() + connectTimeoutMs),
+        now: now(),
+      });
+      noteDisconnect(target, disconnected !== null);
     });
   }
 
-  async function handleConnected(
-    target: AllocatedSidecarTarget,
-  ): Promise<void> {
-    await allocationStore.wakeReconciliation(
-      target.allocationId,
-      target.generation,
-    );
+  function handleConnected(target: AllocatedSidecarTarget): Promise<void> {
+    noteConnect(target);
+    return queueConnectionEvent(target, async () => {
+      await allocationStore.wakeReconciliation(
+        target.allocationId,
+        target.generation,
+      );
+      noteConnect(target);
+    });
   }
 
   async function repairUnscheduledConnections(): Promise<void> {
@@ -670,19 +893,61 @@ export function createSidecarAllocationReconciler({
 
   async function reconcileNext(): Promise<boolean> {
     const leaseId = createLeaseId();
-    const allocation = await allocationStore.claimNextReconcilable({
-      leaseId,
-      leaseDurationMs,
-    });
+    const claimStartedAt = performance.now();
+    const allocation = await runSidecarOperation(
+      "Sidecar allocation claim",
+      operationTimeoutMs,
+      () =>
+        allocationStore.claimNextReconcilable({
+          leaseId,
+          leaseDurationMs,
+          excludedAllocationIds: [...activeAllocations.keys()],
+        }),
+    );
     if (allocation === null) return false;
-    try {
-      await reconcile(allocation, leaseId);
-    } catch (error) {
-      logger.error`Allocation ${allocation.id} reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
+    // A claim started before another local claim returned can outlive its lease.
+    if (activeAllocations.has(allocation.id)) {
       await allocationStore.parkReconciliation(allocation.id, leaseId, {
         kind: "retry-after-error",
         notBefore: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
       });
+      return true;
+    }
+    activeAllocations.set(allocation.id, {
+      allocation,
+      controller: new AbortController(),
+      leaseDeadline: claimStartedAt + leaseDurationMs,
+      pendingConnect: null,
+    });
+    try {
+      await reconcile(allocation, leaseId);
+    } catch (error) {
+      if (error instanceof ReconciliationLeaseLostError) {
+        const cause = error.cause;
+        if (cause === undefined) {
+          logger.info`Allocation ${allocation.id} reconciliation stopped: lease ${leaseId} is no longer current`;
+        } else {
+          logger.warn`Allocation ${allocation.id} reconciliation stopped because renewal of lease ${leaseId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+          try {
+            await allocationStore.parkReconciliation(allocation.id, leaseId, {
+              kind: "retry-after-error",
+              notBefore: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
+            });
+          } catch (parkError) {
+            logger.warn`Failed to park allocation ${allocation.id} after renewal failure: ${parkError instanceof Error ? parkError.message : String(parkError)}`;
+          }
+        }
+        return true;
+      }
+      logger.error`Allocation ${allocation.id} reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;
+      await finishReconciliation(allocation.id, () =>
+        allocationStore.parkReconciliation(allocation.id, leaseId, {
+          kind: "retry-after-error",
+          notBefore: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
+        }),
+      );
+    } finally {
+      activeAllocations.delete(allocation.id);
     }
     return true;
   }

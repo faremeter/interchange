@@ -33,6 +33,48 @@ function lastFrame(ws: { sent: string[] }): Record<string, unknown> {
   return frame;
 }
 
+describe("SidecarRouter allocation initialization cancellation", () => {
+  for (const operation of ["deploy", "restore"] as const) {
+    test(`does not send ${operation} frames after cancellation during identity validation`, async () => {
+      const controller = new AbortController();
+      const cancelled = new Error("Initialization cancelled");
+      let cancelDuringValidation = false;
+      const router = createAllocatedRouter({
+        validateSidecarIdentity: async () => {
+          if (cancelDuringValidation) controller.abort(cancelled);
+          return true;
+        },
+      });
+      const ws = await connectAllocated(router);
+      const previousFrames = [...ws.sent];
+      cancelDuringValidation = true;
+
+      const sending =
+        operation === "deploy"
+          ? router.sendAgentDeployToAllocation(
+              TEST_TARGET,
+              TEST_IDENTITY.workflowRunAddress,
+              TEST_CONFIG,
+              undefined,
+              controller.signal,
+            )
+          : router.sendWorkflowRunPackToAllocation(
+              TEST_TARGET,
+              TEST_IDENTITY.workflowRunAddress,
+              new Uint8Array([1, 2, 3]),
+              "refs/heads/events",
+              "a".repeat(40),
+              controller.signal,
+            );
+      const error = await sending.catch((cause: unknown) => cause);
+
+      expect(error).toBe(cancelled);
+      expect(ws.sent).toEqual(previousFrames);
+      expect(router.getRoutableAddresses()).toEqual([]);
+    });
+  }
+});
+
 describe("SidecarRouter allocation deploy transport", () => {
   test("rejects deploys without a Hub signing key before mutating routing", async () => {
     const router = createSidecarRouter({
