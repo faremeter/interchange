@@ -105,6 +105,11 @@ export const workflowRun = pgTable(
     // material from the credential table (dropping a revoked or deleted id,
     // picking up a rotated secret) and reconcile the reconnecting child.
     credentialRefs: jsonb("credential_refs").$type<WorkflowRunCredentialRefs>(),
+    lifecyclePolicy: jsonb("lifecycle_policy"),
+    expiresAt: timestamp("expires_at"),
+    cancellationRequestedAt: timestamp("cancellation_requested_at"),
+    cancellationDeadline: timestamp("cancellation_deadline"),
+    capacityReleaseAt: timestamp("capacity_release_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     // Nullable: a run has no end time until it reaches a terminal state.
     endedAt: timestamp("ended_at"),
