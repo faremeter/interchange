@@ -19,6 +19,7 @@ import {
   type AgentErrorFrame,
   type SessionErrorFrame,
   type AgentUndeployFrame,
+  type WorkflowControlFrame,
   type PackPushFrame,
   type PackDoneFrame,
   type PackAckFrame,
@@ -296,6 +297,8 @@ export interface DeployRouter {
    * so test routers can omit the implementation.
    */
   undeploy?: (frame: AgentUndeployFrame) => Promise<void>;
+  /** Cancel a workflow or stop its process while retaining local inspection state. */
+  control?: (frame: WorkflowControlFrame) => Promise<void>;
 }
 
 /**
@@ -1679,6 +1682,22 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "agent.undeploy":
         await handleAgentUndeploy(frame);
+        break;
+      case "workflow.control":
+        try {
+          if (deployRouter.control === undefined)
+            throw new Error(
+              "Workflow control is not supported by this sidecar",
+            );
+          await deployRouter.control(frame);
+          send({ type: "workflow.control.ack", requestId: frame.requestId });
+        } catch (error) {
+          send({
+            type: "workflow.control.ack",
+            requestId: frame.requestId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         break;
       case "pong":
         lastPongAt = Date.now();

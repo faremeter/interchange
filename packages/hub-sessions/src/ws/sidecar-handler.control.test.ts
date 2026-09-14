@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { WorkflowControlFrame } from "@intx/types/sidecar";
 
+import {
+  SidecarIdentityValidationError,
+  WorkflowControlRejectedError,
+  WorkflowControlTimeoutError,
+  WorkflowControlUnreachableError,
+} from "./sidecar-handler";
 import {
   connectAllocated,
   createAllocatedRouter,
@@ -18,6 +25,10 @@ function framesOfType(ws: { sent: string[] }, type: string) {
   );
 }
 
+// Longer than the runner's budget, so an acknowledgement, not the clock,
+// settles each request.
+const CONTROL_TIMEOUT_MS = 60_000;
+
 const approvalSnapshot = {
   name: "charge_card",
   description: "Charge the customer",
@@ -26,6 +37,172 @@ const approvalSnapshot = {
 };
 
 describe("SidecarRouter allocation control protocols", () => {
+  test("workflow control accepts an acknowledgement only from its allocation connection", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.sendWorkflowControl(
+      TEST_IDENTITY,
+      {
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        runId: TEST_IDENTITY.anchorRunId,
+        action: "stop",
+        reason: "Lifetime expired",
+      },
+      CONTROL_TIMEOUT_MS,
+    );
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await tick();
+    const command = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control")[0],
+    );
+    const acknowledgement = JSON.stringify({
+      type: "workflow.control.ack",
+      requestId: command.requestId,
+    });
+    router.handleMessage(
+      { send: () => undefined, close: () => undefined },
+      acknowledgement,
+    );
+    await tick();
+    expect(settled).toBe(false);
+    router.handleMessage(ws, acknowledgement);
+    await pending;
+    expect(settled).toBe(true);
+  });
+
+  test("workflow control cannot target a different run", async () => {
+    const router = createAllocatedRouter();
+    await connectAllocated(router, [TEST_IDENTITY.workflowRunAddress]);
+    await expect(
+      router.sendWorkflowControl(
+        TEST_IDENTITY,
+        {
+          agentAddress: TEST_IDENTITY.workflowRunAddress,
+          runId: "run_other",
+          action: "cancel",
+          reason: "Wrong run",
+        },
+        CONTROL_TIMEOUT_MS,
+      ),
+    ).rejects.toThrow("anchor run");
+  });
+
+  test("workflow control reports a generation this Hub does not hold as unreachable", async () => {
+    const router = createAllocatedRouter();
+    await expect(
+      router.sendWorkflowControl(
+        TEST_IDENTITY,
+        {
+          agentAddress: TEST_IDENTITY.workflowRunAddress,
+          runId: TEST_IDENTITY.anchorRunId,
+          action: "stop",
+          reason: "Lifetime expired",
+        },
+        CONTROL_TIMEOUT_MS,
+      ),
+    ).rejects.toBeInstanceOf(WorkflowControlUnreachableError);
+  });
+
+  test("workflow control reports a disconnect before the acknowledgement as unreachable", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.sendWorkflowControl(
+      TEST_IDENTITY,
+      {
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        runId: TEST_IDENTITY.anchorRunId,
+        action: "stop",
+        reason: "Lifetime expired",
+      },
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    router.handleClose(ws);
+    await expect(pending).rejects.toBeInstanceOf(
+      WorkflowControlUnreachableError,
+    );
+  });
+
+  test("workflow control distinguishes a silent worker from a refusing one", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const command = {
+      agentAddress: TEST_IDENTITY.workflowRunAddress,
+      runId: TEST_IDENTITY.anchorRunId,
+      action: "stop",
+      reason: "Lifetime expired",
+    } as const;
+    await expect(
+      router.sendWorkflowControl(TEST_IDENTITY, command, 1),
+    ).rejects.toBeInstanceOf(WorkflowControlTimeoutError);
+
+    const refused = router.sendWorkflowControl(
+      TEST_IDENTITY,
+      command,
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+        error: "Shutdown failed",
+      }),
+    );
+    await expect(refused).rejects.toBeInstanceOf(WorkflowControlRejectedError);
+  });
+
+  test("an acknowledgement that cannot be validated leaves the stop unknown", async () => {
+    let validationFails = false;
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if (validationFails) throw new Error("database unavailable");
+        return true;
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.sendWorkflowControl(
+      TEST_IDENTITY,
+      {
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        runId: TEST_IDENTITY.anchorRunId,
+        action: "stop",
+        reason: "Lifetime expired",
+      },
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    const frame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control")[0],
+    );
+    validationFails = true;
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: frame.requestId,
+      }),
+    );
+    await expect(pending).rejects.toBeInstanceOf(
+      SidecarIdentityValidationError,
+    );
+  });
+
   test("acknowledges a signal correlation only after its durable co-write", async () => {
     const registered: string[] = [];
     const router = createAllocatedRouter({

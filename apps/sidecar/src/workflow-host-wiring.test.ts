@@ -2855,6 +2855,62 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(spawner.spawnCount()).toBe(2);
   });
 
+  test("cancelling a self-terminated deployment prevents boot restore", async () => {
+    const dataDir = await createTempBaseDir("sidecar-self-term-cancel-data-");
+    const head = "run_selfterm_cancel@example.com";
+    const deploymentId = deriveDeploymentId(head);
+    const spawner = makeReadyDrivingSpawner(9780);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    const deploying = router.deploy(singleStepFrame(head, "wf-st-cancel"));
+    await spawner.driveReadyFor(0);
+    await deploying;
+    spawner.failNextSpawn();
+    await spawner.recycleRequestFor(0);
+    // The reclaim exposes no completion signal; use the existing deadline-free
+    // wait for its active-address transition, as the neighboring tests do.
+    await waitUntil(() => !router.activeAddresses().includes(head));
+    expect(await recordExists(dataDir, deploymentId)).toBe(true);
+
+    const scratch = path.join(
+      dataDir,
+      "workflow-step-state",
+      deploymentId,
+      "inspection.txt",
+    );
+    await fs.mkdir(path.dirname(scratch), { recursive: true });
+    await fs.writeFile(scratch, "retained");
+    const control = router.control;
+    if (control === undefined) throw new Error("router.control is undefined");
+    const command = {
+      type: "workflow.control",
+      requestId: "cancel-request",
+      action: "cancel",
+      runId: "run_selfterm_cancel",
+      agentAddress: head,
+      reason: "Operator cancellation after failed recycle",
+    } as const;
+    await Promise.all([
+      control(command),
+      control({ ...command, requestId: "concurrent-cancel" }),
+    ]);
+    await control({ ...command, requestId: "cancel-retry" });
+    expect(await recordExists(dataDir, deploymentId)).toBe(false);
+    expect(await fs.readFile(scratch, "utf8")).toBe("retained");
+
+    const restartedSpawner = makeReadyDrivingSpawner(9790);
+    const { router: restarted } = await buildMultistepFixture({
+      spawner: restartedSpawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    await restarted.restoreWorkflowRuns();
+    expect(restartedSpawner.spawnCount()).toBe(0);
+    expect(restarted.activeAddresses()).toEqual([]);
+  });
+
   test("a reclaimed self-terminated address survives a following operator undeploy", async () => {
     const dataDir = await createTempBaseDir("sidecar-self-term-undeploy-data-");
     const head = "run_selfterm_undeploy@example.com";
