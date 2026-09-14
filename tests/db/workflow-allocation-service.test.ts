@@ -678,7 +678,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       await service.initialize();
 
-      expect(destroyCalls).toHaveLength(1);
+      expect(destroyCalls).toHaveLength(0);
       expect(
         await h.db.query.workflowProbe.findFirst({
           where: eq(workflowProbe.id, "sal-startup-cleanup"),
@@ -691,6 +691,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       if (service.reconcileReleasingProbes === undefined) {
         throw new Error("workflow probe cleanup reconciliation is unavailable");
       }
+      await expect(service.reconcileReleasingProbes()).rejects.toThrow(
+        "Failed to clean up releasing workflow probes",
+      );
+      expect(destroyCalls).toHaveLength(1);
       await service.reconcileReleasingProbes();
 
       expect(destroyCalls).toHaveLength(2);

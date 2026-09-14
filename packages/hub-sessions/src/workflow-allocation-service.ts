@@ -14,7 +14,6 @@ import {
 import { grant, workflowRun } from "@intx/db/schema";
 import { eq } from "drizzle-orm";
 import { generateId } from "@intx/hub-common";
-import { getLogger } from "@intx/log";
 import {
   hexEncode,
   SidecarCapabilityRule,
@@ -55,8 +54,6 @@ import {
   runSidecarOperation,
   type SidecarReconciliationContext,
 } from "./sidecar-allocation/operation";
-
-const logger = getLogger(["hub", "workflow-allocation"]);
 
 export class WorkflowProvisioningError extends Error {
   readonly code: string;
@@ -274,10 +271,34 @@ export function createWorkflowAllocationService({
     );
   }
 
-  async function finishProbeRelease(
-    releasing: WorkflowProbe,
+  const probeCleanupTasks = new Map<string, Promise<void>>();
+
+  function finishProbeRelease(
+    probe: WorkflowProbe,
     finalStatus: "succeeded" | "failed",
   ): Promise<void> {
+    const existing = probeCleanupTasks.get(probe.id);
+    if (existing !== undefined) return existing;
+    const task = cleanUpProbe(probe, finalStatus);
+    probeCleanupTasks.set(probe.id, task);
+    const settled = () => {
+      if (probeCleanupTasks.get(probe.id) === task)
+        probeCleanupTasks.delete(probe.id);
+    };
+    void task.then(settled, settled);
+    return task;
+  }
+
+  async function cleanUpProbe(
+    probe: WorkflowProbe,
+    finalStatus: "succeeded" | "failed",
+  ): Promise<void> {
+    const releasing = await probeStore.get(probe.id);
+    if (releasing?.status === "succeeded" || releasing?.status === "failed")
+      return;
+    if (releasing?.status !== "releasing") {
+      throw new Error(`Workflow probe ${probe.id} is not releasing`);
+    }
     const sidecarId = releasing.sidecarId;
     if (sidecarId !== null) {
       const provisioner = matchingProvisioner(releasing);
@@ -805,9 +826,8 @@ export function createWorkflowAllocationService({
   async function initialize(): Promise<void> {
     const failures: unknown[] = [];
     for (const probe of await probeStore.listActive()) {
-      let releasing: WorkflowProbe | null;
       try {
-        releasing = await beginProbeRelease(
+        await beginProbeRelease(
           probe,
           probe.status === "releasing"
             ? undefined
@@ -818,13 +838,6 @@ export function createWorkflowAllocationService({
         );
       } catch (error) {
         failures.push(error);
-        continue;
-      }
-      if (releasing === null) continue;
-      try {
-        await finishProbeRelease(releasing, cleanupFinalStatus(releasing));
-      } catch (error) {
-        logger.warn`Workflow probe ${releasing.id} cleanup remains pending after startup: ${error instanceof Error ? error.message : String(error)}`;
       }
     }
     if (failures.length > 0) {

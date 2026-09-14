@@ -182,6 +182,14 @@ export function createWorkflowProbeStore(db: DBHandle) {
       return updated ?? null;
     },
 
+    async get(probeId: string): Promise<WorkflowProbe | null> {
+      return (
+        (await db.query.workflowProbe.findFirst({
+          where: eq(workflowProbe.id, probeId),
+        })) ?? null
+      );
+    },
+
     async listActive(): Promise<WorkflowProbe[]> {
       return db.query.workflowProbe.findMany({
         where: inArray(workflowProbe.status, [...activeStatuses]),
