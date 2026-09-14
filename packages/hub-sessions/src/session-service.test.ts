@@ -186,6 +186,9 @@ function createMockAllocationRouter(
     fenceAllocation() {
       throw new Error("mock allocation fence is not used by session service");
     },
+    async sendWorkflowControl() {
+      throw new Error("mock workflow control is not used by session service");
+    },
     retireAllocation() {
       throw new Error(
         "mock allocation retirement is not used by session service",

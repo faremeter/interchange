@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { WorkflowControlFrame } from "@intx/types/sidecar";
 
 import {
   connectAllocated,
@@ -26,6 +27,53 @@ const approvalSnapshot = {
 };
 
 describe("SidecarRouter allocation control protocols", () => {
+  test("workflow control accepts an acknowledgement only from its allocation connection", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const pending = router.sendWorkflowControl(TEST_IDENTITY, {
+      agentAddress: TEST_IDENTITY.workflowRunAddress,
+      runId: TEST_IDENTITY.anchorRunId,
+      action: "stop",
+      reason: "Lifetime expired",
+    });
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await tick();
+    const command = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control")[0],
+    );
+    const acknowledgement = JSON.stringify({
+      type: "workflow.control.ack",
+      requestId: command.requestId,
+    });
+    router.handleMessage(
+      { send: () => undefined, close: () => undefined },
+      acknowledgement,
+    );
+    await tick();
+    expect(settled).toBe(false);
+    router.handleMessage(ws, acknowledgement);
+    await pending;
+    expect(settled).toBe(true);
+  });
+
+  test("workflow control cannot target a different run", async () => {
+    const router = createAllocatedRouter();
+    await connectAllocated(router, [TEST_IDENTITY.workflowRunAddress]);
+    await expect(
+      router.sendWorkflowControl(TEST_IDENTITY, {
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        runId: "run_other",
+        action: "cancel",
+        reason: "Wrong run",
+      }),
+    ).rejects.toThrow("anchor run");
+  });
+
   test("acknowledges a signal correlation only after its durable co-write", async () => {
     const registered: string[] = [];
     const router = createAllocatedRouter({

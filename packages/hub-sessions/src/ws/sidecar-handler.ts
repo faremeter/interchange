@@ -27,6 +27,8 @@ import {
   type PackRejectFrame,
   type RepoId,
   type RunGrantsFrame,
+  type WorkflowControlFrame,
+  type WorkflowControlAckFrame,
   type SignalCorrelationRegisterFrame,
   type CredentialDelivery,
   type WorkflowSourceAssetMount,
@@ -372,6 +374,11 @@ export type AllocatedSidecarTarget = {
 };
 
 export type SidecarAllocationRouter = {
+  sendWorkflowControl(
+    target: AllocatedSidecarTarget,
+    command: Omit<WorkflowControlFrame, "type" | "requestId">,
+    timeoutMs?: number,
+  ): Promise<void>;
   /** Advance the in-memory trust boundary before provisioning a generation. */
   fenceAllocation(allocationId: string, generation: number): void;
   /**
@@ -707,6 +714,11 @@ export function createSidecarRouter(
 
   // agentAddress → pending undeploy (resolved by agent.undeploy.ack)
   const pendingUndeploys = new PendingTracker<string>();
+  const pendingWorkflowControls = new PendingTracker<
+    string,
+    void,
+    AllocatedSidecarTarget
+  >();
 
   // requestId → pending workflow probe (resolved by workflow.probe.result,
   // rejected by workflow.probe.error). Result-carrying, unlike the other
@@ -1180,6 +1192,7 @@ export function createSidecarRouter(
       case "agent.deploy.ack":
       case "agent.error":
       case "agent.undeploy.ack":
+      case "workflow.control.ack":
       case "repo.pack.ack":
       case "repo.pack.reject":
       case "workflow.probe.result":
@@ -1238,6 +1251,8 @@ export function createSidecarRouter(
       }
       case "agent.deploy.ack":
         return handleDeployAck(ws, frame);
+      case "workflow.control.ack":
+        return handleWorkflowControlAck(ws, frame);
       case "agent.error":
         rejectDeployPendingFromFrame(ws, frame.agentAddress, frame.error);
         rejectUndeployPending(ws, frame.agentAddress, frame.error);
@@ -2268,6 +2283,10 @@ export function createSidecarRouter(
     // without it a probe whose sidecar drops mid-flight would hang until its
     // own timeout instead of failing fast on the disconnect.
     pendingProbes.rejectAllForWs(ws, `Sidecar ${conn.sidecarId} disconnected`);
+    pendingWorkflowControls.rejectAllForWs(
+      ws,
+      `Sidecar ${conn.sidecarId} disconnected`,
+    );
 
     // Cancel any in-flight inbound pack transfers from this sidecar
     // across both receivers. The two receivers track their own in-
@@ -3476,6 +3495,65 @@ export function createSidecarRouter(
     current.ws.close();
   }
 
+  async function handleWorkflowControlAck(
+    ws: WsHandle,
+    frame: WorkflowControlAckFrame,
+  ): Promise<void> {
+    const entry = pendingWorkflowControls.get(frame.requestId);
+    if (entry === undefined || entry.ws !== ws) return;
+    try {
+      const current = await getAllocatedConnection(entry.meta, "routing");
+      if (current.ws !== ws) return;
+    } catch {
+      pendingWorkflowControls.reject(
+        frame.requestId,
+        "Workflow control allocation changed",
+      );
+      return;
+    }
+    if (frame.error !== undefined)
+      pendingWorkflowControls.reject(frame.requestId, frame.error);
+    else pendingWorkflowControls.resolve(frame.requestId, undefined);
+  }
+
+  async function sendWorkflowControl(
+    target: AllocatedSidecarTarget,
+    command: Omit<WorkflowControlFrame, "type" | "requestId">,
+    timeoutMs = 5_000,
+  ): Promise<void> {
+    const { ws, conn } = await getAllocatedConnection(target, "routing");
+    if (
+      command.agentAddress !== conn.identity.workflowRunAddress ||
+      command.runId !== conn.identity.anchorRunId
+    ) {
+      throw new Error(
+        "Workflow control does not target the allocation's anchor run",
+      );
+    }
+    const requestId = nextRequestId();
+    return new Promise<void>((resolve, reject) => {
+      pendingWorkflowControls.register(
+        requestId,
+        ws,
+        {
+          timeoutMs,
+          timeoutMessage: `Workflow control ${requestId} timed out`,
+          resolve,
+          reject: (error) => reject(new Error(error)),
+        },
+        target,
+      );
+      try {
+        conn.send({ type: "workflow.control", requestId, ...command });
+      } catch (error) {
+        pendingWorkflowControls.reject(
+          requestId,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    });
+  }
+
   function sendAgentUndeploy(
     agentAddress: string,
     reason: string,
@@ -3704,6 +3782,7 @@ export function createSidecarRouter(
     sendProbeToAllocation,
     disconnectAllocation,
     sendAgentUndeploy,
+    sendWorkflowControl,
     sendSourcesUpdate,
     sendCredentialsUpdate,
     sendPackToAllocation,

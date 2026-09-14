@@ -2462,6 +2462,41 @@ export function createSidecarDeployRouter(deps: {
         `sidecar deploy router: unsupported deploy frame for ${frame.agentAddress}; a deploy must carry provisionStep or a workflow definition`,
       );
     },
+    async control(frame): Promise<void> {
+      if (parseAgentId(frame.agentAddress) !== frame.runId) {
+        throw new Error(
+          "Workflow control run does not match the deployment address",
+        );
+      }
+      if (reservingDeployAddresses.has(frame.agentAddress)) {
+        throw new Error("Workflow deployment is still being initialized");
+      }
+      const wired = activeSupervisors.get(frame.agentAddress);
+      if (frame.action === "cancel") {
+        if (wired !== undefined) {
+          await wired.supervisor.requestCancel({
+            runId: frame.runId,
+            origin: "supervisor-operator",
+            reason: frame.reason,
+            at: new Date().toISOString(),
+          });
+        }
+        return;
+      }
+      if (wired !== undefined) await wired.supervisor.shutdown();
+      reclaimSelfTerminatedSupervisor({
+        runId: deriveDeploymentId(frame.agentAddress),
+        agentAddress: frame.agentAddress,
+      });
+      // A stopped terminal deployment must not respawn on sidecar restart.
+      // Keep its scratch and source material for the allocation's retention period.
+      if (stepStateDataDir !== undefined) {
+        await deleteWorkflowRunRecord(
+          stepStateDataDir,
+          deriveDeploymentId(frame.agentAddress),
+        );
+      }
+    },
     async undeploy(frame): Promise<void> {
       // Symmetric teardown for `deploy`: release the per-deployment
       // routing state both branches install so a stale `signal.deliver`
