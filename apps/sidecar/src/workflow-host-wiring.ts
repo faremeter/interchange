@@ -2495,6 +2495,40 @@ export function createSidecarDeployRouter(deps: {
         `sidecar deploy router: unsupported deploy frame for ${frame.agentAddress}; a deploy must carry provisionStep or a workflow definition`,
       );
     },
+    async control(frame): Promise<void> {
+      if (parseAgentId(frame.agentAddress) !== frame.runId) {
+        throw new Error(
+          "Workflow control run does not match the deployment address",
+        );
+      }
+      if (reservingDeployAddresses.has(frame.agentAddress)) {
+        throw new Error("Workflow deployment is still being initialized");
+      }
+      const wired = activeSupervisors.get(frame.agentAddress);
+      if (frame.action === "cancel" && wired !== undefined) {
+        await wired.supervisor.requestCancel({
+          runId: frame.runId,
+          origin: "supervisor-operator",
+          reason: frame.reason,
+          at: new Date().toISOString(),
+        });
+        return;
+      }
+      // Cancellation without a supervisor must still retire its restart record.
+      if (wired !== undefined) await wired.supervisor.shutdown();
+      reclaimSelfTerminatedSupervisor({
+        runId: deriveDeploymentId(frame.agentAddress),
+        agentAddress: frame.agentAddress,
+      });
+      // A stopped terminal deployment must not respawn on sidecar restart.
+      // Keep its scratch and source material for the allocation's retention period.
+      if (stepStateDataDir !== undefined) {
+        await deleteWorkflowRunRecord(
+          stepStateDataDir,
+          deriveDeploymentId(frame.agentAddress),
+        );
+      }
+    },
     async undeploy(frame): Promise<void> {
       // Symmetric teardown for `deploy`: release the per-deployment
       // routing state both branches install so a stale `signal.deliver`
@@ -2536,23 +2570,15 @@ export function createSidecarDeployRouter(deps: {
         // no-op only if the spawn failed before registering, so it is safe to
         // call unconditionally for any spawned deployment.
         deps.transport.unregister(frame.agentAddress);
-        // Reclaim the deployment's per-step local-disk scratch now that
-        // its supervisor + workflow-process child are torn down. The
-        // whole `workflow-step-state/<runId>/` subtree goes: the
-        // warm single-step agent's stable workspace under `warm/` (the
-        // dir bounded keying parks per agent) AND any cold `runs/<runId>/`
-        // subtrees a multi-step deploy's per-run cleanup did not already
-        // drop. Awaiting `shutdown()` above guarantees no child still
-        // holds the scratch, so this is a safe `rm -rf`. The durable
-        // conversation under `agent-conversation-state/` is a DIFFERENT
-        // root and is deliberately NOT touched here -- a re-deploy on the
-        // same address must restore the prior conversation from it.
-        if (stepStateDataDir !== undefined) {
-          await rm(pathJoin(stepStateDataDir, "workflow-step-state", runId), {
-            recursive: true,
-            force: true,
-          });
-        }
+      }
+      // Reclaim warm and cold scratch after teardown, including scratch an
+      // earlier stop retained after removing the supervisor registration.
+      // Durable conversations live under a separate root and survive undeploy.
+      if (stepStateDataDir !== undefined) {
+        await rm(pathJoin(stepStateDataDir, "workflow-step-state", runId), {
+          recursive: true,
+          force: true,
+        });
       }
       // Drop the run record so a boot-time restore does not re-spawn a
       // torn-down deployment, and reclaim a source-ref deployment's

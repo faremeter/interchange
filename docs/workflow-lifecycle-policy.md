@@ -85,6 +85,8 @@ future hibernation do not reset the clock. This also covers deployments that
 never receive their first trigger. If still live at expiry, the Hub stops the
 deployment as `cancelled`, using a bounded cancellation grace period followed by
 enforced termination if needed.
+Cancellation also removes the restart record before acknowledgement when no
+supervisor remains, preventing a later sidecar restart from reviving the run.
 
 `capacityRetention` starts when the top-level run becomes terminal. Here, failure
 retains the environment for 15 minutes; success and cancellation request
