@@ -1,15 +1,22 @@
 import { eq, and, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, validator } from "hono-openapi";
+import { authorize } from "@intx/authz";
 
 import { tenant, principal, role, principalRole, grant } from "@intx/db/schema";
-import { createPrincipalStore, parseTenantRow } from "@intx/db";
+import {
+  createPrincipalStore,
+  parseTenantRow,
+  loadTenantLifecyclePolicies,
+} from "@intx/db";
 import type { DB, PrincipalKeyStore } from "@intx/db";
+import type { GrantStore, ConditionRegistry } from "@intx/types/authz";
 import {
   CreateTenant,
   ErrorResponse,
   UpdateTenant,
   TenantResponse,
+  resolveWorkflowLifecyclePolicy,
 } from "@intx/types";
 
 import { unauthorizedResponse, type AppEnv } from "../context";
@@ -37,11 +44,15 @@ function formatTenant(row: typeof tenant.$inferSelect) {
 export type CreateTenantRoutesDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
+  grantStore: GrantStore;
+  conditionRegistry: ConditionRegistry;
 };
 
 export function createTenantRoutes({
   db,
   principalKeyStore,
+  grantStore,
+  conditionRegistry,
 }: CreateTenantRoutesDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const principalStore = createPrincipalStore(db, principalKeyStore);
@@ -285,6 +296,44 @@ export function createTenantRoutes({
       });
       if (!membership) {
         return errorResponse(c, "forbidden", "Not a member of this tenant");
+      }
+
+      const authorization = await authorize(
+        grantStore,
+        membership.id,
+        tenantId,
+        `tenant:${tenantId}`,
+        "manage",
+        conditionRegistry,
+      );
+      if (authorization.effect !== "allow") {
+        return errorResponse(
+          c,
+          "forbidden",
+          "You do not have permission to manage this tenant",
+        );
+      }
+      if (body.config !== undefined) {
+        const current = await db.query.tenant.findFirst({
+          where: eq(tenant.id, tenantId),
+          columns: { parentId: true },
+        });
+        if (current === undefined)
+          return errorResponse(c, "not_found", "Tenant not found");
+        const inherited =
+          current.parentId === null
+            ? []
+            : await loadTenantLifecyclePolicies(db, current.parentId);
+        const resolved = resolveWorkflowLifecyclePolicy([
+          ...inherited,
+          body.config.lifecycle ?? {},
+        ]);
+        if (!resolved.ok)
+          return errorResponse(
+            c,
+            "bad_request",
+            `${resolved.field} exceeds inherited limit ${resolved.limit}`,
+          );
       }
 
       const updates: Record<string, unknown> = { updatedAt: new Date() };

@@ -13,6 +13,7 @@ import {
   principalStatuses,
   signalKinds,
   TenantConfig,
+  WorkflowLifecyclePolicy,
   workflowDefinitionStatuses,
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
@@ -138,6 +139,10 @@ export function parseWorkflowDefinitionRow(
   return {
     ...row,
     status: WorkflowDefinitionStatusValidator.assert(row.status),
+    lifecyclePolicy:
+      row.lifecyclePolicy == null
+        ? null
+        : WorkflowLifecyclePolicy.assert(row.lifecyclePolicy),
     grantRequirements:
       row.grantRequirements !== null
         ? GrantRequirement.array().assert(row.grantRequirements)
@@ -214,6 +219,10 @@ export function parseWorkflowRunRow(row: typeof workflowRun.$inferSelect) {
   return {
     ...row,
     status: WorkflowRunStatusValidator.assert(row.status),
+    lifecyclePolicy:
+      row.lifecyclePolicy == null
+        ? null
+        : WorkflowLifecyclePolicy.assert(row.lifecyclePolicy),
     modelPreferences:
       row.modelPreferences !== null
         ? InvokerModelPreferences.assert(row.modelPreferences)

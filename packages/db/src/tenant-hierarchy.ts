@@ -3,7 +3,7 @@ import { eq, inArray } from "drizzle-orm";
 
 import { TenantConfig, type TenantSidecarCapabilityPolicy } from "@intx/types";
 
-import type { DB } from "./client";
+import type { DB, DBExecutor } from "./client";
 import { tenant } from "./schema/tenants";
 
 /**
@@ -14,7 +14,7 @@ import { tenant } from "./schema/tenants";
  * chain that could omit inherited policy or configuration.
  */
 export async function getAncestorChain(
-  db: DB["db"],
+  db: DBExecutor,
   tenantId: string,
 ): Promise<string[]> {
   const chain: string[] = [];

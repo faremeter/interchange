@@ -49,6 +49,7 @@
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/turns | List a run's turns |
 | GET | /api/tenants/:tenantId/workflows/definitions | List workflow definitions |
 | GET | /api/tenants/:tenantId/workflows/definitions/:definitionId/versions | List definition versions |
+| PATCH | /api/tenants/:tenantId/workflows/definitions/:definitionId/lifecycle | Update workflow lifecycle policy |
 | POST | /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback | Roll back to a previous version |
 | POST | /api/tenants/:tenantId/workflows/deployments | Deploy a workflow |
 | GET | /api/tenants/:tenantId/workflows/deployments | List workflow deployments |
@@ -573,6 +574,17 @@ Lists all versions of a workflow definition with status.
 Query: cursor?, limit?
 
 200: unknown -- List of versions
+404: ErrorResponse -- Definition not found
+
+### PATCH /api/tenants/:tenantId/workflows/definitions/:definitionId/lifecycle
+Update workflow lifecycle policy
+
+Replaces the installed workflow's lifecycle overrides for future deployments. Omitted fields inherit tenant limits.
+
+Body: UpdateWorkflowDefinitionLifecycle
+
+200: WorkflowDefinitionResponse -- Policy updated
+400: ErrorResponse -- Invalid policy or inherited limit exceeded
 404: ErrorResponse -- Definition not found
 
 ### POST /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback
@@ -1537,7 +1549,7 @@ Source: packages/types/src/me.ts
 Source: packages/types/src/observability.ts
 
 ### TenantResponse
-`{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, parentId?: string | null }`
+`{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, parentId?: string | null }`
 Source: packages/types/src/tenants.ts
 
 ### TraceResponse
@@ -1605,7 +1617,7 @@ Source: packages/types/src/providers.ts
 Source: packages/types/src/roles.ts
 
 ### UpdateTenant
-`{ config?: { [string]: unknown, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, name?: string }`
+`{ config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, name?: string }`
 Source: packages/types/src/tenants.ts
 
 ### UpdateWallet
@@ -1613,6 +1625,10 @@ Source: packages/types/src/tenants.ts
 Source: packages/types/src/wallets.ts
 
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
+
+### UpdateWorkflowDefinitionLifecycle
+`{ lifecycle: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, + (undeclared): reject }`
+Source: packages/types/src/workflows.ts
 
 ### UserProfile
 `{ createdAt: string, email: string, emailVerified: boolean, id: string, name: string, updatedAt: string, image?: string | null }`
@@ -1627,7 +1643,7 @@ Source: packages/types/src/wallets.ts
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
 
 ### WorkflowDefinitionResponse
-`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, description?: string | null }`
+`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, description?: string | null, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject } }`
 Source: packages/types/src/workflows.ts
 
 **status**: Lifecycle state of the definition: `deployed` (a launchable version is active) or `stopped` (deactivated).

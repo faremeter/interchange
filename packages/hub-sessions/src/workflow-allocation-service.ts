@@ -6,6 +6,7 @@ import {
   createWorkflowProbeStore,
   createWorkflowRunLaunchSpecStore,
   resolveTenantSidecarCapabilityPolicies,
+  resolveDeploymentLifecyclePolicy,
   resolveSourcesByOfferingIds,
   type DB,
   type SidecarAllocation,
@@ -16,6 +17,7 @@ import { eq } from "drizzle-orm";
 import { generateId } from "@intx/hub-common";
 import {
   hexEncode,
+  lifecycleDeadline,
   SidecarCapabilityRule,
   type CredentialCipher,
 } from "@intx/types";
@@ -390,6 +392,17 @@ export function createWorkflowAllocationService({
     };
 
     await db.transaction(async (tx) => {
+      const lifecycle = await resolveDeploymentLifecyclePolicy(
+        tx,
+        request.tenantId,
+        approved.approval.definitionId,
+      );
+      if (!lifecycle.ok) {
+        throw new WorkflowProvisioningError(
+          "lifecycle_policy_conflict",
+          `${lifecycle.field} exceeds inherited limit ${lifecycle.limit}`,
+        );
+      }
       await tx.insert(workflowRun).values({
         id: request.anchorRunId,
         tenantId: request.tenantId,
@@ -397,6 +410,11 @@ export function createWorkflowAllocationService({
         definitionId: approved.approval.definitionId,
         address: deploymentAddress,
         status: "deployed",
+        lifecyclePolicy: lifecycle.policy,
+        expiresAt:
+          lifecycle.policy.maxLifetime === undefined
+            ? null
+            : lifecycleDeadline(createdAt, lifecycle.policy.maxLifetime),
         createdAt,
       });
       await tx.insert(grant).values({

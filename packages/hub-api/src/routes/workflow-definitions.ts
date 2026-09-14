@@ -7,6 +7,7 @@ import {
   parseWorkflowDefinitionRow,
   parseWorkflowDefinitionVersionRow,
   createWorkflowDefinitionStore,
+  loadTenantLifecyclePolicies,
 } from "@intx/db";
 import type { DB } from "@intx/db";
 import {
@@ -14,6 +15,8 @@ import {
   ErrorResponse,
   WorkflowDefinitionResponse,
   WorkflowRollbackRequest,
+  UpdateWorkflowDefinitionLifecycle,
+  resolveWorkflowLifecyclePolicy,
   paginatedSchema,
 } from "@intx/types";
 
@@ -91,6 +94,7 @@ export function createWorkflowDefinitionRoutes({
           name: def.name,
           description: def.description ?? null,
           currentVersion: def.currentVersion,
+          lifecycle: def.lifecyclePolicy ?? {},
           status: def.status,
           createdAt: ts(def.createdAt),
           updatedAt: ts(def.updatedAt),
@@ -176,6 +180,72 @@ export function createWorkflowDefinitionRoutes({
     },
   );
 
+  app.patch(
+    "/:definitionId/lifecycle",
+    requireGrant(idResource("workflow-definition", "definitionId"), "manage"),
+    describeRoute({
+      tags: ["Workflow Definitions"],
+      summary: "Update workflow lifecycle policy",
+      description:
+        "Replaces the installed workflow's lifecycle overrides for future deployments. Omitted fields inherit tenant limits.",
+      responses: {
+        200: jsonResponse("Policy updated", WorkflowDefinitionResponse),
+        400: jsonResponse(
+          "Invalid policy or inherited limit exceeded",
+          ErrorResponse,
+        ),
+        404: jsonResponse("Definition not found", ErrorResponse),
+      },
+    }),
+    validator("json", UpdateWorkflowDefinitionLifecycle),
+    async (c) => {
+      const tenantId = c.get("tenant").id;
+      const definitionId = c.req.param("definitionId");
+      const lifecycle = c.req.valid("json").lifecycle;
+      const definition = await db.query.workflowDefinition.findFirst({
+        where: and(
+          eq(workflowDefinition.id, definitionId),
+          eq(workflowDefinition.tenantId, tenantId),
+        ),
+      });
+      if (definition === undefined)
+        return errorResponse(c, "not_found", "Definition not found");
+      const resolved = resolveWorkflowLifecyclePolicy([
+        ...(await loadTenantLifecyclePolicies(db, tenantId)),
+        lifecycle,
+      ]);
+      if (!resolved.ok)
+        return errorResponse(
+          c,
+          "bad_request",
+          `${resolved.field} exceeds inherited limit ${resolved.limit}`,
+        );
+      const [updated] = await db
+        .update(workflowDefinition)
+        .set({ lifecyclePolicy: lifecycle, updatedAt: new Date() })
+        .where(
+          and(
+            eq(workflowDefinition.id, definitionId),
+            eq(workflowDefinition.tenantId, tenantId),
+          ),
+        )
+        .returning();
+      if (updated === undefined)
+        return errorResponse(c, "not_found", "Definition not found");
+      return c.json({
+        id: updated.id,
+        tenantId: updated.tenantId,
+        name: updated.name,
+        description: updated.description,
+        currentVersion: updated.currentVersion,
+        status: parseWorkflowDefinitionRow(updated).status,
+        lifecycle,
+        createdAt: ts(updated.createdAt),
+        updatedAt: ts(updated.updatedAt),
+      });
+    },
+  );
+
   app.post(
     "/:definitionId/rollback",
     requireGrant(idResource("workflow-definition", "definitionId"), "manage"),
@@ -216,6 +286,7 @@ export function createWorkflowDefinitionRoutes({
         name: def.name,
         description: def.description ?? null,
         currentVersion: def.currentVersion,
+        lifecycle: def.lifecyclePolicy ?? {},
         status: def.status,
         createdAt: ts(def.createdAt),
         updatedAt: ts(def.updatedAt),

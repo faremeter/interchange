@@ -1,8 +1,10 @@
 import { type } from "arktype";
 
 import { SidecarCapabilityPolicy } from "./sidecar-capabilities";
+import { WorkflowLifecyclePolicy } from "./workflow-lifecycle";
 
 export const TenantConfig = type({
+  "lifecycle?": WorkflowLifecyclePolicy,
   "sidecarPlacement?": SidecarCapabilityPolicy,
   "[string]": "unknown",
 });
