@@ -1095,6 +1095,12 @@ export type CorrespondentGrantMinterDeps = {
  * - The insert is deduplicated under a `FOR UPDATE` lock on the sending run, so
  *   a repeat mail to the same recipient does not accrue a second row.
  *
+ * All recipients of one outbound mail are handled in a SINGLE transaction: the
+ * sending run is locked and its `correspondent` authorization checked once, then
+ * each recipient is resolved and inserted under that one lock -- the
+ * authorization is invariant across the fan-out, so it is not re-derived per
+ * recipient.
+ *
  * Best-effort: minting is a side effect of sending and MUST NOT break delivery,
  * so any fault degrades to no grant and is logged, mirroring the send path's
  * frame-key resolver.
@@ -1103,15 +1109,15 @@ export function createCorrespondentGrantMinter(
   deps: CorrespondentGrantMinterDeps,
 ): (args: {
   senderAddress: string;
-  recipientAddress: string;
+  recipientAddresses: string[];
 }) => Promise<void> {
   return async (args) => {
     const senderAddress = args.senderAddress.toLowerCase();
     try {
       await deps.db.transaction(async (tx) => {
-        // Lock the SENDING run row. A terminal/absent run mints nothing, and
-        // the lock serializes concurrent sends from the same run so the dedup
-        // below cannot be raced.
+        // Lock the SENDING run row once. A terminal/absent run mints nothing,
+        // and the lock serializes concurrent sends from the same run so the
+        // per-recipient dedup below cannot be raced.
         const [sender] = await tx
           .select({
             status: workflowRun.status,
@@ -1126,9 +1132,11 @@ export function createCorrespondentGrantMinter(
         if (sender === undefined) return;
         if (!isLiveWorkflowRunStatus(sender.status)) return;
         if (sender.principalId === null) return;
+        const senderPrincipalId = sender.principalId;
 
         // Gate: the sending definition must have been approved for the
-        // `correspondent` relation (the marker in its frozen snapshot).
+        // `correspondent` relation (the marker in its frozen snapshot). This
+        // holds for every recipient of this mail, so check it once.
         const snapshot = await loadFrozenGrantSnapshot(tx, sender.definitionId);
         if (snapshot === null) return;
         const authorized = snapshot.perStep.some((step) =>
@@ -1136,50 +1144,55 @@ export function createCorrespondentGrantMinter(
         );
         if (!authorized) return;
 
-        const recipient = await resolveSenderPrincipal(
-          tx,
-          deps.principalKeyStore,
-          args.recipientAddress,
-        );
-        if (recipient === null) return;
-
-        const resource = mailAcceptResource("principal", recipient.principalId);
-        // No unique constraint exists on `(principalId, resource, action)` (a
-        // principal may hold both an allow and a deny), so dedup with a guarded
-        // insert under the run lock rather than an ON CONFLICT.
-        const [existing] = await tx
-          .select({ id: grantTable.id })
-          .from(grantTable)
-          .where(
-            and(
-              eq(grantTable.principalId, sender.principalId),
-              eq(grantTable.resource, resource),
-              eq(grantTable.action, MAIL_ACCEPT_ACTION),
-            ),
-          )
-          .limit(1);
-        if (existing !== undefined) return;
-
         const now = new Date();
-        await tx.insert(grantTable).values({
-          id: generateId("grant"),
-          tenantId: sender.tenantId,
-          principalId: sender.principalId,
-          resource,
-          action: MAIL_ACCEPT_ACTION,
-          effect: "allow",
-          conditions: null,
-          // A correspondent grant materializes the definition's creator-declared
-          // `correspondent` policy, so it shares the `creator` provenance of the
-          // launch-time `mail.accept` rows.
-          origin: "creator",
-          expiresAt: null,
-          createdAt: now,
-          updatedAt: now,
-        });
+        for (const recipientAddress of args.recipientAddresses) {
+          const recipient = await resolveSenderPrincipal(
+            tx,
+            deps.principalKeyStore,
+            recipientAddress,
+          );
+          if (recipient === null) continue;
+
+          const resource = mailAcceptResource(
+            "principal",
+            recipient.principalId,
+          );
+          // No unique constraint exists on `(principalId, resource, action)` (a
+          // principal may hold both an allow and a deny), so dedup with a
+          // guarded insert under the run lock rather than an ON CONFLICT.
+          const [existing] = await tx
+            .select({ id: grantTable.id })
+            .from(grantTable)
+            .where(
+              and(
+                eq(grantTable.principalId, senderPrincipalId),
+                eq(grantTable.resource, resource),
+                eq(grantTable.action, MAIL_ACCEPT_ACTION),
+              ),
+            )
+            .limit(1);
+          if (existing !== undefined) continue;
+
+          await tx.insert(grantTable).values({
+            id: generateId("grant"),
+            tenantId: sender.tenantId,
+            principalId: senderPrincipalId,
+            resource,
+            action: MAIL_ACCEPT_ACTION,
+            effect: "allow",
+            conditions: null,
+            // A correspondent grant materializes the definition's creator-declared
+            // `correspondent` policy, so it shares the `creator` provenance of
+            // the launch-time `mail.accept` rows.
+            origin: "creator",
+            expiresAt: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
       });
     } catch (cause) {
-      correspondentLogger.error`Failed to mint a correspondent accept-grant (sender ${args.senderAddress} -> recipient ${args.recipientAddress}): ${cause instanceof Error ? cause.message : String(cause)}`;
+      correspondentLogger.error`Failed to mint correspondent accept-grants for sender ${args.senderAddress}: ${cause instanceof Error ? cause.message : String(cause)}`;
     }
   };
 }

@@ -476,7 +476,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         await mint()({
           senderAddress: WORKFLOW_ADDRESS,
-          recipientAddress: RECIPIENT_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
         });
 
         const rows = await correspondentRows();
@@ -495,7 +495,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         await mint()({
           senderAddress: WORKFLOW_ADDRESS,
-          recipientAddress: RECIPIENT_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
         });
 
         expect(await correspondentRows()).toHaveLength(0);
@@ -508,7 +508,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         await mint()({
           senderAddress: WORKFLOW_ADDRESS,
-          recipientAddress: RECIPIENT_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
         });
 
         expect(await correspondentRows()).toHaveLength(0);
@@ -522,11 +522,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const minter = mint();
         await minter({
           senderAddress: WORKFLOW_ADDRESS,
-          recipientAddress: RECIPIENT_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
         });
         await minter({
           senderAddress: WORKFLOW_ADDRESS,
-          recipientAddress: RECIPIENT_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
         });
 
         expect(await correspondentRows()).toHaveLength(1);
@@ -539,10 +539,55 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         await mint()({
           senderAddress: WORKFLOW_ADDRESS,
-          recipientAddress: RECIPIENT_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS],
         });
 
         expect(await correspondentRows()).toHaveLength(0);
+      });
+
+      test("mints a grant for each recipient of one outbound mail in a single call", async () => {
+        await seedFrozenSnapshot(correspondentSnapshot());
+        await makeSenderRun("running");
+        await seedRecipientRun();
+        // A second resolvable recipient run: the fan-out mints one grant per
+        // recipient under a single lock on the sending run.
+        const RECIPIENT2_RUN_ID = "run_recipient2";
+        const RECIPIENT2_ADDRESS = "run_recipient2@tenant.example";
+        const RECIPIENT2_PRINCIPAL = "prn_recipient2";
+        await seedPrincipal(h.db, {
+          id: RECIPIENT2_PRINCIPAL,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: RECIPIENT2_RUN_ID,
+        });
+        await h.db.insert(workflowRun).values({
+          id: RECIPIENT2_RUN_ID,
+          tenantId: TENANT,
+          anchorRunId: RECIPIENT2_RUN_ID,
+          definitionId: DEFINITION,
+          address: RECIPIENT2_ADDRESS,
+          status: "running",
+          principalId: RECIPIENT2_PRINCIPAL,
+          publicKey: "cd".repeat(32),
+        });
+
+        await mint()({
+          senderAddress: WORKFLOW_ADDRESS,
+          recipientAddresses: [RECIPIENT_ADDRESS, RECIPIENT2_ADDRESS],
+        });
+
+        expect(await correspondentRows()).toHaveLength(1);
+        const rows2 = await h.db
+          .select()
+          .from(grant)
+          .where(
+            eq(
+              grant.resource,
+              mailAcceptResource("principal", RECIPIENT2_PRINCIPAL),
+            ),
+          );
+        expect(rows2).toHaveLength(1);
+        expect(rows2[0]?.principalId).toBe(SENDER_PRINCIPAL);
       });
     });
   },

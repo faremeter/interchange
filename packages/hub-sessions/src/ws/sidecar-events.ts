@@ -387,16 +387,16 @@ export type SidecarLookups = {
   }) => Promise<MailTriggeredRunGrantsResult>;
 
   /**
-   * Records that a live run mailed a party, so that party's reply is admitted:
-   * the dynamic `correspondent` relation. Called at the send seam for each
-   * recipient of a run's outbound mail. It mints a `mail.accept:principal:<id>`
-   * grant on the SENDING run only when the sending definition authored the
-   * `correspondent` relation and the sending run is live; an unresolvable
-   * recipient or a principal-less/terminal sender mints nothing. Best-effort --
-   * it never throws, so a mint fault never breaks delivery. */
+   * Records that a live run mailed one or more parties, so their replies are
+   * admitted: the dynamic `correspondent` relation. Called once per outbound
+   * mail with all its recipients. It mints a `mail.accept:principal:<id>` grant
+   * on the SENDING run for each recipient, only when the sending definition
+   * authored the `correspondent` relation and the sending run is live; an
+   * unresolvable recipient or a principal-less/terminal sender mints nothing.
+   * Best-effort -- it never throws, so a mint fault never breaks delivery. */
   mintCorrespondentGrant?: (args: {
     senderAddress: string;
-    recipientAddress: string;
+    recipientAddresses: string[];
   }) => Promise<void>;
 
   /** Ingests a received agent-state pack and returns whether the wire
