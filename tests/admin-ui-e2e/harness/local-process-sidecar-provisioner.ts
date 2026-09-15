@@ -110,7 +110,31 @@ export function createLocalProcessSidecarProvisioner({
   }
 
   const allocations = new Map<string, AllocationState>();
+  const operations = new Map<string, Promise<void>>();
   let shutdownPromise: Promise<void> | null = null;
+
+  function serialize<T>(
+    allocationId: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    if (shutdownPromise !== null) {
+      return Promise.reject(
+        new Error("Local sidecar provisioner is shutting down"),
+      );
+    }
+    const previous = operations.get(allocationId) ?? Promise.resolve();
+    const pending = previous.then(run);
+    const settled = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    operations.set(allocationId, settled);
+    void settled.then(() => {
+      if (operations.get(allocationId) === settled)
+        operations.delete(allocationId);
+    });
+    return pending;
+  }
 
   async function stopAndRemove(
     state: Extract<AllocationState, { kind: "live" }>,
@@ -134,6 +158,7 @@ export function createLocalProcessSidecarProvisioner({
   }
 
   async function ensure(request: EnsureSidecarRequest) {
+    request.signal?.throwIfAborted();
     const existing = allocations.get(request.allocationId);
     if (existing !== undefined && existing.generation > request.generation) {
       return {
@@ -189,6 +214,7 @@ export function createLocalProcessSidecarProvisioner({
       path.join(dataRoot, `${request.allocationId}-`),
     );
     try {
+      request.signal?.throwIfAborted();
       const handle = spawnSidecar({ request, dataDir });
       const managed: ManagedProcess = { handle, exited: false };
       void handle.exited.then(() => {
@@ -239,14 +265,18 @@ export function createLocalProcessSidecarProvisioner({
     apiVersion: 1,
     bindingFingerprint: "local-process:v1",
     capabilities: [],
-    ensure,
-    destroy,
+    // Keep cleanup behind any late ensure for the same allocation, including
+    // work the Hub stopped awaiting after an operation timeout.
+    ensure: (request) => serialize(request.allocationId, () => ensure(request)),
+    destroy: (request) =>
+      serialize(request.allocationId, () => destroy(request)),
   };
 
   return {
     provisioner,
     shutdown() {
       shutdownPromise ??= (async () => {
+        await Promise.all(operations.values());
         const failures: unknown[] = [];
         for (const state of allocations.values()) {
           if (state.kind !== "live") continue;
