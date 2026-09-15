@@ -380,6 +380,7 @@ export async function createHubServer({
   });
   const sidecarAllocationReconciler = createSidecarAllocationReconciler({
     allocationStore: sidecarAllocationStore,
+    maxConcurrentClaims: sidecarAllocationConcurrency,
     plugins: sidecarPlugins,
     router: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,

@@ -10,6 +10,7 @@ import type {
   SidecarAllocationRouter,
 } from "../ws/sidecar-handler";
 import { SessionLaunchError } from "../session-service";
+import { DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY } from "../reconciliation-scheduler";
 import {
   DestroySidecarResult,
   EnsureSidecarResult,
@@ -73,6 +74,8 @@ export type SidecarAllocationReconcilerDeps = {
   readonly leaseDurationMs?: number;
   readonly connectTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
+  /** Includes claim queries the Hub stopped awaiting after their deadline. */
+  readonly maxConcurrentClaims?: number;
   readonly retryDelayMs?: (attempt: number) => number;
   readonly now?: () => Date;
   readonly createSidecarId?: () => string;
@@ -149,6 +152,7 @@ export function createSidecarAllocationReconciler({
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
   connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
   operationTimeoutMs = DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
+  maxConcurrentClaims = DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
   retryDelayMs = defaultRetryDelay,
   now = () => new Date(),
   createSidecarId = () => `sc_${randomHex(16)}`,
@@ -161,6 +165,9 @@ export function createSidecarAllocationReconciler({
   }
   if (!Number.isSafeInteger(operationTimeoutMs) || operationTimeoutMs <= 0) {
     throw new Error("operationTimeoutMs must be a positive integer");
+  }
+  if (!Number.isSafeInteger(maxConcurrentClaims) || maxConcurrentClaims <= 0) {
+    throw new Error("maxConcurrentClaims must be a positive integer");
   }
 
   const activeAllocations = new Map<
@@ -921,24 +928,34 @@ export function createSidecarAllocationReconciler({
     }
   }
 
+  let pendingClaims = 0;
+
   async function reconcileNext(): Promise<boolean> {
     const leaseId = createLeaseId();
     const claimStartedAt = performance.now();
     const allocation = await runSidecarOperation(
       "Sidecar allocation claim",
       operationTimeoutMs,
-      () =>
-        allocationStore.claimNextReconcilable({
-          leaseId,
-          leaseDurationMs,
-          excludedAllocationIds: [
-            ...new Set([
-              ...activeAllocations.keys(),
-              ...connectionEvents.keys(),
-              ...readinessQueries,
-            ]),
-          ],
-        }),
+      async () => {
+        if (pendingClaims >= maxConcurrentClaims) return null;
+        pendingClaims += 1;
+        try {
+          return await allocationStore.claimNextReconcilable({
+            leaseId,
+            leaseDurationMs,
+            excludedAllocationIds: [
+              ...new Set([
+                ...activeAllocations.keys(),
+                ...connectionEvents.keys(),
+                ...readinessQueries,
+              ]),
+            ],
+          });
+        } finally {
+          // A timeout releases the caller, but this query still owns capacity.
+          pendingClaims -= 1;
+        }
+      },
     );
     if (allocation === null) return false;
     // A claim started before another local claim returned can outlive its lease
