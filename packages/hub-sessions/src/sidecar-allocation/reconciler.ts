@@ -251,12 +251,17 @@ export function createSidecarAllocationReconciler({
             !(await runSidecarOperation(
               "Reconciliation lease validation",
               operationTimeoutMs,
-              () =>
-                allocationStore.isReconciliationLeaseCurrent(
-                  allocation.id,
-                  allocation.generation,
-                  leaseId,
-                ),
+              async () => {
+                try {
+                  return await allocationStore.isReconciliationLeaseCurrent(
+                    allocation.id,
+                    allocation.generation,
+                    leaseId,
+                  );
+                } catch (cause) {
+                  throw new ReconciliationLeaseLostError(allocation.id, cause);
+                }
+              },
               signal,
             ))
           ) {
@@ -1113,7 +1118,7 @@ export function createSidecarAllocationReconciler({
         if (cause === undefined) {
           logger.info`Allocation ${allocation.id} reconciliation stopped: lease ${leaseId} is no longer current`;
         } else {
-          logger.warn`Allocation ${allocation.id} reconciliation stopped because renewal of lease ${leaseId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+          logger.warn`Allocation ${allocation.id} reconciliation stopped because lease ${leaseId} could not be confirmed: ${cause instanceof Error ? cause.message : String(cause)}`;
           // Pending writes already keep this allocation excluded. A retry write
           // could wait behind the same transaction and trap the cancelled slot.
           if (connectionEvents.has(allocation.id)) return true;
