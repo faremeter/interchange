@@ -631,6 +631,11 @@ The four observation points and why they are the four:
    the typical pause sits through drain untouched; an author who
    explicitly opts in via `drainBehavior: "cancel"` gets the
    short-circuit at entry and again on `drain.signal` mid-await.
+   What drain can meet here is bounded by where a park is allowed at
+   all. In a run whose env declares `hasUpstreamSignalResolver`
+   false, an untimed park is refused before it suspends, so the only
+   pause a drain finds beneath a terminal `childWorkflow` child is a
+   timed one, which its own timer ends whatever drain decides.
 
 The four sites cover every place the runtime body blocks long
 enough for drain to matter. The state-machine primitives that do
@@ -698,6 +703,11 @@ Child-workflow drain coordination splits two ways:
   resulting cancel mail as `supervisor-operator` origin against
   its own runtime, which then drains through its own four
   observation points.
+
+Neither path has to reckon with a parked grandchild. An untimed park
+beneath a terminal `childWorkflow` child is refused before it
+suspends, so what a drain finds under such a child is in-flight work
+the cancel cascade tears down, or a timed wait its own timer ends.
 
 #### Recycle
 
