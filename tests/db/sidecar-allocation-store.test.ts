@@ -6,7 +6,12 @@ import {
   expect,
   test,
 } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
+import {
+  createSidecarAllocationReconciler,
+  createSidecarPluginRegistry,
+  createSidecarRouter,
+} from "@intx/hub-sessions";
 
 import {
   createSidecarAllocationStore,
@@ -284,6 +289,58 @@ describe.skipIf(!harnessDbEnvAvailable())(
           leaseDurationMs: 60_000,
         }),
       ).toBeNull();
+    });
+
+    test("timed-out claims leave database capacity for unrelated queries", async () => {
+      const store = createSidecarAllocationStore(h.db);
+      const locked = Promise.withResolvers<boolean>();
+      const unlock = Promise.withResolvers<boolean>();
+      const claims: ReturnType<typeof store.claimNextReconcilable>[] = [];
+      const reconciler = createSidecarAllocationReconciler({
+        allocationStore: {
+          ...store,
+          claimNextReconcilable(args) {
+            const claim = store.claimNextReconcilable(args);
+            claims.push(claim);
+            return claim;
+          },
+        },
+        plugins: createSidecarPluginRegistry({ provisioners: [] }),
+        router: createSidecarRouter({
+          authenticateSidecar: async () => null,
+          validateSidecarIdentity: async () => false,
+        }),
+        hubWebSocketUrl: "ws://localhost",
+        operationTimeoutMs: 20,
+        maxConcurrentClaims: 1,
+      });
+      const blocker = h.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`lock table sidecar_allocation in access exclusive mode`,
+        );
+        locked.resolve(true);
+        await unlock.promise;
+      });
+      try {
+        await locked.promise;
+        await expect(reconciler.reconcileNext()).rejects.toThrow(
+          "Sidecar allocation claim timed out",
+        );
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          expect(await reconciler.reconcileNext()).toBe(false);
+        }
+        expect(claims).toHaveLength(1);
+        // This uses the same ten-connection pool while the allocation table
+        // remains locked. Abandoned claims must not consume the entire pool.
+        const [unrelated] = await h.db.execute(sql`select 1 as value`);
+        expect(unrelated?.["value"]).toBe(1);
+      } finally {
+        unlock.resolve(true);
+        await blocker;
+        await Promise.allSettled(claims);
+      }
+      expect(await reconciler.reconcileNext()).toBe(false);
+      expect(claims).toHaveLength(2);
     });
 
     test("excludes due allocations without claiming or changing them", async () => {
