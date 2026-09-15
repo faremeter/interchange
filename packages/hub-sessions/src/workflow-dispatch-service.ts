@@ -98,6 +98,7 @@ function targetForReadyAllocation(
   if (
     allocation.status !== "allocated" ||
     allocation.ensureAcceptedGeneration !== allocation.generation ||
+    allocation.initializationLeaseId !== undefined ||
     allocation.connectDeadline !== undefined
   ) {
     return null;

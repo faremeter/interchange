@@ -35,7 +35,9 @@ import { eq } from "drizzle-orm";
 
 import { defineAgent } from "@intx/agent";
 import { createNoopCredentialCipher, generateKeyPair } from "@intx/crypto";
+import { createSidecarAllocationStore } from "@intx/db";
 import {
+  sidecar,
   sidecarAllocation,
   workflowDefinition,
   workflowRun,
@@ -43,7 +45,14 @@ import {
 import {
   createAgentRepoStore,
   createHubSessionLookups,
+  createSessionService,
+  createSidecarAllocationReconciler,
+  createSidecarCredentialResolver,
+  createSidecarPluginRegistry,
+  createSidecarRouter,
+  createWorkflowAllocationService,
   deployCodeSourcedWorkflow,
+  recoverSenderDeploy,
   SessionLaunchError,
   type AgentRepoStore,
   type SidecarAllocationRouter,
@@ -59,7 +68,10 @@ import type {
   InferenceSource,
   KeyPair,
 } from "@intx/types/runtime";
-import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
+import {
+  RunGrantsFrame,
+  WorkflowProjectionDefinition,
+} from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { defineWorkflow, projectLiveToInert, step } from "@intx/workflow";
@@ -70,7 +82,11 @@ import {
   type ApprovalSet,
 } from "@intx/workflow-deploy";
 
-import { seedInferenceCredentials } from "../hub-agent/lib/deploy-flow-env";
+import {
+  seedInferenceCredentials,
+  waitFor,
+} from "../hub-agent/lib/deploy-flow-env";
+import { createMockWs } from "./sidecar-test-helpers";
 
 const TENANT_ID = "tnt_anchor_before_frame";
 const DEFINITION_ID = "def_anchor_before_frame";
@@ -240,6 +256,441 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ensureAcceptedGeneration: ALLOC_GENERATION,
       });
     }
+
+    test.each([
+      "lease cancellation",
+      "socket takeover",
+      "recovery before rollback",
+    ] as const)(
+      "an unsent redeploy preserves the live workflow and its deferred mail after %s",
+      async (interruption) => {
+        const previousKey = "a".repeat(64);
+        await seedWorkflowRun(h.db, {
+          id: ANCHOR_RUN_ID,
+          anchorRunId: ANCHOR_RUN_ID,
+          tenantId: TENANT_ID,
+          definitionId: DEFINITION_ID,
+          address: DEPLOY_ADDRESS,
+          publicKey: previousKey,
+        });
+        await seedAllocation();
+        await h.db.insert(sidecar).values({
+          id: "sc-unsent-redeploy",
+          tokenHashSha256: new Uint8Array(32).fill(1),
+        });
+        await h.db
+          .update(sidecarAllocation)
+          .set({
+            sidecarId: "sc-unsent-redeploy",
+            nextAttemptAt: new Date(0),
+          })
+          .where(eq(sidecarAllocation.id, ALLOC_ID));
+        const store = createSidecarAllocationStore(h.db);
+        const leaseId = "unsent-redeploy";
+        let currentLeaseId = leaseId;
+        await store.claimNextReconcilable({ leaseId, leaseDurationMs: 60_000 });
+        const identity = {
+          kind: "allocated" as const,
+          sidecarId: "sc-unsent-redeploy",
+          allocationId: ALLOC_ID,
+          tenantId: TENANT_ID,
+          anchorRunId: ANCHOR_RUN_ID,
+          workflowRunAddress: DEPLOY_ADDRESS,
+          generation: ALLOC_GENERATION,
+        };
+        const target = { allocationId: ALLOC_ID, generation: ALLOC_GENERATION };
+        const credentials = createSidecarCredentialResolver({ db: h.db });
+        const mailParked = Promise.withResolvers<boolean>();
+        let failActivityRead = false;
+        const router = createSidecarRouter({
+          authenticateSidecar: async () => identity,
+          validateSidecarIdentity: async (candidate, use) => {
+            if (failActivityRead) {
+              failActivityRead = false;
+              throw new Error("Transient activity lookup failure");
+            }
+            return credentials.isCurrent(candidate, use);
+          },
+          hubPublicKey: "b".repeat(64),
+          lookups: {
+            resolveSenderKey: async () => {
+              const key = (await readAnchor())?.publicKey ?? null;
+              if (key === null) mailParked.resolve(true);
+              return key;
+            },
+            materializeMailTriggeredRunGrants: async () => ({
+              outcome: "materialized",
+              stepGrants: [],
+            }),
+          },
+        });
+        router.fenceAllocation(ALLOC_ID, ALLOC_GENERATION);
+        const ws = createMockWs();
+        let currentWs = ws;
+        router.handleOpen(ws);
+        router.handleMessage(
+          ws,
+          JSON.stringify({
+            type: "reconnect",
+            sidecarId: identity.sidecarId,
+            token: "test-token",
+            agentAddresses: [DEPLOY_ADDRESS],
+          }),
+        );
+        await waitFor(
+          () => router.getRoutableAddresses().includes(DEPLOY_ADDRESS),
+          { timeoutMs: 5_000 },
+        );
+        expect(await router.isAllocatedWorkflowActive(target)).toBe(true);
+        failActivityRead = true;
+        expect(await router.isAllocatedWorkflowActive(target)).toBe(false);
+
+        const dataDir = await fs.promises.mkdtemp(
+          path.join(os.tmpdir(), "unsent-redeploy-"),
+        );
+        tempDirs.push(dataDir);
+        const agentRepoStore = createAgentRepoStore({ dataDir, signingKey });
+        const controller = new AbortController();
+        const dropped: unknown[] = [];
+        router.events.on("mail.outbound.undelivered", (mail) => {
+          dropped.push(mail);
+        });
+        const service = createSessionService({
+          db: h.db,
+          agentRepoStore,
+          sidecarRouter: router,
+          sidecarAllocationRouter: {
+            ...router,
+            sendAgentDeployToAllocation: (
+              target,
+              address,
+              config,
+              workflow,
+              signal,
+              beforeSend,
+            ) =>
+              router.sendAgentDeployToAllocation(
+                target,
+                address,
+                config,
+                workflow,
+                signal,
+                async () => {
+                  await beforeSend?.();
+                  if (interruption === "socket takeover") {
+                    currentWs = createMockWs();
+                    router.handleOpen(currentWs);
+                    router.handleMessage(
+                      currentWs,
+                      JSON.stringify({
+                        type: "reconnect",
+                        sidecarId: identity.sidecarId,
+                        token: "test-token",
+                        agentAddresses: [DEPLOY_ADDRESS],
+                      }),
+                    );
+                    await waitFor(() => ws.closed, { timeoutMs: 5_000 });
+                  }
+                  router.handleMessage(
+                    currentWs,
+                    JSON.stringify({
+                      type: "mail.outbound",
+                      senderAddress: DEPLOY_ADDRESS,
+                      recipients: [DEPLOY_ADDRESS],
+                      rawMessage: "aGVsbG8=",
+                    }),
+                  );
+                  await mailParked.promise;
+                  if (interruption !== "socket takeover")
+                    controller.abort(
+                      new Error("Lease renewal failed before send"),
+                    );
+                  if (interruption === "recovery before rollback") {
+                    await store.parkReconciliation(ALLOC_ID, leaseId, {
+                      kind: "retry-after-error",
+                      notBefore: new Date(0),
+                    });
+                    currentLeaseId = "raced-recovery";
+                    const claimed = await store.claimNextReconcilable({
+                      leaseId: currentLeaseId,
+                      leaseDurationMs: 60_000,
+                    });
+                    if (claimed === null)
+                      throw new Error("Recovery claim failed");
+                    await recoverSenderDeploy({
+                      db: h.db,
+                      sidecarRouter: router,
+                      allocation: claimed,
+                      reconciliation: {
+                        leaseId: currentLeaseId,
+                        signal: new AbortController().signal,
+                      },
+                    });
+                    expect(dropped).toEqual([]);
+                  }
+                },
+              ),
+          },
+        });
+        const approved = await makeApproveBundle();
+        await seedInferenceCredentials(h.db, TENANT_ID, SOURCES, CONFIG);
+        try {
+          const error = await service
+            .deployPreparedCodeSourcedWorkflow({
+              tenantId: TENANT_ID,
+              anchorRunId: ANCHOR_RUN_ID,
+              deploymentDomain: DEPLOYMENT_DOMAIN,
+              agentAddress: DEPLOY_ADDRESS,
+              source: { kind: "registry", registry: "npm" },
+              approved: {
+                ...approved,
+                approval: {
+                  ...approved.approval,
+                  approvedSurface: createApprovalSet([
+                    "inference.source:anthropic:mock-model",
+                  ]),
+                },
+              },
+              config: CONFIG,
+              allocationTarget: target,
+              reconciliation: { leaseId, signal: controller.signal },
+              credentialCipher: createNoopCredentialCipher(),
+            })
+            .catch((error: unknown) => error);
+          expect(error).toMatchObject({ leakedAgent: false });
+          expect(
+            [...ws.sent, ...currentWs.sent].some((frame) =>
+              frame.includes('"type":"agent.deploy"'),
+            ),
+          ).toBe(false);
+          await store.parkReconciliation(ALLOC_ID, currentLeaseId, {
+            kind: "retry-after-error",
+            notBefore: new Date(0),
+          });
+          const plugins = createSidecarPluginRegistry({
+            provisioners: [
+              {
+                id: "provisioner-anchor-test",
+                apiVersion: 1,
+                bindingFingerprint: "fp-anchor-test",
+                capabilities: [],
+                async ensure() {
+                  throw new Error("Must not ensure a live worker");
+                },
+                async destroy() {
+                  throw new Error("Must not destroy a live worker");
+                },
+              },
+            ],
+          });
+          const allocationService = createWorkflowAllocationService({
+            db: h.db,
+            deploymentPlugins: plugins,
+            probePlugins: plugins,
+            preparedDeployer: service,
+            allocationRouter: router,
+            credentialCipher: createNoopCredentialCipher(),
+            hubWebSocketUrl: "ws://unused",
+          });
+          const reconciler = createSidecarAllocationReconciler({
+            allocationStore: store,
+            plugins,
+            router,
+            hubWebSocketUrl: "ws://unused",
+            onInitializationRecovery: (allocation, reconciliation) =>
+              recoverSenderDeploy({
+                db: h.db,
+                sidecarRouter: router,
+                allocation,
+                reconciliation,
+              }),
+            onReady: async (allocation, reconciliation) => {
+              await allocationService.deployReadyAllocation(
+                allocation,
+                reconciliation,
+              );
+            },
+          });
+          await reconciler.reconcileNext();
+          expect(await store.findById(ALLOC_ID)).toMatchObject({
+            status: "allocated",
+            generation: ALLOC_GENERATION,
+          });
+          expect((await readAnchor())?.publicKey).toBe(previousKey);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          expect(currentWs.closed).toBe(false);
+          expect(dropped).toEqual([]);
+          expect(
+            currentWs.sent.filter((frame) =>
+              frame.includes('"type":"mail.inbound"'),
+            ),
+          ).toHaveLength(1);
+          const grants = currentWs.sent
+            .map((frame) => RunGrantsFrame(JSON.parse(frame)))
+            .find((frame) => !(frame instanceof type.errors));
+          if (grants === undefined || grants instanceof type.errors)
+            throw new Error("Missing valid run grants frame");
+          expect(grants.senderIdentities).toEqual([
+            { address: DEPLOY_ADDRESS, publicKey: previousKey },
+          ]);
+        } finally {
+          router.handleClose(ws);
+          router.handleClose(currentWs);
+        }
+      },
+    );
+
+    test("a sent-but-unacked redeploy keeps its initialization marker and leaves deferred mail parked", async () => {
+      const previousKey = "c".repeat(64);
+      await seedWorkflowRun(h.db, {
+        id: ANCHOR_RUN_ID,
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        definitionId: DEFINITION_ID,
+        address: DEPLOY_ADDRESS,
+        publicKey: previousKey,
+      });
+      await seedAllocation();
+      await h.db.insert(sidecar).values({
+        id: "sc-sent-redeploy",
+        tokenHashSha256: new Uint8Array(32).fill(2),
+      });
+      await h.db
+        .update(sidecarAllocation)
+        .set({
+          sidecarId: "sc-sent-redeploy",
+          nextAttemptAt: new Date(0),
+        })
+        .where(eq(sidecarAllocation.id, ALLOC_ID));
+      const store = createSidecarAllocationStore(h.db);
+      const leaseId = "sent-redeploy";
+      await store.claimNextReconcilable({ leaseId, leaseDurationMs: 60_000 });
+      const identity = {
+        kind: "allocated" as const,
+        sidecarId: "sc-sent-redeploy",
+        allocationId: ALLOC_ID,
+        tenantId: TENANT_ID,
+        anchorRunId: ANCHOR_RUN_ID,
+        workflowRunAddress: DEPLOY_ADDRESS,
+        generation: ALLOC_GENERATION,
+      };
+      const target = { allocationId: ALLOC_ID, generation: ALLOC_GENERATION };
+      const credentials = createSidecarCredentialResolver({ db: h.db });
+      const mailParked = Promise.withResolvers<boolean>();
+      const router = createSidecarRouter({
+        authenticateSidecar: async () => identity,
+        validateSidecarIdentity: async (candidate, use) =>
+          credentials.isCurrent(candidate, use),
+        hubPublicKey: "b".repeat(64),
+        lookups: {
+          resolveSenderKey: async () => {
+            const key = (await readAnchor())?.publicKey ?? null;
+            if (key === null) mailParked.resolve(true);
+            return key;
+          },
+          materializeMailTriggeredRunGrants: async () => ({
+            outcome: "materialized",
+            stepGrants: [],
+          }),
+        },
+      });
+      router.fenceAllocation(ALLOC_ID, ALLOC_GENERATION);
+      const ws = createMockWs();
+      router.handleOpen(ws);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: identity.sidecarId,
+          token: "test-token",
+          agentAddresses: [DEPLOY_ADDRESS],
+        }),
+      );
+      await waitFor(
+        () => router.getRoutableAddresses().includes(DEPLOY_ADDRESS),
+        { timeoutMs: 5_000 },
+      );
+
+      const dataDir = await fs.promises.mkdtemp(
+        path.join(os.tmpdir(), "sent-redeploy-"),
+      );
+      tempDirs.push(dataDir);
+      const agentRepoStore = createAgentRepoStore({ dataDir, signingKey });
+      const controller = new AbortController();
+      const dropped: unknown[] = [];
+      router.events.on("mail.outbound.undelivered", (mail) => {
+        dropped.push(mail);
+      });
+      const service = createSessionService({
+        db: h.db,
+        agentRepoStore,
+        sidecarRouter: router,
+        sidecarAllocationRouter: {
+          ...router,
+          sendAgentDeployToAllocation: async (
+            _target,
+            _agentAddress,
+            _config,
+            _workflow,
+            _signal,
+            beforeSend,
+          ) => {
+            await beforeSend?.();
+            router.handleMessage(
+              ws,
+              JSON.stringify({
+                type: "mail.outbound",
+                senderAddress: DEPLOY_ADDRESS,
+                recipients: [DEPLOY_ADDRESS],
+                rawMessage: "aGVsbG8=",
+              }),
+            );
+            await mailParked.promise;
+            throw Object.assign(new Error("ack timeout"), {
+              frameSent: true,
+            });
+          },
+        },
+      });
+      const approved = await makeApproveBundle();
+      await seedInferenceCredentials(h.db, TENANT_ID, SOURCES, CONFIG);
+      try {
+        const error = await service
+          .deployPreparedCodeSourcedWorkflow({
+            tenantId: TENANT_ID,
+            anchorRunId: ANCHOR_RUN_ID,
+            deploymentDomain: DEPLOYMENT_DOMAIN,
+            agentAddress: DEPLOY_ADDRESS,
+            source: { kind: "registry", registry: "npm" },
+            approved: {
+              ...approved,
+              approval: {
+                ...approved.approval,
+                approvedSurface: createApprovalSet([
+                  "inference.source:anthropic:mock-model",
+                ]),
+              },
+            },
+            config: CONFIG,
+            allocationTarget: target,
+            reconciliation: { leaseId, signal: controller.signal },
+            credentialCipher: createNoopCredentialCipher(),
+          })
+          .catch((error: unknown) => error);
+        expect(error).toMatchObject({ leakedAgent: true });
+        expect(await store.findById(ALLOC_ID)).toMatchObject({
+          initializationLeaseId: leaseId,
+        });
+        expect((await readAnchor())?.publicKey).toBeNull();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(dropped).toEqual([]);
+        expect(
+          ws.sent.filter((frame) => frame.includes('"type":"mail.inbound"')),
+        ).toHaveLength(0);
+      } finally {
+        router.handleClose(ws);
+      }
+    });
 
     async function deployWith(router: SidecarAllocationRouter): Promise<void> {
       const { approval, projection, closure } = await makeApproveBundle();
