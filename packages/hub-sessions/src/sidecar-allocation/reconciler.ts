@@ -216,7 +216,7 @@ export function createSidecarAllocationReconciler({
     return new Date(now().getTime() + retryDelayMs(attempt));
   }
 
-  async function withLeaseHeartbeat<T>(
+  async function withReconciliationLease<T>(
     allocation: SidecarAllocation,
     leaseId: string,
     operationName: string,
@@ -228,53 +228,6 @@ export function createSidecarAllocationReconciler({
     if (active === undefined)
       throw new ReconciliationLeaseLostError(allocation.id);
     const controller = active.controller;
-    let finished = false;
-    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
-    const checkLeaseExpiry = (): void => {
-      if (finished || controller.signal.aborted) return;
-      const remaining = active.leaseDeadline - performance.now();
-      if (remaining <= 0) {
-        controller.abort(new ReconciliationLeaseLostError(allocation.id));
-      } else {
-        expiryTimer = setTimeout(checkLeaseExpiry, Math.ceil(remaining));
-      }
-    };
-    let renewing = false;
-    const renew = async (): Promise<void> => {
-      if (renewing || controller.signal.aborted) return;
-      renewing = true;
-      const startedAt = performance.now();
-      try {
-        const renewed = await allocationStore.extendReconciliationLease(
-          allocation.id,
-          leaseId,
-          leaseDurationMs,
-        );
-        if (finished || controller.signal.aborted) return;
-        if (!renewed || performance.now() >= active.leaseDeadline) {
-          controller.abort(new ReconciliationLeaseLostError(allocation.id));
-        } else {
-          // The database grants the lease during the request. Counting from its
-          // start avoids extending ownership by the response's transit time.
-          active.leaseDeadline = startedAt + leaseDurationMs;
-        }
-      } catch (error) {
-        if (!finished) {
-          controller.abort(
-            new ReconciliationLeaseLostError(allocation.id, error),
-          );
-        }
-      } finally {
-        renewing = false;
-      }
-    };
-    const interval = setInterval(
-      () => {
-        void renew();
-      },
-      Math.max(1, Math.floor(leaseDurationMs / 3)),
-    );
-    checkLeaseExpiry();
     try {
       return await runSidecarOperation(
         operationName,
@@ -306,10 +259,6 @@ export function createSidecarAllocationReconciler({
     } catch (error) {
       controller.signal.throwIfAborted();
       throw error;
-    } finally {
-      finished = true;
-      clearInterval(interval);
-      clearTimeout(expiryTimer);
     }
   }
 
@@ -371,7 +320,7 @@ export function createSidecarAllocationReconciler({
         !connectionAlreadyReady &&
         !(await router.isAllocatedSidecarReady(target))
       ) {
-        await withLeaseHeartbeat(
+        await withReconciliationLease(
           allocation,
           leaseId,
           "Sidecar connection",
@@ -400,7 +349,7 @@ export function createSidecarAllocationReconciler({
 
     if (onReady !== undefined) {
       try {
-        await withLeaseHeartbeat(
+        await withReconciliationLease(
           allocation,
           leaseId,
           "Workflow initialization",
@@ -469,7 +418,7 @@ export function createSidecarAllocationReconciler({
     let result: EnsureSidecarResult;
     try {
       result = parseEnsureResult(
-        await withLeaseHeartbeat(
+        await withReconciliationLease(
           allocation,
           leaseId,
           "Sidecar ensure",
@@ -637,7 +586,7 @@ export function createSidecarAllocationReconciler({
     let result: DestroySidecarResult;
     try {
       result = parseDestroyResult(
-        await withLeaseHeartbeat(
+        await withReconciliationLease(
           allocation,
           leaseId,
           "Sidecar destroy",
@@ -913,13 +862,68 @@ export function createSidecarAllocationReconciler({
       });
       return true;
     }
-    activeAllocations.set(allocation.id, {
+    const active = {
       allocation,
       controller: new AbortController(),
       leaseDeadline: claimStartedAt + leaseDurationMs,
       pendingConnect: null,
-    });
+    };
+    activeAllocations.set(allocation.id, active);
+    let finished = false;
+    let renewing = false;
+    const renew = async (): Promise<void> => {
+      if (finished || renewing || active.controller.signal.aborted) return;
+      renewing = true;
+      const startedAt = performance.now();
+      try {
+        const renewed = await allocationStore.extendReconciliationLease(
+          allocation.id,
+          leaseId,
+          leaseDurationMs,
+        );
+        if (finished || active.controller.signal.aborted) return;
+        if (!renewed || performance.now() >= active.leaseDeadline) {
+          active.controller.abort(
+            new ReconciliationLeaseLostError(allocation.id),
+          );
+        } else {
+          // The database grants the lease during the request. Counting from its
+          // start avoids extending ownership by the response's transit time.
+          active.leaseDeadline = startedAt + leaseDurationMs;
+        }
+      } catch (error) {
+        if (!finished && !active.controller.signal.aborted) {
+          active.controller.abort(
+            new ReconciliationLeaseLostError(allocation.id, error),
+          );
+        }
+      } finally {
+        renewing = false;
+      }
+    };
+    // One heartbeat covers the whole claim, including database transitions
+    // between provider calls. Short stages must not keep postponing renewal.
+    const heartbeat = setInterval(
+      () => {
+        void renew();
+      },
+      Math.max(1, Math.floor(leaseDurationMs / 3)),
+    );
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    const checkLeaseExpiry = (): void => {
+      if (active.controller.signal.aborted) return;
+      const remaining = active.leaseDeadline - performance.now();
+      if (remaining <= 0) {
+        active.controller.abort(
+          new ReconciliationLeaseLostError(allocation.id),
+        );
+      } else {
+        expiryTimer = setTimeout(checkLeaseExpiry, Math.ceil(remaining));
+      }
+    };
+    checkLeaseExpiry();
     try {
+      active.controller.signal.throwIfAborted();
       await reconcile(allocation, leaseId);
     } catch (error) {
       if (error instanceof ReconciliationLeaseLostError) {
@@ -947,6 +951,9 @@ export function createSidecarAllocationReconciler({
         }),
       );
     } finally {
+      finished = true;
+      clearInterval(heartbeat);
+      clearTimeout(expiryTimer);
       activeAllocations.delete(allocation.id);
     }
     return true;
