@@ -1973,6 +1973,9 @@ export function createSidecarRouter(
         // cached" invariant holds; a recipient with no cached key resolves such
         // mail as `unknown`, which its admission policy rejects by default (a
         // workflow may relax `unknown` to admit).
+        // Finish asynchronous preparation before sending the grants and mail
+        // together, keeping another delivery's key out of the gap between them.
+        const messageId = await deriveMessageId(base64Decode(rawMessage));
         // Send the run's grants ahead of the mail. A `false` here means the
         // deployment is unroutable. Do not route the mail that would dispatch
         // it; the grants-only reservation remains the canonical snapshot for a
@@ -1993,7 +1996,6 @@ export function createSidecarRouter(
         // mail's own id (derived over the same bytes the sidecar derives), so a
         // redelivery replays identically and the downstream RunStarted /
         // stable-runId dedup makes it effectively-once.
-        const messageId = await deriveMessageId(base64Decode(rawMessage));
         const outcome: "routed" | "unrouted" = routeMail(
           recipient,
           rawMessage,
