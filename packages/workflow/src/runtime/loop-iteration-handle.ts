@@ -17,6 +17,13 @@
 //   - `onPark`/`onSignalPark`, which `createSuspendableChildHandle` owns: the
 //     body's parks feed the handle's queue for the container to proxy up, not
 //     the parent env's supervisor-facing `onPark`.
+// One inherited field is nonetheless restated on the child env rather than
+// left to the spread:
+//   - `hasUpstreamSignalResolver`. A loop iteration is answerable exactly when
+//     its container is, and `parkOnSignalResult` reads that field to refuse an
+//     untimed gate nothing can answer. Carrying it silently would leave the
+//     other half of that guard invisible from here, where a future change to
+//     the spread could drop it without a reader noticing.
 // Everything else -- including `readParkedApprovalOps`, the child's own
 // mid-park crash-recovery read hook -- is inherited unchanged.
 
@@ -64,6 +71,9 @@ export function createLoopIterationHandle(
     ...inherited,
     signalChannel: args.signalChannel,
     drain: createNoopDrainController(args.definition),
+    // Restated rather than left to the spread: an iteration is answerable
+    // exactly when its container is, and `parkOnSignalResult` refuses on it.
+    hasUpstreamSignalResolver: baseEnv.hasUpstreamSignalResolver,
   };
   return createSuspendableChildHandle(childEnv, {
     definition: args.definition,

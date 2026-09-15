@@ -562,6 +562,26 @@ parsed `SpawnTimeEnv` plus a `substrateConfig` record listing the
 keys the host's binary called out); the factory never sees
 `NodeJS.ProcessEnv` directly.
 
+Each spawn seam also declares `hasUpstreamSignalResolver` on the
+runtime env it builds, and the value is a per-seam judgement no
+type can make. Declare `true` where an answer can reach the run:
+the deployment's own addressable run, and a suspendable body whose
+container re-parks on the body's own signal and relays a decision
+back down. Declare `false` on a terminal `childWorkflow` child,
+which carries no address and whose spawner awaits its terminal
+rather than driving it across parks. The field is required, so an
+omission is a compile error -- but a wrong `true` is not. Declared
+on a terminal-child seam it type-checks and reinstates the silent
+hang the flag exists to remove: the run parks forever on a signal
+nobody can send.
+
+The in-tree seams are the worked example. `buildRuntimeEnv`
+(`packages/workflow-host/src/child/run-child.ts`) declares `true`
+for the deployment's own run. In
+`apps/sidecar/src/workflow-substrate-factory.ts`,
+`createSidecarRunChild` declares `false` and
+`createSidecarSpawnSuspendableChild` declares `true`.
+
 The supervisor's `binaryPath` binding resolves to the host's own
 binary statically. In the sidecar's wiring
 (`apps/sidecar/src/workflow-host-wiring.ts`) the resolution lives

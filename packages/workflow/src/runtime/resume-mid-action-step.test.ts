@@ -84,6 +84,7 @@ describe("resume mid-action-step", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
 
     await runtimeRun(def, env1, { runId }).complete;

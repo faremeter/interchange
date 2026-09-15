@@ -69,6 +69,7 @@ describe("resume mid-agent-step", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
 
     const result1 = await runtimeRun(def, env1).complete;
@@ -172,6 +173,7 @@ describe("resume mid-agent-step", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
 
     const result1 = await runtimeRun(def, env1).complete;

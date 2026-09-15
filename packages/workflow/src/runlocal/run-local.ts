@@ -80,6 +80,13 @@ export interface RunLocalOptions extends RuntimeRunOptions {
   clock?: () => Date;
   /** Inject a deterministic id generator for tests. */
   newId?: (prefix: string) => string;
+  /**
+   * Whether a park in this run can be answered from outside it. Defaults to
+   * true: a top-level local run is the addressable one, and its caller holds
+   * the handle that delivers. The terminal-child spawner passes false, since
+   * nothing can address a child run.
+   */
+  hasUpstreamSignalResolver?: boolean;
 }
 
 /**
@@ -147,6 +154,7 @@ export function runLocal(
     clock,
     newId,
     drain: createNoopDrainController(rewritten),
+    hasUpstreamSignalResolver: options.hasUpstreamSignalResolver ?? true,
   };
   // Wired after construction because the loop-iteration executor closes over
   // the env it belongs to, so each iteration's body runs under the parent's
@@ -397,6 +405,10 @@ export function createInMemorySpawnChild(
       runId: childRunId,
       depth,
       maxChildSpawnDepth,
+      // Terminal: the parent awaits this child's terminal rather than driving
+      // it across parks, and nothing upstream can address the child run, so a
+      // park inside it could never be answered.
+      hasUpstreamSignalResolver: false,
     });
     const onParentAbort = (): void => {
       void child.cancel("supervisor-operator", "parent cancelled");

@@ -201,6 +201,7 @@ function buildEnv(
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 10)}`,
     drain: createNoopDrainController(definition),
+    hasUpstreamSignalResolver: true,
   };
 }
 

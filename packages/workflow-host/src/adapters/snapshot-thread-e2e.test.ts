@@ -191,6 +191,7 @@ async function runOnce(
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(workflowDef),
+    hasUpstreamSignalResolver: true,
     onPark: (park) => parks.push(park),
   };
 
