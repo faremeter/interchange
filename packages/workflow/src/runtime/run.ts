@@ -1488,12 +1488,20 @@ async function runStep(
       stepStartedEmitted = true;
     }
 
-    // Build per-step abort: timeout AND outer cancellation both abort.
+    // Build per-step abort: timeout AND outer cancellation both abort. The
+    // durable commit above is an await, so check the outer signal's level
+    // before subscribing to its edge; an abort raised during that commit
+    // would otherwise never reach the invoker, which would then work on
+    // behalf of a run that is already cancelled.
     const stepAbort = new AbortController();
     const onOuter = () => {
       stepAbort.abort();
     };
-    abort.addEventListener("abort", onOuter, { once: true });
+    if (abort.aborted) {
+      stepAbort.abort();
+    } else {
+      abort.addEventListener("abort", onOuter, { once: true });
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     if (step.timeout !== undefined) {
       timer = setTimeout(() => {
@@ -1900,11 +1908,22 @@ async function runAction(
   started = await commitDurable(env, runId, startedEvent);
   void started;
 
+  // As in `runStep`: the durable commit above is an await, so check the outer
+  // signal's level before subscribing to its edge, or an abort raised during
+  // the commit never becomes observable to the handler at all.
+  //
+  // Observable is the whole of what this bridge promises. Whether a handler
+  // stops once it can see the abort is the handler's own choice, and whether
+  // the effect is started at all belongs to the invoker one layer down.
   const actionAbort = new AbortController();
   const onOuter = (): void => {
     actionAbort.abort();
   };
-  abort.addEventListener("abort", onOuter, { once: true });
+  if (abort.aborted) {
+    actionAbort.abort();
+  } else {
+    abort.addEventListener("abort", onOuter, { once: true });
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   if (primitive.timeout !== undefined) {
     timer = setTimeout(() => {
