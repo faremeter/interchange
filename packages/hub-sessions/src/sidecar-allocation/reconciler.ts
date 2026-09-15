@@ -79,7 +79,7 @@ export type SidecarAllocationReconcilerDeps = {
   readonly leaseDurationMs?: number;
   readonly connectTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
-  /** Includes claim queries the Hub stopped awaiting after their deadline. */
+  /** Bounds admitted claims, active reconciliation, and retained allocation queries or writes. */
   readonly maxConcurrentClaims?: number;
   readonly retryDelayMs?: (attempt: number) => number;
   readonly now?: () => Date;
@@ -1004,19 +1004,29 @@ export function createSidecarAllocationReconciler({
     }
   }
 
-  let pendingClaims = 0;
+  let admittedClaims = 0;
 
   async function reconcileNext(): Promise<boolean> {
-    const leaseId = createLeaseId();
-    const claimStartedAt = performance.now();
-    const allocation = await runSidecarOperation(
-      "Sidecar allocation claim",
-      operationTimeoutMs,
-      async () => {
-        if (pendingClaims >= maxConcurrentClaims) return null;
-        pendingClaims += 1;
-        try {
-          return await allocationStore.claimNextReconcilable({
+    const retainedAllocations = new Set([
+      ...connectionEvents.keys(),
+      ...pendingAllocationQueries,
+    ]);
+    // An active claim already owns capacity for its allocation's pending work.
+    for (const allocationId of activeAllocations.keys())
+      retainedAllocations.delete(allocationId);
+    if (admittedClaims + retainedAllocations.size >= maxConcurrentClaims)
+      return false;
+
+    admittedClaims += 1;
+    let claim: ReturnType<AllocationStore["claimNextReconcilable"]> | undefined;
+    try {
+      const leaseId = createLeaseId();
+      const claimStartedAt = performance.now();
+      const allocation = await runSidecarOperation(
+        "Sidecar allocation claim",
+        operationTimeoutMs,
+        () => {
+          claim = allocationStore.claimNextReconcilable({
             leaseId,
             leaseDurationMs,
             excludedAllocationIds: [
@@ -1027,13 +1037,27 @@ export function createSidecarAllocationReconciler({
               ]),
             ],
           });
-        } finally {
-          // A timeout releases the caller, but this query still owns capacity.
-          pendingClaims -= 1;
-        }
-      },
-    );
-    if (allocation === null) return false;
+          return claim;
+        },
+      );
+      if (allocation === null) return false;
+      return await reconcileClaim(allocation, leaseId, claimStartedAt);
+    } finally {
+      const release = () => {
+        admittedClaims -= 1;
+      };
+      // Keep the reservation through the claim-to-reconciliation handoff. A
+      // timed-out claim still owns capacity until its database query settles.
+      if (claim === undefined) release();
+      else void claim.then(release, release);
+    }
+  }
+
+  async function reconcileClaim(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    claimStartedAt: number,
+  ): Promise<boolean> {
     // A delayed claim can predate a queued write's exclusion. Let its lease
     // expire instead of starting more work or parking behind that same write.
     if (connectionEvents.has(allocation.id)) return true;
