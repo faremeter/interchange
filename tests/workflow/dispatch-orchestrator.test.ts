@@ -719,6 +719,7 @@ function buildEnv(opts: {
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(fullDemo),
+    hasUpstreamSignalResolver: true,
     loopFns: makeLoopFns(escalateAtTask),
   };
   const loopBodies = new Map(

@@ -96,6 +96,7 @@ describe("resume-from-log seam", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
 
     const run2 = runtimeRun(def, env, {
@@ -137,6 +138,7 @@ describe("resume-from-log seam", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
     const result1 = await runtimeRun(def, env).complete;
     expect(result1.terminalStatus).toBe("completed");

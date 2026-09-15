@@ -67,6 +67,7 @@ function buildEnv(
     clock,
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain,
+    hasUpstreamSignalResolver: true,
   };
   return { env, repoStore };
 }

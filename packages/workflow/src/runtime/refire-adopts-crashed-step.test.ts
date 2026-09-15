@@ -109,6 +109,7 @@ describe("re-fire adopts a crashed step from the durable log", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
 
     const result1 = await runtimeRun(def, env1).complete;
@@ -206,6 +207,7 @@ describe("re-fire adopts a crashed step from the durable log", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
 
     const result1 = await runtimeRun(def, env1).complete;
@@ -292,6 +294,7 @@ describe("re-fire adopts a crashed step from the durable log", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
 
     const result1 = await runtimeRun(def, env1).complete;
@@ -387,6 +390,7 @@ describe("re-fire adopts a crashed step from the durable log", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
 
     const handle = runtimeRun(def, env1);
@@ -474,6 +478,7 @@ describe("seeded resume adopts a completed step by skip", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
 
     const result1 = await runtimeRun(def, env1).complete;
