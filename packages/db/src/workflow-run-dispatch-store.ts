@@ -7,6 +7,7 @@ import {
   inArray,
   isNull,
   lte,
+  notInArray,
   or,
   sql,
   type SQL,
@@ -74,6 +75,7 @@ export class WorkflowRunDispatchPayloadConflictError extends Error {
 }
 
 export type ClaimWorkflowRunDispatchArgs = {
+  readonly excludedDispatchIds?: readonly string[];
   readonly leaseId: string;
   readonly leaseDurationMs: number;
 };
@@ -285,6 +287,14 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
             and(
               eq(workflowRunDispatch.status, "pending"),
               lte(workflowRunDispatch.nextAttemptAt, sql`now()`),
+              ...(args.excludedDispatchIds !== undefined &&
+              args.excludedDispatchIds.length > 0
+                ? [
+                    notInArray(workflowRunDispatch.id, [
+                      ...args.excludedDispatchIds,
+                    ]),
+                  ]
+                : []),
               or(
                 isNull(workflowRunDispatch.deliveryLeaseExpiresAt),
                 lte(workflowRunDispatch.deliveryLeaseExpiresAt, sql`now()`),

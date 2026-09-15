@@ -128,6 +128,7 @@ describe("createWorkflowDispatchService", () => {
         "cmF3IG1haWw=",
         "principal-1@tenant-1.example",
         "message-1",
+        expect.any(AbortSignal),
       ],
     ]);
   });
@@ -302,7 +303,152 @@ describe("createWorkflowDispatchService", () => {
           signalId: signal.signalId,
           payload: signal.payload,
         },
+        expect.any(AbortSignal),
       ],
     ]);
+  });
+
+  test("an expired delivery remains excluded across drains until its database read settles", async () => {
+    const stuck = dispatch({
+      id: "dispatch-stuck",
+      anchorRunId: "deployment-stuck",
+      messageId: "message-stuck",
+    });
+    const healthy = dispatch({
+      id: "dispatch-healthy",
+      anchorRunId: "deployment-healthy",
+      messageId: "message-healthy",
+    });
+    const leased = new Set<string>();
+    const pending = [stuck];
+    const claims: string[] = [];
+    const exclusions: (readonly string[])[] = [];
+    const stuckClaimed = Promise.withResolvers<boolean>();
+    const releaseStuck = Promise.withResolvers<string>();
+    const delivered: string[] = [];
+    let addressReads = 0;
+    const service = createWorkflowDispatchService({
+      dispatchStore: fakeDispatchStore({
+        claimNextPending: async ({ excludedDispatchIds = [] }) => {
+          exclusions.push(excludedDispatchIds);
+          const next = pending.find(
+            (candidate) =>
+              !leased.has(candidate.id) &&
+              !excludedDispatchIds.includes(candidate.id),
+          );
+          if (next === undefined) return null;
+          leased.add(next.id);
+          claims.push(next.id);
+          return next;
+        },
+      }),
+      allocationStore: fakeAllocationStore({
+        findByAnchorRunId: async (anchorRunId) =>
+          allocation({
+            id: `allocation-for-${anchorRunId}`,
+            anchorRunId,
+          }),
+      }),
+      router: {
+        sendSignalDeliverToAllocation: async () => {
+          throw new Error("must not route mail as signal");
+        },
+        sendWorkflowRunDispatchToAllocation: async (
+          _target,
+          _agentAddress,
+          _runId,
+          _stepGrants,
+          _rawMessage,
+          _senderAddress,
+          messageId,
+        ) => {
+          delivered.push(messageId);
+        },
+      },
+      resolveAnchorAddress: async (anchorRunId) => {
+        if (anchorRunId === stuck.anchorRunId && ++addressReads === 1) {
+          stuckClaimed.resolve(true);
+          return releaseStuck.promise;
+        }
+        return "run_abc@acme.localhost";
+      },
+      leaseDurationMs: 30,
+      createLeaseId: () => "lease-1",
+      now: () => NOW,
+    });
+
+    service.wake();
+    await stuckClaimed.promise;
+    try {
+      // Database lease expiry must not admit a second copy of the same I/O.
+      leased.delete(stuck.id);
+      expect(await service.reconcileNext()).toBe(false);
+      expect(exclusions.at(-1)).toContain(stuck.id);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(await service.reconcileNext()).toBe(false);
+      expect(exclusions.at(-1)).toContain(stuck.id);
+
+      pending.push(healthy);
+      expect(await service.reconcileNext()).toBe(true);
+      expect(delivered).toEqual(["message-healthy"]);
+      expect(claims).toEqual([stuck.id, healthy.id]);
+      expect(addressReads).toBe(1);
+    } finally {
+      releaseStuck.resolve("run_abc@acme.localhost");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(delivered).toEqual(["message-healthy"]);
+    expect(await service.reconcileNext()).toBe(true);
+    expect(delivered).toEqual(["message-healthy", "message-stuck"]);
+    expect(addressReads).toBe(2);
+  });
+
+  test("a late claim cannot duplicate a delivery already executing", async () => {
+    const lateClaim = Promise.withResolvers<ClaimedDispatch>();
+    const entered = Promise.withResolvers<boolean>();
+    const release = Promise.withResolvers<string>();
+    let claims = 0;
+    let addressReads = 0;
+    let sends = 0;
+    const exclusions: (readonly string[])[] = [];
+    const service = createWorkflowDispatchService({
+      dispatchStore: fakeDispatchStore({
+        claimNextPending: (args) => {
+          exclusions.push(args.excludedDispatchIds ?? []);
+          return ++claims === 1
+            ? Promise.resolve(dispatch())
+            : lateClaim.promise;
+        },
+      }),
+      allocationStore: fakeAllocationStore({
+        findByAnchorRunId: async () => allocation(),
+      }),
+      router: {
+        sendSignalDeliverToAllocation: async () => undefined,
+        sendWorkflowRunDispatchToAllocation: async () => {
+          sends += 1;
+        },
+      },
+      resolveAnchorAddress: () => {
+        addressReads += 1;
+        entered.resolve(true);
+        return release.promise;
+      },
+    });
+    const first = service.reconcileNext();
+    const second = service.reconcileNext();
+    await entered.promise;
+    try {
+      lateClaim.resolve(dispatch());
+      await second;
+      expect(exclusions).toEqual([[], []]);
+      expect(addressReads).toBe(1);
+      expect(sends).toBe(0);
+    } finally {
+      lateClaim.resolve(dispatch());
+      release.resolve("run_abc@acme.localhost");
+      await Promise.all([first, second]);
+    }
+    expect(sends).toBe(1);
   });
 });

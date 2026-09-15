@@ -434,8 +434,11 @@ export async function createHubServer({
     name: "Workflow dispatch",
     concurrency: 1,
     reconcileNext: async () => {
-      // Enqueue notifications and periodic retries enter the same guarded drain.
-      workflowDispatchService.wake();
+      // Drain directly instead of poking the guarded wake(): a stuck drain
+      // must not block unrelated dispatches. Claims are lease-guarded and
+      // skip locked rows, so concurrent drains route around each other while
+      // enqueue notifications still enter through wake().
+      await workflowDispatchService.reconcileUntilIdle();
       return false;
     },
   });
