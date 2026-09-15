@@ -4,6 +4,7 @@ import type { SidecarAllocation, SidecarAllocationStore } from "@intx/db";
 import { hexEncode } from "@intx/types";
 
 import { SessionLaunchError } from "../session-service";
+import { tick } from "../ws/sidecar-handler.test-helpers";
 import type { EnsureSidecarResult, SidecarProvisioner } from "./contracts";
 import {
   createSidecarAllocationReconciler,
@@ -1252,6 +1253,127 @@ describe("provisioner operation deadlines", () => {
 });
 
 describe("reconciliation ownership", () => {
+  test("renews the lease while binding a replacement between provider operations", async () => {
+    const binding = Promise.withResolvers<SidecarAllocation>();
+    const renewedWhileBinding = Promise.withResolvers<boolean>();
+    const provisioning = allocation({
+      status: "provisioning",
+      generation: 2,
+      sidecarId: "sc-new",
+    });
+    const calls: string[] = [];
+    let isBinding = false;
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: async () =>
+            allocation({
+              status: "replacing",
+              generation: 2,
+              sidecarId: "sc-old",
+            }),
+          bindReplacementSidecar: () => {
+            isBinding = true;
+            return binding.promise;
+          },
+          extendReconciliationLease: async () => {
+            if (isBinding) renewedWhileBinding.resolve(true);
+            return true;
+          },
+          markAllocated: async () => ({
+            ...provisioning,
+            status: "allocated",
+            ensureAcceptedGeneration: 2,
+          }),
+          markConnectionReady: async () => {
+            calls.push("ready");
+            return null;
+          },
+        }),
+        onReady: async () => {
+          calls.push("initialize");
+        },
+      }),
+      leaseDurationMs: 600,
+    });
+    const work = reconciler.reconcileNext();
+    const deadline = setTimeout(
+      () => renewedWhileBinding.resolve(false),
+      1_000,
+    );
+    try {
+      expect(await renewedWhileBinding.promise).toBe(true);
+    } finally {
+      clearTimeout(deadline);
+      isBinding = false;
+      binding.resolve(provisioning);
+      await work;
+    }
+    expect(calls).toEqual(["initialize", "ready"]);
+  });
+
+  test.each(["accepted", "rejected", "error"] as const)(
+    "ignores a completed claim's late renewal %s after the allocation is reclaimed",
+    async (outcome) => {
+      const renewalEntered = Promise.withResolvers<boolean>();
+      const renewal = Promise.withResolvers<boolean>();
+      const firstInitialization = Promise.withResolvers<boolean>();
+      const nextEntered = Promise.withResolvers<boolean>();
+      const nextInitialization = Promise.withResolvers<boolean>();
+      const readyLeases: (string | undefined)[] = [];
+      const signals: AbortSignal[] = [];
+      let leases = 0;
+      const reconciler = createSidecarAllocationReconciler({
+        ...deps({
+          store: fakeStore({
+            claimNextReconcilable: async () =>
+              allocation({ status: "allocated", generation: 1 }),
+            extendReconciliationLease: (_id, leaseId) => {
+              if (leaseId !== "lease-1") return Promise.resolve(true);
+              renewalEntered.resolve(true);
+              return renewal.promise;
+            },
+            markConnectionReady: async (args) => {
+              readyLeases.push(args.expectedLeaseId);
+              return null;
+            },
+          }),
+        }),
+        createLeaseId: () => `lease-${String(++leases)}`,
+        leaseDurationMs: 300,
+        onReady: async (_row, { signal, leaseId }) => {
+          signals.push(signal);
+          if (leaseId === "lease-1") {
+            await firstInitialization.promise;
+          } else {
+            nextEntered.resolve(true);
+            await nextInitialization.promise;
+          }
+          signal.throwIfAborted();
+        },
+      });
+      const first = reconciler.reconcileNext();
+      await renewalEntered.promise;
+      firstInitialization.resolve(true);
+      await first;
+      expect(readyLeases).toEqual(["lease-1"]);
+
+      const next = reconciler.reconcileNext();
+      await nextEntered.promise;
+      try {
+        if (outcome === "error")
+          renewal.reject(new Error("old connection lost"));
+        else renewal.resolve(outcome === "accepted");
+        await tick();
+        expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
+      } finally {
+        nextInitialization.resolve(true);
+        await next;
+      }
+      expect(readyLeases).toEqual(["lease-1", "lease-2"]);
+    },
+  );
+
   test.each(["ensure", "destroy", "initialize"] as const)(
     "does not %s when the claimed lease is no longer current",
     async (operation) => {
