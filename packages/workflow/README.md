@@ -91,6 +91,31 @@ A loop body may also spawn a `childWorkflow` grandchild: the child is lifted to
 a ref and runs as its own child run, depth-counted against the tree-wide spawn
 ceiling exactly like any other child.
 
+A `childWorkflow` child cannot hold a human gate, and neither can anything
+inside it. The relay that makes a loop iteration's pause durable is severed at
+the `childWorkflow` boundary: a child run carries no address of its own, and
+the spawning step waits for its terminal rather than driving it across parks,
+so no decision can be routed back down. A body nested inside the child
+inherits that answer, so this holds at any depth rather than only for a gate
+written directly in the child.
+
+An untimed wait beneath that boundary fails the step that asked for it, naming
+the gate, rather than waiting on a signal nobody can send. A gate carrying a
+`timeout` is unaffected, because its own timer resolves it without anything
+upstream.
+
+Where the spawn step sits at a workflow root, an `onFailure` handler on it
+absorbs this failure like any other child failure, so a workflow that routes
+around child failures swallows it; leave that step unrouted if you want to see
+it. A spawn step in a `loop` body cannot carry `onFailure` at all -- routing is
+honored only at a workflow root, and a loop body is not one -- so the failure
+surfaces there regardless.
+
+To hold a human gate, keep the `awaitSignal` in a run the control plane can
+address: the deployment's own run, whether directly or in a `loop` body or
+`onTrigger` section body of it, whose container relays the decision down. What
+no container can do is reach across the `childWorkflow` boundary.
+
 A loop body may contain a nested `loop`. An inner loop resolves its body ref
 from the same top-level bodies map (a loop iteration inherits its parent's env),
 its body-child run ids carry the container run id so iterations stay unique

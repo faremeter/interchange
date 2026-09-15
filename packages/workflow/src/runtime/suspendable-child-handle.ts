@@ -22,6 +22,7 @@ import type {
   SuspendableChildPark,
   WorkflowRuntimeEnv,
 } from "./env";
+import { bridgeAbort } from "./abort-bridge";
 import { runtimeRun } from "./run";
 import type { WorkflowEvent } from "../state-machine/index";
 
@@ -137,11 +138,7 @@ export function createSuspendableChildHandle(
   const onParentAbort = (): void => {
     localTeardown.abort();
   };
-  if (signal.aborted) {
-    onParentAbort();
-  } else {
-    signal.addEventListener("abort", onParentAbort, { once: true });
-  }
+  const detachParentAbort = bridgeAbort(signal, onParentAbort);
 
   // On resume, drive the run from its durable log; the body step re-parks
   // silently (a re-park does not re-fire onPark), and the caller relays the
@@ -168,7 +165,7 @@ export function createSuspendableChildHandle(
       failure = cause instanceof Error ? cause : new Error(String(cause));
     })
     .finally(() => {
-      signal.removeEventListener("abort", onParentAbort);
+      detachParentAbort();
       if (cleanup !== undefined) void cleanup();
       notify();
     });

@@ -675,6 +675,35 @@ Child-workflow drain coordination splits two ways:
   its own runtime, which then drains through its own four
   observation points.
 
+#### Why a child cannot hold a control-plane park
+
+A run can be answered from outside only where the control plane can
+reach it: the deployment's single addressable run, or a suspendable
+child whose container re-parks on the same correlation and relays the
+decision back down. A `childWorkflow` child is neither. It carries no
+address, the hub refuses to deliver a signal to any run id but the
+deployment's, and the spawning step awaits the child's terminal rather
+than driving it across parks.
+
+The env therefore carries `hasUpstreamSignalResolver`, set by the seam
+that spawns a run, and the runtime refuses an untimed park wherever it
+is false. The check lives at the park itself because that is the only
+place both facts are known: whether a resolver exists is the seam's
+knowledge, while whether this particular park is untimed is the leaf's.
+
+A timed gate is exempt. Its scheduler timer resolves it in process, so
+it needs nothing upstream and works beneath the boundary today.
+
+Refusing before anything durable is written keeps the log honest: a run
+that cannot proceed carries no suspension recording that it is waiting.
+
+It does not prevent an orphaned approval row, and it is worth being
+precise about why, because the reverse is easy to assume. A park in a
+terminal child could not have registered one in any case. An author
+`awaitSignal` on an author-chosen name produces no control-plane park at
+all, and a terminal child's env carries no notify sink -- the only sink
+in production is on the deployment's addressable run.
+
 #### Recycle
 
 Recycle is the supervisor's "same deploy tree, fresh process" path,

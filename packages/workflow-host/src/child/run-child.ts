@@ -1732,6 +1732,10 @@ function buildRuntimeEnv(args: {
     authorize: args.authorize,
     invokeStep,
     spawnChild,
+    // The deployment's addressable run. Its parks are registered with the hub
+    // through the notify sink below, and a resolved decision is delivered back
+    // onto this run's own channel.
+    hasUpstreamSignalResolver: true,
     // Resolve a loop's `while`/`carry` refs against the closure's loop module.
     // Every ref was force-resolved at establish, so a lookup here cannot fail
     // for a definition that passed startup.

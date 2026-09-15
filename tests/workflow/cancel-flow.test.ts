@@ -86,6 +86,7 @@ describe("childWorkflow terminal-status propagation", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(parent),
+      hasUpstreamSignalResolver: true,
     };
     const result = await runtimeRun(parent, env).complete;
     expect(result.terminalStatus).toBe("failed");
@@ -118,6 +119,7 @@ describe("childWorkflow terminal-status propagation", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(parent),
+      hasUpstreamSignalResolver: true,
     };
     const result = await runtimeRun(parent, env).complete;
     expect(result.terminalStatus).toBe("failed");
@@ -211,6 +213,7 @@ describe("cancellation log invariants", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(parent),
+      hasUpstreamSignalResolver: true,
     };
 
     const run = runtimeRun(parent, env);

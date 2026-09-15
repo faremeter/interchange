@@ -64,6 +64,7 @@ function buildEnv(
     clock,
     newId: (prefix) => `${prefix}-0`,
     drain: createNoopDrainController(body),
+    hasUpstreamSignalResolver: true,
   };
 }
 
