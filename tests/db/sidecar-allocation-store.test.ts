@@ -127,7 +127,592 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expectedLeaseId: leaseId,
       });
       if (allocation === null) throw new Error("Failed to create allocation");
-      return { store, allocation, leaseId };
+      return {
+        store,
+        allocation,
+        leaseId,
+        initialization: {
+          allocationId: id,
+          generation: allocation.generation,
+          anchorRunId: ANCHOR_RUN_ID,
+          tenantId: TENANT_ID,
+          leaseId,
+          signal: new AbortController().signal,
+        },
+      };
+    }
+
+    test("initialization reserves once and publishes the key and marker atomically", async () => {
+      const { store, allocation, leaseId, initialization } =
+        await createClaimedAllocation("alloc-initialization");
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "previous-key" })
+        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      expect(await store.beginInitialization(initialization)).toEqual({
+        previousPublicKey: "previous-key",
+      });
+      expect(await store.beginInitialization(initialization)).toBeNull();
+      expect((await store.findById(allocation.id))?.initializationLeaseId).toBe(
+        leaseId,
+      );
+      expect(
+        (
+          await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, ANCHOR_RUN_ID),
+          })
+        )?.publicKey,
+      ).toBeNull();
+      expect(
+        await store.markConnectionReady({
+          allocationId: allocation.id,
+          generation: allocation.generation,
+          expectedLeaseId: leaseId,
+        }),
+      ).toBeNull();
+
+      const credentialRefs = { credentialIds: ["credential-1"], bindings: [] };
+      expect(
+        await store.completeInitialization({
+          ...initialization,
+          publicKey: "new-key",
+          credentialRefs,
+        }),
+      ).toBe(true);
+      expect(
+        (await store.findById(allocation.id))?.initializationLeaseId,
+      ).toBeUndefined();
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, ANCHOR_RUN_ID),
+        }),
+      ).toMatchObject({ publicKey: "new-key", credentialRefs });
+      expect(
+        await store.completeInitialization({
+          ...initialization,
+          publicKey: "late-key",
+        }),
+      ).toBe(false);
+    });
+
+    test("unsent rollback restores the captured key after lease loss without overwriting a later completion", async () => {
+      const { store, allocation, initialization } =
+        await createClaimedAllocation("alloc-key-rollback");
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "previous-key" })
+        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      const reserved = await store.beginInitialization(initialization);
+      expect(reserved).toEqual({ previousPublicKey: "previous-key" });
+      if (reserved === null) throw new Error("Reservation failed");
+      const controller = new AbortController();
+      controller.abort(new Error("Old initialization cancelled"));
+      const rollback = {
+        ...initialization,
+        ...reserved,
+        signal: controller.signal,
+      };
+      await store.markConnectionLost({
+        allocationId: allocation.id,
+        generation: allocation.generation,
+        connectDeadline: new Date(0),
+      });
+      const nextLeaseId = "new-owner";
+      await store.claimNextReconcilable({
+        leaseId: nextLeaseId,
+        leaseDurationMs: 60_000,
+      });
+      expect(await store.clearUnsentInitialization(rollback)).toBe(true);
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, ANCHOR_RUN_ID),
+        }),
+      ).toMatchObject({ publicKey: "previous-key" });
+      expect(
+        (await store.findById(allocation.id))?.initializationLeaseId,
+      ).toBeUndefined();
+      expect(await store.clearUnsentInitialization(rollback)).toBe(false);
+      expect(
+        await store.beginUnrecoverableRelease({
+          allocationId: allocation.id,
+          expectedGeneration: allocation.generation,
+          expectedLeaseId: nextLeaseId,
+          onlyIfInitializationIncomplete: true,
+          failureCode: "stale-uncertainty",
+          failureMessage: "Claim observed the marker before rollback",
+        }),
+      ).toBeNull();
+      const next = { ...initialization, leaseId: nextLeaseId };
+      expect(await store.beginInitialization(next)).toEqual({
+        previousPublicKey: "previous-key",
+      });
+      expect(await store.clearUnsentInitialization(rollback)).toBe(false);
+      expect(
+        await store.completeInitialization({ ...next, publicKey: "new-key" }),
+      ).toBe(true);
+      expect(await store.clearUnsentInitialization(rollback)).toBe(false);
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, ANCHOR_RUN_ID),
+        }),
+      ).toMatchObject({ publicKey: "new-key" });
+    });
+
+    for (const recovery of [false, true]) {
+      for (const nextAttempt of [false, true]) {
+        test(`cleanup cannot act on a rolled-back first attempt (recovery=${String(recovery)}, nextAttempt=${String(nextAttempt)})`, async () => {
+          const { store, allocation, initialization } =
+            await createClaimedAllocation("alloc-first-rollback");
+          const reserved = await store.beginInitialization(initialization);
+          expect(reserved).toEqual({ previousPublicKey: null });
+          await store.markConnectionLost({
+            allocationId: allocation.id,
+            generation: allocation.generation,
+            connectDeadline: new Date(0),
+          });
+          const leaseId = "recovery-owner";
+          const claimed = await store.claimNextReconcilable({
+            leaseId,
+            leaseDurationMs: 60_000,
+          });
+          if (claimed?.initializationLeaseId === undefined)
+            throw new Error("Recovery did not observe the pending attempt");
+          expect(
+            await store.clearUnsentInitialization({
+              ...initialization,
+              previousPublicKey: null,
+            }),
+          ).toBe(true);
+          if (nextAttempt) {
+            await store.beginInitialization({ ...initialization, leaseId });
+          }
+          const cleanup = {
+            allocationId: allocation.id,
+            expectedGeneration: allocation.generation,
+            expectedLeaseId: leaseId,
+            onlyIfInitializationIncomplete: true,
+            expectedInitializationLeaseId: claimed.initializationLeaseId,
+            failureCode: "stale-uncertainty",
+            failureMessage: "Recovery observed the marker before rollback",
+          };
+          expect(
+            recovery
+              ? await store.beginReplacement({
+                  ...cleanup,
+                  expectedStatus: "allocated",
+                  nextAttemptAt: new Date(),
+                })
+              : await store.beginUnrecoverableRelease(cleanup),
+          ).toBeNull();
+          expect(await store.findById(allocation.id)).toMatchObject({
+            status: "allocated",
+            generation: allocation.generation,
+          });
+          expect(
+            (await store.findById(allocation.id))?.initializationLeaseId,
+          ).toBe(nextAttempt ? leaseId : undefined);
+          expect(
+            await h.db.query.workflowRun.findFirst({
+              where: eq(workflowRun.id, ANCHOR_RUN_ID),
+            }),
+          ).toMatchObject({ status: "running", publicKey: null });
+          if (nextAttempt) {
+            const currentCleanup = {
+              ...cleanup,
+              expectedInitializationLeaseId: leaseId,
+            };
+            expect(
+              recovery
+                ? await store.beginReplacement({
+                    ...currentCleanup,
+                    expectedStatus: "allocated",
+                    nextAttemptAt: new Date(),
+                  })
+                : await store.beginUnrecoverableRelease(currentCleanup),
+            ).toMatchObject({
+              status: recovery ? "replacing" : "releasing",
+              generation: allocation.generation + 1,
+            });
+          }
+        });
+      }
+    }
+
+    test("a failed marker clear rolls back key restoration too", async () => {
+      const { store, allocation, initialization } =
+        await createClaimedAllocation("alloc-atomic-rollback");
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "previous-key" })
+        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      const reserved = await store.beginInitialization(initialization);
+      if (reserved === null) throw new Error("Reservation failed");
+      await h.db.execute(
+        sql`alter table sidecar_allocation add constraint test_reject_clear check (initialization_lease_id is not null)`,
+      );
+      try {
+        await expect(
+          store.clearUnsentInitialization({ ...initialization, ...reserved }),
+        ).rejects.toThrow();
+        expect(
+          await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, ANCHOR_RUN_ID),
+          }),
+        ).toMatchObject({ publicKey: null });
+        expect(
+          (await store.findById(allocation.id))?.initializationLeaseId,
+        ).toBe(initialization.leaseId);
+      } finally {
+        await h.db.execute(
+          sql`alter table sidecar_allocation drop constraint test_reject_clear`,
+        );
+      }
+      expect(
+        await store.clearUnsentInitialization({
+          ...initialization,
+          ...reserved,
+        }),
+      ).toBe(true);
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, ANCHOR_RUN_ID),
+        }),
+      ).toMatchObject({ publicKey: "previous-key" });
+    });
+
+    test("disconnect preserves uncertainty and stale callbacks cannot resolve it", async () => {
+      const { store, allocation, initialization } =
+        await createClaimedAllocation("alloc-initialization-disconnect");
+      expect(await store.beginInitialization(initialization)).toEqual({
+        previousPublicKey: null,
+      });
+      await store.markConnectionLost({
+        allocationId: allocation.id,
+        generation: allocation.generation,
+        connectDeadline: new Date(0),
+      });
+      const claimed = await store.claimNextReconcilable({
+        leaseId: "next-owner",
+        leaseDurationMs: 60_000,
+      });
+      expect(claimed?.initializationLeaseId).toBe(initialization.leaseId);
+      // The stale owner may still null its own marker: the session-service
+      // caller only invokes the clear for a proven-unsent frame, and marker
+      // equality proves no newer attempt began. Uncertainty is preserved
+      // below by the missing key, not by the marker.
+      expect(
+        await store.clearUnsentInitialization({
+          ...initialization,
+          previousPublicKey: null,
+        }),
+      ).toBe(true);
+      expect(
+        await store.completeInitialization({
+          ...initialization,
+          publicKey: "stale-key",
+        }),
+      ).toBe(false);
+      expect(
+        await store.beginInitialization({
+          ...initialization,
+          leaseId: "next-owner",
+        }),
+      ).toEqual({ previousPublicKey: null });
+      const releasing = await store.beginUnrecoverableRelease({
+        allocationId: allocation.id,
+        expectedGeneration: allocation.generation,
+        expectedLeaseId: "next-owner",
+        onlyIfInitializationIncomplete: true,
+        failureCode: "uncertain",
+        failureMessage: "Previous deploy was cancelled",
+      });
+      expect(releasing).toMatchObject({
+        status: "releasing",
+        generation: allocation.generation + 1,
+      });
+      expect(releasing?.initializationLeaseId).toBeUndefined();
+    });
+
+    test("an unsent attempt clears under its own marker after its lease lapses", async () => {
+      const { store, allocation, initialization } =
+        await createClaimedAllocation("alloc-unsent");
+      await store.beginInitialization(initialization);
+      expect(
+        await store.clearUnsentInitialization({
+          ...initialization,
+          leaseId: "other-attempt",
+          previousPublicKey: null,
+        }),
+      ).toBe(false);
+      expect(
+        await store.clearUnsentInitialization({
+          ...initialization,
+          previousPublicKey: null,
+        }),
+      ).toBe(true);
+      expect(await store.beginInitialization(initialization)).toEqual({
+        previousPublicKey: null,
+      });
+      await h.db
+        .update(sidecarAllocation)
+        .set({ reconciliationLeaseExpiresAt: new Date(0) })
+        .where(eq(sidecarAllocation.id, allocation.id));
+      // Completion stays lease-guarded: the expired lease cannot publish,
+      // and the failed publish leaves this attempt's marker behind.
+      expect(
+        await store.completeInitialization({
+          ...initialization,
+          publicKey: "expired-key",
+        }),
+      ).toBe(false);
+      expect((await store.findById(allocation.id))?.initializationLeaseId).toBe(
+        initialization.leaseId,
+      );
+      // A lapsed lease must not strand this attempt's own marker: marker
+      // equality still proves no newer attempt began, so the proven-unsent
+      // clear goes through.
+      expect(
+        await store.clearUnsentInitialization({
+          ...initialization,
+          previousPublicKey: null,
+        }),
+      ).toBe(true);
+      expect(
+        (await store.findById(allocation.id))?.initializationLeaseId,
+      ).toBeUndefined();
+    });
+
+    test("a clear only nulls its own attempt's still-current marker", async () => {
+      const { store, allocation, initialization } =
+        await createClaimedAllocation("alloc-unsent-scope");
+      await store.beginInitialization(initialization);
+      // A newer attempt's marker is not ours to clear.
+      await h.db
+        .update(sidecarAllocation)
+        .set({ initializationLeaseId: "next-owner" })
+        .where(eq(sidecarAllocation.id, allocation.id));
+      expect(
+        await store.clearUnsentInitialization({
+          ...initialization,
+          previousPublicKey: null,
+        }),
+      ).toBe(false);
+      expect((await store.findById(allocation.id))?.initializationLeaseId).toBe(
+        "next-owner",
+      );
+      // Neither is a marker left behind by a generation advance.
+      await h.db
+        .update(sidecarAllocation)
+        .set({
+          generation: allocation.generation + 1,
+          ensureAcceptedGeneration: allocation.generation + 1,
+        })
+        .where(eq(sidecarAllocation.id, allocation.id));
+      expect(
+        await store.clearUnsentInitialization({
+          ...initialization,
+          previousPublicKey: null,
+        }),
+      ).toBe(false);
+    });
+
+    for (const recovery of [false, true]) {
+      test(`a committed initialization survives an ambiguous failure with recovery=${String(recovery)}`, async () => {
+        const { store, allocation, initialization } =
+          await createClaimedAllocation("alloc-completed");
+        await store.beginInitialization(initialization);
+        await store.completeInitialization({
+          ...initialization,
+          publicKey: "committed-key",
+        });
+        const common = {
+          allocationId: allocation.id,
+          expectedGeneration: allocation.generation,
+          expectedLeaseId: initialization.leaseId,
+          onlyIfInitializationIncomplete: true,
+          failureCode: "lost_commit_response",
+          failureMessage: "The commit response was lost",
+        };
+        const changed = recovery
+          ? await store.beginReplacement({
+              ...common,
+              expectedStatus: "allocated",
+              nextAttemptAt: new Date(),
+            })
+          : await store.beginUnrecoverableRelease(common);
+        expect(changed).toBeNull();
+        expect(await store.findById(allocation.id)).toMatchObject({
+          status: "allocated",
+          generation: allocation.generation,
+        });
+        expect(
+          (
+            await h.db.query.workflowRun.findFirst({
+              where: eq(workflowRun.id, ANCHOR_RUN_ID),
+            })
+          )?.publicKey,
+        ).toBe("committed-key");
+      });
+    }
+
+    test("cleanup waiting behind publication observes the committed key", async () => {
+      const { store, allocation, initialization } =
+        await createClaimedAllocation("alloc-completion-race");
+      await store.beginInitialization(initialization);
+      const locked = Promise.withResolvers<number>();
+      const release = Promise.withResolvers<boolean>();
+      const blocker = h.db.transaction(async (tx) => {
+        const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`);
+        const pid = backend?.["pid"];
+        if (typeof pid !== "number") throw new Error("Missing backend PID");
+        await tx
+          .select()
+          .from(workflowRun)
+          .where(eq(workflowRun.id, ANCHOR_RUN_ID))
+          .for("update");
+        locked.resolve(pid);
+        await release.promise;
+      });
+      const blockerPid = await locked.promise;
+      async function waitUntilBlocked(by: number): Promise<number> {
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          const [waiting] = await h.db.execute(
+            sql`select pid from pg_stat_activity where ${by} = any(pg_blocking_pids(pid))`,
+          );
+          const pid = waiting?.["pid"];
+          if (typeof pid === "number") return pid;
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+        throw new Error("Expected transaction did not block");
+      }
+      const publishing = store.completeInitialization({
+        ...initialization,
+        publicKey: "committed-key",
+      });
+      let cleanup:
+        | ReturnType<typeof store.beginUnrecoverableRelease>
+        | undefined;
+      try {
+        const publishingPid = await waitUntilBlocked(blockerPid);
+        cleanup = store.beginUnrecoverableRelease({
+          allocationId: allocation.id,
+          expectedGeneration: allocation.generation,
+          expectedLeaseId: initialization.leaseId,
+          onlyIfInitializationIncomplete: true,
+          failureCode: "ambiguous_completion",
+          failureMessage: "Completion response was lost",
+        });
+        // Establish both lock waits before publication commits. Cleanup's
+        // initial statement snapshot therefore predates the new public key.
+        await waitUntilBlocked(publishingPid);
+      } finally {
+        release.resolve(true);
+        await blocker;
+      }
+      expect(await publishing).toBe(true);
+      expect(await cleanup).toBeNull();
+      expect(await store.findById(allocation.id)).toMatchObject({
+        status: "allocated",
+        generation: allocation.generation,
+      });
+    });
+
+    for (const completing of [false, true]) {
+      for (const failure of ["cancelled", "expired"] as const) {
+        test(`initialization ${completing ? "completion" : "reservation"} rolls back if ${failure} while holding the allocation`, async () => {
+          const { store, allocation, initialization } =
+            await createClaimedAllocation("alloc-cancelled-write");
+          await h.db
+            .update(workflowRun)
+            .set({ publicKey: "old-key" })
+            .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+          if (completing) await store.beginInitialization(initialization);
+          const locked = Promise.withResolvers<boolean>();
+          const release = Promise.withResolvers<boolean>();
+          const blocker = h.db.transaction(async (tx) => {
+            await tx
+              .select()
+              .from(workflowRun)
+              .where(eq(workflowRun.id, ANCHOR_RUN_ID))
+              .for("update");
+            locked.resolve(true);
+            await release.promise;
+          });
+          await locked.promise;
+          const expiresAt = new Date(Date.now() + 1_000);
+          if (failure === "expired") {
+            await h.db
+              .update(sidecarAllocation)
+              .set({ reconciliationLeaseExpiresAt: expiresAt })
+              .where(eq(sidecarAllocation.id, allocation.id));
+          }
+          const controller = new AbortController();
+          const writing = completing
+            ? store.completeInitialization({
+                ...initialization,
+                signal: controller.signal,
+                publicKey: "cancelled-key",
+              })
+            : store.beginInitialization({
+                ...initialization,
+                signal: controller.signal,
+              });
+          // Wait until the initializer owns the allocation and is blocked on the
+          // anchor. NOWAIT is independent of how long the database takes to run.
+          try {
+            const deadline = Date.now() + 5_000;
+            for (;;) {
+              if (Date.now() >= deadline)
+                throw new Error("Initializer never acquired allocation lock");
+              try {
+                await h.db.transaction(async (tx) => {
+                  await tx.execute(
+                    sql`select id from sidecar_allocation where id = ${allocation.id} for update nowait`,
+                  );
+                });
+              } catch (error) {
+                const cause = error instanceof Error ? error.cause : undefined;
+                if (
+                  cause instanceof Error &&
+                  "code" in cause &&
+                  cause.code === "55P03"
+                )
+                  break;
+                throw error;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 1));
+            }
+            if (failure === "cancelled")
+              controller.abort(new Error("Initialization cancelled"));
+            else
+              await new Promise((resolve) =>
+                setTimeout(
+                  resolve,
+                  Math.max(0, expiresAt.getTime() - Date.now()) + 25,
+                ),
+              );
+          } finally {
+            release.resolve(true);
+            await blocker;
+          }
+          await expect(writing).rejects.toThrow(
+            failure === "cancelled"
+              ? "Initialization cancelled"
+              : "Initialization lease expired",
+          );
+          expect(
+            (
+              await h.db.query.workflowRun.findFirst({
+                where: eq(workflowRun.id, ANCHOR_RUN_ID),
+              })
+            )?.publicKey,
+          ).toBe(completing ? null : "old-key");
+          expect(
+            (await store.findById(allocation.id))?.initializationLeaseId,
+          ).toBe(completing ? initialization.leaseId : undefined);
+        });
+      }
     }
 
     test("fences replacement before binding a new physical sidecar", async () => {
