@@ -61,6 +61,7 @@ import type {
   WorkflowRuntimeEnv,
 } from "./env";
 import { shouldAbortForDrain } from "./drain";
+import { bridgeAbort } from "./abort-bridge";
 import {
   assertSpawnDepthWithinLimit,
   resolveMaxChildSpawnDepth,
@@ -194,15 +195,9 @@ export function runtimeRun(
   // `StepFailed` -> `RunFailed`) rather than cancelling. See
   // `RuntimeRunOptions.localAbort`.
   if (options.localAbort !== undefined) {
-    if (options.localAbort.aborted) {
+    bridgeAbort(options.localAbort, () => {
       cancelController.abort();
-    } else {
-      options.localAbort.addEventListener(
-        "abort",
-        () => cancelController.abort(),
-        { once: true },
-      );
-    }
+    });
   }
   const completePromise = executeRun(
     definition,
@@ -1497,11 +1492,7 @@ async function runStep(
     const onOuter = () => {
       stepAbort.abort();
     };
-    if (abort.aborted) {
-      stepAbort.abort();
-    } else {
-      abort.addEventListener("abort", onOuter, { once: true });
-    }
+    bridgeAbort(abort, onOuter);
     let timer: ReturnType<typeof setTimeout> | undefined;
     if (step.timeout !== undefined) {
       timer = setTimeout(() => {
@@ -1925,11 +1916,7 @@ async function runAction(
   const onOuter = (): void => {
     actionAbort.abort();
   };
-  if (abort.aborted) {
-    actionAbort.abort();
-  } else {
-    abort.addEventListener("abort", onOuter, { once: true });
-  }
+  bridgeAbort(abort, onOuter);
   let timer: ReturnType<typeof setTimeout> | undefined;
   if (primitive.timeout !== undefined) {
     timer = setTimeout(() => {
@@ -2831,11 +2818,7 @@ async function raceContainerSignalRelay(
   const onOuterAbort = (): void => {
     raceAbort.abort();
   };
-  if (abort.aborted) {
-    raceAbort.abort();
-  } else {
-    abort.addEventListener("abort", onOuterAbort, { once: true });
-  }
+  bridgeAbort(abort, onOuterAbort);
   const pSignal = env.signalChannel
     .awaitNext(name, raceAbort.signal)
     .then((r) => ({ tag: "signal" as const, r }));
@@ -4515,11 +4498,7 @@ async function parkOnSignalResult(
   // pre-delivery queue before the abort signal, so a signal that arrived
   // before the park is still consumed as durable progress; throwing would
   // discard it.
-  if (abort.aborted) {
-    combinedAbort.abort();
-  } else {
-    abort.addEventListener("abort", onOuterAbort, { once: true });
-  }
+  bridgeAbort(abort, onOuterAbort);
   // Listen for drain transitions that land mid-await.
   const onDrain = (): void => {
     if (shouldAbortForDrain(env.drain, opts.stepId)) {
