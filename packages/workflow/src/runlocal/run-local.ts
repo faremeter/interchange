@@ -291,7 +291,7 @@ export function createSpawnLoopIteration(
   };
 }
 
-function createInMemorySpawnChild(
+export function createInMemorySpawnChild(
   bodies: ReadonlyMap<string, WorkflowDefinition>,
 ): SpawnChildWorkflow {
   return async ({
@@ -302,6 +302,18 @@ function createInMemorySpawnChild(
     depth,
     maxChildSpawnDepth,
   }) => {
+    // Four awaits separate the child run id allocation from this call, one of
+    // them a durable flush, so a cancel can land before the spawner runs. The
+    // abort bridge below subscribes to an edge and would miss one already
+    // past, leaving the child uncancelled and this function awaiting a
+    // terminal that never comes. Refusing outright also avoids writing a whole
+    // child log subtree for a run already known to be cancelled, and matches
+    // what the deployed spawn adapter does, so a local rehearsal does not
+    // diverge from production.
+    if (signal.aborted) {
+      throw abortReason(signal);
+    }
+
     const resolved = bodies.get(definitionRef);
     if (resolved === undefined) {
       // The runtime dispatched a childWorkflow ref with no lifted definition.
@@ -337,6 +349,16 @@ function createInMemorySpawnChild(
       signal.removeEventListener("abort", onParentAbort);
     }
   };
+}
+
+/**
+ * The error an aborted signal should surface: its own reason when it carries
+ * one, so a cancel's cause is not replaced by a generic abort.
+ */
+function abortReason(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason;
+  return new DOMException("aborted", "AbortError");
 }
 
 function defaultClock(): Date {
