@@ -4,27 +4,22 @@ export PATH := $(PWD)/node_modules/.bin:$(PWD)/bin:$(PATH)
 # exports condition; external consumers fall through to the compiled dist.
 BUN := bun --conditions=intx-src
 
-# Worker count for the workflow-deploy pass. 4 is the safe floor for CI
-# (ubuntu-latest: 4 vCPU / 16GB RAM -- one worker + sidecar subprocess +
-# workflow-process child per concurrent file). Raise it on bigger machines,
-# e.g. `make test-workflow WF_PARALLEL=8`: the files are isolated and
-# wall-clock bound, so 8 workers measured ~16% faster on an 8-core/31GB
-# guest with no change in flakiness.
+# Worker count for the workflow-deploy pass (default 4; CI caps at 2:
+# each file spawns sidecar + workflow-process children, and 4 workers
+# exhausted ubuntu-latest's memory). Raise on bigger machines, e.g.
+# `make test-workflow WF_PARALLEL=8` (~16% faster on 8 cores).
 WF_PARALLEL ?= 4
 
-# Worker count for the unit pass. Like WF_PARALLEL, 4 is the safe floor for
-# CI (4 vCPU); raise it on bigger machines, e.g. `make test-unit
-# UNIT_PARALLEL=16`. Unit workers are light (no spawned subprocesses), so
-# the cost is process startup and module loading rather than RAM; on a
-# 32-core guest 16 workers measured ~45% faster than 4, while 32 workers
-# flaked the suite's load-sensitive 2s waitFor timers.
+# Worker count for the unit pass (default 4; CI caps at 2). Workers are
+# light, so cost is startup + module loading, not RAM; on a 32-core guest
+# 16 workers were ~45% faster than 4, but 32 flaked the 2s waitFor timers.
+# Raise via `make test-unit UNIT_PARALLEL=16`.
 UNIT_PARALLEL ?= 4
 
-# Worker count for the core integration pass. Like the other lanes, 4 is
-# the safe floor for CI (4 vCPU); raise it on bigger machines, e.g.
-# `make test-core CORE_PARALLEL=8`. Measured on a 32-core guest:
-# serial 41-45s; CORE_PARALLEL=4 ~16s; CORE_PARALLEL=8 ~10s (best);
-# 16-32 workers plateau ~10.5-12s (DB-bound).
+# Worker count for the core integration pass (default 4; CI caps at 2).
+# Raise on bigger machines, e.g. `make test-core CORE_PARALLEL=8`.
+# Measured on a 32-core guest: serial 41-45s; 4 ~16s; 8 ~10s (best);
+# 16-32 plateau ~10.5-12s (DB-bound).
 CORE_PARALLEL ?= 4
 
 all: lint build build-admin-ui test

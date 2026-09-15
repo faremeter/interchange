@@ -68,6 +68,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      # Cap at 2: ubuntu-latest runs out of memory with the Makefile's 4-worker default.
+      UNIT_PARALLEL: "2"
       # bin/db-reset runs psql with -h/-p only (no -U), so its superuser identity
       # comes from libpq's PGUSER/PGPASSWORD here. Do not add -U to db-reset to
       # "fix" this -- that is what would break CI.
@@ -101,6 +103,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      # Cap at 2: ubuntu-latest runs out of memory with the Makefile's 4-worker default.
+      WF_PARALLEL: "2"
       PGUSER: postgres
       PGPASSWORD: postgres
       PGHOST: localhost
@@ -131,6 +135,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      # Cap at 2: ubuntu-latest runs out of memory with the Makefile's 4-worker default.
+      CORE_PARALLEL: "2"
       PGUSER: postgres
       PGPASSWORD: postgres
       PGHOST: localhost
