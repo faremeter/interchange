@@ -4269,6 +4269,30 @@ async function parkOnSignalResult(
   state: ReturnType<typeof resumeFromLog>,
   abort: AbortSignal,
 ): Promise<ParkResult> {
+  // An untimed park waits for a signal from outside this run, so it can only
+  // be answered where something upstream can deliver one. A terminal child has
+  // no address of its own and no container relaying decisions down to it, so
+  // the wait would never end: the child parks, the spawner waits on a terminal
+  // that never comes, and an approval nobody can see holds the whole tree.
+  //
+  // A body nested inside such a child inherits the same answer, so this fires
+  // for a gate at any depth beneath the boundary rather than only a direct
+  // one. The advice below must therefore not send an author to a loop or
+  // onTrigger body: that is where they already are.
+  //
+  // Refuse before anything durable is written, so the run fails at the step
+  // that asked for the impossible and no suspension is recorded for a
+  // correlation the control plane will never hear about. A timed gate is
+  // exempt -- its own timer resolves it in process, needing nothing upstream.
+  if (!env.hasUpstreamSignalResolver && opts.timeout === undefined) {
+    throw new Error(
+      `step ${opts.stepId} waits on ${opts.signalName} with no timeout, but ` +
+        `nothing outside this run can deliver it. A childWorkflow child is ` +
+        `run to its terminal rather than driven across parks, so no gate ` +
+        `beneath that boundary can be answered, at any depth. Give the gate ` +
+        `a timeout, or move it into a run the control plane can address`,
+    );
+  }
   // Re-emit `SignalAwaited` only when the gate is not already awaiting it.
   // On a re-park resume the gate is already `awaiting-signal` (StepStarted
   // + SignalAwaited durable), so this is skipped and the tail re-parks on
