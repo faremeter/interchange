@@ -48,6 +48,23 @@ export function harnessDbEnvAvailable(): boolean {
 }
 
 /**
+ * Returns true when the repo additionally has `.env.hub`, the file carrying
+ * the hub role. Anything that reads that role gates on this rather than on
+ * `harnessDbEnvAvailable`, which knows only about the connection settings and
+ * the migration role.
+ *
+ * The distinction matters in a fresh worktree, where the env files are absent
+ * because they are gitignored: gating on the narrower predicate lets a suite
+ * run and then fail on a missing key, which is the loud-error case this gate
+ * exists to avoid.
+ */
+export function harnessHubEnvAvailable(): boolean {
+  return (
+    harnessDbEnvAvailable() && existsSync(path.join(REPO_ROOT, ".env.hub"))
+  );
+}
+
+/**
  * Read the repo's `.env` + `.env.migrate` and surface the migration
  * user's credentials. The migration user is what the harnesses use to
  * create schemas and apply DDL; a spawned hub still runs as the hub
