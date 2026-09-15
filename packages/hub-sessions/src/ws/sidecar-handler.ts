@@ -428,6 +428,7 @@ export type SidecarAllocationRouter = {
     rawMessage: string,
     authenticatedSender: string,
     messageId: string,
+    signal?: AbortSignal,
   ): Promise<void>;
   /** Deliver an idempotent signal to the exact provisioned generation. */
   sendSignalDeliverToAllocation(
@@ -439,6 +440,7 @@ export type SidecarAllocationRouter = {
       signalId: string;
       payload: unknown;
     },
+    signal?: AbortSignal,
   ): Promise<void>;
 };
 
@@ -2924,8 +2926,11 @@ export function createSidecarRouter(
     rawMessage: string,
     authenticatedSender: string,
     messageId: string,
+    signal?: AbortSignal,
   ): Promise<void> {
+    signal?.throwIfAborted();
     const { ws, conn } = await getAllocatedConnection(target, "routing");
+    signal?.throwIfAborted();
     if (addressIndex.get(agentAddress) !== ws) {
       throw new Error(
         `Address ${agentAddress} is not routed on allocation ${target.allocationId}`,
@@ -2948,6 +2953,7 @@ export function createSidecarRouter(
       lookups.resolveSenderKey !== undefined
         ? await lookups.resolveSenderKey(authenticatedSender)
         : null;
+    signal?.throwIfAborted();
     // Co-deliver the resolved key on the run's grants barrier, omitting a null
     // key so it is never cached (see deliverMailToRecipient). The same list
     // rides the pending-mail entry so the reconnect replay carries it too.
@@ -3466,8 +3472,11 @@ export function createSidecarRouter(
       signalId: string;
       payload: unknown;
     },
+    signal?: AbortSignal,
   ): Promise<void> {
+    signal?.throwIfAborted();
     const { ws, conn } = await getAllocatedConnection(target, "routing");
+    signal?.throwIfAborted();
     if (addressIndex.get(opts.agentAddress) !== ws) {
       throw new Error(
         `Address ${opts.agentAddress} is not routed on allocation ${target.allocationId}`,
