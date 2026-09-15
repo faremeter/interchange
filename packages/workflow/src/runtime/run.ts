@@ -4447,7 +4447,21 @@ async function parkOnSignalResult(
   const onOuterAbort = (): void => {
     combinedAbort.abort();
   };
-  abort.addEventListener("abort", onOuterAbort, { once: true });
+  // The durable flush above is an await, so the outer signal may already have
+  // aborted by the time this bridge is built. An abort is an edge, not a
+  // level: a listener attached after the fact never fires, and the park below
+  // would then wait on a signal nothing will send.
+  //
+  // Abort the combined controller rather than throwing, which is what
+  // `waitForTimer` does from the same position. `awaitNext` consults its
+  // pre-delivery queue before the abort signal, so a signal that arrived
+  // before the park is still consumed as durable progress; throwing would
+  // discard it.
+  if (abort.aborted) {
+    combinedAbort.abort();
+  } else {
+    abort.addEventListener("abort", onOuterAbort, { once: true });
+  }
   // Listen for drain transitions that land mid-await.
   const onDrain = (): void => {
     if (shouldAbortForDrain(env.drain, opts.stepId)) {
