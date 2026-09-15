@@ -1935,6 +1935,59 @@ describe("reconciliation ownership", () => {
     expect(initialized).toBe(false);
   });
 
+  for (const settlement of ["resolve", "reject"] as const) {
+    test(`bounds outstanding claims across timeouts and resumes after they ${settlement}`, async () => {
+      const claims = Array.from({ length: 2 }, () =>
+        Promise.withResolvers<SidecarAllocation | null>(),
+      );
+      let started = 0;
+      let initialized = false;
+      const reconciler = createSidecarAllocationReconciler({
+        ...deps({
+          store: fakeStore({
+            claimNextReconcilable: () => {
+              const claim = claims[started++];
+              return claim?.promise ?? Promise.resolve(null);
+            },
+          }),
+        }),
+        operationTimeoutMs: 10,
+        maxConcurrentClaims: 2,
+        onReady: async () => {
+          initialized = true;
+        },
+      });
+      try {
+        const results = await Promise.allSettled([
+          reconciler.reconcileNext(),
+          reconciler.reconcileNext(),
+          reconciler.reconcileNext(),
+        ]);
+        expect(results.map((result) => result.status)).toEqual([
+          "rejected",
+          "rejected",
+          "fulfilled",
+        ]);
+        expect(results[2]).toEqual({ status: "fulfilled", value: false });
+        expect(await reconciler.reconcileNext()).toBe(false);
+        expect(await reconciler.reconcileNext()).toBe(false);
+        expect(started).toBe(2);
+        const first = claims[0];
+        if (first === undefined) throw new Error("Missing first claim");
+        if (settlement === "resolve")
+          first.resolve(allocation({ status: "allocated", generation: 1 }));
+        else first.reject(new Error("delayed database failure"));
+        await tick();
+        expect(await reconciler.reconcileNext()).toBe(false);
+        expect(started).toBe(3);
+        expect(initialized).toBe(false);
+      } finally {
+        for (const claim of claims) claim.resolve(null);
+        await Promise.allSettled(claims.map((claim) => claim.promise));
+      }
+    });
+  }
+
   test("retries a hung lease validation without starting initialization", async () => {
     const validation = Promise.withResolvers<boolean>();
     const calls: string[] = [];
