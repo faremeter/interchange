@@ -1,0 +1,2 @@
+ALTER TABLE "sidecar_allocation" ADD COLUMN "initialization_lease_id" text;--> statement-breakpoint
+ALTER TABLE "sidecar_allocation" ADD CONSTRAINT "sidecar_allocation_initialization_check" CHECK ("sidecar_allocation"."initialization_lease_id" is null or ("sidecar_allocation"."status" = 'allocated' and "sidecar_allocation"."ensure_accepted_generation" is not null and "sidecar_allocation"."ensure_accepted_generation" = "sidecar_allocation"."generation"));

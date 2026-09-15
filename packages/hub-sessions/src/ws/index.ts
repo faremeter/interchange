@@ -3,6 +3,7 @@ export {
   type SidecarRouter,
   type SidecarRouterConfig,
   type SenderDeploySettledOutcome,
+  type AllocatedSenderDeployAttempt,
   type SidecarConnection,
   type SidecarAuthIdentity,
   type SidecarAuthenticator,

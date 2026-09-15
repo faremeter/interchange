@@ -59,6 +59,14 @@ export type SidecarAllocationReconcilerDeps = {
     | "waitForAllocatedSidecar"
   >;
   readonly hubWebSocketUrl: string;
+  /**
+   * Resolve the previous attempt's deferred mail under the newly claimed
+   * lease, before connection waits or cleanup.
+   */
+  readonly onInitializationRecovery?: (
+    allocation: SidecarAllocation,
+    reconciliation: SidecarReconciliationContext,
+  ) => Promise<void>;
   /** Idempotently restores and deploys one connected allocation generation. */
   readonly onReady?: (
     allocation: SidecarAllocation,
@@ -147,6 +155,7 @@ export function createSidecarAllocationReconciler({
   plugins,
   router,
   hubWebSocketUrl,
+  onInitializationRecovery,
   onReady,
   enableAutomaticReplacementRecovery = false,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
@@ -272,7 +281,19 @@ export function createSidecarAllocationReconciler({
 
   // A timed-out lookup still occupies its database connection. Exclude its
   // allocation until it settles so retries cannot accumulate duplicate reads.
-  const readinessQueries = new Set<string>();
+  const pendingAllocationQueries = new Set<string>();
+
+  async function trackAllocationQuery<T>(
+    allocationId: string,
+    query: () => Promise<T>,
+  ): Promise<T> {
+    pendingAllocationQueries.add(allocationId);
+    try {
+      return await query();
+    } finally {
+      pendingAllocationQueries.delete(allocationId);
+    }
+  }
 
   async function isSidecarReady(
     allocation: SidecarAllocation,
@@ -283,17 +304,13 @@ export function createSidecarAllocationReconciler({
     return runSidecarOperation(
       "Sidecar readiness",
       operationTimeoutMs,
-      async () => {
-        readinessQueries.add(allocation.id);
-        try {
-          return await router.isAllocatedSidecarReady({
+      () =>
+        trackAllocationQuery(allocation.id, () =>
+          router.isAllocatedSidecarReady({
             allocationId: allocation.id,
             generation: allocation.generation,
-          });
-        } finally {
-          readinessQueries.delete(allocation.id);
-        }
-      },
+          }),
+        ),
       active.controller.signal,
     );
   }
@@ -303,40 +320,82 @@ export function createSidecarAllocationReconciler({
     leaseId: string,
     code: string,
     message: string,
+    {
+      onlyIfInitializationIncomplete = false,
+    }: { onlyIfInitializationIncomplete?: boolean } = {},
   ): Promise<void> {
-    if (
-      allocation.status === "allocated" &&
-      !enableAutomaticReplacementRecovery
-    ) {
-      const releasing = await allocationStore.beginUnrecoverableRelease({
+    const initializationCheck = onlyIfInitializationIncomplete
+      ? {
+          onlyIfInitializationIncomplete: true,
+          ...(allocation.initializationLeaseId !== undefined
+            ? {
+                expectedInitializationLeaseId: allocation.initializationLeaseId,
+              }
+            : {}),
+        }
+      : {};
+    let shouldRetryInitialization = false;
+    await queueReconciliationStep(
+      { allocationId: allocation.id, generation: allocation.generation },
+      async () => {
+        const updated =
+          allocation.status === "allocated" &&
+          !enableAutomaticReplacementRecovery
+            ? await allocationStore.beginUnrecoverableRelease({
+                ...initializationCheck,
+                allocationId: allocation.id,
+                expectedGeneration: allocation.generation,
+                expectedLeaseId: leaseId,
+                failureCode: code,
+                failureMessage: `Automatic recovery is disabled: ${message}`,
+                now: now(),
+              })
+            : await allocationStore.beginReplacement({
+                ...initializationCheck,
+                allocationId: allocation.id,
+                expectedStatus:
+                  allocation.status === "allocated"
+                    ? "allocated"
+                    : "provisioning",
+                expectedGeneration: allocation.generation,
+                expectedLeaseId: leaseId,
+                nextAttemptAt: retryAt(
+                  allocation.ensureAttempts + allocation.destroyAttempts,
+                ),
+                failureCode: code,
+                failureMessage: message,
+                now: now(),
+              });
+        if (updated !== null) {
+          // A late commit still advances the fence before this queued work
+          // settles and its allocation becomes eligible for another claim.
+          router.fenceAllocation(updated.id, updated.generation);
+        } else {
+          shouldRetryInitialization = onlyIfInitializationIncomplete;
+        }
+      },
+    );
+    if (shouldRetryInitialization)
+      await retryInitialization(allocation, leaseId);
+  }
+
+  async function retryInitialization(
+    allocation: SidecarAllocation,
+    leaseId: string,
+  ): Promise<void> {
+    // A publication or unsent rollback may have committed since the claim.
+    // Retry the ordinary callback, including initialization and dispatch requeue.
+    // If ownership was lost instead, this lease-guarded update changes nothing.
+    await finishReconciliation(allocation.id, () =>
+      allocationStore.scheduleRetry({
         allocationId: allocation.id,
+        expectedStatus: "allocated",
         expectedGeneration: allocation.generation,
         expectedLeaseId: leaseId,
-        failureCode: code,
-        failureMessage: `Automatic recovery is disabled: ${message}`,
+        nextAttemptAt: now(),
         now: now(),
-      });
-      if (releasing !== null) {
-        router.fenceAllocation(releasing.id, releasing.generation);
-      }
-      return;
-    }
-    const replaced = await allocationStore.beginReplacement({
-      allocationId: allocation.id,
-      expectedStatus:
-        allocation.status === "allocated" ? "allocated" : "provisioning",
-      expectedGeneration: allocation.generation,
-      expectedLeaseId: leaseId,
-      nextAttemptAt: retryAt(
-        allocation.ensureAttempts + allocation.destroyAttempts,
-      ),
-      failureCode: code,
-      failureMessage: message,
-      now: now(),
-    });
-    if (replaced !== null) {
-      router.fenceAllocation(replaced.id, replaced.generation);
-    }
+      }),
+    );
   }
 
   async function waitUntilReady(
@@ -361,19 +420,10 @@ export function createSidecarAllocationReconciler({
           allocation,
           leaseId,
           "Sidecar connection",
-          async () => {
-            // The router revalidates identity inside its wait. Keep that lookup
-            // excluded too if the caller stops waiting before it settles.
-            readinessQueries.add(allocation.id);
-            try {
-              await router.waitForAllocatedSidecar(
-                target,
-                Math.max(0, remaining),
-              );
-            } finally {
-              readinessQueries.delete(allocation.id);
-            }
-          },
+          () =>
+            trackAllocationQuery(allocation.id, () =>
+              router.waitForAllocatedSidecar(target, Math.max(0, remaining)),
+            ),
           operationTimeoutMs,
         );
       }
@@ -418,6 +468,7 @@ export function createSidecarAllocationReconciler({
             leaseId,
             "sidecar_initialization_uncertain",
             error.message,
+            { onlyIfInitializationIncomplete: true },
           );
           return;
         }
@@ -700,6 +751,21 @@ export function createSidecarAllocationReconciler({
     ) {
       return;
     }
+    if (
+      allocation.status === "allocated" &&
+      onInitializationRecovery !== undefined
+    ) {
+      await withReconciliationLease(
+        allocation,
+        leaseId,
+        "Sender deployment recovery",
+        (context) =>
+          trackAllocationQuery(allocation.id, () =>
+            onInitializationRecovery(allocation, context),
+          ),
+        operationTimeoutMs,
+      );
+    }
     const provisioner = provisionerFor(allocation);
     if (provisioner === null) {
       if (allocation.status === "pending") {
@@ -751,6 +817,16 @@ export function createSidecarAllocationReconciler({
         );
         return;
       case "allocated":
+        if (allocation.initializationLeaseId !== undefined) {
+          await replaceAfterFailure(
+            allocation,
+            leaseId,
+            "sidecar_initialization_uncertain",
+            "A previous initialization attempt did not record completion",
+            { onlyIfInitializationIncomplete: true },
+          );
+          return;
+        }
         await waitUntilReady(allocation, leaseId);
         return;
       case "replacing":
@@ -947,7 +1023,7 @@ export function createSidecarAllocationReconciler({
               ...new Set([
                 ...activeAllocations.keys(),
                 ...connectionEvents.keys(),
-                ...readinessQueries,
+                ...pendingAllocationQueries,
               ]),
             ],
           });
@@ -958,11 +1034,14 @@ export function createSidecarAllocationReconciler({
       },
     );
     if (allocation === null) return false;
+    // A delayed claim can predate a queued write's exclusion. Let its lease
+    // expire instead of starting more work or parking behind that same write.
+    if (connectionEvents.has(allocation.id)) return true;
     // A claim started before another local claim returned can outlive its lease
     // and exclusion snapshot, including a lookup abandoned by that attempt.
     if (
       activeAllocations.has(allocation.id) ||
-      readinessQueries.has(allocation.id)
+      pendingAllocationQueries.has(allocation.id)
     ) {
       await allocationStore.parkReconciliation(allocation.id, leaseId, {
         kind: "retry-after-error",
@@ -1040,6 +1119,9 @@ export function createSidecarAllocationReconciler({
           logger.info`Allocation ${allocation.id} reconciliation stopped: lease ${leaseId} is no longer current`;
         } else {
           logger.warn`Allocation ${allocation.id} reconciliation stopped because renewal of lease ${leaseId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+          // Pending writes already keep this allocation excluded. A retry write
+          // could wait behind the same transaction and trap the cancelled slot.
+          if (connectionEvents.has(allocation.id)) return true;
           try {
             await allocationStore.parkReconciliation(allocation.id, leaseId, {
               kind: "retry-after-error",

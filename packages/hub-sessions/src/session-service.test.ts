@@ -14,14 +14,26 @@ import {
 } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
-import type { DB } from "@intx/db";
+import type { DB, SidecarAllocation } from "@intx/db";
 import { generateId } from "@intx/hub-common";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AssetService } from "./asset-service";
 import type { Principal, RepoId, RepoStore } from "./repo-store";
-import { createSessionService, SessionLaunchError } from "./session-service";
+import {
+  createSessionService,
+  recoverSenderDeploy,
+  SessionLaunchError,
+} from "./session-service";
+import {
+  createAllocatedRouter,
+  connectAllocated,
+  TEST_CONFIG,
+  TEST_IDENTITY,
+  TEST_TARGET,
+  tick,
+} from "./ws/sidecar-handler.test-helpers";
 import type {
   SendPackOptions,
   SidecarAllocationRouter,
@@ -88,21 +100,18 @@ function createMockRouter(): TestSidecarRouter & {
       });
       return mock.routeMailResult;
     }) as SidecarRouter["sendRunGrants"],
-    noteSenderDeployStarted: ((address: string): void => {
+    noteSenderDeployStarted: (address, attempt) => {
       calls.push({
         method: "noteSenderDeployStarted",
-        args: [address],
+        args: [address, attempt],
       });
-    }) as SidecarRouter["noteSenderDeployStarted"],
-    noteSenderDeploySettled: ((
-      address: string,
-      outcome: Parameters<SidecarRouter["noteSenderDeploySettled"]>[1],
-    ): void => {
+    },
+    noteSenderDeploySettled: (sender, outcome) => {
       calls.push({
         method: "noteSenderDeploySettled",
-        args: [address, outcome],
+        args: [sender, outcome],
       });
-    }) as SidecarRouter["noteSenderDeploySettled"],
+    },
     sendAgentDeploy: ((
       agentAddress: string,
       config: HarnessConfig,
@@ -1377,6 +1386,538 @@ describe("deployCodeSourcedWorkflow", () => {
   }
 
   describe("deployPreparedCodeSourcedWorkflow", () => {
+    for (const scenario of [
+      "cancelled after commit",
+      "lost commit response",
+      "rolled back publication",
+      "cancelled recovery read",
+    ] as const) {
+      test(`settles deferred mail from the durable outcome: ${scenario}`, async () => {
+        const controller = new AbortController();
+        const deploySent = Promise.withResolvers<boolean>();
+        const mailParked = Promise.withResolvers<boolean>();
+        const publicationFinished = Promise.withResolvers<boolean>();
+        const publicationResponse = Promise.withResolvers<boolean>();
+        const recoveryRead = Promise.withResolvers<boolean>();
+        const recoveryResponse = Promise.withResolvers<boolean>();
+        let holdRecoveryRead = scenario === "cancelled recovery read";
+        let publicKey: string | null = null;
+        let initializationLeaseId: string | null = null;
+        let transactions = 0;
+        const router = createAllocatedRouter({
+          lookups: {
+            resolveSenderKey: async () => {
+              mailParked.resolve(true);
+              return publicKey;
+            },
+            materializeMailTriggeredRunGrants: async () => ({
+              outcome: "materialized",
+              stepGrants: [],
+            }),
+          },
+        });
+        const dropped: unknown[] = [];
+        router.events.on("mail.outbound.undelivered", (mail) => {
+          dropped.push(mail);
+        });
+        const ws = await connectAllocated(router);
+        const send = ws.send.bind(ws);
+        ws.send = (data) => {
+          send(data);
+          const frame: unknown = JSON.parse(data);
+          if (
+            typeof frame === "object" &&
+            frame !== null &&
+            "type" in frame &&
+            frame.type === "agent.deploy"
+          )
+            deploySent.resolve(true);
+        };
+        const transaction = async (
+          run: (tx: ReturnType<typeof transactionHandle>) => Promise<unknown>,
+        ) => {
+          transactions += 1;
+          let nextKey = publicKey;
+          let nextMarker = initializationLeaseId;
+          const result = await run(
+            transactionHandle((values) => {
+              if ("publicKey" in values) {
+                if (
+                  values.publicKey !== null &&
+                  typeof values.publicKey !== "string"
+                )
+                  throw new Error("Invalid key write");
+                nextKey = values.publicKey;
+              }
+              if ("initializationLeaseId" in values) {
+                if (
+                  values.initializationLeaseId !== null &&
+                  typeof values.initializationLeaseId !== "string"
+                )
+                  throw new Error("Invalid marker write");
+                nextMarker = values.initializationLeaseId;
+              }
+            }),
+          );
+          if (transactions === 1 || scenario !== "rolled back publication") {
+            publicKey = nextKey;
+            initializationLeaseId = nextMarker;
+          }
+          if (transactions === 2) {
+            publicationFinished.resolve(true);
+            await publicationResponse.promise;
+          }
+          return result;
+        };
+        function transactionHandle(
+          write: (values: Record<string, unknown>) => void,
+        ) {
+          return {
+            select: () => ({
+              from: () => ({
+                where: () => ({
+                  for: async () => [
+                    { id: TEST_TARGET.allocationId, publicKey },
+                  ],
+                }),
+              }),
+            }),
+            update: () => ({
+              set: (values: Record<string, unknown>) => ({
+                where: () => ({
+                  returning: async () => {
+                    write(values);
+                    return [{ id: TEST_IDENTITY.anchorRunId }];
+                  },
+                }),
+              }),
+            }),
+          };
+        }
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- delay the transaction response after commit or rollback; allocation-store DB tests cover the SQL guards
+        const db = {
+          transaction,
+          query: {
+            workflowDefinition: {
+              findFirst: async () => ({ id: "definition" }),
+            },
+            workflowRun: {
+              findFirst: async () => {
+                if (holdRecoveryRead) {
+                  recoveryRead.resolve(true);
+                  await recoveryResponse.promise;
+                }
+                return { publicKey };
+              },
+            },
+          },
+        } as unknown as DB["db"];
+        const repoStore = createMockRepoStore();
+        repoStore.repoStore.resolveRef = async () => null;
+        const service = createSessionService({
+          sidecarRouter: router,
+          sidecarAllocationRouter: router,
+          agentRepoStore: repoStore,
+          db,
+        });
+        const projection = {
+          id: "definition",
+          triggers: [],
+          steps: {},
+          stepOrder: [],
+        };
+        const deployment = service
+          .deployPreparedCodeSourcedWorkflow({
+            tenantId: TEST_IDENTITY.tenantId,
+            anchorRunId: TEST_IDENTITY.anchorRunId,
+            deploymentDomain: "tenant.example",
+            agentAddress: TEST_IDENTITY.workflowRunAddress,
+            source: SOURCE,
+            approved: {
+              approval: {
+                ok: true,
+                definitionId: "definition",
+                approvedWireHash: "b".repeat(64),
+                approvedGrants: new Set(),
+                projection,
+              },
+              projection,
+              closure: { schemaVersion: "1", topLevel: [], entries: [] },
+            },
+            config: TEST_CONFIG,
+            allocationTarget: TEST_TARGET,
+            reconciliation: {
+              signal: controller.signal,
+              leaseId: "initializer",
+            },
+          })
+          .catch((error: unknown) => error);
+        try {
+          await deploySent.promise;
+          router.handleMessage(
+            ws,
+            JSON.stringify({
+              type: "mail.outbound",
+              senderAddress: TEST_IDENTITY.workflowRunAddress,
+              recipients: [TEST_IDENTITY.workflowRunAddress],
+              rawMessage: "aGVsbG8=",
+            }),
+          );
+          await mailParked.promise;
+          router.handleMessage(
+            ws,
+            JSON.stringify({
+              type: "agent.deploy.ack",
+              agentAddress: TEST_IDENTITY.workflowRunAddress,
+              publicKey: "a".repeat(64),
+            }),
+          );
+          await publicationFinished.promise;
+          const committed = scenario !== "rolled back publication";
+          expect(publicKey === null).toBe(!committed);
+          expect(initializationLeaseId === null).toBe(committed);
+          if (scenario === "cancelled after commit") {
+            controller.abort(new Error("disconnect after commit"));
+            expect(dropped).toEqual([]);
+            publicationResponse.resolve(true);
+            expect(await deployment).toMatchObject({ publicKey });
+          } else {
+            publicationResponse.reject(new Error("publication response lost"));
+            expect(await deployment).toMatchObject({ leakedAgent: true });
+            expect(dropped).toEqual([]);
+            const allocation: SidecarAllocation = {
+              id: TEST_TARGET.allocationId,
+              generation: TEST_TARGET.generation,
+              anchorRunId: TEST_IDENTITY.anchorRunId,
+              tenantId: TEST_IDENTITY.tenantId,
+              provisionerId: "test",
+              provisionerApiVersion: 1,
+              provisionerBindingFingerprint: "test:v1",
+              status: "allocated",
+              ensureAttempts: 1,
+              destroyAttempts: 0,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              ...(initializationLeaseId !== null
+                ? { initializationLeaseId }
+                : {}),
+            };
+            if (holdRecoveryRead) {
+              const expired = new AbortController();
+              const recovering = recoverSenderDeploy({
+                db,
+                sidecarRouter: router,
+                allocation,
+                reconciliation: {
+                  leaseId: "expired-recovery",
+                  signal: expired.signal,
+                },
+              });
+              await recoveryRead.promise;
+              expired.abort(new Error("recovery lease lost"));
+              recoveryResponse.resolve(true);
+              await expect(recovering).rejects.toThrow("recovery lease lost");
+              expect(dropped).toEqual([]);
+              expect(() =>
+                router.noteSenderDeployStarted(
+                  TEST_IDENTITY.workflowRunAddress,
+                  {
+                    ...TEST_TARGET,
+                    leaseId: "must-still-be-pending",
+                  },
+                ),
+              ).toThrow("unresolved attempt");
+              holdRecoveryRead = false;
+            }
+            await recoverSenderDeploy({
+              db,
+              sidecarRouter: router,
+              allocation,
+              reconciliation: {
+                leaseId: "recovery",
+                signal: new AbortController().signal,
+              },
+            });
+            if (!committed) {
+              expect(dropped).toEqual([]);
+              router.fenceAllocation(
+                TEST_TARGET.allocationId,
+                TEST_TARGET.generation + 1,
+              );
+            }
+          }
+          await tick();
+          const frames: unknown[] = ws.sent.map((data) => JSON.parse(data));
+          expect(
+            frames.filter(
+              (frame) =>
+                typeof frame === "object" &&
+                frame !== null &&
+                "type" in frame &&
+                frame.type === "mail.inbound",
+            ),
+          ).toHaveLength(committed ? 1 : 0);
+          expect(dropped).toHaveLength(committed ? 0 : 1);
+        } finally {
+          publicationResponse.resolve(true);
+          recoveryResponse.resolve(true);
+          router.handleClose(ws);
+        }
+      });
+    }
+
+    for (const reserve of [true, false]) {
+      test(`prepared deploy persists its attempt through the send gate (reservation=${String(reserve)})`, async () => {
+        const writes: Record<string, unknown>[] = [];
+        let selections = 0;
+        const tx = {
+          select: () => ({
+            from: () => ({
+              where: () => ({
+                for: async () => {
+                  selections += 1;
+                  return reserve ? [{ id: "alloc-test", publicKey: null }] : [];
+                },
+              }),
+            }),
+          }),
+          update: () => ({
+            set: (values: Record<string, unknown>) => {
+              writes.push(values);
+              return {
+                where: () => ({
+                  returning: async () => [{ id: ANCHOR_RUN_ID }],
+                }),
+              };
+            },
+          }),
+        };
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- transaction double records the narrow initialization writes; real atomicity is covered by DB tests
+        const db = {
+          ...CAPTURING_DB,
+          transaction: async (run: (handle: typeof tx) => Promise<unknown>) =>
+            run(tx),
+        } as unknown as DB["db"];
+        const allocationRouter = createMockAllocationRouter();
+        allocationRouter.sendAgentDeployToAllocation = async (
+          _target,
+          _address,
+          _config,
+          _workflow,
+          _signal,
+          beforeSend,
+        ) => {
+          expect(beforeSend).toBeDefined();
+          try {
+            await beforeSend?.();
+          } catch (cause) {
+            throw Object.assign(new Error("reservation failed", { cause }), {
+              frameSent: false,
+            });
+          }
+          expect(writes).toEqual([
+            { publicKey: null },
+            { initializationLeaseId: "lease-test" },
+          ]);
+          return { publicKey: "completed-key" };
+        };
+        const preparedRepoStore = createMockRepoStore();
+        preparedRepoStore.repoStore.resolveRef = async () => null;
+        const service = createSessionService({
+          sidecarRouter: createMockRouter(),
+          sidecarAllocationRouter: allocationRouter,
+          agentRepoStore: preparedRepoStore,
+          db,
+        });
+        const { approval, projection, closure } = await makeApproveOutput([
+          "inference.source:anthropic:mock-model",
+        ]);
+        if (!approval.ok) throw new Error("expected approval");
+        capturedAnchorUpdate = undefined;
+        const result = await service
+          .deployPreparedCodeSourcedWorkflow({
+            tenantId: TENANT,
+            anchorRunId: ANCHOR_RUN_ID,
+            deploymentDomain: DEPLOYMENT_DOMAIN,
+            agentAddress: DEPLOY_ADDRESS,
+            source: SOURCE,
+            approved: { approval, projection, closure },
+            config: CONFIG,
+            allocationTarget: { allocationId: "alloc-test", generation: 1 },
+            reconciliation: {
+              leaseId: "lease-test",
+              signal: new AbortController().signal,
+            },
+            credentialCipher: createNoopCredentialCipher(),
+          })
+          .catch((error: unknown) => error);
+        if (reserve) {
+          expect(result).toMatchObject({ publicKey: "completed-key" });
+          expect(selections).toBe(3);
+          expect(writes.at(-1)).toEqual({ initializationLeaseId: null });
+          expect(writes[2]).toMatchObject({ publicKey: "completed-key" });
+        } else {
+          expect(result).toMatchObject({ leakedAgent: false });
+          expect(writes).toEqual([]);
+          // A rejected reservation must not clear an existing same-token marker.
+          expect(capturedAnchorUpdate).toBeUndefined();
+        }
+      });
+    }
+
+    test.each(["none", "reservation", "rollback"] as const)(
+      "handles unsent rollback with a lost %s response",
+      async (lostResponse) => {
+        const writes: Record<string, unknown>[] = [];
+        let publicKey: string | null = "previous-key";
+        let transactions = 0;
+        const tx = {
+          select: () => ({
+            from: () => ({
+              where: () => ({
+                for: async () => [{ id: "alloc-test", publicKey }],
+              }),
+            }),
+          }),
+          update: () => ({
+            set: (values: Record<string, unknown>) => {
+              writes.push(values);
+              if ("publicKey" in values) {
+                if (
+                  values.publicKey !== null &&
+                  typeof values.publicKey !== "string"
+                )
+                  throw new Error("Invalid key write");
+                publicKey = values.publicKey;
+              }
+              return {
+                where: () => ({
+                  returning: async () => [{ id: ANCHOR_RUN_ID }],
+                }),
+              };
+            },
+          }),
+        };
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- transaction double records the narrow initialization writes; real atomicity is covered by DB tests
+        const db = {
+          ...CAPTURING_DB,
+          query: {
+            ...CAPTURING_DB.query,
+            workflowRun: { findFirst: async () => ({ publicKey }) },
+          },
+          transaction: async (run: (handle: typeof tx) => Promise<unknown>) => {
+            transactions += 1;
+            const result = await run(tx);
+            if (
+              (transactions === 1 && lostResponse === "reservation") ||
+              (transactions === 2 && lostResponse === "rollback")
+            )
+              throw new Error("Transaction response lost after commit");
+            return result;
+          },
+        } as unknown as DB["db"];
+        const controller = new AbortController();
+        const allocationRouter = createMockAllocationRouter();
+        allocationRouter.sendAgentDeployToAllocation = async (
+          _target,
+          _address,
+          _config,
+          _workflow,
+          _signal,
+          beforeSend,
+        ) => {
+          expect(beforeSend).toBeDefined();
+          try {
+            await beforeSend?.();
+          } catch (cause) {
+            throw Object.assign(new Error("reservation failed", { cause }), {
+              frameSent: false,
+            });
+          }
+          // The reservation committed above; only now does the connection drop,
+          // before the frame reaches the wire.
+          controller.abort(new Error("sidecar disconnected before send"));
+          throw Object.assign(new Error("connection lost before send"), {
+            frameSent: false,
+          });
+        };
+        const preparedRepoStore = createMockRepoStore();
+        preparedRepoStore.repoStore.resolveRef = async () => null;
+        const router = createMockRouter();
+        const settlements: unknown[] = [];
+        router.noteSenderDeploySettled = (_sender, outcome) =>
+          settlements.push(outcome);
+        const service = createSessionService({
+          sidecarRouter: router,
+          sidecarAllocationRouter: allocationRouter,
+          agentRepoStore: preparedRepoStore,
+          db,
+        });
+        const { approval, projection, closure } = await makeApproveOutput([
+          "inference.source:anthropic:mock-model",
+        ]);
+        if (!approval.ok) throw new Error("expected approval");
+        const result = await service
+          .deployPreparedCodeSourcedWorkflow({
+            tenantId: TENANT,
+            anchorRunId: ANCHOR_RUN_ID,
+            deploymentDomain: DEPLOYMENT_DOMAIN,
+            agentAddress: DEPLOY_ADDRESS,
+            source: SOURCE,
+            approved: { approval, projection, closure },
+            config: CONFIG,
+            allocationTarget: { allocationId: "alloc-test", generation: 1 },
+            reconciliation: {
+              leaseId: "lease-test",
+              signal: controller.signal,
+            },
+            credentialCipher: createNoopCredentialCipher(),
+          })
+          .catch((error: unknown) => error);
+        expect(result).toMatchObject({ leakedAgent: false });
+        if (lostResponse === "reservation") {
+          expect(writes).toEqual([
+            { publicKey: null },
+            { initializationLeaseId: "lease-test" },
+          ]);
+          expect(settlements).toEqual([]);
+          return;
+        }
+        expect(writes).toEqual([
+          { publicKey: null },
+          { initializationLeaseId: "lease-test" },
+          { publicKey: "previous-key" },
+          { initializationLeaseId: null },
+        ]);
+        if (lostResponse === "rollback") {
+          expect(settlements).toEqual([]);
+          await recoverSenderDeploy({
+            db,
+            sidecarRouter: router,
+            allocation: {
+              id: "alloc-test",
+              anchorRunId: ANCHOR_RUN_ID,
+              tenantId: TENANT,
+              generation: 1,
+              status: "allocated",
+              provisionerId: "test",
+              provisionerApiVersion: 1,
+              provisionerBindingFingerprint: "test:v1",
+              ensureAttempts: 0,
+              destroyAttempts: 0,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+            reconciliation: {
+              leaseId: "recovery",
+              signal: new AbortController().signal,
+            },
+          });
+        }
+        expect(settlements).toEqual([{ recorded: "previous-key" }]);
+      },
+    );
+
     test("does not restore, deploy, or publish after cancellation while building a restore pack", async () => {
       const controller = new AbortController();
       const cancelled = new Error("Initialization cancelled");
@@ -1425,7 +1966,7 @@ describe("deployCodeSourcedWorkflow", () => {
       expect(capturedAnchorUpdate).toBeUndefined();
     });
 
-    test("a cancelled deploy cannot publish its late key or settle a newer attempt", async () => {
+    test("a cancelled deploy cannot publish its late key or declare definitive failure", async () => {
       const controller = new AbortController();
       const cancelled = new Error("Initialization cancelled");
       const allocationRouter = createMockAllocationRouter();
@@ -1439,7 +1980,6 @@ describe("deployCodeSourcedWorkflow", () => {
       ) => {
         expect(signal).toBe(controller.signal);
         controller.abort(cancelled);
-        sidecarRouter.noteSenderDeployStarted(DEPLOY_ADDRESS);
         return { publicKey: "late-public-key" };
       };
       const preparedRepoStore = createMockRepoStore();
@@ -1481,8 +2021,6 @@ describe("deployCodeSourcedWorkflow", () => {
       expect(error.cause).toBe(cancelled);
       expect(capturedAnchorUpdate).toBeUndefined();
       expect(sidecarRouter.calls.map((call) => call.method)).toEqual([
-        "noteSenderDeployStarted",
-        "noteSenderDeploySettled",
         "noteSenderDeployStarted",
       ]);
     });

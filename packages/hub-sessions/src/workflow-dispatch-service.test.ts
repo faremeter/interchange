@@ -133,49 +133,55 @@ describe("createWorkflowDispatchService", () => {
     ]);
   });
 
-  test("retries without routing while an allocation is not ready", async () => {
-    const retries: unknown[] = [];
-    let didClaim = false;
-    const service = createWorkflowDispatchService({
-      dispatchStore: fakeDispatchStore({
-        claimNextPending: async () => {
-          if (didClaim) return null;
-          didClaim = true;
-          return dispatch({ attemptCount: 2 });
+  for (const reason of ["connecting", "initializing"] as const) {
+    test(`retries without routing while an allocation is ${reason}`, async () => {
+      const retries: unknown[] = [];
+      let didClaim = false;
+      const service = createWorkflowDispatchService({
+        dispatchStore: fakeDispatchStore({
+          claimNextPending: async () => {
+            if (didClaim) return null;
+            didClaim = true;
+            return dispatch({ attemptCount: 2 });
+          },
+          scheduleRetry: async (args) => {
+            retries.push(args);
+            return dispatch();
+          },
+        }),
+        allocationStore: fakeAllocationStore({
+          findByAnchorRunId: async () =>
+            allocation(
+              reason === "connecting"
+                ? { connectDeadline: new Date(NOW.getTime() + 60_000) }
+                : { initializationLeaseId: "old-initializer" },
+            ),
+        }),
+        router: {
+          sendSignalDeliverToAllocation: async () => {
+            throw new Error("must not route");
+          },
+          sendWorkflowRunDispatchToAllocation: async () => {
+            throw new Error("must not route");
+          },
         },
-        scheduleRetry: async (args) => {
-          retries.push(args);
-          return dispatch();
-        },
-      }),
-      allocationStore: fakeAllocationStore({
-        findByAnchorRunId: async () =>
-          allocation({ connectDeadline: new Date(NOW.getTime() + 60_000) }),
-      }),
-      router: {
-        sendSignalDeliverToAllocation: async () => {
-          throw new Error("must not route");
-        },
-        sendWorkflowRunDispatchToAllocation: async () => {
-          throw new Error("must not route");
-        },
-      },
-      resolveAnchorAddress: async () => "workflow@tenant.example",
-      createLeaseId: () => "lease-1",
-      retryDelayMs: () => 1_000,
-      now: () => NOW,
-    });
+        resolveAnchorAddress: async () => "workflow@tenant.example",
+        createLeaseId: () => "lease-1",
+        retryDelayMs: () => 1_000,
+        now: () => NOW,
+      });
 
-    expect(await service.reconcileUntilIdle()).toBe(1);
-    expect(retries).toEqual([
-      expect.objectContaining({
-        dispatchId: "dispatch-1",
-        expectedLeaseId: "lease-1",
-        code: "allocation_not_ready",
-        nextAttemptAt: new Date(NOW.getTime() + 1_000),
-      }),
-    ]);
-  });
+      expect(await service.reconcileUntilIdle()).toBe(1);
+      expect(retries).toEqual([
+        expect.objectContaining({
+          dispatchId: "dispatch-1",
+          expectedLeaseId: "lease-1",
+          code: "allocation_not_ready",
+          nextAttemptAt: new Date(NOW.getTime() + 1_000),
+        }),
+      ]);
+    });
+  }
 
   test("delegates inbox acknowledgement to the atomically fenced store", async () => {
     const acknowledgements: unknown[] = [];
