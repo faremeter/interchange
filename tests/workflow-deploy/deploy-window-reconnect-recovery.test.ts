@@ -9,11 +9,22 @@
 // sidecar's real `hub-link` allocation-authenticated reconnect path.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 
 import { isRunAddress } from "@intx/types";
+import { createSidecarAllocationStore } from "@intx/db";
+import {
+  createSidecarAllocationReconciler,
+  createSidecarPluginRegistry,
+  restoreWorkflowRunToAllocation,
+} from "@intx/hub-sessions";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
-import { tenant as tenantTable } from "@intx/db/schema";
+import {
+  sidecar as sidecarTable,
+  tenant as tenantTable,
+} from "@intx/db/schema";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -56,6 +67,7 @@ const DEFINITION_ASSET_ID = "ast_deploy_window_recovery_wf";
 let env: DeployFlowEnv;
 let h: TestDb;
 let deploymentMailAddress: string;
+let deploymentConfig: HarnessConfig;
 
 beforeAll(async () => {
   if (!harnessDbEnvAvailable()) return;
@@ -129,6 +141,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         `mail.address:${deploymentMailAddress}`,
         `mail.send:${DEPLOYMENT_DOMAIN}`,
       ]);
+      deploymentConfig = config;
 
       const entryModule = singleStepAgentEntry({
         stepId: STEP_ID,
@@ -254,5 +267,120 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(terminal.type).toBe("RunCompleted");
     }, 240_000);
+
+    test("an outstanding deploy preserves the live worker's files before fenced cleanup", async () => {
+      const router = env.hub.router;
+      const target = env.hub.prepareAllocationIdentity(
+        DEPLOYMENT_ID,
+        deploymentMailAddress,
+      );
+      const store = createSidecarAllocationStore(h.db);
+      await h.db.insert(sidecarTable).values({
+        id: SIDECAR_ID,
+        tokenHashSha256: new Uint8Array(32).fill(7),
+      });
+      await store.createAdopted({
+        id: target.allocationId,
+        anchorRunId: DEPLOYMENT_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "test",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "test:v1",
+        generation: target.generation,
+        sidecarId: SIDECAR_ID,
+        connectDeadline: new Date(Date.now() + 60_000),
+      });
+      const leaseId = "interrupted-initialization";
+      await store.claimNextReconcilable({ leaseId, leaseDurationMs: 60_000 });
+      expect(
+        await store.beginInitialization({
+          ...target,
+          anchorRunId: DEPLOYMENT_ID,
+          tenantId: TENANT_ID,
+          leaseId,
+          signal: new AbortController().signal,
+        }),
+      ).not.toBeNull();
+
+      const deployment = env.deployments.get(DEPLOYMENT_ID);
+      if (deployment === undefined)
+        throw new Error("Missing deployed workflow");
+      const runDir = path.join(
+        env.sidecar.dataDir,
+        "workflow-runs",
+        deployment.workflowRunRepoId.id,
+      );
+      const recordPath = path.join(runDir, "deployment.json");
+      const record = await fs.readFile(recordPath, "utf8");
+      const sentinelPath = path.join(runDir, "restore-must-not-delete.txt");
+      await fs.writeFile(sentinelPath, "live workflow state");
+
+      // A duplicate-deploy rejection clears the router's marker just as a late
+      // deploy timeout does, while this real supervisor remains alive. The unit
+      // regression exercises the cancellation/timeout ordering itself.
+      await expect(
+        router.sendAgentDeployToAllocation(
+          target,
+          deploymentMailAddress,
+          deploymentConfig,
+          {
+            sources: {},
+            approvedWireHash: "a".repeat(64),
+            sourceRef: {
+              source: { kind: "registry", registry: "npm" },
+              closure: { schemaVersion: "1", topLevel: [], entries: [] },
+            },
+          },
+        ),
+      ).rejects.toThrow("already deployed");
+      expect(await router.isAllocatedWorkflowActive(target)).toBe(false);
+      expect(await router.isAllocatedSidecarReady(target)).toBe(true);
+      await store.parkReconciliation(target.allocationId, leaseId, {
+        kind: "retry-after-error",
+        notBefore: new Date(0),
+      });
+
+      let restores = 0;
+      const reconciler = createSidecarAllocationReconciler({
+        allocationStore: store,
+        router,
+        hubWebSocketUrl: "ws://localhost/unused",
+        plugins: createSidecarPluginRegistry({
+          provisioners: [
+            {
+              id: "test",
+              apiVersion: 1,
+              bindingFingerprint: "test:v1",
+              capabilities: [],
+              async ensure() {
+                throw new Error("must not ensure");
+              },
+              async destroy() {
+                throw new Error("cleanup has not been claimed yet");
+              },
+            },
+          ],
+        }),
+        onReady: async (_allocation, { signal }) => {
+          restores += 1;
+          await restoreWorkflowRunToAllocation({
+            agentRepoStore: env.hub.agentRepoStore,
+            allocationRouter: router,
+            allocationTarget: target,
+            agentAddress: deploymentMailAddress,
+            signal,
+          });
+        },
+      });
+      expect(await reconciler.reconcileNext()).toBe(true);
+      expect(restores).toBe(0);
+      expect((await store.findById(target.allocationId))?.status).toBe(
+        "releasing",
+      );
+      expect(await fs.readFile(recordPath, "utf8")).toBe(record);
+      expect(await fs.readFile(sentinelPath, "utf8")).toBe(
+        "live workflow state",
+      );
+    });
   },
 );

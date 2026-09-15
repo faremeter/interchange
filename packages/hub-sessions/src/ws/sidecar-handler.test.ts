@@ -598,6 +598,11 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
   const RECIPIENT = "run_recipient@exclusive";
   const RAW_MESSAGE = "aGVsbG8=";
   const KEY = "ab".repeat(32);
+  const ATTEMPT = {
+    allocationId: "alloc-sender",
+    generation: 1,
+    leaseId: "sender-deploy",
+  };
 
   const raceIdentities: Record<
     string,
@@ -706,7 +711,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       expect(address).toBe(SENDER);
       resolveCalls += 1;
       if (resolveCalls === 1) {
-        router.noteSenderDeploySettled(SENDER, { recorded: KEY });
+        router.noteSenderDeploySettled(ATTEMPT, { recorded: KEY });
         return null;
       }
       return KEY;
@@ -718,7 +723,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     // Establish the in-flight-deploy precondition the narrowed park gate requires:
     // mark the allocated key-record mid-flight so a null resolve parks rather than
     // delivering keyless.
-    router.noteSenderDeployStarted(SENDER);
+    router.noteSenderDeployStarted(SENDER, ATTEMPT);
     sendMail(router, senderWs);
     const inbound = await waitForFrame(
       recipientWs,
@@ -760,13 +765,13 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     // Establish the in-flight-deploy precondition the narrowed park gate requires:
     // mark the allocated key-record mid-flight so a null resolve parks rather than
     // delivering keyless.
-    router.noteSenderDeployStarted(SENDER);
+    router.noteSenderDeployStarted(SENDER, ATTEMPT);
     sendMail(router, senderWs);
     await tick();
     // The mail is parked, not delivered.
     expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
 
-    router.noteSenderDeploySettled(SENDER, { failed: "deploy timed out" });
+    router.noteSenderDeploySettled(ATTEMPT, { failed: "deploy timed out" });
     await tick();
 
     // The parked mail is surfaced for external relay rather than hung forever,
@@ -775,6 +780,117 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       { rawMessage: RAW_MESSAGE, recipients: [RECIPIENT] },
     ]);
     expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
+  });
+
+  for (const generation of [1, 2]) {
+    test(`ignores old callbacks after recovery starts another attempt at generation ${String(generation)}`, async () => {
+      const router = createInterlockRouter(async () => null);
+      const senderWs = await connectAs(router, "sc-sender", SENDER);
+      const recipientWs = await connectAs(router, "sc-recipient", RECIPIENT);
+      const dropped: unknown[] = [];
+      router.events.on("mail.outbound.undelivered", (mail) => {
+        dropped.push(mail);
+      });
+      router.noteSenderDeployStarted(SENDER, ATTEMPT);
+      sendMail(router, senderWs);
+      await tick();
+      router.noteSenderDeploySettled(
+        { allocationId: ATTEMPT.allocationId, generation: ATTEMPT.generation },
+        { failed: "previous initialization did not commit" },
+      );
+      expect(dropped).toHaveLength(1);
+
+      const next = { ...ATTEMPT, generation, leaseId: "next-initializer" };
+      router.noteSenderDeployStarted(SENDER, next);
+      sendMail(router, senderWs);
+      await tick();
+      router.noteSenderDeploySettled(ATTEMPT, { recorded: KEY });
+      router.noteSenderDeploySettled(ATTEMPT, { failed: "late failure" });
+      router.noteSenderDeploySettled(SENDER, { recorded: KEY });
+      await tick();
+      expect(dropped).toHaveLength(1);
+      expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
+
+      router.noteSenderDeploySettled(next, { recorded: KEY });
+      await tick();
+      expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(1);
+      expect(dropped).toHaveLength(1);
+    });
+  }
+
+  test("a newer attempt cannot capture a completed attempt's scheduled mail delivery", async () => {
+    const router = createInterlockRouter(async () => null);
+    const senderWs = await connectAs(router, "sc-sender", SENDER);
+    const recipientWs = await connectAs(router, "sc-recipient", RECIPIENT);
+    router.noteSenderDeployStarted(SENDER, ATTEMPT);
+    sendMail(router, senderWs);
+    await tick();
+
+    router.noteSenderDeploySettled(ATTEMPT, { recorded: KEY });
+    const next = { ...ATTEMPT, leaseId: "next-initializer" };
+    router.noteSenderDeployStarted(SENDER, next);
+    sendMail(router, senderWs);
+    await tick();
+    expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(1);
+    expect(
+      framesOfType(recipientWs, "run.grants")[0]?.senderIdentities,
+    ).toEqual([{ address: SENDER, publicKey: KEY }]);
+
+    const nextKey = "cd".repeat(32);
+    router.noteSenderDeploySettled(next, { recorded: nextKey });
+    await tick();
+    expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(2);
+    expect(
+      framesOfType(recipientWs, "run.grants")[1]?.senderIdentities,
+    ).toEqual([{ address: SENDER, publicKey: nextKey }]);
+  });
+
+  test("rebuilding an advanced fence settles an old attempt after a lost cleanup response", async () => {
+    const router = createInterlockRouter(async () => null);
+    const senderWs = await connectAs(router, "sc-sender", SENDER);
+    const dropped: unknown[] = [];
+    router.events.on("mail.outbound.undelivered", (mail) => {
+      dropped.push(mail);
+    });
+    router.noteSenderDeployStarted(SENDER, ATTEMPT);
+    sendMail(router, senderWs);
+    await tick();
+    router.fenceAllocation(ATTEMPT.allocationId, 2);
+    expect(dropped).toHaveLength(1);
+    expect(() =>
+      router.noteSenderDeployStarted(SENDER, {
+        ...ATTEMPT,
+        generation: 2,
+        leaseId: "replacement",
+      }),
+    ).not.toThrow();
+    router.noteSenderDeploySettled(
+      { ...ATTEMPT, generation: 2 },
+      { failed: "test cleanup" },
+    );
+  });
+
+  test("a failure notification can start a new attempt without the old settlement clearing it", async () => {
+    const router = createInterlockRouter(async () => null);
+    const senderWs = await connectAs(router, "sc-sender", SENDER);
+    const recipientWs = await connectAs(router, "sc-recipient", RECIPIENT);
+    const next = { ...ATTEMPT, leaseId: "next-initializer" };
+    router.events.on("mail.outbound.undelivered", () => {
+      router.noteSenderDeployStarted(SENDER, next);
+    });
+    router.noteSenderDeployStarted(SENDER, ATTEMPT);
+    sendMail(router, senderWs);
+    await tick();
+    router.noteSenderDeploySettled(
+      { allocationId: ATTEMPT.allocationId, generation: ATTEMPT.generation },
+      { failed: "previous initialization did not commit" },
+    );
+    sendMail(router, senderWs);
+    await tick();
+    expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
+    router.noteSenderDeploySettled(next, { recorded: KEY });
+    await tick();
+    expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(1);
   });
 
   test("a settle only wakes mail parked under a byte-identical sender address", async () => {
@@ -796,7 +912,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     // Establish the in-flight-deploy precondition the narrowed park gate requires:
     // mark the allocated key-record mid-flight so a null resolve parks rather than
     // delivering keyless.
-    router.noteSenderDeployStarted(SENDER);
+    router.noteSenderDeployStarted(SENDER, ATTEMPT);
     sendMail(router, senderWs);
     await tick();
 
@@ -809,7 +925,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     expect(framesOfType(recipientWs, "mail.inbound")).toHaveLength(0);
 
     // The byte-identical settle wakes it and it delivers with the key.
-    router.noteSenderDeploySettled(SENDER, { recorded: KEY });
+    router.noteSenderDeploySettled(ATTEMPT, { recorded: KEY });
     const inbound = await waitForFrame(
       recipientWs,
       (f) => f.type === "mail.inbound" && f.authenticatedSender === SENDER,
@@ -878,7 +994,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
 
     // A deploy IS in flight for the sender, so the run-sender park branch would
     // trigger if it were reached; the external-only recipient short-circuits it.
-    router.noteSenderDeployStarted(SENDER);
+    router.noteSenderDeployStarted(SENDER, ATTEMPT);
     router.handleMessage(
       senderWs,
       JSON.stringify({

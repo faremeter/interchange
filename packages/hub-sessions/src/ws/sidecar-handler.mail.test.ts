@@ -795,7 +795,10 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     // The mail is held only while a key-record settle is guaranteed to arrive.
     // Mark the sender's deploy in flight so an unresolvable key parks rather than
     // delivering keyless.
-    router.noteSenderDeployStarted(TEST_IDENTITY.workflowRunAddress);
+    router.noteSenderDeployStarted(TEST_IDENTITY.workflowRunAddress, {
+      ...TEST_TARGET,
+      leaseId: "sender-deploy",
+    });
     router.handleMessage(
       ws,
       JSON.stringify({

@@ -45,6 +45,7 @@ export const sidecarAllocation = pgTable(
     nextAttemptAt: timestamp("next_attempt_at"),
     reconciliationLeaseId: text("reconciliation_lease_id"),
     reconciliationLeaseExpiresAt: timestamp("reconciliation_lease_expires_at"),
+    initializationLeaseId: text("initialization_lease_id"),
     ensureAttempts: integer("ensure_attempts").notNull().default(0),
     destroyAttempts: integer("destroy_attempts").notNull().default(0),
     connectDeadline: timestamp("connect_deadline"),
@@ -74,6 +75,10 @@ export const sidecarAllocation = pgTable(
     check(
       "sidecar_allocation_accepted_generation_check",
       sql`${t.ensureAcceptedGeneration} is null or ${t.ensureAcceptedGeneration} <= ${t.generation}`,
+    ),
+    check(
+      "sidecar_allocation_initialization_check",
+      sql`${t.initializationLeaseId} is null or (${t.status} = 'allocated' and ${t.ensureAcceptedGeneration} is not null and ${t.ensureAcceptedGeneration} = ${t.generation})`,
     ),
   ],
 );

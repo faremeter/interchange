@@ -34,6 +34,40 @@ function lastFrame(ws: { sent: string[] }): Record<string, unknown> {
 }
 
 describe("SidecarRouter allocation initialization cancellation", () => {
+  for (const change of ["cancel", "disconnect", "reject"] as const) {
+    test(`does not send after ${change} while persisting the deployment attempt`, async () => {
+      const controller = new AbortController();
+      const router = createAllocatedRouter();
+      const ws = await connectAllocated(router);
+      const entered = Promise.withResolvers<boolean>();
+      const release = Promise.withResolvers<boolean>();
+      const before = [...ws.sent];
+      const sent = router
+        .sendAgentDeployToAllocation(
+          TEST_TARGET,
+          TEST_IDENTITY.workflowRunAddress,
+          TEST_CONFIG,
+          undefined,
+          controller.signal,
+          async () => {
+            entered.resolve(true);
+            await release.promise;
+          },
+        )
+        .catch((error: unknown) => error);
+      await entered.promise;
+      expect(ws.sent).toEqual(before);
+      if (change === "cancel") controller.abort(new Error("cancelled"));
+      if (change === "disconnect") router.handleClose(ws);
+      if (change === "reject")
+        release.reject(new Error("commit response lost"));
+      else release.resolve(true);
+      expect(await sent).toMatchObject({ frameSent: false });
+      expect(ws.sent).toEqual(before);
+      expect(router.getRoutableAddresses()).toEqual([]);
+    });
+  }
+
   for (const operation of ["deploy", "restore"] as const) {
     test(`does not send ${operation} frames after cancellation during identity validation`, async () => {
       const controller = new AbortController();
@@ -68,7 +102,11 @@ describe("SidecarRouter allocation initialization cancellation", () => {
             );
       const error = await sending.catch((cause: unknown) => cause);
 
-      expect(error).toBe(cancelled);
+      if (operation === "deploy") {
+        expect(error).toMatchObject({ frameSent: false, cause: cancelled });
+      } else {
+        expect(error).toBe(cancelled);
+      }
       expect(ws.sent).toEqual(previousFrames);
       expect(router.getRoutableAddresses()).toEqual([]);
     });

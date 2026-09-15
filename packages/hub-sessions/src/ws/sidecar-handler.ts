@@ -69,8 +69,9 @@ export interface DeployFrameFailure extends Error {
 function deployFrameFailure(
   message: string,
   frameSent: boolean,
+  cause?: unknown,
 ): DeployFrameFailure {
-  return Object.assign(new Error(message), { frameSent });
+  return Object.assign(new Error(message, { cause }), { frameSent });
 }
 
 export function isDeployFrameFailure(err: unknown): err is DeployFrameFailure {
@@ -193,6 +194,10 @@ export type SenderDeploySettledOutcome =
   | { recorded: string }
   | { failed: string };
 
+export type AllocatedSenderDeployAttempt = AllocatedSidecarTarget & {
+  readonly leaseId: string;
+};
+
 export type SidecarRouter = {
   handleOpen(ws: WsHandle): void;
   handleMessage(ws: WsHandle, data: string): void;
@@ -241,14 +246,13 @@ export type SidecarRouter = {
    * sender parked while its public key was not yet recorded. A `recorded`
    * outcome wakes the parked mail and re-drives its delivery now that the key
    * co-delivers; a `failed` outcome drains it to `mail.outbound.undelivered`.
-   * Called from BOTH durable key-record sites (the non-allocated deploy-ack
-   * projection and the allocated anchor-key update) immediately after the write.
-   * The `address` MUST be byte-identical to the sender address the mail was sent
-   * under, or no parked entry matches. Idempotent by sender: a second settle, or
-   * a settle after the TTL already drained the mail, is a no-op.
+   * Allocated callbacks name their exact attempt; recovery may settle the
+   * previous attempt by generation after claiming its reconciliation lease.
+   * An address-only settlement belongs to a non-allocated deployment and cannot
+   * settle an allocated attempt. Stale or repeated settlements are no-ops.
    */
   noteSenderDeploySettled(
-    address: string,
+    sender: string | AllocatedSidecarTarget | AllocatedSenderDeployAttempt,
     outcome: SenderDeploySettledOutcome,
   ): void;
   /**
@@ -256,10 +260,13 @@ export type SidecarRouter = {
    * emit and its anchor-key update. An allocated run records its key later than
    * the deploy ack clears `pendingDeploys`, so this marker covers the allocated
    * pre-ack window that `pendingDeploys` alone under-covers. `noteSenderDeploySettled`
-   * clears it on both the recorded and failed outcomes, keeping the start/settle
-   * bracket balanced.
+   * clears it only when the durable outcome is known. Cancellation leaves it
+   * pending for recovery, so a lost publication response cannot discard mail.
    */
-  noteSenderDeployStarted(address: string): void;
+  noteSenderDeployStarted(
+    address: string,
+    attempt: AllocatedSenderDeployAttempt,
+  ): void;
   /**
    * Returns the current connector-thread state for the named agent, or
    * `null` if the agent has no active connector thread (or if the
@@ -379,6 +386,7 @@ export type SidecarAllocationRouter = {
     config: HarnessConfig,
     workflow?: AgentDeployFrame["workflow"],
     signal?: AbortSignal,
+    beforeSend?: () => Promise<void>,
   ): Promise<{ publicKey: string }>;
   sendPackToAllocation(
     target: AllocatedSidecarTarget,
@@ -571,7 +579,10 @@ export function createSidecarRouter(
   // so pendingDeploys alone under-covers the allocated pre-ack window. session-
   // service brackets this marker across its deploy try/catch: set before the
   // deploy emit, cleared by noteSenderDeploySettled on record or failure.
-  const allocatedKeyRecordInFlight = new Set<string>();
+  const allocatedKeyRecordInFlight = new Map<
+    string,
+    AllocatedSenderDeployAttempt
+  >();
   // agentAddress → queued frames for disconnected agents awaiting reconnect
   type DisconnectedAgent = {
     queue: HubFrame[];
@@ -1674,15 +1685,42 @@ export function createSidecarRouter(
     logger.warn`Dropping ${String(entries.length)} deferred message(s) from ${authenticatedSender}: ${reason}`;
   }
 
-  function noteSenderDeployStarted(address: string): void {
-    allocatedKeyRecordInFlight.add(address);
+  function noteSenderDeployStarted(
+    address: string,
+    attempt: AllocatedSenderDeployAttempt,
+  ): void {
+    if (allocatedKeyRecordInFlight.has(address)) {
+      throw new Error(`Sender deployment ${address} has an unresolved attempt`);
+    }
+    allocatedKeyRecordInFlight.set(address, attempt);
   }
 
   function noteSenderDeploySettled(
+    sender: string | AllocatedSidecarTarget | AllocatedSenderDeployAttempt,
+    outcome: SenderDeploySettledOutcome,
+  ): void {
+    if (typeof sender !== "string") {
+      for (const [address, attempt] of [...allocatedKeyRecordInFlight]) {
+        if (
+          attempt.allocationId !== sender.allocationId ||
+          attempt.generation !== sender.generation ||
+          ("leaseId" in sender && attempt.leaseId !== sender.leaseId)
+        ) {
+          continue;
+        }
+        allocatedKeyRecordInFlight.delete(address);
+        settleSenderMail(address, outcome);
+      }
+      return;
+    }
+    if (allocatedKeyRecordInFlight.has(sender)) return;
+    settleSenderMail(sender, outcome);
+  }
+
+  function settleSenderMail(
     address: string,
     outcome: SenderDeploySettledOutcome,
   ): void {
-    allocatedKeyRecordInFlight.delete(address);
     if ("failed" in outcome) {
       drainDeferredSenderMail(
         address,
@@ -1692,16 +1730,16 @@ export function createSidecarRouter(
     }
     for (const entry of claimAllDeferredSenderMail(address)) {
       // Re-drive delivery as its OWN task, off the settle's stack, so delivery
-      // work never runs on the deploy-ack handler's stack or reorders against
-      // it. The re-drive re-enters handleMailOutbound; the key is recorded (the
-      // durable write happens-before this settle), so it resolves the sender key
-      // and delivers inline.
+      // work never runs on the deploy-ack handler's stack. Carry the confirmed
+      // key: another attempt may start before this task runs, and must not
+      // capture this mail or change the key that authenticates it.
       void Promise.resolve()
         .then(() =>
           handleMailOutbound(
             entry.rawMessage,
             entry.authenticatedSender,
             entry.recipients,
+            outcome.recorded,
           ),
         )
         .catch((err: unknown) => {
@@ -1794,6 +1832,7 @@ export function createSidecarRouter(
     rawMessage: string,
     authenticatedSender: string,
     recipients: string[],
+    recordedSenderKey?: string,
   ): Promise<void> {
     // A mail addressed to more than one workflow deployment would birth a
     // run per recipient from a single inbound mail. The stable runId
@@ -1828,11 +1867,20 @@ export function createSidecarRouter(
     // until the key lands rather than delivering it keyless, which a strict
     // recipient drops as an unknown sender. A parked message returns here and is
     // re-driven later by a settle or the TTL.
-    const resolution = await resolveSenderIdentitiesOrPark(
-      rawMessage,
-      authenticatedSender,
-      recipients,
-    );
+    const resolution =
+      recordedSenderKey === undefined
+        ? await resolveSenderIdentitiesOrPark(
+            rawMessage,
+            authenticatedSender,
+            recipients,
+          )
+        : {
+            deliver: true as const,
+            senderIdentities: senderIdentitiesFromKey(
+              authenticatedSender,
+              recordedSenderKey,
+            ),
+          };
     if (!resolution.deliver) return;
     const senderIdentities = resolution.senderIdentities;
 
@@ -2505,6 +2553,20 @@ export function createSidecarRouter(
     }
     allocationFences.set(allocationId, generation);
 
+    // A durable generation advance resolves unfinished initialization as failed.
+    // This also covers a cleanup transaction whose response was lost: the next
+    // reconciliation rebuilds this fence before it can start a replacement.
+    for (const attempt of [...allocatedKeyRecordInFlight.values()]) {
+      if (
+        attempt.allocationId === allocationId &&
+        attempt.generation < generation
+      ) {
+        noteSenderDeploySettled(attempt, {
+          failed: `Allocation ${allocationId} advanced beyond the deployment attempt`,
+        });
+      }
+    }
+
     const current = allocatedConnections.get(allocationId);
     if (current !== undefined && current.identity.generation !== generation) {
       handleClose(current.ws);
@@ -3137,28 +3199,54 @@ export function createSidecarRouter(
     harnessConfig: HarnessConfig,
     workflow?: AgentDeployFrame["workflow"],
     signal?: AbortSignal,
+    beforeSend?: () => Promise<void>,
   ): Promise<{ publicKey: string }> {
-    signal?.throwIfAborted();
-    const { ws, conn } = await getAllocatedConnection(target, "routing");
-    signal?.throwIfAborted();
-    if (agentAddress !== conn.identity.workflowRunAddress) {
-      throw new Error(
-        `Allocation ${target.allocationId} cannot deploy unrelated address ${agentAddress}`,
+    try {
+      signal?.throwIfAborted();
+      const { ws, conn } = await getAllocatedConnection(target, "routing");
+      signal?.throwIfAborted();
+      if (agentAddress !== conn.identity.workflowRunAddress) {
+        throw new Error(
+          `Allocation ${target.allocationId} cannot deploy unrelated address ${agentAddress}`,
+        );
+      }
+      const existing = addressIndex.get(agentAddress);
+      if (existing !== undefined && existing !== ws) {
+        throw new Error(
+          `Deployment ${agentAddress} is already routed to another sidecar`,
+        );
+      }
+      if (hubPublicKeyHex === undefined)
+        throw new Error("Hub signing key is required for agent deployment");
+      if (pendingDeploys.has(agentAddress))
+        throw new Error(
+          `Deploy already in progress for agent "${agentAddress}"`,
+        );
+      await beforeSend?.();
+      signal?.throwIfAborted();
+      if (
+        allocatedConnections.get(target.allocationId)?.ws !== ws ||
+        allocationFences.get(target.allocationId) !== target.generation
+      ) {
+        throw new Error(
+          `Allocated sidecar connection changed for allocation ${target.allocationId}`,
+        );
+      }
+      // Return without awaiting: only pre-send failures belong to this catch.
+      return sendAgentDeployOnConnection(
+        ws,
+        conn,
+        agentAddress,
+        harnessConfig,
+        workflow,
+      );
+    } catch (cause) {
+      throw deployFrameFailure(
+        cause instanceof Error ? cause.message : String(cause),
+        false,
+        cause,
       );
     }
-    const existing = addressIndex.get(agentAddress);
-    if (existing !== undefined && existing !== ws) {
-      throw new Error(
-        `Deployment ${agentAddress} is already routed to another sidecar`,
-      );
-    }
-    return sendAgentDeployOnConnection(
-      ws,
-      conn,
-      agentAddress,
-      harnessConfig,
-      workflow,
-    );
   }
 
   /**
