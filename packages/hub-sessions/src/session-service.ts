@@ -1,15 +1,16 @@
 import { type } from "arktype";
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import { getLogger } from "@intx/log";
 import {
   buildCredentialDelivery,
+  createSidecarAllocationStore,
   listAssetsForTenant,
   resolveInferenceMaterials,
   type DB,
+  type SidecarAllocation,
 } from "@intx/db";
 import {
-  sidecarAllocation as sidecarAllocationTable,
   workflowDefinition as workflowDefinitionTable,
   workflowRun as workflowRunTable,
   type WorkflowRunCredentialRefs,
@@ -61,7 +62,6 @@ import {
 } from "./asset-service";
 import type {
   AllocatedSidecarTarget,
-  SenderDeploySettledOutcome,
   SendProbeArgs,
   SidecarAllocationRouter,
   SidecarRouter,
@@ -423,6 +423,7 @@ export type SendMultiStepDeployFrameArgs = SourceRefDeployFrameArgs;
 export async function sendMultiStepDeployFrame(
   args: SendMultiStepDeployFrameArgs,
   signal?: AbortSignal,
+  beforeSend?: () => Promise<void>,
 ): Promise<{ publicKey: string }> {
   signal?.throwIfAborted();
   const workflow = {
@@ -449,6 +450,7 @@ export async function sendMultiStepDeployFrame(
     args.config,
     workflow,
     signal,
+    beforeSend,
   );
 }
 
@@ -796,18 +798,43 @@ async function emitSourceRefDeployFrame(
   args: DeployCodeSourcedWorkflowArgs & {
     allocationTarget?: AllocatedSidecarTarget;
     sidecarAllocationRouter?: SidecarAllocationRouter;
+    onUnsentInitializationCleared(publicKey: string | null): void;
   },
-  signal?: AbortSignal,
+  reconciliation: SidecarReconciliationContext,
 ): Promise<{
   publicKey: string;
   definitionId: string;
   credentialRefs?: WorkflowRunCredentialRefs;
 }> {
-  signal?.throwIfAborted();
+  const { signal, leaseId } = reconciliation;
+  signal.throwIfAborted();
   const { definitionId, sendArgs } = await prepareSourceRefDeploy(args);
-  signal?.throwIfAborted();
+  signal.throwIfAborted();
+  const allocationStore = createSidecarAllocationStore(args.db);
+  const initialization = {
+    allocationId: sendArgs.allocationTarget.allocationId,
+    generation: sendArgs.allocationTarget.generation,
+    anchorRunId: args.anchorRunId,
+    tenantId: args.tenantId,
+    leaseId,
+    signal,
+  };
+  let previousPublicKey: string | null | undefined;
   try {
-    const result = await sendMultiStepDeployFrame(sendArgs, signal);
+    const result = await sendMultiStepDeployFrame(
+      sendArgs,
+      signal,
+      async () => {
+        const reserved =
+          await allocationStore.beginInitialization(initialization);
+        if (reserved === null) {
+          throw new Error(
+            "Allocation no longer permits this initialization attempt",
+          );
+        }
+        previousPublicKey = reserved.previousPublicKey;
+      },
+    );
     return {
       publicKey: result.publicKey,
       definitionId,
@@ -817,6 +844,20 @@ async function emitSourceRefDeployFrame(
     };
   } catch (cause) {
     if (!isDeployFrameFailure(cause)) throw cause;
+    // Only a confirmed reservation gives us the key to restore. An ambiguous
+    // reservation response leaves its durable marker for conservative cleanup.
+    // A confirmed unsent attempt can roll back even after lease cancellation.
+    if (!cause.frameSent && previousPublicKey !== undefined) {
+      try {
+        const cleared = await allocationStore.clearUnsentInitialization({
+          ...initialization,
+          previousPublicKey,
+        });
+        if (cleared) args.onUnsentInitializationCleared(previousPublicKey);
+      } catch (error) {
+        logger.warn`Could not clear unsent initialization for ${initialization.allocationId}: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
     throw new SessionLaunchError("start", cause, cause.frameSent);
   }
 }
@@ -965,6 +1006,36 @@ export async function deployCodeSourcedWorkflow(
   }
 
   return { publicKey };
+}
+
+/** Resolve deferred sender mail after claiming the previous initializer's lease. */
+export async function recoverSenderDeploy(args: {
+  db: DB["db"];
+  sidecarRouter: Pick<SidecarRouter, "noteSenderDeploySettled">;
+  allocation: SidecarAllocation;
+  reconciliation: SidecarReconciliationContext;
+}): Promise<void> {
+  const { allocation, reconciliation } = args;
+  reconciliation.signal.throwIfAborted();
+  // A proven-unsent clear may still restore the previous key after this claim.
+  // Do not fail its mail using the claim's stale marker. Cleanup rechecks under
+  // the allocation lock; an advanced fence settles failure, while a rolled-back
+  // attempt is resolved by its caller or the next claim's completed key.
+  if (allocation.initializationLeaseId !== undefined) return;
+  // Claiming the lease prevents the previous attempt from publishing. Its
+  // marker and key now distinguish a committed initialization from failure,
+  // even before the worker reconnects or the old response arrives.
+  const anchor = await args.db.query.workflowRun.findFirst({
+    where: eq(workflowRunTable.id, allocation.anchorRunId),
+    columns: { publicKey: true },
+  });
+  reconciliation.signal.throwIfAborted();
+  args.sidecarRouter.noteSenderDeploySettled(
+    { allocationId: allocation.id, generation: allocation.generation },
+    anchor !== undefined && anchor.publicKey !== null
+      ? { recorded: anchor.publicKey }
+      : { failed: "Previous deployment initialization did not complete" },
+  );
 }
 
 export function createSessionService(
@@ -1492,64 +1563,21 @@ export function createSessionService(
     }
     const dbHandle = db;
     try {
-      args.reconciliation.signal.throwIfAborted();
-      const updated = await dbHandle.transaction(async (tx) => {
-        const [allocation] = await tx
-          .select({
-            id: sidecarAllocationTable.id,
-            anchorRunId: sidecarAllocationTable.anchorRunId,
-            status: sidecarAllocationTable.status,
-            generation: sidecarAllocationTable.generation,
-            ensureAcceptedGeneration:
-              sidecarAllocationTable.ensureAcceptedGeneration,
-          })
-          .from(sidecarAllocationTable)
-          .where(
-            and(
-              eq(sidecarAllocationTable.id, args.allocationTarget.allocationId),
-              eq(
-                sidecarAllocationTable.reconciliationLeaseId,
-                args.reconciliation.leaseId,
-              ),
-              gt(
-                sidecarAllocationTable.reconciliationLeaseExpiresAt,
-                sql`clock_timestamp()`,
-              ),
-            ),
-          )
-          .limit(1)
-          .for("update");
-        args.reconciliation.signal.throwIfAborted();
-        if (
-          allocation === undefined ||
-          allocation.anchorRunId !== args.anchorRunId ||
-          allocation.status !== "allocated" ||
-          allocation.generation !== args.allocationTarget.generation ||
-          allocation.ensureAcceptedGeneration !==
-            args.allocationTarget.generation
-        ) {
-          return null;
-        }
-        const [anchor] = await tx
-          .update(workflowRunTable)
-          .set({
-            publicKey: args.publicKey,
-            ...(args.credentialRefs !== undefined
-              ? { credentialRefs: args.credentialRefs }
-              : {}),
-          })
-          .where(
-            and(
-              eq(workflowRunTable.id, args.anchorRunId),
-              eq(workflowRunTable.anchorRunId, args.anchorRunId),
-              eq(workflowRunTable.tenantId, args.tenantId),
-            ),
-          )
-          .returning({ id: workflowRunTable.id });
-        args.reconciliation.signal.throwIfAborted();
-        return anchor ?? null;
+      const updated = await createSidecarAllocationStore(
+        dbHandle,
+      ).completeInitialization({
+        allocationId: args.allocationTarget.allocationId,
+        generation: args.allocationTarget.generation,
+        anchorRunId: args.anchorRunId,
+        tenantId: args.tenantId,
+        leaseId: args.reconciliation.leaseId,
+        signal: args.reconciliation.signal,
+        publicKey: args.publicKey,
+        ...(args.credentialRefs !== undefined
+          ? { credentialRefs: args.credentialRefs }
+          : {}),
       });
-      if (updated === null) {
+      if (!updated) {
         throw new Error(
           `Prepared anchor run ${args.anchorRunId} lost allocation ownership before initialization completed`,
         );
@@ -1609,7 +1637,11 @@ export function createSessionService(
     });
     signal.throwIfAborted();
 
+    let restoredPublicKey: string | null | undefined;
     const commonEmit = {
+      onUnsentInitializationCleared(publicKey: string | null) {
+        restoredPublicKey = publicKey;
+      },
       approved: params.approved,
       sidecarAllocationRouter: allocationRouter,
       allocationTarget: params.allocationTarget,
@@ -1632,30 +1664,17 @@ export function createSessionService(
       definitionId: string;
       credentialRefs?: WorkflowRunCredentialRefs;
     };
-    let senderDeploySettled = false;
-    function settleSenderDeploy(outcome: SenderDeploySettledOutcome): void {
-      if (senderDeploySettled) return;
-      senderDeploySettled = true;
-      sidecarRouter.noteSenderDeploySettled(params.agentAddress, outcome);
-    }
-    const cancelSenderDeploy = () => {
-      settleSenderDeploy({
-        failed:
-          signal.reason instanceof Error
-            ? signal.reason.message
-            : "Initialization cancelled",
-      });
+    const senderAttempt = {
+      ...params.allocationTarget,
+      leaseId: params.reconciliation.leaseId,
     };
+    signal.throwIfAborted();
+    sidecarRouter.noteSenderDeployStarted(params.agentAddress, senderAttempt);
     try {
       // Bracket the allocated pre-ack window: mark the sender's key-record as
       // mid-flight before the deploy emit so a run that sends mail before its
       // anchor key is committed parks rather than delivering keyless. The settle
-      // in both the success and catch paths below clears the marker.
-      sidecarRouter.noteSenderDeployStarted(params.agentAddress);
-      // Settle before replacement starts, so this attempt's late completion
-      // cannot clear the next attempt's sender-key marker at the same address.
-      signal.addEventListener("abort", cancelSenderDeploy, { once: true });
-      signal.throwIfAborted();
+      // follows durable completion; cancellation leaves the outcome to recovery.
       if (source.kind === "asset") {
         if (resolveAttachment === null) {
           throw new Error(
@@ -1664,12 +1683,12 @@ export function createSessionService(
         }
         result = await emitSourceRefDeployFrame(
           { ...commonEmit, source, resolveAttachment },
-          signal,
+          params.reconciliation,
         );
       } else {
         result = await emitSourceRefDeployFrame(
           { ...commonEmit, source },
-          signal,
+          params.reconciliation,
         );
       }
 
@@ -1691,7 +1710,7 @@ export function createSessionService(
       // `params.agentAddress` is the run's deploy address, byte-identical to the
       // sender address its mail was sent under (asserted against the anchor at
       // deploy time), so a settle matches the parked entries.
-      settleSenderDeploy({
+      sidecarRouter.noteSenderDeploySettled(senderAttempt, {
         recorded: result.publicKey,
       });
 
@@ -1701,16 +1720,24 @@ export function createSessionService(
         publicKey: result.publicKey,
       };
     } catch (error) {
-      // The deploy frame or the durable key write failed. Drain any mail the run
-      // parked while pre-ack so it surfaces as undelivered rather than waiting
-      // out the TTL. An allocated deploy's failure is owned here, not in the
-      // router's reject boundary.
-      settleSenderDeploy({
-        failed: error instanceof Error ? error.message : String(error),
-      });
+      if (restoredPublicKey !== undefined) {
+        sidecarRouter.noteSenderDeploySettled(
+          senderAttempt,
+          restoredPublicKey === null
+            ? { failed: error instanceof Error ? error.message : String(error) }
+            : { recorded: restoredPublicKey },
+        );
+      }
+      // A sent deploy or cancelled publication may have committed despite its
+      // lost response, as may an unsent rollback. Without a confirmed rollback,
+      // recovery owns transport failures too. Only an uncancelled preparation
+      // failure can settle definitively here.
+      else if (!signal.aborted && !(error instanceof SessionLaunchError)) {
+        sidecarRouter.noteSenderDeploySettled(senderAttempt, {
+          failed: error instanceof Error ? error.message : String(error),
+        });
+      }
       throw error;
-    } finally {
-      signal.removeEventListener("abort", cancelSenderDeploy);
     }
   }
 

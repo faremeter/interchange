@@ -28,6 +28,7 @@ import {
   createWorkflowAllocationService,
   createWorkflowDispatchService,
   createReconciliationScheduler,
+  recoverSenderDeploy,
   DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
   pushCredentialReconcile,
   WORKSPACE_BUILTINS_REGISTRY,
@@ -387,6 +388,8 @@ export async function createHubServer({
     ...(sidecarOperationTimeoutMs !== undefined
       ? { operationTimeoutMs: sidecarOperationTimeoutMs }
       : {}),
+    onInitializationRecovery: (allocation, reconciliation) =>
+      recoverSenderDeploy({ db, sidecarRouter, allocation, reconciliation }),
     onReady: async (allocation, reconciliation) => {
       await workflowAllocationService.deployReadyAllocation(
         allocation,

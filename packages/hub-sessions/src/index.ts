@@ -5,6 +5,7 @@ export {
 } from "./agent-repo";
 export {
   createSessionService,
+  recoverSenderDeploy,
   SessionLaunchError,
   bridgeOrchestratorDeployContent,
   deployCodeSourcedWorkflow,
@@ -36,6 +37,7 @@ export {
   type SidecarRouter,
   type SidecarRouterConfig,
   type SenderDeploySettledOutcome,
+  type AllocatedSenderDeployAttempt,
   type SidecarAuthIdentity,
   type SidecarAuthenticator,
   type AllocatedSidecarTarget,

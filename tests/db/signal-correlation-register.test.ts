@@ -29,7 +29,6 @@ import {
   createSidecarRouter,
   type AgentRepoStore,
   type SidecarAuthenticator,
-  type WsHandle,
 } from "@intx/hub-sessions";
 import {
   createTestDb,
@@ -43,6 +42,8 @@ import {
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
+
+import { createMockWs } from "./sidecar-test-helpers";
 
 // The register handler never touches the repo store, so a throwing stub keeps
 // the AgentRepoStore surface satisfied without a real on-disk store.
@@ -69,19 +70,6 @@ const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
   workflowRunAddress: authenticatedAddress,
   generation: 1,
 });
-
-function createMockWs(): WsHandle & { sent: string[]; closed: boolean } {
-  return {
-    sent: [],
-    closed: false,
-    send(data: string) {
-      this.sent.push(data);
-    },
-    close() {
-      this.closed = true;
-    },
-  };
-}
 
 // The backend pid of a handle's single connection. Only meaningful for a
 // `max: 1` handle, where every query reuses the one physical connection, so the
