@@ -220,6 +220,14 @@ export function createDefaultActionInvoker(
   resolver: ((ref: string) => ActionHandler) | undefined,
 ): ActionInvoker {
   return async ({ handler, input, requires, authzContext, signal }) => {
+    // Refuse before anything is constructed, so a cancelled run resolves no
+    // handler and touches no ledger. An action is single-attempt with
+    // observable side effects and there is no retry to reconsider the
+    // decision, so starting one for a run already known to be cancelled is
+    // not recoverable downstream. The step invoker refuses the same way.
+    if (signal.aborted) {
+      throw abortReason(signal);
+    }
     if (!resolver) {
       throw new Error(
         `action ${handler} requires an actionResolver; pass one to runLocal({ actionResolver })`,
