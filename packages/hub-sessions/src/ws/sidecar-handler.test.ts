@@ -17,6 +17,7 @@ import {
   type SidecarAuthIdentity,
   type WsHandle,
 } from "./sidecar-handler";
+import type { SidecarLookups } from "./sidecar-events";
 
 const identity: Extract<SidecarAuthIdentity, { kind: "allocated" }> = {
   kind: "allocated",
@@ -630,6 +631,9 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
 
   function createInterlockRouter(
     resolveSenderKey: (address: string) => Promise<string | null>,
+    materializeMailTriggeredRunGrants: NonNullable<
+      SidecarLookups["materializeMailTriggeredRunGrants"]
+    > = async () => ({ outcome: "materialized", stepGrants: [] }),
   ) {
     const router = createSidecarRouter({
       authenticateSidecar: async ({ sidecarId }) =>
@@ -643,10 +647,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       disconnectQueueTTLMs: 60_000,
       lookups: {
         resolveSenderKey,
-        materializeMailTriggeredRunGrants: async () => ({
-          outcome: "materialized",
-          stepGrants: [],
-        }),
+        materializeMailTriggeredRunGrants,
       },
     });
     router.fenceAllocation("alloc-sender", 1);
@@ -677,6 +678,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
   function sendMail(
     router: ReturnType<typeof createSidecarRouter>,
     senderWs: ReturnType<typeof createMockWs>,
+    rawMessage = RAW_MESSAGE,
   ): void {
     router.handleMessage(
       senderWs,
@@ -684,7 +686,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
         type: "mail.outbound",
         senderAddress: SENDER,
         recipients: [RECIPIENT],
-        rawMessage: RAW_MESSAGE,
+        rawMessage,
         delivered: false,
       }),
     );
@@ -843,6 +845,75 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     expect(
       framesOfType(recipientWs, "run.grants")[1]?.senderIdentities,
     ).toEqual([{ address: SENDER, publicKey: nextKey }]);
+  });
+
+  test("overlapping deferred replays keep each signing key adjacent to its mail", async () => {
+    const materialize = Promise.withResolvers<boolean>();
+    const bothMaterializing = Promise.withResolvers<boolean>();
+    let materializations = 0;
+    const router = createInterlockRouter(
+      async () => null,
+      async () => {
+        materializations += 1;
+        if (materializations === 2) bothMaterializing.resolve(true);
+        await materialize.promise;
+        return { outcome: "materialized", stepGrants: [] };
+      },
+    );
+    const senderWs = await connectAs(router, "sc-sender", SENDER);
+    const recipientWs = await connectAs(router, "sc-recipient", RECIPIENT);
+    const keys = [KEY, "cd".repeat(32)];
+    try {
+      for (const [index, key] of keys.entries()) {
+        const attempt = { ...ATTEMPT, leaseId: `initializer-${String(index)}` };
+        router.noteSenderDeployStarted(SENDER, attempt);
+        sendMail(
+          router,
+          senderWs,
+          btoa(`Message-ID: <message-${String(index)}>\r\n\r\nhello`),
+        );
+        await tick();
+        router.noteSenderDeploySettled(attempt, { recorded: key });
+      }
+      await bothMaterializing.promise;
+      materialize.resolve(true);
+      await tick();
+
+      const frames = recipientWs.sent
+        .map((raw): Record<string, unknown> => JSON.parse(raw))
+        .filter(
+          (frame) =>
+            frame.type === "run.grants" || frame.type === "mail.inbound",
+        );
+      expect(frames).toMatchObject([
+        {
+          type: "run.grants",
+          senderIdentities: [{ address: SENDER, publicKey: keys[0] }],
+        },
+        { type: "mail.inbound", messageId: "<message-0>" },
+        {
+          type: "run.grants",
+          senderIdentities: [{ address: SENDER, publicKey: keys[1] }],
+        },
+        { type: "mail.inbound", messageId: "<message-1>" },
+      ]);
+    } finally {
+      materialize.resolve(true);
+      await tick();
+      for (const frame of framesOfType(recipientWs, "mail.inbound")) {
+        router.handleMessage(
+          recipientWs,
+          JSON.stringify({
+            type: "mail.inbound.ack",
+            agentAddress: RECIPIENT,
+            messageId: frame.messageId,
+          }),
+        );
+      }
+      await tick();
+      router.handleClose(senderWs);
+      router.handleClose(recipientWs);
+    }
   });
 
   test("rebuilding an advanced fence settles an old attempt after a lost cleanup response", async () => {
