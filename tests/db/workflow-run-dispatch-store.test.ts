@@ -122,6 +122,58 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await store.listUnsettled(ANCHOR_RUN_ID)).toEqual([]);
     });
 
+    test("excludes an executing dispatch even after its database lease expires", async () => {
+      const store = createWorkflowRunDispatchStore(h.db);
+      for (const id of ["stuck", "healthy"]) {
+        await store.enqueue({
+          id,
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: `message-${id}`,
+          senderAddress: SENDER_ADDRESS,
+          rawMessage: new TextEncoder().encode(id),
+          stepGrants: [],
+        });
+      }
+      expect(
+        (
+          await store.claimNextPending({
+            leaseId: "original-lease",
+            leaseDurationMs: 60_000,
+          })
+        )?.id,
+      ).toBe("stuck");
+      await h.db
+        .update(workflowRunDispatch)
+        .set({ deliveryLeaseExpiresAt: new Date(0) })
+        .where(eq(workflowRunDispatch.id, "stuck"));
+
+      expect(
+        (
+          await store.claimNextPending({
+            leaseId: "healthy-lease",
+            leaseDurationMs: 60_000,
+            excludedDispatchIds: ["stuck"],
+          })
+        )?.id,
+      ).toBe("healthy");
+      expect(
+        await store.claimNextPending({
+          leaseId: "excluded-lease",
+          leaseDurationMs: 60_000,
+          excludedDispatchIds: ["stuck"],
+        }),
+      ).toBeNull();
+      expect(
+        (
+          await store.claimNextPending({
+            leaseId: "retry-lease",
+            leaseDurationMs: 60_000,
+            excludedDispatchIds: [],
+          })
+        )?.id,
+      ).toBe("stuck");
+    });
+
     test("deduplicates an exact message and rejects a conflicting payload", async () => {
       const store = createWorkflowRunDispatchStore(h.db);
       const stepGrants = RunGrantsFrame.assert({
