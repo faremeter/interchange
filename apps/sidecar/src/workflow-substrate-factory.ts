@@ -1508,6 +1508,10 @@ export function createSidecarRunChild(
       childRunId,
       parentRunId,
       onEvent,
+      // Terminal: the caller awaits this child's terminal rather than driving
+      // it across parks, and no signal can be addressed to a child run, so a
+      // park inside it has nothing that could answer it.
+      hasUpstreamSignalResolver: false,
       ...(credentialMaterial !== undefined
         ? { materialCell: credentialMaterial }
         : {}),
@@ -1638,6 +1642,11 @@ export function createSidecarSpawnSuspendableChild(
       // The run's live credential-material cell so the body's inference resolves
       // its source secret against the parent's current delivery; a grandchild
       // spawned from the body inherits it through the recursive spawnChild.
+      //
+      // Park-aware: the container drives this body across its parks and relays
+      // a decision back down onto the body's own channel, so a park here is
+      // answerable even though the body run carries no address of its own.
+      hasUpstreamSignalResolver: true,
       ...(credentialMaterial !== undefined
         ? { materialCell: credentialMaterial }
         : {}),
@@ -1781,6 +1790,14 @@ async function buildChildRunEnv(args: {
    * stays unset.
    */
   materialCell?: CredentialMaterialCell;
+  /**
+   * Whether a park in this child can be answered from outside it. The two
+   * seams that share this builder differ precisely here, so neither gets a
+   * default: a suspendable body is driven across its parks by a container
+   * that relays a decision back down, while a terminal child has no address
+   * and no relay above it.
+   */
+  hasUpstreamSignalResolver: boolean;
 }): Promise<{
   env: WorkflowRuntimeEnv;
   signalChannel: ReturnType<typeof createWorkflowHostSignalChannel>;
@@ -2014,6 +2031,7 @@ async function buildChildRunEnv(args: {
     clock,
     newId,
     drain,
+    hasUpstreamSignalResolver: args.hasUpstreamSignalResolver,
     ...(loopFns !== undefined ? { loopFns } : {}),
   };
   // Wire loop-iteration spawning for a `loop` nested in this body. Assigned

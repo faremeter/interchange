@@ -71,6 +71,7 @@ describe("resume mid-map", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
     const result1 = await runtimeRun(def, env).complete;
     const trimmed: WorkflowEvent[] = [];

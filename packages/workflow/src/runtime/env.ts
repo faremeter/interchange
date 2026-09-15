@@ -585,6 +585,26 @@ export interface WorkflowRuntimeEnv {
    */
   drain: DrainController;
   /**
+   * Whether a park in this run tree has anything upstream that could resolve
+   * it.
+   *
+   * An untimed park waits on a signal that has to arrive from outside the
+   * run. That only happens when the run is reachable from the control plane:
+   * either it is the deployment's addressable run, or it is a suspendable
+   * child whose container relays a decision back down. A terminal
+   * `childWorkflow` child is neither -- it has no address of its own and no
+   * relay above it -- so a park there can never be answered.
+   *
+   * The seam that spawns a run is the only layer that knows which case it is
+   * in, so it states the fact here and the runtime enforces it at the park.
+   *
+   * Required rather than optional on purpose. An absent flag would have to
+   * mean permissive, and a host that forgot to set it would silently inherit
+   * the unanswerable park this exists to prevent. Requiring it makes that a
+   * compile error instead.
+   */
+  hasUpstreamSignalResolver: boolean;
+  /**
    * Optional suspension-notify sink. Fired once each time a step commits a
    * `SignalAwaited` on a reserved `signalName(correlationId)` channel -- the
    * agent-step suspend path, not a plain `awaitSignal` gate. The host uses it

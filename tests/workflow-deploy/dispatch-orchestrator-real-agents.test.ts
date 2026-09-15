@@ -1028,6 +1028,7 @@ describe("dispatch orchestrator with real agents", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(fullDemo),
+      hasUpstreamSignalResolver: true,
       loopFns,
     };
     const loopBodies = new Map(

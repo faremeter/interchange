@@ -955,6 +955,7 @@ describe("per-level pipeline with real agents", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(pipeline),
+      hasUpstreamSignalResolver: true,
       loopFns,
     };
     const loopBodies = new Map(
