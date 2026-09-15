@@ -1867,6 +1867,12 @@ async function runStep(
  * runner. The per-effect ledger is a deeper exactly-once line of defense
  * for effects routed through `perform`; the barrier here is what makes the
  * action non-re-invocable at the runtime layer.
+ *
+ * Cancellation splits along the same line. The runtime owes that a handler
+ * is never STARTED for a run already known to be cancelled, which the
+ * invoker enforces by refusing a pre-aborted signal at entry. Stopping once
+ * started is the author's half: the handler is handed the signal, and the
+ * runtime cannot make a side effect already in flight transactional.
  */
 async function runAction(
   definition: WorkflowDefinition,
