@@ -75,6 +75,96 @@ describe("SidecarRouter allocation initialization cancellation", () => {
   }
 });
 
+describe("SidecarRouter dispatch cancellation", () => {
+  for (const kind of ["mail", "signal"] as const) {
+    test(`does not send ${kind} after cancellation during identity validation`, async () => {
+      const controller = new AbortController();
+      const cancelled = new Error("Delivery lease expired");
+      let cancelDuringValidation = false;
+      const router = createAllocatedRouter({
+        validateSidecarIdentity: async () => {
+          if (cancelDuringValidation) controller.abort(cancelled);
+          return true;
+        },
+      });
+      const address = TEST_IDENTITY.workflowRunAddress;
+      const ws = await connectAllocated(router, [address]);
+      const before = [...ws.sent];
+      cancelDuringValidation = true;
+      try {
+        const sending =
+          kind === "mail"
+            ? router.sendWorkflowRunDispatchToAllocation(
+                TEST_TARGET,
+                address,
+                TEST_IDENTITY.anchorRunId,
+                [],
+                "bWFpbA==",
+                "sender@tenant.example",
+                "message-1",
+                controller.signal,
+              )
+            : router.sendSignalDeliverToAllocation(
+                TEST_TARGET,
+                {
+                  agentAddress: address,
+                  runId: TEST_IDENTITY.anchorRunId,
+                  signalName: "continue",
+                  signalId: "signal-1",
+                  payload: {},
+                },
+                controller.signal,
+              );
+        expect(await sending.catch((error: unknown) => error)).toBe(cancelled);
+        expect(ws.sent).toEqual(before);
+      } finally {
+        router.handleClose(ws);
+      }
+    });
+  }
+
+  test("does not send grants or mail when a cancelled sender-key lookup returns", async () => {
+    const controller = new AbortController();
+    const cancelled = new Error("Delivery lease expired");
+    const entered = Promise.withResolvers<boolean>();
+    const key = Promise.withResolvers<string>();
+    const router = createAllocatedRouter({
+      lookups: {
+        resolveSenderKey: () => {
+          entered.resolve(true);
+          return key.promise;
+        },
+      },
+    });
+    const address = TEST_IDENTITY.workflowRunAddress;
+    const ws = await connectAllocated(router, [address]);
+    const before = [...ws.sent];
+    const sending = router
+      .sendWorkflowRunDispatchToAllocation(
+        TEST_TARGET,
+        address,
+        TEST_IDENTITY.anchorRunId,
+        [],
+        "bWFpbA==",
+        "sender@tenant.example",
+        "message-1",
+        controller.signal,
+      )
+      .catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      controller.abort(cancelled);
+      key.resolve("a".repeat(64));
+      expect(await sending).toBe(cancelled);
+      expect(ws.sent).toEqual(before);
+    } finally {
+      key.resolve("a".repeat(64));
+      await sending;
+      router.handleClose(ws);
+    }
+  });
+});
+
 describe("SidecarRouter allocation deploy transport", () => {
   test("rejects deploys without a Hub signing key before mutating routing", async () => {
     const router = createSidecarRouter({
