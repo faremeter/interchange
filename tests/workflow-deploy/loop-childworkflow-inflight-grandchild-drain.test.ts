@@ -2,17 +2,23 @@
 //
 // Companion to loop-await-signal-drain-roundtrip (a loop body parked on its own
 // awaitSignal). Here the loop body's step is a `childWorkflow` spawn of a
-// grandchild that PARKS on an awaitSignal, so at drain time the grandchild is a
-// live in-process terminal child. The drain cascade must tear the grandchild
-// down LOCALLY -- it runs under the workflow-process principal and cannot sign
-// the supervisor `CancelRequested` a control-plane cancel needs -- so its parked
-// step fails to `RunFailed`, `createSidecarRunChild` returns, the loop body's
-// spawn step unblocks, and the whole run settles `RunFailed`. If the grandchild
-// instead self-wrote a supervisor cancel, the proxy would author it as
-// workflow-process, the kind handler would reject it, the grandchild would wedge
-// un-settled, and the loop body's spawn step (awaiting the grandchild terminal)
-// would HANG the run -- the defect this guards against, one level below the loop
-// iteration itself.
+// grandchild that is mid-step on a long sleep, so at drain time the grandchild
+// is a live in-process terminal child. The drain cascade must tear the
+// grandchild down LOCALLY -- it runs under the workflow-process principal and
+// cannot sign the supervisor `CancelRequested` a control-plane cancel needs --
+// so its step fails to `RunFailed`, `createSidecarRunChild` returns, the loop
+// body's spawn step unblocks, and the whole run settles `RunFailed`. If the
+// grandchild instead self-wrote a supervisor cancel, the proxy would author it
+// as workflow-process, the kind handler would reject it, the grandchild would
+// wedge un-settled, and the loop body's spawn step (awaiting the grandchild
+// terminal) would HANG the run -- the defect this guards against, one level
+// below the loop iteration itself.
+//
+// A parked grandchild is deliberately not covered here: a terminal child can no
+// longer hold an untimed park at all, so that state is unreachable rather than
+// untested. Drain over a genuinely parked in-process run is covered by
+// loop-await-signal-drain-roundtrip, where the loop body itself parks and its
+// container relays.
 //
 // Harness justification: SPAWN-REAL. Real hub + sidecar subprocess + mock
 // inference.
@@ -43,19 +49,17 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-import { loopChildWorkflowParkedEntry } from "./fixtures/loop-childworkflow-parked-grandchild";
+import { loopChildWorkflowInFlightEntry } from "./fixtures/loop-childworkflow-inflight-grandchild";
 import { loopBodyRunId } from "@intx/workflow";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const LOOP_STEP_ID = "rework";
 const DRAIN_DEADLINE_MS = 1_000;
 
-const TENANT_ID = "tnt_loop_cw_parked_drain";
-const CALLER_PRINCIPAL_ID = "prn_loop_cw_parked_drain";
-const PARKED_ANCHOR = "run_loop-cw-parked-drain-1";
+const TENANT_ID = "tnt_loop_cw_inflight_drain";
+const CALLER_PRINCIPAL_ID = "prn_loop_cw_inflight_drain";
 const SLEEP_ANCHOR = "run_loop-cw-sleep-drain-1";
 const DEFINITION_ASSET_IDS: Record<string, string> = {
-  [PARKED_ANCHOR]: "ast_loop_cw_parked_drain_wf",
   [SLEEP_ANCHOR]: "ast_loop_cw_sleep_drain_wf",
 };
 
@@ -108,13 +112,11 @@ async function topLevelRunId(
   );
 }
 
-// Deploy a loop whose body spawns a childWorkflow grandchild that is in-flight
-// (parked on an awaitSignal, or mid-step on a long sleep), drain the deployment,
-// and assert the run sheds to RunFailed without wedging on the grandchild.
+// Deploy a loop whose body spawns a childWorkflow grandchild that is in flight
+// mid-step on a long sleep, drain the deployment, and assert the run sheds to
+// RunFailed without wedging on the grandchild.
 async function runGrandchildDrainTest(opts: {
   anchorRunId: string;
-  grandchildStep: "awaitSignal" | "sleep";
-  inFlightEventType: "SignalAwaited" | "TimerSet";
 }): Promise<void> {
   const { anchorRunId } = opts;
   const childWorkflowId = `wf_child_${anchorRunId}`;
@@ -149,11 +151,10 @@ async function runGrandchildDrainTest(opts: {
     `mail.send:${DEPLOYMENT_DOMAIN}`,
   ]);
 
-  const entryModule = loopChildWorkflowParkedEntry({
+  const entryModule = loopChildWorkflowInFlightEntry({
     address: deploymentMailAddress,
     workflowId: `wf_${anchorRunId}`,
     childWorkflowId,
-    grandchildStep: opts.grandchildStep,
   });
 
   const definitionAssetId = DEFINITION_ASSET_IDS[anchorRunId];
@@ -212,9 +213,9 @@ async function runGrandchildDrainTest(opts: {
     );
   }
 
-  // The grandchild reaches its in-flight state (parked on its awaitSignal, or
-  // mid-step on its sleep timer) -- a live in-process terminal child, the state
-  // the drain must tear down locally.
+  // The grandchild reaches its in-flight state -- mid-step on its sleep timer,
+  // a live in-process terminal child, the state the drain must tear down
+  // locally.
   await waitFor(
     async () => {
       const events = await readWorkflowRunEvents(
@@ -222,7 +223,7 @@ async function runGrandchildDrainTest(opts: {
         anchorRunId,
         grandchildRunId,
       );
-      return events.some((e) => e.type === opts.inFlightEventType);
+      return events.some((e) => e.type === "TimerSet");
     },
     { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
   );
@@ -265,23 +266,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
 
     test(
-      "drain settles RunFailed without wedging on a PARKED grandchild",
-      () =>
-        runGrandchildDrainTest({
-          anchorRunId: PARKED_ANCHOR,
-          grandchildStep: "awaitSignal",
-          inFlightEventType: "SignalAwaited",
-        }),
-      120_000,
-    );
-
-    test(
       "drain settles RunFailed without wedging on a MID-STEP (sleeping) grandchild",
       () =>
         runGrandchildDrainTest({
           anchorRunId: SLEEP_ANCHOR,
-          grandchildStep: "sleep",
-          inFlightEventType: "TimerSet",
         }),
       120_000,
     );
