@@ -2476,6 +2476,74 @@ describe("reconciliation ownership", () => {
     });
   }
 
+  test("retries a lease query failure when the worker reconnects during validation", async () => {
+    const current = allocation({
+      status: "allocated",
+      generation: TEST_TARGET.generation,
+      ensureAcceptedGeneration: TEST_TARGET.generation,
+      connectDeadline: new Date(0),
+    });
+    const router = createAllocatedRouter();
+    const calls: string[] = [];
+    let validations = 0;
+    let socket: Awaited<ReturnType<typeof connectAllocated>> | undefined;
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: async () => current,
+          isReconciliationLeaseCurrent: async () => {
+            validations += 1;
+            if (validations === 2) {
+              socket = await connectAllocated(router);
+              throw new Error("Database connection terminated unexpectedly");
+            }
+            return true;
+          },
+          parkReconciliation: async () => {
+            calls.push("park");
+            return true;
+          },
+          beginUnrecoverableRelease: async () => {
+            calls.push("release");
+            return { ...current, status: "releasing", generation: 2 };
+          },
+          markConnectionReady: async () => {
+            calls.push("ready");
+            return current;
+          },
+        }),
+      }),
+      router,
+      onInitializationRecovery: async () => {
+        calls.push("recover");
+      },
+      onReady: async () => {
+        calls.push("initialize");
+      },
+    });
+    router.events.on("sidecar.allocated.connected", (target) =>
+      reconciler.handleConnected(target),
+    );
+    try {
+      await reconciler.reconcileNext();
+      expect(calls).toEqual(["recover", "park"]);
+      expect(socket?.closed).toBe(false);
+      expect(await router.isAllocatedSidecarReady(TEST_TARGET)).toBe(true);
+
+      await reconciler.reconcileNext();
+      expect(calls).toEqual([
+        "recover",
+        "park",
+        "recover",
+        "initialize",
+        "ready",
+      ]);
+      expect(socket?.closed).toBe(false);
+    } finally {
+      if (socket !== undefined) router.handleClose(socket);
+    }
+  });
+
   test("retries a hung lease validation without starting initialization", async () => {
     const validation = Promise.withResolvers<boolean>();
     const calls: string[] = [];
