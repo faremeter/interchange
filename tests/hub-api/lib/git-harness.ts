@@ -89,7 +89,6 @@
 // the spawned hub, it was deliberately set here.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -105,7 +104,6 @@ import {
   requireKey,
 } from "@intx/test-harness/env";
 import {
-  harnessDbEnvAvailable,
   loadHarnessDbConfig,
   randomSchemaName,
 } from "@intx/test-harness/db-harness";
@@ -134,11 +132,7 @@ type HarnessEnv = {
  * Absence-only: a file that exists but lacks a required key still
  * surfaces a loud error from `loadHarnessDbConfig`/`loadHubEnv`.
  */
-export function harnessHubEnvAvailable(): boolean {
-  return (
-    harnessDbEnvAvailable() && existsSync(path.join(REPO_ROOT, ".env.hub"))
-  );
-}
+export { harnessHubEnvAvailable } from "@intx/test-harness/db-harness";
 
 async function loadHubEnv(): Promise<HarnessEnv> {
   const shared = await loadEnvFile(path.join(REPO_ROOT, ".env"));
