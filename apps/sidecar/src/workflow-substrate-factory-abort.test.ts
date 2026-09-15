@@ -159,6 +159,22 @@ const parkForever: SidecarChildStepInvoker = async () => ({
   },
 });
 
+// An invoker that stays in flight without parking: it resolves only when the
+// step's own signal aborts. The terminal seam uses this because a terminal
+// child may no longer park -- it has nothing upstream to answer one -- so a
+// park would fail the child on its own rather than leave it running for the
+// parent abort to tear down.
+const hangUntilAborted: SidecarChildStepInvoker = async ({ signal }) => {
+  await new Promise<void>((_resolve, reject) => {
+    const fail = (): void => {
+      reject(new Error("aborted"));
+    };
+    if (signal?.aborted === true) fail();
+    else signal?.addEventListener("abort", fail, { once: true });
+  });
+  return { output: null };
+};
+
 const evaluateGrantsAdapter: Parameters<
   typeof createSidecarRunChild
 >[0]["evaluateGrants"] = async ({ resource, action, grants }) => {
@@ -201,7 +217,10 @@ async function seedRunGrants(
   });
 }
 
-function sharedDeps(substrate: ReturnType<typeof createRepoStore>) {
+function sharedDeps(
+  substrate: ReturnType<typeof createRepoStore>,
+  invokeStep: SidecarChildStepInvoker = parkForever,
+) {
   return {
     substrate,
     workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
@@ -211,7 +230,7 @@ function sharedDeps(substrate: ReturnType<typeof createRepoStore>) {
       repoStore: createInMemoryRepoStore(),
       clock: () => new Date(),
     }),
-    invokeStep: parkForever,
+    invokeStep,
     evaluateGrants: evaluateGrantsAdapter,
     dataDir: bodySourcesDataDir,
     bodySources: {},
@@ -230,20 +249,19 @@ function reader(substrate: ReturnType<typeof createRepoStore>) {
   });
 }
 
-// Wait for the child's step to park (a SignalAwaited committed to its durable
-// log), so the abort lands while the child is genuinely in flight. The commit
-// is the signal, so subscribe to the run's log instead of re-reading it on a
-// timer; the waiter replays what is already committed, so a park that landed
-// before the call counts exactly as a later one does.
-async function waitForChildPark(
+// Wait for the child to reach `kind` in its durable log, so the abort lands
+// while the child is genuinely in flight. The two seams reach that state
+// differently: a suspendable body parks on a `SignalAwaited`, while a terminal
+// child cannot park and is instead held open mid-step after its `StepStarted`.
+// The commit is the signal, so subscribe to the run's log instead of re-reading
+// it on a timer; the waiter replays what is already committed, so a state that
+// landed before the call counts exactly as a later one does.
+async function waitForChildEvent(
   substrate: ReturnType<typeof createRepoStore>,
   childRunId: string,
+  kind: WorkflowEvent["kind"],
 ): Promise<void> {
-  await waitForEvent(
-    reader(substrate),
-    childRunId,
-    (e) => e.kind === "SignalAwaited",
-  );
+  await waitForEvent(reader(substrate), childRunId, (e) => e.kind === kind);
 }
 
 // Assert the child's durable log shows a LOCAL fail teardown: a StepFailed and
@@ -268,7 +286,9 @@ describe("in-process child parent-abort", () => {
       grant(`tool:${BODY_STEP_AGENT_ID}`, "invoke"),
     ]);
 
-    const runChild = createSidecarRunChild(sharedDeps(substrate));
+    const runChild = createSidecarRunChild(
+      sharedDeps(substrate, hangUntilAborted),
+    );
     const abort = new AbortController();
     const childRunId = "run-body-terminal";
     const settled = runChild(
@@ -286,7 +306,7 @@ describe("in-process child parent-abort", () => {
       noopOnEvent,
     );
 
-    await waitForChildPark(substrate, childRunId);
+    await waitForChildEvent(substrate, childRunId, "StepStarted");
     abort.abort();
 
     const result = await settled;
