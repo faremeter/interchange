@@ -43,11 +43,23 @@ it. A step at the top level, a step inside a `loop` body, a step
 inside an inline `onTrigger` section body, and a step inside a
 `childWorkflow` child all get the same tool-bearing execution
 environment. There is no nesting depth and no primitive at which an
-agent runs at reduced capability.
+agent silently runs at reduced capability.
 
 This is an invariant of the system, not a property of the primitives
 that happen to exist today. A new body-bearing primitive inherits it:
 if the primitive runs inference, its steps get tools.
+
+The `childWorkflow` boundary is where that word carries weight. A
+step in a child gets the same tools, and a tool declared
+`approval: "ask"` reaches the provider exactly as it does at the top
+level. What the child cannot do is hold the resulting approval:
+nothing upstream can answer a park inside it, so the runtime refuses
+the park and fails the step, naming the gate. The capability is not
+quietly withdrawn -- the step that depends on it stops, and the
+operator's approval decision is the reason a run failed rather than
+a decision that had no effect. Keep such a step in the deployment's
+own run, in a `loop` body, or in an `onTrigger` section body, where
+a decision can be relayed down.
 
 A toolless execution path is not an acceptable shortcut, and the
 reason is that it is silent. The deploy-time capability walk descends
@@ -158,6 +170,39 @@ A loop body may also spawn a `childWorkflow` grandchild: the child is lifted to
 a ref and runs as its own child run, depth-counted against the tree-wide spawn
 ceiling exactly like any other child.
 
+A `childWorkflow` child cannot hold a human gate, and neither can anything
+inside it. The relay that makes a loop iteration's pause durable is severed at
+the `childWorkflow` boundary: a child run carries no address of its own, and
+the spawning step waits for its terminal rather than driving it across parks,
+so no decision can be routed back down. A body nested inside the child
+inherits that answer, so this holds at any depth rather than only for a gate
+written directly in the child.
+
+An untimed wait beneath that boundary fails the step that asked for it, naming
+the gate, rather than waiting on a signal nobody can send. A gate carrying a
+`timeout` is unaffected, because its own timer resolves it without anything
+upstream.
+
+Where the spawn step sits at a workflow root, an `onFailure` handler on it
+absorbs this failure like any other child failure, so a workflow that routes
+around child failures swallows it; leave that step unrouted if you want to see
+it. A spawn step in a `loop` body cannot carry `onFailure` at all -- routing is
+honored only at a workflow root, and a loop body is not one -- so the failure
+surfaces there regardless.
+
+To hold a human gate, keep the `awaitSignal` in a run the control plane can
+address: the deployment's own run, whether directly or in a `loop` body or
+`onTrigger` section body of it, whose container relays the decision down. What
+no container can do is reach across the `childWorkflow` boundary.
+
+Of those homes the `onTrigger` section body carries a caveat the relay does not
+cause. A section body's run id omits the enclosing run, so a second top-level
+run of the same deployment finds the first run's body log already terminal and
+short-circuits it: the body never executes, nobody is asked, and the run still
+reports a clean terminal status (tracked as INTR-552). A gate a repeating
+deployment depends on belongs in the deployment's own run or in a `loop` body,
+whose iteration run ids re-root per run.
+
 A loop body may contain a nested `loop`. An inner loop resolves its body ref
 from the same top-level bodies map (a loop iteration inherits its parent's env),
 its body-child run ids carry the container run id so iterations stay unique
@@ -180,7 +225,9 @@ layer.
 
 Practical guidance: use a loop to repeat a self-contained unit -- which may park
 on an `awaitSignal`, spawn a `childWorkflow`, or run a nested `loop` -- until a
-pure `while`/`carry` says stop. Model a `sleep` delay at a top-level step or an
+pure `while`/`carry` says stop. Keep the gate in the body itself: an untimed
+`awaitSignal` inside a `childWorkflow` the body spawns, at any depth, fails the
+step rather than waiting. Model a `sleep` delay at a top-level step or an
 onTrigger section, not in a loop body. Keep a loop body's action idempotent
 where practical, since a mid-invocation crash fails the run and the effect is
 never re-run.
