@@ -212,7 +212,9 @@ describe("createWorkflowProbeExecutor", () => {
       ]);
       // The un-flattened snapshot preserves the per-step grouping and the
       // (here empty) tool-grant effect map the flattened `grants` discards.
-      // The `sleep` step carries only the deployment-wide trigger grants.
+      // The `wait` step carries the deployment-wide trigger grants and no
+      // relational accept markers: every relation is opt-in, and the fixture
+      // declares a mail trigger but no explicit mailAccept, so none resolve.
       expect(result.grantWalkSnapshot).toEqual({
         perStep: [
           {

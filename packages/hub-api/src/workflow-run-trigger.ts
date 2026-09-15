@@ -367,6 +367,13 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         tenantId: tenant.id,
         runPrincipalId,
         now,
+        // The calling principal is the run's invoker; the triggered
+        // deployment's definition is `self`. Both resolve the run's declared
+        // `mail.accept` relation markers to concrete accept-grant rows so an
+        // HTTP-launched run still carries them for later mail-transport
+        // delivery.
+        invokerPrincipalId: principal.id,
+        definitionId: anchor.definitionId,
         invokerGrants,
         creatorGrants,
         grantRequirements: declaredGrantRequirements,

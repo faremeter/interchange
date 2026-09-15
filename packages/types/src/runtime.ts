@@ -310,6 +310,80 @@ export const InboundMailPolicy = type({
 export type InboundMailPolicy = typeof InboundMailPolicy.infer;
 
 /**
+ * A `mail.accept` coordinate id is valid when it is a non-empty string with no
+ * `:`. The colon is the segment separator of the `mail.accept:<type>:<id>`
+ * resource, so an id that carries one would split into extra segments and make
+ * the shape ambiguous. This owns that rule: the resource builder in `@intx/authz`
+ * imports it, and the `MailAccept` schema narrows on it, so the authoring
+ * boundary and the resource builder share one definition.
+ */
+export function isValidCoordId(id: string): boolean {
+  return id.length > 0 && !id.includes(":");
+}
+
+/**
+ * A per-workflow relational accept-rule set: the author's declaration of which
+ * senders a deployment accepts inbound mail from, keyed by the sender's relation
+ * to the deployment. The relational toggles admit a sender the deployment stands
+ * in that relation to:
+ *
+ * - `invoker` -- the principal that launched the deployment.
+ * - `self` -- a sibling deployment of the same definition.
+ * - `tenant` -- any deployment in the same tenant.
+ * - `correspondent` -- a party the deployment has already exchanged mail with.
+ *
+ * `principals` and `definitions` name explicit senders by id: a principal id
+ * the deployment accepts regardless of relation, and a definition id whose
+ * deployments the author accepts.
+ *
+ * Enforcement: `invoker`, `self`, `tenant`, and the explicit
+ * `principals`/`definitions` are resolved at launch into `mail.accept` grant
+ * rows; `correspondent` is minted at the send instant when the deployment mails
+ * a party, so that party's reply is admitted. Every relation the schema accepts
+ * is enforced by the inbound admission gate -- there is no declarable-but-inert
+ * relation.
+ *
+ * The object is SPARSE: every key is optional, and an omitted key is NOT a
+ * default of any kind here. Each relation is opt-in: an absent toggle resolves
+ * OFF in the shared accept-rule resolver, so a definition accepts nothing on the
+ * relational axis unless it declares a relation. Keeping the field sparse means
+ * the content hash covers only what the author actually declared, so a
+ * definition that omits the field hashes identically to one authored before the
+ * field existed. Undeclared keys are rejected so a typo such as `invokr` or
+ * `principal` fails at the wire boundary rather than riding through as an inert
+ * unknown key.
+ */
+export const MailAccept = type({
+  "invoker?": "boolean",
+  "self?": "boolean",
+  "tenant?": "boolean",
+  "correspondent?": "boolean",
+  "principals?": "string[]",
+  "definitions?": "string[]",
+})
+  .onUndeclaredKey("reject")
+  // A raw wire definition reaches this schema without passing through
+  // `defineWorkflow`, so an authored id that violates the coordinate grammar is
+  // untrusted input that must be rejected here rather than throwing later in the
+  // capability walk. Reject an explicit `principals`/`definitions` id that could
+  // not compose into a `mail.accept:<type>:<id>` resource.
+  .narrow((accept, ctx) => {
+    for (const key of ["principals", "definitions"] as const) {
+      const ids = accept[key];
+      if (ids === undefined) continue;
+      for (const id of ids) {
+        if (!isValidCoordId(id)) {
+          return ctx.mustBe(
+            `a non-empty ${key} id without ":" (received ${JSON.stringify(id)})`,
+          );
+        }
+      }
+    }
+    return true;
+  });
+export type MailAccept = typeof MailAccept.infer;
+
+/**
  * A parsed MIME part. `content` is the DECODED bytes in memory (the
  * transfer-encoding has already been undone). `filename` and `disposition` are
  * surfaced from the part's `Content-Disposition` / `Content-Type` so a consumer

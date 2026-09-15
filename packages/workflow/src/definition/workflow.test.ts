@@ -6,7 +6,7 @@ import {
   type AgentDefinition,
   type BaseEnv,
 } from "@intx/agent";
-import type { InboundMailPolicy } from "@intx/types/runtime";
+import type { InboundMailPolicy, MailAccept } from "@intx/types/runtime";
 
 import {
   action,
@@ -517,6 +517,73 @@ describe("inboundMailPolicy", () => {
       steps: { a: step({ agent: makeAgent("a") }) },
     });
     expect(def).not.toHaveProperty("inboundMailPolicy");
+  });
+});
+
+describe("mailAccept", () => {
+  test("carries a sparse rule set through when a mail trigger is declared", () => {
+    const def = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: makeAgent("a") }) },
+      mailAccept: { invoker: true, tenant: false },
+    });
+    expect(def.mailAccept).toEqual({ invoker: true, tenant: false });
+    // The relations the author omitted stay unset rather than defaulted -- the
+    // field is sparse and no key is populated for a relation the author omitted.
+    // The opt-in resolution lives in the shared resolver, not here.
+    expect(def.mailAccept).not.toHaveProperty("self");
+    expect(def.mailAccept).not.toHaveProperty("correspondent");
+  });
+
+  test("round-trips explicit principal and definition id lists unchanged", () => {
+    const def = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: makeAgent("a") }) },
+      mailAccept: {
+        principals: ["principal-1", "principal-2"],
+        definitions: ["definition-1"],
+      },
+    });
+    expect(def.mailAccept).toEqual({
+      principals: ["principal-1", "principal-2"],
+      definitions: ["definition-1"],
+    });
+  });
+
+  test("accepts rules when a mail trigger comes from an onTrigger section", () => {
+    const def = defineWorkflow({
+      id: "w",
+      steps: {
+        section: onTrigger({
+          on: { type: "mail", to: "s@x.example" },
+          body: simpleBody(),
+        }),
+      },
+      mailAccept: { tenant: true },
+    });
+    expect(def.mailAccept).toEqual({ tenant: true });
+  });
+
+  test("rejects rules when no mail trigger is declared", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "manual" },
+        steps: { a: step({ agent: makeAgent("a") }) },
+        mailAccept: { invoker: true },
+      }),
+    ).toThrow(/no mail trigger/);
+  });
+
+  test("omits the field entirely when no rules are declared", () => {
+    const def = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: makeAgent("a") }) },
+    });
+    expect(def).not.toHaveProperty("mailAccept");
   });
 });
 
@@ -1842,6 +1909,48 @@ describe("hashDefinition", () => {
         : {}),
     });
     expect(omitted).not.toHaveProperty("inboundMailPolicy");
+    expect(hashDefinition(omitted)).toEqual(hashDefinition(plain));
+  });
+
+  test("a declared mailAccept changes the content hash", () => {
+    const a = makeAgent("a");
+    const base = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: a }) },
+    });
+    const withAccept = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: a }) },
+      mailAccept: { invoker: true },
+    });
+    expect(hashDefinition(withAccept)).not.toEqual(hashDefinition(base));
+  });
+
+  test("an absent mailAccept is hash-invariant against a mail-triggered baseline", () => {
+    // The load-bearing hash-stability assertion: a definition that omits the
+    // relational accept-rules must hash identically whether or not the field
+    // ever entered the construction -- the absent field contributes nothing to
+    // the canonical form, so a deployment authored before the field existed
+    // keeps its content handle and is not forced to re-approve. Construct one
+    // baseline through a conditional spread that resolves to no key (the
+    // sparse-optional contract: omitted accept-rules are never populated), and
+    // assert it matches the plain baseline.
+    const a = makeAgent("a");
+    const plain = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: a }) },
+    });
+    const declaredAccept: MailAccept | undefined = undefined;
+    const omitted = defineWorkflow({
+      id: "w",
+      trigger: { type: "mail", to: "s@x.example" },
+      steps: { a: step({ agent: a }) },
+      ...(declaredAccept !== undefined ? { mailAccept: declaredAccept } : {}),
+    });
+    expect(omitted).not.toHaveProperty("mailAccept");
     expect(hashDefinition(omitted)).toEqual(hashDefinition(plain));
   });
 });

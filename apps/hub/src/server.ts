@@ -6,12 +6,15 @@ import {
   createWorkflowRunDispatchStore,
   resolveFrameSenderKey,
   resolveSenderKey,
+  resolveSenderPrincipal,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
+import { timeWindowEvaluator } from "@intx/authz";
 import {
   createApp,
   createAuth,
+  createCorrespondentGrantMinter,
   createMailTriggeredRunGrantsMaterializer,
 } from "@intx/hub-api";
 import {
@@ -250,6 +253,10 @@ export async function createHubServer({
         db,
         principalKeyStore,
         grantStore: createGrantStore(db),
+        // The hub's standard condition registry (mirrors createHubApp), so a
+        // conditioned operator mail.accept deny is evaluated, not skipped, by
+        // the admission gate.
+        registry: { time_window: timeWindowEvaluator },
       },
     ),
     resolveSenderKey: (address) =>
@@ -261,6 +268,21 @@ export async function createHubServer({
     resolveSenderKeyStrict: async (address) =>
       (await resolveSenderKey(db, principalKeyStore, address))?.publicKey ??
       null,
+    // The strict, coordinate-carrying resolution the mail-triggered run's
+    // invoker binding needs. It keeps the widened resolution rather than
+    // unwrapping to the key, so the sender's principal, tenant, and admission
+    // coordinates carry through; a principal-less run and the strict resolver's
+    // throw both fail the binding closed (see `resolveSenderPrincipal`).
+    resolveSenderPrincipal: (address) =>
+      resolveSenderPrincipal(db, principalKeyStore, address),
+    // Records a correspondent at the send seam: when a live run mails a party,
+    // the sending run gains a `mail.accept:principal:<recipient>` grant so that
+    // party's reply is admitted. Gated on the sending definition having
+    // authored the `correspondent` relation; best-effort, never breaks a send.
+    mintCorrespondentGrant: createCorrespondentGrantMinter({
+      db,
+      principalKeyStore,
+    }),
   };
 
   const sidecarCredentials = createSidecarCredentialResolver({ db });
