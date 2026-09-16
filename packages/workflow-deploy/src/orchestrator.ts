@@ -29,11 +29,10 @@ import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { formatRunAddress } from "@intx/types";
-import { walkStepTree } from "@intx/workflow/definition";
 
 import { type ApprovalSet } from "./capability-approval";
 import {
-  inertLoopBody,
+  forEachInertLoopBodyStep,
   readInertStepInference,
   type InertBodyStepPreference,
 } from "./inert-ontrigger-bodies";
@@ -199,13 +198,12 @@ export function pinInertStepSources(args: {
  * bodies, and hand each leaf its `(isAgent, preference)` classification. Owns
  * the classification so every consumer reads a step the same way.
  *
- * The traversal itself is the canonical `walkStepTree` from `@intx/workflow`,
- * under `LOOP_BODY_DESCENT` -- the descent that stays inside ONE flat step-id
+ * The traversal itself is `forEachInertLoopBodyStep` -- the canonical
+ * `walkStepTree` under the descent that stays inside ONE flat step-id
  * namespace, which is what the pinned `sources` map is keyed by. An onTrigger
  * section or childWorkflow body is lifted to its own definition with its own
- * sources map, so this walk stops at that boundary. Only the per-rung body read
- * is supplied here, because the inert projection types its steps as `unknown`
- * and `inertLoopBody` is what validates one.
+ * sources map, so that walk stops at the boundary. This wrapper adds only the
+ * per-step inference classification.
  */
 function forEachInertStep(
   args: { definition: WorkflowProjectionDefinition; context: string },
@@ -215,21 +213,13 @@ function forEachInertStep(
     preference: InertBodyStepPreference | null;
   }) => void,
 ): void {
-  walkStepTree<unknown, WorkflowProjectionDefinition>({
-    tree: args.definition,
-    context: args.context,
-    nestedTrees: (stepValue) => {
-      const loopBody = inertLoopBody(stepValue);
-      return loopBody === null ? [] : [loopBody];
-    },
-    visit: ({ stepId, step }) => {
-      const { isAgent, preference } = readInertStepInference(
-        step,
-        args.context,
-        stepId,
-      );
-      visit({ stepId, isAgent, preference });
-    },
+  forEachInertLoopBodyStep(args, ({ stepId, step }) => {
+    const { isAgent, preference } = readInertStepInference(
+      step,
+      args.context,
+      stepId,
+    );
+    visit({ stepId, isAgent, preference });
   });
 }
 

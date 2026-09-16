@@ -111,6 +111,8 @@ import {
   enumerateInlineLoopBodies,
   rewriteInlineChildWorkflowBodies,
   runtimeRun,
+  walkWorkflowSteps,
+  LOOP_BODY_DESCENT,
   type LoopFnRegistry,
   type ParkedApprovalOp,
   type ReadParkedApprovalOps,
@@ -1870,9 +1872,27 @@ async function buildChildRunEnv(args: {
   // assemblies produce). The in-process child has no per-step mail
   // address, so the snapshot's `address` mirrors the step id --
   // `createCredentialsBackedAuthorize` reads only `grants`.
+  //
+  // "Every step the child definition declares" reaches past `stepOrder` into
+  // this body's `loop` bodies: a loop iteration runs under the inherited env,
+  // so its steps authorize against THIS snapshot under their own plain ids. A
+  // snapshot built from `stepOrder` alone leaves a loop nested one rung down
+  // with no entry, and the authorize throws on the body's first tool call. The
+  // capped set applies to them unchanged -- the cap is taken once, against the
+  // spawned body, and a loop inherits its enclosing run's authority rather than
+  // narrowing it again.
+  const credentialStepIds = new Set<string>();
+  walkWorkflowSteps({
+    definition: rewrittenDefinition,
+    descent: LOOP_BODY_DESCENT,
+    context: "sidecar child credentials snapshot: ",
+    visit: ({ stepId }) => {
+      credentialStepIds.add(stepId);
+    },
+  });
   const contentHash = await hashGrants(childGrants);
   const credentialsSnapshot: CredentialsSnapshot = {
-    steps: rewrittenDefinition.stepOrder.map((stepId) => ({
+    steps: [...credentialStepIds].map((stepId) => ({
       stepId,
       address: stepId,
       grants: childGrants,

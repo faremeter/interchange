@@ -33,6 +33,7 @@ export {
 export { extractFoldedBody, type FoldedBody } from "./fold-synthesis";
 export {
   enumerateInertBodies,
+  inertFlatNamespaceStepIds,
   inertLoopBody,
   type EnumeratedInertBody,
   type InertBodyStepPreference,

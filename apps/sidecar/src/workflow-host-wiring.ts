@@ -73,7 +73,10 @@ import {
   type SourceRefPin,
 } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN, projectLiveToInert } from "@intx/workflow";
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
+import {
+  deriveWorkflowRunRepoId,
+  inertFlatNamespaceStepIds,
+} from "@intx/workflow-deploy";
 
 import {
   applyFrozenWorkflowClosure,
@@ -368,10 +371,13 @@ function createStepStrategy(args: {
  *   - `runId` absent (deploy time): write every step's grants into its
  *     own `agent-state` repo at `STEP_GRANTS_PATH`, keyed by the same
  *     `deriveStepRepoId` the supervisor reads with, so read and write
- *     address the same repo. The write is on the spawn critical path: a
- *     failure rejects the deploy (the caller's `finally` unwinds the
- *     partial state) rather than spawning a child that would fail every
- *     authorize closed against an empty grant set.
+ *     address the same repo. `stepOrder` here is the deployment's whole
+ *     flat step-id namespace, not the bare top-level order, because the
+ *     supervisor assembles a snapshot entry for every loop-body step too.
+ *     The write is on the spawn critical path: a failure rejects the
+ *     deploy (the caller's `finally` unwinds the partial state) rather
+ *     than spawning a child that would fail every authorize closed
+ *     against an empty grant set.
  *
  *   - `runId` present (per-run delivery): write a single
  *     `runs/<runId>/grants.json` into the deployment's `workflow-run`
@@ -435,7 +441,11 @@ export type AssembleRunCredentialsSnapshotOpts = {
   anchorRunId: string;
   /** Run whose per-run grants file is read. */
   runId: string;
-  /** Step ids in `stepOrder`; the per-run grants apply uniformly across them. */
+  /**
+   * Every step id the snapshot must cover -- the deployment's flat step-id
+   * namespace, loop-body step ids included. The per-run grants apply
+   * uniformly across them.
+   */
   stepOrder: readonly string[];
   /** Per-step mail-address derivation. */
   deriveStepAddress: DeriveStepAddress;
@@ -693,10 +703,12 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    */
   stepCount: number;
   /**
-   * Step ids in the deployed `WorkflowDefinition`'s `stepOrder`. The
+   * Every step id in the deployment's flat step-id namespace: its
+   * `stepOrder` plus the step ids of every `loop` body it carries. The
    * `onRunStart` grants sink walks these to assemble the per-run
-   * credentialsSnapshot from each step's `agent-state` repo, so the sink
-   * needs the ordered ids rather than the bare count.
+   * credentialsSnapshot, so the sink needs the ids rather than the bare
+   * count -- and it needs the loop-body ids too, because a loop iteration
+   * inherits the parent run's env and authorizes against this same snapshot.
    */
   stepOrder: readonly string[];
   /** Deployment's mail address. */
@@ -1710,6 +1722,19 @@ export function createSidecarDeployRouter(deps: {
       multistepDeriveStepAddress,
     });
 
+    // Every step id the deployment's credentials snapshot must cover. This is
+    // NOT `stepOrder`: a `loop` body runs in-process as a child run inheriting
+    // the parent's env, so a body step authorizes against the SAME snapshot the
+    // top-level steps do, keyed by its own plain step id. A snapshot built from
+    // `stepOrder` alone carries no entry for it and the child's authorize
+    // throws on the body's first tool call. The address/repo strategy above
+    // stays on `stepOrder`, because the head/step collapse is a property of the
+    // deployment's own step count, not of what a body can run.
+    const credentialStepIds = inertFlatNamespaceStepIds({
+      definition: spec.definition,
+      context: "sidecar deploy router credentials snapshot: ",
+    });
+
     // Unwind every piece of spawn state if any step in this block throws,
     // so a failed spawn leaks no freshly-spawned workflow-process child,
     // `activeSupervisors` entry, transport registration, or multistep
@@ -1801,7 +1826,7 @@ export function createSidecarDeployRouter(deps: {
         workflowRunRef: "refs/heads/main",
         runId,
         stepCount: spec.definition.stepOrder.length,
-        stepOrder: spec.definition.stepOrder,
+        stepOrder: credentialStepIds,
         deploymentMailAddress: spec.agentAddress,
         ...(credentialDelivery !== undefined ? { credentialDelivery } : {}),
         deriveStepAddress: stepStrategy.deriveStepAddress,
@@ -1894,14 +1919,13 @@ export function createSidecarDeployRouter(deps: {
         hubKeyRecorded = true;
       }
 
-      const stepOrder = [...spec.definition.stepOrder];
       // Warm-keep is the single-step launched-agent deploy: the sole step
       // IS the long-lived agent, so the child warm-keeps it across
       // messages. A multi-step deploy keeps instantiate-send-teardown per
       // step. The signal is carried explicitly down through the spawn env.
       const warmKeep = spec.definition.stepOrder.length === 1;
       const spawnOpts: SpawnOpts = {
-        stepOrder,
+        stepOrder: [...credentialStepIds],
         definitionHash,
         warmKeep,
         onInferenceEvent: (event) => {
@@ -2410,10 +2434,19 @@ export function createSidecarDeployRouter(deps: {
       // credentialsSnapshot. Write the operator-approved
       // `frame.config.grants` to the same repo the supervisor reads via
       // `deriveStepRepoId`, before the spawn core, so the read sees them.
+      //
+      // The write covers the deployment's whole flat step-id namespace, loop
+      // body steps included: the supervisor assembles a snapshot entry for each
+      // of them, and an entry read out of a repo that was never written carries
+      // an empty grant set, which denies the body every resource the deploy
+      // approved.
       await writeStepGrants({
         repoStore: deps.repoStore,
         anchorRunId: runId,
-        stepOrder: effectiveDefinition.stepOrder,
+        stepOrder: inertFlatNamespaceStepIds({
+          definition: effectiveDefinition,
+          context: "sidecar deploy router grants bridge: ",
+        }),
         deriveStepRepoId: stepStrategy.deriveStepRepoId,
         grants: frame.config.grants,
       });
