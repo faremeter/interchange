@@ -1358,22 +1358,24 @@ onTrigger-body path. A deployment restored from a record written before body
 sources moved into it (its `bodySources` absent) falls back to the legacy
 plaintext `assets/workflow/<childBodyRef>/sources.json` for the missing bodies.
 
-**Per-step tools.** Unlike the onTrigger-body path (which runs toolless), a
-`childWorkflow` step runs real tools — through the same **source-tools** arm the
-top-level source step invoker uses. The child holds the live, re-verified
-`WorkflowDefinition`, so each child step's agent carries live `toolFactories`;
-the invoker builds its env with `sourceTools: true` (and the parent's
-`closurePackageDir` for plugin materialization), which feeds those live factories
-straight into the tool slot. No tool deploy tree is staged and no tool-mark floor
+**Per-step tools.** Every spawned child's steps run real tools — a
+`childWorkflow` step and an onTrigger section body step alike — through the same
+**source-tools** arm the top-level source step invoker uses. Tools are available
+wherever inference runs; see the invariant in `packages/workflow/README.md`. The
+child holds the live, re-verified `WorkflowDefinition`, so each child step's
+agent carries live `toolFactories`; the invoker builds its env with
+`sourceTools: true` (and the parent's `closurePackageDir` for plugin
+materialization), which feeds those live factories straight into the tool slot. No tool deploy tree is staged and no tool-mark floor
 is recorded: a source tool's runtime name is the bare `definition.name`, for
 which the capability walk already emitted a `tool:<name>` grant into the
 credentials snapshot, so the snapshot authorizes it directly (the floor exists
 only to compensate a _pinned_ tool's namespaced name, which the walk never saw).
 The invoker must not fall through to the pinned-tool arm — with no staged tree it
 resolves the child step's address against the _parent_ deployment's mailbox and
-step count and returns an empty tool set silently, a fail-quiet path a
-tool-bearing child must never take. `sourceTools` and `toolless` are mutually
-exclusive; the child takes `sourceTools`.
+step count and returns an empty tool set silently, a fail-quiet path a spawned
+child must never take. This also keeps a body step whose id collides with a
+parent step id from reading the parent step's tools: the source arm never
+consults the deploy tree at all.
 
 **Grants (least-privilege).** The operator approves the transitive capability
 set: the capability walk folds an inline child's grants into the spawning

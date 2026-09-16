@@ -6,7 +6,7 @@
 // `authorize` (parent grants), `effects`, and the durable shared
 // `repoStore`/`blobs` -- so tool, action, grant, and inference-source behaviour
 // matches the in-process iteration this replaces. An onTrigger body, by
-// contrast, runs in a fresh capped/toolless env; a loop is the parent's own
+// contrast, runs in a fresh capped env; a loop is the parent's own
 // bounded rework, so parent-env inheritance is what it IS.
 //
 // Two things are NOT inherited:

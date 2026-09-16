@@ -747,8 +747,8 @@ export interface SidecarStepBuildEnvDeps {
    * resolver `fetchFull` verifies signatures against. When present, the warm
    * agent's `mail_read` / `mail_search` / `mail_wait` resolve against the
    * committed mailbox rather than throwing "not wired". Absent for a build that
-   * owns no inbound mailbox (the toolless onTrigger body), whose transport
-   * inbound stays inert.
+   * owns no inbound mailbox (a spawned child or an onTrigger body), whose
+   * transport inbound stays inert.
    */
   inbound?: SupervisorBackedTransportInbound;
   /** Per-step tool-loader caps (cache + registry tarball size). */
@@ -800,7 +800,7 @@ export interface SidecarStepBuildEnvDeps {
    * `req.agent.toolFactories`. Those are the same `AnnotatedToolFactory`
    * callables `materializeStepTools` would produce, bare-named (no
    * namespacing loader runs), so the existing tool-bearing agent factory
-   * consumes them unchanged. Mutually exclusive with `toolless`.
+   * consumes them unchanged.
    *
    * The source-ref lineage stages no `tool-packages-manifest.json`, so
    * `materializeStepTools` would find nothing and return empty tools; this
@@ -821,23 +821,10 @@ export interface SidecarStepBuildEnvDeps {
    * feeds the resulting plugin factories into the per-step plugin chain. A
    * plugin package contributes no agent-visible tool factory, so this closure
    * load is the only channel that reaches an `env.plugins` a source workflow's
-   * posix bundle consumes. Undefined on a toolless deploy, which never
-   * materializes plugins from a closure.
+   * posix bundle consumes. Undefined on a build that materializes pinned tool
+   * packages instead, which reads no closure.
    */
   closurePackageDir?: string;
-  /**
-   * Build a TOOLLESS env: skip tool materialization entirely and attach an
-   * empty tool runtime. Set for an onTrigger body step. A body agent is
-   * guaranteed toolless by the deploy-time guard (a tool-bearing body agent is
-   * rejected at deploy, INTR-310), and -- critically -- the body child runs
-   * under the PARENT deployment's `mailboxAddress`/`stepCount`, so resolving a
-   * body step's deploy tree through `stepDeployTreeDir` would read the PARENT
-   * step's tools for a body stepId that happens to collide with a parent step
-   * id. Skipping materialization makes the toolless-body invariant structural
-   * rather than incidental on non-collision. `recordToolMarkFloor` is not
-   * called in this mode (there is no floor to record).
-   */
-  toolless: boolean;
 }
 
 /**
@@ -890,11 +877,12 @@ async function materializeSourcePluginFactories(
  * a real agent against real storage.
  */
 /**
- * The per-run credential inputs a tool-bearing build resolves the step's
- * `credentials` wiring from. The live material cell and the grants resolver
- * ride in from the run child (per-run state); the provider registry is
- * sidecar-static and combined in at the invoke-step boundary. Absent for a
- * toolless build (an onTrigger body), which assembles no credentials.
+ * The per-run credential inputs a build resolves the step's `credentials`
+ * wiring from. The live material cell and the grants resolver ride in from the
+ * run child (per-run state); the provider registry is sidecar-static and
+ * combined in at the invoke-step boundary. Absent when no credential material
+ * was threaded, which leaves the step's inference reader and tool credentials
+ * unwired.
  */
 interface SidecarStepCredentialContext {
   readonly materialCell: CredentialMaterialCell;
@@ -1042,12 +1030,7 @@ export function createSidecarStepBuildEnv(
     const workdir = path.join(storeDir, "workspace");
     await fs.promises.mkdir(workdir, { recursive: true });
 
-    // Assemble the step's tool runtime. Three arms:
-    //
-    //   - Toolless body step: empty tools, no manifest read. A body stepId
-    //     that collides with a parent step id can never read the parent's
-    //     deploy tree; the body agent is guaranteed toolless by the deploy
-    //     guard, so there is nothing to materialize and no floor to record.
+    // Assemble the step's tool runtime. Two arms:
     //
     //   - Source-ref lineage (`sourceTools`): run the step agent's OWN
     //     evaluated tool factories. The child holds the live re-verified
@@ -1077,28 +1060,23 @@ export function createSidecarStepBuildEnv(
     //     surfaces loudly through `materializeStepTools` rather than degrading to
     //     empty tools.
     const materialization: StepToolMaterialization =
-      deps.toolless === true
-        ? { factories: [], pluginFactories: [] }
-        : deps.sourceTools === true
-          ? {
-              factories: req.agent.toolFactories.map((factory) => ({
-                packageName: factory.id,
-                declaredCredentials: [],
-                factory,
-              })),
-              pluginFactories: await materializeSourcePluginFactories(
-                deps,
-                req,
-              ),
-            }
-          : await materializeStepTools({
-              dataDir: deps.dataDir,
-              mailboxAddress: deps.mailboxAddress,
-              stepId,
-              stepCount: deps.stepCount,
-              storeDir,
-              cache: deps.cache,
-            });
+      deps.sourceTools === true
+        ? {
+            factories: req.agent.toolFactories.map((factory) => ({
+              packageName: factory.id,
+              declaredCredentials: [],
+              factory,
+            })),
+            pluginFactories: await materializeSourcePluginFactories(deps, req),
+          }
+        : await materializeStepTools({
+            dataDir: deps.dataDir,
+            mailboxAddress: deps.mailboxAddress,
+            stepId,
+            stepCount: deps.stepCount,
+            storeDir,
+            cache: deps.cache,
+          });
 
     // Derive and record the step's tool-mark floor from the just-loaded
     // factories' static definitions. A pinned tool loads here in the
@@ -1109,14 +1087,12 @@ export function createSidecarStepBuildEnv(
     // evaluator's `baseStepId(stepId)` lookup resolves for both a plain
     // step and a `map` iteration's scoped id.
     //
-    // Skipped in the toolless mode: there are no factories, so recording an
-    // empty floor would only risk clobbering a colliding parent step id's
-    // real floor in a shared map. Skipped on the source-ref lineage too: a
-    // source tool's runtime name is the bare `definition.name` the capability
-    // walk already emitted a `tool:<name>` grant for, so the credentials
-    // snapshot authorizes it directly with the correct effect -- no floor is
-    // needed, and recording one would blur that invariant.
-    if (deps.toolless !== true && deps.sourceTools !== true) {
+    // Skipped on the source-ref lineage: a source tool's runtime name is the
+    // bare `definition.name` the capability walk already emitted a `tool:<name>`
+    // grant for, so the credentials snapshot authorizes it directly with the
+    // correct effect -- no floor is needed, and recording one would blur that
+    // invariant.
+    if (deps.sourceTools !== true) {
       deps.recordToolMarkFloor(
         baseStepId(stepId),
         deriveToolMarkFloorGrants(
@@ -1135,7 +1111,7 @@ export function createSidecarStepBuildEnv(
     // Inbound (`deps.inbound`, present for the warm single-step agent) makes
     // `mail_read` / `mail_search` / `mail_wait` resolve locally against a fresh
     // committed snapshot of the deployment's substrate `INBOX`; a build that
-    // owns no inbound mailbox (the toolless body) leaves it undefined and the
+    // owns no inbound mailbox (a spawned child) leaves it undefined and the
     // inbound methods stay inert. Both `transport` and `address` are the env
     // keys `@intx/tools-mail`'s sidecar bundle declares in its `requires`.
     const transport = createSupervisorBackedTransport(
@@ -1195,71 +1171,45 @@ export function createSidecarStepBuildEnv(
     // handing it to `agentFactory`; object spread preserves own
     // symbol-keyed properties, so the slot survives the spread.
     attachStepTools(env, materialization);
-    // Attach the credential wiring for a tool-bearing build so the
-    // `agentFactory` can assemble each bundle's consumer-scoped `credentials`
-    // capability. Grants are wired as a THUNK, resolved (and cast to the
-    // sidecar's `GrantRule` grammar, the same cast `evaluateGrantsAdapter`
-    // makes) only when a package actually needs a capability -- a step with no
-    // credential-consuming package never reads them, so a self-discovery
-    // resume that precedes the grants barrier does not fault on a missing
-    // snapshot. Omitted for a toolless build, which carries no
-    // `credentialContext` and assembles no credentials.
+    // Attach the credential wiring so the `agentFactory` can assemble each
+    // bundle's consumer-scoped `credentials` capability. Grants are wired as a
+    // THUNK, resolved (and cast to the sidecar's `GrantRule` grammar, the same
+    // cast `evaluateGrantsAdapter` makes) only when a package actually needs a
+    // capability -- a step with no credential-consuming package never reads
+    // them, so a self-discovery resume that precedes the grants barrier does not
+    // fault on a missing snapshot. Omitted when no credential context was
+    // threaded, in which case a credential-consuming tool fails closed and loud
+    // at its own `resolve("credentials")`.
     if (credentialContext !== undefined) {
       // Inference resolves its source's secret from the SAME live cell tool
       // credentials resolve from, by `credentialId`, so the step's sources carry
-      // no inline key and the child never holds the cipher key. The reader is set
-      // whenever a context is present -- a toolless onTrigger body carries a
-      // context for the reader alone.
+      // no inline key and the child never holds the cipher key.
       env.readCurrentMaterial = createInferenceCredentialResolver(
         credentialContext.materialCell,
       );
-      // Attach the tool `credentials` capability only for a tool-bearing build. A
-      // toolless body has no tool grants and assembles no capability, so it skips
-      // the wiring while still reading the run's live material for inference.
-      if (deps.toolless !== true) {
-        attachStepCredentialWiring(env, {
-          materialCell: credentialContext.materialCell,
-          resolveGrants: () =>
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolveStepGrants returns unknown[] at the run-child boundary; the sidecar owns the GrantRule grammar
-            credentialContext.resolveStepGrants(stepId) as readonly GrantRule[],
-          providers: credentialContext.providers,
-        });
-      }
+      attachStepCredentialWiring(env, {
+        materialCell: credentialContext.materialCell,
+        resolveGrants: () =>
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolveStepGrants returns unknown[] at the run-child boundary; the sidecar owns the GrantRule grammar
+          credentialContext.resolveStepGrants(stepId) as readonly GrantRule[],
+        providers: credentialContext.providers,
+      });
     }
     return env;
   };
 }
 
 /**
- * Real per-step invoker for a childWorkflow child (INTR-310). It widens the
- * workflow-runtime `StepInvoker` with the child's credentials-backed
- * `authorize` (the seam that resolves each tool call against the run's
- * grants), the child's own per-step inference `sourcesRef` (built fresh per
- * spawn from the env-delivered body sources, disjoint from the top-level's
- * mutable table), and the parent run's `onEvent` funnel (so the child's live
- * inference events reach the hub timeline). Same shape as
- * `SidecarBodyStepInvoker`; the two differ only in whether the build env is
- * tool-bearing (childWorkflow, source-tools) or toolless (onTrigger body).
+ * Real per-step invoker for a spawned child's steps -- a childWorkflow child
+ * and an onTrigger section body alike. It widens the workflow-runtime
+ * `StepInvoker` with the child's credentials-backed `authorize` (the seam that
+ * resolves each tool call against the run's grants), the child's own per-step
+ * inference `sourcesRef` (built fresh per spawn from the env-delivered body
+ * sources, disjoint from the top-level's mutable table), and the parent run's
+ * `onEvent` funnel (so the child's live inference events reach the hub
+ * timeline).
  */
 export type SidecarChildStepInvoker = (
-  req: StepInvokeRequest,
-  authorize: WorkflowAuthorizeFn,
-  sourcesRef: SourcesSnapshotRef,
-  onEvent: (event: InferenceEvent) => void,
-  credentialContext?: SidecarStepCredentialContext,
-) => Promise<StepInvokeResult>;
-
-/**
- * Real per-step invoker for an onTrigger BODY child. Structurally identical to
- * `SidecarChildStepInvoker`; the two differ only in the build env the wrapper
- * uses -- an onTrigger body is guaranteed toolless (the deploy guard rejects a
- * tool-bearing body), so this invoker builds a toolless env, while a
- * childWorkflow step builds a tool-bearing source-tools env. Both run a real
- * agent through `createWorkflowStepInvoker`, resolving inference against the
- * child's own per-step `sourcesRef` and funnelling live events through
- * `onEvent` to the hub timeline.
- */
-export type SidecarBodyStepInvoker = (
   req: StepInvokeRequest,
   authorize: WorkflowAuthorizeFn,
   sourcesRef: SourcesSnapshotRef,
@@ -1316,6 +1266,10 @@ interface SidecarRunChildDeps {
    * factory's default (`childInvokeStep` in
    * `createSidecarSubstrateFactory`) runs a real, tool-bearing agent
    * against the child's own staged sources; a test may inject its own.
+   * One invoker serves every spawned child's steps -- a childWorkflow
+   * child, an onTrigger section body, and a body's own grandchildren --
+   * because each of them runs real inference and so must be able to call
+   * tools.
    *
    * The invoker receives the child's credentials-backed `authorize`
    * alongside the request, mirroring the workflow-process child's
@@ -1324,15 +1278,6 @@ interface SidecarRunChildDeps {
    * gates each tool call against the run's grants.
    */
   invokeStep: SidecarChildStepInvoker;
-  /**
-   * Toolless per-step invoker used ONLY for an onTrigger body child's own
-   * steps (INTR-310). `createSidecarSpawnSuspendableChild` wires it onto the
-   * body env so a guaranteed-toolless body runs through a toolless build env;
-   * the tool-bearing `invokeStep` above stays the seam for childWorkflow spawns
-   * and for the body's own childWorkflow grandchildren. Absent runs the body's
-   * steps through the tool-bearing invoker (a test-only shape).
-   */
-  bodyInvokeStep?: SidecarBodyStepInvoker;
   /**
    * Every spawned body's plaintext inference-source table, keyed by definition
    * id, decrypted sidecar-side from the run record and delivered through the
@@ -1358,10 +1303,10 @@ interface SidecarRunChildDeps {
   evaluateGrants: GrantEvaluator;
   /**
    * Sidecar-static credential provider registry, shared with the top level.
-   * The child's tool-bearing build combines it with the run's live material
-   * cell and the child's capped grants to assemble each bundle's consumer
-   * `credentials` capability; the toolless body build carries it too so its
-   * inference reader resolves against the same material.
+   * The child's build combines it with the run's live material cell and the
+   * child's capped grants to assemble each bundle's consumer `credentials`
+   * capability, and to resolve its inference source secret against the same
+   * material.
    */
   credentialProviders: CredentialProviderRegistry;
   /** Director registry the child runtime uses; defaults to the canonical built-ins. */
@@ -1630,21 +1575,16 @@ export function createSidecarSpawnSuspendableChild(
       childRunId,
       parentRunId,
       // The live event sink is always threaded (both a body step and a
-      // grandchild childWorkflow step run a real agent). The BODY env adds a
-      // toolless `bodyStepInvoker` when the factory wired one, so a body's
-      // guaranteed-toolless steps run through the toolless build env rather than
-      // the tool-bearing childWorkflow invoker. A body's own childWorkflow
-      // grandchildren, built via the internal `createSidecarRunChild(deps)`
-      // above, run through the tool-bearing `deps.invokeStep`.
+      // grandchild childWorkflow step run a real agent). The body's own steps
+      // and its childWorkflow grandchildren, built via the internal
+      // `createSidecarRunChild(deps)` above, both run through the tool-bearing
+      // `deps.invokeStep`.
       onEvent,
       // The run's live credential-material cell so the body's inference resolves
       // its source secret against the parent's current delivery; a grandchild
       // spawned from the body inherits it through the recursive spawnChild.
       ...(credentialMaterial !== undefined
         ? { materialCell: credentialMaterial }
-        : {}),
-      ...(deps.bodyInvokeStep !== undefined
-        ? { bodyStepInvoker: deps.bodyInvokeStep }
         : {}),
     });
 
@@ -1760,14 +1700,6 @@ async function buildChildRunEnv(args: {
   childRunId: string;
   parentRunId: string;
   /**
-   * Toolless body-step invoker for the onTrigger body path. Present ONLY when
-   * this env hosts an onTrigger body: `createSidecarSpawnSuspendableChild`
-   * passes it so the body's (guaranteed toolless) agent steps run for real. A
-   * childWorkflow env runs its steps through the real, tool-bearing
-   * `deps.invokeStep` instead.
-   */
-  bodyStepInvoker?: SidecarBodyStepInvoker;
-  /**
    * Per-run live inference-event sink, threaded from the parent run's event
    * channel. Required for both paths -- a childWorkflow step and an onTrigger
    * body step both run a real agent whose inference the hub stream must see, so
@@ -1798,7 +1730,6 @@ async function buildChildRunEnv(args: {
     definition,
     childRunId,
     parentRunId,
-    bodyStepInvoker,
     onEvent,
     materialCell,
   } = args;
@@ -1963,13 +1894,11 @@ async function buildChildRunEnv(args: {
   // Assemble the per-step credential context from the run's live material cell
   // (threaded in from the parent) when one is present, so the child's inference
   // resolves its source secret by `credentialId` against the parent's current
-  // delivery. The childWorkflow path is tool-bearing, so its context resolves
-  // the child's capped grants (mirroring the top level's snapshot lookup) and
-  // carries the sidecar-static providers for the tool `credentials` capability.
-  // The toolless BODY path needs the inference reader only: its build env sets
-  // the reader but attaches no tool wiring (gated on `toolless`), so its grants
-  // resolver is never read. Absent when no material was threaded (a non-sidecar
-  // executor), which leaves the child's inference reader unset.
+  // delivery. Every spawned child's steps are tool-bearing, so the context
+  // resolves the child's capped grants (mirroring the top level's snapshot
+  // lookup) and carries the sidecar-static providers for the tool `credentials`
+  // capability. Absent when no material was threaded (a non-sidecar executor),
+  // which leaves the child's inference reader unset.
   const childCredentialContext: SidecarStepCredentialContext | undefined =
     materialCell === undefined
       ? undefined
@@ -1988,23 +1917,15 @@ async function buildChildRunEnv(args: {
           },
           providers: deps.credentialProviders,
         };
-  const bodyCredentialContext: SidecarStepCredentialContext | undefined =
-    materialCell === undefined
-      ? undefined
-      : {
-          materialCell,
-          resolveStepGrants: () => [],
-          providers: deps.credentialProviders,
-        };
   // Per-step invocation seam. The runtime body invokes `env.invokeStep` with
   // the request alone; the wrapper forwards the child's credentials-backed
   // authorize (so each tool call gates against the inherited grants), the run's
   // `sourcesRef`, the event funnel, and the credential context (so the step's
-  // inference reads the run's live material). The childWorkflow path runs a real
-  // tool-bearing agent (`deps.invokeStep`, the source-tools arm); the onTrigger
-  // BODY path runs a toolless agent (`bodyStepInvoker`). Both read the same
+  // inference reads the run's live material). One invoker serves both the
+  // childWorkflow path and the onTrigger body path: each runs a real
+  // tool-bearing agent through the source-tools arm against the same
   // `sourcesRef`.
-  let invokeStep: WorkflowRuntimeEnv["invokeStep"] = (req) =>
+  const invokeStep: WorkflowRuntimeEnv["invokeStep"] = (req) =>
     deps.invokeStep(
       req,
       authorize,
@@ -2012,16 +1933,6 @@ async function buildChildRunEnv(args: {
       childOnEvent,
       childCredentialContext,
     );
-  if (bodyStepInvoker !== undefined) {
-    invokeStep = (req) =>
-      bodyStepInvoker(
-        req,
-        authorize,
-        sourcesRef,
-        childOnEvent,
-        bodyCredentialContext,
-      );
-  }
   const env: WorkflowRuntimeEnv = {
     repoStore,
     scheduler: deps.scheduler,
@@ -2039,7 +1950,7 @@ async function buildChildRunEnv(args: {
   // Wire loop-iteration spawning for a `loop` nested in this body. Assigned
   // AFTER the env literal because the iteration host closes over `env`: a loop
   // iteration re-enters THIS body env, so a nested loop composes and inherits
-  // the body's toolless step invoker, capped grants, and in-memory spawnChild.
+  // the body's step invoker, capped grants, and in-memory spawnChild.
   //
   // This deliberately REPLICATES the top-level loop host in run-child.ts rather
   // than sharing a helper. The two live in different packages and differ in the
@@ -2382,7 +2293,6 @@ export function createSidecarSubstrateFactory(
       recordToolMarkFloor: (stepId, grants) => {
         toolMarkFloorByStep.set(stepId, grants);
       },
-      toolless: false,
       // Source-ref is the only deploy lineage: the child runs each step agent's
       // own evaluated tool factories (fed from `req.agent.toolFactories`) from
       // the materialized closure, never a pinned tool-package manifest off a
@@ -2393,8 +2303,8 @@ export function createSidecarSubstrateFactory(
       closurePackageDir: env.spawn.closurePackageDir,
       // Activate the warm agent's inbound mail surface: `mail_read` /
       // `mail_search` / `mail_wait` resolve against the deployment's committed
-      // substrate `INBOX` through this bundle. The body build below omits it
-      // (a toolless body owns no inbound mailbox).
+      // substrate `INBOX` through this bundle. The spawned-child build below
+      // omits it (a spawned child owns no warm inbound mailbox).
       inbound: transportInbound,
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
@@ -2418,17 +2328,29 @@ export function createSidecarSubstrateFactory(
       builtinCredentialProviders(),
     );
 
-    // childWorkflow step build env (INTR-310). A childWorkflow child's steps run
-    // real, TOOL-BEARING agents through the same source-tools arm the top level
-    // uses: the child holds the live re-verified definition, so each step agent
+    // Spawned-child step build env (INTR-310). Every spawned child's steps --
+    // a childWorkflow child's and an onTrigger section body's alike -- run real,
+    // TOOL-BEARING agents through the same source-tools arm the top level uses:
+    // the child holds the live re-verified definition, so each step agent
     // carries live `toolFactories` fed from `req.agent.toolFactories`, and the
-    // source arm materializes declared plugins from the shared closure. Built
-    // COLD per invocation -- no `durableConversation`/warm hooks (a fan-out
-    // branch is a fresh run per spawn) and no `inbound` (a spawned child owns no
-    // warm inbound mailbox; inbound-reading tools stay inert). The source arm
-    // records no tool-mark floor (a source tool's bare `tool:<name>` grant is
-    // already in the credentials snapshot), so the floor recorder throw-asserts
-    // that invariant.
+    // source arm materializes declared plugins from the shared closure. Tools
+    // are available wherever inference runs, so a body agent gets the same
+    // build a top-level step agent gets (see the tool-availability invariant in
+    // `packages/workflow/README.md`).
+    //
+    // Built COLD per invocation -- no `durableConversation`/warm hooks (a
+    // fan-out branch and a section body are each a fresh run per spawn) and no
+    // `inbound` (a spawned child owns no warm inbound mailbox; inbound-reading
+    // tools stay inert). The source arm records no tool-mark floor (a source
+    // tool's bare `tool:<name>` grant is already in the credentials snapshot),
+    // so the floor recorder throw-asserts that invariant.
+    //
+    // The source arm also keeps the body's tools scoped correctly by
+    // construction: a body child runs under the PARENT deployment's
+    // `mailboxAddress`/`stepCount`, so a body step whose id collides with a
+    // parent step id would read the PARENT step's tools if tools were resolved
+    // off the deploy tree. Feeding each agent its own evaluated
+    // `req.agent.toolFactories` never consults that tree.
     const coldChildBuildStepEnv = createSidecarStepBuildEnv({
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
@@ -2443,22 +2365,22 @@ export function createSidecarSubstrateFactory(
           "source-tools child build-env must not record a tool-mark floor",
         );
       },
-      toolless: false,
       sourceTools: true,
       closurePackageDir: env.spawn.closurePackageDir,
     });
-    // childWorkflow step invoker (INTR-310). Mirrors `bodyInvokeStep` below but
-    // tool-bearing: it runs a real agent through `createWorkflowStepInvoker`,
-    // resolving inference against the child's own per-step `sourcesRef` (staged
-    // at deploy, read fresh per spawn) and funnelling live events to the parent
-    // run's channel. `buildChildRunEnv` threads in the run's `credentialContext`
-    // (the live material cell, the child's capped grants, the sidecar-static
-    // providers), so the tool-bearing build attaches each bundle's `credentials`
-    // capability and the step's inference resolves its source secret against the
-    // run's live material. Absent when no material was threaded, in which case a
-    // tool that declares a credential consumer fails closed and loud at its own
-    // `resolve("credentials")`, never silently. Wired as `childRunDeps.invokeStep`,
-    // so it also covers a body's own childWorkflow grandchildren.
+    // Spawned-child step invoker (INTR-310). It runs a real agent through
+    // `createWorkflowStepInvoker`, resolving inference against the child's own
+    // per-step `sourcesRef` (staged at deploy, read fresh per spawn) and
+    // funnelling live events to the parent run's channel. `buildChildRunEnv`
+    // threads in the run's `credentialContext` (the live material cell, the
+    // child's capped grants, the sidecar-static providers), so the build
+    // attaches each bundle's `credentials` capability and the step's inference
+    // resolves its source secret against the run's live material. Absent when no
+    // material was threaded, in which case a tool that declares a credential
+    // consumer fails closed and loud at its own `resolve("credentials")`, never
+    // silently. Wired as `childRunDeps.invokeStep`, so it covers every spawned
+    // child's steps: a childWorkflow child, an onTrigger section body, and a
+    // body's own childWorkflow grandchildren.
     const childInvokeStep: SidecarChildStepInvoker = (
       req,
       authorize,
@@ -2470,64 +2392,6 @@ export function createSidecarSubstrateFactory(
         workflowAuthorize: authorize,
         buildEnv: (buildReq) =>
           coldChildBuildStepEnv(buildReq, sourcesRef, credentialContext),
-        agentFactory: stepAgentFactory,
-        sourcesRef,
-        onEvent,
-      })(req);
-
-    // onTrigger BODY step invoker (INTR-310). Unlike a childWorkflow child, an
-    // onTrigger section body IS staged: its definition and per-step inference
-    // sources land on disk beside each other at deploy, and its agents are
-    // guaranteed toolless (a tool-bearing body agent is rejected at deploy). So
-    // a body agent step runs for real through the same `createWorkflowStepInvoker`
-    // the top level uses -- built COLD per invocation (no warm registry: a body
-    // is a fresh run per section event, so no durableConversation, warmCache, or
-    // run-boundary mirror) and TOOLLESS (the build-env skips tool
-    // materialization, so a body stepId colliding with a parent step id can
-    // never read the parent's tools). The per-body `sourcesRef` is threaded in
-    // by `buildChildRunEnv`, disjoint from the top level's. `onEvent` is the
-    // per-run event funnel `buildChildRunEnv` threads in from the parent run's
-    // event channel, so a body agent's live inference events reach the hub
-    // stream at the deployment-level granularity the top level already has
-    // (per-run attribution stays durable via runs/<childRunId>/events/).
-    const coldBodyBuildStepEnv = createSidecarStepBuildEnv({
-      dataDir: validated.SIDECAR_DATA_DIR,
-      workflowRunRepoId,
-      signer: conversationSigner,
-      mailboxAddress: env.spawn.mailboxAddress,
-      stepCount: env.spawn.stepCount,
-      outboundMailBridge: env.outboundMailBridge,
-      cache: stepToolCache,
-      adapters: childAdapterRegistry,
-      // The toolless build-env never records a floor (it skips tool
-      // materialization). Assert that invariant rather than silently no-op: a
-      // call here would mean the toolless gate regressed.
-      recordToolMarkFloor: () => {
-        throw new Error(
-          "toolless body build-env must not record a tool-mark floor",
-        );
-      },
-      toolless: true,
-      // A body agent is guaranteed toolless (the deploy guard rejects a
-      // tool-bearing body), so the source-ref tool arm never applies here even
-      // on a source-ref parent; the toolless arm wins regardless.
-      sourceTools: false,
-    });
-    const bodyInvokeStep: SidecarBodyStepInvoker = (
-      req,
-      authorize,
-      sourcesRef,
-      onEvent,
-      credentialContext,
-    ) =>
-      createWorkflowStepInvoker({
-        workflowAuthorize: authorize,
-        // A body is guaranteed toolless, so the cold build env attaches no tool
-        // credential wiring; it still sets the inference reader from the context's
-        // live material cell so the body's inference resolves its source secret
-        // against the run's current delivery.
-        buildEnv: (buildReq) =>
-          coldBodyBuildStepEnv(buildReq, sourcesRef, credentialContext),
         agentFactory: stepAgentFactory,
         sourcesRef,
         onEvent,
@@ -2716,17 +2580,13 @@ export function createSidecarSubstrateFactory(
       principal,
       scheduler,
       invokeStep: childInvokeStep,
-      // The onTrigger body path runs real agent steps; the childWorkflow path
-      // (and a body's childWorkflow grandchildren) stay on `invokeStep`.
-      bodyInvokeStep,
       // Plaintext body sources decrypted sidecar-side from the run record; each
       // body path resolves its own table from here by definition id.
       bodySources: parseBodyInferenceSources(validated.WORKFLOW_BODY_SOURCES),
       dataDir: validated.SIDECAR_DATA_DIR,
       evaluateGrants: evaluateGrantsAdapter,
-      // Shared with the top level's `buildStepEnv`: the child's tool-bearing
-      // build combines it with the run's live material and capped grants; the
-      // toolless body build carries it for its inference reader.
+      // Shared with the top level's `buildStepEnv`: a spawned child's build
+      // combines it with the run's live material and capped grants.
       credentialProviders,
       // The shared closure the child re-walks to cap its inherited grants at
       // its declared capabilities. Source-ref only, so always present here.

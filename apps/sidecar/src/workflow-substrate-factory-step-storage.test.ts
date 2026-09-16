@@ -105,7 +105,6 @@ function buildDeps(opts: {
     cache: { cacheMaxBytes: 1_000_000, registryMaxTarballBytes: 1_000_000 },
     adapters: createBuiltinRegistry(),
     recordToolMarkFloor: () => undefined,
-    toolless: false,
     sourceTools: false,
     ...(opts.durableConversation !== undefined
       ? { durableConversation: opts.durableConversation }
