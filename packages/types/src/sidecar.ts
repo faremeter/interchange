@@ -9,6 +9,7 @@
 
 import { type } from "arktype";
 import { GrantWalkSnapshot } from "./grant-snapshot";
+import { ApprovalItem } from "./grants";
 import { WireGrantRule } from "./grant-wire";
 import {
   BoundedApprovalSnapshot,
@@ -589,8 +590,10 @@ export type SourceRefPin = typeof SourceRefPin.infer;
  * definition's bytes come from and the entry module the probe evaluated;
  * `projection` is the inert wire projection the freeze hashed; `closure` is the
  * frozen dependency closure the pin resolved to; `approvedWireHash` is the freeze
- * anchor; `approvedGrants` is the approved grant set (rehydrated to a `Set` on
- * the deploy hand-off). Per-step inference sources are deliberately NOT frozen
+ * anchor; `approvedGrants` is the approved surface -- the walk's grant-shape
+ * strings plus the definition's declared grant requirements, each an
+ * `ApprovalItem` (rehydrated to a `Set` on the deploy hand-off). Per-step
+ * inference sources are deliberately NOT frozen
  * here -- they carry credential secrets and are re-resolved from the launch
  * spec's offering ids at deploy time.
  */
@@ -600,7 +603,7 @@ export const FrozenApprovalBundle = type({
   projection: WorkflowProjectionDefinition,
   closure: ToolPackageManifest,
   approvedWireHash: "string > 0",
-  approvedGrants: "string[]",
+  approvedGrants: ApprovalItem.array(),
 });
 export type FrozenApprovalBundle = typeof FrozenApprovalBundle.infer;
 

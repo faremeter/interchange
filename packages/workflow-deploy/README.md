@@ -27,7 +27,14 @@ Public surface:
   and as the input to the approval gate.
 - `createApprovalSetGate(approvals)` / `createApprovalSourceGate(source)`
   — operator-approval gating against a flat `ApprovalSet` or an async
-  source.
+  source. An `ApprovalSet` holds typed approval items: the grant-shape
+  strings the walk surfaces, and the `GrantRequirement` records a
+  definition declares.
+- `isApprovedGrantRequirement(approvals, requirement)` — whether the
+  operator approved a declared requirement, compared as a whole record
+  (`source`, `resource`, `action`, `effect`, `conditions`). A requirement
+  is multi-axis and has no grant-string form, so the comparison is
+  structural.
 - `pickStepInferenceSource(...)` / `pinInertStepSources(...)` /
   `buildInertProjectionStepSources(...)` / `buildInertBodyStepSources(...)`
   — resolve each step's inference source against the operator-approved
