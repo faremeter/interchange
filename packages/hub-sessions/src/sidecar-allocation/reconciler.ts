@@ -9,6 +9,7 @@ import type {
   AllocatedSidecarTarget,
   SidecarAllocationRouter,
 } from "../ws/sidecar-handler";
+import { SidecarIdentityValidationError } from "../ws/sidecar-handler";
 import { SessionLaunchError } from "../session-service";
 import { DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY } from "../reconciliation-scheduler";
 import {
@@ -435,7 +436,18 @@ export function createSidecarAllocationReconciler({
           "Sidecar connection",
           () =>
             trackAllocationQuery(allocation.id, () =>
-              router.waitForAllocatedSidecar(target, Math.max(0, remaining)),
+              router.waitForAllocatedSidecar(
+                target,
+                Math.max(0, remaining),
+                (validation) => {
+                  // The waiter can expire before a notification lookup settles.
+                  // Retain its exclusion and capacity independently of the wait.
+                  void trackAllocationQuery(
+                    allocation.id,
+                    () => validation,
+                  ).catch(() => undefined);
+                },
+              ),
             ),
           operationTimeoutMs,
         );
@@ -443,9 +455,12 @@ export function createSidecarAllocationReconciler({
     } catch (error) {
       // Let the router report connection expiry. Our outer deadline can expire
       // during lease or identity validation without establishing worker loss.
+      // A failed identity lookup is likewise inconclusive: the worker may be
+      // healthy behind it, so retry instead of releasing the generation.
       if (
         error instanceof ReconciliationLeaseLostError ||
-        error instanceof SidecarOperationTimeoutError
+        error instanceof SidecarOperationTimeoutError ||
+        error instanceof SidecarIdentityValidationError
       )
         throw error;
       await replaceAfterFailure(
@@ -1005,7 +1020,14 @@ export function createSidecarAllocationReconciler({
         allocationId: allocation.id,
         generation: allocation.generation,
       };
-      if (await router.isAllocatedSidecarReady(target)) continue;
+      try {
+        if (await router.isAllocatedSidecarReady(target)) continue;
+      } catch (error) {
+        // Unknown readiness is not absence. Leave the allocation for the next
+        // repair sweep instead of scheduling a reconnect the worker may hold.
+        if (error instanceof SidecarIdentityValidationError) continue;
+        throw error;
+      }
       try {
         await allocationStore.scheduleReconnectIfUnscheduled({
           ...target,
