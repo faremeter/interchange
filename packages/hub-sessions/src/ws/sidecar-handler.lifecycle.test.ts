@@ -9,7 +9,10 @@ import {
   TEST_TARGET,
   tick,
 } from "./sidecar-handler.test-helpers";
-import { createSidecarRouter } from "./sidecar-handler";
+import {
+  createSidecarRouter,
+  SidecarIdentityValidationError,
+} from "./sidecar-handler";
 
 /**
  * The router's timers, driven by the test. The intervals were already
@@ -196,6 +199,28 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     expect(() =>
       router.fenceAllocation(TEST_TARGET.allocationId, 1),
     ).not.toThrow();
+  });
+
+  test("reports a clean timeout when a later validation supersedes a transient failure", async () => {
+    let readinessCalls = 0;
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async (_identity, use) => {
+        if (use !== "readiness") return true;
+        readinessCalls += 1;
+        if (readinessCalls === 1) throw new Error("transient lookup failure");
+        return false;
+      },
+    });
+    const ws = await connectAllocated(router);
+    const waiting = router.waitForAllocatedSidecar(TEST_TARGET, 30);
+    const error = await waiting.catch((cause: unknown) => cause);
+
+    expect(readinessCalls).toBeGreaterThanOrEqual(2);
+    if (!(error instanceof Error)) throw new Error("expected an Error");
+    expect(error).not.toBeInstanceOf(SidecarIdentityValidationError);
+    expect(error.message).toMatch(/Timed out waiting/);
+
+    router.handleClose(ws);
   });
 
   test("tracks connector state only for an address owned by the allocation", async () => {

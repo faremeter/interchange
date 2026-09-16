@@ -54,6 +54,7 @@ import {
   deployCodeSourcedWorkflow,
   recoverSenderDeploy,
   SessionLaunchError,
+  SidecarIdentityValidationError,
   type AgentRepoStore,
   type SidecarAllocationRouter,
 } from "@intx/hub-sessions";
@@ -343,7 +344,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
         expect(await router.isAllocatedWorkflowActive(target)).toBe(true);
         failActivityRead = true;
-        expect(await router.isAllocatedWorkflowActive(target)).toBe(false);
+        await expect(
+          router.isAllocatedWorkflowActive(target),
+        ).rejects.toBeInstanceOf(SidecarIdentityValidationError);
 
         const dataDir = await fs.promises.mkdtemp(
           path.join(os.tmpdir(), "unsent-redeploy-"),

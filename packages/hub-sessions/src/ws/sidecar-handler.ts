@@ -82,6 +82,21 @@ export function isDeployFrameFailure(err: unknown): err is DeployFrameFailure {
   );
 }
 
+/**
+ * Identity validation failed or remained pending at the connection deadline.
+ * Readiness is unknown: the worker may be healthy behind the lookup, so
+ * callers must retry rather than treat this as a missed connection deadline.
+ */
+export class SidecarIdentityValidationError extends Error {
+  constructor(allocationId: string, generation: number, cause?: unknown) {
+    super(
+      `Cannot validate sidecar identity for allocation ${allocationId} generation ${String(generation)}`,
+      { cause },
+    );
+    this.name = "SidecarIdentityValidationError";
+  }
+}
+
 export type SidecarConnection = {
   sidecarId: string;
   identity: SidecarAuthIdentity;
@@ -364,14 +379,24 @@ export type SidecarAllocationRouter = {
    * terminal. Durable identity validation rejects later stale reconnects.
    */
   retireAllocation(target: AllocatedSidecarTarget): void;
-  /** Resolve once the exact authenticated allocation generation is connected. */
+  /**
+   * Resolve once the exact authenticated allocation generation is connected.
+   * Throws `SidecarIdentityValidationError` when readiness cannot be
+   * determined; only confirmed absence surfaces as a connection timeout.
+   * `onValidation` observes notification lookups that may outlive this wait.
+   */
   waitForAllocatedSidecar(
     target: AllocatedSidecarTarget,
     timeoutMs: number,
+    onValidation?: (validation: Promise<boolean>) => void,
   ): Promise<void>;
-  /** Check exact allocated readiness without parking a reconciliation worker. */
+  /**
+   * Check exact allocated readiness without parking a reconciliation worker.
+   * Throws `SidecarIdentityValidationError` when identity validation fails;
+   * `false` means the worker is confirmed absent or stale.
+   */
   isAllocatedSidecarReady(target: AllocatedSidecarTarget): Promise<boolean>;
-  /** Check whether the exact generation already hosts its workflow supervisor. */
+  /** Check for an active supervisor, throwing when identity validation fails. */
   isAllocatedWorkflowActive(target: AllocatedSidecarTarget): Promise<boolean>;
   /** Probe a workflow on the exact provisioned allocation generation. */
   sendProbeToAllocation(
@@ -588,6 +613,9 @@ export function createSidecarRouter(
     resolve(): void;
     reject(error: Error): void;
     timer: ReturnType<typeof setTimeout>;
+    validationFailure?: SidecarIdentityValidationError;
+    validations: Set<Promise<boolean>>;
+    onValidation?: (validation: Promise<boolean>) => void;
   };
   const allocationWaiters = new Map<string, Set<AllocationWaiter>>();
   // agentAddress → ws handle (routing table)
@@ -1428,15 +1456,54 @@ export function createSidecarRouter(
     const waiters = allocationWaiters.get(allocationId);
     const current = allocatedConnections.get(allocationId);
     if (waiters === undefined || current === undefined) return;
-    if (!(await validateSidecarIdentity(current.identity, "readiness"))) return;
+    const matchingWaiters = [...waiters].filter(
+      (waiter) => waiter.generation === current.identity.generation,
+    );
+    if (matchingWaiters.length === 0) return;
+    const validation = Promise.resolve().then(() =>
+      validateSidecarIdentity(current.identity, "readiness"),
+    );
+    for (const waiter of matchingWaiters) {
+      waiter.validations.add(validation);
+      waiter.onValidation?.(validation);
+    }
+    let identityCurrent: boolean;
+    try {
+      identityCurrent = await validation;
+    } catch (cause) {
+      // A failed revalidation leaves the waiters parked: a later register
+      // revalidates, and at expiry the wait reports the failure rather than a
+      // missed deadline. Registration itself was already gated, so this must
+      // not fail the connection that just registered.
+      const validationFailure = new SidecarIdentityValidationError(
+        allocationId,
+        current.identity.generation,
+        cause,
+      );
+      for (const waiter of matchingWaiters) {
+        waiter.validationFailure = validationFailure;
+      }
+      return;
+    } finally {
+      for (const waiter of matchingWaiters) {
+        waiter.validations.delete(validation);
+      }
+    }
+    // A clean validation supersedes earlier failures: expiry must report the
+    // current reading, not a stale transient.
+    for (const waiter of matchingWaiters) {
+      delete waiter.validationFailure;
+    }
+    if (!identityCurrent || allocatedConnections.get(allocationId) !== current)
+      return;
 
-    for (const waiter of [...waiters]) {
-      if (waiter.generation !== current.identity.generation) continue;
+    for (const waiter of matchingWaiters) {
+      if (!waiters.delete(waiter)) continue;
       clearTimeout(waiter.timer);
-      waiters.delete(waiter);
       waiter.resolve();
     }
-    if (waiters.size === 0) allocationWaiters.delete(allocationId);
+    if (waiters.size === 0 && allocationWaiters.get(allocationId) === waiters)
+      allocationWaiters.delete(allocationId);
   }
 
   async function handleAllocatedRegister(
@@ -2660,7 +2727,17 @@ export function createSidecarRouter(
         `Allocated sidecar is not connected for allocation ${target.allocationId} generation ${String(target.generation)}`,
       );
     }
-    if (!(await validateSidecarIdentity(current.identity, use))) {
+    let identityCurrent: boolean;
+    try {
+      identityCurrent = await validateSidecarIdentity(current.identity, use);
+    } catch (cause) {
+      throw new SidecarIdentityValidationError(
+        target.allocationId,
+        target.generation,
+        cause,
+      );
+    }
+    if (!identityCurrent) {
       if (allocatedConnections.get(target.allocationId) === current) {
         handleClose(current.ws);
         current.ws.close();
@@ -2714,7 +2791,11 @@ export function createSidecarRouter(
     try {
       await getProvisionedConnection(target, "readiness");
       return true;
-    } catch {
+    } catch (error) {
+      // A failed validation is unknown, not absent: the worker may be healthy
+      // behind a failed lookup, so report it distinctly instead of answering
+      // `false` and letting the caller release a live worker.
+      if (error instanceof SidecarIdentityValidationError) throw error;
       return false;
     }
   }
@@ -2726,7 +2807,8 @@ export function createSidecarRouter(
       const { conn } = await getAllocatedConnection(target, "readiness");
       if (conn.identity.kind !== "allocated") return false;
       return conn.workflowAddresses.has(conn.identity.workflowRunAddress);
-    } catch {
+    } catch (error) {
+      if (error instanceof SidecarIdentityValidationError) throw error;
       return false;
     }
   }
@@ -2734,14 +2816,26 @@ export function createSidecarRouter(
   async function waitForAllocatedSidecar(
     target: AllocatedSidecarTarget,
     timeoutMs: number,
+    onValidation?: (validation: Promise<boolean>) => void,
   ): Promise<void> {
-    if (await isAllocatedSidecarReady(target)) return;
+    // An indeterminable worker waits out the unknown while time remains: only
+    // confirmed absence may surface as a connection timeout. At expiry the
+    // wait reports the validation failure rather than a missed deadline, so
+    // the caller retries instead of releasing a worker that may be healthy.
+    let validationFailure: SidecarIdentityValidationError | undefined;
+    try {
+      if (await isAllocatedSidecarReady(target)) return;
+    } catch (error) {
+      if (!(error instanceof SidecarIdentityValidationError)) throw error;
+      validationFailure = error;
+    }
     if (allocationFences.get(target.allocationId) !== target.generation) {
       throw new Error(
         `Allocation ${target.allocationId} generation ${String(target.generation)} is not current`,
       );
     }
     if (timeoutMs <= 0) {
+      if (validationFailure !== undefined) throw validationFailure;
       throw new Error(
         `Timed out waiting for allocated sidecar ${target.allocationId}`,
       );
@@ -2750,6 +2844,8 @@ export function createSidecarRouter(
     await new Promise<void>((resolve, reject) => {
       const waiter: AllocationWaiter = {
         generation: target.generation,
+        validations: new Set(),
+        ...(onValidation !== undefined ? { onValidation } : {}),
         resolve,
         reject,
         timer: setTimeout(() => {
@@ -2759,11 +2855,18 @@ export function createSidecarRouter(
             allocationWaiters.delete(target.allocationId);
           }
           reject(
-            new Error(
-              `Timed out waiting for allocated sidecar ${target.allocationId} generation ${String(target.generation)}`,
-            ),
+            waiter.validationFailure ??
+              (waiter.validations.size > 0
+                ? new SidecarIdentityValidationError(
+                    target.allocationId,
+                    target.generation,
+                  )
+                : new Error(
+                    `Timed out waiting for allocated sidecar ${target.allocationId} generation ${String(target.generation)}`,
+                  )),
           );
         }, timeoutMs),
+        ...(validationFailure !== undefined ? { validationFailure } : {}),
       };
       let waiters = allocationWaiters.get(target.allocationId);
       if (waiters === undefined) {
