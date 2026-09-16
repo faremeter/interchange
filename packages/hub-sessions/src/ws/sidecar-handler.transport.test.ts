@@ -17,6 +17,7 @@ import {
   createSidecarRouter,
   isDeployFrameFailure,
   type SidecarAuthIdentity,
+  SidecarIdentityValidationError,
 } from "./sidecar-handler";
 
 function lastFrame(ws: { sent: string[] }): Record<string, unknown> {
@@ -645,5 +646,136 @@ describe("SidecarRouter allocation pack transport", () => {
       transferId: "transfer-rogue",
       reason: "path_violation",
     });
+  });
+});
+
+describe("SidecarRouter readiness validation failures", () => {
+  test("does not mistake a failed identity lookup for an inactive supervisor", async () => {
+    const validationError = new Error("statement timeout");
+    let failValidation = false;
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if (failValidation) throw validationError;
+        return true;
+      },
+    });
+    const socket = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    try {
+      failValidation = true;
+      const error = await router
+        .isAllocatedWorkflowActive(TEST_TARGET)
+        .catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(SidecarIdentityValidationError);
+      expect(error).toMatchObject({ cause: validationError });
+      expect(socket.closed).toBe(false);
+
+      failValidation = false;
+      expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(true);
+      router.handleClose(socket);
+      expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(false);
+    } finally {
+      router.handleClose(socket);
+    }
+  });
+
+  test("reports an identity validation failure distinctly from an absent worker", async () => {
+    const validationError = new Error("statement timeout");
+    let failValidation = false;
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if (failValidation) throw validationError;
+        return true;
+      },
+    });
+    await connectAllocated(router);
+    failValidation = true;
+
+    const error = await router
+      .isAllocatedSidecarReady(TEST_TARGET)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(SidecarIdentityValidationError);
+    expect(error).toMatchObject({ cause: validationError });
+    failValidation = false;
+    await expect(router.isAllocatedSidecarReady(TEST_TARGET)).resolves.toBe(
+      true,
+    );
+  });
+
+  test("rejects a connection wait without remaining time on validation failure", async () => {
+    let failValidation = false;
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if (failValidation) throw new Error("statement timeout");
+        return true;
+      },
+    });
+    await connectAllocated(router);
+    failValidation = true;
+
+    const error = await router
+      .waitForAllocatedSidecar(TEST_TARGET, 0)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(SidecarIdentityValidationError);
+  });
+
+  test("waits out a validation failure and reports it instead of a worker timeout", async () => {
+    let failValidation = false;
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if (failValidation) throw new Error("statement timeout");
+        return true;
+      },
+    });
+    await connectAllocated(router);
+    failValidation = true;
+
+    const error = await router
+      .waitForAllocatedSidecar(TEST_TARGET, 20)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(SidecarIdentityValidationError);
+    expect(error).toMatchObject({
+      message: expect.not.stringContaining("Timed out waiting"),
+    });
+  });
+
+  test("still reports a worker timeout when the worker is absent", async () => {
+    const router = createAllocatedRouter();
+
+    const error = await router
+      .waitForAllocatedSidecar(TEST_TARGET, 10)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(SidecarIdentityValidationError);
+    expect(error).toMatchObject({
+      message: expect.stringContaining("Timed out waiting"),
+    });
+  });
+
+  test("resolves a waiting connection once validation recovers", async () => {
+    const outcomes: ("ok" | "fail")[] = ["ok", "fail", "ok", "ok"];
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if ((outcomes.shift() ?? "ok") === "fail") {
+          throw new Error("statement timeout");
+        }
+        return true;
+      },
+    });
+    const waiting = router.waitForAllocatedSidecar(TEST_TARGET, 500).then(
+      () => "resolved",
+      (cause: unknown) => cause,
+    );
+    await tick();
+    await connectAllocated(router);
+    await tick();
+    await connectAllocated(router, [], "reconnect");
+
+    await expect(waiting).resolves.toBe("resolved");
   });
 });
