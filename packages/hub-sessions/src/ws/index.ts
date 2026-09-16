@@ -1,5 +1,6 @@
 export {
   createSidecarRouter,
+  SidecarIdentityValidationError,
   type SidecarRouter,
   type SidecarRouterConfig,
   type SenderDeploySettledOutcome,

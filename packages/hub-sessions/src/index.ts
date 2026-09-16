@@ -42,6 +42,7 @@ export {
   type SidecarAuthenticator,
   type AllocatedSidecarTarget,
   type SidecarAllocationRouter,
+  SidecarIdentityValidationError,
   createSidecarCredentialResolver,
   createSidecarTokenAuthenticator,
   type CreateSidecarTokenAuthenticatorDeps,
