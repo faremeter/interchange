@@ -11,7 +11,18 @@ import { describe, test, expect } from "bun:test";
 
 import { defineAgent } from "@intx/agent";
 
-import { awaitSignal, defineWorkflow, runLocal } from "@intx/workflow";
+import {
+  awaitSignal,
+  defineWorkflow,
+  runLocal,
+  type WorkflowAuthorizeFn,
+} from "@intx/workflow";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -33,7 +44,7 @@ describe("awaitSignal timeout", () => {
         wait: awaitSignal({ name: "approve", timeout: 30 }),
       },
     });
-    const result = await runLocal(def).complete;
+    const result = await runLocal(def, { authorize: allowAll }).complete;
     expect(result.terminalStatus).toBe("failed");
     const stepFailed = result.events.find(
       (e) => e.kind === "StepFailed" && e.stepId === "wait",
@@ -64,7 +75,7 @@ describe("awaitSignal timeout", () => {
         wait: awaitSignal({ name: "approve", timeout: 5000 }),
       },
     });
-    const run = runLocal(def);
+    const run = runLocal(def, { authorize: allowAll });
     await run.signal("approve", { ok: true });
     const result = await run.complete;
     expect(result.terminalStatus).toBe("completed");

@@ -4,11 +4,9 @@
 // its own child run.
 //
 // The grandchild's single step is a `map` over an empty list: it runs zero
-// iterations and completes with no inner step, so the grandchild completes
-// WITHOUT a per-child handler resolver (runLocal does not thread the parent's
-// resolvers into a child run, mirroring production, where each child resolves
-// its own closure). A completed run proves the whole lift/resolve/spawn path,
-// since a loop that converges required the body's childWorkflow to complete.
+// iterations, so the grandchild completes without reaching any inner step. A
+// completed run proves the whole lift/resolve/spawn path, since a loop that
+// converges required the body's childWorkflow to complete.
 
 import { describe, test, expect } from "bun:test";
 
@@ -22,7 +20,14 @@ import {
   runLocal,
   step,
   type LoopFn,
+  type WorkflowAuthorizeFn,
 } from "@intx/workflow";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 const leaf = defineWorkflow({
   id: "leaf",
@@ -119,7 +124,10 @@ const nestedCwParent = defineWorkflow({
 
 describe("childWorkflow inside a loop body", () => {
   test("a loop body spawns a grandchild that runs to completion", async () => {
-    const result = await runLocal(cwLoopParent, { loopFns }).complete;
+    const result = await runLocal(cwLoopParent, {
+      authorize: allowAll,
+      loopFns,
+    }).complete;
 
     // The loop converged after one iteration, which required the body's
     // childWorkflow grandchild to spawn (lifted + resolved from the inherited
@@ -132,7 +140,10 @@ describe("childWorkflow inside a loop body", () => {
   });
 
   test("a grandchild inside a nested loop body runs to completion", async () => {
-    const result = await runLocal(nestedCwParent, { loopFns }).complete;
+    const result = await runLocal(nestedCwParent, {
+      authorize: allowAll,
+      loopFns,
+    }).complete;
 
     // The outer loop converged after one iteration, which required the inner
     // loop to converge, which required the inner body's childWorkflow grandchild

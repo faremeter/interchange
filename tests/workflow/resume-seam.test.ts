@@ -20,8 +20,15 @@ import {
   runtimeRun,
   step,
   type StepInvoker,
+  type WorkflowAuthorizeFn,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -52,6 +59,7 @@ describe("resume-from-log seam", () => {
     };
 
     const run1 = runLocal(def, {
+      authorize: allowAll,
       triggerPayload: { initial: true },
       invokeStep,
     });

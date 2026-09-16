@@ -14,7 +14,14 @@ import {
   runLocal,
   step,
   type StepInvoker,
+  type WorkflowAuthorizeFn,
 } from "@intx/workflow";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -47,6 +54,7 @@ describe("audit/invoker input agreement", () => {
       return { output: { received: input } };
     };
     const result = await runLocal(def, {
+      authorize: allowAll,
       triggerPayload: { field: undefined },
       invokeStep,
     }).complete;

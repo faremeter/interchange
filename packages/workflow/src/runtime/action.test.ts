@@ -62,6 +62,7 @@ describe("action primitive", () => {
       },
     });
     const result = await runLocal(def, {
+      authorize: allowAll(),
       triggerPayload: { n: 1 },
       actionResolver: () => handler,
     }).complete;
@@ -88,6 +89,7 @@ describe("action primitive", () => {
       },
     });
     const result = await runLocal(def, {
+      authorize: allowAll(),
       actionResolver: () => handler,
     }).complete;
     expect(result.terminalStatus).toBe("completed");
@@ -110,6 +112,7 @@ describe("action primitive", () => {
       },
     });
     const result = await runLocal(def, {
+      authorize: allowAll(),
       actionResolver: () => handler,
     }).complete;
     expect(result.terminalStatus).toBe("failed");
@@ -173,12 +176,14 @@ describe("action primitive", () => {
     });
     const runId = "run-dedup-fixed";
 
-    const first = await runLocal(def, { invokeAction, runId }).complete;
+    const first = await runLocal(def, { authorize, invokeAction, runId })
+      .complete;
     expect(first.terminalStatus).toBe("completed");
     expect(effectRuns).toBe(1);
     expect(first.outputs.act).toBe("sha-1");
 
-    const second = await runLocal(def, { invokeAction, runId }).complete;
+    const second = await runLocal(def, { authorize, invokeAction, runId })
+      .complete;
     expect(second.terminalStatus).toBe("completed");
     expect(effectRuns).toBe(1);
     expect(second.outputs.act).toBe("sha-1");

@@ -16,8 +16,15 @@ import {
   defineWorkflow,
   runLocal,
   step,
+  type WorkflowAuthorizeFn,
   type WorkflowDefinition,
 } from "@intx/workflow";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -57,13 +64,16 @@ function nestedChain(): WorkflowDefinition {
 describe("childWorkflow runtime depth guard (runLocal)", () => {
   test("a chain deeper than the ceiling fails the run", async () => {
     // ceiling 2: mid (depth 2) spawning leaf (depth 3) trips the guard.
-    const result = await runLocal(nestedChain(), { maxChildSpawnDepth: 2 })
-      .complete;
+    const result = await runLocal(nestedChain(), {
+      authorize: allowAll,
+      maxChildSpawnDepth: 2,
+    }).complete;
     expect(result.terminalStatus).toBe("failed");
   });
 
   test("the same chain completes under the default ceiling", async () => {
-    const result = await runLocal(nestedChain(), {}).complete;
+    const result = await runLocal(nestedChain(), { authorize: allowAll })
+      .complete;
     expect(result.terminalStatus).toBe("completed");
   });
 
@@ -73,6 +83,7 @@ describe("childWorkflow runtime depth guard (runLocal)", () => {
     // -- that an override can only tighten, never loosen -- is proven in the
     // child-depth unit test; a chain past 32 is impractical to author here.)
     const result = await runLocal(nestedChain(), {
+      authorize: allowAll,
       maxChildSpawnDepth: 1_000_000,
     }).complete;
     expect(result.terminalStatus).toBe("completed");
