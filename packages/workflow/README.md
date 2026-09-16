@@ -13,7 +13,9 @@ Multi-entry exports:
 
 - `@intx/workflow/definition` — `WorkflowDefinition`, `defineWorkflow`,
   `hashDefinition`, the `stepId` shape rule. The on-disk form a
-  workflow lives in.
+  workflow lives in. It also carries the canonical step walk
+  (`walkStepTree`, `walkWorkflowSteps`, `executableStepIds`); see
+  "Walking a definition's steps" below.
 - `@intx/workflow/state-machine` — the event union, the transition
   function, the `RunState` projection. Pure functions over the
   workflow-run log.
@@ -33,6 +35,40 @@ DI seams for mail bus / signing key / subprocess spawner), see
 operator-approval gate that consumes it, and the address derivation
 and per-step inference-source pinning a deploy needs, see
 `@intx/workflow-deploy`.
+
+## Walking a definition's steps
+
+`stepOrder` lists the steps of ONE definition record. A workflow's
+executable surface is larger: a `loop` carries an inline body, and an
+inline `onTrigger` section or `childWorkflow` carries a full nested
+definition. A consumer that answers "which steps run here" off
+`stepOrder` alone under-counts every nested body.
+
+`walkStepTree` is the one traversal every such consumer goes through. It
+visits steps in pre-order (a step before the bodies it carries, and a
+body's steps before the next sibling), throws on a `stepOrder` entry with
+no matching step, and takes the descent as an explicit argument rather
+than an implicit house rule. Two named descents cover the cases in use:
+
+- `EXECUTABLE_STEP_DESCENT` — loop bodies, inline onTrigger bodies, and
+  inline childWorkflow bodies. This is the setting that yields every step
+  id the deployment can execute. `executableStepIds(definition)` is the
+  deduplicated id list under it, and the deploy-time capability walk
+  descends with it so an operator approves everything a step can run.
+- `LOOP_BODY_DESCENT` — loop bodies only. This is the setting that stays
+  inside one flat step-id namespace: a loop body resolves against the
+  enclosing definition's map, while an inline section or child body is
+  lifted to its own definition keyed under its own ref. The deploy's
+  per-step inference-source pin descends with it.
+
+`walkWorkflowSteps` and `walkNestedWorkflowSteps` are the live
+`WorkflowDefinition` entry points; they read each primitive's nested
+bodies through `nestedWorkflowBodies`, whose switch is exhaustive so a
+newly-added primitive kind fails at compile time rather than silently
+reading as a leaf. `walkStepTree` itself is generic over the step and
+tree types, so the inert wire projection — whose step values are
+`unknown` and are validated as the caller descends — rides the same
+traversal.
 
 ## Consuming a real agent step's structured output
 

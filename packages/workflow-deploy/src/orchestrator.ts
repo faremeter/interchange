@@ -29,6 +29,7 @@ import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { formatRunAddress } from "@intx/types";
+import { walkStepTree } from "@intx/workflow/definition";
 
 import { type ApprovalSet } from "./capability-approval";
 import {
@@ -145,10 +146,10 @@ export function pickStepInferenceSource(args: {
 
 /**
  * Walk a frozen inert definition's steps and pin each to a single inference
- * source, recursing into `loop` bodies. This owns the traversal -- the step
- * walk, the flat-map collision rule, and the loop-body recursion. The per-step
- * LEAF policy (which source a given step resolves to, and how a step that
- * declares no source is pinned) is supplied by the caller through
+ * source, recursing into `loop` bodies. This owns the flat-map collision rule;
+ * the traversal is the canonical step walk (see `forEachInertStep`). The
+ * per-step LEAF policy (which source a given step resolves to, and how a step
+ * that declares no source is pinned) is supplied by the caller through
  * `resolveLeafSource`, so the walk can be reused by callers that pin steps
  * under different rules.
  *
@@ -196,8 +197,15 @@ export function pinInertStepSources(args: {
 /**
  * Walk a frozen inert definition's steps in `stepOrder`, recursing into `loop`
  * bodies, and hand each leaf its `(isAgent, preference)` classification. Owns
- * the traversal so every consumer classifies steps the same way; a second
- * implementation would drift from this one the first time a primitive is added.
+ * the classification so every consumer reads a step the same way.
+ *
+ * The traversal itself is the canonical `walkStepTree` from `@intx/workflow`,
+ * under `LOOP_BODY_DESCENT` -- the descent that stays inside ONE flat step-id
+ * namespace, which is what the pinned `sources` map is keyed by. An onTrigger
+ * section or childWorkflow body is lifted to its own definition with its own
+ * sources map, so this walk stops at that boundary. Only the per-rung body read
+ * is supplied here, because the inert projection types its steps as `unknown`
+ * and `inertLoopBody` is what validates one.
  */
 function forEachInertStep(
   args: { definition: WorkflowProjectionDefinition; context: string },
@@ -207,20 +215,22 @@ function forEachInertStep(
     preference: InertBodyStepPreference | null;
   }) => void,
 ): void {
-  const walk = (def: WorkflowProjectionDefinition): void => {
-    for (const stepId of def.stepOrder) {
-      const stepValue = def.steps[stepId];
+  walkStepTree<unknown, WorkflowProjectionDefinition>({
+    tree: args.definition,
+    context: args.context,
+    nestedTrees: (stepValue) => {
+      const loopBody = inertLoopBody(stepValue);
+      return loopBody === null ? [] : [loopBody];
+    },
+    visit: ({ stepId, step }) => {
       const { isAgent, preference } = readInertStepInference(
-        stepValue,
+        step,
         args.context,
         stepId,
       );
       visit({ stepId, isAgent, preference });
-      const loopBody = inertLoopBody(stepValue);
-      if (loopBody !== null) walk(loopBody);
-    }
-  };
-  walk(args.definition);
+    },
+  });
 }
 
 /**

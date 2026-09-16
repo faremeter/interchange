@@ -62,6 +62,10 @@ import {
   UnknownDirectorIdError,
 } from "@intx/agent";
 import type { GrantEffect } from "@intx/types";
+import {
+  EXECUTABLE_STEP_DESCENT,
+  walkNestedWorkflowSteps,
+} from "@intx/workflow/definition";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
 
 /**
@@ -233,17 +237,41 @@ function collectActionGrants(
  * body-bearing primitive -- the grants of every step of its nested body. A
  * loop, an inline onTrigger section, and an inline childWorkflow each run their
  * body per the deployment, so the operator must approve everything the body can
- * run. The walk descends into the authored `{ inline }` form; a `{ ref }` body
- * is a separately-declared asset whose grants were folded in from its own
- * inline form, so it is skipped here.
+ * run. That is exactly `EXECUTABLE_STEP_DESCENT`: every step the deployment can
+ * execute, including the ones a lifted body owns. A `{ ref }` body is a
+ * separately-declared asset whose grants were folded in from its own inline
+ * form, so the descent skips it.
  *
- * The nesting switch is EXHAUSTIVE: a newly-added primitive kind fails the
- * `never` assignment below at compile time, forcing the walk to decide how to
- * treat it rather than silently dropping a nested closure's grants. A miss here
- * is a silent, fail-open authorization gap because `director:` is not re-gated
- * at runtime -- so the compiler, not a remembered call site, owns coverage.
+ * Duplicate-name handling is scoped per body step: `collectAgentGrants` throws
+ * on a duplicate within a single agent, but two DIFFERENT body steps that each
+ * mint the same `tool:<name>` are distinct runtime agents (the runtime builds
+ * one agent per step), so the union across body steps is not a duplicate-name
+ * error.
  */
 function collectPrimitiveGrants(
+  primitive: WorkflowDefinition["steps"][string],
+  registry: DirectorRegistry,
+  pluginDefs: PluginToolDefinitions,
+  unresolved: Set<string>,
+  collected: GrantSet,
+): void {
+  collectOwnGrants(primitive, registry, pluginDefs, unresolved, collected);
+  walkNestedWorkflowSteps({
+    primitive,
+    descent: EXECUTABLE_STEP_DESCENT,
+    context: "capability walk: body ",
+    visit: ({ step }) => {
+      collectOwnGrants(step, registry, pluginDefs, unresolved, collected);
+    },
+  });
+}
+
+/**
+ * Union the grants a single primitive declares in its own right -- its agent's
+ * grants and its action's `effect:<cap>` grants -- into `collected`, without
+ * descending into anything it nests.
+ */
+function collectOwnGrants(
   primitive: WorkflowDefinition["steps"][string],
   registry: DirectorRegistry,
   pluginDefs: PluginToolDefinitions,
@@ -256,94 +284,6 @@ function collectPrimitiveGrants(
   }
   for (const grant of collectActionGrants(primitive)) {
     collected.grants.add(grant);
-  }
-  switch (primitive.kind) {
-    case "loop":
-      collectBodyGrants(
-        primitive.body,
-        registry,
-        pluginDefs,
-        unresolved,
-        collected,
-      );
-      return;
-    case "onTrigger":
-      if ("inline" in primitive.body) {
-        collectBodyGrants(
-          primitive.body.inline,
-          registry,
-          pluginDefs,
-          unresolved,
-          collected,
-        );
-      }
-      return;
-    case "childWorkflow":
-      if ("inline" in primitive.definition) {
-        collectBodyGrants(
-          primitive.definition.inline,
-          registry,
-          pluginDefs,
-          unresolved,
-          collected,
-        );
-      }
-      return;
-    case "step":
-    case "map":
-    case "action":
-    case "gate":
-    case "escalation":
-    case "awaitSignal":
-    case "sleep":
-      // Leaf primitives: no nested body to descend into.
-      return;
-    default: {
-      const exhaustive: never = primitive;
-      throw new Error(
-        `capability walk: unhandled primitive kind ${JSON.stringify(
-          (exhaustive as { kind: string }).kind,
-        )}`,
-      );
-    }
-  }
-}
-
-/**
- * Walk every step of a nested body (a loop body, an inline onTrigger section
- * body, or an inline childWorkflow definition) and union its grants into
- * `collected`. Each step routes through `collectPrimitiveGrants`, so a body
- * that itself nests another body -- including a loop body that contains a
- * nested loop -- is covered by the same single dispatch, which recurses into
- * the inner body's own grants.
- *
- * Duplicate-name handling is scoped per body step: `collectAgentGrants` throws
- * on a duplicate within a single agent, but two DIFFERENT body steps that each
- * mint the same `tool:<name>` are distinct runtime agents (the runtime builds
- * one agent per step), so the union across body steps is not a duplicate-name
- * error.
- */
-function collectBodyGrants(
-  body: WorkflowDefinition,
-  registry: DirectorRegistry,
-  pluginDefs: PluginToolDefinitions,
-  unresolved: Set<string>,
-  collected: GrantSet,
-): void {
-  for (const bodyStepId of body.stepOrder) {
-    const bodyPrimitive = body.steps[bodyStepId];
-    if (bodyPrimitive === undefined) {
-      throw new Error(
-        `capability walk: body step ${bodyStepId} listed in stepOrder is missing from steps`,
-      );
-    }
-    collectPrimitiveGrants(
-      bodyPrimitive,
-      registry,
-      pluginDefs,
-      unresolved,
-      collected,
-    );
   }
 }
 
