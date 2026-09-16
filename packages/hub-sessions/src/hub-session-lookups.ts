@@ -343,6 +343,8 @@ export function createHubSessionLookups(
           id: workflowRun.id,
           address: workflowRun.address,
           anchorRunId: workflowRun.anchorRunId,
+          tenantId: workflowRun.tenantId,
+          definitionId: workflowRun.definitionId,
         })
         .from(workflowRun)
         .where(
@@ -429,6 +431,29 @@ export function createHubSessionLookups(
       for (const { runId, status } of newlyTerminalRuns) {
         try {
           await db.transaction(async (tx) => {
+            // Lazily anchor the run before settling it. An internal run that
+            // parks only on a plain signal gate never reaches
+            // `registerSignalCorrelation`, the sole other path that mints an
+            // internal run row, so its terminal event can be the first the hub
+            // sees of the run. A never-minted row is ordinary bookkeeping, not
+            // a deployment-boundary violation, so mint it here against this
+            // deployment's anchor rather than letting the ownership guard below
+            // mistake absence for foreignness. The insert no-ops when any row
+            // already exists, which keeps that guard authoritative for a row
+            // that exists and anchors elsewhere. The principal is null: an
+            // internal run inherits its deployment's grants and has none of its
+            // own.
+            await workflowRunStore.createIfAbsent(
+              {
+                id: runId,
+                anchorRunId: anchor.id,
+                definitionId: anchor.definitionId,
+                tenantId: anchor.tenantId,
+                principalId: null,
+                status: "running",
+              },
+              tx,
+            );
             const [ownedRun] = await tx
               .select({ anchorRunId: workflowRun.anchorRunId })
               .from(workflowRun)
@@ -445,19 +470,11 @@ export function createHubSessionLookups(
               tx,
             );
             if (won === null) {
-              // No running row matched. Either the run is already terminal (a
-              // benign replay against an already-settled row) or no row exists
-              // at all -- the run reached a terminal event before its anchor
-              // committed, so its terminal state has nowhere to land. Only the
-              // second case is a defect; distinguish them and log the missing
-              // anchor loudly rather than silently treating both as done.
-              const [existing] = await tx
-                .select({ id: workflowRun.id })
-                .from(workflowRun)
-                .where(eq(workflowRun.id, runId));
-              if (existing === undefined) {
-                logger.error`Terminal event for run ${runId} (deployment ${anchor.id}, target status ${status}) has no workflow_run row; the run terminated before its anchor committed`;
-              }
+              // The row exists (the mint above guarantees it) and belongs to
+              // this deployment (the guard above), so no running row matched
+              // only because the run is already terminal -- a benign replay
+              // against an already-settled row. Leave its settled status and
+              // `endedAt` alone.
               return;
             }
             // Deactivate the run's own principal, if it has one. Externally-
