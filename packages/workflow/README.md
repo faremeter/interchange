@@ -29,8 +29,9 @@ Multi-entry exports:
 For a production host (workflow-run repo backing, scheduler that
 honors wall-clock fire times, signal channel that observes commits,
 DI seams for mail bus / signing key / subprocess spawner), see
-`@intx/workflow-host`. For deploy-time validation, capability walk,
-and the agent-deploy-trivial-workflow dichotomy, see
+`@intx/workflow-host`. For the deploy-time capability walk, the
+operator-approval gate that consumes it, and the address derivation
+and per-step inference-source pinning a deploy needs, see
 `@intx/workflow-deploy`.
 
 ## Consuming a real agent step's structured output

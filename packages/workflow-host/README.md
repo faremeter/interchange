@@ -26,9 +26,14 @@ The package is organized along the abstract pieces it implements:
   startup recovery walk and a live `subscribeKind` loop so a
   `TimerSet` committed by an active workflow process fires without
   waiting for a process restart. `signal-channel.ts` funnels live
-  `SignalReceived` commits into the matching awaiter, with resume
-  rehydration consulting `unconsumedSignals` so a signal that
-  arrived while offline replays before live subscription begins.
+  `SignalReceived` commits into the matching awaiter. The channel
+  reads `unconsumedSignals` through its injected `readState`
+  reader, but every production call site passes an `emptyState`
+  reader, so that queue is always empty in production: a pre-await
+  signal resolves through the live `subscribeKind` tail, and
+  resume rehydration of a signal that arrived while the run was
+  offline is not wired. Plumbing the runtime body's own `RunState`
+  reader into the child is what that capability waits on.
 - `ipc/` — control and event channel implementations the
   supervisor wraps. Threat model lives at the top of
   `ipc/index.ts`; the supervisor uses these primitives directly.
