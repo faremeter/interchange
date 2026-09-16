@@ -62,7 +62,11 @@ const StepGrantsFile = type({
 }).onUndeclaredKey("ignore");
 
 export type CredentialsSnapshotStep = {
-  /** Workflow step id from `WorkflowDefinition.stepOrder`. */
+  /**
+   * Workflow step id: a `WorkflowDefinition.stepOrder` entry, or a step id
+   * from one of the definition's `loop` bodies (a loop body shares the
+   * enclosing definition's flat step-id namespace).
+   */
   stepId: string;
   /** Mail address the step's agent presents to the bus. */
   address: string;
@@ -73,7 +77,7 @@ export type CredentialsSnapshotStep = {
 };
 
 export type CredentialsSnapshot = {
-  /** Step-id keyed entries in `stepOrder` traversal order. */
+  /** Step-id keyed entries in the caller's traversal order. */
   steps: readonly CredentialsSnapshotStep[];
 };
 
@@ -107,9 +111,17 @@ export type AssembleCredentialsSnapshotOpts = {
   /** Principal presented for each step's read. */
   principal: Principal;
   /**
-   * Step ids in the deployment's `stepOrder`. The trivial workflow
-   * passes a single entry; multi-step deployments pass every step in
-   * the order the workflow asset declared.
+   * Every step id the snapshot must carry an entry for. The trivial
+   * workflow passes a single entry; multi-step deployments pass every
+   * step in the order the workflow asset declared.
+   *
+   * This is the deployment's flat step-id namespace, which is WIDER than
+   * the definition's own `stepOrder`: a `loop` body runs in-process as a
+   * child run inheriting the parent's env, so a body step authorizes
+   * against this same snapshot under its own plain step id. The caller
+   * owns that widening -- it is the layer that holds the definition --
+   * and the snapshot is total over whatever it passes, because the
+   * child's authorize treats a missing entry as unrecoverable.
    */
   stepOrder: readonly string[];
   /** Anchor run id used in agent-state repo identity and address derivation. */

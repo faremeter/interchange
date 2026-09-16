@@ -851,10 +851,25 @@ implementation can reuse it without forking the wiring.
 ### CredentialsSnapshot Assembly
 
 Per the Q6.4 discovery decision, each workflow step gets its own
-`agent-state` repo, and the supervisor enumerates the workflow
-definition's `stepOrder` at spawn time to assemble a per-step grant
-snapshot. The implementation lives in
+`agent-state` repo, and the supervisor assembles a per-step grant
+snapshot at spawn time over the step ids the host hands it. The
+implementation lives in
 `packages/workflow-host/src/supervisor/credentials.ts`:
+
+The domain is the deployment's FLAT STEP-ID NAMESPACE, which is wider
+than the definition's own `stepOrder`: a `loop` body runs in-process as
+a child run inheriting the parent's env, so a body step authorizes
+against this same snapshot under its own plain step id. The host owns
+that widening because it is the layer that holds the definition --
+`inertFlatNamespaceStepIds` in `@intx/workflow-deploy` computes it from
+the frozen inert projection, and the sidecar's deploy router feeds the
+result to both the snapshot assembly and the deploy-time per-step grants
+write. A step id absent from the snapshot is unrecoverable at the child's
+authorize (it throws rather than denying), so the producer, not the
+consumer, owns totality. An `onTrigger` section or `childWorkflow` body
+is NOT part of this namespace: it is lifted to its own definition and the
+sidecar mints it a fresh snapshot of its own when it builds the spawned
+child's run env.
 
 - `defaultStepRepoId({ runId, stepId })` returns the
   `agent-state` repo identity for the step. The default convention

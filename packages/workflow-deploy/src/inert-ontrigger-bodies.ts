@@ -34,6 +34,7 @@
 import { type } from "arktype";
 import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { inlineBodyRef } from "@intx/workflow";
+import { walkStepTree } from "@intx/workflow/definition";
 
 /**
  * A body step's declared preferred inference-source identity -- the `(provider,
@@ -152,6 +153,62 @@ export function inertLoopBody(
     );
   }
   return body;
+}
+
+/**
+ * Visit every step of a frozen inert projection in `stepOrder`, recursing into
+ * `loop` bodies. This is the walk that stays inside ONE FLAT STEP-ID NAMESPACE:
+ * a loop body runs in-process as a child run sharing the parent's env, so its
+ * steps resolve against the enclosing definition's per-step tables, while an
+ * onTrigger section or childWorkflow body is lifted to its own definition with
+ * tables of its own and the walk stops at that boundary.
+ *
+ * The traversal itself is the canonical `walkStepTree`. Only the per-rung body
+ * read is supplied here, because the inert projection types its steps as
+ * `unknown` and `inertLoopBody` is what validates one.
+ *
+ * `context` is the caller label the walk's throw is prefixed with, so a
+ * malformed projection is traceable to whoever walked it.
+ */
+export function forEachInertLoopBodyStep(
+  args: { definition: WorkflowProjectionDefinition; context: string },
+  visit: (entry: { stepId: string; step: unknown }) => void,
+): void {
+  walkStepTree<unknown, WorkflowProjectionDefinition>({
+    tree: args.definition,
+    context: args.context,
+    nestedTrees: (stepValue) => {
+      const loopBody = inertLoopBody(stepValue);
+      return loopBody === null ? [] : [loopBody];
+    },
+    visit: ({ stepId, step }) => {
+      visit({ stepId, step });
+    },
+  });
+}
+
+/**
+ * Every step id in a frozen inert projection's FLAT STEP-ID NAMESPACE: its own
+ * `stepOrder` plus the step ids of every `loop` body it carries, transitively,
+ * deduplicated in first-reach order.
+ *
+ * This is the domain of every per-deployment table keyed by plain step id --
+ * the credentials snapshot above all. A loop iteration inherits the parent
+ * run's env, so a body step authorizes against the SAME snapshot the enclosing
+ * definition's steps do; a snapshot built from `stepOrder` alone therefore has
+ * no entry for it and the child's authorize throws on the body's first tool
+ * call. Deduplication is exact here: the ids share one namespace, so a repeated
+ * id IS the same id.
+ */
+export function inertFlatNamespaceStepIds(args: {
+  definition: WorkflowProjectionDefinition;
+  context: string;
+}): readonly string[] {
+  const ids = new Set<string>();
+  forEachInertLoopBodyStep(args, ({ stepId }) => {
+    ids.add(stepId);
+  });
+  return [...ids];
 }
 
 /**
