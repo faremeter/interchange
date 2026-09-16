@@ -48,6 +48,10 @@ const ASSET = "ast";
 const DEPLOYMENT = "dep";
 const DEPLOYMENT_ADDRESS = "run_dep@tnt.example";
 const DEPLOYMENT_REPO_ID = deriveWorkflowRunRepoId(DEPLOYMENT_ADDRESS);
+// A second deployment on the same tenant, so a run anchored elsewhere can be
+// offered to this deployment's pack-receive seam.
+const FOREIGN_DEPLOYMENT = "dep-foreign";
+const FOREIGN_DEPLOYMENT_ADDRESS = "run_dep_foreign@tnt.example";
 const WFR_REF = "refs/heads/events";
 
 function eventBody(seq: number, type: string): string {
@@ -476,16 +480,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBe("settled");
     });
 
-    test("a terminal event with no run row logs loudly and still acks", async () => {
-      // The run reached a terminal event before any anchor committed, so no
-      // workflow_run row exists. The flip matches nothing, but this is a defect
-      // (a lost anchor), not a benign replay: the seam must log at ERROR rather
-      // than silently succeed. The pack is still acked -- the git ref advanced.
+    test("a terminal event with no run row mints the row and settles it quietly", async () => {
+      // A loop iteration parked on a plain signal gate never crosses the
+      // correlation register, the only other path that mints an internal run
+      // row, so its terminal event is the first the hub sees of the run. A
+      // missing row is ordinary bookkeeping, not a deployment-boundary
+      // violation: the seam must mint the row against this deployment's anchor
+      // and settle it, with no ERROR.
       const errors: string[] = [];
       const restore = installErrorCapture(errors);
       try {
         const { pack, tip } = await buildPack([
-          { runId: "run-orphan", terminalType: "RunCompleted" },
+          { runId: "run-plain-gate", terminalType: "RunCompleted" },
         ]);
         const verdict = await receiveWith(h.db, pack, tip);
         expect(verdict).toEqual({ accepted: true });
@@ -493,14 +499,63 @@ describe.skipIf(!harnessDbEnvAvailable())(
         restore();
       }
 
-      // No row was silently created; the flip stayed a no-op on the DB.
-      const rows = await h.db
+      const [minted] = await h.db
         .select()
         .from(workflowRun)
-        .where(eq(workflowRun.id, "run-orphan"));
-      expect(rows).toHaveLength(0);
-      // The missing anchor surfaced loudly, naming the run.
-      expect(errors.some((m) => m.includes("run-orphan"))).toBe(true);
+        .where(eq(workflowRun.id, "run-plain-gate"));
+      expect(minted?.anchorRunId).toBe(DEPLOYMENT);
+      expect(minted?.tenantId).toBe(TENANT);
+      // An internal run inherits its deployment's grants and owns no principal.
+      expect(minted?.principalId).toBeNull();
+      expect(minted?.status).toBe("completed");
+      expect(minted?.endedAt).not.toBeNull();
+
+      expect(errors).toEqual([]);
+    });
+
+    test("a terminal event for another deployment's run is ignored loudly", async () => {
+      // The deployment-boundary check. A run row that EXISTS and anchors on a
+      // different deployment must not be settled by this deployment's pack: the
+      // seam logs at ERROR and leaves the row untouched. This is the case the
+      // missing-row mint above must not swallow.
+      await seedWorkflowRun(h.db, {
+        id: FOREIGN_DEPLOYMENT,
+        anchorRunId: FOREIGN_DEPLOYMENT,
+        tenantId: TENANT,
+        address: FOREIGN_DEPLOYMENT_ADDRESS,
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run-foreign",
+        anchorRunId: FOREIGN_DEPLOYMENT,
+        tenantId: TENANT,
+      });
+
+      const errors: string[] = [];
+      const restore = installErrorCapture(errors);
+      try {
+        const { pack, tip } = await buildPack([
+          { runId: "run-foreign", terminalType: "RunCompleted" },
+        ]);
+        const verdict = await receiveWith(h.db, pack, tip);
+        expect(verdict).toEqual({ accepted: true });
+      } finally {
+        restore();
+      }
+
+      // The foreign row kept its status, its end time, and its anchor.
+      const [foreign] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-foreign"));
+      expect(foreign?.status).toBe("running");
+      expect(foreign?.endedAt).toBeNull();
+      expect(foreign?.anchorRunId).toBe(FOREIGN_DEPLOYMENT);
+
+      // The boundary violation surfaced loudly, naming the run and the
+      // deployment that tried to settle it.
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("run-foreign");
+      expect(errors[0]).toContain(DEPLOYMENT);
     });
 
     test("markTerminal flips a running run once and is a no-op thereafter", async () => {
