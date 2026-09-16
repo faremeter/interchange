@@ -55,6 +55,21 @@ export {
   type StepPrimitive,
 } from "./primitives";
 
+export {
+  executableStepIds,
+  nestedWorkflowBodies,
+  walkNestedWorkflowSteps,
+  walkStepTree,
+  walkWorkflowSteps,
+  EXECUTABLE_STEP_DESCENT,
+  LOOP_BODY_DESCENT,
+  type StepTree,
+  type StepWalkArgs,
+  type StepWalkDescent,
+  type StepWalkEntry,
+  type WorkflowStepWalkArgs,
+} from "./step-walk";
+
 export type {
   ManualTrigger,
   MailTrigger,

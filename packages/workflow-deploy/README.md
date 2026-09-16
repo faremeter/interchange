@@ -32,9 +32,11 @@ Public surface:
   `buildInertProjectionStepSources(...)` / `buildInertBodyStepSources(...)`
   — resolve each step's inference source against the operator-approved
   grant set, so an unapproved source fails the deploy closed.
-  `pinInertStepSources` is the shared walk (step order, loop-body
-  recursion, flat-map collision rule) parameterized by a per-step leaf
-  resolver. `buildInertBodyStepSources` pins a lifted body: an
+  `pinInertStepSources` owns the flat-map collision rule and is
+  parameterized by a per-step leaf resolver; it traverses through
+  `walkStepTree` from `@intx/workflow` under `LOOP_BODY_DESCENT`, the
+  descent that stays inside one flat step-id namespace.
+  `buildInertBodyStepSources` pins a lifted body: an
   agent-bearing step resolves through the gate, while a step that cannot
   invoke inference takes the deploy's default source as an inert
   placeholder.
