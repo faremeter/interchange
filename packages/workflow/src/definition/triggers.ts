@@ -16,8 +16,16 @@ export interface MailTrigger {
 }
 
 /**
- * Cron-shaped schedule trigger. Missed ticks during outages are
- * skipped; the next future tick fires normally.
+ * Cron-shaped schedule trigger. RESERVED, NOT IMPLEMENTED: no cron parser and
+ * no scheduler exist, so nothing ever fires a schedule trigger. A workflow that
+ * declared one would hash, deploy, and then simply never run -- no error, no
+ * log, no failed run. Two layers reject it instead: `defineWorkflow` refuses to
+ * normalize a definition carrying one, and the hub's probe gate refuses an
+ * inert projection carrying one (the gate is what reaches an already-deployed
+ * closure, which bundles its own copy of `defineWorkflow`).
+ *
+ * The intended semantics, once a scheduler exists: missed ticks during outages
+ * are skipped; the next future tick fires normally.
  */
 export interface ScheduleTrigger {
   type: "schedule";
