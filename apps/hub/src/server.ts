@@ -78,6 +78,7 @@ export async function createHubServer({
   // dedicated, droppable schema. Production deployments leave it
   // unset and run against postgres' default search_path.
   const pgSchema = process.env["PG_SCHEMA"];
+  const dbStatementTimeoutMs = process.env["DB_STATEMENT_TIMEOUT_MS"];
   const { db } = createDB({
     host: process.env["DB_HOST"] ?? "localhost",
     port: Number(process.env["DB_PORT"] ?? 5432),
@@ -85,6 +86,9 @@ export async function createHubServer({
     password: process.env["DB_PASSWORD"] ?? "postgres",
     database: process.env["DB_NAME"] ?? "interchange",
     ...(pgSchema !== undefined && { schema: pgSchema }),
+    ...(dbStatementTimeoutMs !== undefined && {
+      statementTimeoutMs: Number(dbStatementTimeoutMs),
+    }),
   });
 
   const auth = createAuth(db);
