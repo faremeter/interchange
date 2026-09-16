@@ -146,45 +146,12 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
   if (stepEntries.length === 0) {
     throw new Error("defineWorkflow requires at least one step");
   }
-  const seen = new Set<string>();
   const steps: Record<string, Primitive> = {};
   const stepOrder: string[] = [];
   for (const [stepId, primitive] of stepEntries) {
-    if (seen.has(stepId)) {
-      throw new Error(`duplicate step id ${stepId}`);
-    }
-    seen.add(stepId);
-    if (stepId === "") {
-      throw new Error("step ids cannot be empty");
-    }
-    // The workflow-deploy orchestrator derives per-step mail addresses
-    // of the form `<runId>-<stepId>@<deploymentDomain>` for
-    // multi-step deployments. Constraining `stepId` to
-    // `[a-zA-Z0-9_-]+` at definition time means the derived local-part
-    // never needs escaping and the address parser at the substrate
-    // boundary never sees a step-id-shaped local-part it cannot
-    // round-trip.
-    if (!STEP_ID_PATTERN.test(stepId)) {
-      throw new Error(
-        `step id ${JSON.stringify(stepId)} must match ${STEP_ID_PATTERN.source}`,
-      );
-    }
-    // `__` is the delimiter that joins a step id into the ids the runtime
-    // derives from it: an inline-body ref (`<workflowId>__<stepId>`, and under
-    // nesting `<parentRef>__<stepId>`), a loop iteration body run id
-    // (`<runId>__<loopId>__<index>`), and an onTrigger section body run id
-    // (`<sectionId>__<index>`, which is parsed back). A `__` inside a step id
-    // would make one of those ids ambiguous with a different chain -- and they
-    // key the durable store, so the collision is silent shared-state
-    // corruption. Reject it in EVERY step id here, at the boundary that owns
-    // the id grammar, so every ref/run-id segment stays atomic. A nested body
-    // is its own normalized definition, so this covers every nesting level.
-    if (stepId.includes("__")) {
-      throw new Error(
-        `step id ${JSON.stringify(stepId)} must not contain "__"; ` +
-          `it becomes a segment of a runtime id joined by "__"`,
-      );
-    }
+    // The one id rule `validateStepIds` cannot carry: it must read the
+    // author's embedded `id` BEFORE the record key is assigned over it, so it
+    // belongs here rather than in a pass that sees the assembled record.
     if (primitive.id !== "" && primitive.id !== stepId) {
       throw new Error(
         `step ${stepId} carries a conflicting embedded id ${primitive.id}; ` +
@@ -374,11 +341,12 @@ function applyDefaultInputStep(
  * require. `validateLoopBody`, `validateChildWorkflowBody` and
  * `validateOnTriggerBody` re-enter this same suite on an embedded body, so
  * factoring the passes here keeps the top-level and embedded-body validations
- * identical -- a malformed body (dangling `after`, cycle, forbidden loop body,
- * misplaced onFailure) fails at the parent's authoring time exactly as it would
- * at its own. All three body kinds carry identical trust: each is a plain
- * `WorkflowDefinition` field, structurally forgeable and swappable after
- * normalization, so none of them may rest on having come from `defineWorkflow`.
+ * identical -- a malformed body (ill-formed step id, dangling `after`, cycle,
+ * forbidden loop body, misplaced onFailure) fails at the parent's authoring
+ * time exactly as it would at its own. All three body kinds carry identical
+ * trust: each is a plain `WorkflowDefinition` field, structurally forgeable and
+ * swappable after normalization, so none of them may rest on having come from
+ * `defineWorkflow`.
  *
  * `isTopLevel` distinguishes the definition's own step record from a body a
  * spawned run executes. The only pass that reads it is the onTrigger placement
@@ -398,6 +366,10 @@ function validateSteps(
   isTopLevel: boolean,
   loopDepth = 0,
 ): void {
+  // Runs first so a record whose ids are not even well-formed is rejected on
+  // that ground, rather than on whatever a later pass happens to notice about
+  // the same step.
+  validateStepIds(steps);
   validateAfterRefs(steps);
   // Runs after validateAfterRefs so every after/then/else endpoint is
   // already known to name a real step; this pass only rejects cycles.
@@ -412,6 +384,56 @@ function validateSteps(
   validateLoopBody(steps, loopDepth);
   validateOnTriggerBody(steps, isTopLevel);
   validateChildWorkflowBody(steps);
+}
+
+/**
+ * Enforce the step-id grammar over one step record. Every rule here constrains
+ * the record's KEYS alone, so it reads identically at a workflow root and in a
+ * nested body -- and a nested body needs it just as much: a `loop` body, a
+ * `childWorkflow` inline body, and an `onTrigger` inline body are plain
+ * `WorkflowDefinition` fields the parent embeds, structurally forgeable and
+ * never proven to have come from `defineWorkflow`. Owning the grammar in one
+ * pass of the `validateSteps` suite is what makes every id-bearing record
+ * answer to it: the root through `normalize`, each body through the suite's
+ * re-entry, at every nesting level.
+ *
+ * `normalize` keeps the one id rule this pass cannot carry -- the comparison of
+ * a primitive's embedded `id` against its record key, which must happen before
+ * the key is assigned over it.
+ */
+function validateStepIds(steps: Record<string, Primitive>): void {
+  for (const stepId of Object.keys(steps)) {
+    if (stepId === "") {
+      throw new Error("step ids cannot be empty");
+    }
+    // The workflow-deploy orchestrator derives per-step mail addresses
+    // of the form `<runId>-<stepId>@<deploymentDomain>` for
+    // multi-step deployments. Constraining `stepId` to
+    // `[a-zA-Z0-9_-]+` at definition time means the derived local-part
+    // never needs escaping and the address parser at the substrate
+    // boundary never sees a step-id-shaped local-part it cannot
+    // round-trip.
+    if (!STEP_ID_PATTERN.test(stepId)) {
+      throw new Error(
+        `step id ${JSON.stringify(stepId)} must match ${STEP_ID_PATTERN.source}`,
+      );
+    }
+    // `__` is the delimiter that joins a step id into the ids the runtime
+    // derives from it: an inline-body ref (`<workflowId>__<stepId>`, and under
+    // nesting `<parentRef>__<stepId>`), a loop iteration body run id
+    // (`<runId>__<loopId>__<index>`), and an onTrigger section body run id
+    // (`<sectionId>__<index>`, which is parsed back). A `__` inside a step id
+    // would make one of those ids ambiguous with a different chain -- and they
+    // key the durable store, so the collision is silent shared-state
+    // corruption. A body step id feeds those same joins, which is why this pass
+    // has to reach a body rather than trust it to have normalized itself.
+    if (stepId.includes("__")) {
+      throw new Error(
+        `step id ${JSON.stringify(stepId)} must not contain "__"; ` +
+          `it becomes a segment of a runtime id joined by "__"`,
+      );
+    }
+  }
 }
 
 /**
@@ -772,9 +794,10 @@ function validateLoopBody(
  * section that does not sit at the top level. The body runs as its own child
  * run per occurrence, so -- like a childWorkflow body -- it must be as valid as
  * a top-level definition; this pass re-enters `validateSteps` on the inline
- * body, so a malformed section body (dangling after, cycle, forbidden loop
- * body, misplaced onFailure) is rejected at the parent's authoring time. The
- * one restriction ADDED over a top-level root is the subscription-layer ban:
+ * body, so a malformed section body (ill-formed step id, dangling after, cycle,
+ * forbidden loop body, misplaced onFailure) is rejected at the parent's
+ * authoring time. The one restriction ADDED over a top-level root is the
+ * subscription-layer ban:
  * only the top-level step record may declare a section. Unlike a loop body, a
  * section body may sleep and spawn child workflows -- an onTrigger section IS
  * the sanctioned long-lived input loop.
