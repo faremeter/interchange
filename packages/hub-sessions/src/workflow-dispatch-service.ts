@@ -77,12 +77,15 @@ export type WorkflowDispatchServiceDeps = {
     anchorRunId: string,
   ) => Promise<string | null>;
   readonly leaseDurationMs?: number;
+  /** Bounds pending claims and unfinished deliveries across all drains. */
+  readonly maxConcurrentDispatches?: number;
   readonly retryDelayMs?: (attempt: number) => number;
   readonly now?: () => Date;
   readonly createLeaseId?: () => string;
 };
 
 const DEFAULT_LEASE_DURATION_MS = 30_000;
+const DEFAULT_MAX_CONCURRENT_DISPATCHES = 8;
 
 function defaultRetryDelay(attempt: number): number {
   return Math.min(500 * 2 ** Math.min(attempt, 6), 30_000);
@@ -121,6 +124,7 @@ export function createWorkflowDispatchService({
   router,
   resolveAnchorAddress,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
+  maxConcurrentDispatches = DEFAULT_MAX_CONCURRENT_DISPATCHES,
   retryDelayMs = defaultRetryDelay,
   now = () => new Date(),
   createLeaseId = randomLeaseId,
@@ -128,8 +132,15 @@ export function createWorkflowDispatchService({
   if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs <= 0) {
     throw new Error("leaseDurationMs must be a positive integer");
   }
+  if (
+    !Number.isSafeInteger(maxConcurrentDispatches) ||
+    maxConcurrentDispatches <= 0
+  ) {
+    throw new Error("maxConcurrentDispatches must be a positive integer");
+  }
 
   let drainPromise: Promise<void> | null = null;
+  let admittedDispatches = 0;
   const activeDispatches = new Set<string>();
 
   function retryAt(attempt: number): Date {
@@ -153,43 +164,55 @@ export function createWorkflowDispatchService({
   }
 
   async function reconcileNext(): Promise<boolean> {
-    const leaseId = createLeaseId();
-    const claimStartedAt = performance.now();
-    const dispatch = await dispatchStore.claimNextPending({
-      leaseId,
-      leaseDurationMs,
-      excludedDispatchIds: [...activeDispatches],
-    });
-    if (dispatch === null) return false;
-
-    // A concurrent claim can outlive both its exclusion snapshot and the old
-    // lease. Do not start another delivery while its original I/O is pending.
-    if (activeDispatches.has(dispatch.id)) return true;
-    const remaining = leaseDurationMs - (performance.now() - claimStartedAt);
-    if (remaining <= 0) return true;
-
-    activeDispatches.add(dispatch.id);
+    if (admittedDispatches >= maxConcurrentDispatches) return false;
+    admittedDispatches += 1;
+    let delivery: Promise<void> | undefined;
+    let activeDispatchId: string | undefined;
     try {
-      await runSidecarOperation(
-        "Workflow dispatch",
-        Math.ceil(remaining),
-        async (signal) => {
-          try {
-            await deliver(dispatch, leaseId, signal);
-          } finally {
-            // The deadline frees the drain, but unfinished I/O keeps this
-            // dispatch excluded until it actually settles.
-            activeDispatches.delete(dispatch.id);
-          }
-        },
-      );
-    } catch (error) {
-      if (!(error instanceof SidecarOperationTimeoutError)) throw error;
-      // The durable lease expires independently. Do not start another database
-      // write here: a stuck retry write must not occupy the freed drain either.
-      logger.warn`Dispatch ${dispatch.id} stopped at its delivery deadline`;
+      const leaseId = createLeaseId();
+      const claimStartedAt = performance.now();
+      const dispatch = await dispatchStore.claimNextPending({
+        leaseId,
+        leaseDurationMs,
+        excludedDispatchIds: [...activeDispatches],
+      });
+      if (dispatch === null) return false;
+
+      // A concurrent claim can outlive both its exclusion snapshot and the old
+      // lease. Do not start another delivery while its original I/O is pending.
+      if (activeDispatches.has(dispatch.id)) return true;
+      const remaining = leaseDurationMs - (performance.now() - claimStartedAt);
+      if (remaining <= 0) return true;
+
+      activeDispatchId = dispatch.id;
+      activeDispatches.add(dispatch.id);
+      try {
+        await runSidecarOperation(
+          "Workflow dispatch",
+          Math.ceil(remaining),
+          (signal) => {
+            delivery = deliver(dispatch, leaseId, signal);
+            return delivery;
+          },
+        );
+      } catch (error) {
+        if (!(error instanceof SidecarOperationTimeoutError)) throw error;
+        // The durable lease expires independently. Do not start another database
+        // write here: a stuck retry write must not occupy the freed drain either.
+        logger.warn`Dispatch ${dispatch.id} stopped at its delivery deadline`;
+      }
+      return true;
+    } finally {
+      const release = () => {
+        admittedDispatches -= 1;
+        if (activeDispatchId !== undefined)
+          activeDispatches.delete(activeDispatchId);
+      };
+      // Timeouts free the drain, but the underlying I/O retains its admission
+      // reservation and dispatch exclusion until it actually settles.
+      if (delivery === undefined) release();
+      else void delivery.then(release, release);
     }
-    return true;
   }
 
   async function deliver(
