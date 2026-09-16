@@ -185,9 +185,10 @@ function isStepToolMaterialization(
  * `agentFactory` assembles each bundle's consumer-scoped `credentials`
  * capability from: the live material cell, the step's grants, and the
  * provider registry. Set by `buildEnv` alongside the tool slot, read by
- * `createToolBearingAgentFactory`. Absent for a toolless build (an onTrigger
- * body step, or a unit test using the bare factory) -- then no credentials
- * capability is assembled and bundles keep the base capabilities bag.
+ * `createToolBearingAgentFactory`. Absent for a build that threaded no
+ * credential context (a unit test using the bare factory) -- then no
+ * credentials capability is assembled and bundles keep the base capabilities
+ * bag.
  */
 const STEP_CREDENTIAL_WIRING = Symbol("intx.sidecar.step-credential-wiring");
 
@@ -224,8 +225,9 @@ function isStepCredentialWiring(value: unknown): value is StepCredentialWiring {
 /**
  * Attach a step's credential wiring to the per-step env so the tool-bearing
  * `agentFactory` can assemble each bundle's `credentials` capability. Called
- * by `buildEnv` for a tool-bearing step; omitted for a toolless build, which
- * leaves the slot unset and the credentials capability unassembled.
+ * by `buildEnv` for a step whose build threaded a credential context; omitted
+ * otherwise, which leaves the slot unset and the credentials capability
+ * unassembled.
  */
 export function attachStepCredentialWiring(
   env: Omit<BaseEnv, "authorize">,
@@ -481,8 +483,8 @@ export function createToolBearingAgentFactory(): <EnvReq extends BaseEnv>(
     }
 
     // Assemble each package's consumer-scoped `credentials` capability once,
-    // when the step carries credential wiring (a toolless/test build carries
-    // none, yielding an empty map). Every factory in a package shares the one
+    // when the step carries credential wiring (a bare test build carries none,
+    // yielding an empty map). Every factory in a package shares the one
     // capability; a package that declares a handle no binding resolves fails
     // the launch here, loudly, rather than at the tool's first resolve. This
     // can throw (reconcile fail-closed, malformed delivery) before any handle

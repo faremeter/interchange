@@ -1763,7 +1763,7 @@ function buildRuntimeEnv(args: {
   // authorize, effect ledger, and durable shared repoStore/blobs), giving the
   // body only its own substrate-backed signal channel -- the inherited-env
   // iteration model plus park capability, distinct from an onTrigger body's
-  // fresh capped/toolless env. Resolved from the bodies map by ref (loop
+  // fresh capped env. Resolved from the bodies map by ref (loop
   // bodies were registered there at establish) and wrapped with this run's
   // event funnel. Assigned AFTER env construction because it closes over `env`.
   const loopIterationHost = createInMemorySpawnSuspendableChild({
