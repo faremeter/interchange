@@ -24,6 +24,7 @@ export {
 export {
   createApprovalSetGate,
   createApprovalSourceGate,
+  isApprovedGrantRequirement,
   type ApprovalDecision,
   type ApprovalSet,
   type ApprovalSource,

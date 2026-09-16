@@ -5,24 +5,55 @@
 // supplied `ApprovalSet` and decides whether the deploy may proceed.
 //
 // Approval semantics (v1):
-//   - The operator supplies a flat set of approved grant-shape strings
-//     (`ApprovalSet`). Every grant the walk surfaced on every step must
-//     appear in that set; any miss is a per-step `pending` entry and
-//     fails the gate.
+//   - The operator supplies a flat set of approved items (`ApprovalSet`).
+//     Every grant the walk surfaced on every step must appear in that set;
+//     any miss is a per-step `pending` entry and fails the gate.
 //   - A non-empty `unresolvedDirectors` field on the walk result is
 //     itself a deploy-time failure; the gate surfaces it through
 //     `ApprovalDecision` and the caller aborts the deploy.
 
+import { isDeepStrictEqual } from "node:util";
+
+import type { ApprovalItem, GrantRequirement } from "@intx/types";
+
 import type { CapabilityWalkResult } from "./capability-walk";
 
 /**
- * A flat set of grant-shape strings the operator has approved for this
- * deployment. The deploy flow's wiring synthesizes the set from the
- * deployment context (admin UI cache, legacy grant-store mirror,
- * scripted policy). Order does not matter; membership is the only thing
- * the gate consults.
+ * A flat set of the items the operator has approved for this deployment:
+ * grant-shape strings the capability walk surfaces, and the grant
+ * requirements a definition declares. The deploy flow's wiring synthesizes
+ * the set from the deployment context (admin UI cache, legacy grant-store
+ * mirror, scripted policy). Order does not matter; membership is the only
+ * thing the gate consults.
  */
-export type ApprovalSet = ReadonlySet<string>;
+export type ApprovalSet = ReadonlySet<ApprovalItem>;
+
+/**
+ * Whether the operator approved this declared grant requirement.
+ *
+ * A requirement is compared as a WHOLE RECORD, not by resource alone:
+ * `source` decides whose authority the run path delegates, `effect` decides
+ * what the materialized row permits, and `conditions` narrows when it
+ * applies, so a change to any of them changes the authority the definition
+ * mints. Anything the operator did not approve exactly is unapproved, which
+ * is the fail-closed direction.
+ *
+ * The comparison is structural over the validated record rather than over a
+ * canonical string form: `conditions` is an open `Record<string, unknown>`,
+ * so no single-axis string can carry a requirement without losing part of it.
+ * Grant-string members of the set are skipped -- a string never describes a
+ * requirement.
+ */
+export function isApprovedGrantRequirement(
+  approvals: ApprovalSet,
+  requirement: GrantRequirement,
+): boolean {
+  for (const item of approvals) {
+    if (typeof item === "string") continue;
+    if (isDeepStrictEqual(item, requirement)) return true;
+  }
+  return false;
+}
 
 /**
  * Source the approval gate consults. Kept as an indirection so a future

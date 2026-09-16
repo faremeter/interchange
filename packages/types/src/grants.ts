@@ -112,3 +112,25 @@ export const GrantRequirement = type({
   "conditions?": "Record<string, unknown> | null",
 });
 export type GrantRequirement = typeof GrantRequirement.infer;
+
+export const ApprovalItem = type("string").or(GrantRequirement);
+
+/**
+ * One thing an operator approved for a workflow deployment. The approved
+ * surface has two kinds of entry and they live on different axes, so the
+ * vocabulary carries both rather than flattening one into the other:
+ *
+ *   - A grant-shape string (`tool:<name>`, `effect:<cap>`,
+ *     `inference.source:<provider>:<model>`, ...) -- what the deploy-time
+ *     capability walk surfaces per step.
+ *   - A `GrantRequirement` -- what the definition declares, and what the run
+ *     path materializes into real grant rows on the run principal. It is not
+ *     expressible as a grant string: `source` names WHOSE authority is
+ *     delegated, which is not a resource/action fact, and `conditions` is an
+ *     open record.
+ *
+ * Keeping both in one vocabulary keeps "what the operator approved" a single
+ * record with a single gate, and lets the gate compare a declared requirement
+ * to an approved one structurally rather than through a lossy string form.
+ */
+export type ApprovalItem = typeof ApprovalItem.infer;

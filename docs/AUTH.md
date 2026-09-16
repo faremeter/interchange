@@ -178,9 +178,14 @@ Given those two anchors, the sidecar's **capability walk is advisory, not enforc
 
 - **over-report** grants → the operator's `ApprovalSet` declines;
 - **under-report** grants → the workflow is under-provisioned and fails closed at the child's authorize check, never over-privileged;
-- **lie about the projection** → the re-verify barrier catches it and fails closed.
+- **lie about the projection** → the re-verify barrier catches it and fails closed;
+- **declare a grant requirement the operator did not approve** → the gate declines, on the same `ApprovalSet` decision.
 
-None of these escalate privilege, because forging the advisory list yields **no new credential material** (hub-delivered, no sidecar cipher) and **no new code** (closure-pinned). The list's _accuracy_ still matters — it is the single artifact the operator's one decision is made against, so an under-stated list could win an approval whose true grant implications the operator did not see. That is **informed-consent** integrity, worth keeping honest, not a privilege-escalation boundary.
+The fourth path is different in kind from the first three and is worth stating plainly. A declared `grantRequirement` is **not advisory**: the freeze persists it and both run-time materialization sites mint real grant rows on the run principal from it, which ship to the child as the run's `stepGrants`. It also rides `grantWalkSnapshot`, a sibling of `projection` on the probe frame, so it sits **outside the wire-hash preimage** — tamper-evidence says nothing about it. The operator's decision is therefore the only thing gating it, which is why `gateAndFreezeProbeResult` holds every declared requirement to the `ApprovalSet` alongside the walk's grant strings, comparing the whole requirement record (`source`, `resource`, `action`, `effect`, `conditions`) rather than the resource alone. The approval vocabulary carries both kinds of item for this reason: a requirement is multi-axis and cannot be expressed as a grant-shape string.
+
+Even so, a forged requirement **delegates** authority rather than fabricating it: `resolveGrantMaterialization` resolves every requirement against the creator's or the invoker's own grants and rejects `insufficient_grants` on a miss. The ceiling is whatever that party already holds — which is why a wildcard requirement is the maximal case and not a universal bypass. Note that a wildcard row is nonetheless stronger than any walk-derived row: the walk emits bare `tool:<name>` grants, which are inert against a pinned tool's namespaced `tool:<bundleId>:<name>` gate, while a `*` resource matches that gate. Step scoping, not the capability ceiling, is what an unapproved wildcard would defeat.
+
+None of the four escalate privilege beyond that delegation, because forging the advisory list yields **no new credential material** (hub-delivered, no sidecar cipher) and **no new code** (closure-pinned). The list's _accuracy_ still matters — it is the single artifact the operator's one decision is made against, so an under-stated list could win an approval whose true grant implications the operator did not see. That is **informed-consent** integrity, worth keeping honest, not a privilege-escalation boundary.
 
 ### The child-side grant gate is defense-in-depth
 
