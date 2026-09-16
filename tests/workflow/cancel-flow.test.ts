@@ -29,9 +29,16 @@ import {
   step,
   type SpawnChildWorkflow,
   type StepInvoker,
+  type WorkflowAuthorizeFn,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import { createDefaultDirectorRegistry } from "@intx/agent";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -145,7 +152,7 @@ describe("cancellation log invariants", () => {
         resolveStep = resolve;
       });
 
-    const run = runLocal(def, { invokeStep });
+    const run = runLocal(def, { authorize: allowAll, invokeStep });
     // Wait a tick for StepStarted to commit and the runner to land
     // on env.invokeStep.
     await new Promise<void>((resolve) => {

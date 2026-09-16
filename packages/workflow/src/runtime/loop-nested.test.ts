@@ -20,8 +20,15 @@ import {
   runLocal,
   type ActionHandler,
   type LoopFn,
+  type WorkflowAuthorizeFn,
   type WorkflowDefinition,
 } from "@intx/workflow";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 // A leaf body: one action that counts its invocations.
 const leaf = defineWorkflow({
@@ -111,7 +118,11 @@ describe("nested loop", () => {
       innerLoopBody,
     );
 
-    const result = await runLocal(nested, { actionResolver, loopFns }).complete;
+    const result = await runLocal(nested, {
+      authorize: allowAll,
+      actionResolver,
+      loopFns,
+    }).complete;
 
     expect(result.terminalStatus).toBe("completed");
     // Outer converges after 3 iterations; each runs the inner loop, which itself
@@ -181,7 +192,11 @@ describe("nested loop awaitSignal (in-process park)", () => {
       throw new Error(`unknown handler ${ref}`);
     };
 
-    const run = runLocal(outer, { actionResolver, loopFns });
+    const run = runLocal(outer, {
+      authorize: allowAll,
+      actionResolver,
+      loopFns,
+    });
     // The in-memory channel queues the delivery until the outermost relay
     // subscribes, so delivering before the chain parks is fine.
     await run.signal("go", { done: true }, "sig-1");
@@ -236,8 +251,11 @@ describe("nested loop routing", () => {
       innerLoopBody,
     );
 
-    const result = await runLocal(nested, { actionResolver, loopFns: fns })
-      .complete;
+    const result = await runLocal(nested, {
+      authorize: allowAll,
+      actionResolver,
+      loopFns: fns,
+    }).complete;
 
     expect(result.terminalStatus).toBe("completed");
     const { outcome, iterations } = outerLoopOutcome(result.outputs.outer);
@@ -263,7 +281,11 @@ describe("nested loop routing", () => {
       innerLoopBody,
     );
 
-    const result = await runLocal(nested, { actionResolver, loopFns }).complete;
+    const result = await runLocal(nested, {
+      authorize: allowAll,
+      actionResolver,
+      loopFns,
+    }).complete;
 
     expect(result.terminalStatus).toBe("completed");
     const outer = result.outputs.outer;
@@ -334,8 +356,11 @@ describe("nested loop routing", () => {
       innerLoopWf,
     );
 
-    const result = await runLocal(nested, { actionResolver, loopFns: fns })
-      .complete;
+    const result = await runLocal(nested, {
+      authorize: allowAll,
+      actionResolver,
+      loopFns: fns,
+    }).complete;
 
     expect(result.terminalStatus).toBe("completed");
     // One outer iteration ran the inner loop, which exhausted at 2 (two leaf

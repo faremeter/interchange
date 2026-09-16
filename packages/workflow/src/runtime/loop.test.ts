@@ -11,7 +11,14 @@ import {
   type ActionHandler,
   type LoopFn,
   type RunResult,
+  type WorkflowAuthorizeFn,
 } from "@intx/workflow";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 // A loop body: one action that echoes its numeric input. The iteration
 // input arrives as the child run's trigger payload, so the action reads
@@ -87,6 +94,7 @@ describe("runLoop", () => {
     // input 0 -> 1 -> 2; `cont` (count < 2) goes false at count 2, so it
     // converges after 3 iterations, well under the cap of 5.
     const result = await runLocal(dispatchWorkflow(5), {
+      authorize: allowAll,
       actionResolver,
       loopFns,
     }).complete;
@@ -101,6 +109,7 @@ describe("runLoop", () => {
   test("hits the cap and routes to onExhausted", async () => {
     // With a cap of 2 the loop exhausts (cont still true at count 1).
     const result = await runLocal(dispatchWorkflow(2), {
+      authorize: allowAll,
       actionResolver,
       loopFns,
     }).complete;
@@ -122,6 +131,7 @@ describe("runLoop", () => {
       throw new Error(`unknown loop fn ${ref}`);
     };
     const result = await runLocal(dispatchWorkflow(5), {
+      authorize: allowAll,
       actionResolver,
       loopFns: throwingFns,
     }).complete;
@@ -177,6 +187,7 @@ describe("runLoop", () => {
     });
 
     const result = await runLocal(workflow, {
+      authorize: allowAll,
       actionResolver: effectResolver,
       loopFns,
     }).complete;

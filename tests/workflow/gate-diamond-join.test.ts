@@ -17,7 +17,14 @@ import {
   runLocal,
   step,
   type StepInvoker,
+  type WorkflowAuthorizeFn,
 } from "@intx/workflow";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 function makeAgent(id: string) {
   return defineAgent({
@@ -73,7 +80,8 @@ describe("gate-skip sentinel", () => {
       return { output: input };
     };
 
-    const result = await runLocal(def, { invokeStep }).complete;
+    const result = await runLocal(def, { authorize: allowAll, invokeStep })
+      .complete;
     expect(result.terminalStatus).toBe("completed");
     expect(seenAgents).toContain("a");
     expect(seenAgents).not.toContain("b");

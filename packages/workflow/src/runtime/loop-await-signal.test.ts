@@ -14,7 +14,14 @@ import {
   runLocal,
   type ActionHandler,
   type LoopFn,
+  type WorkflowAuthorizeFn,
 } from "@intx/workflow";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 function loopAwaitWorkflow(maxIterations: number) {
   return defineWorkflow({
@@ -83,7 +90,11 @@ describe("loop body awaitSignal (in-process park)", () => {
       if (ref === "thread") return () => null;
       throw new Error(`unknown loop fn ${ref}`);
     };
-    const run = runLocal(loopAwaitWorkflow(3), { actionResolver, loopFns });
+    const run = runLocal(loopAwaitWorkflow(3), {
+      authorize: allowAll,
+      actionResolver,
+      loopFns,
+    });
     // Deliver on the parent channel where the container's relay awaits it; the
     // in-memory channel queues the delivery until the relay subscribes.
     await run.signal("go", { done: true }, "sig-1");
@@ -106,7 +117,11 @@ describe("loop body awaitSignal (in-process park)", () => {
       if (ref === "thread") return (childOutput) => holdOf(childOutput);
       throw new Error(`unknown loop fn ${ref}`);
     };
-    const run = runLocal(loopAwaitWorkflow(5), { actionResolver, loopFns });
+    const run = runLocal(loopAwaitWorkflow(5), {
+      authorize: allowAll,
+      actionResolver,
+      loopFns,
+    });
     // Iteration 0 consumes the first "go" (1); iteration 1 consumes the second
     // (2). FIFO on the parent channel's "go" queue routes each to its relay.
     await run.signal("go", 1, "sig-1");

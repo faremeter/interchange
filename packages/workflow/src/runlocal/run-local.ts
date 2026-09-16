@@ -44,11 +44,12 @@ import { createInMemorySignalChannel } from "./signal-channel";
 
 export interface RunLocalOptions extends RuntimeRunOptions {
   /**
-   * Override the agent-runner. The default returns a stub
-   * `AgentResult` after invoking the per-step `env.authorize` so the
-   * AuthorizeContext propagation invariant holds in default-stub
-   * mode. Tests that exercise real agents wire their own runner
-   * (which constructs `createAgent` and calls `agent.send`).
+   * Override the agent-runner. The default invokes the per-step
+   * `env.authorize` so the AuthorizeContext propagation invariant holds
+   * in default-stub mode, fails the step on any decision that is not an
+   * explicit allow, and otherwise returns a stub `AgentResult`. Tests
+   * that exercise real agents wire their own runner (which constructs
+   * `createAgent` and calls `agent.send`).
    */
   invokeStep?: StepInvoker;
   /**
@@ -63,10 +64,14 @@ export interface RunLocalOptions extends RuntimeRunOptions {
   /** Resolve a loop's `while`/`carry` refs to pure functions. */
   loopFns?: LoopFnRegistry;
   /**
-   * Workflow-level authorize. Defaults to `() => allow`; tests inject
-   * a spy.
+   * Workflow-level authorize. Required, with no default: the caller owns
+   * the decision about what a local run may do, and a permissive default
+   * here made an authorization failure invisible until the workflow was
+   * deployed. The deployed authorize refuses to answer when it cannot
+   * resolve a decision (no credentials snapshot, no entry for the step);
+   * the local surface refuses to invent one.
    */
-  authorize?: WorkflowAuthorizeFn;
+  authorize: WorkflowAuthorizeFn;
   /**
    * Director registry. Defaults to the canonical built-in registry
    * from `@intx/agent` (the same surface production uses).
@@ -86,16 +91,10 @@ export interface RunLocalOptions extends RuntimeRunOptions {
  */
 export function runLocal(
   definition: WorkflowDefinition,
-  options: RunLocalOptions = {},
+  options: RunLocalOptions,
 ): WorkflowRun {
   const directors = options.directors ?? createDefaultDirectorRegistry();
-  const authorize: WorkflowAuthorizeFn =
-    options.authorize ??
-    (async () => ({
-      effect: "allow",
-      matchingGrants: [],
-      resolvedBy: null,
-    }));
+  const authorize = options.authorize;
   const invokeStep: StepInvoker =
     options.invokeStep ?? createDefaultStepInvoker(authorize);
   const effects = createInMemoryEffectLedger();
@@ -142,7 +141,10 @@ export function runLocal(
     invokeStep,
     invokeAction,
     effects,
-    spawnChild: createInMemorySpawnChild(childBodies),
+    spawnChild: createInMemorySpawnChild(
+      childBodies,
+      inheritChildOptions(options),
+    ),
     clock,
     newId,
     drain: createNoopDrainController(rewritten),
@@ -179,18 +181,81 @@ function extractRuntimeOptions(options: RunLocalOptions): RuntimeRunOptions {
 }
 
 /**
+ * The subset of `RunLocalOptions` a spawned `childWorkflow` inherits from
+ * its parent run. The deployed host builds the child's env from the
+ * parent's -- the same step invoker, the same authorize (capped to the
+ * child's declared resources), the same director registry, and the loop
+ * and action resolvers re-loaded from the same deployment closure -- so a
+ * local child that reverted to the bare defaults would let a strict env
+ * pass a test whose child never saw it.
+ *
+ * Everything omitted here is either per-run identity the spawn callback
+ * supplies itself (`runId`, `triggerPayload`, `depth`) or per-run
+ * substrate the child builds fresh (its own event log, blob store, signal
+ * channel, and effect ledger), matching how the deployed host scopes each
+ * child run's substrate under its own `childRunId`.
+ */
+type InheritedChildOptions = Pick<
+  RunLocalOptions,
+  | "authorize"
+  | "invokeStep"
+  | "invokeAction"
+  | "actionResolver"
+  | "loopFns"
+  | "directors"
+  | "clock"
+  | "newId"
+>;
+
+function inheritChildOptions(options: RunLocalOptions): InheritedChildOptions {
+  return {
+    authorize: options.authorize,
+    ...(options.invokeStep !== undefined
+      ? { invokeStep: options.invokeStep }
+      : {}),
+    ...(options.invokeAction !== undefined
+      ? { invokeAction: options.invokeAction }
+      : {}),
+    ...(options.actionResolver !== undefined
+      ? { actionResolver: options.actionResolver }
+      : {}),
+    ...(options.loopFns !== undefined ? { loopFns: options.loopFns } : {}),
+    ...(options.directors !== undefined
+      ? { directors: options.directors }
+      : {}),
+    ...(options.clock !== undefined ? { clock: options.clock } : {}),
+    ...(options.newId !== undefined ? { newId: options.newId } : {}),
+  };
+}
+
+/**
  * Default stub step invoker. Calls the workflow-level authorize so
- * AuthorizeContext propagation is observable, then returns
- * `{ output: null }`. Returning a stable `null` (rather than echoing
- * the input) keeps the "hello world" path -- a workflow whose step's
- * input resolves to `undefined` because the caller did not supply
- * `triggerPayload` -- from cliffing on the blob substrate's strict
- * non-serializable rejection. Real workflows supply a runner that
- * wraps `createAgent` and `agent.send`.
+ * AuthorizeContext propagation is observable, refuses any decision that
+ * is not an explicit allow, then returns `{ output: null }`. Returning a
+ * stable `null` (rather than echoing the input) keeps the "hello world"
+ * path -- a workflow whose step's input resolves to `undefined` because
+ * the caller did not supply `triggerPayload` -- from cliffing on the blob
+ * substrate's strict non-serializable rejection. Real workflows supply a
+ * runner that wraps `createAgent` and `agent.send`.
+ *
+ * Failing closed mirrors `createEffectContext`, which enforces the same
+ * rule for an action's effects: deny, ask, and a null (no matching grant)
+ * all block. A stub that discarded the decision would complete a step the
+ * deployed agent harness would have refused, which is the whole class of
+ * defect a local run is supposed to catch.
  */
 function createDefaultStepInvoker(authorize: WorkflowAuthorizeFn): StepInvoker {
   return async ({ agent, authzContext }) => {
-    await authorize(`tool:${agent.id}`, "invoke", authzContext);
+    const decision = await authorize(
+      `tool:${agent.id}`,
+      "invoke",
+      authzContext,
+    );
+    if (decision.effect !== "allow") {
+      throw new Error(
+        `step agent ${agent.id} was not authorized (${String(decision.effect)})`,
+      );
+    }
     return { output: null };
   };
 }
@@ -293,6 +358,7 @@ export function createSpawnLoopIteration(
 
 function createInMemorySpawnChild(
   bodies: ReadonlyMap<string, WorkflowDefinition>,
+  inherited: InheritedChildOptions,
 ): SpawnChildWorkflow {
   return async ({
     definitionRef,
@@ -316,8 +382,10 @@ function createInMemorySpawnChild(
     // parent-allocated childRunId so the parent's audit log and the
     // child's own log agree on identity. Carry the depth (already checked
     // one rung up) and the tree-wide ceiling so the child's own spawns keep
-    // counting against the same bound.
+    // counting against the same bound, and the inherited env overrides so
+    // the child runs under the same authorize and invokers as its parent.
     const child = runLocal(resolved, {
+      ...inherited,
       triggerPayload: input,
       runId: childRunId,
       depth,

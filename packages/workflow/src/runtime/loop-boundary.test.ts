@@ -10,7 +10,14 @@ import {
   type ActionHandler,
   type LoopFn,
   type RunResult,
+  type WorkflowAuthorizeFn,
 } from "@intx/workflow";
+
+const allowAll: WorkflowAuthorizeFn = async () => ({
+  effect: "allow",
+  matchingGrants: [],
+  resolvedBy: null,
+});
 
 const body = defineWorkflow({
   id: "body",
@@ -94,8 +101,11 @@ describe("loop boundary", () => {
     // Converges at the 3rd iteration (count reaches 2). cap=3 means the
     // convergence check must win over the exhaustion check on that
     // iteration.
-    const result = await runLocal(build(3), { actionResolver, loopFns })
-      .complete;
+    const result = await runLocal(build(3), {
+      authorize: allowAll,
+      actionResolver,
+      loopFns,
+    }).complete;
     const out = loopOut(result);
     expect(out.outcome).toBe("converged");
     expect(out.iterations).toBe(3);
@@ -104,16 +114,22 @@ describe("loop boundary", () => {
   });
 
   test("cap one below convergence exhausts (cap=2)", async () => {
-    const result = await runLocal(build(2), { actionResolver, loopFns })
-      .complete;
+    const result = await runLocal(build(2), {
+      authorize: allowAll,
+      actionResolver,
+      loopFns,
+    }).complete;
     const out = loopOut(result);
     expect(out.outcome).toBe("exhausted");
     expect(out.iterations).toBe(2);
   });
 
   test("cap=1 runs exactly one iteration then exhausts", async () => {
-    const result = await runLocal(build(1), { actionResolver, loopFns })
-      .complete;
+    const result = await runLocal(build(1), {
+      authorize: allowAll,
+      actionResolver,
+      loopFns,
+    }).complete;
     const out = loopOut(result);
     expect(out.outcome).toBe("exhausted");
     expect(out.iterations).toBe(1);
