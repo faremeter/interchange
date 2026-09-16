@@ -409,6 +409,124 @@ describe("createWorkflowDispatchService", () => {
     expect(addressReads).toBe(2);
   });
 
+  for (const phase of ["lookup", "retry write"] as const) {
+    for (const settlement of ["resolve", "reject"] as const) {
+      test(`bounds abandoned ${phase} work across drains until it ${settlement}s`, async () => {
+        const firstIO = Promise.withResolvers<boolean>();
+        const secondIO = Promise.withResolvers<boolean>();
+        const firstEntered = Promise.withResolvers<boolean>();
+        const rows = ["first", "second", "healthy"].map((id) =>
+          dispatch({ id, anchorRunId: id, messageId: id }),
+        );
+        const exclusions: (readonly string[])[] = [];
+        const delivered: string[] = [];
+        let claims = 0;
+        const waitForIO = async (id: string) => {
+          if (id === "first") {
+            firstEntered.resolve(true);
+            await firstIO.promise;
+          } else if (id === "second") {
+            await secondIO.promise;
+          }
+        };
+        const service = createWorkflowDispatchService({
+          dispatchStore: fakeDispatchStore({
+            claimNextPending: async ({ excludedDispatchIds = [] }) => {
+              exclusions.push(excludedDispatchIds);
+              return rows[claims++] ?? null;
+            },
+            scheduleRetry: async ({ dispatchId }) => {
+              await waitForIO(dispatchId);
+              return null;
+            },
+          }),
+          allocationStore: fakeAllocationStore({
+            findByAnchorRunId: async (id) => {
+              if (id === "healthy") return allocation();
+              if (phase === "lookup") await waitForIO(id);
+              return null;
+            },
+          }),
+          router: {
+            sendSignalDeliverToAllocation: async () => undefined,
+            sendWorkflowRunDispatchToAllocation: async (
+              _target,
+              _address,
+              _runId,
+              _grants,
+              _raw,
+              _sender,
+              messageId,
+            ) => {
+              delivered.push(messageId);
+            },
+          },
+          resolveAnchorAddress: async () => "run_abc@acme.localhost",
+          maxConcurrentDispatches: 2,
+          leaseDurationMs: 30,
+        });
+        service.wake();
+        await firstEntered.promise;
+        try {
+          await service.reconcileUntilIdle();
+          expect(await service.reconcileNext()).toBe(false);
+          expect(claims).toBe(2);
+          expect(delivered).toEqual([]);
+
+          if (settlement === "resolve") firstIO.resolve(true);
+          else firstIO.reject(new Error("Database connection closed"));
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          expect(await service.reconcileNext()).toBe(true);
+          expect(exclusions.at(-1)).toEqual(["second"]);
+          expect(claims).toBe(3);
+          expect(delivered).toEqual(["healthy"]);
+        } finally {
+          firstIO.resolve(true);
+          secondIO.resolve(true);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      });
+    }
+  }
+
+  test("reserves capacity for pending claims and releases it after failures", async () => {
+    const claim = Promise.withResolvers<ClaimedDispatch | null>();
+    let claims = 0;
+    const service = createWorkflowDispatchService({
+      dispatchStore: fakeDispatchStore({
+        claimNextPending: () => {
+          claims += 1;
+          if (claims === 1) return claim.promise;
+          if (claims === 2) throw new Error("Synchronous claim failure");
+          return Promise.resolve(null);
+        },
+      }),
+      allocationStore: fakeAllocationStore(),
+      router: {
+        sendSignalDeliverToAllocation: async () => undefined,
+        sendWorkflowRunDispatchToAllocation: async () => undefined,
+      },
+      resolveAnchorAddress: async () => null,
+      maxConcurrentDispatches: 1,
+    });
+    const first = service.reconcileNext();
+    try {
+      expect(await service.reconcileNext()).toBe(false);
+      expect(claims).toBe(1);
+      claim.reject(new Error("Asynchronous claim failure"));
+      await expect(first).rejects.toThrow("Asynchronous claim failure");
+      await expect(service.reconcileNext()).rejects.toThrow(
+        "Synchronous claim failure",
+      );
+      expect(await service.reconcileNext()).toBe(false);
+      expect(await service.reconcileNext()).toBe(false);
+      expect(claims).toBe(4);
+    } finally {
+      claim.resolve(null);
+      await Promise.allSettled([first]);
+    }
+  });
+
   test("a late claim cannot duplicate a delivery already executing", async () => {
     const lateClaim = Promise.withResolvers<ClaimedDispatch>();
     const entered = Promise.withResolvers<boolean>();
