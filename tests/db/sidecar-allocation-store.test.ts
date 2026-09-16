@@ -11,6 +11,7 @@ import {
   createSidecarAllocationReconciler,
   createSidecarPluginRegistry,
   createSidecarRouter,
+  recoverSenderDeploy,
 } from "@intx/hub-sessions";
 
 import {
@@ -19,6 +20,7 @@ import {
   createWorkflowRunLaunchSpecStore,
 } from "@intx/db";
 import {
+  sidecar,
   sidecarAllocation,
   workflowDefinition,
   workflowRun,
@@ -928,6 +930,83 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(claims).toHaveLength(2);
     });
 
+    test("abandoned recovery reads leave database capacity for unrelated queries", async () => {
+      const store = createSidecarAllocationStore(h.db);
+      for (let index = 0; index < 10; index += 1) {
+        const id = `recovery-capacity-${String(index)}`;
+        await seedWorkflowRun(h.db, {
+          id,
+          anchorRunId: id,
+          tenantId: TENANT_ID,
+          definitionId: DEFINITION_ID,
+        });
+        await h.db.insert(sidecar).values({
+          id,
+          tokenHashSha256: new Uint8Array(32).fill(index),
+        });
+        await store.createAdopted({
+          id,
+          anchorRunId: id,
+          tenantId: TENANT_ID,
+          provisionerId: "test",
+          provisionerApiVersion: 1,
+          provisionerBindingFingerprint: "test:v1",
+          sidecarId: id,
+          generation: 1,
+          connectDeadline: new Date(Date.now() + 60_000),
+        });
+      }
+      const router = createSidecarRouter({
+        authenticateSidecar: async () => null,
+        validateSidecarIdentity: async () => false,
+      });
+      const recoveries: Promise<void>[] = [];
+      const reconciler = createSidecarAllocationReconciler({
+        allocationStore: store,
+        plugins: createSidecarPluginRegistry({ provisioners: [] }),
+        router,
+        hubWebSocketUrl: "ws://localhost",
+        operationTimeoutMs: 100,
+        maxConcurrentClaims: 8,
+        onInitializationRecovery(allocation, reconciliation) {
+          const recovery = recoverSenderDeploy({
+            db: h.db,
+            sidecarRouter: router,
+            allocation,
+            reconciliation,
+          });
+          recoveries.push(recovery);
+          return recovery;
+        },
+      });
+      const locked = Promise.withResolvers<boolean>();
+      const unlock = Promise.withResolvers<boolean>();
+      const blocker = h.db.transaction(async (tx) => {
+        await tx.execute(sql`lock table workflow_run in access exclusive mode`);
+        locked.resolve(true);
+        await unlock.promise;
+      });
+      try {
+        await locked.promise;
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          expect(await reconciler.reconcileNext()).toBe(true);
+        }
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          expect(await reconciler.reconcileNext()).toBe(false);
+        }
+        expect(recoveries).toHaveLength(8);
+        // Eight blocked reads and the lock holder leave one pool connection.
+        const [unrelated] = await h.db.execute(sql`select 1 as value`);
+        expect(unrelated?.["value"]).toBe(1);
+      } finally {
+        unlock.resolve(true);
+        await blocker;
+        await Promise.allSettled(recoveries);
+      }
+      expect(await reconciler.reconcileNext()).toBe(true);
+      expect(recoveries).toHaveLength(9);
+    });
+
     test("excludes due allocations without claiming or changing them", async () => {
       const secondAnchorRunId = "anchor-exclusion-second";
       await seedWorkflowRun(h.db, {
@@ -1183,6 +1262,80 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(ready?.status).toBe("allocated");
       expect(ready?.reconciliationLeaseId).toBeUndefined();
       expect(ready?.connectDeadline).toBeUndefined();
+      expect(ready?.nextAttemptAt).toBeUndefined();
+    });
+
+    test("a lease validation failure preserves its schedule and retries after lease expiry", async () => {
+      const { store, allocation } = await createClaimedAllocation(
+        "alloc-lease-query-failure",
+      );
+      const due = new Date(0);
+      await h.db
+        .update(sidecarAllocation)
+        .set({ reconciliationLeaseExpiresAt: due, nextAttemptAt: due })
+        .where(eq(sidecarAllocation.id, allocation.id));
+      let validations = 0;
+      let initializations = 0;
+      let leases = 0;
+      const reconciler = createSidecarAllocationReconciler({
+        allocationStore: {
+          ...store,
+          isReconciliationLeaseCurrent: async (...args) => {
+            if (++validations === 1)
+              throw new Error("Database connection failed during validation");
+            return store.isReconciliationLeaseCurrent(...args);
+          },
+        },
+        plugins: createSidecarPluginRegistry({
+          provisioners: [
+            {
+              id: "ec2-spot",
+              apiVersion: 1,
+              bindingFingerprint: "ec2-spot:test",
+              capabilities: [],
+              async ensure() {
+                throw new Error("Must not reprovision the connected worker");
+              },
+              async destroy() {
+                throw new Error("Must not destroy the connected worker");
+              },
+            },
+          ],
+        }),
+        router: {
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          isAllocatedSidecarReady: async () => true,
+          waitForAllocatedSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "ws://localhost/unused",
+        createLeaseId: () => `recovery-${String(++leases)}`,
+        onReady: async () => {
+          initializations += 1;
+        },
+      });
+
+      expect(await reconciler.reconcileNext()).toBe(true);
+      expect(initializations).toBe(0);
+      expect(await store.findById(allocation.id)).toMatchObject({
+        status: "allocated",
+        generation: allocation.generation,
+        nextAttemptAt: due,
+        reconciliationLeaseId: "recovery-1",
+      });
+      expect(await reconciler.reconcileNext()).toBe(false);
+
+      // Expire only the lease: no retry write repairs or changes the schedule.
+      await h.db
+        .update(sidecarAllocation)
+        .set({ reconciliationLeaseExpiresAt: due })
+        .where(eq(sidecarAllocation.id, allocation.id));
+      expect(await reconciler.reconcileNext()).toBe(true);
+      expect(initializations).toBe(1);
+      const ready = await store.findById(allocation.id);
+      expect(ready?.status).toBe("allocated");
+      expect(ready?.generation).toBe(allocation.generation);
+      expect(ready?.reconciliationLeaseId).toBeUndefined();
       expect(ready?.nextAttemptAt).toBeUndefined();
     });
 
