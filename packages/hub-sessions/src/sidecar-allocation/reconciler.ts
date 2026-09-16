@@ -82,7 +82,10 @@ export type SidecarAllocationReconcilerDeps = {
   readonly leaseDurationMs?: number;
   readonly connectTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
-  /** Includes claim queries the Hub stopped awaiting after their deadline. */
+  /**
+   * Bounds admitted claims, active reconciliation, and retained allocation
+   * queries or writes.
+   */
   readonly maxConcurrentClaims?: number;
   readonly retryDelayMs?: (attempt: number) => number;
   readonly now?: () => Date;
@@ -256,10 +259,12 @@ export function createSidecarAllocationReconciler({
               operationTimeoutMs,
               async () => {
                 try {
-                  return await allocationStore.isReconciliationLeaseCurrent(
-                    allocation.id,
-                    allocation.generation,
-                    leaseId,
+                  return await trackAllocationQuery(allocation.id, () =>
+                    allocationStore.isReconciliationLeaseCurrent(
+                      allocation.id,
+                      allocation.generation,
+                      leaseId,
+                    ),
                   );
                 } catch (cause) {
                   throw new ReconciliationLeaseLostError(allocation.id, cause);
@@ -286,17 +291,20 @@ export function createSidecarAllocationReconciler({
 
   // A timed-out lookup still occupies its database connection. Exclude its
   // allocation until it settles so retries cannot accumulate duplicate reads.
-  const pendingAllocationQueries = new Set<string>();
+  const pendingAllocationQueries = new Map<string, { count: number }>();
 
   async function trackAllocationQuery<T>(
     allocationId: string,
     query: () => Promise<T>,
   ): Promise<T> {
-    pendingAllocationQueries.add(allocationId);
+    const pending = pendingAllocationQueries.get(allocationId) ?? { count: 0 };
+    pending.count += 1;
+    pendingAllocationQueries.set(allocationId, pending);
     try {
       return await query();
     } finally {
-      pendingAllocationQueries.delete(allocationId);
+      pending.count -= 1;
+      if (pending.count === 0) pendingAllocationQueries.delete(allocationId);
     }
   }
 
@@ -463,7 +471,10 @@ export function createSidecarAllocationReconciler({
           allocation,
           leaseId,
           "Workflow initialization",
-          (context) => onReady(allocation, context),
+          (context) =>
+            trackAllocationQuery(allocation.id, () =>
+              onReady(allocation, context),
+            ),
         );
       } catch (error) {
         if (error instanceof ReconciliationLeaseLostError) throw error;
@@ -1009,51 +1020,68 @@ export function createSidecarAllocationReconciler({
     }
   }
 
-  let pendingClaims = 0;
+  let admittedClaims = 0;
 
   async function reconcileNext(): Promise<boolean> {
-    const leaseId = createLeaseId();
-    const claimStartedAt = performance.now();
-    const allocation = await runSidecarOperation(
-      "Sidecar allocation claim",
-      operationTimeoutMs,
-      async () => {
-        if (pendingClaims >= maxConcurrentClaims) return null;
-        pendingClaims += 1;
-        try {
-          return await allocationStore.claimNextReconcilable({
+    const retainedAllocations = new Set([
+      ...connectionEvents.keys(),
+      ...pendingAllocationQueries.keys(),
+    ]);
+    // An active claim already owns capacity for its allocation's pending work.
+    for (const allocationId of activeAllocations.keys())
+      retainedAllocations.delete(allocationId);
+    if (admittedClaims + retainedAllocations.size >= maxConcurrentClaims)
+      return false;
+
+    admittedClaims += 1;
+    let claim: ReturnType<AllocationStore["claimNextReconcilable"]> | undefined;
+    try {
+      const leaseId = createLeaseId();
+      const claimStartedAt = performance.now();
+      const allocation = await runSidecarOperation(
+        "Sidecar allocation claim",
+        operationTimeoutMs,
+        () => {
+          claim = allocationStore.claimNextReconcilable({
             leaseId,
             leaseDurationMs,
             excludedAllocationIds: [
               ...new Set([
                 ...activeAllocations.keys(),
                 ...connectionEvents.keys(),
-                ...pendingAllocationQueries,
+                ...pendingAllocationQueries.keys(),
               ]),
             ],
           });
-        } finally {
-          // A timeout releases the caller, but this query still owns capacity.
-          pendingClaims -= 1;
-        }
-      },
-    );
-    if (allocation === null) return false;
-    // A delayed claim can predate a queued write's exclusion. Let its lease
-    // expire instead of starting more work or parking behind that same write.
-    if (connectionEvents.has(allocation.id)) return true;
-    // A claim started before another local claim returned can outlive its lease
-    // and exclusion snapshot, including a lookup abandoned by that attempt.
+          return claim;
+        },
+      );
+      if (allocation === null) return false;
+      return await reconcileClaim(allocation, leaseId, claimStartedAt);
+    } finally {
+      const release = () => {
+        admittedClaims -= 1;
+      };
+      // Keep the reservation through the claim-to-reconciliation handoff. A
+      // timed-out claim still owns capacity until its database query settles.
+      if (claim === undefined) release();
+      else void claim.then(release, release);
+    }
+  }
+
+  async function reconcileClaim(
+    allocation: SidecarAllocation,
+    leaseId: string,
+    claimStartedAt: number,
+  ): Promise<boolean> {
+    // Local work may have started since this claim's exclusion snapshot. Let
+    // its lease expire without adding another database write behind that work.
     if (
+      connectionEvents.has(allocation.id) ||
       activeAllocations.has(allocation.id) ||
       pendingAllocationQueries.has(allocation.id)
-    ) {
-      await allocationStore.parkReconciliation(allocation.id, leaseId, {
-        kind: "retry-after-error",
-        notBefore: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
-      });
+    )
       return true;
-    }
     const active = {
       allocation,
       controller: new AbortController(),
@@ -1068,10 +1096,12 @@ export function createSidecarAllocationReconciler({
       renewing = true;
       const startedAt = performance.now();
       try {
-        const renewed = await allocationStore.extendReconciliationLease(
-          allocation.id,
-          leaseId,
-          leaseDurationMs,
+        const renewed = await trackAllocationQuery(allocation.id, () =>
+          allocationStore.extendReconciliationLease(
+            allocation.id,
+            leaseId,
+            leaseDurationMs,
+          ),
         );
         if (finished || active.controller.signal.aborted) return;
         if (!renewed || performance.now() >= active.leaseDeadline) {
@@ -1124,18 +1154,9 @@ export function createSidecarAllocationReconciler({
           logger.info`Allocation ${allocation.id} reconciliation stopped: lease ${leaseId} is no longer current`;
         } else {
           logger.warn`Allocation ${allocation.id} reconciliation stopped because lease ${leaseId} could not be confirmed: ${cause instanceof Error ? cause.message : String(cause)}`;
-          // Pending writes already keep this allocation excluded. A retry write
-          // could wait behind the same transaction and trap the cancelled slot.
-          if (connectionEvents.has(allocation.id)) return true;
-          try {
-            await allocationStore.parkReconciliation(allocation.id, leaseId, {
-              kind: "retry-after-error",
-              notBefore: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
-            });
-          } catch (parkError) {
-            logger.warn`Failed to park allocation ${allocation.id} after renewal failure: ${parkError instanceof Error ? parkError.message : String(parkError)}`;
-          }
         }
+        // The durable schedule survives the claim. Stop renewing and let the
+        // lease expire; handling a lease failure must not require another write.
         return true;
       }
       logger.error`Allocation ${allocation.id} reconciliation failed: ${error instanceof Error ? error.message : String(error)}`;

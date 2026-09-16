@@ -1902,7 +1902,7 @@ describe("reconciliation ownership", () => {
   });
 
   test.each(["accepted", "rejected", "error"] as const)(
-    "ignores a completed claim's late renewal %s after the allocation is reclaimed",
+    "retains a completed claim's pending renewal until it settles with %s",
     async (outcome) => {
       const renewalEntered = Promise.withResolvers<boolean>();
       const renewal = Promise.withResolvers<boolean>();
@@ -1915,8 +1915,10 @@ describe("reconciliation ownership", () => {
       const reconciler = createSidecarAllocationReconciler({
         ...deps({
           store: fakeStore({
-            claimNextReconcilable: async () =>
-              allocation({ status: "allocated", generation: 1 }),
+            claimNextReconcilable: async ({ excludedAllocationIds = [] }) =>
+              excludedAllocationIds.includes("alloc-1")
+                ? null
+                : allocation({ status: "allocated", generation: 1 }),
             extendReconciliationLease: (_id, leaseId) => {
               if (leaseId !== "lease-1") return Promise.resolve(true);
               renewalEntered.resolve(true);
@@ -1947,19 +1949,23 @@ describe("reconciliation ownership", () => {
       await first;
       expect(readyLeases).toEqual(["lease-1"]);
 
-      const next = reconciler.reconcileNext();
-      await nextEntered.promise;
       try {
+        expect(await reconciler.reconcileNext()).toBe(false);
         if (outcome === "error")
           renewal.reject(new Error("old connection lost"));
         else renewal.resolve(outcome === "accepted");
         await tick();
-        expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
-      } finally {
+        expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+        const next = reconciler.reconcileNext();
+        await nextEntered.promise;
         nextInitialization.resolve(true);
         await next;
+        expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
+      } finally {
+        renewal.resolve(true);
+        nextInitialization.resolve(true);
       }
-      expect(readyLeases).toEqual(["lease-1", "lease-2"]);
+      expect(readyLeases).toEqual(["lease-1", "lease-3"]);
     },
   );
 
@@ -2151,6 +2157,7 @@ describe("reconciliation ownership", () => {
       let claims = 0;
       let readinessChecks = 0;
       let initialized = 0;
+      let parks = 0;
       const dependencies = deps({
         store: fakeStore({
           claimNextReconcilable: (args) => {
@@ -2161,6 +2168,10 @@ describe("reconciliation ownership", () => {
           },
           markConnectionLost: async () => current,
           markConnectionReady: async () => null,
+          parkReconciliation: async () => {
+            parks += 1;
+            return true;
+          },
         }),
       });
       const query = () => {
@@ -2201,6 +2212,7 @@ describe("reconciliation ownership", () => {
         expect(exclusions).toEqual([[], []]);
         expect(readinessChecks).toBe(1);
         expect(initialized).toBe(0);
+        expect(parks).toBe(0);
       } finally {
         lateClaim.resolve(current);
         readiness.reject(new Error("old database connection closed"));
@@ -2400,6 +2412,287 @@ describe("reconciliation ownership", () => {
     },
   );
 
+  for (const phase of ["readiness", "recovery", "lease validation"] as const) {
+    for (const settlement of ["resolve", "reject"] as const) {
+      test(`bounds abandoned ${phase} queries across allocations until they ${settlement}`, async () => {
+        const firstRead = Promise.withResolvers<boolean>();
+        const secondRead = Promise.withResolvers<boolean>();
+        const firstEntered = Promise.withResolvers<boolean>();
+        const secondEntered = Promise.withResolvers<boolean>();
+        const thirdClaim = Promise.withResolvers<SidecarAllocation | null>();
+        const thirdClaimEntered = Promise.withResolvers<boolean>();
+        const rows = ["alloc-1", "alloc-2", "alloc-3"].map((id) =>
+          allocation({ id, status: "allocated", generation: 1 }),
+        );
+        let claims = 0;
+        const initialized: string[] = [];
+        const dependencies = deps({
+          store: fakeStore({
+            claimNextReconcilable: async () => {
+              const row = rows[claims++] ?? null;
+              if (claims === 3) {
+                thirdClaimEntered.resolve(true);
+                return thirdClaim.promise;
+              }
+              return row;
+            },
+            markConnectionReady: async () => null,
+            scheduleRetry: async () => null,
+          }),
+        });
+        const query = (allocationId: string) => {
+          if (allocationId === "alloc-1") {
+            firstEntered.resolve(true);
+            return firstRead.promise;
+          }
+          if (allocationId === "alloc-2") {
+            secondEntered.resolve(true);
+            return secondRead.promise;
+          }
+          return Promise.resolve(true);
+        };
+        const reconciler = createSidecarAllocationReconciler({
+          ...dependencies,
+          maxConcurrentClaims: 2,
+          operationTimeoutMs: 30,
+          leaseDurationMs: 1_000,
+          allocationStore: {
+            ...dependencies.allocationStore,
+            isReconciliationLeaseCurrent: (allocationId) =>
+              phase === "lease validation"
+                ? query(allocationId)
+                : Promise.resolve(true),
+          },
+          router: {
+            ...dependencies.router,
+            isAllocatedSidecarReady: (target) =>
+              phase === "readiness"
+                ? query(target.allocationId)
+                : Promise.resolve(true),
+          },
+          ...(phase === "recovery"
+            ? {
+                onInitializationRecovery: async (row: SidecarAllocation) => {
+                  await query(row.id);
+                },
+              }
+            : {}),
+          onReady: async (row) => {
+            initialized.push(row.id);
+          },
+        });
+        const first = reconciler.reconcileNext();
+        const work = [first];
+        try {
+          await firstEntered.promise;
+          // One active allocation with a pending query occupies one slot.
+          const second = reconciler.reconcileNext();
+          work.push(second);
+          expect(
+            await Promise.race([
+              secondEntered.promise,
+              second.then(() => false),
+            ]),
+          ).toBe(true);
+          await Promise.all(work);
+
+          for (let attempt = 0; attempt < 10; attempt += 1) {
+            expect(await reconciler.reconcileNext()).toBe(false);
+          }
+          expect(claims).toBe(2);
+          expect(initialized).toEqual([]);
+
+          if (settlement === "resolve") firstRead.resolve(true);
+          else firstRead.reject(new Error("Old database connection closed"));
+          await tick();
+          const third = reconciler.reconcileNext();
+          work.push(third);
+          await thirdClaimEntered.promise;
+          // The remaining abandoned read and this pending claim share the limit.
+          expect(await reconciler.reconcileNext()).toBe(false);
+          expect(claims).toBe(3);
+          thirdClaim.resolve(rows[2] ?? null);
+          expect(await third).toBe(true);
+          expect(claims).toBe(3);
+          expect(initialized).toEqual(["alloc-3"]);
+        } finally {
+          firstRead.resolve(true);
+          secondRead.resolve(true);
+          thirdClaim.resolve(null);
+          await Promise.allSettled(work);
+          await tick();
+        }
+      });
+    }
+  }
+
+  for (const firstSettled of ["readiness", "renewal"] as const) {
+    test(`retains overlapping queries after ${firstSettled} settles`, async () => {
+      const readiness = Promise.withResolvers<boolean>();
+      const renewal = Promise.withResolvers<boolean>();
+      const renewalEntered = Promise.withResolvers<void>();
+      let claims = 0;
+      const initialized: string[] = [];
+      const dependencies = deps({
+        store: fakeStore({
+          claimNextReconcilable: async () =>
+            allocation({
+              id: `alloc-${String(++claims)}`,
+              status: "allocated",
+              generation: 1,
+            }),
+          extendReconciliationLease: () => {
+            renewalEntered.resolve();
+            return renewal.promise;
+          },
+          markConnectionReady: async () => null,
+        }),
+      });
+      const reconciler = createSidecarAllocationReconciler({
+        ...dependencies,
+        maxConcurrentClaims: 1,
+        leaseDurationMs: 90,
+        router: {
+          ...dependencies.router,
+          isAllocatedSidecarReady: ({ allocationId }) =>
+            allocationId === "alloc-1"
+              ? readiness.promise
+              : Promise.resolve(true),
+        },
+        onReady: async (row) => {
+          initialized.push(row.id);
+        },
+      });
+      const first = reconciler.reconcileNext();
+      try {
+        await renewalEntered.promise;
+        await first;
+        expect(await reconciler.reconcileNext()).toBe(false);
+        if (firstSettled === "readiness") readiness.resolve(true);
+        else renewal.resolve(true);
+        await tick();
+        expect(await reconciler.reconcileNext()).toBe(false);
+        expect(claims).toBe(1);
+
+        readiness.resolve(true);
+        renewal.resolve(true);
+        await tick();
+        expect(await reconciler.reconcileNext()).toBe(true);
+        expect(claims).toBe(2);
+        expect(initialized).toEqual(["alloc-2"]);
+      } finally {
+        readiness.resolve(true);
+        renewal.resolve(true);
+        await first;
+      }
+    });
+  }
+
+  test("retains capacity until a timed-out connection write settles", async () => {
+    const write = Promise.withResolvers<SidecarAllocation | null>();
+    let claims = 0;
+    let writes = 0;
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: async () =>
+            allocation({
+              id: `alloc-${String(++claims)}`,
+              status: "allocated",
+              generation: 1,
+            }),
+          markConnectionReady: () =>
+            ++writes === 1 ? write.promise : Promise.resolve(null),
+        }),
+      }),
+      maxConcurrentClaims: 1,
+      operationTimeoutMs: 30,
+    });
+    try {
+      expect(await reconciler.reconcileNext()).toBe(true);
+      expect(writes).toBe(1);
+      expect(await reconciler.reconcileNext()).toBe(false);
+      expect(claims).toBe(1);
+      write.resolve(null);
+      await tick();
+      expect(await reconciler.reconcileNext()).toBe(true);
+      expect(claims).toBe(2);
+      expect(writes).toBe(2);
+    } finally {
+      write.resolve(null);
+      await tick();
+    }
+  });
+
+  test("keeps capacity reserved while a claim becomes active reconciliation", async () => {
+    const claim = Promise.withResolvers<SidecarAllocation | null>();
+    const claimEntered = Promise.withResolvers<boolean>();
+    const finish = Promise.withResolvers<boolean>();
+    let claims = 0;
+    let initialized = false;
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: () => {
+            claims += 1;
+            claimEntered.resolve(true);
+            return claims === 1 ? claim.promise : Promise.resolve(null);
+          },
+          markConnectionReady: async () => null,
+        }),
+      }),
+      maxConcurrentClaims: 1,
+      onReady: async () => {
+        initialized = true;
+        await finish.promise;
+      },
+    });
+    const work = reconciler.reconcileNext();
+    await claimEntered.promise;
+    const competing = claim.promise.then(async () => {
+      for (let attempt = 0; attempt < 50 && !initialized; attempt += 1) {
+        expect(await reconciler.reconcileNext()).toBe(false);
+      }
+      expect(initialized).toBe(true);
+    });
+    try {
+      claim.resolve(allocation({ status: "allocated", generation: 1 }));
+      await competing;
+      expect(claims).toBe(1);
+      expect(await reconciler.reconcileNext()).toBe(false);
+      expect(claims).toBe(1);
+    } finally {
+      claim.resolve(null);
+      finish.resolve(true);
+      await Promise.allSettled([work, competing]);
+    }
+    expect(await reconciler.reconcileNext()).toBe(false);
+    expect(claims).toBe(2);
+  });
+
+  test("releases capacity after empty, rejected, and synchronously thrown claims", async () => {
+    let claims = 0;
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: () => {
+            claims += 1;
+            if (claims === 2)
+              return Promise.reject(new Error("Rejected claim"));
+            if (claims === 3) throw new Error("Thrown claim");
+            return Promise.resolve(null);
+          },
+        }),
+      }),
+      maxConcurrentClaims: 1,
+    });
+    expect(await reconciler.reconcileNext()).toBe(false);
+    await expect(reconciler.reconcileNext()).rejects.toThrow("Rejected claim");
+    await expect(reconciler.reconcileNext()).rejects.toThrow("Thrown claim");
+    expect(await reconciler.reconcileNext()).toBe(false);
+    expect(claims).toBe(4);
+  });
+
   test("times out a hung claim without initializing its late result", async () => {
     const claim = Promise.withResolvers<SidecarAllocation | null>();
     let initialized = false;
@@ -2526,18 +2819,12 @@ describe("reconciliation ownership", () => {
     );
     try {
       await reconciler.reconcileNext();
-      expect(calls).toEqual(["recover", "park"]);
+      expect(calls).toEqual(["recover"]);
       expect(socket?.closed).toBe(false);
       expect(await router.isAllocatedSidecarReady(TEST_TARGET)).toBe(true);
 
       await reconciler.reconcileNext();
-      expect(calls).toEqual([
-        "recover",
-        "park",
-        "recover",
-        "initialize",
-        "ready",
-      ]);
+      expect(calls).toEqual(["recover", "recover", "initialize", "ready"]);
       expect(socket?.closed).toBe(false);
     } finally {
       if (socket !== undefined) router.handleClose(socket);
@@ -2607,34 +2894,65 @@ describe("reconciliation ownership", () => {
     expect(retried).toBe(false);
   });
 
-  test("parks the allocation when lease renewal throws transiently", async () => {
-    let parked = 0;
-    let parkedLeaseId: string | undefined;
-    const reconciler = createSidecarAllocationReconciler({
-      ...deps({
-        store: fakeStore({
-          claimNextReconcilable: async () =>
-            allocation({ status: "allocated", generation: 1 }),
-          extendReconciliationLease: async () => {
-            throw new Error("db blip");
-          },
-          parkReconciliation: async (_allocationId, leaseId) => {
-            parked += 1;
-            parkedLeaseId = leaseId;
-            return true;
-          },
-        }),
+  test("a renewal failure finishes without parking while its read retains capacity", async () => {
+    const readiness = Promise.withResolvers<boolean>();
+    const park = Promise.withResolvers<boolean>();
+    const parkEntered = Promise.withResolvers<string>();
+    let claims = 0;
+    let renewals = 0;
+    let reads = 0;
+    let initialized = 0;
+    const dependencies = deps({
+      store: fakeStore({
+        claimNextReconcilable: async () => {
+          claims += 1;
+          return allocation({ status: "allocated", generation: 1 });
+        },
+        extendReconciliationLease: async () => {
+          renewals += 1;
+          throw new Error("Database connection failed");
+        },
+        parkReconciliation: () => {
+          parkEntered.resolve("park");
+          return park.promise;
+        },
+        markConnectionReady: async () => null,
       }),
-      leaseDurationMs: 30,
-      onReady: (_allocation, _context) => {
-        return new Promise(() => {
-          // The interrupted initialization never completes on its own.
-        });
+    });
+    const reconciler = createSidecarAllocationReconciler({
+      ...dependencies,
+      maxConcurrentClaims: 1,
+      leaseDurationMs: 90,
+      router: {
+        ...dependencies.router,
+        isAllocatedSidecarReady: () =>
+          ++reads === 1 ? readiness.promise : Promise.resolve(true),
+      },
+      onReady: async () => {
+        initialized += 1;
       },
     });
-    expect(await reconciler.reconcileNext()).toBe(true);
-    expect(parked).toBe(1);
-    expect(parkedLeaseId).toBe("lease-1");
+    const work = reconciler.reconcileNext();
+    try {
+      expect(
+        await Promise.race([work.then(() => "finished"), parkEntered.promise]),
+      ).toBe("finished");
+      expect(renewals).toBe(1);
+      expect(initialized).toBe(0);
+      expect(await reconciler.reconcileNext()).toBe(false);
+      expect(claims).toBe(1);
+
+      readiness.resolve(true);
+      await tick();
+      expect(initialized).toBe(0);
+      expect(await reconciler.reconcileNext()).toBe(true);
+      expect(claims).toBe(2);
+      expect(initialized).toBe(1);
+    } finally {
+      readiness.resolve(true);
+      park.resolve(false);
+      await work;
+    }
   });
 
   test("initialization can finish after the provider operation deadline", async () => {
@@ -2728,6 +3046,52 @@ describe("reconciliation ownership", () => {
     expect(calls).toEqual([]);
   });
 
+  test("a late claim leaves active initialization alone without parking", async () => {
+    const current = allocation({ status: "allocated", generation: 1 });
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const lateClaim = Promise.withResolvers<SidecarAllocation>();
+    const exclusions: (readonly string[])[] = [];
+    let claims = 0;
+    let initialized = 0;
+    let parks = 0;
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: ({ excludedAllocationIds = [] }) => {
+            exclusions.push(excludedAllocationIds);
+            if (++claims === 1) return Promise.resolve(current);
+            return lateClaim.promise;
+          },
+          parkReconciliation: async () => {
+            parks += 1;
+            return true;
+          },
+          markConnectionReady: async () => null,
+        }),
+      }),
+      onReady: async () => {
+        initialized += 1;
+        entered.resolve();
+        await finish.promise;
+      },
+    });
+    const first = reconciler.reconcileNext();
+    const late = reconciler.reconcileNext();
+    try {
+      await entered.promise;
+      lateClaim.resolve(current);
+      expect(await late).toBe(true);
+      expect(exclusions).toEqual([[], []]);
+      expect(initialized).toBe(1);
+      expect(parks).toBe(0);
+    } finally {
+      lateClaim.resolve(current);
+      finish.resolve();
+      await Promise.all([first, late]);
+    }
+  });
+
   test("excludes an allocation until its local initialization has finished", async () => {
     const entered = Promise.withResolvers<boolean>();
     const finish = Promise.withResolvers<boolean>();
@@ -2812,6 +3176,61 @@ describe("reconciliation ownership", () => {
       }
     });
   }
+
+  test("excludes an allocation until its cancelled initialization settles", async () => {
+    const entered = Promise.withResolvers<boolean>();
+    const init = Promise.withResolvers<boolean>();
+    const exclusions: (readonly string[])[] = [];
+    const calls: string[] = [];
+    let allowClaim = true;
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: async (args) => {
+            exclusions.push(args.excludedAllocationIds ?? []);
+            if (!allowClaim) return null;
+            allowClaim = false;
+            return allocation({ status: "allocated", generation: 1 });
+          },
+          markConnectionLost: async () => null,
+          markConnectionReady: async () => {
+            calls.push("ready");
+            return allocation({ status: "allocated", generation: 1 });
+          },
+        }),
+      }),
+      maxConcurrentClaims: 1,
+      onReady: async (_allocation, context) => {
+        entered.resolve(true);
+        await init.promise;
+        context.signal.throwIfAborted();
+        calls.push("initialize");
+      },
+    });
+    const work = reconciler.reconcileNext();
+    await entered.promise;
+    const disconnect = reconciler.handleDisconnect({
+      allocationId: "alloc-1",
+      generation: 1,
+    });
+    try {
+      await disconnect;
+      await work;
+      expect(calls).toEqual([]);
+      expect(await reconciler.reconcileNext()).toBe(false);
+      expect(exclusions).toEqual([[]]);
+
+      init.resolve(true);
+      await tick();
+      allowClaim = true;
+      expect(await reconciler.reconcileNext()).toBe(true);
+      expect(exclusions).toEqual([[], []]);
+      expect(calls).toEqual(["initialize", "ready"]);
+    } finally {
+      init.resolve(true);
+      await work;
+    }
+  });
 
   test("a disconnect during ensure clears an earlier slow connect notification", async () => {
     const entered = Promise.withResolvers<boolean>();
