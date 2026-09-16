@@ -371,20 +371,32 @@ function applyDefaultInputStep(
 
 /**
  * Run every step-record validation pass in the order their dependencies
- * require. `validateChildWorkflowBody` and `validateOnTriggerBody` re-enter
- * this same suite on an inline body, so factoring the passes here keeps the
- * top-level and embedded-body validations identical -- a malformed body
- * (dangling `after`, cycle, forbidden loop body, misplaced onFailure) fails at
- * the parent's authoring time exactly as it would at its own.
+ * require. `validateLoopBody`, `validateChildWorkflowBody` and
+ * `validateOnTriggerBody` re-enter this same suite on an embedded body, so
+ * factoring the passes here keeps the top-level and embedded-body validations
+ * identical -- a malformed body (dangling `after`, cycle, forbidden loop body,
+ * misplaced onFailure) fails at the parent's authoring time exactly as it would
+ * at its own. All three body kinds carry identical trust: each is a plain
+ * `WorkflowDefinition` field, structurally forgeable and swappable after
+ * normalization, so none of them may rest on having come from `defineWorkflow`.
  *
  * `isTopLevel` distinguishes the definition's own step record from a body a
  * spawned run executes. The only pass that reads it is the onTrigger placement
  * rule: the runtime lifts sections once, at the top level, so a section inside
- * a spawned body is unreachable. Both recursion sites pass `false`.
+ * a spawned body is unreachable. Every recursion site passes `false`.
+ *
+ * `loopDepth` is the loop-body nesting level this record sits at; it is what
+ * `validateLoopBody` counts against `MAX_LOOP_NESTING_DEPTH`. It is threaded
+ * through rather than recomputed so the loop recursion runs exactly once per
+ * body and the count survives the re-entry. A `childWorkflow` or `onTrigger`
+ * body starts a fresh count: the ceiling exists to bound the recursive readers
+ * that descend loop-in-loop chains (`projectForHash`, `runLoop`'s frames), and
+ * neither of those descends through a child or section body.
  */
 function validateSteps(
   steps: Record<string, Primitive>,
   isTopLevel: boolean,
+  loopDepth = 0,
 ): void {
   validateAfterRefs(steps);
   // Runs after validateAfterRefs so every after/then/else endpoint is
@@ -397,7 +409,7 @@ function validateSteps(
   // acyclic graph, and after validateAfterRefs so every onFailure handler is
   // known to exist and to `after`-depend on its unit.
   validateOnFailureStraddlers(steps);
-  validateLoopBody(steps);
+  validateLoopBody(steps, loopDepth);
   validateOnTriggerBody(steps, isTopLevel);
   validateChildWorkflowBody(steps);
 }
@@ -702,14 +714,26 @@ const LOOP_BODY_FORBIDDEN = new Set<Primitive["kind"]>(["sleep", "onTrigger"]);
 const MAX_LOOP_NESTING_DEPTH = 8;
 
 /**
- * Reject a loop whose body contains a forbidden primitive, at every nesting
- * level, and reject nesting deeper than `MAX_LOOP_NESTING_DEPTH`. Recurses into
- * each loop body -- like `validateChildWorkflowBody` -- so the ban does not
- * depend on the (type-unenforced) invariant that every loop body came from its
- * own `defineWorkflow`; a hand-built body is checked here too. The walk
+ * Reject a loop whose body contains a forbidden primitive or routes on failure,
+ * at every nesting level, and reject nesting deeper than
+ * `MAX_LOOP_NESTING_DEPTH`. Those two rules are what a loop body ADDS over a
+ * workflow root; everything else a body must satisfy it shares with one, so the
+ * pass then re-enters `validateSteps` on the body -- like
+ * `validateChildWorkflowBody` and `validateOnTriggerBody`. The re-entry is what
+ * makes the whole suite independent of the (type-unenforced) invariant that
+ * every loop body came from its own `defineWorkflow`; a hand-built or
+ * spread-swapped body is checked here exactly as a root is.
+ *
+ * The re-entry IS the recursion into nested loop bodies: `validateSteps` calls
+ * this pass back with `bodyDepth`, so the count keeps descending and each body
+ * is walked once. Recursing separately as well would double the traversals per
+ * level and let the re-entered walk restart the count at zero. The walk
  * short-circuits at the depth limit, so a pathological input cannot overflow it.
  */
-function validateLoopBody(steps: Record<string, Primitive>, depth = 0): void {
+function validateLoopBody(
+  steps: Record<string, Primitive>,
+  depth: number,
+): void {
   for (const [stepId, primitive] of Object.entries(steps)) {
     if (primitive.kind !== "loop") continue;
     const bodyDepth = depth + 1;
@@ -735,7 +759,11 @@ function validateLoopBody(steps: Record<string, Primitive>, depth = 0): void {
       // step, including a map's inner step reached through this walk.
       assertNoRoutableFailure(bodyStepId, bodyPrimitive);
     }
-    validateLoopBody(primitive.body.steps, bodyDepth);
+    // The body-only bans above run first so their message wins over a generic
+    // root-level complaint about the same step. `isTopLevel` is false: a loop
+    // body is a spawned run, so the onTrigger placement rule applies to it, and
+    // a section reached below the body's own kind ban is rejected there.
+    validateSteps(primitive.body.steps, false, bodyDepth);
   }
 }
 
