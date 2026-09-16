@@ -176,7 +176,7 @@ describe("onTrigger primitive", () => {
         id: "wf",
         steps: { section: onTrigger({ on: { type: "manual" }, body: inner }) },
       }),
-    ).toThrow(/may not nest another section/);
+    ).toThrow(/nested inside a spawned body/);
   });
 
   test("rejects a loop body that contains an onTrigger section", () => {
@@ -464,6 +464,45 @@ describe("defineWorkflow", () => {
       steps: { a: step({ agent: a }) },
     });
     expect(def.triggers).toEqual([{ type: "manual" }]);
+  });
+
+  test("rejects a declared schedule trigger", () => {
+    const a = makeAgent("a");
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        trigger: { type: "schedule", cron: "0 9 * * *" },
+        steps: { a: step({ agent: a }) },
+      }),
+    ).toThrow(/schedule trigger/);
+  });
+
+  test("rejects a schedule trigger listed among several triggers", () => {
+    const a = makeAgent("a");
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        triggers: [
+          { type: "mail", to: "s@x.example" },
+          { type: "schedule", cron: "*/5 * * * *" },
+        ],
+        steps: { a: step({ agent: a }) },
+      }),
+    ).toThrow(/schedule trigger/);
+  });
+
+  test("rejects a schedule trigger contributed by an onTrigger section", () => {
+    expect(() =>
+      defineWorkflow({
+        id: "w",
+        steps: {
+          section: onTrigger({
+            on: { type: "schedule", cron: "0 * * * *" },
+            body: simpleBody(),
+          }),
+        },
+      }),
+    ).toThrow(/schedule trigger/);
   });
 });
 
@@ -1104,6 +1143,56 @@ describe("childWorkflow inline authoring", () => {
         steps: { sub: childWorkflow({ definition: childWithBadLoop }) },
       }),
     ).toThrow(/a loop body may not contain/);
+  });
+
+  test("rejects an onTrigger section inside an inline child body", () => {
+    // The runtime lifts onTrigger sections only at the top level, so a section
+    // inside a spawned body reaches the runtime inline and fails. The deploy
+    // enumeration already rejects it; authoring must agree, or the author gets
+    // a clean definition and a clean local run followed by a deploy rejection.
+    const child = defineWorkflow({
+      id: "child",
+      steps: {
+        section: onTrigger({ on: { type: "manual" }, body: simpleBody() }),
+      },
+    });
+    expect(() =>
+      defineWorkflow({
+        id: "parent",
+        trigger: { type: "manual" },
+        steps: { sub: childWorkflow({ definition: child }) },
+      }),
+    ).toThrow(/nested inside a spawned body/);
+  });
+
+  test("rejects an onTrigger section nested two bodies deep", () => {
+    // Hand-assembled, because every intermediate defineWorkflow would reject
+    // the nesting itself; the parent's authoring is the first check that runs.
+    const grandchild = simpleBody();
+    const grandchildWithSection: WorkflowDefinition = {
+      ...grandchild,
+      steps: {
+        ...grandchild.steps,
+        section: onTrigger({ on: { type: "manual" }, body: simpleBody() }),
+      },
+      stepOrder: [...grandchild.stepOrder, "section"],
+    };
+    const child = simpleBody();
+    const childWithGrandchild: WorkflowDefinition = {
+      ...child,
+      steps: {
+        ...child.steps,
+        sub: childWorkflow({ definition: grandchildWithSection }),
+      },
+      stepOrder: [...child.stepOrder, "sub"],
+    };
+    expect(() =>
+      defineWorkflow({
+        id: "parent",
+        trigger: { type: "manual" },
+        steps: { sub: childWorkflow({ definition: childWithGrandchild }) },
+      }),
+    ).toThrow(/nested inside a spawned body/);
   });
 });
 

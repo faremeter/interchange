@@ -440,10 +440,13 @@ describe("walkCapabilities", () => {
   });
 
   test("collects an onTrigger section's grants nested inside a childWorkflow body", () => {
-    // The mirror of the onTrigger-body -> childWorkflow direction: a
-    // childWorkflow body may run an onTrigger section, whose agent must also
-    // reach the parent deploy's approval set. Both cross-nesting directions
-    // are covered so neither collector can silently drop the other's grants.
+    // The mirror of the onTrigger-body -> childWorkflow direction. This nesting
+    // is REJECTED at authoring and at deploy, because the runtime lifts
+    // sections only at the top level -- so the fixture is hand-assembled rather
+    // than authored. The walk must still collect the section's grants: it is
+    // the collector of record for whatever definition it is handed, and a
+    // collector that drops grants on a shape it was not expecting under-reports
+    // the approval surface, which is the failure direction that matters.
     const registry = createDefaultDirectorRegistry();
     const sectionAgent = defineAgent({
       id: "ag_nested_section",
@@ -457,22 +460,28 @@ describe("walkCapabilities", () => {
       trigger: { type: "manual" },
       steps: { work: step({ agent: sectionAgent }) },
     });
-    const child = defineWorkflow({
+    const child: WorkflowDefinition = {
       id: "child-with-section",
-      trigger: { type: "manual" },
+      triggers: [{ type: "manual" }],
       steps: {
-        section: onTrigger({
-          on: { type: "mail", to: "c@x.example" },
-          body: section,
-        }),
+        section: {
+          ...onTrigger({
+            on: { type: "mail", to: "c@x.example" },
+            body: section,
+          }),
+          id: "section",
+        },
       },
-    });
-    const workflow = defineWorkflow({
+      stepOrder: ["section"],
+    };
+    const workflow: WorkflowDefinition = {
       id: "wf_child_section",
+      triggers: [{ type: "manual" }],
       steps: {
-        spawn: childWorkflow({ definition: child }),
+        spawn: { ...childWorkflow({ definition: child }), id: "spawn" },
       },
-    });
+      stepOrder: ["spawn"],
+    };
 
     const walk = walkCapabilities(workflow, registry);
     const declarations = walk.perStep.get("spawn");

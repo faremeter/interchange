@@ -12,11 +12,14 @@
 //   3. RECOMPUTE the wire hash over the RECEIVED projection as tamper-evidence:
 //      a shipped hash that differs from the hub recompute is rejected, fail
 //      closed, no coercion.
-//   4. Gate the advisory grant set against the approval policy: an operator
+//   4. Reject a projection declaring a trigger type the runtime does not
+//      implement, so a deployment that could only ever sit inert never gets
+//      approved.
+//   5. Gate the advisory grant set against the approval policy: an operator
 //      `ApprovalSet` requires every grant the probe surfaced to be approved or
 //      the gate fails, while `approve-probed` approves exactly what the probe
 //      surfaced.
-//   5. Freeze the approved wire hash onto the definition version row, keyed by
+//   6. Freeze the approved wire hash onto the definition version row, keyed by
 //      the definition's selector, and return the frozen approved grant set.
 //
 // The frozen approved set is the single source of truth for the definition's
@@ -26,6 +29,7 @@
 // grant set is a deterministic projection of the exact content the hash
 // addresses, so pinning the hash pins the set.
 
+import { type } from "arktype";
 import { and, eq } from "drizzle-orm";
 
 import type { DBExecutor } from "@intx/db";
@@ -90,9 +94,10 @@ export type PersistFrozenApprovalFn = (
 
 /**
  * The outcome of gating and freezing a probe result. `ok: true` is the frozen
- * approval the deploy hand-off consumes. The `ok: false` arms name the two
+ * approval the deploy hand-off consumes. The `ok: false` arms name the three
  * fail-closed paths: a shipped hash that does not match the hub recompute
- * (tamper-evidence), and advisory grants the operator did not approve.
+ * (tamper-evidence), advisory grants the operator did not approve, and a
+ * trigger type the runtime does not implement.
  */
 export type ProbeGateResult =
   | {
@@ -117,6 +122,12 @@ export type ProbeGateResult =
       readonly ok: false;
       readonly reason: "grants_not_approved";
       readonly unapprovedGrants: readonly string[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "unimplemented_trigger";
+      /** The distinct reserved-but-unimplemented trigger types the projection declared. */
+      readonly unimplementedTriggerTypes: readonly string[];
     };
 
 /**
@@ -192,6 +203,40 @@ function isApproveProbed(
   return "mode" in policy;
 }
 
+/**
+ * Trigger types the definition vocabulary declares but the runtime does not
+ * implement. `schedule` is reserved: no cron parser and no scheduler exist, so
+ * a schedule-triggered deployment would hash, deploy, and then never fire --
+ * no error, no log, no failed run. Admitting one at the gate is the only way a
+ * deployment reaches that state, so the gate refuses it.
+ */
+const UNIMPLEMENTED_TRIGGER_TYPES: ReadonlySet<string> = new Set(["schedule"]);
+
+// A projected trigger, typed only to its discriminant. `triggers` rides the
+// wire projection as `unknown[]` on purpose (the wire envelope does not own
+// the trigger vocabulary), so the discriminant is read through a validator
+// rather than an assertion. An entry that carries no string `type` is not a
+// trigger this gate has an opinion about and is left to the deploy path.
+const ProjectedTriggerType = type({ type: "string" });
+
+/**
+ * The distinct unimplemented trigger types a projection declares, in first-seen
+ * order. Empty when every declared trigger has an implementation behind it.
+ */
+function collectUnimplementedTriggerTypes(
+  triggers: readonly unknown[],
+): readonly string[] {
+  const found: string[] = [];
+  for (const trigger of triggers) {
+    const parsed = ProjectedTriggerType(trigger);
+    if (parsed instanceof type.errors) continue;
+    if (!UNIMPLEMENTED_TRIGGER_TYPES.has(parsed.type)) continue;
+    if (found.includes(parsed.type)) continue;
+    found.push(parsed.type);
+  }
+  return found;
+}
+
 export type GateAndFreezeArgs = {
   /** The `workflow`-kind asset the frozen definition projects over. */
   readonly assetId: string;
@@ -214,9 +259,12 @@ export type GateAndFreezeArgs = {
  *
  * Fails closed on the two security-load-bearing checks before it writes
  * anything: the recomputed wire hash must match the hash the sidecar shipped
- * (tamper-evidence), and every advisory grant must be operator-approved. Only
- * then does it freeze the recomputed hash onto the version row and return the
- * approved grant set.
+ * (tamper-evidence), and every advisory grant must be operator-approved. It
+ * also refuses a projection whose triggers include a reserved-but-unimplemented
+ * type -- not a security check, but the layer a pinned closure cannot carry a
+ * stale copy of, so it is where a workflow that could only sit inert is caught.
+ * Only then does it freeze the recomputed hash onto the version row and return
+ * the approved grant set.
  */
 export async function gateAndFreezeProbeResult(
   args: GateAndFreezeArgs,
@@ -236,6 +284,25 @@ export async function gateAndFreezeProbeResult(
       reason: "wire_hash_mismatch",
       shippedWireHash: probeResult.wireHash,
       recomputedWireHash,
+    };
+  }
+
+  // Reject a trigger type nothing implements. This runs on the projection
+  // rather than on the author's definition because `defineWorkflow` is bundled
+  // INTO the pinned workflow closure: a closure published before the authoring
+  // check carries its own frozen copy and never sees it. The projection's
+  // `triggers` are produced by the hub's live->inert projector, so this is the
+  // one trigger surface a stale closure cannot carry past. Placed after the
+  // wire-hash check so tamper-evidence still decides first -- the projection
+  // must be the one the sidecar hashed before its content is reasoned about.
+  const unimplementedTriggerTypes = collectUnimplementedTriggerTypes(
+    probeResult.projection.triggers,
+  );
+  if (unimplementedTriggerTypes.length > 0) {
+    return {
+      ok: false,
+      reason: "unimplemented_trigger",
+      unimplementedTriggerTypes,
     };
   }
 

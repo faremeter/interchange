@@ -197,12 +197,29 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     stepOrder.push(stepId);
   }
 
-  validateSteps(steps);
+  validateSteps(steps, true);
 
   // An onTrigger section's `on` is the first-class binding between a
   // trigger and the section it drives, so each section contributes its
   // trigger to the workflow's subscription set.
   const triggers = resolveTriggers(config, collectSectionTriggers(steps));
+
+  // `schedule` is a reserved trigger type with no implementation behind it:
+  // nothing in the system parses a cron expression or fires a tick. A workflow
+  // that declared one would hash, deploy, and never run -- the only signal is
+  // the absence of runs. Reject it at the authoring boundary so the author
+  // learns immediately. This runs after resolveTriggers so a schedule trigger
+  // contributed by an onTrigger section's `on` is caught too, not only a
+  // top-level `trigger`/`triggers`.
+  for (const trigger of triggers) {
+    if (trigger.type === "schedule") {
+      throw new Error(
+        `defineWorkflow ${config.id} declares a schedule trigger, which is ` +
+          `reserved but not implemented; no scheduler fires it, so the ` +
+          `workflow would deploy and never run`,
+      );
+    }
+  }
 
   // An inbound-mail admission policy governs how mail delivered to this
   // workflow is admitted, so it is meaningless without a mail trigger to
@@ -354,13 +371,21 @@ function applyDefaultInputStep(
 
 /**
  * Run every step-record validation pass in the order their dependencies
- * require. `validateChildWorkflowBody` re-enters this same suite on an
- * inline child body, so factoring the passes here keeps the top-level and
- * embedded-child validations identical -- a malformed child (dangling
- * `after`, cycle, forbidden loop body, nested section) fails at the parent's
- * authoring time exactly as it would at its own.
+ * require. `validateChildWorkflowBody` and `validateOnTriggerBody` re-enter
+ * this same suite on an inline body, so factoring the passes here keeps the
+ * top-level and embedded-body validations identical -- a malformed body
+ * (dangling `after`, cycle, forbidden loop body, misplaced onFailure) fails at
+ * the parent's authoring time exactly as it would at its own.
+ *
+ * `isTopLevel` distinguishes the definition's own step record from a body a
+ * spawned run executes. The only pass that reads it is the onTrigger placement
+ * rule: the runtime lifts sections once, at the top level, so a section inside
+ * a spawned body is unreachable. Both recursion sites pass `false`.
  */
-function validateSteps(steps: Record<string, Primitive>): void {
+function validateSteps(
+  steps: Record<string, Primitive>,
+  isTopLevel: boolean,
+): void {
   validateAfterRefs(steps);
   // Runs after validateAfterRefs so every after/then/else endpoint is
   // already known to name a real step; this pass only rejects cycles.
@@ -373,7 +398,7 @@ function validateSteps(steps: Record<string, Primitive>): void {
   // known to exist and to `after`-depend on its unit.
   validateOnFailureStraddlers(steps);
   validateLoopBody(steps);
-  validateOnTriggerBody(steps);
+  validateOnTriggerBody(steps, isTopLevel);
   validateChildWorkflowBody(steps);
 }
 
@@ -715,16 +740,22 @@ function validateLoopBody(steps: Record<string, Primitive>, depth = 0): void {
 }
 
 /**
- * Validate an onTrigger section body as a full workflow root, and reject a
- * body that nests another onTrigger. The body runs as its own child run per
- * occurrence, so -- like a childWorkflow body -- it must be as valid as a
- * top-level definition; this pass re-enters `validateSteps` on the inline
+ * Validate an onTrigger section body as a full workflow root, and reject any
+ * section that does not sit at the top level. The body runs as its own child
+ * run per occurrence, so -- like a childWorkflow body -- it must be as valid as
+ * a top-level definition; this pass re-enters `validateSteps` on the inline
  * body, so a malformed section body (dangling after, cycle, forbidden loop
  * body, misplaced onFailure) is rejected at the parent's authoring time. The
  * one restriction ADDED over a top-level root is the subscription-layer ban:
- * a section may not contain a section. Unlike a loop body, a section body may
- * sleep and spawn child workflows -- an onTrigger section IS the sanctioned
- * long-lived input loop.
+ * only the top-level step record may declare a section. Unlike a loop body, a
+ * section body may sleep and spawn child workflows -- an onTrigger section IS
+ * the sanctioned long-lived input loop.
+ *
+ * The placement rule mirrors the deploy-side inert-body enumeration in
+ * `@intx/workflow-deploy`, which lifts sections only at the top level and
+ * throws on one found below it. Keeping the two in step is what stops an
+ * author from getting a clean definition and a clean local run followed by a
+ * deploy rejection.
  *
  * PENDING INTR-310: a body agent `step` is accepted here but is not yet
  * EXECUTABLE -- per-step agent invocation inside a body is stubbed, so a body
@@ -735,28 +766,28 @@ function validateLoopBody(steps: Record<string, Primitive>, depth = 0): void {
  * A separate pass from `validateAcyclic`, which does not recurse into the
  * body's own (already-normalized) `WorkflowDefinition`.
  */
-function validateOnTriggerBody(steps: Record<string, Primitive>): void {
+function validateOnTriggerBody(
+  steps: Record<string, Primitive>,
+  isTopLevel: boolean,
+): void {
   for (const [stepId, primitive] of Object.entries(steps)) {
     if (primitive.kind !== "onTrigger") continue;
+    if (!isTopLevel) {
+      throw new Error(
+        `onTrigger section at step ${stepId} is nested inside a spawned body; ` +
+          `the runtime lifts onTrigger sections only at the top level, so a ` +
+          `nested section is never subscribed. Move it to the top-level ` +
+          `workflow`,
+      );
+    }
     // Only an inline (authored) body carries steps to constrain here; a
     // deployed `{ ref }` body was validated at its own deploy.
     if (!("inline" in primitive.body)) continue;
-    for (const [bodyStepId, bodyPrimitive] of Object.entries(
-      primitive.body.inline.steps,
-    )) {
-      if (bodyPrimitive.kind === "onTrigger") {
-        throw new Error(
-          `onTrigger ${stepId} body step ${bodyStepId} is itself an ` +
-            `onTrigger; an onTrigger body may not nest another section`,
-        );
-      }
-    }
     // The section body runs as its own child run, so validate it as a full
     // root (mirroring validateChildWorkflowBody). This reaches every
     // placement check -- including assertNoRoutableFailure -- so a misplaced
-    // onFailure in a hand-assembled section body is rejected here too. The
-    // nested-section ban above runs first so its specific message wins.
-    validateSteps(primitive.body.inline.steps);
+    // onFailure in a hand-assembled section body is rejected here too.
+    validateSteps(primitive.body.inline.steps, false);
   }
 }
 
@@ -775,7 +806,7 @@ function validateChildWorkflowBody(steps: Record<string, Primitive>): void {
   for (const primitive of Object.values(steps)) {
     if (primitive.kind !== "childWorkflow") continue;
     if (!("inline" in primitive.definition)) continue;
-    validateSteps(primitive.definition.inline.steps);
+    validateSteps(primitive.definition.inline.steps, false);
   }
 }
 
