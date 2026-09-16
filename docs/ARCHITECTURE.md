@@ -11,13 +11,17 @@ An agent definition is a blueprint — the catalog entry that describes what an 
 A definition contains:
 
 **Skills**
-Executable capabilities that define what the agent can do. Skills are executed by the local harness, which handles interaction with the local environment on behalf of the skill.
+Executable capabilities that define what the agent can do. Under the intended model the local harness executes a skill and handles interaction with the local environment on behalf of it.
+
+Authoring and delivery are built; execution is not. A skill is a hub-side asset whose `SKILL.md` frontmatter is validated and indexed when it is pushed, and the sidecar materializes an agent's attached skill assets as plain files under its workspace at `skills/<name>/`. Nothing loads or runs a materialized skill, and no harness component reads the skill index, so attaching a skill does not yet give an agent a capability it would otherwise lack.
 
 **System Prompt**
 The agent's identity and behavioral instructions. Defines the persona, goals, and constraints that guide the agent's reasoning.
 
 **Context Building**
-Logic for constructing and managing the agent's context window. The context builder assembles the agent's working context from multiple sources: system prompt, skill instructions, initial state, conversation history, and runtime state. It handles compaction strategies to keep context within model limits while preserving relevant information. Skills contribute their own context fragments, which the builder integrates into the overall context hierarchy. The context builder distinguishes between trusted content (system prompt, skill instructions) and untrusted content (external messages, tool responses, user input), applying structural boundaries that help prevent untrusted content from being interpreted as instructions.
+Logic for constructing and managing the agent's context window. The context builder assembles the agent's working context from multiple sources: system prompt, initial state, conversation history, and runtime state. It handles compaction strategies to keep context within model limits while preserving relevant information. The context builder distinguishes between trusted content (the system prompt) and untrusted content (external messages, tool responses, user input), applying structural boundaries that help prevent untrusted content from being interpreted as instructions.
+
+Skills contribute no context fragments today. The system prompt reaches inference as a single string and nothing composes skill content into it. Once skills become executable, their instructions are intended to enter the context as trusted content alongside the system prompt.
 
 **Initial State**
 Pre-populated data that forms part of the agent's starting context. Layered on top of the system prompt and other initial context elements.

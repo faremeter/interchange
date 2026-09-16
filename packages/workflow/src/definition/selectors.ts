@@ -1,10 +1,19 @@
 // Path-selector DSL.
 //
-// `input`, `reads`, and `writes` on a workflow step are *data*, not
-// code. The DAG must be statically inspectable so the deploy-time
-// capability-surface walker can compute the grant union without
-// executing user code. The four selector shapes below are the entire
-// vocabulary.
+// A step's `input` is *data*, not code: the four selector shapes below are the
+// entire vocabulary a step may use to name where its input comes from, so the
+// wiring between steps can be read off the definition without executing any
+// author code. Two readers consume it -- the runtime evaluator in
+// `runtime/selectors.ts`, which resolves a selector against the per-run
+// context, and the definition-validation passes in `workflow.ts`, which walk
+// the `input` tree to check that every path it names is statically resolvable.
+//
+// The `reads` and `writes` fields a step may also carry use the same shapes,
+// but nothing reads them: they are projected verbatim onto the wire and
+// otherwise inert. In particular the deploy-time capability-surface walker
+// never inspects a selector -- it derives the grant union from agent
+// capabilities and tools, not from selector paths -- so the vocabulary carries
+// no grant guarantee.
 
 /**
  * Reference a dot-separated path inside the per-run context.
@@ -64,9 +73,12 @@ export function isLiteralSelector(s: Selector): s is LiteralSelector {
 }
 
 /**
- * Walk every selector in a tree, calling `visit` on each. Used by the
- * capability-surface walker and by definition-validation passes that
- * confirm the selector tree is statically resolvable.
+ * Walk every selector in a tree, calling `visit` on each.
+ *
+ * Exported from `@intx/workflow` for consumers that need to inspect a selector
+ * tree generically. Nothing in this repository calls it: the runtime evaluator
+ * and the definition-validation passes each dispatch on the selector shape
+ * directly, because both do work per shape rather than one uniform visit.
  */
 export function walkSelectors(
   selector: Selector,

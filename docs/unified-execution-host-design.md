@@ -674,11 +674,8 @@ must hold no matter how deep the nesting:
 
 ### 3e. Event threading
 
-Today the real step-invoker drops events: the substrate factory's `invokeStep`
-wrapper takes `(req, onEvent)` and `void onEvent`s it
-(`apps/sidecar/src/workflow-substrate-factory.ts`), with the comment "the
-event funnel inside the adapter lands when the harness's emit hook is wired."
-The transport for events already exists end-to-end:
+A real step's agent events reach the hub timeline. The transport underneath
+them:
 
 - Child emits via `createEventChannelSender` (HMAC over fd3) in
   `packages/workflow-host/src/child/run-child.ts`. The event channel is
@@ -696,20 +693,28 @@ The transport for events already exists end-to-end:
 - The hub fans the event to per-agent listeners -> the timeline.
 
 **Decision: thread the agent's `onEvent` through the step-invoker to the event
-channel.** Concretely:
+channel.** As built:
 
 - `createWorkflowStepInvoker` (`packages/workflow-host/src/adapters/step-invoker.ts`)
-  gains an `onEvent` parameter (or the agent env carries an emit sink). Inside
-  `invokeStep`, before `agent.send`, subscribe the agent's event stream
-  (`agent.stream()` / the reactor's event surface) and forward each
-  `InferenceEvent` to `onEvent`.
-- The substrate factory stops voiding `onEvent` and connects it to the child's
-  event sender.
+  takes an optional `onEvent` sink. `subscribeAgentEvents` subscribes the
+  agent's `stream()` before `agent.send`, so the inbound `inference.start` and
+  the per-turn and tool-call events are captured, and forwards every
+  `InferenceEvent` to the sink. Forwarding is best-effort observability: a sink
+  that throws is logged and swallowed rather than aborting the step, and
+  `message.received` is excluded as an assembly-internal dequeue signal.
+  Omitting the sink leaves the agent's `stream()` unconsumed. In warm-keep mode
+  the cache holds a mutable per-entry sink that each invocation points at its
+  own step before `agent.send` and clears after, so a stray event between
+  messages is dropped rather than delivered to a torn-down channel.
+- `apps/sidecar/src/workflow-substrate-factory.ts` supplies the sink instead of
+  discarding it, threading it through the per-step env builder and the
+  child-run env to the child's event sender. A missing sink on the child path
+  is treated as a wiring defect and throws, rather than silently dropping the
+  child's inference events from the hub stream.
 
-This is a **signature change** on the step-invoker adapter (it currently has no
-`onEvent` on the agent-build path), plus a call-site connection — bounded, but
-it touches the adapter's public surface, so it is a deliberate API change, not
-a one-line edit.
+This was a signature change on the step-invoker adapter plus a call-site
+connection — bounded, but it touched the adapter's public surface, so it is
+recorded here as a deliberate API change rather than a one-line edit.
 
 ### 3f. Multiplexing and workflow-declared isolation granularity (Decision 2)
 

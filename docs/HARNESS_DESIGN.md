@@ -29,7 +29,7 @@ The sidecar manages agent workloads on behalf of the hub. Each deployment runs i
 
 ## Sidecar Package Structure
 
-The sidecar app is a thin wiring file that composes building blocks
+The sidecar app is a thin wiring layer that composes building blocks
 out of `@intx/hub-agent`, `@intx/workflow-host`, and `@intx/agent`.
 The per-deployment disk layout, the hub WebSocket protocol, and the
 deploy router live in `@intx/hub-agent`; `@intx/workflow-host` owns
@@ -40,14 +40,43 @@ the per-deployment `WorkflowSupervisor` that spawns and supervises the
 capabilities, step tools, and conversation state from `@intx/harness`.
 The app supplies the concrete crypto / tool / storage / authz plugins.
 
+"Thin" describes the app's layering, not its file count: the app owns every
+binding that names a concrete dependency, so the wiring surface is wide even
+though the reusable machinery lives in the packages above.
+
 ```
 apps/sidecar/
+├── bin/
+│   ├── workflow-child        # Workflow-process child binary; the only reader of process.env on that path
+│   └── workflow-probe-child  # Airlocked one-shot probe child binary
 ├── src/
-│   ├── index.ts             # Entry point: wires the stores, the harness builder, and the hub link
-│   └── default-harness.ts   # HarnessBuilder source-admission seam (canBuildSource) the deploy router consults before spawning
+│   ├── index.ts                             # Entry point: wires the stores, the harness builder, and the hub link
+│   ├── config.ts                            # Boundary readers for the sidecar's env-config inputs
+│   ├── default-harness.ts                   # HarnessBuilder source-admission seam (canBuildSource) the deploy router consults before spawning
+│   ├── atomic-write.ts                      # Atomic, durable file replacement for non-rebuildable on-disk records
+│   ├── signing-keypair.ts                   # Loads or mints the sidecar's on-disk Ed25519 signing keypair
+│   ├── conversation-state.ts                # Durable conversation state for the warm single-step agent
+│   ├── run-grants.ts                        # Shared read primitives for a run's on-disk grants
+│   ├── child-grant-filter.ts                # Caps a spawned child's inherited grants at the capabilities its body declares
+│   ├── step-agent-tools.ts                  # Per-step tool materialization and agent construction inside the child
+│   ├── step-credential-capabilities.ts      # Per-package credential capability for a step's tool bundles
+│   ├── tool-materialization.ts              # Tool-package materialization and active-deploy-id persistence
+│   ├── sidecar-materialization-config.ts    # Shared registry-map and host-platform resolution for both materializers
+│   ├── source-asset-delivery.ts             # Materializes a workflow closure's source assets from their packs
+│   ├── workflow-host-wiring.ts              # Constructs the WorkflowSupervisor with this sidecar's host bindings
+│   ├── workflow-substrate-factory.ts        # Substrate factory bin/workflow-child hands to the workflow-host child entry
+│   ├── workflow-probe-handler.ts            # Spawns the airlocked probe child for workflow.probe.request frames
+│   ├── workflow-closure-apply.ts            # Deploy-side application of a code-sourced workflow's frozen closure
+│   ├── workflow-closure-materialization.ts  # Host-side materializer for a probe frame's frozen closure
+│   ├── workflow-run-record.ts               # Sidecar-local per-run record that survives a process restart
+│   ├── workflow-run-pack-client.ts          # Pushes workflow-run packs over the hub link
+│   └── workflow-run-pack-restore.ts         # Restores a workflow-run repo's refs from a hub-supplied pack
 ├── package.json
+├── README.md
 └── tsconfig.json
 ```
+
+Tests are co-located as `*.test.ts` beside each module and are omitted above.
 
 ## Hub ↔ Sidecar Communication
 
