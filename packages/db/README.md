@@ -37,6 +37,17 @@ typed values; downstream code uses those values without
 re-casting. See `CONVENTIONS.md` for the project-wide rule against
 cast-at-callsite in DB consumers.
 
+Connections created by `createDB` set PostgreSQL's `statement_timeout` to
+60,000 milliseconds. Override it with `statementTimeoutMs` in `DBConfig`
+(a positive integer up to 2,147,483,647 milliseconds). The Hub reads this
+override from `DB_STATEMENT_TIMEOUT_MS`.
+
+PostgreSQL cancels statements that exceed the deadline, including time
+waiting for locks. An uncaught timeout rolls back the enclosing transaction.
+This bounds individual statements once they reach PostgreSQL; pool waits,
+network stalls, and time between statements in an open transaction remain
+outside that deadline. Migration clients use their own connection settings.
+
 ## Model catalog
 
 The `model`, `model_provider`, `model_offering`, and `model_pricing`
