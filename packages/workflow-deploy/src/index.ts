@@ -35,6 +35,7 @@ export {
   enumerateInertBodies,
   inertFlatNamespaceStepIds,
   inertLoopBody,
+  inertNestedBodies,
   type EnumeratedInertBody,
   type InertBodyStepPreference,
 } from "./inert-ontrigger-bodies";

@@ -15,12 +15,14 @@
 //   4. Reject a projection declaring a trigger type the runtime does not
 //      implement, so a deployment that could only ever sit inert never gets
 //      approved.
-//   5. Gate the advisory grant set AND the definition's declared grant
+//   5. Reject a projection carrying a step the grant walk left no record for,
+//      so no deployment can schedule a step whose grants nobody approved.
+//   6. Gate the advisory grant set AND the definition's declared grant
 //      requirements against the approval policy: an operator `ApprovalSet`
 //      requires every grant the probe surfaced and every requirement it
 //      declared to be approved or the gate fails, while `approve-probed`
 //      approves exactly what the probe surfaced.
-//   6. Freeze the approved wire hash onto the definition version row, keyed by
+//   7. Freeze the approved wire hash onto the definition version row, keyed by
 //      the definition's selector, and return the frozen approved grant set.
 //
 // The frozen approved set is the single source of truth for the definition's
@@ -52,6 +54,11 @@ import type {
   WorkflowDefinitionRegistrySource,
 } from "@intx/types/workflow-sources";
 import {
+  EXECUTABLE_STEP_DESCENT,
+  walkStepTree,
+} from "@intx/workflow/definition";
+import {
+  inertNestedBodies,
   isApprovedGrantRequirement,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
@@ -108,11 +115,11 @@ export type PersistFrozenApprovalFn = (
 
 /**
  * The outcome of gating and freezing a probe result. `ok: true` is the frozen
- * approval the deploy hand-off consumes. The `ok: false` arms name the four
+ * approval the deploy hand-off consumes. The `ok: false` arms name the five
  * fail-closed paths: a shipped hash that does not match the hub recompute
  * (tamper-evidence), advisory grants the operator did not approve, declared
- * grant requirements the operator did not approve, and a trigger type the
- * runtime does not implement.
+ * grant requirements the operator did not approve, a trigger type the runtime
+ * does not implement, and an executable step the grant walk left no record for.
  */
 export type ProbeGateResult =
   | {
@@ -153,7 +160,43 @@ export type ProbeGateResult =
       readonly reason: "unimplemented_trigger";
       /** The distinct reserved-but-unimplemented trigger types the projection declared. */
       readonly unimplementedTriggerTypes: readonly string[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "steps_without_grant_record";
+      /** Every executable step the grant-walk snapshot accounts for nothing at. */
+      readonly stepsWithoutGrantRecord: readonly StepWithoutGrantRecord[];
+      /**
+       * One sentence naming every miss. A deploy that trips this is a defect in
+       * the deploy path rather than in the author's workflow, so the sentence
+       * carries what whoever maintains that path needs: the step, the position,
+       * and the record that was absent.
+       */
+      readonly message: string;
     };
+
+/**
+ * One step the deployment can execute that the probe's grant-walk snapshot
+ * carries no record for.
+ */
+export type StepWithoutGrantRecord = {
+  /** The executable step id with no approved grants behind it. */
+  readonly stepId: string;
+  /**
+   * The chain of step ids the executable walk reached `stepId` through,
+   * outermost first and `stepId` itself last. Two nested bodies may
+   * legitimately carry the same step id, so the chain -- not the id alone --
+   * is what names the position in the closure.
+   */
+  readonly reachedThrough: readonly string[];
+  /**
+   * The top-level step whose snapshot record was supposed to account for
+   * `stepId`. The capability walk folds every nested body's grants into the
+   * record of the top-level step that carries the body, so this names the
+   * `perStep` key the absent record would have had.
+   */
+  readonly recordStepId: string;
+};
 
 /**
  * Build the production persistence step of the freeze. Records identity through
@@ -263,6 +306,106 @@ function collectUnimplementedTriggerTypes(
   return found;
 }
 
+const EXECUTABLE_CLOSURE_CONTEXT = "probe gate executable closure: ";
+
+/** One step the executable walk reached, with where it was reached from. */
+type ExecutableReach = StepWithoutGrantRecord;
+
+/**
+ * Every step the deployment can execute, walked over the frozen inert
+ * projection under `EXECUTABLE_STEP_DESCENT`, each carrying the chain it was
+ * reached through and the top-level step whose grant record accounts for it.
+ *
+ * The descent is the canonical one rather than a local re-derivation on
+ * purpose: the capability walk folds a nested body's grants into the enclosing
+ * top-level step under exactly this descent, so the two agree by construction
+ * and a primitive kind added to one side cannot silently fall out of the other.
+ */
+function collectExecutableReaches(
+  projection: WorkflowProjectionDefinition,
+): readonly ExecutableReach[] {
+  const reaches: ExecutableReach[] = [];
+  // `walkStepTree` visits a step before it asks for the bodies that step
+  // carries, so the reach recorded by `visit` is the parent of whatever
+  // `nestedTrees` is asked for next. `pendingStep` turns that ordering from an
+  // assumption into a checked invariant rather than a silent coupling.
+  let pendingReach: ExecutableReach | null = null;
+  let pendingStep: unknown = null;
+  const parentByTree = new Map<
+    WorkflowProjectionDefinition,
+    ExecutableReach | null
+  >([[projection, null]]);
+
+  walkStepTree<unknown, WorkflowProjectionDefinition>({
+    tree: projection,
+    context: EXECUTABLE_CLOSURE_CONTEXT,
+    nestedTrees: (step) => {
+      const bodies = inertNestedBodies(step, EXECUTABLE_STEP_DESCENT);
+      if (bodies.length === 0) return bodies;
+      if (pendingReach === null || pendingStep !== step) {
+        throw new Error(
+          `${EXECUTABLE_CLOSURE_CONTEXT}nested bodies were requested for a step the walk had not just visited`,
+        );
+      }
+      for (const body of bodies) {
+        parentByTree.set(body, pendingReach);
+      }
+      return bodies;
+    },
+    visit: ({ stepId, step, tree }) => {
+      const parent = parentByTree.get(tree);
+      if (parent === undefined) {
+        throw new Error(
+          `${EXECUTABLE_CLOSURE_CONTEXT}step ${stepId} was reached in a body tree the walk never descended into`,
+        );
+      }
+      const reach: ExecutableReach = {
+        stepId,
+        recordStepId: parent === null ? stepId : parent.recordStepId,
+        reachedThrough:
+          parent === null ? [stepId] : [...parent.reachedThrough, stepId],
+      };
+      reaches.push(reach);
+      pendingReach = reach;
+      pendingStep = step;
+    },
+  });
+  return reaches;
+}
+
+/**
+ * Every executable step the grant-walk snapshot carries no record for.
+ *
+ * A step's approved-grant record is the snapshot entry keyed by the top-level
+ * step it descends from: the capability walk collects one record per top-level
+ * step and folds into it the grants of every step that step can run. So a
+ * present record covers a whole executable subtree, and an absent one leaves
+ * every step of that subtree with no approved grants at all.
+ */
+function collectStepsWithoutGrantRecord(
+  projection: WorkflowProjectionDefinition,
+  snapshot: GrantWalkSnapshot,
+): readonly StepWithoutGrantRecord[] {
+  const recordedStepIds = new Set(
+    snapshot.perStep.map((record) => record.stepId),
+  );
+  return collectExecutableReaches(projection).filter(
+    (reach) => !recordedStepIds.has(reach.recordStepId),
+  );
+}
+
+function describeStepsWithoutGrantRecord(
+  missing: readonly StepWithoutGrantRecord[],
+): string {
+  const positions = missing
+    .map(
+      (missed) =>
+        `${missed.stepId} (reached through ${missed.reachedThrough.join(" > ")}; expected a grant-walk record keyed by top-level step ${missed.recordStepId})`,
+    )
+    .join("; ");
+  return `the probe's grant-walk snapshot carries no approved-grant record covering ${String(missing.length)} executable step(s): ${positions}. A step outside every record deploys with no approved grants, and its tool calls are refused at run time with nothing on the deploy path reporting it.`;
+}
+
 export type GateAndFreezeArgs = {
   /** The `workflow`-kind asset the frozen definition projects over. */
   readonly assetId: string;
@@ -289,7 +432,9 @@ export type GateAndFreezeArgs = {
  * declared grant requirement must be operator-approved. It also refuses a
  * projection whose triggers include a reserved-but-unimplemented type -- not a
  * security check, but the layer a pinned closure cannot carry a stale copy of,
- * so it is where a workflow that could only sit inert is caught.
+ * so it is where a workflow that could only sit inert is caught -- and one
+ * whose executable closure reaches a step the grant walk left no record for,
+ * which is the layer holding both halves of the probe answer at once.
  * Only then does it freeze the recomputed hash onto the version row and return
  * the approved grant set.
  */
@@ -330,6 +475,43 @@ export async function gateAndFreezeProbeResult(
       ok: false,
       reason: "unimplemented_trigger",
       unimplementedTriggerTypes,
+    };
+  }
+
+  // Totality: every step the deployment can execute must have an approved-grant
+  // record behind it. The two halves of a probe answer are produced
+  // independently -- the projection by the hub's live->inert projector, the
+  // grant-walk snapshot by the sidecar's capability walk over the live
+  // definition -- and nothing until now compared them. A step the walk skipped
+  // still projects, still deploys, and is still scheduled; its tool calls are
+  // then refused for lack of any grant, and the tool runner turns that refusal
+  // into an error tool result rather than a failure, so the run completes
+  // having done none of the work. This is the check that makes that
+  // unreachable: it is total over the closure and it runs on every deploy,
+  // rather than depending on some test happening to invoke a tool from the
+  // affected step.
+  //
+  // Placed after the trigger check and before the operator-policy checks
+  // below. A deploy that trips this is a defect in the deploy path, not a
+  // decision the operator can make differently, so it must not be reported
+  // behind an unapproved-grant message an operator would act on instead.
+  //
+  // DO NOT move this assertion earlier in this package's history. The record it
+  // requires is a claim that the approval covers everything the step can run,
+  // and that claim was not kept for a step inside a loop body or a section body
+  // until the deploy and runtime producers were made total over the executable
+  // closure. Asserted before those producers, the gate would have been
+  // enforcing a guarantee the rest of the system did not honour.
+  const stepsWithoutGrantRecord = collectStepsWithoutGrantRecord(
+    probeResult.projection,
+    probeResult.grantWalkSnapshot,
+  );
+  if (stepsWithoutGrantRecord.length > 0) {
+    return {
+      ok: false,
+      reason: "steps_without_grant_record",
+      stepsWithoutGrantRecord,
+      message: describeStepsWithoutGrantRecord(stepsWithoutGrantRecord),
     };
   }
 

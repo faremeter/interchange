@@ -30,11 +30,21 @@
 // validated through an arktype. A step that claims to be an agent-bearing
 // primitive (`step`/`map`) but carries no well-formed `agent.modelSources` is a
 // malformed projection and throws, rather than silently pinning a fallback.
+//
+// Reading a nested body off an inert step is also the one part of the canonical
+// step walk the inert representation has to supply itself, so it lives here as
+// `inertNestedBodies` -- the counterpart of the live `nestedWorkflowBodies`.
+// Every consumer that walks a frozen projection descends through it, so the
+// inert descent rule has one owner the way the live one does.
 
 import { type } from "arktype";
 import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { inlineBodyRef } from "@intx/workflow";
-import { walkStepTree } from "@intx/workflow/definition";
+import {
+  LOOP_BODY_DESCENT,
+  walkStepTree,
+  type StepWalkDescent,
+} from "@intx/workflow/definition";
 
 /**
  * A body step's declared preferred inference-source identity -- the `(provider,
@@ -134,6 +144,24 @@ function firstPreference(
 const InertLoopStep = type({ kind: "'loop'", body: "unknown" });
 
 /**
+ * Validate one inline body value as a workflow projection. `where` names the
+ * reader and the body it was reached through, so a malformed frozen projection
+ * is traceable to the exact position that carried it.
+ */
+function validateInertBodyProjection(
+  inlineBody: unknown,
+  where: string,
+): WorkflowProjectionDefinition {
+  const validated = WorkflowProjectionDefinition(inlineBody);
+  if (validated instanceof type.errors) {
+    throw new Error(
+      `${where} is not a valid workflow projection: ${validated.summary}`,
+    );
+  }
+  return validated;
+}
+
+/**
  * If an inert projection step is a `loop`, return its body projection (a nested
  * inert workflow definition); otherwise null. A loop body runs in-process as a
  * child run sharing the parent's env, so its agent steps resolve their pinned
@@ -143,16 +171,65 @@ const InertLoopStep = type({ kind: "'loop'", body: "unknown" });
  */
 export function inertLoopBody(
   stepValue: unknown,
-): typeof WorkflowProjectionDefinition.infer | null {
+): WorkflowProjectionDefinition | null {
   const asLoop = InertLoopStep(stepValue);
   if (asLoop instanceof type.errors) return null;
-  const body = WorkflowProjectionDefinition(asLoop.body);
-  if (body instanceof type.errors) {
-    throw new Error(
-      `inertLoopBody: loop step body is not a valid workflow projection: ${body.summary}`,
-    );
+  return validateInertBodyProjection(
+    asLoop.body,
+    "inertLoopBody: loop step body",
+  );
+}
+
+/**
+ * The nested inert body projections one frozen-projection step carries,
+ * filtered by `descent`. This is the inert analogue of the live
+ * `nestedWorkflowBodies`, and it exists so the inert representation states the
+ * descent rule in ONE place the way the live one does.
+ *
+ * The live reader dispatches over the typed `Primitive` union and so can carry
+ * an exhaustive switch. An inert step is `unknown` on the wire, so each
+ * container shape is recognized through its own validator instead; a step
+ * matching none of them carries no inline body and yields nothing, exactly as a
+ * leaf primitive does on the live side. A `{ ref }` body also yields nothing
+ * under every descent: the referenced asset is deployed and walked on its own,
+ * so there is no inline tree here.
+ *
+ * Throws when a step announces itself as a container but its body is not a
+ * valid projection. A malformed frozen projection must fail loud rather than
+ * read as a leaf, which would silently shrink whatever surface the caller is
+ * walking.
+ */
+export function inertNestedBodies(
+  stepValue: unknown,
+  descent: StepWalkDescent,
+): readonly WorkflowProjectionDefinition[] {
+  if (descent.loopBodies) {
+    const loopBody = inertLoopBody(stepValue);
+    if (loopBody !== null) return [loopBody];
   }
-  return body;
+  if (descent.inlineOnTriggerBodies) {
+    const asOnTrigger = InlineOnTriggerStep(stepValue);
+    if (!(asOnTrigger instanceof type.errors)) {
+      return [
+        validateInertBodyProjection(
+          asOnTrigger.body.inline,
+          "inertNestedBodies: inline onTrigger body",
+        ),
+      ];
+    }
+  }
+  if (descent.inlineChildWorkflowBodies) {
+    const asChild = InlineChildWorkflowStep(stepValue);
+    if (!(asChild instanceof type.errors)) {
+      return [
+        validateInertBodyProjection(
+          asChild.definition.inline,
+          "inertNestedBodies: inline childWorkflow body",
+        ),
+      ];
+    }
+  }
+  return [];
 }
 
 /**
@@ -177,10 +254,7 @@ export function forEachInertLoopBodyStep(
   walkStepTree<unknown, WorkflowProjectionDefinition>({
     tree: args.definition,
     context: args.context,
-    nestedTrees: (stepValue) => {
-      const loopBody = inertLoopBody(stepValue);
-      return loopBody === null ? [] : [loopBody];
-    },
+    nestedTrees: (stepValue) => inertNestedBodies(stepValue, LOOP_BODY_DESCENT),
     visit: ({ stepId, step }) => {
       visit({ stepId, step });
     },
@@ -271,12 +345,10 @@ function liftInertBody(
   kind: "onTrigger" | "childWorkflow",
 ): EnumeratedInertBody {
   const ref = inlineBodyRef(enclosingId, stepId);
-  const validatedBody = WorkflowProjectionDefinition(inlineBody);
-  if (validatedBody instanceof type.errors) {
-    throw new Error(
-      `enumerateInertBodies: inline ${kind} body at step ${stepId} is not a valid workflow projection: ${validatedBody.summary}`,
-    );
-  }
+  const validatedBody = validateInertBodyProjection(
+    inlineBody,
+    `enumerateInertBodies: inline ${kind} body at step ${stepId}`,
+  );
   const definition = { ...validatedBody, id: ref };
   return { ref, definition };
 }
