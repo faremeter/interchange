@@ -8,7 +8,7 @@
 // recursion drifts from every other one the first time a primitive kind is
 // added. This module owns the traversal so neither happens.
 //
-// Two properties the walk is built around:
+// Three properties the walk is built around:
 //
 //   - The set of bodies to descend into is an EXPLICIT argument
 //     (`StepWalkDescent`), never an implicit house rule. The two descents in

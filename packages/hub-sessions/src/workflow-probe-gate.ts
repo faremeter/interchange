@@ -320,9 +320,13 @@ type ExecutableReach = StepWithoutGrantRecord;
  * reached through and the top-level step whose grant record accounts for it.
  *
  * The descent is the canonical one rather than a local re-derivation on
- * purpose: the capability walk folds a nested body's grants into the enclosing
- * top-level step under exactly this descent, so the two agree by construction
- * and a primitive kind added to one side cannot silently fall out of the other.
+ * purpose. Sharing `EXECUTABLE_STEP_DESCENT` with the capability walk makes the
+ * two sides agree on ONE thing: which primitive kinds are descended into, so a
+ * newly-added container kind cannot become reachable here while staying
+ * invisible to the walk. It does NOT make the two agree about grants. This
+ * function sees only step positions; whether the walk folded the right grants
+ * into a record is not observable from the inert projection and is not checked
+ * anywhere on this path.
  *
  * The position each step was reached at is the walk's own `path`, for the same
  * reason. The head of that path is the top-level step the entry descends from,
@@ -348,9 +352,14 @@ function collectExecutableReaches(
  *
  * A step's approved-grant record is the snapshot entry keyed by the top-level
  * step it descends from: the capability walk collects one record per top-level
- * step and folds into it the grants of every step that step can run. So a
- * present record covers a whole executable subtree, and an absent one leaves
- * every step of that subtree with no approved grants at all.
+ * step and folds into it the grants of every step that step can run.
+ *
+ * This is a PRESENCE check and nothing more. An absent record is decisive --
+ * it leaves every step of that subtree with no approved grants at all, which
+ * is the hole this catches. A present record is not evidence the other way:
+ * nothing here opens the record to confirm it actually carries the grants the
+ * steps beneath it need. A record present but under-filled passes this check
+ * and still refuses those tool calls at run time.
  */
 function collectStepsWithoutGrantRecord(
   projection: WorkflowProjectionDefinition,
@@ -403,8 +412,10 @@ export type GateAndFreezeArgs = {
  * projection whose triggers include a reserved-but-unimplemented type -- not a
  * security check, but the layer a pinned closure cannot carry a stale copy of,
  * so it is where a workflow that could only sit inert is caught -- and one
- * whose executable closure reaches a step the grant walk left no record for,
- * which is the layer holding both halves of the probe answer at once.
+ * whose executable closure reaches a step the grant walk left no record for --
+ * the layer holding both halves of the probe answer at once, and a presence
+ * check on those records rather than a check that any record's contents are
+ * sufficient.
  * Only then does it freeze the recomputed hash onto the version row and return
  * the approved grant set.
  */
