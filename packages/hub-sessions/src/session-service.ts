@@ -634,7 +634,7 @@ async function prepareSourceRefDeploy(
   // The hub holds only the frozen inert projection, so it enumerates the inline
   // bodies from the wire form and resolves each body step's source through the
   // same resolver + operator-approval gate the top-level steps use
-  // (`pickStepInferenceSource` against `approval.approvedGrants`). Each body's
+  // (`pickStepInferenceSource` against `approval.approvedSurface`). Each body's
   // wire hash is recomputed from the inert body verbatim, so a body child's
   // re-verify over the re-evaluated closure clears the same barrier a top-level
   // re-verify does. The pinned sources ride OUTSIDE the hash; their trust comes
@@ -653,7 +653,7 @@ async function prepareSourceRefDeploy(
   const referencedDefinitions = await buildReferencedWorkflowSourcePins({
     projection,
     config: args.config,
-    operatorApprovals: approval.approvedGrants,
+    operatorApprovals: approval.approvedSurface,
   });
 
   // Assemble the ONE credential delivery. Its `materials` cover three rails, each
@@ -1595,7 +1595,7 @@ export function createSessionService(
     const sources = buildInertProjectionStepSources({
       projection: params.approved.projection,
       config: params.config,
-      operatorApprovals: approval.approvedGrants,
+      operatorApprovals: approval.approvedSurface,
     });
 
     // Restore the Hub-authoritative run ref onto the exact allocation generation

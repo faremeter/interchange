@@ -22,6 +22,7 @@ import {
   pickStepInferenceSource,
   WorkflowDefinitionInvalidError,
 } from "./orchestrator";
+import { createApprovalSet } from "./capability-approval";
 
 function makeConfig(args: {
   sources: HarnessConfig["sources"];
@@ -71,7 +72,7 @@ describe("pickStepInferenceSource (step with no declared preference)", () => {
     // (openai, default-model). A step that declared no source advertises
     // nothing for the walk to surface, so the source pin is the only place the
     // unapproved fallback is caught.
-    const approvals = new Set<string>([
+    const approvals = createApprovalSet([
       "inference.source:anthropic:worker-model",
     ]);
 
@@ -103,7 +104,7 @@ describe("pickStepInferenceSource (step with no declared preference)", () => {
       defaultSource: "src-lambda",
     });
 
-    const approvals = new Set<string>();
+    const approvals = createApprovalSet([]);
 
     expect(() =>
       pickStepInferenceSource({
@@ -132,7 +133,7 @@ describe("pickStepInferenceSource (step with no declared preference)", () => {
 
     // The operator approved the (provider, model) of the source the step falls
     // back to, so the pin proceeds.
-    const approvals = new Set<string>([
+    const approvals = createApprovalSet([
       "inference.source:anthropic:worker-model",
     ]);
 

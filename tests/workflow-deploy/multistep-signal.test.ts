@@ -30,6 +30,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
+  createApprovalSet,
   deriveRunAddress,
   deriveStepAgentId,
   type ApprovalSet,
@@ -143,7 +144,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // trigger grants to every step (including the `awaitSignal`
       // primitive); the operator approval set must therefore enumerate
       // them for every step that the walk surfaces.
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,

@@ -15,8 +15,14 @@ import {
   type WorkflowDefinition,
 } from "@intx/workflow";
 import {
+  EXECUTABLE_STEP_DESCENT,
+  LOOP_BODY_DESCENT,
+  type Primitive,
+} from "@intx/workflow/definition";
+import {
   enumerateInertBodies,
   inertLoopBody,
+  inertNestedBodies,
   readInertStepInference,
 } from "./inert-ontrigger-bodies";
 
@@ -510,5 +516,142 @@ describe("readInertStepInference", () => {
     ).toThrow(
       /body ref: step s1 is a step primitive but carries no valid agent\.modelSources/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The inert body reader's exhaustiveness over the primitive kind set is a
+// compile-time property of its table's keys, so it cannot be observed at
+// runtime. What CAN be observed is the behaviour that property protects: every
+// container kind descends, a `{ ref }` body does not, a leaf yields nothing,
+// and a step whose kind is outside the closed set throws instead of reading as
+// a leaf. The last one is the whole point -- an unrecognized container read as
+// a leaf is exactly the fail-open the deploy-time totality check exists to
+// close.
+// ---------------------------------------------------------------------------
+
+const NESTED_BODY_STEPS: Record<string, unknown> = {
+  s: agentStep("anthropic", "m"),
+};
+
+// One sample step per primitive kind. The `Record<Primitive["kind"], unknown>`
+// annotation forces a sample for every kind the live union carries, so a new
+// primitive cannot be added without deciding what this reader does with it.
+const STEP_BY_KIND: Record<Primitive["kind"], unknown> = {
+  step: agentStep("anthropic", "m"),
+  map: { kind: "map", step: { agent: { modelSources: [] } } },
+  action: { kind: "action" },
+  gate: { kind: "gate", when: "state.ok", then: "a", else: "b" },
+  escalation: { kind: "escalation", to: "ops@acme.test" },
+  awaitSignal: { kind: "awaitSignal", signalName: "go" },
+  sleep: { kind: "sleep" },
+  loop: loopStep(projection(NESTED_BODY_STEPS, ["s"])),
+  onTrigger: inlineOnTrigger("inner", NESTED_BODY_STEPS, ["s"]),
+  childWorkflow: inlineChildWorkflow("inner", NESTED_BODY_STEPS, ["s"]),
+};
+
+const CONTAINER_KINDS: readonly string[] = [
+  "loop",
+  "onTrigger",
+  "childWorkflow",
+] satisfies readonly Primitive["kind"][];
+
+describe("inertNestedBodies", () => {
+  for (const [kind, step] of Object.entries(STEP_BY_KIND)) {
+    const isContainer = CONTAINER_KINDS.includes(kind);
+    const expectation = isContainer
+      ? "descends into its inline body"
+      : "yields nothing";
+    test(`a ${kind} step ${expectation} under the executable descent`, () => {
+      const bodies = inertNestedBodies(step, EXECUTABLE_STEP_DESCENT);
+      expect(bodies).toHaveLength(isContainer ? 1 : 0);
+      if (isContainer) {
+        expect(bodies[0]?.stepOrder).toEqual(["s"]);
+      }
+    });
+  }
+
+  test("a loop body is the only body the flat-namespace descent reaches", () => {
+    // LOOP_BODY_DESCENT stops at the lifted-body boundary, so the two lifted
+    // container kinds yield nothing while the loop still descends.
+    expect(
+      inertNestedBodies(STEP_BY_KIND.loop, LOOP_BODY_DESCENT),
+    ).toHaveLength(1);
+    expect(
+      inertNestedBodies(STEP_BY_KIND.onTrigger, LOOP_BODY_DESCENT),
+    ).toHaveLength(0);
+    expect(
+      inertNestedBodies(STEP_BY_KIND.childWorkflow, LOOP_BODY_DESCENT),
+    ).toHaveLength(0);
+  });
+
+  test("a loop body yields nothing when its own descent flag is off", () => {
+    expect(
+      inertNestedBodies(STEP_BY_KIND.loop, {
+        loopBodies: false,
+        inlineOnTriggerBodies: true,
+        inlineChildWorkflowBodies: true,
+      }),
+    ).toHaveLength(0);
+  });
+
+  test("a { ref } body yields nothing rather than descending", () => {
+    // The referenced asset is deployed and walked on its own, so there is no
+    // inline tree here -- distinct from a malformed container, which throws.
+    const refSection = {
+      kind: "onTrigger",
+      id: "sect",
+      on: { type: "mail", to: "s@acme.test" },
+      body: { ref: "somewhere_else" },
+    };
+    const refChild = {
+      kind: "childWorkflow",
+      id: "spawn",
+      definition: { ref: "somewhere_else" },
+    };
+    expect(inertNestedBodies(refSection, EXECUTABLE_STEP_DESCENT)).toHaveLength(
+      0,
+    );
+    expect(inertNestedBodies(refChild, EXECUTABLE_STEP_DESCENT)).toHaveLength(
+      0,
+    );
+  });
+
+  test("an unrecognized kind throws rather than reading as a leaf", () => {
+    expect(() =>
+      inertNestedBodies({ kind: "teleport" }, EXECUTABLE_STEP_DESCENT),
+    ).toThrow(/step is not a known workflow primitive/);
+    expect(() =>
+      inertNestedBodies({ noKindAtAll: true }, EXECUTABLE_STEP_DESCENT),
+    ).toThrow(/step is not a known workflow primitive/);
+  });
+
+  test("a container kind carrying no body slot throws", () => {
+    expect(() =>
+      inertNestedBodies({ kind: "loop", id: "l" }, EXECUTABLE_STEP_DESCENT),
+    ).toThrow(/loop step carries no body/);
+    expect(() =>
+      inertNestedBodies(
+        { kind: "onTrigger", id: "s" },
+        EXECUTABLE_STEP_DESCENT,
+      ),
+    ).toThrow(/onTrigger step carries neither an inline body nor a \{ ref \}/);
+    expect(() =>
+      inertNestedBodies(
+        { kind: "childWorkflow", id: "c" },
+        EXECUTABLE_STEP_DESCENT,
+      ),
+    ).toThrow(
+      /childWorkflow step carries neither an inline definition nor a \{ ref \}/,
+    );
+  });
+
+  test("a container kind carrying a malformed body throws", () => {
+    expect(() =>
+      inertNestedBodies(
+        inlineOnTrigger("inner", { s: agentStep("p", "m") }, ["missing"]),
+        EXECUTABLE_STEP_DESCENT,
+      ),
+    ).toThrow(/not a valid workflow projection/);
   });
 });

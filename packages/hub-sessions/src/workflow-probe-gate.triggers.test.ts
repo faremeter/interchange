@@ -13,7 +13,7 @@ import { describe, test, expect } from "bun:test";
 
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
-import type { ApprovalSet } from "@intx/workflow-deploy";
+import { createApprovalSet, type ApprovalSet } from "@intx/workflow-deploy";
 
 import {
   gateAndFreezeProbeResult,
@@ -62,7 +62,7 @@ describe("gateAndFreezeProbeResult trigger admission", () => {
     const probeResult = await makeProbeResult(
       projectionWithTriggers([{ type: "schedule", cron: "0 9 * * *" }]),
     );
-    const approvals: ApprovalSet = new Set(probeResult.grants);
+    const approvals: ApprovalSet = createApprovalSet(probeResult.grants);
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
@@ -87,7 +87,7 @@ describe("gateAndFreezeProbeResult trigger admission", () => {
         { type: "schedule", cron: "*/5 * * * *" },
       ]),
     );
-    const approvals: ApprovalSet = new Set(probeResult.grants);
+    const approvals: ApprovalSet = createApprovalSet(probeResult.grants);
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",

@@ -63,7 +63,11 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 
 import {
   SECOND_SIDECAR_ID,
@@ -432,7 +436,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     }
 
     function buildApprovals(address: string, extra: string[]): ApprovalSet {
-      return new Set<string>([
+      return createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${address}`,

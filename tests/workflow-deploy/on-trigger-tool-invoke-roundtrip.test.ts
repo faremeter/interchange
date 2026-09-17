@@ -35,10 +35,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import { loadFrozenGrantSnapshot } from "@intx/db";
-import type { GrantEffect, GrantWalkSnapshot } from "@intx/types";
-import type { WireGrantRule } from "@intx/types/grant-wire";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -60,6 +62,10 @@ import {
   type DeployFlowEnv,
   type InferenceRequest,
 } from "../hub-agent/lib/deploy-flow-env";
+import {
+  deriveWireRunGrants,
+  toolResultTexts,
+} from "./nested-tool-invoke-helpers";
 import { onTriggerToolInvokeEntry } from "./fixtures/on-trigger-tool-invoke-workflow";
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 
@@ -74,95 +80,10 @@ const TENANT_ID = "tnt_on_trigger_tool_invoke";
 const CALLER_PRINCIPAL_ID = "prn_on_trigger_tool_invoke";
 const DEFINITION_ASSET_ID = "ast_on_trigger_tool_invoke_wf";
 
-/**
- * Project a frozen grant-walk snapshot into the run's wire grant rows, matching
- * the production trigger route's projection: one row per distinct grant across
- * steps, tool effect taken from the step's `grantEffects` with `ask` winning
- * over `allow`, effect grants always `allow`. The rows are principal-agnostic
- * (`principalId: null`), matched by resource + action at the child's grant
- * evaluator.
- */
-function deriveWireRunGrants(snapshot: GrantWalkSnapshot): WireGrantRule[] {
-  const effectByResource = new Map<string, GrantEffect>();
-  for (const step of snapshot.perStep) {
-    const grantEffects = new Map<string, GrantEffect>(
-      Object.entries(step.grantEffects),
-    );
-    for (const grant of step.grants) {
-      if (grant.startsWith("tool:")) {
-        const effect = grantEffects.get(grant);
-        if (effect === undefined) {
-          throw new Error(
-            `deriveWireRunGrants: tool grant ${JSON.stringify(grant)} has no grantEffects entry`,
-          );
-        }
-        const existing = effectByResource.get(grant);
-        if (existing === "ask" || effect === "ask") {
-          effectByResource.set(grant, "ask");
-        } else if (existing === undefined) {
-          effectByResource.set(grant, effect);
-        }
-      } else if (grant.startsWith("effect:") && !effectByResource.has(grant)) {
-        effectByResource.set(grant, "allow");
-      }
-    }
-  }
-  return [...effectByResource].map(([resource, effect]) => ({
-    id: `run-grant:${resource}`,
-    resource,
-    action: "invoke",
-    effect,
-    origin: "creator",
-    conditions: null,
-    expiresAt: null,
-    roleId: null,
-    principalId: null,
-  }));
-}
-
 /** The filename the scripted tool call writes under the body step's workdir. */
 const TOOL_OUTPUT_FILE = "body-invoked.txt";
 /** The "fs" variant's own return text for that call. */
 const EXPECTED_TOOL_RESULT_TEXT = `wrote ${TOOL_OUTPUT_FILE}`;
-
-/**
- * Every `tool_result` text in a request's history. The Anthropic adapter
- * serializes a tool result as a user-turn content block `{ type: "tool_result",
- * tool_use_id, content: [{ type: "text", text }] }`, so the inner text blocks
- * are flattened here.
- *
- * The TEXT is asserted rather than the block's presence because a handler that
- * throws also produces a well-formed `tool_result` -- the tool runner converts
- * an exception into `ToolResult { isError: true }`, the agent answers it in
- * text, and the run completes. A presence-only assertion goes green on a run
- * where the tool never executed; only the tool's own return text proves it ran.
- */
-function toolResultTexts(req: InferenceRequest): string[] {
-  const texts: string[] = [];
-  for (const message of req.messages ?? []) {
-    const content = message.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (block.type !== "tool_result") continue;
-      const inner = block.content;
-      if (typeof inner === "string") {
-        texts.push(inner);
-        continue;
-      }
-      if (Array.isArray(inner)) {
-        texts.push(
-          inner
-            .filter((b) => b.type === "text" && b.text !== undefined)
-            .map((b) => b.text ?? "")
-            .join(""),
-        );
-        continue;
-      }
-      texts.push("");
-    }
-  }
-  return texts;
-}
 
 /** The tool names the provider was handed on each captured request, in order. */
 function describeToolLists(requests: readonly InferenceRequest[]): string {
@@ -274,7 +195,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The body agent declares the inline tool, so the deploy walk folds its
       // grant into the section's approved surface; withholding `tool:<name>`
       // here makes the gate reject the deploy with `grants_not_approved`.
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,

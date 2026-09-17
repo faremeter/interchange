@@ -24,6 +24,8 @@ import type { HarnessConfig } from "@intx/types/runtime";
 import type { ToolPackagePin } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
+  approvalItemsFromSet,
+  approvalSetFromItems,
   buildInertProjectionStepSources,
   deriveRunAddress,
   deriveRunAgentId,
@@ -386,7 +388,9 @@ export function createWorkflowAllocationService({
       projection: approved.projection,
       closure: approved.closure,
       approvedWireHash: approved.approval.approvedWireHash,
-      approvedGrants: [...approved.approval.approvedGrants],
+      approvedGrants: [
+        ...approvalItemsFromSet(approved.approval.approvedSurface),
+      ],
     };
 
     await db.transaction(async (tx) => {
@@ -652,12 +656,12 @@ export function createWorkflowAllocationService({
       buildInertProjectionStepSources({
         projection: approved.projection,
         config,
-        operatorApprovals: approved.approval.approvedGrants,
+        operatorApprovals: approved.approval.approvedSurface,
       });
       await buildReferencedWorkflowSourcePins({
         projection: approved.projection,
         config,
-        operatorApprovals: approved.approval.approvedGrants,
+        operatorApprovals: approved.approval.approvedSurface,
       });
       const deploymentProvisioner = selectProvisioner(
         await deploymentPlugins.selectProvisioner({
@@ -741,15 +745,16 @@ export function createWorkflowAllocationService({
       );
     }
     // The frozen bundle deploys verbatim -- no re-probe. Rehydrate the approval
-    // hand-off from it: the approved grant set becomes a `Set`, and the frozen
-    // definition id is the anchor's own (set at prepare time from this freeze).
+    // hand-off from it: the persisted flat item list is partitioned back into
+    // the gate's `ApprovalSet`, and the frozen definition id is the anchor's own
+    // (set at prepare time from this freeze).
     const bundle = spec.frozenApprovalBundle;
     const approved: InstallAndApproveResult = {
       approval: {
         ok: true,
         definitionId: anchor.definitionId,
         approvedWireHash: bundle.approvedWireHash,
-        approvedGrants: new Set(bundle.approvedGrants),
+        approvedSurface: approvalSetFromItems(bundle.approvedGrants),
         projection: bundle.projection,
       },
       projection: bundle.projection,

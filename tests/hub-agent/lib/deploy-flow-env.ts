@@ -1782,7 +1782,7 @@ export async function deployWorkflowSourceForTest(
     buildInertProjectionStepSources({
       projection: approved.projection,
       config: opts.config,
-      operatorApprovals: new Set(approved.approval.approvedGrants),
+      operatorApprovals: approved.approval.approvedSurface,
     });
 
   // Pre-register: every inference source references a registered credential by

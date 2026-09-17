@@ -28,7 +28,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -167,7 +171,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // into the credentials snapshot and, delivered per run, is what
       // authorizes the tool call at run time -- the source path's tool
       // authorization rides the snapshot, no sidecar floor.
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,

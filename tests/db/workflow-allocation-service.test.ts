@@ -29,6 +29,7 @@ import {
 } from "@intx/hub-sessions";
 import { credentialAad, type SidecarCapabilityRule } from "@intx/types";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+import { createApprovalSet } from "@intx/workflow-deploy";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -192,7 +193,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ok: true as const,
           definitionId: DEFINITION_ID,
           approvedWireHash: result.wireHash,
-          approvedGrants: new Set<string>(),
+          approvedSurface: createApprovalSet([]),
           projection: result.projection,
         },
         projection: result.projection,

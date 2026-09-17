@@ -91,7 +91,11 @@ import {
   seedPrincipal,
   seedPrincipalKey,
 } from "@intx/test-harness/seed";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 
 import {
   SESSION_ID,
@@ -316,7 +320,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The action step declares `effect:{requires:["fs:write"]}`; the walk
       // lifts `effect:fs:write`, which the operator must approve so the gate
       // freezes it into the snapshot the route derives from.
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "effect:fs:write",
         `mail.address:${deploymentMailAddress}`,
         `mail.send:${DEPLOYMENT_DOMAIN}`,

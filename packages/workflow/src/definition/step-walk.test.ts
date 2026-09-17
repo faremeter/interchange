@@ -58,6 +58,22 @@ function visitedIds(
   return ids;
 }
 
+function visitedPaths(
+  definition: WorkflowDefinition,
+  descent: StepWalkDescent,
+): readonly string[][] {
+  const paths: string[][] = [];
+  walkWorkflowSteps({
+    definition,
+    descent,
+    context: "step-walk test: ",
+    visit: ({ path }) => {
+      paths.push([...path]);
+    },
+  });
+  return paths;
+}
+
 /** A loop whose body holds a single agent step, plus its exhaustion handler. */
 function workflowWithLoop(): WorkflowDefinition {
   const body = defineWorkflow({
@@ -341,6 +357,58 @@ describe("walkWorkflowSteps", () => {
     expect(trees).toEqual(["wf_loop", "loop-body", "loop-body", "wf_loop"]);
   });
 
+  test("hands each entry the chain of step ids it was reached through", () => {
+    expect(visitedPaths(workflowWithLoop(), EXECUTABLE_STEP_DESCENT)).toEqual([
+      ["rework"],
+      ["rework", "work"],
+      ["rework", "commit"],
+      ["esc"],
+    ]);
+  });
+
+  test("the chain grows one rung per body the walk descends into", () => {
+    // Three rungs, crossing the lifted-body boundary at the second: two steps
+    // in different bodies may share an id, so the chain is what tells them
+    // apart.
+    const grandchild = defineWorkflow({
+      id: "grandchild",
+      trigger: { type: "manual" },
+      steps: { work: step({ agent: makeAgent("work") }) },
+    });
+    const body = defineWorkflow({
+      id: "spin-body",
+      trigger: { type: "manual" },
+      steps: { spawn: childWorkflow({ definition: grandchild }) },
+    });
+    const workflow = defineWorkflow({
+      id: "wf_three_rungs",
+      trigger: { type: "manual" },
+      steps: {
+        spin: loop({
+          body,
+          while: "w",
+          carry: "c",
+          maxIterations: 2,
+          onExhausted: "esc",
+        }),
+        esc: step({ agent: makeAgent("esc"), after: ["spin"] }),
+      },
+    });
+
+    expect(visitedPaths(workflow, EXECUTABLE_STEP_DESCENT)).toEqual([
+      ["spin"],
+      ["spin", "spawn"],
+      ["spin", "spawn", "work"],
+      ["esc"],
+    ]);
+    // The flat-namespace descent stops at the lift, so the chain stops with it.
+    expect(visitedPaths(workflow, LOOP_BODY_DESCENT)).toEqual([
+      ["spin"],
+      ["spin", "spawn"],
+      ["esc"],
+    ]);
+  });
+
   test("a stepOrder entry with no matching step throws with the caller's context", () => {
     const workflow: WorkflowDefinition = {
       id: "wf_phantom",
@@ -372,6 +440,26 @@ describe("walkNestedWorkflowSteps", () => {
     });
 
     expect(ids).toEqual(["work", "commit"]);
+  });
+
+  test("roots each chain at the nested body, not at the enclosing step", () => {
+    // This walk is handed the primitive, not the step id it sits under, so the
+    // chain it can honestly report starts inside the body.
+    const workflow = workflowWithLoop();
+    const rework = workflow.steps["rework"];
+    if (rework === undefined) throw new Error("missing loop step");
+
+    const paths: string[][] = [];
+    walkNestedWorkflowSteps({
+      primitive: rework,
+      descent: EXECUTABLE_STEP_DESCENT,
+      context: "step-walk test: ",
+      visit: ({ path }) => {
+        paths.push([...path]);
+      },
+    });
+
+    expect(paths).toEqual([["work"], ["commit"]]);
   });
 
   test("a leaf primitive nests nothing", () => {
@@ -573,15 +661,18 @@ describe("walkStepTree", () => {
     };
 
     const ids: string[] = [];
+    const paths: string[][] = [];
     walkStepTree<unknown, OpaqueTree>({
       tree,
       context: "step-walk test: ",
       nestedTrees: opaqueLoopBody,
-      visit: ({ stepId }) => {
+      visit: ({ stepId, path }) => {
         ids.push(stepId);
+        paths.push([...path]);
       },
     });
 
     expect(ids).toEqual(["rework", "work", "esc"]);
+    expect(paths).toEqual([["rework"], ["rework", "work"], ["esc"]]);
   });
 });

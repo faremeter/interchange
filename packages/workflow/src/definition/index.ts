@@ -68,6 +68,7 @@ export {
   type StepWalkArgs,
   type StepWalkDescent,
   type StepWalkEntry,
+  type StepWalkPath,
   type WorkflowStepWalkArgs,
 } from "./step-walk";
 

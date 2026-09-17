@@ -113,7 +113,11 @@ import {
   seedPrincipal,
   seedPrincipalKey,
 } from "@intx/test-harness/seed";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 
 import {
@@ -621,7 +625,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         defaultSource: "anthropic:mock-model",
       };
 
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,

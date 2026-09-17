@@ -28,11 +28,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import { loopBodyRunId } from "@intx/workflow";
 import { loadFrozenGrantSnapshot } from "@intx/db";
-import type { GrantEffect, GrantWalkSnapshot } from "@intx/types";
-import type { WireGrantRule } from "@intx/types/grant-wire";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -53,9 +55,12 @@ import {
   waitFor,
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
-  type InferenceRequest,
-  type WorkflowRunEvent,
 } from "../hub-agent/lib/deploy-flow-env";
+import {
+  deriveWireRunGrants,
+  failureMessages,
+  toolResultTexts,
+} from "./nested-tool-invoke-helpers";
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
 import {
   LOOP_BODY_STEP_ID,
@@ -81,90 +86,6 @@ const EXPECTED_TOOL_RESULT = `wrote ${TOOL_OUTPUT_FILENAME}`;
 // The loop converges after exactly two iterations (see the fixture), so the
 // container run log carries one ChildSpawned per iteration.
 const EXPECTED_ITERATIONS = 2;
-
-/**
- * Project a frozen grant-walk snapshot into the run's runtime `tool:`/`effect:`
- * grant rows, in the `run.grants` wire shape the trigger delivers. Mirrors the
- * production `deriveRunRuntimeGrantRows`/`runGrantToWire` tail (not exported
- * from `@intx/hub-api`): one row per distinct grant across steps, tool effect
- * taken from the step's `grantEffects` with `ask` winning over `allow`, effect
- * grants always `allow`. The rows are principal-agnostic (`principalId: null`),
- * matched by resource + action at the child's grant evaluator.
- */
-function deriveWireRunGrants(snapshot: GrantWalkSnapshot): WireGrantRule[] {
-  const effectByResource = new Map<string, GrantEffect>();
-  for (const step of snapshot.perStep) {
-    const grantEffects = new Map<string, GrantEffect>(
-      Object.entries(step.grantEffects),
-    );
-    for (const grant of step.grants) {
-      if (grant.startsWith("tool:")) {
-        const effect = grantEffects.get(grant);
-        if (effect === undefined) {
-          throw new Error(
-            `deriveWireRunGrants: tool grant ${JSON.stringify(grant)} has no grantEffects entry`,
-          );
-        }
-        const existing = effectByResource.get(grant);
-        if (existing === "ask" || effect === "ask") {
-          effectByResource.set(grant, "ask");
-        } else if (existing === undefined) {
-          effectByResource.set(grant, effect);
-        }
-      } else if (grant.startsWith("effect:") && !effectByResource.has(grant)) {
-        effectByResource.set(grant, "allow");
-      }
-    }
-  }
-  return [...effectByResource].map(([resource, effect]) => ({
-    id: `run-grant:${resource}`,
-    resource,
-    action: "invoke",
-    effect,
-    origin: "creator",
-    conditions: null,
-    expiresAt: null,
-    roleId: null,
-    principalId: null,
-  }));
-}
-
-// Flatten the text of every `tool_result` block in an inference request. The
-// Anthropic adapter serializes a result as a user-turn content block whose own
-// `content` is either a bare string or an array of `{ type: "text", text }`.
-function toolResultTexts(req: InferenceRequest): string[] {
-  const texts: string[] = [];
-  for (const message of req.messages ?? []) {
-    const content = message.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (block.type !== "tool_result") continue;
-      const inner = block.content;
-      if (typeof inner === "string") {
-        texts.push(inner);
-        continue;
-      }
-      if (Array.isArray(inner)) {
-        texts.push(
-          inner
-            .filter((b) => b.type === "text" && b.text !== undefined)
-            .map((b) => b.text ?? "")
-            .join(""),
-        );
-      }
-    }
-  }
-  return texts;
-}
-
-// Every failure event in a run log, rendered with its full body. A step that
-// throws records the thrown message under `error.message`, so an assertion on
-// this list reports the underlying failure rather than a bare count mismatch.
-function failureMessages(events: readonly WorkflowRunEvent[]): string[] {
-  return events
-    .filter((e) => e.type === "StepFailed" || e.type === "RunFailed")
-    .map((e) => `${e.type} ${JSON.stringify(e.body)}`);
-}
 
 // The top-level container run: the loop's per-iteration body runs are keyed
 // `<runId>__<loopStepId>__<index>`, so the container is the only run id with no
@@ -265,7 +186,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         defaultSource: "anthropic:mock-model",
       };
 
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,

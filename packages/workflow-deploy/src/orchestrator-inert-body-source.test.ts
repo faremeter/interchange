@@ -25,6 +25,7 @@ import {
   buildInertBodyStepSources,
   WorkflowDefinitionInvalidError,
 } from "./orchestrator";
+import { createApprovalSet } from "./capability-approval";
 
 function projectionOf(def: Parameters<typeof projectLiveToInert>[0]) {
   const projection = WorkflowProjectionDefinition(
@@ -59,7 +60,7 @@ const CONFIG: HarnessConfig = {
 
 // What a probe of a body carrying no agent source produces: no
 // `inference.source:` entry, because no agent advertised one.
-const NO_SOURCE_APPROVALS = new Set<string>(["effect:fs:write"]);
+const NO_SOURCE_APPROVALS = createApprovalSet(["effect:fs:write"]);
 
 describe("buildInertBodyStepSources", () => {
   test("pins a step that cannot invoke inference to the unapproved default", () => {
@@ -143,7 +144,7 @@ describe("buildInertBodyStepSources", () => {
       definition: projectionOf(def),
       workflowId: "wf-body-all-agent__body",
       config: { ...CONFIG, defaultSource: "src-missing" },
-      operatorApprovals: new Set<string>([
+      operatorApprovals: createApprovalSet([
         `inference.source:${DEFAULT_SOURCE.provider}:${DEFAULT_SOURCE.model}`,
       ]),
     });

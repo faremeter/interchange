@@ -275,7 +275,7 @@ async function deployBindingThroughRoute(opts: {
       const sources = buildInertProjectionStepSources({
         projection: approved.projection,
         config,
-        operatorApprovals: approved.approval.approvedGrants,
+        operatorApprovals: approved.approval.approvedSurface,
       });
       const repoId = { kind: "workflow", id: source.assetId } as const;
       const resolveAttachment = async (requestedAssetId: string) => {

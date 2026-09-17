@@ -45,7 +45,11 @@ import type { GrantEffect, GrantWalkSnapshot } from "@intx/types";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/sidecar";
 import type { WireGrantRule } from "@intx/types/grant-wire";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -340,7 +344,7 @@ async function deployProbeSource(opts: {
   // run time through the frozen snapshot) and, when the definition declares a
   // binding, the binding's `credential:<handle>` surface (which the gate holds
   // the binding to).
-  const operatorApprovals: ApprovalSet = new Set<string>([
+  const operatorApprovals: ApprovalSet = createApprovalSet([
     "inference.source:anthropic:mock-model",
     "director:@intx/agent/default",
     `mail.address:${mailAddress}`,

@@ -23,7 +23,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -366,7 +370,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // (`<parentWorkflowId>__<stepId>`); ChildSpawned carries that ref.
       const CHILD_BODY_REF = `${PARENT_WORKFLOW_ID}__spawn`;
 
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
@@ -576,7 +580,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         domain: DEPLOYMENT_DOMAIN,
       });
 
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
@@ -712,7 +716,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         domain: DEPLOYMENT_DOMAIN,
       });
 
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
@@ -817,7 +821,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         model: "mock-model",
       };
 
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
@@ -957,7 +961,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const CHILD_BODY_REF = `${NESTED_PARENT_WORKFLOW_ID}__spawnChild`;
       const GRANDCHILD_BODY_REF = `${CHILD_BODY_REF}__spawnGrandchild`;
 
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,
@@ -1192,7 +1196,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         };
       });
 
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${parentMailAddress}`,

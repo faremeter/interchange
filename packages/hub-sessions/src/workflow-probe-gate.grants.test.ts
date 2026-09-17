@@ -25,7 +25,7 @@ import { describe, test, expect } from "bun:test";
 import type { GrantRequirement } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
-import type { ApprovalSet } from "@intx/workflow-deploy";
+import { createApprovalSet, type ApprovalSet } from "@intx/workflow-deploy";
 
 import {
   gateAndFreezeProbeResult,
@@ -95,11 +95,11 @@ function recordingPersist(definitionId: string): {
 
 // Does the gate's answer account for this requirement anywhere a caller can
 // see it? A correct gate must name an unapproved requirement in its rejection,
-// and must record an approved one in the approval it returns. It is free to
-// choose the string form -- there is no canonical encoding of a requirement in
-// the approval vocabulary today -- so this scans the serialized answer for the
-// requirement's resource and action rather than asserting a shape the fix has
-// not chosen yet.
+// and must record an approved one in the approval it returns. The two arms
+// carry it in different fields (`unapprovedGrantRequirements` on the rejection,
+// `approvedSurface.requirements` on the approval), so this scans the serialized
+// answer for the requirement's resource and action and lets each case assert
+// the exact field where that field is the point.
 function mentions(value: unknown, requirement: GrantRequirement): boolean {
   const serialized = JSON.stringify(value, (_key, v: unknown) =>
     v instanceof Set ? [...v] : v,
@@ -119,7 +119,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
       grants: [],
       grantRequirements: [FORGED_WILDCARD],
     });
-    const approvals: ApprovalSet = new Set();
+    const approvals: ApprovalSet = createApprovalSet([]);
     const { persist, calls } = recordingPersist("def-forged-wildcard");
 
     const result = await gateAndFreezeProbeResult({
@@ -143,7 +143,10 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
       grants: ["tool:fetch", "effect:log"],
       grantRequirements: [FORGED_NAMED],
     });
-    const approvals: ApprovalSet = new Set(["tool:fetch", "effect:log"]);
+    const approvals: ApprovalSet = createApprovalSet([
+      "tool:fetch",
+      "effect:log",
+    ]);
     const { persist, calls } = recordingPersist("def-forged-named");
 
     const result = await gateAndFreezeProbeResult({
@@ -165,7 +168,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
       grants: ["tool:fetch"],
       grantRequirements: [FORGED_WILDCARD, FORGED_NAMED],
     });
-    const approvals: ApprovalSet = new Set(["tool:fetch"]);
+    const approvals: ApprovalSet = createApprovalSet(["tool:fetch"]);
     const { persist, calls } = recordingPersist("def-no-freeze");
 
     await gateAndFreezeProbeResult({
@@ -206,8 +209,11 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
     const frozen = calls[0];
     if (frozen === undefined) throw new Error("no freeze recorded");
     expect(frozen.grantSnapshot.grantRequirements).toEqual([FORGED_NAMED]);
-    // The approval the gate hands back must say so too.
+    // The approval the gate hands back must say so too, in the field the
+    // vocabulary reserves for requirements.
     expect(mentions(result, FORGED_NAMED)).toBe(true);
+    if (!result.ok) throw new Error("expected approval");
+    expect(result.approvedSurface.requirements).toEqual([FORGED_NAMED]);
   });
 
   test("accepts and freezes a declared requirement the ApprovalSet covers", async () => {
@@ -224,7 +230,10 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
       grants: ["tool:fetch"],
       grantRequirements: [FORGED_NAMED],
     });
-    const approvals: ApprovalSet = new Set(["tool:fetch", approved]);
+    const approvals: ApprovalSet = createApprovalSet(
+      ["tool:fetch"],
+      [approved],
+    );
     const { persist, calls } = recordingPersist("def-covered");
 
     const result = await gateAndFreezeProbeResult({
@@ -239,8 +248,12 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
     const frozen = calls[0];
     if (frozen === undefined) throw new Error("no freeze recorded");
     expect(frozen.grantSnapshot.grantRequirements).toEqual([FORGED_NAMED]);
-    // The approved surface names the requirement alongside the walk grant.
+    // The approved surface names the requirement alongside the walk grant, each
+    // in its own field.
     expect(mentions(result, FORGED_NAMED)).toBe(true);
+    if (!result.ok) throw new Error("expected approval");
+    expect(result.approvedSurface.requirements).toEqual([FORGED_NAMED]);
+    expect([...result.approvedSurface.grants]).toEqual(["tool:fetch"]);
   });
 
   test("rejects a requirement that differs from the approved one only in source", async () => {
@@ -256,7 +269,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
         },
       ],
     });
-    const approvals: ApprovalSet = new Set([FORGED_NAMED]);
+    const approvals: ApprovalSet = createApprovalSet([], [FORGED_NAMED]);
     const { persist, calls } = recordingPersist("def-source-mismatch");
 
     const result = await gateAndFreezeProbeResult({
@@ -283,7 +296,7 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
       grants: [],
       grantRequirements: [FORGED_NAMED],
     });
-    const approvals: ApprovalSet = new Set([conditioned]);
+    const approvals: ApprovalSet = createApprovalSet([], [conditioned]);
     const { persist, calls } = recordingPersist("def-conditions-mismatch");
 
     const result = await gateAndFreezeProbeResult({

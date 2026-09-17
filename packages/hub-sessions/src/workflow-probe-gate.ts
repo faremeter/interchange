@@ -58,6 +58,7 @@ import {
   walkStepTree,
 } from "@intx/workflow/definition";
 import {
+  approvalSetFromItems,
   inertNestedBodies,
   isApprovedGrantRequirement,
   type ApprovalSet,
@@ -95,7 +96,9 @@ const FROZEN_VERSION = "1";
  * strings and the definition's declared grant requirements. The requirements
  * belong in the same record because the run path mints real grant rows from
  * them, so an account of the approval that listed only the walk strings would
- * under-report the authority the definition will actually carry.
+ * under-report the authority the definition will actually carry. It is the flat
+ * `ApprovalItem` list rather than the gate's partitioned `ApprovalSet` because
+ * this record is the input to persistence, and the persisted form is flat.
  */
 export type FrozenApproval = {
   readonly assetId: string;
@@ -126,7 +129,7 @@ export type ProbeGateResult =
       readonly ok: true;
       readonly definitionId: string;
       readonly approvedWireHash: string;
-      readonly approvedGrants: ReadonlySet<ApprovalItem>;
+      readonly approvedSurface: ApprovalSet;
       /**
        * The inert wire projection the freeze hashed. Rides the ok-arm so the
        * deploy hand-off carries the exact content the frozen hash addresses,
@@ -320,54 +323,21 @@ type ExecutableReach = StepWithoutGrantRecord;
  * purpose: the capability walk folds a nested body's grants into the enclosing
  * top-level step under exactly this descent, so the two agree by construction
  * and a primitive kind added to one side cannot silently fall out of the other.
+ *
+ * The position each step was reached at is the walk's own `path`, for the same
+ * reason. The head of that path is the top-level step the entry descends from,
+ * which is exactly the `perStep` key the capability walk folds its grants into.
  */
 function collectExecutableReaches(
   projection: WorkflowProjectionDefinition,
 ): readonly ExecutableReach[] {
   const reaches: ExecutableReach[] = [];
-  // `walkStepTree` visits a step before it asks for the bodies that step
-  // carries, so the reach recorded by `visit` is the parent of whatever
-  // `nestedTrees` is asked for next. `pendingStep` turns that ordering from an
-  // assumption into a checked invariant rather than a silent coupling.
-  let pendingReach: ExecutableReach | null = null;
-  let pendingStep: unknown = null;
-  const parentByTree = new Map<
-    WorkflowProjectionDefinition,
-    ExecutableReach | null
-  >([[projection, null]]);
-
   walkStepTree<unknown, WorkflowProjectionDefinition>({
     tree: projection,
     context: EXECUTABLE_CLOSURE_CONTEXT,
-    nestedTrees: (step) => {
-      const bodies = inertNestedBodies(step, EXECUTABLE_STEP_DESCENT);
-      if (bodies.length === 0) return bodies;
-      if (pendingReach === null || pendingStep !== step) {
-        throw new Error(
-          `${EXECUTABLE_CLOSURE_CONTEXT}nested bodies were requested for a step the walk had not just visited`,
-        );
-      }
-      for (const body of bodies) {
-        parentByTree.set(body, pendingReach);
-      }
-      return bodies;
-    },
-    visit: ({ stepId, step, tree }) => {
-      const parent = parentByTree.get(tree);
-      if (parent === undefined) {
-        throw new Error(
-          `${EXECUTABLE_CLOSURE_CONTEXT}step ${stepId} was reached in a body tree the walk never descended into`,
-        );
-      }
-      const reach: ExecutableReach = {
-        stepId,
-        recordStepId: parent === null ? stepId : parent.recordStepId,
-        reachedThrough:
-          parent === null ? [stepId] : [...parent.reachedThrough, stepId],
-      };
-      reaches.push(reach);
-      pendingReach = reach;
-      pendingStep = step;
+    nestedTrees: (step) => inertNestedBodies(step, EXECUTABLE_STEP_DESCENT),
+    visit: ({ stepId, path }) => {
+      reaches.push({ stepId, recordStepId: path[0], reachedThrough: path });
     },
   });
   return reaches;
@@ -521,7 +491,7 @@ export async function gateAndFreezeProbeResult(
   // probe's surface IS the approved set -- so nothing is ever unapproved.
   const unapprovedGrants = isApproveProbed(approvals)
     ? []
-    : probeResult.grants.filter((grant) => !approvals.has(grant));
+    : probeResult.grants.filter((grant) => !approvals.grants.has(grant));
   if (unapprovedGrants.length > 0) {
     return { ok: false, reason: "grants_not_approved", unapprovedGrants };
   }
@@ -569,7 +539,7 @@ export async function gateAndFreezeProbeResult(
     ok: true,
     definitionId,
     approvedWireHash: recomputedWireHash,
-    approvedGrants: new Set(approvedGrants),
+    approvedSurface: approvalSetFromItems(approvedGrants),
     projection: probeResult.projection,
   };
 }

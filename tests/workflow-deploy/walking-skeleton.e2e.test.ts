@@ -65,7 +65,11 @@ import type {
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { WorkflowDefinitionRegistrySource } from "@intx/types/workflow-sources";
 import { generateId } from "@intx/hub-common";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import {
   createTestDb,
@@ -453,7 +457,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     // Every advisory grant the probe's capability walk surfaces must be in the
     // operator's approved set or the gate fails closed; this is a superset of
     // what a toolless mail-triggered agent step surfaces.
-    const operatorApprovals: ApprovalSet = new Set<string>([
+    const operatorApprovals: ApprovalSet = createApprovalSet([
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${deploymentMailAddress}`,
@@ -680,7 +684,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
 
     // The body agent's inference source plus the section's mail grants must all
     // be operator-approved, or the gate/freeze and the per-body pin fail closed.
-    const operatorApprovals: ApprovalSet = new Set<string>([
+    const operatorApprovals: ApprovalSet = createApprovalSet([
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${bodyDeploymentMailAddress}`,

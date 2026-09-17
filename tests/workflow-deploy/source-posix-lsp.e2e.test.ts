@@ -59,7 +59,11 @@ import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import type { Packument, PackumentFetcher } from "@intx/tool-packaging";
 import { generateId } from "@intx/hub-common";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import {
   createTestDb,
@@ -473,7 +477,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The operator approves EVERY grant the walk emits: posix's six gated
       // tools (Option A, from the inlined factory) AND the plugin-contributed
       // `tool:lsp` (Tier-2, surfaced from the plugin's static definitions).
-      const approvals: ApprovalSet = new Set<string>([
+      const approvals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,

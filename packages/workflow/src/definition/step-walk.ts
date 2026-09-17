@@ -21,6 +21,10 @@
 //     descends through here to collect a nested closure's grants, and a missed
 //     container kind there is a silent, fail-open authorization gap. The
 //     compiler, not a remembered call site, owns that coverage.
+//   - The walk knows every step's ancestor chain, so it HANDS THAT CHAIN OVER
+//     (`StepWalkEntry.path`) instead of leaving a consumer to rebuild it from
+//     the order the walk calls back in. A rebuilt position would pin the
+//     traversal's internal call order as an unwritten contract.
 //
 // The traversal core (`walkStepTree`) is generic over the step and tree types
 // so it also serves the inert wire projection, whose steps are `unknown` and
@@ -109,6 +113,16 @@ export const LOOP_BODY_DESCENT: StepWalkDescent = Object.freeze({
   inlineChildWorkflowBodies: false,
 });
 
+/**
+ * The chain of step ids one walked step was reached through: the top-rung step
+ * first, the step itself last, one entry per rung the walk descended.
+ *
+ * The type is non-empty because a step's own id is always the last entry. A
+ * top-rung step's path is `[stepId]` alone, so a consumer reads `path[0]` for
+ * the top-rung step an entry descends from with no length check of its own.
+ */
+export type StepWalkPath = readonly [string, ...string[]];
+
 /** One step the walk reached, with the tree it is an entry of. */
 export interface StepWalkEntry<TStep, TTree> {
   readonly stepId: string;
@@ -118,6 +132,17 @@ export interface StepWalkEntry<TStep, TTree> {
    * step, or the nested body the walk descended into for a deeper one.
    */
   readonly tree: TTree;
+  /**
+   * The chain of step ids this step was reached through, ending in `stepId`.
+   * Two nested bodies may legitimately carry the same step id, so the path --
+   * not `stepId` alone -- is what names a step's position in the walk.
+   *
+   * The chain is rooted at the tree the walk was GIVEN, not at any enclosing
+   * definition the caller happens to hold. {@link walkNestedWorkflowSteps}
+   * starts one walk per nested body, so those bodies' steps are rooted at the
+   * body and the enclosing primitive's step id is not on the path.
+   */
+  readonly path: StepWalkPath;
 }
 
 export interface StepWalkArgs<TStep, TTree extends StepTree<TStep>> {
@@ -144,6 +169,10 @@ export interface StepWalkArgs<TStep, TTree extends StepTree<TStep>> {
  * are visited in its own `stepOrder` before the next sibling step. Consumers
  * that accumulate into an ordered result depend on that order.
  *
+ * Each entry carries the {@link StepWalkEntry.path} it was reached through, so
+ * a consumer that needs a step's position reads it rather than reconstructing
+ * it from the order the walk happens to call `visit` and `nestedTrees` in.
+ *
  * A `stepOrder` entry with no matching `steps` record entry throws. The
  * definition validator forecloses it, so reaching the throw means a
  * hand-assembled or tampered definition, which must fail loud rather than walk
@@ -152,7 +181,7 @@ export interface StepWalkArgs<TStep, TTree extends StepTree<TStep>> {
 export function walkStepTree<TStep, TTree extends StepTree<TStep>>(
   args: StepWalkArgs<TStep, TTree>,
 ): void {
-  const walk = (tree: TTree): void => {
+  const walk = (tree: TTree, parentPath: StepWalkPath | readonly []): void => {
     for (const stepId of tree.stepOrder) {
       const step = tree.steps[stepId];
       if (step === undefined) {
@@ -160,13 +189,14 @@ export function walkStepTree<TStep, TTree extends StepTree<TStep>>(
           `${args.context}step ${stepId} listed in stepOrder is missing from steps`,
         );
       }
-      args.visit({ stepId, step, tree });
+      const path: StepWalkPath = [...parentPath, stepId];
+      args.visit({ stepId, step, tree, path });
       for (const nested of args.nestedTrees(step)) {
-        walk(nested);
+        walk(nested, path);
       }
     }
   };
-  walk(args.tree);
+  walk(args.tree, []);
 }
 
 /**

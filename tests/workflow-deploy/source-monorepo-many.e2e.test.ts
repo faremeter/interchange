@@ -53,6 +53,7 @@ import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources
 import { generateId } from "@intx/hub-common";
 import { inlineBodyRef } from "@intx/workflow";
 import {
+  createApprovalSet,
   deriveRunAddress,
   enumerateInertBodies,
   type ApprovalSet,
@@ -436,7 +437,7 @@ async function deployAndRun(spec: {
 }
 
 const distinctApprovals = (address: string): ApprovalSet =>
-  new Set<string>([
+  createApprovalSet([
     "inference.source:anthropic:mock-model",
     "director:@intx/agent/default",
     `mail.address:${address}`,
@@ -466,7 +467,7 @@ function systemBlockTexts(req: object): string[] {
   return texts;
 }
 
-const collapseApprovals: ApprovalSet = new Set<string>([
+const collapseApprovals: ApprovalSet = createApprovalSet([
   "inference.source:anthropic:mock-model",
   "director:@intx/agent/default",
   `mail.address:${COLLAPSE_ADDRESS}`,
