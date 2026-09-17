@@ -402,7 +402,21 @@ function validateSteps(
  * the key is assigned over it.
  */
 function validateStepIds(steps: Record<string, Primitive>): void {
-  for (const stepId of Object.keys(steps)) {
+  for (const [stepId, primitive] of Object.entries(steps)) {
+    // The record key is the id every id-derived table is built on -- the
+    // credentials snapshot, the deploy-time grants write, and the staged body
+    // ref -- while the runtime authorizes under the primitive's own `id`. At
+    // the root those cannot disagree, because `normalize` assigns the key over
+    // the embedded id before this pass runs. A nested body never passes
+    // through that assignment, so a hand-assembled one can key a step under
+    // one name and carry another, pointing the two halves at different steps.
+    if (primitive.id !== "" && primitive.id !== stepId) {
+      throw new Error(
+        `step ${stepId} carries a conflicting embedded id ${primitive.id}; ` +
+          `the record key is what every id-derived table is built on, so the ` +
+          `two must name the same step`,
+      );
+    }
     if (stepId === "") {
       throw new Error("step ids cannot be empty");
     }

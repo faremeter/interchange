@@ -160,4 +160,25 @@ describe("step-id grammar in a nested body", () => {
     });
     expect(defineAroundLoopBody(outer)).toThrow(/must not contain "__"/);
   });
+  test("rejects a body step whose embedded id names a different step", () => {
+    // The record key is what every id-derived table is built on -- the
+    // credentials snapshot, the deploy-time grants write, the staged body ref
+    // -- while the runtime authorizes under the primitive's own `id`. The root
+    // cannot diverge, because normalize assigns the key over the embedded id.
+    // A hand-assembled body never passes through that assignment, so it can
+    // key a step under one name and carry another, aiming the two halves at
+    // different steps. Built literally here rather than through
+    // `handBuiltBody`, which assigns the key over the id and would erase the
+    // very divergence under test.
+    const body: WorkflowDefinition = {
+      id: "outer",
+      triggers: [{ type: "manual" }],
+      steps: {
+        work: { ...action({ handler: "noop" }), id: "settle" },
+        settle: { ...action({ handler: "noop" }), id: "settle" },
+      },
+      stepOrder: ["work", "settle"],
+    };
+    expect(defineAroundLoopBody(body)).toThrow(/conflicting embedded id/);
+  });
 });
