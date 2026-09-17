@@ -808,11 +808,10 @@ function validateLoopBody(
  * author from getting a clean definition and a clean local run followed by a
  * deploy rejection.
  *
- * PENDING INTR-310: a body agent `step` is accepted here but is not yet
- * EXECUTABLE -- per-step agent invocation inside a body is stubbed, so a body
- * runs only non-inference primitives (awaitSignal, sleep, childWorkflow) at
- * runtime today. INTR-310 wires the body invoker + per-body sources, after
- * which "run agent steps" becomes true at runtime as well.
+ * A body agent `step` is accepted here and executes: a section body runs
+ * inference and calls tools like any other step, under its own grant record.
+ * An author reading this validator to decide whether an agent belongs in a
+ * body should read it as yes.
  *
  * A separate pass from `validateAcyclic`, which does not recurse into the
  * body's own (already-normalized) `WorkflowDefinition`.

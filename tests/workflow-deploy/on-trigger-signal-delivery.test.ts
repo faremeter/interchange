@@ -14,7 +14,7 @@
 // source-ref frame): a single-step workflow whose one step is an `onTrigger`
 // section subscribed to the deployment mail address, with a NON-AGENT body -- a
 // single `awaitSignal({ name })` gate with no timeout. (Body agent-step
-// execution is not wired yet, INTR-310; the signal-relay feature is non-agent
+// execution is exercised by the tool-invoke round-trips; this case is non-agent
 // by nature, so the body IS an awaitSignal, exercising exactly the capability
 // under test.)
 //
@@ -358,7 +358,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // completes, and the section abandons its now-stale signal-relay await and
       // re-arms -- the long-lived section keeps working through a timed-out body
       // gate. onTimeout's target is a non-agent sleep (agent body steps are
-      // INTR-310); its timer fires through the sidecar scheduler.
+      // covered elsewhere); its timer fires through the sidecar scheduler.
       const { containerRunId } = await deployAndTriggerSection({
         anchorRunId: DEPLOYMENT_ID_TIMED,
         definitionAssetId: TIMED_DEFINITION_ASSET_ID,

@@ -252,8 +252,10 @@ PRESENCE of a `tool_result` all look healthy on a run where the tool never
 executed. A test that asserts a tool ran must assert on the `tool_result`'s
 CONTENT.
 
-Where it lives today: nowhere in the repository as a stated rule. The
-`examples/workflow-quickstart` README records it, and the assertion in
+Where it lives today: `toolResultTexts`,
+`tests/workflow-deploy/nested-tool-invoke-helpers.ts`, whose docstring states
+the rule and whose callers are the deployed tool-invoke round-trips. The
+`examples/workflow-quickstart` README records it too, and the assertion in
 `tests/workflow-quickstart/cli.test.ts` depends on it.
 
 **21.** bun 1.4.2's console reporter never prints passing test NAMES. It
