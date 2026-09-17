@@ -58,6 +58,12 @@ Public surface:
   projection so the hub can stage it and pin its per-step sources. The
   enumeration is purely structural; each body step's `(provider, model)`
   preference is read at pin time by `buildInertBodyStepSources`.
+- `inertNestedBodies(step, descent)` — the nested body projections one step of
+  a frozen inert projection carries, filtered by a `StepWalkDescent`. This is
+  the inert counterpart of `@intx/workflow`'s live `nestedWorkflowBodies`, so
+  the inert representation states its descent rule in one place too. Pair it
+  with `walkStepTree` to walk an inert projection under any descent;
+  `inertFlatNamespaceStepIds` is that pairing at `LOOP_BODY_DESCENT`.
 - `deriveRunAddress` / `deriveStepAddress` / `resolveStepAddress` /
   `deriveRunAgentId` / `deriveStepAgentId` / `deriveWorkflowRunRepoId`
   — the pure address and id derivation helpers.

@@ -31,6 +31,28 @@ import { createSidecarEmitter } from "./ws/sidecar-events";
 
 type Call = { method: string; args: unknown[] };
 
+/**
+ * A grant-walk snapshot whose records match a projection's top-level steps.
+ *
+ * The capability walk emits one record per top-level step and folds every
+ * nested body's grants into the record of the step that carries the body, so a
+ * probe answer whose snapshot omits a top-level step describes a deployment
+ * that would run steps nobody approved anything for. The probe gate refuses
+ * that, which is why these fixtures cannot hand it an empty snapshot. They are
+ * about the deploy hand-off rather than about grant content, so the records
+ * carry the step ids the gate must account for and no grants.
+ */
+function snapshotForProjection(projection: WorkflowProjectionDefinition) {
+  return {
+    perStep: projection.stepOrder.map((stepId) => ({
+      stepId,
+      grants: [] as string[],
+      grantEffects: {},
+    })),
+    grantRequirements: [],
+  };
+}
+
 type TestSidecarRouter = SidecarRouter & {
   sendAgentDeploy(
     agentAddress: string,
@@ -1227,7 +1249,7 @@ describe("deployCodeSourcedWorkflow", () => {
       probeResult: {
         projection,
         grants,
-        grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+        grantWalkSnapshot: snapshotForProjection(projection),
         wireHash,
       },
       approvals: new Set(grants),
@@ -1632,7 +1654,7 @@ describe("deployCodeSourcedWorkflow", () => {
       probeResult: {
         projection,
         grants,
-        grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+        grantWalkSnapshot: snapshotForProjection(projection),
         wireHash: await computeWireDefinitionHash(projection),
       },
       approvals: new Set(grants),
@@ -1815,7 +1837,7 @@ describe("deployCodeSourcedWorkflow", () => {
       probeResult: {
         projection,
         grants,
-        grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+        grantWalkSnapshot: snapshotForProjection(projection),
         wireHash: await computeWireDefinitionHash(projection),
       },
       approvals: new Set(grants),
@@ -2064,7 +2086,7 @@ describe("deployCodeSourcedWorkflow", () => {
       probeResult: {
         projection,
         grants,
-        grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+        grantWalkSnapshot: snapshotForProjection(projection),
         wireHash,
       },
       approvals: new Set(grants),
@@ -2137,7 +2159,7 @@ describe("deployCodeSourcedWorkflow", () => {
       probeResult: {
         projection,
         grants,
-        grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+        grantWalkSnapshot: snapshotForProjection(projection),
         wireHash,
       },
       approvals: new Set(grants),
@@ -2197,7 +2219,7 @@ describe("deployCodeSourcedWorkflow", () => {
       probeResult: {
         projection,
         grants,
-        grantWalkSnapshot: { perStep: [], grantRequirements: [] },
+        grantWalkSnapshot: snapshotForProjection(projection),
         wireHash,
       },
       approvals: new Set(grants),
