@@ -36,6 +36,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { deriveWorkflowRunId, isRunAddress } from "@intx/types";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
+  createApprovalSet,
   deriveRunAddress,
   deriveStepAddress,
   deriveStepAgentId,
@@ -178,7 +179,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         defaultSource: "anthropic:mock-model",
       };
 
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,

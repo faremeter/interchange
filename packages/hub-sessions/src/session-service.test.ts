@@ -16,7 +16,7 @@ import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { sessionAsset as sessionAssetTable } from "@intx/db/schema";
 import type { DB } from "@intx/db";
 import { generateId } from "@intx/hub-common";
-import { deriveRunAddress } from "@intx/workflow-deploy";
+import { createApprovalSet, deriveRunAddress } from "@intx/workflow-deploy";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AssetService } from "./asset-service";
@@ -1252,7 +1252,7 @@ describe("deployCodeSourcedWorkflow", () => {
         grantWalkSnapshot: snapshotForProjection(projection),
         wireHash,
       },
-      approvals: new Set(grants),
+      approvals: createApprovalSet(grants),
       persist: async () => ({ definitionId: "def-composed" }),
     });
     const closure: ToolPackageManifest = {
@@ -1657,7 +1657,7 @@ describe("deployCodeSourcedWorkflow", () => {
         grantWalkSnapshot: snapshotForProjection(projection),
         wireHash: await computeWireDefinitionHash(projection),
       },
-      approvals: new Set(grants),
+      approvals: createApprovalSet(grants),
       persist: async () => ({ definitionId: "def-composed" }),
     });
     if (!approval.ok) throw new Error("expected approval");
@@ -1840,7 +1840,7 @@ describe("deployCodeSourcedWorkflow", () => {
         grantWalkSnapshot: snapshotForProjection(projection),
         wireHash: await computeWireDefinitionHash(projection),
       },
-      approvals: new Set(grants),
+      approvals: createApprovalSet(grants),
       persist: async () => ({ definitionId: "def-composed-body" }),
     });
     if (!approval.ok) throw new Error("expected approval");
@@ -2089,7 +2089,7 @@ describe("deployCodeSourcedWorkflow", () => {
         grantWalkSnapshot: snapshotForProjection(projection),
         wireHash,
       },
-      approvals: new Set(grants),
+      approvals: createApprovalSet(grants),
       persist: async () => ({ definitionId: "def-composed-body" }),
     });
     const closure: ToolPackageManifest = {
@@ -2162,7 +2162,7 @@ describe("deployCodeSourcedWorkflow", () => {
         grantWalkSnapshot: snapshotForProjection(projection),
         wireHash,
       },
-      approvals: new Set(grants),
+      approvals: createApprovalSet(grants),
       persist: async () => ({ definitionId: "def-composed-loop-body" }),
     });
     const closure: ToolPackageManifest = {
@@ -2222,7 +2222,7 @@ describe("deployCodeSourcedWorkflow", () => {
         grantWalkSnapshot: snapshotForProjection(projection),
         wireHash,
       },
-      approvals: new Set(grants),
+      approvals: createApprovalSet(grants),
       persist: async () => ({ definitionId: "def-composed-empty-body" }),
     });
     const closure: ToolPackageManifest = {

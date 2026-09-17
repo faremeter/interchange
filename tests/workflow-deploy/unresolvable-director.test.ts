@@ -17,7 +17,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -119,7 +123,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The operator approves a broad surface so the deploy cannot fail on a
       // missing inference/mail/director grant: the only remaining rejection
       // vector is the unresolvable director ref the probe fails closed on.
-      const operatorApprovals: ApprovalSet = new Set<string>([
+      const operatorApprovals: ApprovalSet = createApprovalSet([
         "inference.source:anthropic:mock-model",
         "director:@intx/agent/default",
         `mail.address:${deploymentMailAddress}`,

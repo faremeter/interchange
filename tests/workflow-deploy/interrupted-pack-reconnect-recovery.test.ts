@@ -37,7 +37,11 @@ import {
 
 import { deriveWorkflowRunId, isRunAddress } from "@intx/types";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -178,7 +182,7 @@ async function deploySingleStepWorkflow(
     sources: [inferenceSource],
     defaultSource: "anthropic:mock-model",
   };
-  const operatorApprovals: ApprovalSet = new Set<string>([
+  const operatorApprovals: ApprovalSet = createApprovalSet([
     "inference.source:anthropic:mock-model",
     "director:@intx/agent/default",
     `mail.address:${deploymentMailAddress}`,

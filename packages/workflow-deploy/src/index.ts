@@ -22,6 +22,9 @@ export {
   type PluginToolDefinitions,
 } from "./capability-walk";
 export {
+  approvalItemsFromSet,
+  approvalSetFromItems,
+  createApprovalSet,
   createApprovalSetGate,
   createApprovalSourceGate,
   isApprovedGrantRequirement,

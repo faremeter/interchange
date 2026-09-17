@@ -42,7 +42,11 @@ import {
 import type { HarnessConfig } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
 import { generateId } from "@intx/hub-common";
-import { deriveRunAddress, type ApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  type ApprovalSet,
+} from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import {
   createTestDb,
@@ -249,7 +253,7 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
     }
     const reads = committedReadsToSourceTree(committed);
 
-    const operatorApprovals: ApprovalSet = new Set<string>([
+    const operatorApprovals: ApprovalSet = createApprovalSet([
       "inference.source:anthropic:mock-model",
       "director:@intx/agent/default",
       `mail.address:${deploymentMailAddress}`,

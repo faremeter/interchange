@@ -29,6 +29,7 @@ import {
   buildInertProjectionStepSources,
   WorkflowDefinitionInvalidError,
 } from "./orchestrator";
+import { createApprovalSet } from "./capability-approval";
 
 function projectionOf(def: Parameters<typeof projectLiveToInert>[0]) {
   const projection = WorkflowProjectionDefinition(
@@ -63,7 +64,7 @@ const CONFIG: HarnessConfig = {
 
 // The approved set a probe of an all-action definition produces: effect
 // grants only, no `inference.source:` entry, because no agent advertised one.
-const NO_SOURCE_APPROVALS = new Set<string>(["effect:fs:write"]);
+const NO_SOURCE_APPROVALS = createApprovalSet(["effect:fs:write"]);
 
 describe("buildInertProjectionStepSources (non-agent top-level steps)", () => {
   test("pins every step of an all-action definition to the default placeholder", () => {
@@ -193,7 +194,7 @@ describe("buildInertProjectionStepSources (non-agent top-level steps)", () => {
         defaultSource: DEFAULT_SOURCE.id,
       },
       // Only the agent's pair is approved. The default's is not.
-      operatorApprovals: new Set<string>([
+      operatorApprovals: createApprovalSet([
         `inference.source:${AGENT_SOURCE.provider}:${AGENT_SOURCE.model}`,
       ]),
     });

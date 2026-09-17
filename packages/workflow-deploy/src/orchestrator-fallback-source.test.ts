@@ -19,6 +19,7 @@ import {
   pickStepInferenceSource,
   WorkflowDefinitionInvalidError,
 } from "./orchestrator";
+import { createApprovalSet } from "./capability-approval";
 
 // The agent's first declared source, the `(provider, model)` preference the
 // deploy reads off the step agent and feeds the picker.
@@ -63,7 +64,7 @@ describe("pickStepInferenceSource (agent step)", () => {
     // (openai, default-model). This is the capability-walk-bypass shape: the
     // operator approved one (provider, model), the picker would otherwise
     // silently pin a different one.
-    const approvals = new Set<string>([
+    const approvals = createApprovalSet([
       "inference.source:anthropic:preferred-model",
     ]);
 
@@ -96,7 +97,7 @@ describe("pickStepInferenceSource (agent step)", () => {
     // defaultSource's (provider, model). The agent's preferred source does not
     // resolve against HarnessConfig.sources, so the picker legitimately falls
     // back to the default -- which is approved.
-    const approvals = new Set<string>([
+    const approvals = createApprovalSet([
       "inference.source:anthropic:preferred-model",
       "inference.source:openai:default-model",
     ]);
@@ -142,7 +143,7 @@ describe("pickStepInferenceSource (agent step)", () => {
     // The agent's preferred (provider, model) is approved AND resolves against
     // the deploy's HarnessConfig.sources -- the picker pins it directly without
     // consulting the default.
-    const approvals = new Set<string>([
+    const approvals = createApprovalSet([
       "inference.source:anthropic:preferred-model",
     ]);
 
@@ -174,19 +175,19 @@ describe("isSourceApproved", () => {
   };
 
   test("true when the source's provider:model is in the approved grant set", () => {
-    const approvals = new Set<string>(["inference.source:anthropic:claude"]);
+    const approvals = createApprovalSet(["inference.source:anthropic:claude"]);
     expect(isSourceApproved(source, approvals)).toBe(true);
   });
 
   test("false when the source's provider:model is not approved", () => {
-    const approvals = new Set<string>(["inference.source:openai:gpt"]);
+    const approvals = createApprovalSet(["inference.source:openai:gpt"]);
     expect(isSourceApproved(source, approvals)).toBe(false);
   });
 
   test("keys on the exact provider:model pair, not the source id", () => {
     // Approving the source id (not the provider:model grant shape) must not
     // admit the source -- the grant is keyed by (provider, model).
-    const approvals = new Set<string>(["inference.source:src-a"]);
+    const approvals = createApprovalSet(["inference.source:src-a"]);
     expect(isSourceApproved(source, approvals)).toBe(false);
   });
 });

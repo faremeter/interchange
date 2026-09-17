@@ -1,13 +1,14 @@
 // Assertion helpers shared by the deployed tool-invoke round-trips that run a
-// tool from a step BELOW the top rung (a `map` inner step inside a loop body, a
-// nested inner loop's body step).
+// tool from a step BELOW the top rung: a loop body step, a `map` inner step
+// inside a loop body, a nested inner loop's body step, a loop body inside a
+// spawned child workflow, and an `onTrigger` section body step.
 //
 // Those round-trips read the same three things out of a finished run: the run
 // grants a trigger must deliver, the text of every `tool_result` the agent saw,
-// and the failure events a run log carries. The pair of tests importing this
-// module assert on identical shapes, so the readers live here rather than as
-// per-file copies that could drift apart while claiming to prove the same
-// property at two different nesting depths.
+// and the failure events a run log carries. Every test importing this module
+// asserts on identical shapes, so the readers live here rather than as per-file
+// copies that could drift apart while claiming to prove the same property at
+// different nesting depths.
 
 import type { GrantEffect, GrantWalkSnapshot } from "@intx/types";
 import type { WireGrantRule } from "@intx/types/grant-wire";

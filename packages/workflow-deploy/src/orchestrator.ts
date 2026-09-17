@@ -77,7 +77,7 @@ export function isSourceApproved(
   source: InferenceSource,
   operatorApprovals: ApprovalSet,
 ): boolean {
-  return operatorApprovals.has(
+  return operatorApprovals.grants.has(
     `inference.source:${source.provider}:${source.model}`,
   );
 }

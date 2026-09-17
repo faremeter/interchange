@@ -19,6 +19,7 @@ import {
   buildInertProjectionStepSources,
   WorkflowDefinitionInvalidError,
 } from "./orchestrator";
+import { createApprovalSet } from "./capability-approval";
 
 function agent(id: string, model: string) {
   return defineAgent({
@@ -97,7 +98,9 @@ describe("buildInertProjectionStepSources (loop bodies)", () => {
     const sources = buildInertProjectionStepSources({
       projection: projectionOf(def),
       config: CONFIG,
-      operatorApprovals: new Set(["inference.source:anthropic:worker-model"]),
+      operatorApprovals: createApprovalSet([
+        "inference.source:anthropic:worker-model",
+      ]),
     });
 
     // The loop-body step is pinned (the recursion) -- without it, "turn" is
@@ -150,7 +153,7 @@ describe("buildInertProjectionStepSources (loop bodies)", () => {
       buildInertProjectionStepSources({
         projection: projectionOf(def),
         config: CONFIG,
-        operatorApprovals: new Set([
+        operatorApprovals: createApprovalSet([
           "inference.source:anthropic:worker-model",
           "inference.source:anthropic:other-model",
         ]),
@@ -172,7 +175,9 @@ describe("buildInertProjectionStepSources (loop bodies)", () => {
       buildInertProjectionStepSources({
         projection: raw,
         config: CONFIG,
-        operatorApprovals: new Set(["inference.source:anthropic:worker-model"]),
+        operatorApprovals: createApprovalSet([
+          "inference.source:anthropic:worker-model",
+        ]),
       }),
     ).toThrow(
       /step s1 is a step primitive but carries no valid agent\.modelSources/,

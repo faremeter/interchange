@@ -64,8 +64,10 @@ import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { defineWorkflow, projectLiveToInert, step } from "@intx/workflow";
 import {
+  createApprovalSet,
   deriveRunAddress,
   deriveWorkflowRunRepoId,
+  type ApprovalSet,
 } from "@intx/workflow-deploy";
 
 import { seedInferenceCredentials } from "../hub-agent/lib/deploy-flow-env";
@@ -114,7 +116,7 @@ async function makeApproveBundle(): Promise<{
     ok: true;
     definitionId: string;
     approvedWireHash: string;
-    approvedGrants: ReadonlySet<string>;
+    approvedSurface: ApprovalSet;
     projection: WorkflowProjectionDefinition;
   };
   projection: WorkflowProjectionDefinition;
@@ -147,7 +149,7 @@ async function makeApproveBundle(): Promise<{
       ok: true,
       definitionId: DEFINITION_ID,
       approvedWireHash,
-      approvedGrants: new Set<string>(),
+      approvedSurface: createApprovalSet([]),
       projection,
     },
     projection,

@@ -592,7 +592,10 @@ export type SourceRefPin = typeof SourceRefPin.infer;
  * frozen dependency closure the pin resolved to; `approvedWireHash` is the freeze
  * anchor; `approvedGrants` is the approved surface -- the walk's grant-shape
  * strings plus the definition's declared grant requirements, each an
- * `ApprovalItem` (rehydrated to a `Set` on the deploy hand-off). Per-step
+ * `ApprovalItem` (partitioned by kind into an `ApprovalSet` on the deploy
+ * hand-off, via `approvalSetFromItems`). The persisted form stays this flat
+ * list: rows written before the requirement kind existed hold plain strings,
+ * and a string is an `ApprovalItem`, so they still parse. Per-step
  * inference sources are deliberately NOT frozen
  * here -- they carry credential secrets and are re-resolved from the launch
  * spec's offering ids at deploy time.

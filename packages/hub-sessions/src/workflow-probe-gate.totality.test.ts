@@ -21,7 +21,7 @@ import { describe, test, expect } from "bun:test";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { GrantWalkSnapshot } from "@intx/types";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
-import type { ApprovalSet } from "@intx/workflow-deploy";
+import { createApprovalSet, type ApprovalSet } from "@intx/workflow-deploy";
 
 import {
   gateAndFreezeProbeResult,
@@ -124,7 +124,7 @@ describe("gateAndFreezeProbeResult grant-record totality", () => {
       loopBearingProjection(),
       snapshotFor(["lead"]),
     );
-    const approvals: ApprovalSet = new Set(probeResult.grants);
+    const approvals: ApprovalSet = createApprovalSet(probeResult.grants);
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
@@ -228,7 +228,7 @@ describe("gateAndFreezeProbeResult grant-record totality", () => {
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
       probeResult,
-      approvals: new Set<string>(),
+      approvals: createApprovalSet([]),
       persist: persistMustNotRun,
     });
 
@@ -242,7 +242,7 @@ describe("gateAndFreezeProbeResult grant-record totality", () => {
       loopBearingProjection(),
       snapshotFor(["lead", "spin"]),
     );
-    const approvals: ApprovalSet = new Set(probeResult.grants);
+    const approvals: ApprovalSet = createApprovalSet(probeResult.grants);
     const { persist, calls } = recordingPersist();
 
     const result = await gateAndFreezeProbeResult({

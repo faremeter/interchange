@@ -24,7 +24,7 @@ import { base64Decode } from "@intx/types";
 import type { DBExecutor } from "@intx/db";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
-import type { ApprovalSet } from "@intx/workflow-deploy";
+import { createApprovalSet, type ApprovalSet } from "@intx/workflow-deploy";
 
 import {
   gateAndFreezeProbeResult,
@@ -96,7 +96,7 @@ describe("gateAndFreezeProbeResult", () => {
     const probeResult = await makeProbeResult({
       shippedWireHash: "sha256:not-the-real-hash",
     });
-    const approvals: ApprovalSet = new Set(probeResult.grants);
+    const approvals: ApprovalSet = createApprovalSet(probeResult.grants);
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
@@ -122,7 +122,7 @@ describe("gateAndFreezeProbeResult", () => {
     });
     // The operator approved MORE than the workflow asked for. The freeze must
     // capture the workflow's advertised set, not the wider approval set.
-    const approvals: ApprovalSet = new Set([
+    const approvals: ApprovalSet = createApprovalSet([
       "tool:fetch",
       "effect:log",
       "tool:unused-extra",
@@ -144,10 +144,11 @@ describe("gateAndFreezeProbeResult", () => {
     if (!result.ok) throw new Error("expected approval");
     expect(result.definitionId).toBe("def-123");
     expect(result.approvedWireHash).toBe(expectedHash);
-    expect([...result.approvedGrants].sort()).toEqual([
+    expect([...result.approvedSurface.grants].sort()).toEqual([
       "effect:log",
       "tool:fetch",
     ]);
+    expect(result.approvedSurface.requirements).toEqual([]);
 
     // The freeze was written exactly once, carrying the recomputed hash and the
     // advertised set -- not the shipped hash blindly and not the wider approval
@@ -171,7 +172,7 @@ describe("gateAndFreezeProbeResult", () => {
     const probeResult = await makeProbeResult({
       grants: ["tool:fetch", "effect:log"],
     });
-    const approvals: ApprovalSet = new Set(probeResult.grants);
+    const approvals: ApprovalSet = createApprovalSet(probeResult.grants);
     const { persist } = recordingPersist("def-projection");
 
     const result = await gateAndFreezeProbeResult({
@@ -196,7 +197,10 @@ describe("gateAndFreezeProbeResult", () => {
       grants: ["tool:fetch", "effect:log", "tool:escalate"],
     });
     // The operator did not approve `tool:escalate`.
-    const approvals: ApprovalSet = new Set(["tool:fetch", "effect:log"]);
+    const approvals: ApprovalSet = createApprovalSet([
+      "tool:fetch",
+      "effect:log",
+    ]);
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
@@ -237,7 +241,7 @@ describe("gateAndFreezeProbeResult", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected approval");
     expect(result.approvedWireHash).toBe(expectedHash);
-    expect([...result.approvedGrants].sort()).toEqual([
+    expect([...result.approvedSurface.grants].sort()).toEqual([
       "effect:log",
       "tool:escalate",
       "tool:fetch",
@@ -374,7 +378,7 @@ describe("installAndApproveWorkflowDefinition", () => {
         pin: "@fixture/wf@1.0.0",
         entry: "./index.js",
         assetId,
-        approvals: new Set<string>() satisfies ApprovalSet,
+        approvals: createApprovalSet([]) satisfies ApprovalSet,
         router,
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- sendProbe throws before db is read
         db: {} as unknown as DBExecutor,
