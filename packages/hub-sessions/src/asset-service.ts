@@ -123,16 +123,20 @@ export type AssetServiceErrorReason =
   | "not_found"
   | "path_violation";
 
-// Asset names become the default workspace mountpath segment at
-// session start (`skills/<asset.name>/`). The mountpath segment
-// validator in applyAssetPack rejects anything outside a safe
-// character set; validate at the createAsset boundary so a bad name
-// fails at creation time rather than at materialization time. Names
-// must be lowercase-kebab: lowercase letters, digits, hyphens, with
-// no leading or trailing hyphen. Exported so a caller deriving a name
-// (the agent-fold materializer) asserts the shape at its own boundary
-// rather than discovering a violation three layers in as a generic
-// `invalid_name`.
+// An asset name becomes a workspace mountpath segment for the asset
+// kinds a session actually mounts: a tool-package registry mounts at
+// `package-registries/<asset.name>/`. A skill is an asset kind too,
+// and its `SKILL.md` frontmatter is validated on push and indexed
+// under the pushed ref, but nothing consumes that index and no
+// session path mounts a skill asset into an agent workspace. A skill
+// asset is therefore recorded and validated, not materialized and not
+// executed. The mountpath segment validator in applyAssetPack
+// rejects anything outside a safe character set; validate at the
+// createAsset boundary so a bad name fails at creation time rather
+// than at materialization time. Names must be lowercase-kebab:
+// lowercase letters, digits, hyphens, with no leading or trailing
+// hyphen. The sole enforcement site is the createAsset check below,
+// which rejects a bad name as `invalid_name`.
 export const ASSET_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export class AssetServiceError extends Error {

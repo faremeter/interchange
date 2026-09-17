@@ -25,16 +25,42 @@ Public surface:
 - `walkCapabilities(workflow, registry, pluginDefs)` — the pure
   capability walk; reused to populate per-step capability declarations
   and as the input to the approval gate.
+- `createApprovalSet(grants, requirements)` — the edge of the approval
+  vocabulary. An `ApprovalSet` is one approved surface behind one operator
+  decision, carrying the two kinds of approved item in two fields:
+  `grants`, a `Set` of the grant-shape strings the walk surfaces, and
+  `requirements`, the `GrantRequirement` records a definition declares.
+  The fields are separate because the two membership tests are different
+  operations — a string is found by `Set.has`, a record only by structural
+  comparison — so each kind sits beside the test that can answer for it.
+  Every requirement is validated here, which is what lets the comparison
+  below use `node:util`'s `isDeepStrictEqual` safely: that predicate treats
+  a present-but-undefined optional key as different from an absent one, and
+  `GrantRequirement` admits an object or `null` for `conditions`, never
+  `undefined`, so such a record is rejected loudly at construction instead
+  of silently failing to match at the gate.
+- `approvalSetFromItems(items)` / `approvalItemsFromSet(approvals)` — the
+  boundary between the in-memory `ApprovalSet` and the flat `ApprovalItem`
+  list a freeze persists (`FrozenApprovalBundle.approvedGrants`). The
+  persisted form stays flat and the in-memory form does not, because the two
+  owe different things: a stored row owes compatibility to rows already
+  written, and a flat array is append-friendly and order-independent, while
+  the code reading it owes itself a shape where each kind sits beside its own
+  membership test. `approvalSetFromItems` partitions by kind and routes the
+  requirement half through `createApprovalSet`, so a rehydrated record gets
+  the same parse a freshly-built one does.
 - `createApprovalSetGate(approvals)` / `createApprovalSourceGate(source)`
-  — operator-approval gating against a flat `ApprovalSet` or an async
-  source. An `ApprovalSet` holds typed approval items: the grant-shape
-  strings the walk surfaces, and the `GrantRequirement` records a
-  definition declares.
+  — operator-approval gating against an `ApprovalSet` or an async
+  source. Both gates check only `grants`, because the walk never surfaces
+  a requirement. The requirement half is gated by
+  `gateAndFreezeProbeResult` in `@intx/hub-sessions` — the code-sourced
+  path is where a declared requirement arrives, outside the wire-hash
+  preimage the walk covers.
 - `isApprovedGrantRequirement(approvals, requirement)` — whether the
   operator approved a declared requirement, compared as a whole record
-  (`source`, `resource`, `action`, `effect`, `conditions`). A requirement
-  is multi-axis and has no grant-string form, so the comparison is
-  structural.
+  (`source`, `resource`, `action`, `effect`, `conditions`) against
+  `approvals.requirements`. A requirement is multi-axis and has no
+  grant-string form, so the comparison is structural.
 - `pickStepInferenceSource(...)` / `pinInertStepSources(...)` /
   `buildInertProjectionStepSources(...)` / `buildInertBodyStepSources(...)`
   — resolve each step's inference source against the operator-approved
@@ -64,6 +90,13 @@ Public surface:
   the inert representation states its descent rule in one place too. Pair it
   with `walkStepTree` to walk an inert projection under any descent;
   `inertFlatNamespaceStepIds` is that pairing at `LOOP_BODY_DESCENT`.
+  It dispatches through a table keyed by `Primitive["kind"]` — the same union
+  the live reader's `never` assignment guards — so a body-bearing primitive
+  added to one reader and forgotten in the other is a compile error rather
+  than a container that silently reads as a leaf. A step whose kind is outside
+  that closed set throws, as does a container kind carrying neither an inline
+  body nor a `{ ref }`; a `{ ref }` body yields nothing, because the
+  referenced asset is deployed and walked on its own.
 - `deriveRunAddress` / `deriveStepAddress` / `resolveStepAddress` /
   `deriveRunAgentId` / `deriveStepAgentId` / `deriveWorkflowRunRepoId`
   — the pure address and id derivation helpers.

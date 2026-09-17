@@ -182,7 +182,11 @@ export interface ChildWiring {
 export interface RecycleContext {
   /** The supervisor's full bindings, reused on respawn for credentials and spawn. */
   readonly bindings: WorkflowSupervisorBindings;
-  /** Step ids in this deployment's `stepOrder` for credentials re-assembly. */
+  /**
+   * Every step id in this deployment's flat step-id namespace -- the
+   * definition's own `stepOrder` plus the step ids of every `loop` body it
+   * carries -- for credentials re-assembly.
+   */
   readonly stepOrder: readonly string[];
   /** Definition hash carried on respawn env (unchanged across recycle). */
   readonly definitionHash: string;
