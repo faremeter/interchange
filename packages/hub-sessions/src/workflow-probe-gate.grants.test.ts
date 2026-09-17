@@ -171,16 +171,21 @@ describe("gateAndFreezeProbeResult declared grant requirements", () => {
     const approvals: ApprovalSet = createApprovalSet(["tool:fetch"]);
     const { persist, calls } = recordingPersist("def-no-freeze");
 
-    await gateAndFreezeProbeResult({
+    const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
       probeResult,
       approvals,
       persist,
     });
 
-    for (const frozen of calls) {
-      expect(frozen.grantSnapshot.grantRequirements).toEqual([]);
-    }
+    // Assert the rejection itself, not only that nothing was frozen. A gate
+    // that approved both forged requirements and merely dropped them from the
+    // snapshot would satisfy an is-the-freeze-empty check while failing open,
+    // which is the direction this suite exists to close.
+    expect(result.ok).toBe(false);
+    expect(mentions(result, FORGED_WILDCARD)).toBe(true);
+    expect(mentions(result, FORGED_NAMED)).toBe(true);
+    expect(calls).toEqual([]);
   });
 
   test("approve-probed accounts for the declared requirements in the approval it returns", async () => {
