@@ -251,6 +251,19 @@
         "@intx/types": "workspace:*",
       },
     },
+    "examples/workflow-quickstart": {
+      "name": "@intx/example-workflow-quickstart",
+      "version": "0.3.0",
+      "dependencies": {
+        "@intx/agent": "workspace:*",
+        "@intx/example-agent-common": "workspace:*",
+        "@intx/inference": "workspace:*",
+        "@intx/storage-isogit": "workspace:*",
+        "@intx/types": "workspace:*",
+        "@intx/workflow": "workspace:*",
+        "arktype": "catalog:",
+      },
+    },
     "packages/agent": {
       "name": "@intx/agent",
       "version": "0.3.0",
@@ -924,6 +937,8 @@
     "@intx/example-posix-demo": ["@intx/example-posix-demo@workspace:examples/posix-demo"],
 
     "@intx/example-ring-demo": ["@intx/example-ring-demo@workspace:examples/ring-demo"],
+
+    "@intx/example-workflow-quickstart": ["@intx/example-workflow-quickstart@workspace:examples/workflow-quickstart"],
 
     "@intx/harness": ["@intx/harness@workspace:packages/harness"],
 

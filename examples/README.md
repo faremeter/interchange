@@ -7,12 +7,12 @@ just like packages and apps — they are not throwaway scratch code,
 and they are expected to keep working as the packages they consume
 evolve.
 
-Most examples here target `@intx/agent`; `agent-gemini-image` is the
-exception — it uses `@intx/inference`'s `runInference` directly because
-`image_output` is a streaming shape the higher-level `agent.send()`
-await does not surface. Shared boilerplate lives in
-[`agent-common`](./agent-common/README.md), which is not itself a
-runnable example. Start with
+Most examples here target `@intx/agent`; `workflow-quickstart` targets
+`@intx/workflow`, and `agent-gemini-image` uses `@intx/inference`'s
+`runInference` directly because `image_output` is a streaming shape the
+higher-level `agent.send()` await does not surface. Shared boilerplate
+lives in [`agent-common`](./agent-common/README.md), which is not itself
+a runnable example. Start with
 [`agent-quickstart`](./agent-quickstart/README.md); the rest layer one
 concept on top of that baseline.
 
@@ -62,6 +62,17 @@ without overwhelming the conversation or the model.
   `gemini-2.5-flash-image` asking for both text and image modalities,
   then consume the streaming `inference.image_output` event via
   `runInference`, writing the returned image bytes to disk.
+
+## Workflows
+
+One agent is a conversation; a workflow is a DAG of steps the runtime
+schedules, checkpoints, and can resume after a crash.
+
+- [`workflow-quickstart`](./workflow-quickstart/README.md) — the
+  smallest complete `@intx/workflow` package. A bounded `loop` whose
+  body is an agent step with a tool, an `action` performing a
+  capability-checked effect, and the `interchange.*` manifest fields a
+  host reads to run any of it. Run in-process with `runLocal`.
 
 ## Full integration
 
