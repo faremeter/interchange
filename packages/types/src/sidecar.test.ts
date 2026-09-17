@@ -5,6 +5,7 @@ import {
   AgentDeployFrame,
   CredentialsUpdateFrame,
   DeployApplyErrorCategory,
+  FrozenApprovalBundle,
   HubFrame,
   MAX_AGENT_ADDRESSES_FRAME,
   MAX_CACHED_SENDER_ADDRESSES_FRAME,
@@ -749,5 +750,68 @@ describe("SenderKeyEvictFrame", () => {
   test("rejects a frame with no address", () => {
     const out = SenderKeyEvictFrame({ type: "sender.key.evict" });
     expect(out instanceof type.errors).toBe(true);
+  });
+});
+
+// `FrozenApprovalBundle` is asserted against a persisted jsonb column
+// (`parseWorkflowRunLaunchSpecRow`, packages/db/src/parse-row.ts), so a row
+// written by an older build must keep parsing. `approvedGrants` widened from
+// `string[]` to `ApprovalItem[]`; nothing else in the suite holds a row from
+// before that widening, so this block is the only place the compatibility
+// claim is checked.
+describe("FrozenApprovalBundle approvedGrants", () => {
+  const bundle = {
+    source: {
+      kind: "registry",
+      registry: "npm",
+      package: { packageName: "p", version: "1.0.0" },
+    },
+    entry: "./src/workflow.ts",
+    projection: {
+      id: "w",
+      stepOrder: ["a"],
+      steps: { a: { kind: "step", id: "a" } },
+      triggers: [],
+    },
+    closure: { schemaVersion: "1", topLevel: [], entries: [] },
+    approvedWireHash: "deadbeef",
+  };
+
+  test("a row written before the requirement kind existed still parses", () => {
+    const parsed = FrozenApprovalBundle({
+      ...bundle,
+      approvedGrants: ["tool:x", "inference.source:anthropic:m"],
+    });
+    if (parsed instanceof type.errors) {
+      throw new Error(`legacy row rejected: ${parsed.summary}`);
+    }
+    expect(parsed.approvedGrants).toEqual([
+      "tool:x",
+      "inference.source:anthropic:m",
+    ]);
+  });
+
+  test("a row mixing grant strings and requirement records parses", () => {
+    const requirement = {
+      resource: "tool:*",
+      action: "invoke",
+      source: "creator",
+    } as const;
+    const parsed = FrozenApprovalBundle({
+      ...bundle,
+      approvedGrants: ["tool:x", requirement],
+    });
+    if (parsed instanceof type.errors) {
+      throw new Error(`mixed row rejected: ${parsed.summary}`);
+    }
+    expect(parsed.approvedGrants).toEqual(["tool:x", requirement]);
+  });
+
+  test("an entry that is neither a grant string nor a requirement is refused", () => {
+    const parsed = FrozenApprovalBundle({
+      ...bundle,
+      approvedGrants: [{ resource: "tool:*" }],
+    });
+    expect(parsed instanceof type.errors).toBe(true);
   });
 });
