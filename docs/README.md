@@ -37,6 +37,10 @@ see [`LAYOUT.md`](../LAYOUT.md).
   client views.
 - [`SIDECAR_PLACEMENT.md`](./SIDECAR_PLACEMENT.md) — capability-based
   workflow placement and provisioner selection.
+- [`WORKFLOW_AUTHORING.md`](./WORKFLOW_AUTHORING.md) — skeleton for the
+  workflow authoring guide. An enumeration of the facts an author must
+  know to write and deploy a workflow, each naming the symbol that is
+  currently its home in the source tree. Not yet a written guide.
 
 ## HTTP API
 
