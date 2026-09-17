@@ -296,6 +296,11 @@ export function walkNestedWorkflowSteps(
  * different bodies may legitimately share an id and appear here once. A
  * consumer that must keep those apart walks with an explicit descent and reads
  * each entry's `tree` instead.
+ *
+ * Exported for consumers that want the id set alone. Nothing in this repository
+ * calls it: the deploy gate needs each step's ancestor chain and the sidecar
+ * needs a specific descent, so both walk directly rather than through this
+ * convenience.
  */
 export function executableStepIds(
   definition: WorkflowDefinition,
