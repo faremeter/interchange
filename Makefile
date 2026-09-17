@@ -51,7 +51,7 @@ test: test-unit test-workflow test-core
 # @intx/* import cost (with --parallel's default per-file isolation every
 # file re-imports the whole module graph, which is slower than serial).
 test-unit: FORCE
-	$(BUN) test --parallel=$(UNIT_PARALLEL) --no-isolate packages/ apps/ bin/ tests/agent/ tests/agent-audit-log/ tests/agent-blob-spill/ tests/agent-common/ tests/agent-multi-provider/ tests/agent-quickstart/ tests/agent-resume/ tests/agent-rewind/ tests/agent-rich-tool/ tests/agent-structured-payload/ tests/coding-agent/ tests/hub-agent/lib/ tests/inference-testing/ tests/tool-packaging/ tests/workflow/
+	$(BUN) test --parallel=$(UNIT_PARALLEL) --no-isolate packages/ apps/ bin/ tests/agent/ tests/agent-audit-log/ tests/agent-blob-spill/ tests/agent-common/ tests/agent-multi-provider/ tests/agent-quickstart/ tests/agent-resume/ tests/agent-rewind/ tests/agent-rich-tool/ tests/agent-structured-payload/ tests/coding-agent/ tests/hub-agent/lib/ tests/inference-testing/ tests/tool-packaging/ tests/workflow/ tests/workflow-quickstart/
 
 # The workflow-deploy integration pass: spawns real hub/sidecar processes
 # and drives real agents, so it needs the extended timeout. Split from the

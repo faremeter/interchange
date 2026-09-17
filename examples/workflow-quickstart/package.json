@@ -1,0 +1,31 @@
+{
+  "name": "@intx/example-workflow-quickstart",
+  "description": "Example: author and ship a @intx/workflow workflow — a loop whose body calls a tool, then an action",
+  "version": "0.3.0",
+  "license": "LGPL-2.1-only",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "interchange": {
+    "workflow": "./src/workflow.ts",
+    "loops": "./src/loops.ts",
+    "actions": "./src/actions.ts"
+  },
+  "scripts": {
+    "start": "bun --conditions=intx-src run src/cli.ts"
+  },
+  "dependencies": {
+    "@intx/agent": "workspace:*",
+    "@intx/example-agent-common": "workspace:*",
+    "@intx/inference": "workspace:*",
+    "@intx/storage-isogit": "workspace:*",
+    "@intx/types": "workspace:*",
+    "@intx/workflow": "workspace:*",
+    "arktype": "catalog:"
+  }
+}
