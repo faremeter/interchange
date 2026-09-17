@@ -2137,17 +2137,18 @@ async function runLoop(
     currentInput = carryFn(output, currentInput);
   }
 
-  await routeLoopOutcome(definition, env, runId, primitive, outcome, abort);
   if (lastIteration === undefined) {
     // Unreachable through `loop()`, which rejects a non-positive
     // maxIterations, so every settle follows at least one iteration --
     // replayed or driven. A definition that reached here by another road
     // has no last iteration to report; fail loud rather than publish a
-    // `final` the loop never produced.
+    // `final` the loop never produced. Checked BEFORE the route so the
+    // throw cannot leave one branch of the loop's dependents pruned.
     throw new Error(
       `loop ${primitive.id} settled ${outcome} without running an iteration`,
     );
   }
+  await routeLoopOutcome(definition, env, runId, primitive, outcome, abort);
   const output = {
     outcome,
     iterations,
