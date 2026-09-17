@@ -13,7 +13,7 @@ A definition contains:
 **Skills**
 Executable capabilities that define what the agent can do. Under the intended model the local harness executes a skill and handles interaction with the local environment on behalf of it.
 
-Authoring and delivery are built; execution is not. A skill is a hub-side asset whose `SKILL.md` frontmatter is validated and indexed when it is pushed, and the sidecar materializes an agent's attached skill assets as plain files under its workspace at `skills/<name>/`. Nothing loads or runs a materialized skill, and no harness component reads the skill index, so attaching a skill does not yet give an agent a capability it would otherwise lack.
+Authoring is built; materialization and execution are not. A skill is a hub-side asset kind: its `SKILL.md` frontmatter is validated on push and indexed under the pushed ref. Nothing consumes that index — `getSkillIndex` has no caller outside its own tests. No session path mounts a skill asset into an agent workspace either; the only asset mounts a session produces are tool-package registries and workflow source assets. Pushing a skill therefore records and validates it, and gives an agent no capability it would otherwise lack.
 
 **System Prompt**
 The agent's identity and behavioral instructions. Defines the persona, goals, and constraints that guide the agent's reasoning.

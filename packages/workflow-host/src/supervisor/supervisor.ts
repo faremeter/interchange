@@ -338,7 +338,11 @@ export interface WorkflowSupervisor {
 }
 
 export type SpawnOpts = {
-  /** Step ids in this deployment's `stepOrder` for credentials assembly. */
+  /**
+   * Every step id in this deployment's flat step-id namespace -- the
+   * definition's own `stepOrder` plus the step ids of every `loop` body it
+   * carries -- for credentials assembly.
+   */
   stepOrder: readonly string[];
   /** Content hash of the deployment's workflow definition. */
   definitionHash: string;
