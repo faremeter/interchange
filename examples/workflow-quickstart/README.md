@@ -205,8 +205,12 @@ each call site declares its own, as `allowAll` does here.
 ## Testing a workflow
 
 The test lives in [`tests/workflow-quickstart/`](../../tests/workflow-quickstart/),
-not here — every example in this repository pairs with a directory under
-`tests/` that the `Makefile`'s `test-unit` target enumerates by name.
+not here. Most examples in this repository follow that convention: the
+example's tests go in a `tests/<example-name>/` directory that the
+`Makefile`'s `test-unit` target enumerates by name. Follow it for a new
+example too, because a test file left under `examples/` runs in no pass and
+nothing reports the omission — `bin/check-test-enumeration.ts` only looks at
+`packages/` and `tests/`.
 
 It drives `main()` with a scripted inference source, so the loop, the
 tool call and the action all execute with no network. One assertion in
