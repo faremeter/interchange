@@ -17,7 +17,7 @@ import type {
   AuthorizeContext,
   WorkflowAuthorizeFn,
 } from "../authorize-context";
-import type { WorkflowDefinition } from "../definition/index";
+import type { ActionHandler, WorkflowDefinition } from "../definition/index";
 import {
   enumerateInlineLoopBodies,
   rewriteInlineChildWorkflowBodies,
@@ -28,7 +28,6 @@ import { createEffectContext } from "../runtime/effect-context";
 import { createLoopIterationHandle } from "../runtime/loop-iteration-handle";
 import type {
   ActionInvoker,
-  EffectContext,
   EffectLedger,
   LoopFnRegistry,
   StepInvoker,
@@ -259,18 +258,6 @@ function createDefaultStepInvoker(authorize: WorkflowAuthorizeFn): StepInvoker {
     return { output: null };
   };
 }
-
-/**
- * An action handler: deterministic host TypeScript that performs its
- * external effects through the capability- and ledger-checked
- * `EffectContext`. The default action invoker resolves a handler ref to
- * one of these.
- */
-export type ActionHandler = (
-  input: unknown,
-  ctx: EffectContext,
-  signal: AbortSignal,
-) => Promise<unknown>;
 
 /**
  * Default action invoker. Resolves the handler ref, builds an

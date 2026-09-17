@@ -24,6 +24,7 @@ export {
   step,
   stepTriggerBudget,
   validateRetryTriggerCombination,
+  type ActionHandler,
   type ActionOpts,
   type ActionPrimitive,
   type AwaitSignalOpts,

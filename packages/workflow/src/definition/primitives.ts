@@ -21,6 +21,11 @@
 import type { AgentDefinition, BaseEnv } from "@intx/agent";
 import type { Type } from "arktype";
 
+// Type-only import: an action handler's `ctx` parameter is the runtime's
+// EffectContext. This is a type-level cycle (runtime/env.ts imports
+// Primitive from here), erased at runtime by `import type`, so there is
+// no runtime import cycle.
+import type { EffectContext } from "../runtime/env";
 import type { Selector } from "./selectors";
 // Type-only import: a loop or onTrigger body is a full WorkflowDefinition.
 // This is a type-level cycle (workflow.ts imports Primitive from here),
@@ -210,6 +215,28 @@ export interface ActionPrimitive extends PrimitiveBase {
   /** See {@link StepPrimitive.onFailure}. */
   onFailure?: string;
 }
+
+/**
+ * An action handler: deterministic host TypeScript that performs its
+ * external effects through the capability- and ledger-checked
+ * `EffectContext`. This is the signature an author's handler must satisfy;
+ * the host's `invokeAction` resolves an {@link ActionPrimitive.handler} ref
+ * to one of these.
+ *
+ * A deployed handler is a BARE MODULE EXPORT of the module named by the
+ * package's `interchange.actions` field, resolved by export name. It
+ * receives exactly these three parameters and nothing else: no injected
+ * services, and no opportunity to close over host configuration, because
+ * nothing in the deployment constructs it. `ctx` carries one method,
+ * `perform`. Per-deployment configuration must therefore arrive through
+ * `input`, which in practice means the author selects it out of the
+ * trigger payload via the action's {@link ActionPrimitive.input} selector.
+ */
+export type ActionHandler = (
+  input: unknown,
+  ctx: EffectContext,
+  signal: AbortSignal,
+) => Promise<unknown>;
 
 /**
  * Bounded rework loop. Each iteration is a separate child run of `body`
