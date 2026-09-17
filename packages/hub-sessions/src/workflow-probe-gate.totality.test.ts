@@ -10,11 +10,15 @@
 // of the work.
 //
 // The walk folds a nested body's grants into the record of the top-level step
-// that carries the body, so a top-level record covers that step's whole
-// executable subtree. These tests exercise both directions: a deployment whose
-// snapshot is missing a record is refused and names the affected steps, and
-// well-formed deployments carrying tool-bearing loop and onTrigger bodies still
-// pass.
+// that carries the body, so the gate looks for one record per top-level step
+// an executable step descends from. What the gate checks is PRESENCE of that
+// record, not its contents: it never opens a record to confirm the grants
+// inside actually cover the steps beneath it, so these tests bound the same
+// thing and no more. They exercise both directions of the presence check: a
+// deployment whose snapshot is missing a record is refused and names the
+// affected steps, and well-formed deployments carrying tool-bearing loop and
+// onTrigger bodies still pass. A record that is present but under-filled is
+// outside what either the gate or these tests detect.
 
 import { describe, test, expect } from "bun:test";
 
