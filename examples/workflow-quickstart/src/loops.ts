@@ -21,27 +21,20 @@ import { BodyOutput, RevisionPass } from "./revision-pass";
 import { countWords } from "./word-count-tool";
 
 /**
- * The loop's `while`: keep going while the tagline this pass STARTED with
- * is still longer than the target.
+ * The loop's `while`: keep going while the tagline this pass PRODUCED is
+ * still longer than the target.
  *
- * Note which argument it reads. `LoopFn` is called as
- * `while(iterationOutput, iterationInput)`, and judging the iteration's
- * OUTPUT reads more naturally -- but the loop's own step output is
- * `{ outcome, iterations, carry }`, where `carry` is the converging
- * iteration's INPUT and the converging iteration's output is not exposed
- * at all. A `while` that judged the output would therefore converge on a
- * value no downstream step can read. Judging the carry state is what makes
- * `steps.revise.output.carry` the accepted tagline, which is what the
- * `publish` action consumes.
- *
- * The cost is one extra pass: the loop is a do-while, so the pass that
- * produces the accepted tagline is followed by one more pass that confirms
- * it. The body agent's system prompt tells it to return an already-short
- * tagline unchanged, so that confirming pass is cheap.
+ * `LoopFn` is called as `while(iterationOutput, iterationInput)`, so the
+ * pass's result is the first argument and the state it worked from is the
+ * second. The loop settles the moment this returns false, and the
+ * iteration it judged is the one the loop's step output reports as
+ * `final` -- so the accepted tagline is
+ * `steps.revise.output.final.shorten.reply` downstream.
  */
-export const stillTooLong: LoopFn = (_iterationOutput, carryState) => {
+export const stillTooLong: LoopFn = (iterationOutput, carryState) => {
+  const output = BodyOutput.assert(iterationOutput);
   const pass = RevisionPass.assert(carryState);
-  return countWords(pass.tagline) > pass.maxWords;
+  return countWords(output.shorten.reply) > pass.maxWords;
 };
 
 /**
@@ -49,6 +42,11 @@ export const stillTooLong: LoopFn = (_iterationOutput, carryState) => {
  * Everything else about the pass (the target length, the publish
  * destination) is threaded through unchanged -- the carry state is the
  * only channel a loop iteration has to the next one.
+ *
+ * It does not run on the converging pass: `while` goes false first and the
+ * loop settles. `steps.revise.output.carry` is therefore the state the
+ * converging pass STARTED from, which is where `publish` reads the
+ * destination while it reads the tagline from `final`.
  */
 export const nextPass: LoopFn = (iterationOutput, carryState) => {
   const pass = RevisionPass.assert(carryState);

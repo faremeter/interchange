@@ -43,7 +43,7 @@ const SOURCE: InferenceSource = {
 /** Twelve words; twice the target. */
 const SEED =
   "The only project management tool your growing startup will ever truly need";
-/** Exactly `MAX_WORDS` words, so the pass after this one converges. */
+/** Exactly `MAX_WORDS` words, so the pass that produces it converges. */
 const ACCEPTED = "Project management your startup will love";
 
 /**
@@ -131,15 +131,11 @@ describe("workflow-quickstart CLI", () => {
   });
 
   test("revises in a loop, then publishes the accepted tagline", async () => {
-    // Pass 0: measure the seed, then answer with a shorter tagline.
+    // Pass 0: measure the seed, then answer with a shorter tagline. `while`
+    // judges that answer, sees it already fits, and converges -- so this is
+    // the only pass, and its output is the loop's `final`.
     harness.scenario.replyOnce("anthropic", {
       toolCalls: [{ name: WORD_COUNT_TOOL, args: { text: SEED } }],
-    });
-    harness.scenario.replyOnce("anthropic", { text: ACCEPTED });
-    // Pass 1: measure again; it already fits, so answer unchanged. `while`
-    // then sees a carry state that is short enough and converges.
-    harness.scenario.replyOnce("anthropic", {
-      toolCalls: [{ name: WORD_COUNT_TOOL, args: { text: ACCEPTED } }],
     });
     harness.scenario.replyOnce("anthropic", { text: ACCEPTED });
 
@@ -152,7 +148,7 @@ describe("workflow-quickstart CLI", () => {
 
     expect(stdoutBuf).toContain("completed");
     expect(stdoutBuf).toContain('"outcome":"converged"');
-    expect(stdoutBuf).toContain('"iterations":2');
+    expect(stdoutBuf).toContain('"iterations":1');
 
     // The publish action's effect ran: it wrote the accepted tagline.
     expect(readFileSync(outputPath, "utf8")).toBe(`${ACCEPTED}\n`);
@@ -163,10 +159,7 @@ describe("workflow-quickstart CLI", () => {
     // The tool inside the loop body was actually invoked, once per pass,
     // and returned the real counts rather than a refusal.
     const texts = await toolResultTexts(harness.scenario.matchedRequests());
-    expect(texts).toEqual([
-      String(countWords(SEED)),
-      String(countWords(ACCEPTED)),
-    ]);
+    expect(texts).toEqual([String(countWords(SEED))]);
   });
 
   test("an empty tagline returns exit code 1 with a usage message", async () => {

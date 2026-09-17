@@ -78,8 +78,20 @@ export const workflow = defineWorkflow({
     }),
     publish: action({
       handler: "publishTagline",
-      // The loop's step output is `{ outcome, iterations, carry }`.
-      input: { from: "steps.revise.output.carry" },
+      // The loop's step output is `{ outcome, iterations, carry, final }`:
+      // `final` is the converging pass's output, and `carry` is the state
+      // that pass started from. The accepted tagline comes from the first
+      // and the destination from the second, so the input is assembled
+      // from both.
+      input: {
+        merge: [
+          {
+            project: { from: "steps.revise.output.carry" },
+            fields: ["outputPath"],
+          },
+          { from: "steps.revise.output.final.shorten" },
+        ],
+      },
       // The capability floor for this action's effects. `ctx.perform`
       // refuses any capability not listed here.
       effect: { requires: ["fs:write"] },

@@ -29,19 +29,23 @@ import { type } from "arktype";
 import type { ActionHandler } from "@intx/workflow";
 
 /**
- * What the `publish` action reads: the loop's carry state, which the
- * definition selects with `{ from: "steps.revise.output.carry" }`.
- * Actions get no default-input convention -- an action with no `input`
- * selector receives nothing -- so the selector is always explicit.
+ * What the `publish` action reads: the converging pass's tagline and the
+ * destination, which the definition merges out of the loop's `final` and
+ * `carry`. `reply` is the body step's own key -- a loop iteration's output
+ * is the body's per-step record, so the agent's answer arrives under the
+ * step that produced it. Actions get no default-input convention -- an
+ * action with no `input` selector receives nothing -- so the selector is
+ * always explicit.
  */
 const PublishRequest = type({
-  tagline: "string",
+  reply: "string",
   outputPath: "string",
   "+": "ignore",
 });
 
 export const publishTagline: ActionHandler = async (input, ctx) => {
   const request = PublishRequest.assert(input);
+  const tagline = request.reply.trim();
   await ctx.perform({
     effectId: `write:${request.outputPath}`,
     // Refused unless the action's `effect.requires` lists it. The
@@ -50,9 +54,9 @@ export const publishTagline: ActionHandler = async (input, ctx) => {
     // approve.
     capability: "fs:write",
     run: async () => {
-      await writeFile(request.outputPath, `${request.tagline}\n`, "utf8");
+      await writeFile(request.outputPath, `${tagline}\n`, "utf8");
       return null;
     },
   });
-  return { published: request.tagline, path: request.outputPath };
+  return { published: tagline, path: request.outputPath };
 };

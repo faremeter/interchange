@@ -227,6 +227,26 @@ export interface ActionPrimitive extends PrimitiveBase {
  * `awaitSignal` and resume, may spawn a `childWorkflow` grandchild, and
  * may contain a nested `loop` (bounded depth), but may not contain a
  * `sleep` or `onTrigger` (all enforced at definition time).
+ *
+ * The loop step's own output -- what `steps.<loopId>.output` selects -- is
+ * `{ outcome, iterations, carry, final }`:
+ *
+ * - `outcome` is `"converged"` or `"exhausted"`, the arm the loop routed to.
+ * - `iterations` is how many iterations ran.
+ * - `carry` is the LAST iteration's INPUT. The loop settles the instant
+ *   `while` goes false, before `carry` runs on that iteration, so this is
+ *   the state the converging iteration worked from, not a state derived
+ *   from its result.
+ * - `final` is the LAST iteration's OUTPUT -- the body's per-step output
+ *   record, keyed by step id, exactly as `while` received it. This is where
+ *   a `while` that judges the iteration output leaves its answer; the
+ *   scoped iteration step ids are not selector paths.
+ *
+ * That record is persisted inline on the loop's `StepCompleted`, and a run
+ * that crashes after the loop settles replays the persisted value rather
+ * than recomputing it. Keys may therefore be ADDED to it but never renamed
+ * or removed: a resumed run whose log predates a rename fails on the
+ * missing key.
  */
 export interface LoopPrimitive extends PrimitiveBase {
   kind: "loop";
