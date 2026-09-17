@@ -1744,7 +1744,7 @@ export async function deployWorkflowSourceForTest(
 
   const approvals =
     opts.approvals === "approve-probed"
-      ? ({ mode: "approve-probed" } as const)
+      ? ({ kind: "approve-probed" } as const)
       : opts.approvals;
 
   const allocationTarget = env.hub.prepareAllocationIdentity(

@@ -230,7 +230,7 @@ describe("gateAndFreezeProbeResult", () => {
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
       probeResult,
-      approvals: { mode: "approve-probed" },
+      approvals: { kind: "approve-probed" },
       persist,
     });
 
@@ -269,7 +269,7 @@ describe("gateAndFreezeProbeResult", () => {
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
       probeResult,
-      approvals: { mode: "approve-probed" },
+      approvals: { kind: "approve-probed" },
       persist: persistMustNotRun,
     });
 

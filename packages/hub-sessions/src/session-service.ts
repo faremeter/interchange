@@ -1329,7 +1329,7 @@ export function createSessionService(
     const common = {
       entry: params.entry,
       assetId: params.definitionAssetId,
-      approvals: { mode: "approve-probed" } as const,
+      approvals: { kind: "approve-probed" } as const,
       router: {
         sendProbe: (args: SendProbeArgs) =>
           requireAllocationRouter().sendProbeToAllocation(

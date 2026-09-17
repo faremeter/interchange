@@ -259,7 +259,7 @@ export function createDbFrozenApprovalWriter(
  * declared surface. It does NOT relax tamper-evidence -- the wire-hash check
  * still runs and can still fail closed.
  */
-export type ApproveProbedGrants = { readonly mode: "approve-probed" };
+export type ApproveProbedGrants = { readonly kind: "approve-probed" };
 
 /**
  * How the gate turns the probe's advertised surface into an approved one.
@@ -272,7 +272,7 @@ export type ProbeApprovalPolicy = ApprovalSet | ApproveProbedGrants;
 function isApproveProbed(
   policy: ProbeApprovalPolicy,
 ): policy is ApproveProbedGrants {
-  return "mode" in policy;
+  return policy.kind === "approve-probed";
 }
 
 /**
