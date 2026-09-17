@@ -78,11 +78,17 @@ deploys, and then fails when its refs are resolved.
 Where it lives today: the same two loaders,
 `packages/workflow-host/src/workflow-definition-loader.ts`
 
-**4.** All four `interchange.*` fields may name the same module. Every
-deployed loop fixture points `workflow`, `loops` and `actions` at one bundled
-entry.
+**4.** Five of the `interchange.*` fields name a module -- `tools`,
+`workflow`, `directors`, `loops` and `actions` -- and all five may name the
+SAME module. The sixth field, `credentials`, is a declaration array, not a
+module ref. Every deployed loop fixture points `workflow`, `loops` and
+`actions` at one bundled entry. Every field is optional, and an omission is
+not caught at deployment: per entry 3, an absent `loops` or `actions` fails
+closed only when a ref is resolved, and an absent `directors` falls back to
+the built-in registry.
 
-Where it lives today: `tests/workflow-deploy/fixtures/loop-*-workflow.ts`
+Where it lives today: `PackageJSON`, `packages/types/src/package-json.ts`
+(the fixtures are `tests/workflow-deploy/fixtures/loop-*-workflow.ts`)
 
 **5.** A deployed action handler is a BARE MODULE EXPORT. It receives exactly
 `(input, ctx, signal)` and nothing else: no closure over host configuration,
