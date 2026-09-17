@@ -3,7 +3,6 @@ export {
   createDefaultActionInvoker,
   createInMemoryEffectLedger,
   createSpawnLoopIteration,
-  type ActionHandler,
   type RunLocalOptions,
 } from "./run-local";
 export { createInMemoryRepoStore } from "./repo-store";

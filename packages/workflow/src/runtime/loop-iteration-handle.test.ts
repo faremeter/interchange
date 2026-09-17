@@ -12,8 +12,11 @@ import { describe, test, expect } from "bun:test";
 
 import { createDefaultDirectorRegistry } from "@intx/agent";
 
-import { action, defineWorkflow } from "../definition/index";
-import type { ActionHandler } from "../runlocal/index";
+import {
+  action,
+  defineWorkflow,
+  type ActionHandler,
+} from "../definition/index";
 import {
   createDefaultActionInvoker,
   createInMemoryBlobSubstrate,

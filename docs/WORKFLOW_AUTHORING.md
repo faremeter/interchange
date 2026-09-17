@@ -90,11 +90,11 @@ no injected services. Any per-deployment configuration it needs must arrive
 through its `input` selector, which in practice means the author threads it
 from the trigger payload.
 
-Where it lives today: nowhere directly. It is inferable only from
-`loadWorkflowActionHandlersFromClosure`
+Where it lives today: the `ActionHandler` doc comment,
+`packages/workflow/src/definition/primitives.ts`. The mechanism that makes
+the handler a bare export is `loadWorkflowActionHandlersFromClosure`
 (`packages/workflow-host/src/workflow-definition-loader.ts`), which returns a
-bare `(ref) => ActionHandler`. `ActionHandler` itself is declared in
-`packages/workflow/src/runlocal/run-local.ts`.
+bare `(ref) => ActionHandler`.
 
 ---
 
