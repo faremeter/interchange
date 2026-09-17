@@ -269,11 +269,18 @@ export type ActionHandler = (
  *   a `while` that judges the iteration output leaves its answer; the
  *   scoped iteration step ids are not selector paths.
  *
- * That record is persisted inline on the loop's `StepCompleted`, and a run
- * that crashes after the loop settles replays the persisted value rather
- * than recomputing it. Keys may therefore be ADDED to it but never renamed
- * or removed: a resumed run whose log predates a rename fails on the
- * missing key.
+ * That record is persisted on the loop's `StepCompleted`, and a run that
+ * crashes after the loop settles replays the persisted value rather than
+ * recomputing it. Keys may therefore be ADDED to it but never renamed or
+ * removed: a resumed run whose log predates a rename fails on the missing
+ * key.
+ *
+ * `final` embeds the last iteration's whole per-step output tree, so the
+ * loop's own output is no longer a small fixed record and can cross the blob
+ * substrate's spill threshold -- it rides inline below it and spills above,
+ * where a loop container's output previously never would. A body whose steps
+ * return large values pays that cost once per loop, on top of the scoped
+ * per-iteration events that already carry the same data.
  */
 export interface LoopPrimitive extends PrimitiveBase {
   kind: "loop";
