@@ -49,7 +49,6 @@ import {
   SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
-  listRunIds,
   readWorkflowRunEvents,
   startDeployFlowEnv,
   waitFor,
@@ -59,6 +58,7 @@ import {
 import {
   deriveWireRunGrants,
   failureMessages,
+  findContainerRunId,
   toolResultTexts,
 } from "./nested-tool-invoke-helpers";
 import { MAIL_TOOL_NAME } from "./fixtures/mail-tool";
@@ -86,16 +86,6 @@ const EXPECTED_TOOL_RESULT = `wrote ${TOOL_OUTPUT_FILENAME}`;
 // The loop converges after exactly two iterations (see the fixture), so the
 // container run log carries one ChildSpawned per iteration.
 const EXPECTED_ITERATIONS = 2;
-
-// The top-level container run: the loop's per-iteration body runs are keyed
-// `<runId>__<loopStepId>__<index>`, so the container is the only run id with no
-// `__` separator.
-async function findContainerRunId(
-  workflowRunRepoId: RepoId,
-): Promise<string | undefined> {
-  const ids = await listRunIds(env, workflowRunRepoId);
-  return ids.find((id) => !id.includes("__"));
-}
 
 let env: DeployFlowEnv;
 let h: TestDb;
@@ -259,10 +249,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       await waitFor(
-        async () => (await findContainerRunId(workflowRunRepoId)) !== undefined,
+        async () =>
+          (await findContainerRunId(env, workflowRunRepoId)) !== undefined,
         { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
       );
-      const runId = await findContainerRunId(workflowRunRepoId);
+      const runId = await findContainerRunId(env, workflowRunRepoId);
       if (runId === undefined) throw new Error("unreachable");
 
       const terminal = await waitForWorkflowRunComplete(

@@ -34,8 +34,15 @@
 // Reading a nested body off an inert step is also the one part of the canonical
 // step walk the inert representation has to supply itself, so it lives here as
 // `inertNestedBodies` -- the counterpart of the live `nestedWorkflowBodies`.
-// Every consumer that walks a frozen projection descends through it, so the
-// inert descent rule has one owner the way the live one does.
+// It owns the descent for the consumers that walk a whole frozen projection,
+// so the malformed-container throws below apply on those paths.
+// `enumerateInertBodiesAtDepth` in this same module is NOT one of them: it
+// hand-rolls a depth-limited descent with its own probes, so a malformed
+// container reads as a leaf there rather than throwing. Nothing reaches it
+// with an unvalidated step today -- the wire narrow validates every top-level
+// step, descent validates each nested body, and the probe gate's totality walk
+// runs first -- so the divergence is latent, not exploitable. Whoever adds the
+// next container kind has to add it in both places.
 //
 // Both readers are EXHAUSTIVE OVER THE SAME KIND SET, and that is what the
 // reader's shape here buys. The live reader switches over the typed `Primitive`
