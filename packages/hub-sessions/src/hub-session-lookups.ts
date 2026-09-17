@@ -443,6 +443,19 @@ export function createHubSessionLookups(
             // that exists and anchors elsewhere. The principal is null: an
             // internal run inherits its deployment's grants and has none of its
             // own.
+            //
+            // The mint necessarily precedes the ownership guard, so an id the
+            // hub has never seen is claimed under THIS anchor before anything
+            // establishes it belongs here. That ordering is required -- the
+            // guard reads the row the mint may have to create -- and it is
+            // bounded rather than unbounded: internal run ids are supplied by
+            // the sidecar and accepted verbatim, so the value is
+            // caller-influenced, but it is a different population from the
+            // anchor ids the hub mints itself, and nothing resolves an
+            // internal id without also constraining the anchor or the tenant.
+            // The insert cannot take a row away from another deployment; the
+            // worst it does is create one for an id that deployment would
+            // otherwise have created later.
             await workflowRunStore.createIfAbsent(
               {
                 id: runId,
