@@ -128,22 +128,15 @@ the loop got to. Their type (`LoopFn`) receives only data — no effect
 context, no authorize, no abort signal — so an effectful implementation
 is not expressible.
 
-The non-obvious part is **which argument `while` reads.** It is called
-as `while(iterationOutput, iterationInput)`, and judging the output is
-the natural reading. But the loop's own step output is
-`{ outcome, iterations, carry }`, where `carry` is the _converging
-iteration's input_, and the converging iteration's output is not exposed
-at all. A `while` that judged the output would converge on a value no
-downstream step can read. Judging the carry state is what makes
-`steps.revise.output.carry` the accepted tagline — which is exactly what
-the `publish` action consumes.
-
-The price is one extra pass: a `loop` is a do-while, so the pass that
-produces the accepted tagline is followed by one more that confirms it.
-The body agent's system prompt tells it to return an already-short
-tagline unchanged, so that pass is cheap. Loops whose result is a side
-effect rather than a value do not have this problem; they can judge the
-output and ignore `carry` entirely.
+The loop's own step output is `{ outcome, iterations, carry, final }`.
+`while` is called as `while(iterationOutput, iterationInput)`, so
+`stillTooLong` judges the pass's result and the loop settles on the pass
+that first produced a short-enough tagline. That pass is the one reported
+as `final`, which makes `steps.revise.output.final.shorten.reply` the
+accepted tagline. `carry` is the state that same pass _started from_ —
+the loop settles before `carry` runs on it — and that is where
+`outputPath` still lives. The definition merges the two into the
+`publish` action's input.
 
 **`src/workflow.ts`'s loop body** is a whole `defineWorkflow`. Each
 iteration is a separate child run of it — its own run id, its own event
