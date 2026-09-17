@@ -181,7 +181,7 @@ describe("gateAndFreezeProbeResult grant-record totality", () => {
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
       probeResult,
-      approvals: { mode: "approve-probed" },
+      approvals: { kind: "approve-probed" },
       persist: persistMustNotRun,
     });
 
@@ -208,7 +208,7 @@ describe("gateAndFreezeProbeResult grant-record totality", () => {
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
       probeResult,
-      approvals: { mode: "approve-probed" },
+      approvals: { kind: "approve-probed" },
       persist,
     });
 
@@ -276,7 +276,7 @@ describe("gateAndFreezeProbeResult grant-record totality", () => {
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
       probeResult,
-      approvals: { mode: "approve-probed" },
+      approvals: { kind: "approve-probed" },
       persist,
     });
 
@@ -305,7 +305,7 @@ describe("gateAndFreezeProbeResult grant-record totality", () => {
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
       probeResult,
-      approvals: { mode: "approve-probed" },
+      approvals: { kind: "approve-probed" },
       persist,
     });
 
@@ -321,7 +321,7 @@ describe("gateAndFreezeProbeResult grant-record totality", () => {
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
       probeResult,
-      approvals: { mode: "approve-probed" },
+      approvals: { kind: "approve-probed" },
       persist,
     });
 

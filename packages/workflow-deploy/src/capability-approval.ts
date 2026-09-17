@@ -41,6 +41,17 @@ import type { CapabilityWalkResult } from "./capability-walk";
  * gate consults.
  */
 export type ApprovalSet = {
+  /**
+   * Discriminant. The gate's `ProbeApprovalPolicy` is a union of this type and
+   * `ApproveProbedGrants`, and the two arms mean opposite things: this one
+   * gates every advertised grant against what the operator approved, the other
+   * approves whatever the probe reported. Carrying an explicit literal on each
+   * arm keeps that choice a compiler-checked discriminated union rather than a
+   * structural guess about which optional keys happen to be present -- a guess
+   * that would silently resolve to the approve-everything arm if this type ever
+   * grew the key it tested for.
+   */
+  readonly kind: "approval-set";
   readonly grants: ReadonlySet<string>;
   readonly requirements: readonly GrantRequirement[];
 };
@@ -68,6 +79,7 @@ export function createApprovalSet(
   requirements: Iterable<unknown> = [],
 ): ApprovalSet {
   return {
+    kind: "approval-set",
     grants: new Set(grants),
     requirements: [...requirements].map((requirement) =>
       GrantRequirement.assert(requirement),
