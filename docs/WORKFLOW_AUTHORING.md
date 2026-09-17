@@ -291,3 +291,22 @@ separate, unconstrained string.
 
 Where it lives today: `validateNamespacedId`,
 `packages/agent/src/namespace.ts`
+
+**25.** KNOWN LIMITATION. An `onTrigger` section body can silently NOT RUN
+when a second top-level run of the same deployment reaches it. The body's run
+id is derived as `<sectionStepId>__<eventIndex>`, with no parent-run prefix, so
+it is the same string for every run of that deployment. A run whose body log is
+already terminal short-circuits and returns the earlier result: the body never
+executes, and the run still reports a clean terminal status.
+
+Contrast the loop path, which derives `<runId>__<loopId>__<index>` through
+`loopBodyRunId` and therefore re-roots per run. The asymmetry is the defect.
+
+This predates tool-bearing section bodies, but it costs more now than it did:
+what a skipped body skips is real tool work rather than only non-inference
+primitives. Tracked as INTR-552, which must resolve how already-running bodies
+keyed under the current derivation are handled before the derivation changes.
+
+Where it lives today: the `onTrigger` section path in `runOnTrigger`,
+`packages/workflow/src/runtime/run.ts`, against `loopBodyRunId`,
+`packages/workflow/src/runtime/step-scope.ts`
