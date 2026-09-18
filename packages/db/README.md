@@ -39,8 +39,8 @@ cast-at-callsite in DB consumers.
 
 Connections created by `createDB` set PostgreSQL's `statement_timeout` to
 60,000 milliseconds. Override it with `statementTimeoutMs` in `DBConfig`
-(a positive integer up to 2,147,483,647 milliseconds). The Hub reads this
-override from `DB_STATEMENT_TIMEOUT_MS`.
+(a positive integer up to 2,147,483,647 milliseconds). The Hub and the
+`bin/` database scripts read this override from `DB_STATEMENT_TIMEOUT_MS`.
 
 PostgreSQL cancels statements that exceed the deadline, including time
 waiting for locks. An uncaught timeout rolls back the enclosing transaction.
