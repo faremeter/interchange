@@ -47,6 +47,7 @@ import {
   createRuntimeCapabilities,
   type RuntimeCapabilities,
 } from "@intx/types/runtime-capabilities";
+import { waitUntil } from "@intx/types/testing";
 import type { LoadedToolFactory } from "@intx/tool-packaging";
 
 import {
@@ -129,6 +130,7 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
     // the same shape `createLSPPlugin` produces -- a `ToolPlugin` whose
     // `dispose` terminates a server subprocess -- minus the lazy spawn.
     let spawnedPid: number | undefined;
+    let spawnedExit: Promise<number> | undefined;
     let disposeCalls = 0;
     const lspLikePlugin = definePlugin({
       id: "@intx/tools-lsp-fake/sidecar-bundle",
@@ -138,6 +140,7 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
           stderr: "ignore",
         });
         spawnedPid = proc.pid;
+        spawnedExit = proc.exited;
         return {
           tools: [],
           dispose: () => {
@@ -192,7 +195,8 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
     if (spawnedPid === undefined) {
       throw new Error("plugin factory did not spawn a subprocess");
     }
-    expect(isAlive(spawnedPid)).toBe(true);
+    const pid = spawnedPid;
+    expect(isAlive(pid)).toBe(true);
     expect(disposeCalls).toBe(0);
 
     // Closing the agent must run the plugin disposer, which kills the
@@ -201,14 +205,17 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
     await agent.close();
 
     expect(disposeCalls).toBe(1);
-    // The process is reaped; allow a brief moment for the OS to reflect
-    // the kill.
-    let alive = isAlive(spawnedPid);
-    for (let i = 0; i < 50 && alive; i += 1) {
-      await new Promise((r) => setTimeout(r, 20));
-      alive = isAlive(spawnedPid);
+    // The disposer's `kill` only sends the signal; the child exits after it.
+    // `Bun.spawn` reports that exit as a promise, so await it rather than
+    // re-reading the pid on a timer. The pid stops being signalable once the
+    // exited child is reaped, which is a separate transition the test does
+    // not drive, so wait for that too -- `isAlive` is the only report for it.
+    if (spawnedExit === undefined) {
+      throw new Error("plugin factory did not expose the child's exit");
     }
-    expect(alive).toBe(false);
+    await spawnedExit;
+    await waitUntil(() => !isAlive(pid));
+    expect(isAlive(pid)).toBe(false);
   });
 
   test("a plugin factory that throws mid-chain disposes the already-built plugins", async () => {
@@ -217,6 +224,7 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
     // disposed so a partial-success chain does not leak (the LSP server
     // subprocess being the resource that would leak in production).
     let spawnedPid: number | undefined;
+    let spawnedExit: Promise<number> | undefined;
     let disposed = false;
     const firstPlugin = definePlugin({
       id: "@intx/first-plugin/sidecar-bundle",
@@ -226,6 +234,7 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
           stderr: "ignore",
         });
         spawnedPid = proc.pid;
+        spawnedExit = proc.exited;
         return {
           tools: [],
           dispose: () => {
@@ -267,12 +276,15 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
     if (spawnedPid === undefined) {
       throw new Error("first plugin factory did not spawn a subprocess");
     }
-    let alive = isAlive(spawnedPid);
-    for (let i = 0; i < 50 && alive; i += 1) {
-      await new Promise((r) => setTimeout(r, 20));
-      alive = isAlive(spawnedPid);
+    const pid = spawnedPid;
+    // Same two transitions as the close() test above: the child exits after
+    // the rollback's `kill`, and its pid stops being signalable once reaped.
+    if (spawnedExit === undefined) {
+      throw new Error("first plugin factory did not expose the child's exit");
     }
-    expect(alive).toBe(false);
+    await spawnedExit;
+    await waitUntil(() => !isAlive(pid));
+    expect(isAlive(pid)).toBe(false);
   });
 
   test("agent.close() rejects with an AggregateError when a disposer fails, and still runs the rest", async () => {

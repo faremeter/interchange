@@ -25,14 +25,16 @@ import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
   createControlChannelSender,
-  type FrameReader,
-  type NdjsonReader,
-  type NdjsonWriter,
   type SubprocessHandle,
   type SubprocessSpawner,
 } from "@intx/workflow-host";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import type { WorkflowDefinition } from "@intx/workflow";
+import {
+  createChangeNotifier,
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+} from "@intx/workflow-host/testing";
 
 import { type } from "arktype";
 
@@ -46,90 +48,6 @@ import {
   createMultistepMailRouter,
   createMultistepSignalRouter,
 } from "./workflow-run-pack-client";
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("buffer shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-      return Promise.resolve();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("frame shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
 
 function createSpawnTestRepoStore(tempBase: string): RepoStore {
   const stub: Partial<RepoStore> = {
@@ -185,6 +103,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       resolveExited: (code: number) => void;
     };
     const spawns: SpawnEntry[] = [];
+    const spawnsChanges = createChangeNotifier();
     const spawner: SubprocessSpawner = ({ env }) => {
       const supervisorToChild = createMemoryNdjsonStream();
       const childToSupervisor = createMemoryNdjsonStream();
@@ -216,6 +135,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       };
       entry.handle = handle;
       spawns.push(entry);
+      spawnsChanges.notify();
       return handle;
     };
 
@@ -344,9 +264,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
     expect(isRegistered(transport)).toBe(false);
 
     const deployPromise = router.deploy(frame);
-    while (spawns.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await spawnsChanges.until(() => spawns.length > 0);
     const spawn = spawns[0];
     if (spawn === undefined) throw new Error("unreachable");
     const channelId = spawn.env.IPC_CHANNEL_ID;

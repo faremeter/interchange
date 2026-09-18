@@ -45,6 +45,7 @@ import {
   type WorkflowDefinition,
   type WorkflowEvent,
 } from "@intx/workflow";
+import { waitForEvent } from "@intx/workflow/testing";
 
 import {
   createSidecarRunChild,
@@ -229,19 +230,20 @@ function reader(substrate: ReturnType<typeof createRepoStore>) {
   });
 }
 
-// Poll the child's durable log until its step parks (a SignalAwaited is
-// committed), so the abort lands while the child is genuinely in flight.
+// Wait for the child's step to park (a SignalAwaited committed to its durable
+// log), so the abort lands while the child is genuinely in flight. The commit
+// is the signal, so subscribe to the run's log instead of re-reading it on a
+// timer; the waiter replays what is already committed, so a park that landed
+// before the call counts exactly as a later one does.
 async function waitForChildPark(
   substrate: ReturnType<typeof createRepoStore>,
   childRunId: string,
 ): Promise<void> {
-  const r = reader(substrate);
-  for (let i = 0; i < 300; i += 1) {
-    const events = await r.read(childRunId);
-    if (events.some((e) => e.kind === "SignalAwaited")) return;
-    await new Promise((res) => setTimeout(res, 10));
-  }
-  throw new Error(`timed out waiting for child ${childRunId} to park`);
+  await waitForEvent(
+    reader(substrate),
+    childRunId,
+    (e) => e.kind === "SignalAwaited",
+  );
 }
 
 // Assert the child's durable log shows a LOCAL fail teardown: a StepFailed and

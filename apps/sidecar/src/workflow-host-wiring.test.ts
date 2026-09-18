@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,14 +17,18 @@ import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
   createControlChannelSender,
   type EventPayload,
-  type FrameReader,
-  type NdjsonReader,
-  type NdjsonWriter,
   type SubprocessHandle,
   type SubprocessSpawner,
 } from "@intx/workflow-host";
 import type { WorkflowDefinition } from "@intx/workflow";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
+import { waitUntil } from "@intx/types/testing";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  createSpawnObserver,
+  createChangeNotifier,
+} from "@intx/workflow-host/testing";
 
 import {
   assembleRunCredentialsSnapshot,
@@ -308,100 +312,70 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
 // Multi-step branch tests
 // --------------------------------------------------------------------
 
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
+// The child-process stream trio every deploy test wires. Registered here
+// rather than per test so the three streams are always reachable for
+// teardown: the deploy starts pumps that read them for as long as they stay
+// open, and a test that fails before its own teardown line leaves those pumps
+// running in a worker that is shared across files. Each test destructures
+// only the handles it drives; the rest stay owned by the reaper below, which
+// is why no test needs a `void` to silence the unused-binding rule any more.
+//
+// The exit resolver is deliberately NOT registered here. The reaper must not
+// settle an exit (see below), and a test that settles its own takes the
+// resolver off `createChildStreams()`'s return.
+const liveChildStreams: {
+  supervisorToChild: ReturnType<typeof createMemoryNdjsonStream>;
+  childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
+  eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
+}[] = [];
+
+function createChildStreams() {
+  const supervisorToChild = createMemoryNdjsonStream();
+  const childToSupervisor = createMemoryNdjsonStream();
+  const eventChildToSupervisor = createMemoryFrameStream();
+  let resolveExit: ((code: number) => void) | undefined;
+  const exited = new Promise<number>((resolve) => {
+    resolveExit = resolve;
+  });
+  // The executor above runs synchronously, so the resolver is assigned by the
+  // time anything can call this.
+  const settleExit = (code: number): void => {
+    if (resolveExit === undefined) {
+      throw new Error("exit resolver was not captured");
+    }
+    resolveExit(code);
   };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-      return Promise.resolve();
-    },
-  };
+  liveChildStreams.push({
+    supervisorToChild,
+    childToSupervisor,
+    eventChildToSupervisor,
+  });
   return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    flushed(): readonly string[] {
-      return buffer.slice();
-    },
-    close() {
-      done = true;
-      wake();
-    },
+    supervisorToChild,
+    childToSupervisor,
+    eventChildToSupervisor,
+    exited,
+    resolveExit: settleExit,
   };
 }
 
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
+afterEach(() => {
+  // Close both directions so the deploy's pumps unwind. Closing is
+  // idempotent, so the tests that already tear themselves down are
+  // unaffected.
+  //
+  // The exit is deliberately left unsettled. Settling it tells a supervisor
+  // whose deploy SUCCEEDED that its child died unexpectedly, which it answers
+  // by respawning -- and the spawner doubles here hand every spawn the same
+  // streams, so the replacement child reads a closed stream and dies on its
+  // handshake. The one test that settles its own exit does so after a deploy
+  // that fails mid-handshake, where there is no live supervisor to respawn.
+  for (const streams of liveChildStreams.splice(0)) {
+    streams.childToSupervisor.close();
+    streams.eventChildToSupervisor.close();
+    streams.supervisorToChild.close();
   }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("frame buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    inject(bytes: Uint8Array) {
-      buffer.push(bytes);
-      wake();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
+});
 
 function createTempBaseDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -918,18 +892,22 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   test("validates the projection, constructs SpawnOpts from the frame, drives spawn, and acks the deployment address's public key", async () => {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventChildToSupervisor = createMemoryFrameStream();
-    let resolveExit: ((code: number) => void) | undefined;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
+    const {
+      supervisorToChild,
+      childToSupervisor,
+      eventChildToSupervisor,
+      exited,
+      resolveExit,
+    } = createChildStreams();
     let observedBinary: string | undefined;
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ binaryPath, env }) => {
       observedBinary = binaryPath;
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 7321,
         controlWriter: supervisorToChild.writer,
@@ -983,9 +961,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const deployPromise = router.deploy(frame);
 
     // Wait until the spawner has been invoked.
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
 
     const env = observedEnv;
     expect(observedBinary).toBe("/fake/bin/multistep-workflow-child");
@@ -1029,24 +1005,24 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // lowercase string.
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
     expect(result.publicKey).toBe(hexEncode(deploymentKeyPair.publicKey));
-
-    // Teardown: kill the child so the spawn-time pumps unwind.
-    // Use unused supervisorToChild to silence the linter.
-    void supervisorToChild;
     void supervisorIpcKeyPair;
   });
 
   test("sources the child's DEFINITION_HASH from the frame's hub-approved wire hash, not a sidecar recompute", async () => {
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventChildToSupervisor = createMemoryFrameStream();
-    let resolveExit: ((code: number) => void) | undefined;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
+    const {
+      supervisorToChild,
+      childToSupervisor,
+      eventChildToSupervisor,
+      exited,
+      resolveExit,
+    } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       return {
         pid: 9001,
         controlWriter: supervisorToChild.writer,
@@ -1088,9 +1064,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
     const deployPromise = router.deploy(frame);
 
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const env = observedEnv;
     // The child's DEFINITION_HASH is the frame's hub-approved hash, verbatim.
     expect(env.DEFINITION_HASH).toBe(HUB_APPROVED_HASH);
@@ -1106,7 +1080,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     eventChildToSupervisor.close();
     resolveExit?.(0);
     await deployPromise.catch(() => undefined);
-    void supervisorToChild;
   });
 
   test("a second same-address deploy is rejected mid-spawn and never deletes the live run record", async () => {
@@ -1119,18 +1092,22 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // spawn-core backstop) before it touches durable state, so it cannot
     // delete the first deploy's live record via the soft-fail catch.
     const childIpcKeyPair = await generateKeyPair();
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventChildToSupervisor = createMemoryFrameStream();
-    let resolveExit: ((code: number) => void) | undefined;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
+    const {
+      supervisorToChild,
+      childToSupervisor,
+      eventChildToSupervisor,
+      exited,
+      resolveExit,
+    } = createChildStreams();
     let spawnCount = 0;
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       spawnCount += 1;
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 4242,
         controlWriter: supervisorToChild.writer,
@@ -1175,9 +1152,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const firstDeploy = router.deploy(frame);
     // Wait until the first deploy has spawned: its record is on disk and it
     // is now suspended in the ready handshake with the reservation held.
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const recordBefore = await fs.readFile(recordFile, "utf8");
     expect(recordBefore.length).toBeGreaterThan(0);
 
@@ -1219,8 +1194,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
     expect(registered).toEqual([frame.agentAddress]);
     expect(router.activeAddresses()).toEqual([frame.agentAddress]);
-
-    void supervisorToChild;
   });
 
   test("registers a multistepMailRouter handler against the deployment address once spawn succeeds", async () => {
@@ -1234,16 +1207,20 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // which has no transport entry and no `sessions` row for the
     // deployment address.
     const childIpcKeyPair = await generateKeyPair();
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventChildToSupervisor = createMemoryFrameStream();
-    let resolveExit: ((code: number) => void) | undefined;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
+    const {
+      supervisorToChild,
+      childToSupervisor,
+      eventChildToSupervisor,
+      exited,
+      resolveExit,
+    } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 9123,
         controlWriter: supervisorToChild.writer,
@@ -1276,9 +1253,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     const deployPromise = router.deploy(frame);
 
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
 
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
@@ -1315,9 +1290,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // unhandled rejection; this assertion only checks the address is claimed,
     // not the enqueue outcome for this synthetic payload.
     await claimed?.catch(() => undefined);
-
-    // Teardown.
-    void supervisorToChild;
   });
 
   test("a run.grants frame writes the run's grants to runs/<runId>/grants.json in the workflow-run repo", async () => {
@@ -1329,16 +1301,20 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // subtree. Nothing reads the grants back yet; the assertion is on the
     // on-disk write (right repo, right path, right content).
     const childIpcKeyPair = await generateKeyPair();
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventChildToSupervisor = createMemoryFrameStream();
-    let resolveExit: ((code: number) => void) | undefined;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
+    const {
+      supervisorToChild,
+      childToSupervisor,
+      eventChildToSupervisor,
+      exited,
+      resolveExit,
+    } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 9124,
         controlWriter: supervisorToChild.writer,
@@ -1371,9 +1347,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     const deployPromise = router.deploy(frame);
 
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
 
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
@@ -1434,9 +1408,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     );
     const onDisk: unknown = JSON.parse(await fs.readFile(grantsFile, "utf8"));
     expect(onDisk).toEqual({ grants: stepGrants });
-
-    // Teardown.
-    void supervisorToChild;
   });
 
   // Deploy a multi-step deployment through the full spawn/ready handshake so
@@ -1454,16 +1425,20 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     tempBase: string;
   }> {
     const childIpcKeyPair = await generateKeyPair();
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventChildToSupervisor = createMemoryFrameStream();
-    let resolveExit: ((code: number) => void) | undefined;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
+    const {
+      supervisorToChild,
+      childToSupervisor,
+      eventChildToSupervisor,
+      exited,
+      resolveExit,
+    } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       return {
         pid: 9124,
         controlWriter: supervisorToChild.writer,
@@ -1497,9 +1472,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
     const deployPromise = router.deploy(frame);
 
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -1522,7 +1495,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       },
     });
     await deployPromise;
-    void supervisorToChild;
 
     return {
       grantsRouter,
@@ -1934,20 +1906,16 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       env: Record<string, string>;
       childIpcKeyPair: { privateKey: Uint8Array; publicKey: Uint8Array };
     };
+    const spawnsChanges = createChangeNotifier();
     const spawns: SpawnFixture[] = [];
-    let resolveSpawnAdded: (() => void) | null = null;
-    const spawnAdded = (): Promise<void> =>
-      new Promise((resolve) => {
-        resolveSpawnAdded = resolve;
-      });
     const spawner: SubprocessSpawner = ({ env }) => {
-      const supervisorToChild = createMemoryNdjsonStream();
-      const childToSupervisor = createMemoryNdjsonStream();
-      const eventChildToSupervisor = createMemoryFrameStream();
-      let resolveExit: ((code: number) => void) | undefined;
-      const exited = new Promise<number>((resolve) => {
-        resolveExit = resolve;
-      });
+      const {
+        supervisorToChild,
+        childToSupervisor,
+        eventChildToSupervisor,
+        exited,
+        resolveExit,
+      } = createChildStreams();
       const handle: SubprocessHandle = {
         pid: 4400 + spawns.length,
         controlWriter: supervisorToChild.writer,
@@ -1977,9 +1945,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         },
       };
       spawns.push(fixture);
-      const r = resolveSpawnAdded;
-      resolveSpawnAdded = null;
-      if (r) r();
+      spawnsChanges.notify();
       return handle;
     };
 
@@ -2034,9 +2000,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const deployPromise = router.deploy(frame);
 
     // Wait for the first spawn to land.
-    while (spawns.length === 0) {
-      await spawnAdded();
-    }
+    await spawnsChanges.until(() => spawns.length > 0);
     const first = spawns[0];
     if (first === undefined) throw new Error("unreachable");
     // Drive ready + immediate recycle.request on the first spawn.
@@ -2048,32 +2012,32 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await deployPromise;
 
     // Wait for the recycle's respawn.
-    while (spawns.length < 2) {
-      await spawnAdded();
-    }
+    await spawnsChanges.until(() => spawns.length >= 2);
     const second = spawns[1];
     if (second === undefined) throw new Error("unreachable");
     // Drive ready on the second (recycle's) spawn so the recycle path
     // unwinds cleanly. We do not assert on this spawn's effects; the
     // assertion below covers the iterator-handoff invariant.
     await driveReady(second, { sendRecycleRequest: false });
-    // Allow the recycle path to settle its post-ready work.
-    await new Promise((r) => setTimeout(r, 25));
 
     expect(spawns.length).toBeGreaterThanOrEqual(2);
   });
 
   test("multistepSubstrateEnv carries HUB_WS_URL, SIDECAR_ID, SIDECAR_TOKEN through to the spawn-time env", async () => {
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventChildToSupervisor = createMemoryFrameStream();
-    let resolveExit: ((code: number) => void) | undefined;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
+    const {
+      supervisorToChild,
+      childToSupervisor,
+      eventChildToSupervisor,
+      exited,
+      resolveExit,
+    } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 7600,
         controlWriter: supervisorToChild.writer,
@@ -2107,9 +2071,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
     const frame = makeMultistepFrame({ definition, sources });
     const deployPromise = router.deploy(frame);
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     expect(observedEnv.HUB_WS_URL).toBe("ws://hub.example/sidecar-boot");
     expect(observedEnv.SIDECAR_ID).toBe("sidecar-boot-1");
     expect(observedEnv.SIDECAR_TOKEN).toBe("boot-token-abc");
@@ -2152,6 +2114,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // (b) a subsequent deploy on the SAME address succeeds, which is only
     // possible if the slug was released.
     const childIpcKeyPair = await generateKeyPair();
+    const spawnedHandlesChanges = createChangeNotifier();
     const spawnedHandles: {
       pid: number;
       killed: boolean;
@@ -2162,13 +2125,13 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const observedEnvs: Record<string, string>[] = [];
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnvs.push(env);
-      const supervisorToChild = createMemoryNdjsonStream();
-      const childToSupervisor = createMemoryNdjsonStream();
-      const eventChildToSupervisor = createMemoryFrameStream();
-      let resolveExit: ((code: number) => void) | undefined;
-      const exited = new Promise<number>((resolve) => {
-        resolveExit = resolve;
-      });
+      const {
+        supervisorToChild,
+        childToSupervisor,
+        eventChildToSupervisor,
+        exited,
+        resolveExit,
+      } = createChildStreams();
       const record = {
         pid: 9000 + spawnedHandles.length,
         killed: false,
@@ -2177,6 +2140,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         eventChildToSupervisor,
       };
       spawnedHandles.push(record);
+      spawnedHandlesChanges.notify();
       const handle: SubprocessHandle = {
         pid: record.pid,
         controlWriter: supervisorToChild.writer,
@@ -2211,9 +2175,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       handleIndex: number,
       childPid: number,
     ): Promise<void> {
-      while (spawnedHandles.length <= handleIndex) {
-        await new Promise((r) => setTimeout(r, 1));
-      }
+      await spawnedHandlesChanges.until(
+        () => spawnedHandles.length > handleIndex,
+      );
       const env = observedEnvs[handleIndex];
       const channelId = env?.IPC_CHANNEL_ID;
       if (channelId === undefined) {
@@ -2295,6 +2259,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
       childSender?: ReturnType<typeof createControlChannelSender>;
     };
+    const spawnsChanges = createChangeNotifier();
     const spawns: Spawn[] = [];
     // One-shot spawn failure. When armed, the NEXT spawner invocation throws
     // instead of returning a handle, then disarms. Used to fail a recycle
@@ -2306,14 +2271,15 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         failNext = false;
         throw new Error("makeReadyDrivingSpawner: armed spawn failure");
       }
-      const supervisorToChild = createMemoryNdjsonStream();
-      const childToSupervisor = createMemoryNdjsonStream();
-      const eventChildToSupervisor = createMemoryFrameStream();
-      let resolveExit: ((code: number) => void) | undefined;
-      const exited = new Promise<number>((resolve) => {
-        resolveExit = resolve;
-      });
+      const {
+        supervisorToChild,
+        childToSupervisor,
+        eventChildToSupervisor,
+        exited,
+        resolveExit,
+      } = createChildStreams();
       spawns.push({ env, childToSupervisor, eventChildToSupervisor });
+      spawnsChanges.notify();
       const handle: SubprocessHandle = {
         pid: pidBase + spawns.length,
         controlWriter: supervisorToChild.writer,
@@ -2332,9 +2298,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       index: number,
       opts?: { sendRecycleRequest?: boolean },
     ): Promise<void> {
-      while (spawns.length <= index) {
-        await new Promise((r) => setTimeout(r, 1));
-      }
+      await spawnsChanges.until(() => spawns.length > index);
       const spawn = spawns[index];
       if (spawn === undefined) {
         throw new Error(`spawn ${String(index)} missing`);
@@ -2379,6 +2343,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       spawner,
       driveReadyFor,
       spawnCount: () => spawns.length,
+      awaitSpawnCount: (count: number) =>
+        spawnsChanges.until(() => spawns.length >= count),
       envFor: (index: number): Record<string, string> | undefined =>
         spawns[index]?.env,
       async recycleRequestFor(index: number): Promise<void> {
@@ -2860,12 +2826,18 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await spawner.recycleRequestFor(0);
 
     // The reclaim drops the address from the active map and releases its
-    // transport registration. The self-termination runs asynchronously off the
-    // supervisor's control pump, so poll for the reclaim to settle.
-    const deadline = Date.now() + 5_000;
-    while (router.activeAddresses().includes(head) && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    // transport registration.
+    //
+    // No signal exists for this one. The reclaim runs off the supervisor's
+    // control pump, and the router wires its own self-termination sink
+    // straight to the reclaim without chaining a caller's, so nothing
+    // observable fires when it completes. Exposing one means changing that
+    // wiring, which is a bigger change than this wait justifies.
+    //
+    // So this stays a poll, but it carries no deadline of its own: a reclaim
+    // that never lands is caught by the lane timeout, per "Synchronizing on
+    // State, Not Time" in CONVENTIONS.md.
+    await waitUntil(() => !router.activeAddresses().includes(head));
     expect(router.activeAddresses()).toEqual([]);
     expect(isRegistered(transport, head)).toBe(false);
 
@@ -2901,10 +2873,16 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     spawner.failNextSpawn();
     await spawner.recycleRequestFor(0);
-    const deadline = Date.now() + 5_000;
-    while (router.activeAddresses().includes(head) && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    // No signal exists for this one. The reclaim runs off the supervisor's
+    // control pump, and the router wires its own self-termination sink
+    // straight to the reclaim without chaining a caller's, so nothing
+    // observable fires when it completes. Exposing one means changing that
+    // wiring, which is a bigger change than this wait justifies.
+    //
+    // So this stays a poll, but it carries no deadline of its own: a reclaim
+    // that never lands is caught by the lane timeout, per "Synchronizing on
+    // State, Not Time" in CONVENTIONS.md.
+    await waitUntil(() => !router.activeAddresses().includes(head));
     expect(router.activeAddresses()).toEqual([]);
 
     // An operator undeploy following the reclaim is a clean no-op: the reclaim
@@ -2965,10 +2943,16 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // Drive the supervisor to a self-termination via the recycle-failure path.
     spawner.failNextSpawn();
     await spawner.recycleRequestFor(0);
-    const deadline = Date.now() + 5_000;
-    while (router.activeAddresses().includes(head) && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    // No signal exists for this one. The reclaim runs off the supervisor's
+    // control pump, and the router wires its own self-termination sink
+    // straight to the reclaim without chaining a caller's, so nothing
+    // observable fires when it completes. Exposing one means changing that
+    // wiring, which is a bigger change than this wait justifies.
+    //
+    // So this stays a poll, but it carries no deadline of its own: a reclaim
+    // that never lands is caught by the lane timeout, per "Synchronizing on
+    // State, Not Time" in CONVENTIONS.md.
+    await waitUntil(() => !router.activeAddresses().includes(head));
     expect(router.activeAddresses()).toEqual([]);
 
     // The reclaim dropped the redeploy gate but RETAINED the address mapping:
@@ -3341,9 +3325,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
     // The child asks to recycle; the supervisor respawns.
     await spawner.recycleRequestFor(0);
-    while (spawner.spawnCount() < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await spawner.awaitSpawnCount(2);
     await spawner.driveReadyFor(1);
 
     // The recycle respawn's sources are the ROTATED table, proving the
@@ -3459,9 +3441,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // rotation carries the DEPLOY-TIME sources, proving the failed rotation
     // left no net in-memory effect.
     await spawner.recycleRequestFor(0);
-    while (spawner.spawnCount() < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await spawner.awaitSpawnCount(2);
     await spawner.driveReadyFor(1);
     const respawnEnv = spawner.envFor(1);
     if (respawnEnv === undefined) throw new Error("respawn env missing");
@@ -3525,9 +3505,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // Drive a recycle while the persist is blocked. The respawn env must carry
     // the ROTATED sources, because the synchronous swap already ran.
     await spawner.recycleRequestFor(0);
-    while (spawner.spawnCount() < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await spawner.awaitSpawnCount(2);
     await spawner.driveReadyFor(1);
     const respawnEnv = spawner.envFor(1);
     if (respawnEnv === undefined) throw new Error("respawn env missing");
@@ -3601,9 +3579,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // A recycle interleaves the about-to-fail persist: the respawn still
     // carries the ROTATED sources, because the swap already ran.
     await spawner.recycleRequestFor(0);
-    while (spawner.spawnCount() < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await spawner.awaitSpawnCount(2);
     await spawner.driveReadyFor(1);
     const respawnEnv = spawner.envFor(1);
     if (respawnEnv === undefined) throw new Error("respawn env missing");
@@ -3619,9 +3595,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // A SECOND recycle now respawns on the ROLLED-BACK deploy-time sources,
     // healing the transient down to durable truth.
     await spawner.recycleRequestFor(1);
-    while (spawner.spawnCount() < 3) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await spawner.awaitSpawnCount(3);
     await spawner.driveReadyFor(2);
     const secondRespawnEnv = spawner.envFor(2);
     if (secondRespawnEnv === undefined) {
@@ -3670,16 +3644,20 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // router's fire-and-forget contract means the request frame lands on the
     // downstream stream regardless, which is the observable evidence here.
     const childIpcKeyPair = await generateKeyPair();
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventChildToSupervisor = createMemoryFrameStream();
-    let resolveExit: ((code: number) => void) | undefined;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
+    const {
+      supervisorToChild,
+      childToSupervisor,
+      eventChildToSupervisor,
+      exited,
+      resolveExit,
+    } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 10500,
         controlWriter: supervisorToChild.writer,
@@ -3711,9 +3689,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const frame = makeMultistepFrame({ definition, sources });
 
     const deployPromise = router.deploy(frame);
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -3754,24 +3730,22 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         .length;
     }
 
-    // Let the spawn-time Trigger A re-emit settle so the baseline captures it;
-    // the assertion below then proves the Trigger B call adds a request on top.
-    await new Promise((r) => setTimeout(r, 50));
+    // The baseline has to include the spawn-time request, which is a frame on
+    // this same stream -- so wait for it rather than for fifty milliseconds,
+    // which on a slow enough machine would have banked a baseline of zero and
+    // made the assertion below pass on the spawn-time frame alone.
+    while (parkedRequestCount() < 1) {
+      await supervisorToChild.nextWrite();
+    }
     const baseline = parkedRequestCount();
 
     router.reEmitParkedCorrelations(frame.agentAddress);
 
-    // Fire-and-forget: poll the downstream stream until the router's request
-    // frame lands on top of the spawn-time baseline, bounded so a wiring break
-    // fails the test instead of hanging.
-    const deadline = Date.now() + 2000;
+    // The request frame reaching the downstream stream is the event. The
+    // bounded poll this replaces made a wiring break indistinguishable from
+    // slowness, since both ended at the same deadline.
     while (parkedRequestCount() <= baseline) {
-      if (Date.now() > deadline) {
-        throw new Error(
-          "reEmitParkedCorrelations did not add a parked-correlations.request to the downstream control stream",
-        );
-      }
-      await new Promise((r) => setTimeout(r, 1));
+      await supervisorToChild.nextWrite();
     }
     expect(parkedRequestCount()).toBeGreaterThan(baseline);
   });
@@ -3781,16 +3755,20 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // supervisor owns it (a torn-down or not-yet-respawned deployment). The
     // router must skip it -- neither throw nor drive any downstream frame.
     const childIpcKeyPair = await generateKeyPair();
-    const supervisorToChild = createMemoryNdjsonStream();
-    const childToSupervisor = createMemoryNdjsonStream();
-    const eventChildToSupervisor = createMemoryFrameStream();
-    let resolveExit: ((code: number) => void) | undefined;
-    const exited = new Promise<number>((resolve) => {
-      resolveExit = resolve;
-    });
+    const {
+      supervisorToChild,
+      childToSupervisor,
+      eventChildToSupervisor,
+      exited,
+      resolveExit,
+    } = createChildStreams();
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 10600,
         controlWriter: supervisorToChild.writer,
@@ -3822,9 +3800,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const frame = makeMultistepFrame({ definition, sources });
 
     const deployPromise = router.deploy(frame);
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -3860,17 +3836,23 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         .filter((line) => downstreamPayloadType(line) === PARKED_REQUEST_TYPE)
         .length;
     }
-    // Settle the spawn-time Trigger A re-emit so it is folded into the baseline
-    // rather than racing the post-call window below.
-    await new Promise((r) => setTimeout(r, 50));
+    // The baseline has to include the spawn-time request, which is a frame on
+    // this same stream -- so wait for it rather than for fifty milliseconds,
+    // which on a slow enough machine would have banked a baseline of zero and
+    // made the assertion below pass on the spawn-time frame alone.
+    while (parkedRequestCount() < 1) {
+      await supervisorToChild.nextWrite();
+    }
     const baseline = parkedRequestCount();
 
     // The no-op skip must not throw for an address with no live supervisor.
     expect(() => router.reEmitParkedCorrelations(missAddress)).not.toThrow();
 
-    // Give any errant fire-and-forget a chance to land, then confirm the miss
-    // added no downstream request for the missing address.
-    await new Promise((r) => setTimeout(r, 50));
+    // No pause. The skip path returns without starting any work -- the
+    // assertion above is that the call does not even throw -- so there is no
+    // fire-and-forget in flight for an interval to catch. A pause would only
+    // have given an unrelated frame time to arrive and make this flaky in the
+    // other direction.
     expect(parkedRequestCount()).toBe(baseline);
   });
 });

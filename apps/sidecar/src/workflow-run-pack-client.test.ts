@@ -3,6 +3,7 @@ import { describe, test, expect } from "bun:test";
 import type { InferenceSource } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/sidecar";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import { waitUntil } from "@intx/types/testing";
 
 import {
   createDeploymentAddressRegistry,
@@ -85,6 +86,29 @@ function createRecordingUnderlyingRepoStore(): {
     },
   });
   return { store, preserveCalls, packs, packedTipCommits };
+}
+
+// Yield to the macrotask queue so the facade's coalescing loop settles a push
+// that already rejected.
+//
+// The loop latches a failed push in a `catch` chained on the rejection the
+// `packClient.push` double threw. Neither that double nor
+// `createRecordingUnderlyingRepoStore` performs IO, so every hop from the
+// throw to `slot.lastError` being set is a microtask, and one macrotask turn
+// drains the queue to exhaustion however deep that chain runs. There is
+// nothing to await instead: the latch has no reporter, and the one consumer
+// that does signal (`flushWorkflowRunPushes`) takes the latched error, which
+// is the value the tests using this need left in place.
+//
+// The chain is currently shallow enough that the catch lands before the
+// awaiting test resumes, so the callers below pass without this. The barrier
+// stays because that is a fact about the facade's present await depth, not
+// about its contract: one added `await` on the write path would silently move
+// the latch after the assertion.
+function drainPushSettle(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }
 
 describe("createWorkflowRunPackClient", () => {
@@ -247,12 +271,12 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
         message: "first",
       },
     );
-    // Yield to the microtask queue so the push's `enter` log lands.
-    // With a serialised wrap the write would not resolve until
-    // `exit`; pipelining is the property under test, so we assert
-    // the write returned while the push is still parked inside
-    // packClient.push.
-    await new Promise((r) => setTimeout(r, 0));
+    // Wait for the push's `enter` log to land. With a serialised wrap the
+    // write would not resolve until `exit`; pipelining is the property under
+    // test, so we assert the write returned while the push is still parked
+    // inside packClient.push. `exit` cannot race the assertion: the push is
+    // parked on `gate`, which nothing resolves until the line below.
+    await waitUntil(() => pushOrder.length >= 1);
     expect(pushOrder).toEqual(["enter"]);
     resolvePush();
     await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
@@ -355,7 +379,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     // error, but the contract being pinned here is that the NEXT
     // writeTreePreservingPrefix surfaces it -- ordinary supervisor
     // code does not call flush between writes.
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await drainPushSettle();
     await expect(
       facade.writeTreePreservingPrefix(
         { kind: "supervisor" },
@@ -515,7 +539,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     );
     // Let the first push settle and latch "Connection lost" without a
     // second write to re-arm the loop.
-    await new Promise((r) => setTimeout(r, 10));
+    await drainPushSettle();
     expect(pushCount).toBe(1);
 
     facade.notifyAddressRoutable("agent-cancelled@example.com");
