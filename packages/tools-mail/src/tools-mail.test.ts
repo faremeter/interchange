@@ -24,6 +24,8 @@ import {
   type RuntimeCapabilities,
 } from "@intx/types/runtime-capabilities";
 
+import { base64Encode } from "@intx/types";
+
 import { createMailTools } from "./index";
 import {
   makeMailExpungeHandler,
@@ -34,6 +36,13 @@ import {
   makeMailSendHandler,
   makeMailWaitHandler,
 } from "./handlers";
+
+function defined<T>(value: T | undefined | null): T {
+  if (value === undefined || value === null) {
+    throw new Error("Expected a defined value but got undefined/null");
+  }
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // Mock transport — minimal MessageTransport with hooks for sent-message
@@ -46,6 +55,7 @@ type MockTransport = MessageTransport & {
   getSentMessages(): OutboundMessage[];
   fireWatch(event: MailboxEvent): void;
   enqueueMessage(ref: MessageRef, msg: InboundMessage): void;
+  enqueuePart(path: string, part: MessagePart): void;
   setSearchResult(refs: MessageRef[]): void;
   getFlagCalls(): { op: "set" | "clear"; ref: MessageRef; flags: string[] }[];
   getExpungeCalls(): string[];
@@ -57,6 +67,7 @@ function makeMockTransport(): MockTransport {
   const sentMessages: OutboundMessage[] = [];
   const watchCallbacks: WatchCallback[] = [];
   const messageStore = new Map<string, InboundMessage>();
+  const partStore = new Map<string, MessagePart>();
   let searchResult: MessageRef[] = [];
   const flagCalls: { op: "set" | "clear"; ref: MessageRef; flags: string[] }[] =
     [];
@@ -79,6 +90,9 @@ function makeMockTransport(): MockTransport {
     },
     enqueueMessage(ref: MessageRef, msg: InboundMessage): void {
       messageStore.set(refKey(ref), msg);
+    },
+    enqueuePart(path: string, part: MessagePart): void {
+      partStore.set(path, part);
     },
     setSearchResult(refs: MessageRef[]): void {
       searchResult = refs;
@@ -159,8 +173,13 @@ function makeMockTransport(): MockTransport {
       return { contentType: "multipart/signed" };
     },
 
-    async fetchPart(): Promise<MessagePart> {
-      return { contentType: "text/plain", content: new Uint8Array() };
+    async fetchPart(_ref: MessageRef, path: string): Promise<MessagePart> {
+      return (
+        partStore.get(path) ?? {
+          contentType: "text/plain",
+          content: new Uint8Array(),
+        }
+      );
     },
 
     async fetchFull(ref: MessageRef): Promise<InboundMessage> {
@@ -434,6 +453,224 @@ describe("mail_send handler", () => {
 
     expect(result.isError).toBe(true);
   });
+
+  test("passes decoded attachments to transport.send, inferring utf-8 for text and base64 for binary", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailSendHandler(transport);
+
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const result = await handler(
+      {
+        id: "s4",
+        name: "mail_send",
+        arguments: {
+          to: "user@test",
+          content: "see attached",
+          attachments: [
+            { name: "notes.txt", contentType: "text/plain", content: "hi" },
+            {
+              name: "shot.png",
+              contentType: "image/png",
+              content: btoa(String.fromCharCode(...pngBytes)),
+            },
+          ],
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    const sent = transport.getSentMessages()[0];
+    if (sent === undefined) throw new Error("no sent message");
+    const sentAttachments = defined(sent.attachments);
+    expect(sentAttachments).toHaveLength(2);
+    const text = defined(sentAttachments[0]);
+    const png = defined(sentAttachments[1]);
+    expect(text.name).toBe("notes.txt");
+    expect(new TextDecoder().decode(text.data)).toBe("hi");
+    expect(png.name).toBe("shot.png");
+    expect(Array.from(png.data)).toEqual(Array.from(pngBytes));
+  });
+
+  test("an explicit encoding overrides the content-type inference", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailSendHandler(transport);
+
+    const result = await handler(
+      {
+        id: "s5",
+        name: "mail_send",
+        arguments: {
+          to: "user@test",
+          content: "hi",
+          attachments: [
+            {
+              name: "notes.txt",
+              contentType: "text/plain",
+              content: btoa("hello"),
+              encoding: "base64",
+            },
+          ],
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    const sent = transport.getSentMessages()[0];
+    if (sent === undefined) throw new Error("no sent message");
+    const decodedAttachment = defined(defined(sent.attachments)[0]);
+    expect(new TextDecoder().decode(decodedAttachment.data)).toBe("hello");
+  });
+
+  test("rejects text content under a binary content type", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailSendHandler(transport);
+
+    const result = await handler(
+      {
+        id: "s5b",
+        name: "mail_send",
+        arguments: {
+          to: "user@test",
+          content: "hi",
+          attachments: [
+            {
+              name: "shot.png",
+              contentType: "image/png",
+              content: "iVBORw0KGgo=",
+              encoding: "utf-8",
+            },
+          ],
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBe(true);
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["code"]).toBe("invalid_encoding");
+    expect(transport.getSentMessages()).toHaveLength(0);
+  });
+
+  test("rejects malformed base64 with a stable error code and the attachment index", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailSendHandler(transport);
+
+    const result = await handler(
+      {
+        id: "s6",
+        name: "mail_send",
+        arguments: {
+          to: "user@test",
+          content: "hi",
+          attachments: [
+            {
+              name: "bad.png",
+              contentType: "image/png",
+              content: "@@@not-valid-base64@@@",
+            },
+          ],
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBe(true);
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["code"]).toBe("malformed_base64");
+    expect(String(result.content["error"])).toContain("attachment 0");
+    expect(transport.getSentMessages()).toHaveLength(0);
+  });
+
+  test("rejects a MIME type off the allowlist", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailSendHandler(transport);
+
+    const result = await handler(
+      {
+        id: "s7",
+        name: "mail_send",
+        arguments: {
+          to: "user@test",
+          content: "hi",
+          attachments: [
+            {
+              name: "script.exe",
+              contentType: "application/x-msdownload",
+              content: btoa("MZ"),
+            },
+          ],
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBe(true);
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["code"]).toBe("disallowed_mime_type");
+    expect(transport.getSentMessages()).toHaveLength(0);
+  });
+
+  test("rejects an unsafe attachment name", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailSendHandler(transport);
+
+    const result = await handler(
+      {
+        id: "s8",
+        name: "mail_send",
+        arguments: {
+          to: "user@test",
+          content: "hi",
+          attachments: [
+            {
+              name: 'evil"name',
+              contentType: "text/plain",
+              content: "hi",
+            },
+          ],
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBe(true);
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["code"]).toBe("invalid_attachment_name");
+    expect(transport.getSentMessages()).toHaveLength(0);
+  });
+
+  test("rejects an over-limit attachment size", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailSendHandler(transport);
+
+    const oversized = "x".repeat(10 * 1024 * 1024 + 1);
+    const result = await handler(
+      {
+        id: "s9",
+        name: "mail_send",
+        arguments: {
+          to: "user@test",
+          content: "hi",
+          attachments: [
+            { name: "big.txt", contentType: "text/plain", content: oversized },
+          ],
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBe(true);
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["code"]).toBe("oversize_attachment");
+    expect(transport.getSentMessages()).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -564,6 +801,90 @@ describe("mail_reply handler", () => {
 
     expect(result.isError).toBe(true);
   });
+
+  test("accepts attachments and passes decoded bytes to transport.send", async () => {
+    const transport = makeMockTransport();
+
+    const parentRef: MessageRef = { uid: 13, mailbox: "INBOX" };
+    transport.enqueueMessage(parentRef, {
+      ref: parentRef,
+      headers: {
+        from: "user@test",
+        to: ["agent@local"],
+        date: new Date().toISOString(),
+        messageId: "<parent-att@test>",
+      },
+      flags: [],
+      content: "original",
+      signatureStatus: "missing",
+    });
+
+    const handler = makeMailReplyHandler(transport);
+    const result = await handler(
+      {
+        id: "r5",
+        name: "mail_reply",
+        arguments: {
+          ref: parentRef,
+          content: "reply with attachment",
+          attachments: [
+            { name: "notes.txt", contentType: "text/plain", content: "hi" },
+          ],
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    const sent = transport.getSentMessages()[0];
+    if (sent === undefined) throw new Error("no sent message");
+    expect(sent.attachments).toHaveLength(1);
+    const replyAttachment = defined(defined(sent.attachments)[0]);
+    expect(new TextDecoder().decode(replyAttachment.data)).toBe("hi");
+  });
+
+  test("rejects a disallowed MIME type without touching the transport", async () => {
+    const transport = makeMockTransport();
+    const parentRef: MessageRef = { uid: 14, mailbox: "INBOX" };
+    transport.enqueueMessage(parentRef, {
+      ref: parentRef,
+      headers: {
+        from: "user@test",
+        to: ["agent@local"],
+        date: new Date().toISOString(),
+        messageId: "<parent-bad@test>",
+      },
+      flags: [],
+      content: "original",
+      signatureStatus: "missing",
+    });
+
+    const handler = makeMailReplyHandler(transport);
+    const result = await handler(
+      {
+        id: "r6",
+        name: "mail_reply",
+        arguments: {
+          ref: parentRef,
+          content: "reply",
+          attachments: [
+            {
+              name: "script.exe",
+              contentType: "application/x-msdownload",
+              content: btoa("MZ"),
+            },
+          ],
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBe(true);
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["code"]).toBe("disallowed_mime_type");
+    expect(transport.getSentMessages()).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -610,6 +931,38 @@ describe("mail_search handler", () => {
 // ---------------------------------------------------------------------------
 
 describe("mail_read handler", () => {
+  test("returns a text part as text and any other part as base64", async () => {
+    const ref: MessageRef = { uid: 4, mailbox: "INBOX" };
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00]);
+    const transport = makeMockTransport();
+    transport.enqueuePart("1.2", {
+      contentType: "text/plain; charset=utf-8",
+      content: new TextEncoder().encode("café"),
+    });
+    transport.enqueuePart("1.3", { contentType: "image/png", content: png });
+    const handler = makeMailReadHandler(transport);
+
+    const text = await handler(
+      { id: "rp1", name: "mail_read", arguments: { ref, parts: "1.2" } },
+      signal,
+    );
+    expect(text.content).toEqual({
+      contentType: "text/plain; charset=utf-8",
+      encoding: "utf-8",
+      content: "café",
+    });
+
+    const binary = await handler(
+      { id: "rp2", name: "mail_read", arguments: { ref, parts: "1.3" } },
+      signal,
+    );
+    expect(binary.content).toEqual({
+      contentType: "image/png",
+      encoding: "base64",
+      content: base64Encode(png),
+    });
+  });
+
   test("fetches full message when parts='full'", async () => {
     const transport = makeMockTransport();
     const ref: MessageRef = { uid: 5, mailbox: "INBOX" };
@@ -654,6 +1007,86 @@ describe("mail_read handler", () => {
     );
 
     expect(result.isError).toBe(true);
+  });
+
+  test("parts='full' surfaces attachment metadata with MIME part paths", async () => {
+    const transport = makeMockTransport();
+    const ref: MessageRef = { uid: 7, mailbox: "INBOX" };
+    transport.enqueueMessage(ref, {
+      ...makeInboundMessage(),
+      ref,
+      attachments: [
+        {
+          name: "notes.txt",
+          contentType: "text/plain",
+          data: new TextEncoder().encode("hello"),
+        },
+        {
+          name: "shot.png",
+          contentType: "image/png",
+          data: new Uint8Array([1, 2, 3, 4]),
+        },
+      ],
+    });
+
+    const handler = makeMailReadHandler(transport);
+    const result = await handler(
+      { id: "rd4", name: "mail_read", arguments: { ref, parts: "full" } },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["attachments"]).toEqual([
+      { name: "notes.txt", contentType: "text/plain", size: 5, part: "1.2" },
+      { name: "shot.png", contentType: "image/png", size: 4, part: "1.3" },
+    ]);
+  });
+
+  test("parts='payload' surfaces attachment metadata for a conversation message", async () => {
+    const transport = makeMockTransport();
+    const ref: MessageRef = { uid: 8, mailbox: "INBOX" };
+    transport.enqueueMessage(ref, {
+      ...makeInboundMessage(),
+      ref,
+      attachments: [
+        {
+          name: "notes.txt",
+          contentType: "text/plain",
+          data: new TextEncoder().encode("hello"),
+        },
+      ],
+    });
+
+    const handler = makeMailReadHandler(transport);
+    const result = await handler(
+      { id: "rd5", name: "mail_read", arguments: { ref, parts: "payload" } },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["attachments"]).toEqual([
+      { name: "notes.txt", contentType: "text/plain", size: 5, part: "1.2" },
+    ]);
+  });
+
+  test("omits the attachments key when a message carries none", async () => {
+    const transport = makeMockTransport();
+    const ref: MessageRef = { uid: 9, mailbox: "INBOX" };
+    transport.enqueueMessage(ref, { ...makeInboundMessage(), ref });
+
+    const handler = makeMailReadHandler(transport);
+    const result = await handler(
+      { id: "rd6", name: "mail_read", arguments: { ref, parts: "full" } },
+      signal,
+    );
+
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect("attachments" in result.content).toBe(false);
   });
 });
 

@@ -59,6 +59,22 @@ export function attachmentCategory(
   return undefined;
 }
 
+/**
+ * True when a Content-Type names readable text: `text/*`, JSON, and the
+ * `+json` structured suffix. Callers use this to decide whether an
+ * attachment's content is carried as text or as opaque bytes. Any
+ * Content-Type parameters (e.g. `; charset=utf-8`) are ignored.
+ */
+export function isTextLikeMimeType(contentType: string): boolean {
+  const [mimeType = ""] = contentType.split(";");
+  const mime = mimeType.trim().toLowerCase();
+  return (
+    mime.startsWith("text/") ||
+    mime === "application/json" ||
+    mime.endsWith("+json")
+  );
+}
+
 // Default size limits, on decoded bytes. These are the system-level
 // ceiling; a future per-agent/per-workflow policy resolves an effective
 // limit that defaults to these.
