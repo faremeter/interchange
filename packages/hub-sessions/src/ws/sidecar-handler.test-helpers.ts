@@ -50,15 +50,39 @@ export const TEST_CONFIG: HarnessConfig = {
 export function createMockWs(): WsHandle & {
   sent: string[];
   closed: boolean;
+  /**
+   * Resolve once `predicate` holds over the frames sent so far, re-checking
+   * on each send.
+   *
+   * Several of the router's paths write to the socket from a fire-and-forget
+   * continuation -- the mail redelivery retry is one -- so a test that
+   * triggers one has no return value to await. The send is the event.
+   */
+  awaitSent(predicate: (sent: readonly string[]) => boolean): Promise<void>;
 } {
+  let waiters: (() => void)[] = [];
   return {
     sent: [],
     closed: false,
     send(data: string) {
       this.sent.push(data);
+      const waking = waiters;
+      waiters = [];
+      for (const wake of waking) wake();
     },
     close() {
       this.closed = true;
+    },
+    async awaitSent(predicate) {
+      for (;;) {
+        // Re-checked on every pass, so a frame sent before this call resolves
+        // it rather than leaving it waiting for another send.
+        const sent = new Promise<void>((resolve) => {
+          waiters.push(resolve);
+        });
+        if (predicate(this.sent)) return;
+        await sent;
+      }
     },
   };
 }

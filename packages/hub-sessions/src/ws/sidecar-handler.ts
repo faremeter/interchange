@@ -479,6 +479,26 @@ export type SidecarRouterConfig = {
   /** Interval between redelivery attempts of a connected-window `mail.inbound`
    * the sidecar has not yet acknowledged with `mail.inbound.ack`. */
   mailAckRetryIntervalMs?: number;
+  /**
+   * Arms the mail-redelivery retry and the connection-liveness timers, and
+   * returns each one's canceller. Defaults to the global timer, which is what
+   * production wants.
+   *
+   * The intervals beside it say how long until something should happen; this
+   * says what makes it happen. With only the intervals injectable, a test had
+   * to shorten one and then sleep past it, which turns an assertion about
+   * WHETHER something happened into a bet on how much the machine got through
+   * -- and, for the liveness deadline, on a pause landing inside a window
+   * rather than past it.
+   *
+   * REQUIRED of the returned canceller: calling it more than once must be
+   * harmless. A pending-mail entry outlives a disconnect, so the disconnect
+   * path cancels its retry and a later reconnect can cancel the same one
+   * again. `clearTimeout` on an already-cleared timer is a no-op, which is
+   * what makes the default satisfy this; a substitute must arrange the same,
+   * typically by flipping a flag.
+   */
+  scheduleTimeout?: (handler: () => void, ms: number) => () => void;
   /** Maximum redelivery attempts before the hub stops retrying an un-acked
    * connected-window `mail.inbound`. Bounds the retry so a sidecar that never
    * acks does not accumulate an unbounded timer per delivery. */
@@ -529,6 +549,12 @@ export function createSidecarRouter(
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
     mailAckRetryIntervalMs = DEFAULT_MAIL_ACK_RETRY_INTERVAL_MS,
+    scheduleTimeout = (handler: () => void, ms: number) => {
+      const handle = setTimeout(handler, ms);
+      return () => {
+        clearTimeout(handle);
+      };
+    },
     mailAckMaxRetries = DEFAULT_MAIL_ACK_MAX_RETRIES,
     lookups = {},
   } = config;
@@ -590,7 +616,14 @@ export function createSidecarRouter(
     messageId: string;
     frame: HubFrame;
     attempts: number;
-    timer: ReturnType<typeof setTimeout>;
+    /**
+     * Disarms this entry's redelivery retry. Safe to call more than once:
+     * `scheduleTimeout` requires an idempotent canceller. The second call is
+     * reached when a reconnect drops a generation-local entry the disconnect
+     * had already cancelled -- the disconnect keeps the entry for replay, so
+     * its spent canceller is still on it.
+     */
+    cancelRetry: () => void;
     // When this mail triggers a workflow run, the run's already-materialized
     // grants ride alongside it. Redelivery replays this snapshot as a
     // `run.grants` frame AHEAD of the mail so the redelivered trigger lands on
@@ -644,7 +677,7 @@ export function createSidecarRouter(
   // identically to a null entry (no active thread).
   const connectorStates = new Map<string, ConnectorThreadState | null>();
   // ws handle → liveness timer (reset on each ping from the sidecar)
-  const livenessTimers = new Map<WsHandle, ReturnType<typeof setTimeout>>();
+  const livenessTimers = new Map<WsHandle, () => void>();
 
   // Per-ws serialization chain for QUEUE-class frames (see `frameBypassesQueue`
   // for the split and the invariant behind it). A frame that establishes or
@@ -734,8 +767,8 @@ export function createSidecarRouter(
   function scheduleMailRetry(
     agentAddress: string,
     messageId: string,
-  ): ReturnType<typeof setTimeout> {
-    return setTimeout(() => {
+  ): () => void {
+    return scheduleTimeout(() => {
       void retryPendingMail(agentAddress, messageId).catch((err: unknown) => {
         logger.warn`Redelivery retry for mail ${messageId} to ${agentAddress} failed: ${err instanceof Error ? err.message : String(err)}`;
       });
@@ -763,13 +796,13 @@ export function createSidecarRouter(
       pendingMail.set(agentAddress, byId);
     }
     const existing = byId.get(messageId);
-    if (existing !== undefined) clearTimeout(existing.timer);
+    if (existing !== undefined) existing.cancelRetry();
     byId.set(messageId, {
       agentAddress,
       messageId,
       frame,
       attempts: 0,
-      timer: scheduleMailRetry(agentAddress, messageId),
+      cancelRetry: scheduleMailRetry(agentAddress, messageId),
       ...(runGrants !== undefined ? { runGrants } : {}),
       ...(allocatedTarget !== undefined ? { allocatedTarget } : {}),
     });
@@ -967,7 +1000,7 @@ export function createSidecarRouter(
 
     if (!(await replaySendPendingMail(conn, entry))) return;
     entry.attempts += 1;
-    entry.timer = scheduleMailRetry(agentAddress, messageId);
+    entry.cancelRetry = scheduleMailRetry(agentAddress, messageId);
   }
 
   function resolvePendingMail(agentAddress: string, messageId: string): void {
@@ -975,7 +1008,7 @@ export function createSidecarRouter(
     if (byId === undefined) return;
     const entry = byId.get(messageId);
     if (entry === undefined) return;
-    clearTimeout(entry.timer);
+    entry.cancelRetry();
     deletePendingMail(byId, agentAddress, messageId);
   }
 
@@ -989,7 +1022,7 @@ export function createSidecarRouter(
   function retainPendingMailForAddress(agentAddress: string): void {
     const byId = pendingMail.get(agentAddress);
     if (byId === undefined) return;
-    for (const entry of byId.values()) clearTimeout(entry.timer);
+    for (const entry of byId.values()) entry.cancelRetry();
     const existing = pendingMailRetention.get(agentAddress);
     if (existing !== undefined) clearTimeout(existing);
     const timer = setTimeout(() => {
@@ -1037,13 +1070,13 @@ export function createSidecarRouter(
         // The Hub-owned dispatch row survives generation replacement and will
         // be requeued by the allocation-ready callback. Do not leak or replay
         // this generation-local retry entry onto a different worker.
-        clearTimeout(entry.timer);
+        entry.cancelRetry();
         deletePendingMail(byId, agentAddress, entry.messageId);
         continue;
       }
       if (!(await replaySendPendingMail(conn, entry))) continue;
       entry.attempts = 0;
-      entry.timer = scheduleMailRetry(agentAddress, entry.messageId);
+      entry.cancelRetry = scheduleMailRetry(agentAddress, entry.messageId);
     }
     if (byId.size > 0) {
       logger.info`Redelivered ${String(byId.size)} un-acked message(s) to ${agentAddress} on reconnect`;
@@ -1052,14 +1085,14 @@ export function createSidecarRouter(
 
   function resetLivenessTimer(ws: WsHandle): void {
     const existing = livenessTimers.get(ws);
-    if (existing !== undefined) clearTimeout(existing);
+    if (existing !== undefined) existing();
 
-    const timer = setTimeout(() => {
+    const cancel = scheduleTimeout(() => {
       livenessTimers.delete(ws);
       logger.warn`Sidecar ping timeout, closing connection`;
       ws.close();
     }, pingTimeoutMs);
-    livenessTimers.set(ws, timer);
+    livenessTimers.set(ws, cancel);
   }
 
   function handlePing(ws: WsHandle): void {
@@ -2121,9 +2154,9 @@ export function createSidecarRouter(
     connections.delete(ws);
 
     // Cancel the liveness timer for this connection.
-    const livenessTimer = livenessTimers.get(ws);
-    if (livenessTimer !== undefined) {
-      clearTimeout(livenessTimer);
+    const cancelLiveness = livenessTimers.get(ws);
+    if (cancelLiveness !== undefined) {
+      cancelLiveness();
       livenessTimers.delete(ws);
     }
 
