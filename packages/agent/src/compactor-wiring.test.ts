@@ -43,6 +43,7 @@ import { createDirectorRegistry } from "./director-registry";
 import type { BaseEnv } from "./env";
 import { noopAuditStore } from "./testing/audit-noop";
 import { permissiveAuthorize } from "./testing/authorize-allow";
+import { waitForReactorDone } from "./testing";
 
 // The compactor tests never call infer(); the URL is unreachable so any
 // accidental infer() would fail fast rather than hang.
@@ -187,14 +188,6 @@ function inboundConversation(content: string) {
   });
 }
 
-async function waitForReactorDone(
-  stream: AsyncIterable<ReactorEmittedEvent>,
-): Promise<void> {
-  for await (const event of stream) {
-    if (event.type === "reactor.done") return;
-  }
-}
-
 async function collectUntilDone(
   stream: AsyncIterable<ReactorEmittedEvent>,
 ): Promise<ReactorEmittedEvent[]> {
@@ -203,7 +196,11 @@ async function collectUntilDone(
     events.push(event);
     if (event.type === "reactor.done") return events;
   }
-  return events;
+  // A fatal reactor.error still shuts the reactor down, so reactor.done
+  // arrives on that path too and the early return above is what fires.
+  // Reaching here means the stream closed without it, and returning the
+  // partial events would let the caller assert against a truncated run.
+  throw new Error("reactor event stream ended before reactor.done");
 }
 
 describe("createAgent compactor wiring", () => {

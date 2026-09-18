@@ -14,6 +14,7 @@ import type {
   MessageRef,
   MessageAttachment,
 } from "@intx/types/runtime";
+import { waitUntil } from "@intx/types/testing";
 
 function conversationHeaders(): MessageHeaders {
   return {
@@ -82,9 +83,10 @@ describe("send and watch", () => {
       content: "Hello from alpha",
     });
 
-    // After send completes (which includes async steps + microtask callbacks),
-    // the watch callback should have fired.
-    await new Promise((r) => setTimeout(r, 10));
+    // executeSend schedules each local recipient's watch callbacks with
+    // queueMicrotask, so the callback runs after send() returns rather than on
+    // its call stack. Wait for it to have run.
+    await waitUntil(() => callbackFired);
 
     expect(callbackFired).toBe(true);
     expect(receivedEvent?.type).toBe("exists");
@@ -111,18 +113,30 @@ describe("send and watch", () => {
       type: "conversation.message",
       content: "first",
     });
-    await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => count >= 1);
     expect(count).toBe(1);
 
     unwatch();
+
+    // A watcher registered now joins the same per-mailbox callback set, after
+    // the unwatched one. executeSend dispatches that set in insertion order
+    // via queueMicrotask, so this probe firing is ordered strictly after a
+    // still-registered stale callback would have fired -- if unwatch() had not
+    // removed it, `count` would already be 2 by the time the probe runs.
+    let probeFired = false;
+    const unwatchProbe = betaTransport.watch("INBOX", () => {
+      probeFired = true;
+    });
 
     await alphaTransport.send({
       to: "beta@test.interchange",
       type: "conversation.message",
       content: "second",
     });
-    await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => probeFired);
     expect(count).toBe(1);
+
+    unwatchProbe();
   });
 
   test("remote delivery carries the registered sender address", async () => {
@@ -626,8 +640,9 @@ describe("registration lifecycle", () => {
       content: "hi",
     });
 
-    await new Promise((r) => setTimeout(r, 10));
-
+    // Local delivery appends to the recipient's INBOX inside executeSend, so
+    // the message is searchable once send() resolves; only the watch-callback
+    // dispatch is deferred, and this test does not use it.
     const refs = await betaTransport.search("INBOX", {});
     expect(refs.length).toBe(1);
 
@@ -785,7 +800,7 @@ describe("deliver", () => {
     transport.deliver("alpha@test.interchange", VALID_MESSAGE);
 
     // Watch callbacks are scheduled via queueMicrotask.
-    await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => events.length >= 1);
     expect(events).toHaveLength(1);
     expect(events[0]!.type).toBe("exists");
   });

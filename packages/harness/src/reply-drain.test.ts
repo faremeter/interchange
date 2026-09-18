@@ -12,6 +12,8 @@ import type {
   SendReceipt,
 } from "@intx/types/runtime";
 
+import { waitUntil } from "@intx/types/testing";
+
 import type { ConnectorReplyParts } from "./connector-router";
 import { driveConnectorReplies } from "./reply-drain";
 
@@ -41,15 +43,22 @@ async function* streamOf(
  * A push-based event stream: a test feeds events with `push` and ends the
  * stream with `end`, so the barrier's capture-then-await ordering can be
  * exercised against a stream that stays open between events.
+ *
+ * `pulled()` reports how many events the consumer has taken off the queue.
+ * The drain consumes serially, so `pulled()` reaching n+1 is a signal that
+ * the drain finished its handling of event n -- which is what a test asserting
+ * "event n changed nothing" needs, since there is no event of its own to await.
  */
 function pushStream(): {
   stream: AsyncGenerator<InferenceEvent>;
   push: (event: InferenceEvent) => void;
   end: () => void;
+  pulled: () => number;
 } {
   const queue: InferenceEvent[] = [];
   let notify: (() => void) | null = null;
   let ended = false;
+  let pulledCount = 0;
   const wake = (): void => {
     const resume = notify;
     notify = null;
@@ -59,6 +68,7 @@ function pushStream(): {
     for (;;) {
       const next = queue.shift();
       if (next !== undefined) {
+        pulledCount += 1;
         yield next;
         continue;
       }
@@ -78,13 +88,8 @@ function pushStream(): {
       ended = true;
       wake();
     },
+    pulled: () => pulledCount,
   };
-}
-
-/** Resolve after enough ticks for the drain's chain to settle a pushed reply. */
-async function settleTicks(): Promise<void> {
-  for (let i = 0; i < 5; i += 1) await Promise.resolve();
-  await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
 describe("driveConnectorReplies", () => {
@@ -401,7 +406,7 @@ describe("driveConnectorReplies", () => {
     // -- which is why the warm step must NOT await the barrier for such a turn.
     // When the drain ends before the reply arrives, the barrier resolves as a
     // failure rather than hanging forever.
-    const { stream, push, end } = pushStream();
+    const { stream, push, end, pulled } = pushStream();
 
     const drain = driveConnectorReplies({
       stream,
@@ -424,8 +429,13 @@ describe("driveConnectorReplies", () => {
     });
 
     // A non-reply event flows past without advancing the reply sequence.
+    // The drain consumes the stream serially, so it takes the second noise
+    // event only after it has finished handling the first: waiting for that
+    // second pull puts the assertions strictly after any settlement the first
+    // event could have caused, with no interval to guess at.
     push(noiseEvent(1));
-    await settleTicks();
+    push(noiseEvent(2));
+    await waitUntil(() => pulled() >= 2);
     expect(settledEarly).toBe(false);
     expect(drain.replySeq()).toBe(0);
 

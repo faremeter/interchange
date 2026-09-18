@@ -9,6 +9,7 @@ import { createDefaultDependencies } from "./providers";
 import { createDefaultDirector } from "./default-director";
 import { assertWellFormedToolSequence } from "./turns";
 import { createInboundMessage } from "@intx/mime";
+import { waitUntil } from "@intx/types/testing";
 
 import type {
   ReactorDirector,
@@ -146,28 +147,23 @@ function collectEvents(): {
   };
 }
 
-function waitForEvent(
+// Resolve with the first collected event matching `predicate`, re-checking
+// after each event-loop turn. No deadline: a wall-clock number here is a race
+// the test loses under load, and a never-arriving event is the lane timeout's
+// job to report (CONVENTIONS.md, "Synchronizing on State, Not Time").
+async function waitForEvent(
   events: ReactorEmittedEvent[],
   predicate: (e: ReactorEmittedEvent) => boolean,
-  timeoutMs = 2000,
 ): Promise<ReactorEmittedEvent> {
-  return new Promise((resolve, reject) => {
-    const deadline = setTimeout(
-      () => reject(new Error("Timed out waiting for event")),
-      timeoutMs,
-    );
-
-    function check() {
-      const found = events.find(predicate);
-      if (found !== undefined) {
-        clearTimeout(deadline);
-        resolve(found);
-        return;
-      }
-      setTimeout(check, 10);
-    }
-    check();
+  let found: ReactorEmittedEvent | undefined;
+  await waitUntil(() => {
+    found = events.find(predicate);
+    return found !== undefined;
   });
+  if (found === undefined) {
+    throw new Error("unreachable: waitUntil resolved without a match");
+  }
+  return found;
 }
 
 // Simple inbound message factory. Delegates to the mail-builder so the
@@ -329,9 +325,8 @@ function createTestReactor(
 
   function waitFor(
     type: ReactorEmittedEvent["type"],
-    timeoutMs = 2000,
   ): Promise<ReactorEmittedEvent> {
-    return waitForEvent(events, (e) => e.type === type, timeoutMs);
+    return waitForEvent(events, (e) => e.type === type);
   }
 
   return { reactor, events, waitFor };
@@ -1079,11 +1074,35 @@ describe("createReactor — gate lifecycle", () => {
     const commitGate = new Promise<void>((resolve) => {
       releaseCommit = resolve;
     });
+    // Resolves when the reactor reaches the held commit, so the test observes
+    // the window rather than guessing when it opens.
+    let signalCommitEntered: (() => void) | undefined;
+    const commitEntered = new Promise<void>((resolve) => {
+      signalCommitEntered = resolve;
+    });
+    // Whether `blocked` had been emitted at the moment the commit was
+    // released -- read inside the store, which is the last point still inside
+    // the window. A reactor that emitted before or concurrently with the
+    // commit shows up here as `true`.
+    let blockedDuringCommit: boolean | undefined;
+    let signalCommitObserved: (() => void) | undefined;
+    const commitObserved = new Promise<void>((resolve) => {
+      signalCommitObserved = resolve;
+    });
     const base = makeContextStore();
     const contextStore: ContextStore = {
       ...base,
       async writeMetadata(metadata, signal) {
+        signalCommitEntered?.();
         await commitGate;
+        // Record the suspend's own commit only. A later cycle's commit runs
+        // after `blocked` has legitimately fired and must not overwrite it.
+        if (blockedDuringCommit === undefined) {
+          blockedDuringCommit = events.some(
+            (e) => e.type === "reactor.gate.blocked",
+          );
+          signalCommitObserved?.();
+        }
         return base.writeMetadata(metadata, signal);
       },
     };
@@ -1103,13 +1122,19 @@ describe("createReactor — gate lifecycle", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // The commit is held, so a correctly-ordered reactor has not emitted
-    // `blocked` yet; a reactor that emits before committing would have.
-    await new Promise((r) => setTimeout(r, 50));
+    // The reactor is parked inside the held commit, so a correctly-ordered
+    // reactor has not emitted `blocked` yet; a reactor that emits before
+    // committing would have emitted it before reaching this point.
+    await commitEntered;
     expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(false);
 
-    // Release the durable commit; only now may `blocked` be emitted.
+    // Release the durable commit; only now may `blocked` be emitted. The
+    // in-store check runs before the release returns control to the reactor,
+    // so it closes the window the check above leaves open: an emit that races
+    // the commit instead of preceding it.
     releaseCommit?.();
+    await commitObserved;
+    expect(blockedDuringCommit).toBe(false);
     await waitFor("reactor.gate.blocked");
 
     reactor.abort("admin_kill");
@@ -1128,10 +1153,18 @@ describe("createReactor — gate lifecycle", () => {
     const commitGate = new Promise<void>((resolve) => {
       releaseCommit = resolve;
     });
+    // Resolves when the reactor reaches the held commit. suspendOnGate arms
+    // the gate's timeout timer before it commits, so once this resolves the
+    // 30ms timer below is already scheduled.
+    let signalCommitEntered: (() => void) | undefined;
+    const commitEntered = new Promise<void>((resolve) => {
+      signalCommitEntered = resolve;
+    });
     const base = makeContextStore();
     const contextStore: ContextStore = {
       ...base,
       async writeMetadata(metadata, signal) {
+        signalCommitEntered?.();
         await commitGate;
         return base.writeMetadata(metadata, signal);
       },
@@ -1152,8 +1185,15 @@ describe("createReactor — gate lifecycle", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // Let the gate's timeout elapse while the commit is still held. Neither the
-    // block nor the clear may surface until the commit is released.
+    // The gate timer firing inside the commit window is the race under test,
+    // and nothing observable reports it -- a deferred clear is by definition
+    // not emitted. So the wait below is ordered against the timer rather than
+    // sized to outlast it: the gate's 30ms deadline was set before
+    // `commitEntered` resolved, and this timer's 80ms deadline is set after,
+    // so the gate's deadline is the earlier of the two and the event loop
+    // fires it first no matter how loaded the machine is. Neither the block
+    // nor the clear may surface until the commit is released.
+    await commitEntered;
     await new Promise((r) => setTimeout(r, 80));
     expect(events.some((e) => e.type === "reactor.gate.blocked")).toBe(false);
     expect(events.some((e) => e.type === "reactor.gate.cleared")).toBe(false);
@@ -1191,7 +1231,7 @@ describe("createReactor — gate lifecycle", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    await waitFor("reactor.done", 3000);
+    await waitFor("reactor.done");
 
     const cleared = getEvent(events, "reactor.gate.cleared");
     expect(cleared.data.reason).toBe("timeout");
@@ -1849,7 +1889,7 @@ describe("createReactor — correlation", () => {
     // Deliver the correlated response.
     reactor.deliver(makeInboundMessage(CORR_ID));
 
-    await waitFor("reactor.done", 3000);
+    await waitFor("reactor.done");
 
     const correlated = getEvent(events, "message.correlated");
     expect(correlated.data.correlationId).toBe(CORR_ID);
@@ -2299,9 +2339,11 @@ describe("createReactor — director misbehavior", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // After wait, deliver a second message which triggers done.
-    // Small delay to let the reactor process the first message.
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 20);
+    // After wait, deliver a second message which triggers done. The
+    // director's own counter reports that the first message was processed, so
+    // the second delivery is ordered against that rather than a delay.
+    await waitUntil(() => messageCount >= 1);
+    reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     expect(messageCount).toBe(2);
@@ -2330,8 +2372,10 @@ describe("createReactor — reply action", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // After reply, reactor waits for next event. Deliver another message.
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 20);
+    // After reply, reactor waits for next event. Deliver another message
+    // once the director reports it handled the first one.
+    await waitUntil(() => messageCount >= 1);
+    reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     const replyEvent = getEvent(events, "connector.reply");
@@ -2413,8 +2457,11 @@ describe("createReactor — checkpoint failure", () => {
     reactor.start();
     reactor.deliver(makeInboundMessage());
 
-    // After checkpoint failure + wait, deliver another message.
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 50);
+    // After checkpoint failure + wait, deliver another message. The
+    // non-fatal reactor.error the failed checkpoint emits is the signal that
+    // the first cycle got that far.
+    await waitFor("reactor.error");
+    reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     expect(checkpointCalled).toBe(true);
@@ -2665,7 +2712,7 @@ describe("createReactor — dequeue priority", () => {
     // director shuts down on it, and tool.done is never processed.
     const order: string[] = [];
 
-    const { reactor, waitFor } = createTestReactor({
+    const { reactor, events, waitFor } = createTestReactor({
       contextStore: makeContextStore([assistantToolCallTurn(["tc-pending"])]),
       director: {
         async decide(event, _state, caps) {
@@ -2687,12 +2734,22 @@ describe("createReactor — dequeue priority", () => {
         },
       },
       toolRunner: makeToolRunner(async (call) => {
-        // Deliver a second message while the tool runs, then yield to a real
-        // timer so deliver()'s async enqueue lands before executeTools
+        // Deliver a second message while the tool runs and wait for its
+        // enqueue, so deliver()'s async enqueue lands before executeTools
         // enqueues tool.done. This pins the queue order to
-        // [message.received, tool.done] — the interleave that triggers the bug.
-        reactor.deliver(makeInboundMessage());
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        // [message.received, tool.done] — the interleave that triggers the
+        // bug. processDelivery emits `message.received` in the same
+        // synchronous step as the enqueue, so the emitted event carrying this
+        // message's id is the enqueue's own signal.
+        const mail = makeInboundMessage();
+        reactor.deliver(mail);
+        await waitUntil(() =>
+          events.some(
+            (e) =>
+              e.type === "message.received" &&
+              e.data.message.headers.messageId === mail.headers.messageId,
+          ),
+        );
         return { callId: call.id, content: "ok" };
       }),
     });
@@ -2716,7 +2773,7 @@ describe("createReactor — dequeue priority", () => {
     const order: string[] = [];
     let toolDoneCount = 0;
 
-    const { reactor, waitFor } = createTestReactor({
+    const { reactor, events, waitFor } = createTestReactor({
       contextStore: makeContextStore([assistantToolCallTurn(["tc-a", "tc-b"])]),
       director: {
         async decide(event, _state, caps) {
@@ -2742,8 +2799,19 @@ describe("createReactor — dequeue priority", () => {
         },
       },
       toolRunner: makeToolRunner(async (call) => {
-        reactor.deliver(makeInboundMessage());
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        // Mail delivered mid-batch must be enqueued before this call's
+        // tool.done. The emitted `message.received` carrying this message's
+        // id is published in the same synchronous step as the enqueue, so it
+        // is the signal that the delivery landed.
+        const mail = makeInboundMessage();
+        reactor.deliver(mail);
+        await waitUntil(() =>
+          events.some(
+            (e) =>
+              e.type === "message.received" &&
+              e.data.message.headers.messageId === mail.headers.messageId,
+          ),
+        );
         return { callId: call.id, content: "ok" };
       }),
     });
@@ -2789,8 +2857,10 @@ describe("createReactor — dequeue priority", () => {
         },
       },
       toolRunner: makeToolRunner(async (call) => {
+        // abort() enqueues the abort event synchronously, so it is already
+        // queued ahead of this call's tool.done when abort() returns; no wait
+        // is needed to order the two.
         reactor.abort("admin_kill");
-        await new Promise((resolve) => setTimeout(resolve, 10));
         return { callId: call.id, content: "ok" };
       }),
     });
@@ -2811,7 +2881,7 @@ describe("createReactor — dequeue priority", () => {
     const order: string[] = [];
     let inferenceCount = 0;
 
-    const { reactor, waitFor } = createTestReactor({
+    const { reactor, events, waitFor } = createTestReactor({
       director: {
         async decide(event, _state, caps) {
           order.push(event.type);
@@ -2829,10 +2899,19 @@ describe("createReactor — dequeue priority", () => {
       },
       inferenceRunner: async function* (opts) {
         inferenceCount += 1;
-        // Deliver mail mid-inference, then yield to a real timer so the
-        // message is enqueued before inference.done.
-        reactor.deliver(makeInboundMessage());
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        // Deliver mail mid-inference and wait for its enqueue, so the message
+        // is queued before inference.done. The emitted `message.received`
+        // carrying this message's id is published in the same synchronous
+        // step as the enqueue.
+        const mail = makeInboundMessage();
+        reactor.deliver(mail);
+        await waitUntil(() =>
+          events.some(
+            (e) =>
+              e.type === "message.received" &&
+              e.data.message.headers.messageId === mail.headers.messageId,
+          ),
+        );
         yield {
           type: "inference.done",
           seq: opts.nextSeq(),
@@ -3248,7 +3327,8 @@ describe("createReactor — state snapshot inspection", () => {
     reactor.deliver(makeInboundMessage());
 
     // Wait for the first message to be processed, then deliver a second.
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 30);
+    await waitUntil(() => messageCount >= 1);
+    reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     if (secondSnapshot === undefined) throw new Error("unreachable");
@@ -3284,8 +3364,13 @@ describe("createReactor — deliver after done", () => {
     reactor.deliver(makeInboundMessage());
     reactor.deliver(makeInboundMessage());
 
-    // Give the event loop a chance to process any spurious events.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // A macrotask boundary drains the microtask queue, which is the whole
+    // window in which a spurious event could appear: the only path from
+    // deliver() to an emitted event is processDelivery's async body, and for
+    // an uncorrelated message (these carry no correlationId) tryCorrelate
+    // returns on its first statement, so the emit would land in a microtask.
+    // If the done guard had regressed, the event would be here by now.
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     // No new events should have been emitted after reactor.done.
     expect(events.length).toBe(eventsBeforeDeliver);
@@ -5485,9 +5570,8 @@ function createDirectReactor(opts: {
 
   function waitForType(
     type: ReactorEmittedEvent["type"],
-    timeoutMs = 2000,
   ): Promise<ReactorEmittedEvent> {
-    return waitForEvent(events, (e) => e.type === type, timeoutMs);
+    return waitForEvent(events, (e) => e.type === type);
   }
   return { reactor, events, waitFor: waitForType };
 }
@@ -5603,7 +5687,12 @@ describe("createReactor — transform chain ordering and compact action", () => 
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 30);
+    // The second message drives the terminal done; deliver it once the
+    // compact cycle it must follow has committed.
+    await waitUntil(() =>
+      recording.commits.some((c) => c.message.startsWith("Cycle: compaction")),
+    );
+    reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     expect(messages).toBeGreaterThanOrEqual(1);
@@ -5726,7 +5815,14 @@ describe("createReactor — transform chain ordering and compact action", () => 
     // The director did not chain compact + infer; it only emitted compact.
     // Drive the next infer by delivering another message that re-runs the
     // event loop. The director's message.received → infer rule will fire.
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 30);
+    // The compactor's manifest record is written by the compact cycle, so it
+    // reports that the cycle this delivery must follow has happened.
+    await waitUntil(() =>
+      recording.manifests
+        .flat()
+        .some((r) => r.strategy === "overflow-compactor"),
+    );
+    reactor.deliver(makeInboundMessage());
 
     await waitFor("reactor.done");
     // The reactor ran inference twice: the first attempt failed with
@@ -5813,7 +5909,10 @@ describe("createReactor — transform chain ordering and compact action", () => 
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 80);
+    // The second message must land after the first cycle commits, since the
+    // assertions below key off commit order.
+    await waitUntil(() => recording.commits.length >= 1);
+    reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     expect(recording.commits.length).toBeGreaterThanOrEqual(1);
@@ -5877,7 +5976,10 @@ describe("createReactor — message.run bracket emission", () => {
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 20);
+    // One bracket per message run, so the second message is delivered after
+    // the director reports the first one handled.
+    await waitUntil(() => count >= 1);
+    reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     const endedEvents = events.filter((e) => e.type === "message.run.ended");
@@ -5903,7 +6005,10 @@ describe("createReactor — message.run bracket emission", () => {
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 20);
+    // One bracket per message run, so the second message is delivered after
+    // the director reports the first one handled.
+    await waitUntil(() => count >= 1);
+    reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     const replyIdx = events.findIndex((e) => e.type === "connector.reply");
@@ -5977,7 +6082,10 @@ describe("createReactor — message.run bracket emission", () => {
 
     reactor.start();
     reactor.deliver(makeInboundMessage());
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 30);
+    // The second message drives the terminal done; deliver it once the
+    // director reports the first message handled.
+    await waitUntil(() => count >= 1);
+    reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     const types = events.map((e) => e.type);
@@ -6005,9 +6113,14 @@ describe("createReactor — message.run bracket emission", () => {
     });
 
     reactor.start();
+    // Three message runs, one per delivery. The director's counter reports
+    // each message handled, so each delivery follows the previous run rather
+    // than a delay chosen to separate them.
     reactor.deliver(makeInboundMessage());
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 20);
-    setTimeout(() => reactor.deliver(makeInboundMessage()), 40);
+    await waitUntil(() => count >= 1);
+    reactor.deliver(makeInboundMessage());
+    await waitUntil(() => count >= 2);
+    reactor.deliver(makeInboundMessage());
     await waitFor("reactor.done");
 
     const started = events.filter((e) => e.type === "message.run.started");

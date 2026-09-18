@@ -289,9 +289,13 @@ describe("createAgent tool-rollback dispose handling", () => {
       if (!(caught instanceof Error)) throw new Error("unreachable");
       expect(caught.name).toBe("DuplicateToolError");
 
-      // Let any in-flight microtasks settle so an escaped rejection
-      // would land.
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      // One macrotask boundary is enough: the runtime reports an
+      // unhandled rejection when the microtask queue drains, so a
+      // rejection escaping the rollback above would already have
+      // reached the handler by the time this resolves. Verified against
+      // this runtime with a `void`-discarded rejection of the same
+      // shape as the disposer's.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(observedRejection).toBeNull();
     } finally {
       process.off("unhandledRejection", onUnhandled);
