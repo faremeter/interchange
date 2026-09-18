@@ -326,6 +326,8 @@ timer resolves it in process. The seam that spawns a run states the fact as
 container-driven suspendable body both keep their gates.
 
 Where it lives today: the "Crash and suspension behavior of a `loop` body"
-section of `packages/workflow/README.md` and the `hasUpstreamSignalResolver`
-doc comment, `packages/workflow/src/runtime/env.ts` (enforced by
+section of `packages/workflow/README.md`, the `hasUpstreamSignalResolver`
+doc comment, `packages/workflow/src/runtime/env.ts`, and the
+`AwaitSignalPrimitive` and `ChildWorkflowPrimitive` doc comments,
+`packages/workflow/src/definition/primitives.ts` (enforced by
 `parkOnSignalResult`, `packages/workflow/src/runtime/run.ts`)
