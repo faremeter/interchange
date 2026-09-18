@@ -17,6 +17,7 @@ export function createConnection(config: DBConfig) {
     ...(config.ssl !== undefined && { ssl: config.ssl }),
     connection: {
       TimeZone: "UTC",
+      statement_timeout: config.statementTimeoutMs ?? 60_000,
       ...(config.schema !== undefined && {
         // Pin the connection's search_path so unqualified table
         // references resolve to the caller's schema. The migration

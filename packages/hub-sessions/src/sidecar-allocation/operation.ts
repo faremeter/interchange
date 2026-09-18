@@ -50,6 +50,10 @@ export async function runSidecarOperation<T>(
             new SidecarOperationTimeoutError(operation, timeoutMs),
           );
         }, timeoutMs);
+  // A deadline must never keep the process alive on its own: in-flight work
+  // always holds its own handles, and a bare 120s timer would stall teardown
+  // and test runners after everything else settled.
+  timer?.unref?.();
   try {
     return await Promise.race([
       Promise.resolve().then(() => {

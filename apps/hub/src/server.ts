@@ -28,6 +28,7 @@ import {
   createWorkflowAllocationService,
   createWorkflowDispatchService,
   createReconciliationScheduler,
+  recoverSenderDeploy,
   DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
   pushCredentialReconcile,
   WORKSPACE_BUILTINS_REGISTRY,
@@ -77,6 +78,7 @@ export async function createHubServer({
   // dedicated, droppable schema. Production deployments leave it
   // unset and run against postgres' default search_path.
   const pgSchema = process.env["PG_SCHEMA"];
+  const dbStatementTimeoutMs = process.env["DB_STATEMENT_TIMEOUT_MS"];
   const { db } = createDB({
     host: process.env["DB_HOST"] ?? "localhost",
     port: Number(process.env["DB_PORT"] ?? 5432),
@@ -84,6 +86,9 @@ export async function createHubServer({
     password: process.env["DB_PASSWORD"] ?? "postgres",
     database: process.env["DB_NAME"] ?? "interchange",
     ...(pgSchema !== undefined && { schema: pgSchema }),
+    ...(dbStatementTimeoutMs !== undefined && {
+      statementTimeoutMs: Number(dbStatementTimeoutMs),
+    }),
   });
 
   const auth = createAuth(db);
@@ -380,12 +385,15 @@ export async function createHubServer({
   });
   const sidecarAllocationReconciler = createSidecarAllocationReconciler({
     allocationStore: sidecarAllocationStore,
+    maxConcurrentClaims: sidecarAllocationConcurrency,
     plugins: sidecarPlugins,
     router: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,
     ...(sidecarOperationTimeoutMs !== undefined
       ? { operationTimeoutMs: sidecarOperationTimeoutMs }
       : {}),
+    onInitializationRecovery: (allocation, reconciliation) =>
+      recoverSenderDeploy({ db, sidecarRouter, allocation, reconciliation }),
     onReady: async (allocation, reconciliation) => {
       await workflowAllocationService.deployReadyAllocation(
         allocation,
@@ -433,8 +441,11 @@ export async function createHubServer({
     name: "Workflow dispatch",
     concurrency: 1,
     reconcileNext: async () => {
-      // Enqueue notifications and periodic retries enter the same guarded drain.
-      workflowDispatchService.wake();
+      // Drain directly instead of poking the guarded wake(): a stuck drain
+      // must not block unrelated dispatches. Claims are lease-guarded and
+      // skip locked rows, so concurrent drains route around each other while
+      // enqueue notifications still enter through wake().
+      await workflowDispatchService.reconcileUntilIdle();
       return false;
     },
   });

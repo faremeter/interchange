@@ -17,6 +17,7 @@ import {
   createSidecarRouter,
   isDeployFrameFailure,
   type SidecarAuthIdentity,
+  SidecarIdentityValidationError,
 } from "./sidecar-handler";
 
 function lastFrame(ws: { sent: string[] }): Record<string, unknown> {
@@ -34,6 +35,40 @@ function lastFrame(ws: { sent: string[] }): Record<string, unknown> {
 }
 
 describe("SidecarRouter allocation initialization cancellation", () => {
+  for (const change of ["cancel", "disconnect", "reject"] as const) {
+    test(`does not send after ${change} while persisting the deployment attempt`, async () => {
+      const controller = new AbortController();
+      const router = createAllocatedRouter();
+      const ws = await connectAllocated(router);
+      const entered = Promise.withResolvers<boolean>();
+      const release = Promise.withResolvers<boolean>();
+      const before = [...ws.sent];
+      const sent = router
+        .sendAgentDeployToAllocation(
+          TEST_TARGET,
+          TEST_IDENTITY.workflowRunAddress,
+          TEST_CONFIG,
+          undefined,
+          controller.signal,
+          async () => {
+            entered.resolve(true);
+            await release.promise;
+          },
+        )
+        .catch((error: unknown) => error);
+      await entered.promise;
+      expect(ws.sent).toEqual(before);
+      if (change === "cancel") controller.abort(new Error("cancelled"));
+      if (change === "disconnect") router.handleClose(ws);
+      if (change === "reject")
+        release.reject(new Error("commit response lost"));
+      else release.resolve(true);
+      expect(await sent).toMatchObject({ frameSent: false });
+      expect(ws.sent).toEqual(before);
+      expect(router.getRoutableAddresses()).toEqual([]);
+    });
+  }
+
   for (const operation of ["deploy", "restore"] as const) {
     test(`does not send ${operation} frames after cancellation during identity validation`, async () => {
       const controller = new AbortController();
@@ -68,11 +103,105 @@ describe("SidecarRouter allocation initialization cancellation", () => {
             );
       const error = await sending.catch((cause: unknown) => cause);
 
-      expect(error).toBe(cancelled);
+      if (operation === "deploy") {
+        expect(error).toMatchObject({ frameSent: false, cause: cancelled });
+      } else {
+        expect(error).toBe(cancelled);
+      }
       expect(ws.sent).toEqual(previousFrames);
       expect(router.getRoutableAddresses()).toEqual([]);
     });
   }
+});
+
+describe("SidecarRouter dispatch cancellation", () => {
+  for (const kind of ["mail", "signal"] as const) {
+    test(`does not send ${kind} after cancellation during identity validation`, async () => {
+      const controller = new AbortController();
+      const cancelled = new Error("Delivery lease expired");
+      let cancelDuringValidation = false;
+      const router = createAllocatedRouter({
+        validateSidecarIdentity: async () => {
+          if (cancelDuringValidation) controller.abort(cancelled);
+          return true;
+        },
+      });
+      const address = TEST_IDENTITY.workflowRunAddress;
+      const ws = await connectAllocated(router, [address]);
+      const before = [...ws.sent];
+      cancelDuringValidation = true;
+      try {
+        const sending =
+          kind === "mail"
+            ? router.sendWorkflowRunDispatchToAllocation(
+                TEST_TARGET,
+                address,
+                TEST_IDENTITY.anchorRunId,
+                [],
+                "bWFpbA==",
+                "sender@tenant.example",
+                "message-1",
+                controller.signal,
+              )
+            : router.sendSignalDeliverToAllocation(
+                TEST_TARGET,
+                {
+                  agentAddress: address,
+                  runId: TEST_IDENTITY.anchorRunId,
+                  signalName: "continue",
+                  signalId: "signal-1",
+                  payload: {},
+                },
+                controller.signal,
+              );
+        expect(await sending.catch((error: unknown) => error)).toBe(cancelled);
+        expect(ws.sent).toEqual(before);
+      } finally {
+        router.handleClose(ws);
+      }
+    });
+  }
+
+  test("does not send grants or mail when a cancelled sender-key lookup returns", async () => {
+    const controller = new AbortController();
+    const cancelled = new Error("Delivery lease expired");
+    const entered = Promise.withResolvers<boolean>();
+    const key = Promise.withResolvers<string>();
+    const router = createAllocatedRouter({
+      lookups: {
+        resolveSenderKey: () => {
+          entered.resolve(true);
+          return key.promise;
+        },
+      },
+    });
+    const address = TEST_IDENTITY.workflowRunAddress;
+    const ws = await connectAllocated(router, [address]);
+    const before = [...ws.sent];
+    const sending = router
+      .sendWorkflowRunDispatchToAllocation(
+        TEST_TARGET,
+        address,
+        TEST_IDENTITY.anchorRunId,
+        [],
+        "bWFpbA==",
+        "sender@tenant.example",
+        "message-1",
+        controller.signal,
+      )
+      .catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      controller.abort(cancelled);
+      key.resolve("a".repeat(64));
+      expect(await sending).toBe(cancelled);
+      expect(ws.sent).toEqual(before);
+    } finally {
+      key.resolve("a".repeat(64));
+      await sending;
+      router.handleClose(ws);
+    }
+  });
 });
 
 describe("SidecarRouter allocation deploy transport", () => {
@@ -517,5 +646,136 @@ describe("SidecarRouter allocation pack transport", () => {
       transferId: "transfer-rogue",
       reason: "path_violation",
     });
+  });
+});
+
+describe("SidecarRouter readiness validation failures", () => {
+  test("does not mistake a failed identity lookup for an inactive supervisor", async () => {
+    const validationError = new Error("statement timeout");
+    let failValidation = false;
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if (failValidation) throw validationError;
+        return true;
+      },
+    });
+    const socket = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    try {
+      failValidation = true;
+      const error = await router
+        .isAllocatedWorkflowActive(TEST_TARGET)
+        .catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(SidecarIdentityValidationError);
+      expect(error).toMatchObject({ cause: validationError });
+      expect(socket.closed).toBe(false);
+
+      failValidation = false;
+      expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(true);
+      router.handleClose(socket);
+      expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(false);
+    } finally {
+      router.handleClose(socket);
+    }
+  });
+
+  test("reports an identity validation failure distinctly from an absent worker", async () => {
+    const validationError = new Error("statement timeout");
+    let failValidation = false;
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if (failValidation) throw validationError;
+        return true;
+      },
+    });
+    await connectAllocated(router);
+    failValidation = true;
+
+    const error = await router
+      .isAllocatedSidecarReady(TEST_TARGET)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(SidecarIdentityValidationError);
+    expect(error).toMatchObject({ cause: validationError });
+    failValidation = false;
+    await expect(router.isAllocatedSidecarReady(TEST_TARGET)).resolves.toBe(
+      true,
+    );
+  });
+
+  test("rejects a connection wait without remaining time on validation failure", async () => {
+    let failValidation = false;
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if (failValidation) throw new Error("statement timeout");
+        return true;
+      },
+    });
+    await connectAllocated(router);
+    failValidation = true;
+
+    const error = await router
+      .waitForAllocatedSidecar(TEST_TARGET, 0)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(SidecarIdentityValidationError);
+  });
+
+  test("waits out a validation failure and reports it instead of a worker timeout", async () => {
+    let failValidation = false;
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if (failValidation) throw new Error("statement timeout");
+        return true;
+      },
+    });
+    await connectAllocated(router);
+    failValidation = true;
+
+    const error = await router
+      .waitForAllocatedSidecar(TEST_TARGET, 20)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(SidecarIdentityValidationError);
+    expect(error).toMatchObject({
+      message: expect.not.stringContaining("Timed out waiting"),
+    });
+  });
+
+  test("still reports a worker timeout when the worker is absent", async () => {
+    const router = createAllocatedRouter();
+
+    const error = await router
+      .waitForAllocatedSidecar(TEST_TARGET, 10)
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(SidecarIdentityValidationError);
+    expect(error).toMatchObject({
+      message: expect.stringContaining("Timed out waiting"),
+    });
+  });
+
+  test("resolves a waiting connection once validation recovers", async () => {
+    const outcomes: ("ok" | "fail")[] = ["ok", "fail", "ok", "ok"];
+    const router = createAllocatedRouter({
+      validateSidecarIdentity: async () => {
+        if ((outcomes.shift() ?? "ok") === "fail") {
+          throw new Error("statement timeout");
+        }
+        return true;
+      },
+    });
+    const waiting = router.waitForAllocatedSidecar(TEST_TARGET, 500).then(
+      () => "resolved",
+      (cause: unknown) => cause,
+    );
+    await tick();
+    await connectAllocated(router);
+    await tick();
+    await connectAllocated(router, [], "reconnect");
+
+    await expect(waiting).resolves.toBe("resolved");
   });
 });

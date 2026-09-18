@@ -15,6 +15,10 @@ import type {
   AllocatedSidecarTarget,
   SidecarAllocationRouter,
 } from "./ws/sidecar-handler";
+import {
+  runSidecarOperation,
+  SidecarOperationTimeoutError,
+} from "./sidecar-allocation/operation";
 
 const logger = getLogger(["hub", "workflow-dispatch"]);
 
@@ -73,12 +77,15 @@ export type WorkflowDispatchServiceDeps = {
     anchorRunId: string,
   ) => Promise<string | null>;
   readonly leaseDurationMs?: number;
+  /** Bounds pending claims and unfinished deliveries across all drains. */
+  readonly maxConcurrentDispatches?: number;
   readonly retryDelayMs?: (attempt: number) => number;
   readonly now?: () => Date;
   readonly createLeaseId?: () => string;
 };
 
 const DEFAULT_LEASE_DURATION_MS = 30_000;
+const DEFAULT_MAX_CONCURRENT_DISPATCHES = 8;
 
 function defaultRetryDelay(attempt: number): number {
   return Math.min(500 * 2 ** Math.min(attempt, 6), 30_000);
@@ -94,6 +101,7 @@ function targetForReadyAllocation(
   if (
     allocation.status !== "allocated" ||
     allocation.ensureAcceptedGeneration !== allocation.generation ||
+    allocation.initializationLeaseId !== undefined ||
     allocation.connectDeadline !== undefined
   ) {
     return null;
@@ -116,15 +124,24 @@ export function createWorkflowDispatchService({
   router,
   resolveAnchorAddress,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
+  maxConcurrentDispatches = DEFAULT_MAX_CONCURRENT_DISPATCHES,
   retryDelayMs = defaultRetryDelay,
   now = () => new Date(),
   createLeaseId = randomLeaseId,
 }: WorkflowDispatchServiceDeps): WorkflowDispatchService {
-  if (leaseDurationMs <= 0) {
-    throw new Error("leaseDurationMs must be positive");
+  if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs <= 0) {
+    throw new Error("leaseDurationMs must be a positive integer");
+  }
+  if (
+    !Number.isSafeInteger(maxConcurrentDispatches) ||
+    maxConcurrentDispatches <= 0
+  ) {
+    throw new Error("maxConcurrentDispatches must be a positive integer");
   }
 
   let drainPromise: Promise<void> | null = null;
+  let admittedDispatches = 0;
+  const activeDispatches = new Set<string>();
 
   function retryAt(attempt: number): Date {
     return new Date(now().getTime() + retryDelayMs(attempt));
@@ -147,16 +164,66 @@ export function createWorkflowDispatchService({
   }
 
   async function reconcileNext(): Promise<boolean> {
-    const leaseId = createLeaseId();
-    const dispatch = await dispatchStore.claimNextPending({
-      leaseId,
-      leaseDurationMs,
-    });
-    if (dispatch === null) return false;
+    if (admittedDispatches >= maxConcurrentDispatches) return false;
+    admittedDispatches += 1;
+    let delivery: Promise<void> | undefined;
+    let activeDispatchId: string | undefined;
+    try {
+      const leaseId = createLeaseId();
+      const claimStartedAt = performance.now();
+      const dispatch = await dispatchStore.claimNextPending({
+        leaseId,
+        leaseDurationMs,
+        excludedDispatchIds: [...activeDispatches],
+      });
+      if (dispatch === null) return false;
 
+      // A concurrent claim can outlive both its exclusion snapshot and the old
+      // lease. Do not start another delivery while its original I/O is pending.
+      if (activeDispatches.has(dispatch.id)) return true;
+      const remaining = leaseDurationMs - (performance.now() - claimStartedAt);
+      if (remaining <= 0) return true;
+
+      activeDispatchId = dispatch.id;
+      activeDispatches.add(dispatch.id);
+      try {
+        await runSidecarOperation(
+          "Workflow dispatch",
+          Math.ceil(remaining),
+          (signal) => {
+            delivery = deliver(dispatch, leaseId, signal);
+            return delivery;
+          },
+        );
+      } catch (error) {
+        if (!(error instanceof SidecarOperationTimeoutError)) throw error;
+        // The durable lease expires independently. Do not start another database
+        // write here: a stuck retry write must not occupy the freed drain either.
+        logger.warn`Dispatch ${dispatch.id} stopped at its delivery deadline`;
+      }
+      return true;
+    } finally {
+      const release = () => {
+        admittedDispatches -= 1;
+        if (activeDispatchId !== undefined)
+          activeDispatches.delete(activeDispatchId);
+      };
+      // Timeouts free the drain, but the underlying I/O retains its admission
+      // reservation and dispatch exclusion until it actually settles.
+      if (delivery === undefined) release();
+      else void delivery.then(release, release);
+    }
+  }
+
+  async function deliver(
+    dispatch: ClaimedDispatch,
+    leaseId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     const allocation = await allocationStore.findByAnchorRunId(
       dispatch.anchorRunId,
     );
+    signal.throwIfAborted();
     if (allocation === null) {
       await retry(
         dispatch,
@@ -164,7 +231,7 @@ export function createWorkflowDispatchService({
         "allocation_missing",
         `No sidecar allocation exists for workflow anchor ${dispatch.anchorRunId}`,
       );
-      return true;
+      return;
     }
     const target = targetForReadyAllocation(allocation);
     if (target === null) {
@@ -174,9 +241,10 @@ export function createWorkflowDispatchService({
         "allocation_not_ready",
         `Sidecar allocation ${allocation.id} is not ready for delivery`,
       );
-      return true;
+      return;
     }
     const agentAddress = await resolveAnchorAddress(dispatch.anchorRunId);
+    signal.throwIfAborted();
     if (agentAddress === null) {
       await retry(
         dispatch,
@@ -184,21 +252,25 @@ export function createWorkflowDispatchService({
         "anchor_address_missing",
         `Workflow anchor ${dispatch.anchorRunId} has no routing address`,
       );
-      return true;
+      return;
     }
 
     try {
       if (dispatch.kind === "signal") {
-        const signal = SignalDeliverFrame.assert(
+        const frame = SignalDeliverFrame.assert(
           JSON.parse(new TextDecoder().decode(dispatch.rawMessage)),
         );
-        await router.sendSignalDeliverToAllocation(target, {
-          agentAddress: signal.agentAddress,
-          runId: signal.runId,
-          signalName: signal.signalName,
-          signalId: signal.signalId,
-          payload: signal.payload,
-        });
+        await router.sendSignalDeliverToAllocation(
+          target,
+          {
+            agentAddress: frame.agentAddress,
+            runId: frame.runId,
+            signalName: frame.signalName,
+            signalId: frame.signalId,
+            payload: frame.payload,
+          },
+          signal,
+        );
       } else {
         // A deliverable mail dispatch always carries the sender persisted at
         // enqueue (the workflow_run_dispatch mail-sender check enforces it).
@@ -218,12 +290,14 @@ export function createWorkflowDispatchService({
           base64Encode(dispatch.rawMessage),
           dispatch.senderAddress,
           dispatch.messageId,
+          signal,
         );
       }
       // Keep the delivery lease until the sidecar acknowledges its durable
       // inbox write. If that ack never arrives, lease expiry makes the same
       // immutable payload claimable again.
     } catch (error) {
+      signal.throwIfAborted();
       await retry(
         dispatch,
         leaseId,
@@ -231,7 +305,6 @@ export function createWorkflowDispatchService({
         error instanceof Error ? error.message : String(error),
       );
     }
-    return true;
   }
 
   async function reconcileUntilIdle(maxIterations = 100): Promise<number> {
