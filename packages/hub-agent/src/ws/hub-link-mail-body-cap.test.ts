@@ -25,7 +25,7 @@ import type {
   RemoteSendHandler,
   MessageSentHandler,
 } from "@intx/mail-memory";
-import { configureSync, getConfig, resetSync } from "@intx/log";
+import { configureSync, getConfig } from "@intx/log";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
@@ -170,11 +170,17 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  if (savedLogConfig) {
-    configureSync({ reset: true, ...savedLogConfig });
-  } else {
-    resetSync();
+  // A null capture means this file loaded without `@intx/log` having
+  // installed its default sink, which cannot happen -- importing the
+  // package runs the install. Resetting here instead would leave the
+  // worker with no logging configuration at all, and the install
+  // cannot re-fire to repair it.
+  if (!savedLogConfig) {
+    throw new Error(
+      "no logging configuration was captured before this suite replaced it",
+    );
   }
+  configureSync({ reset: true, ...savedLogConfig });
 });
 
 function capErrors(): string[] {

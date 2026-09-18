@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-type-assertion -- Transport.fetch<T> is a generic interface method; mock implementations must use `as T` to satisfy the return type contract */
 import { describe, expect, test } from "bun:test";
 
+import { waitUntil } from "@intx/types/testing";
+
 import { createRunSession, type RunSession } from "./session";
 import type { Transport } from "./transport";
 import type { WorkflowRunEvent } from "./validators";
@@ -14,8 +16,8 @@ function noop(): void {
   // intentional no-op for onChange callbacks
 }
 
-function tick(ms = 0): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function event(seq: number, type: string, body: Record<string, unknown> = {}) {
@@ -52,6 +54,40 @@ function eventsResponse(events: WorkflowRunEvent[]) {
   return { runId: RUN_ID, events };
 }
 
+/**
+ * A second, still-live session used as a pacer for a negative assertion.
+ *
+ * "No further read happened" cannot be waited for -- it is already true the
+ * instant it is checked -- and a pause proves only that the machine got
+ * through that pause. This session is started AFTER the one under test and
+ * polls on the same interval, so a read the session under test had wrongly
+ * scheduled was armed earlier with the same delay and therefore fires first.
+ * A completed scheduled read here is proof that read would already have
+ * happened.
+ */
+function createPollPacer(): {
+  reads: () => number;
+  destroy: () => void;
+} {
+  const mock = createMockTransport(() =>
+    eventsResponse([event(0, "RunStarted")]),
+  );
+  const session = createRunSession({
+    tenantId: TENANT_ID,
+    runId: RUN_ID,
+    transport: mock.transport,
+    onChange: noop,
+    pollIntervalMs: POLL_MS,
+  });
+  session.start();
+  return {
+    reads: () => mock.calls,
+    destroy: () => {
+      session.destroy();
+    },
+  };
+}
+
 describe("run session lifecycle", () => {
   test("start polls the events endpoint and hydrates the timeline", async () => {
     const mock = createMockTransport(() =>
@@ -67,7 +103,7 @@ describe("run session lifecycle", () => {
 
     expect(session.hydrated).toBe(false);
     const stop = session.start();
-    await tick();
+    await waitUntil(() => session.hydrated);
 
     expect(session.hydrated).toBe(true);
     expect(mock.paths[0]).toBe(`${BASE_PATH}/events`);
@@ -89,7 +125,7 @@ describe("run session lifecycle", () => {
     });
 
     session.start();
-    await tick();
+    await waitUntil(() => session.hydrated);
 
     expect(session.hydrated).toBe(true);
     expect(session.events).toHaveLength(0);
@@ -148,11 +184,12 @@ describe("run session polling", () => {
     });
 
     session.start();
-    await tick();
+    await waitUntil(() => session.events.length >= 1);
     expect(session.events.map((e) => e.seq)).toEqual([0]);
 
-    // Wait past the poll interval for the second read.
-    await tick(POLL_MS * 2);
+    // The second read replacing the timeline is the event; the poll interval
+    // says when it is due, not how long the test is willing to wait for it.
+    await waitUntil(() => session.events.length >= 2);
     expect(session.events.map((e) => e.seq)).toEqual([0, 1]);
     session.destroy();
   });
@@ -170,13 +207,18 @@ describe("run session polling", () => {
     });
 
     session.start();
-    await tick();
+    await waitUntil(() => session.terminal);
     expect(session.terminal).toBe(true);
     const callsAtTerminal = mock.calls;
 
     // No further reads once the run has settled.
-    await tick(POLL_MS * 3);
-    expect(mock.calls).toBe(callsAtTerminal);
+    const pacer = createPollPacer();
+    try {
+      await waitUntil(() => pacer.reads() >= 2);
+      expect(mock.calls).toBe(callsAtTerminal);
+    } finally {
+      pacer.destroy();
+    }
     session.destroy();
   });
 
@@ -196,7 +238,7 @@ describe("run session polling", () => {
     });
 
     session.start();
-    await tick();
+    await waitUntil(() => changes >= 1);
     // Terminal on the first read, so exactly one change fired.
     expect(changes).toBe(1);
     session.destroy();
@@ -215,12 +257,17 @@ describe("run session polling", () => {
     });
 
     session.start();
-    await tick();
+    await waitUntil(() => session.hydrated);
     session.destroy();
     const callsAtDestroy = mock.calls;
 
-    await tick(POLL_MS * 3);
-    expect(mock.calls).toBe(callsAtDestroy);
+    const pacer = createPollPacer();
+    try {
+      await waitUntil(() => pacer.reads() >= 2);
+      expect(mock.calls).toBe(callsAtDestroy);
+    } finally {
+      pacer.destroy();
+    }
   });
 
   test("start cleanup cancels the in-flight read without hydrating", async () => {
@@ -248,6 +295,10 @@ describe("run session polling", () => {
 
     const cleanup = session.start();
     cleanup();
+    // Releasing the parked fetch leaves only microtask work between here and
+    // the poll's post-fetch `stopped` check, so this macrotask yield resumes
+    // after that check has run. The assertion is a negative, which a wait on
+    // state could not express.
     resolveFetch();
     await tick();
 
@@ -283,7 +334,7 @@ describe("run session error handling", () => {
     });
 
     session.start();
-    await tick();
+    await waitUntil(() => reported.error !== null);
 
     if (reported.error === null) {
       throw new Error("expected an error to be reported");
@@ -317,7 +368,7 @@ describe("run session error handling", () => {
     });
 
     session.start();
-    await tick();
+    await waitUntil(() => reported.error !== null);
 
     if (reported.error === null) {
       throw new Error("expected an error to be reported");

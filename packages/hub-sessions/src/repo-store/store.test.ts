@@ -6,6 +6,7 @@ import git from "isomorphic-git";
 import { generateKeyPair } from "@intx/crypto";
 import { collectReachableObjects } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
+import { waitUntil } from "@intx/types/testing";
 import { createRepoStore } from "./store";
 import type {
   AuthorizeFn,
@@ -1438,12 +1439,18 @@ describe("RepoStore", () => {
 
     const targetDir = await makeTempDir("repo-store-serial-target-");
     const events: string[] = [];
+    // Each push parks inside validatePush until the test releases it, so the
+    // first push holds the repo for as long as the test wants rather than for
+    // a fixed delay the second push has to arrive inside of.
+    const parked: (() => void)[] = [];
     const slowHandler: TestHandler = {
       kind: "agent-state",
       directoryPrefix: "repos-under-test",
       async validatePush() {
         events.push("validate");
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise<void>((resolve) => {
+          parked.push(resolve);
+        });
         return { ok: true };
       },
       onRefUpdated({ newSha }) {
@@ -1474,6 +1481,14 @@ describe("RepoStore", () => {
       secondSha,
       firstSha,
     );
+
+    // Release each push only once it has parked. A store that ran the two in
+    // parallel would park both before either release, which the event order
+    // below reports as two adjacent "validate" entries.
+    await waitUntil(() => parked.length >= 1);
+    parked[0]?.();
+    await waitUntil(() => parked.length >= 2);
+    parked[1]?.();
 
     await Promise.all([firstP, secondP]);
 
@@ -1515,9 +1530,12 @@ describe("RepoStore", () => {
     const { pack: packB } = await sourceStore.createPack(principal, repoB, REF);
 
     const targetDir = await makeTempDir("repo-store-parallel-target-");
-    const enters: number[] = [];
     let activeConcurrent = 0;
     let observedMaxConcurrent = 0;
+    let reportBothInFlight!: () => void;
+    const bothInFlight = new Promise<void>((resolve) => {
+      reportBothInFlight = resolve;
+    });
     const trackingHandler: TestHandler = {
       kind: "agent-state",
       directoryPrefix: "repos-under-test",
@@ -1527,8 +1545,13 @@ describe("RepoStore", () => {
           observedMaxConcurrent,
           activeConcurrent,
         );
-        enters.push(Date.now());
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        // A barrier, not a delay: each handler holds the push until BOTH have
+        // entered, so the second one arrives however long it takes. The delay
+        // this replaces closed the window after 100ms, and a push that
+        // reached the handler later than that left the counter at 1 and
+        // failed a store that was in fact parallel.
+        if (activeConcurrent === 2) reportBothInFlight();
+        await bothInFlight;
         activeConcurrent -= 1;
         return { ok: true };
       },
@@ -1544,18 +1567,19 @@ describe("RepoStore", () => {
       authorize: allowAll,
     });
 
-    const start = Date.now();
     await Promise.all([
       targetStore.receivePack(principal, repoA, REF, packA, shaA, null),
       targetStore.receivePack(principal, repoB, REF, packB, shaB, null),
     ]);
-    const elapsed = Date.now() - start;
 
+    // Both handlers were in flight at once, which is the property: the
+    // counter rises to 2 only if the second push entered before the first
+    // released. Exact equality also rules out serialization, which would
+    // leave it at 1, so no elapsed-time bound is needed to tell the two
+    // apart -- and a bound would only add a dependency on how fast the
+    // machine happens to be. A store that serialized the two repos never
+    // releases the barrier at all, which the lane timeout reports as a hang.
     expect(observedMaxConcurrent).toBe(2);
-    // Serialized work would take ~200ms; parallel work completes well
-    // under 180ms. The bound is generous to absorb scheduler jitter on
-    // contended CI runners.
-    expect(elapsed).toBeLessThan(180);
   });
 
   test("getRepoDir returns dataDir/<directoryPrefix>/<id>", async () => {

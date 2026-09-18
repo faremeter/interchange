@@ -28,6 +28,7 @@ import {
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { hexDecode, hexEncode } from "@intx/types";
+import { waitUntil } from "@intx/types/testing";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
@@ -101,19 +102,6 @@ afterEach(async () => {
     dirs.map((d) => fs.rm(d, { recursive: true, force: true })),
   );
 });
-
-async function waitFor(
-  predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
-): Promise<void> {
-  const start = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-    }
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
 
 function makeKey(seed: number): Uint8Array {
   const key = new Uint8Array(32);
@@ -266,9 +254,9 @@ describe("hub-link sender-key rotation on reconnect", () => {
         getCachedSenderAddresses: () => firstCache.rotatableAddresses(),
       });
       first.connect();
-      await waitFor(() => router.getConnectedSidecars().includes(sidecarId));
+      await waitUntil(() => router.getConnectedSidecars().includes(sidecarId));
       first.close();
-      await waitFor(() => !router.getConnectedSidecars().includes(sidecarId));
+      await waitUntil(() => !router.getConnectedSidecars().includes(sidecarId));
 
       // The key rotates hub-side while the sidecar is disconnected.
       currentKey = hexEncode(newKey);
@@ -301,7 +289,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
       second.connect();
       try {
         // The refresh push is fire-and-forget, so poll for the cache to update.
-        await waitFor(() => {
+        await waitUntil(() => {
           const held = reconnectCache.get(sender);
           return held !== undefined && held[0] === newKey[0];
         });
@@ -365,9 +353,9 @@ describe("hub-link sender-key rotation on reconnect", () => {
         getCachedSenderAddresses: () => firstCache.rotatableAddresses(),
       });
       first.connect();
-      await waitFor(() => router.getConnectedSidecars().includes(sidecarId));
+      await waitUntil(() => router.getConnectedSidecars().includes(sidecarId));
       first.close();
-      await waitFor(() => !router.getConnectedSidecars().includes(sidecarId));
+      await waitUntil(() => !router.getConnectedSidecars().includes(sidecarId));
 
       // The sender's principal is hard-deleted hub-side while the sidecar is
       // disconnected: the strict resolver now returns a confirmed null for it.
@@ -406,7 +394,7 @@ describe("hub-link sender-key rotation on reconnect", () => {
       second.connect();
       try {
         // The evict push is fire-and-forget, so poll for the cache to drop it.
-        await waitFor(() => reconnectCache.get(sender) === undefined);
+        await waitUntil(() => reconnectCache.get(sender) === undefined);
         expect(reconnectCache.get(sender)).toBeUndefined();
         expect(observedHandshakes).toContain("reconnect");
       } finally {

@@ -188,6 +188,7 @@ function withTestDeployBindings(): {
 }
 import type { KeyPair } from "@intx/types/runtime";
 import { hexDecode } from "@intx/types";
+import { waitUntil } from "@intx/types/testing";
 
 // In-memory AgentKeyStore for tests. Tests that exercise deploy-commit
 // verification register keys via the public AgentKeyStore methods
@@ -230,19 +231,6 @@ function createTestKeyStore(): AgentKeyStore & {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-async function waitFor(
-  predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
-): Promise<void> {
-  const start = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-    }
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
 
 function createMockSessionManager(): SessionManager {
   return {
@@ -304,11 +292,18 @@ type TestEnv = {
   router: ReturnType<typeof createSidecarRouter>;
   agentEvents: { addr: string; sid: string; event: unknown }[];
   outboundMail: { rawMessage: string; recipients: string[] }[];
+  /**
+   * Every frame the sidecar sent, in arrival order. The router consumes frames
+   * without reporting them, so a test whose subject is what the SIDECAR emits
+   * -- the heartbeat is one -- has this to wait on instead of a duration.
+   */
+  sidecarFrames: string[];
 };
 
 function startTestServer(): TestEnv {
   const agentEvents: TestEnv["agentEvents"] = [];
   const outboundMail: TestEnv["outboundMail"] = [];
+  const sidecarFrames: TestEnv["sidecarFrames"] = [];
 
   const router = createSidecarRouter({
     authenticateSidecar: acceptAnySidecar,
@@ -345,6 +340,7 @@ function startTestServer(): TestEnv {
         },
         onMessage(evt, _ws) {
           if (typeof evt.data === "string") {
+            sidecarFrames.push(evt.data);
             prepareAllocationFrame(router, evt.data);
             router.handleMessage(handle, evt.data);
           }
@@ -362,7 +358,7 @@ function startTestServer(): TestEnv {
     port: 0,
   });
 
-  return { server, router, agentEvents, outboundMail };
+  return { server, router, agentEvents, outboundMail, sidecarFrames };
 }
 
 // ---------------------------------------------------------------------------
@@ -406,13 +402,13 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes("test-sidecar"),
       );
       expect(env.router.getConnectedSidecars()).toContain("test-sidecar");
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("test-sidecar"),
       );
     }
@@ -433,7 +429,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes("sc-create"),
       );
 
@@ -448,7 +444,7 @@ describe("sidecar↔hub integration", () => {
       expect(env.router.getConnectedSidecars()).toContain("sc-create");
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-create"),
       );
     }
@@ -471,7 +467,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes("sc-events"),
       );
 
@@ -481,7 +477,7 @@ describe("sidecar↔hub integration", () => {
         data: {},
       });
 
-      await waitFor(() => env.agentEvents.length > startLength);
+      await waitUntil(() => env.agentEvents.length > startLength);
       const event = env.agentEvents[env.agentEvents.length - 1];
       expect(event?.addr).toBe("agent-1@test.interchange");
       expect(event?.sid).toBe("sess-1");
@@ -492,7 +488,7 @@ describe("sidecar↔hub integration", () => {
       });
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-events"),
       );
     }
@@ -521,7 +517,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes("sc-mail-out"),
       );
 
@@ -534,12 +530,12 @@ describe("sidecar↔hub integration", () => {
         content: "Hello from sidecar",
       });
 
-      await waitFor(() => env.outboundMail.length > startLength);
+      await waitUntil(() => env.outboundMail.length > startLength);
       const mail = env.outboundMail[env.outboundMail.length - 1];
       expect(mail?.recipients).toEqual(["remote@other.interchange"]);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-mail-out"),
       );
     }
@@ -566,12 +562,12 @@ describe("sidecar↔hub integration", () => {
     // Routability lags the connection: it lands only after the hub
     // re-registers the announced addresses, so wait on the routable
     // address directly.
-    await waitFor(() =>
+    await waitUntil(() =>
       env.router.getRoutableAddresses().includes(deploymentAddress),
     );
 
     client.close();
-    await waitFor(
+    await waitUntil(
       () => !env.router.getConnectedSidecars().includes("sc-disconnect"),
     );
     expect(env.router.getRoutableAddresses()).not.toContain(deploymentAddress);
@@ -591,7 +587,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes("sc-pack-reject"),
       );
 
@@ -616,7 +612,7 @@ describe("sidecar↔hub integration", () => {
       ).rejects.toThrow("Pack rejected: signature_invalid");
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-pack-reject"),
       );
     }
@@ -636,7 +632,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes("sc-pack-unsigned"),
       );
 
@@ -661,7 +657,7 @@ describe("sidecar↔hub integration", () => {
       ).rejects.toThrow("Pack rejected: signature_invalid");
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-pack-unsigned"),
       );
     }
@@ -726,7 +722,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         badRouter.getConnectedSidecars().includes("sc-bad-hex"),
       );
 
@@ -814,7 +810,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         deployHubRouter.getConnectedSidecars().includes("sc-deploy-key"),
       );
 
@@ -894,12 +890,19 @@ describe("sidecar↔hub integration", () => {
 
     try {
       client.connect();
-      await waitFor(() =>
+      await waitUntil(() =>
         pingEnv.router.getConnectedSidecars().includes("sc-ping"),
       );
 
-      // Wait long enough for at least one ping/pong round trip.
-      await new Promise((r) => setTimeout(r, 250));
+      // The heartbeat closes the link at the first tick that finds no pong
+      // within two ping intervals, so the SECOND tick is where a missing pong
+      // takes the connection down. Waiting for a third ping therefore waits
+      // past that point: the sidecar only reaches it by having been answered.
+      const pings = () =>
+        pingEnv.sidecarFrames.filter(
+          (frame) => JSON.parse(frame).type === "ping",
+        );
+      await waitUntil(() => pings().length >= 3);
 
       // The sidecar should still be connected (pongs keep it alive).
       expect(pingEnv.router.getConnectedSidecars()).toContain("sc-ping");
@@ -934,7 +937,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes("sc-asset-route"),
       );
 
@@ -973,7 +976,7 @@ describe("sidecar↔hub integration", () => {
       ]);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-asset-route"),
       );
     }
@@ -1014,7 +1017,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes("sc-workflow-restore-route"),
       );
       await sendAgentDeploy(env.router, address, TEST_CONFIG);
@@ -1041,7 +1044,7 @@ describe("sidecar↔hub integration", () => {
       ]);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () =>
           !env.router
             .getConnectedSidecars()
@@ -1068,7 +1071,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes("sc-asset-fail"),
       );
       await sendAgentDeploy(
@@ -1089,7 +1092,7 @@ describe("sidecar↔hub integration", () => {
       ).rejects.toThrow("Pack rejected: corrupt");
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-asset-fail"),
       );
     }
@@ -1125,7 +1128,7 @@ describe("sidecar↔hub integration", () => {
 
     try {
       client.connect();
-      await waitFor(() =>
+      await waitUntil(() =>
         reconnectEnv.router
           .getConnectedSidecars()
           .includes("sc-reconnect-race"),
@@ -1135,7 +1138,7 @@ describe("sidecar↔hub integration", () => {
       // its close event on the client, which schedules a reconnect
       // through the fake scheduler.
       await reconnectEnv.server.stop(true);
-      await waitFor(() => pendingReconnect !== null);
+      await waitUntil(() => pendingReconnect !== null);
 
       // close() must cancel the scheduled reconnect. Without the fix
       // the cancel function never runs and pendingReconnect stays
@@ -1182,7 +1185,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
 
@@ -1194,14 +1197,14 @@ describe("sidecar↔hub integration", () => {
       );
       expect(accepted).toBe(true);
 
-      await waitFor(() => routed.length > 0);
+      await waitUntil(() => routed.length > 0);
 
       expect(routed).toHaveLength(1);
       expect(routed[0]?.address).toBe(deploymentAddress);
       expect(routed[0]?.bytes).toEqual(VALID_MESSAGE);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-multistep-mail"),
       );
     }
@@ -1241,7 +1244,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
 
@@ -1250,14 +1253,14 @@ describe("sidecar↔hub integration", () => {
         deadlineMs: 4_321,
       });
 
-      await waitFor(() => routed.length > 0);
+      await waitUntil(() => routed.length > 0);
 
       expect(routed).toHaveLength(1);
       expect(routed[0]?.agentAddress).toBe(deploymentAddress);
       expect(routed[0]?.deadlineMs).toBe(4_321);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-drain-router"),
       );
     }
@@ -1299,7 +1302,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
       // Resolves on the sidecar's session.ack. Without a reply this would
@@ -1314,7 +1317,7 @@ describe("sidecar↔hub integration", () => {
       expect(routed[0]?.agentAddress).toBe(deploymentAddress);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-sources-ack"),
       );
     }
@@ -1346,7 +1349,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
       await expect(
@@ -1358,7 +1361,7 @@ describe("sidecar↔hub integration", () => {
       ).rejects.toThrow(/no deployment registered/);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () =>
           !env.router.getConnectedSidecars().includes("sc-sources-unrouted"),
       );
@@ -1391,7 +1394,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
       await expect(
@@ -1403,7 +1406,7 @@ describe("sidecar↔hub integration", () => {
       ).rejects.toThrow(/supervisor is recycling/);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-sources-reject"),
       );
     }
@@ -1430,7 +1433,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
       await expect(
@@ -1442,7 +1445,7 @@ describe("sidecar↔hub integration", () => {
       ).rejects.toThrow(/no sourcesInboundRouter/);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () =>
           !env.router.getConnectedSidecars().includes("sc-sources-norouter"),
       );
@@ -1558,7 +1561,7 @@ describe("sidecar↔hub integration", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         wfrRouter.getConnectedSidecars().includes("sc-wfr-bootstrap-race"),
       );
 
@@ -1567,7 +1570,7 @@ describe("sidecar↔hub integration", () => {
       // "unrouted agent" before it ever reaches `receiveWorkflowRunPack`.
       const agentAddress = "race-agent@test.interchange";
       await sendAgentDeploy(wfrRouter, agentAddress, TEST_CONFIG);
-      await waitFor(() =>
+      await waitUntil(() =>
         wfrRouter.getRoutableAddresses().includes(agentAddress),
       );
 
@@ -1618,7 +1621,7 @@ describe("sidecar↔hub integration", () => {
       expect(uniqueTransferIds.size).toBe(3);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () =>
           !wfrRouter.getConnectedSidecars().includes("sc-wfr-bootstrap-race"),
       );
@@ -1664,7 +1667,7 @@ describe("initial handshake on connect", () => {
         data: {},
       });
 
-      await waitFor(() => frames.length === 2);
+      await waitUntil(() => frames.length === 2);
 
       const parsed = frames.map((s) => JSON.parse(s));
       const registerFrames = parsed.filter(
@@ -1713,7 +1716,7 @@ describe("initial handshake on connect", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         frames.some((frame) => JSON.parse(frame).type === "register"),
       );
       const parsed = frames.map((frame) => JSON.parse(frame));
@@ -1801,7 +1804,7 @@ describe("initial handshake on connect", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         frames.some((s) => JSON.parse(s).type === "register"),
       );
       client.sendSignalCorrelationRegister({
@@ -1812,7 +1815,7 @@ describe("initial handshake on connect", () => {
         kind: "approval",
         approvalSnapshot: snapshot,
       });
-      await waitFor(() =>
+      await waitUntil(() =>
         frames.some(
           (s) => JSON.parse(s).type === "signal.correlation.register",
         ),
@@ -1833,6 +1836,11 @@ describe("initial handshake on connect", () => {
   test("an ack from the hub settles the register retry", async () => {
     const allFrames: string[] = [];
     const app = new Hono();
+    // Acks "corr-ack" and deliberately ignores "corr-unacked". The unacked
+    // correlation is the test's clock: its watchdog was armed AFTER the acked
+    // one and carries the same interval, so its retry cannot reach the socket
+    // before a retry of the acked one would have. Seeing it is proof the acked
+    // correlation's window has passed, which a pause could only guess at.
     app.get(
       "/ws",
       upgradeWebSocket((_c) => ({
@@ -1844,7 +1852,7 @@ describe("initial handshake on connect", () => {
           );
           if (
             frame.type === "signal.correlation.register" &&
-            frame.correlationId !== undefined
+            frame.correlationId === "corr-ack"
           ) {
             ws.send(
               JSON.stringify({
@@ -1870,22 +1878,35 @@ describe("initial handshake on connect", () => {
       sessions,
       ...withTestDeployBindings(),
       getWorkflowAddresses: () => [],
-      // A tight watchdog against a generous cap: an unacked register would
-      // climb toward the cap, so a count that stabilizes far below it is the
-      // ack having stopped the retry -- robust against a round-trip that races
-      // one retry rather than asserting an exact timing-gated count.
-      registerAckTimeoutMs: 30,
+      // The watchdog here races a real round trip: the ack has to travel the
+      // socket and be handled before the acked correlation's own watchdog
+      // fires, or the retry this test forbids is the correct behaviour. At
+      // thirty milliseconds a loaded machine loses that race -- observed
+      // once in five runs of the unit pass at thirty-two workers -- so the
+      // interval is several times the loopback trip it surrounds.
+      registerAckTimeoutMs: 300,
       registerAckMaxAttempts: 10,
     });
 
-    const registers = (): string[] =>
-      allFrames.filter(
-        (s) => JSON.parse(s).type === "signal.correlation.register",
-      );
+    const registersFor = (correlationId: string): string[] =>
+      allFrames.filter((s) => {
+        const frame: { type: string; correlationId?: string } = JSON.parse(s);
+        return (
+          frame.type === "signal.correlation.register" &&
+          frame.correlationId === correlationId
+        );
+      });
+
+    const approvalSnapshot = {
+      name: "charge_card",
+      description: "Charge the customer's card",
+      inputSchema: { type: "object" },
+      arguments: { amount: 100 },
+    };
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         allFrames.some((s) => JSON.parse(s).type === "register"),
       );
       client.sendSignalCorrelationRegister({
@@ -1894,22 +1915,22 @@ describe("initial handshake on connect", () => {
         anchorRunId: "dep-1",
         agentAddress: "run_reg_ack@integration.interchange",
         kind: "approval",
-        approvalSnapshot: {
-          name: "charge_card",
-          description: "Charge the customer's card",
-          inputSchema: { type: "object" },
-          arguments: { amount: 100 },
-        },
+        approvalSnapshot,
       });
-      await waitFor(() => registers().length >= 1);
-      // Let the ack settle and several watchdog windows pass, then confirm the
-      // register count has stopped growing and stayed far below the cap -- the
-      // ack settled the retry rather than the loop running to exhaustion.
-      await new Promise((r) => setTimeout(r, 200));
-      const settledCount = registers().length;
-      await new Promise((r) => setTimeout(r, 120));
-      expect(registers().length).toBe(settledCount);
-      expect(settledCount).toBeLessThan(5);
+      client.sendSignalCorrelationRegister({
+        correlationId: "corr-unacked",
+        runId: "run-2",
+        anchorRunId: "dep-1",
+        agentAddress: "run_reg_ack@integration.interchange",
+        kind: "approval",
+        approvalSnapshot,
+      });
+
+      // The unacked correlation's watchdog has fired and resent. Both frames
+      // travel the one socket in send order, so a retry of the acked
+      // correlation would already be recorded here -- and there is none.
+      await waitUntil(() => registersFor("corr-unacked").length >= 2);
+      expect(registersFor("corr-ack")).toHaveLength(1);
     } finally {
       client.close();
       await server.stop(true);
@@ -1945,14 +1966,25 @@ describe("initial handshake on connect", () => {
       registerAckMaxAttempts: 3,
     });
 
-    const registers = (): string[] =>
-      allFrames.filter(
-        (s) => JSON.parse(s).type === "signal.correlation.register",
-      );
+    const registersFor = (correlationId: string): string[] =>
+      allFrames.filter((s) => {
+        const frame: { type: string; correlationId?: string } = JSON.parse(s);
+        return (
+          frame.type === "signal.correlation.register" &&
+          frame.correlationId === correlationId
+        );
+      });
+
+    const approvalSnapshot = {
+      name: "charge_card",
+      description: "Charge the customer's card",
+      inputSchema: { type: "object" },
+      arguments: { amount: 100 },
+    };
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         allFrames.some((s) => JSON.parse(s).type === "register"),
       );
       client.sendSignalCorrelationRegister({
@@ -1961,17 +1993,31 @@ describe("initial handshake on connect", () => {
         anchorRunId: "dep-1",
         agentAddress: "run_reg_retry@integration.interchange",
         kind: "approval",
-        approvalSnapshot: {
-          name: "charge_card",
-          description: "Charge the customer's card",
-          inputSchema: { type: "object" },
-          arguments: { amount: 100 },
-        },
+        approvalSnapshot,
       });
-      // Three sends total (initial + two retries), then the acker gives up.
-      await waitFor(() => registers().length >= 3);
-      await new Promise((r) => setTimeout(r, 150));
-      expect(registers()).toHaveLength(3);
+      // The subject's first retry is on the socket, so its watchdog has
+      // fired once.
+      await waitUntil(() => registersFor("corr-retry").length >= 2);
+
+      // "corr-late" is the test's clock. Its watchdog is armed after that
+      // fire and carries the same interval, so each of its timers falls due
+      // after the subject's matching one, and a timer heap fires in due
+      // order. Its third send therefore cannot reach the one shared socket
+      // before a fourth send of the subject would have.
+      client.sendSignalCorrelationRegister({
+        correlationId: "corr-late",
+        runId: "run-2",
+        anchorRunId: "dep-1",
+        agentAddress: "run_reg_retry@integration.interchange",
+        kind: "approval",
+        approvalSnapshot,
+      });
+      await waitUntil(() => registersFor("corr-late").length >= 3);
+
+      // Three sends total (initial plus two retries), then the acker gives
+      // up: the fire that would have carried a fourth is the one that found
+      // the budget spent.
+      expect(registersFor("corr-retry")).toHaveLength(3);
     } finally {
       client.close();
       await server.stop(true);
