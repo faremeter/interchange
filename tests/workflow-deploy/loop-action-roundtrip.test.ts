@@ -139,7 +139,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await fireMailTrigger(env, deploymentMailAddress, {
@@ -148,7 +148,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
 
@@ -156,22 +155,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(terminal.type).toBe("RunCompleted");
 
       // Three loop iterations, each running the action body. All child spawns in
       // this run are loop iterations (no onTrigger/childWorkflow primitive). The
       // child packs the ChildSpawned records incrementally and replication can
-      // lag several seconds under load, so poll with a generous deadline.
+      // lag under load, so read until the third record lands. The poll carries
+      // no deadline of its own: this test's own budget is the failsafe for a
+      // count that never arrives, and the harness `waitFor` is what puts the
+      // sidecar's output on the env teardown's report.
       let loopSpawns = 0;
-      const deadline = Date.now() + 30_000;
-      for (;;) {
+      await waitFor(async () => {
         const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
         loopSpawns = events.filter((e) => e.type === "ChildSpawned").length;
-        if (loopSpawns >= 3 || Date.now() > deadline) break;
-        await new Promise((r) => setTimeout(r, 100));
-      }
+        return loopSpawns >= 3;
+      });
       expect(loopSpawns).toBe(3);
     }, 120_000);
   },

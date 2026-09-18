@@ -282,7 +282,7 @@ async function deployAndRunMap(opts: {
   // routability is asynchronous. Wait for it before firing the trigger.
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   await fireMailTrigger(env, deploymentMailAddress, {
@@ -291,7 +291,6 @@ async function deployAndRunMap(opts: {
 
   const runId = await waitForFirstRunId(env, workflowRunRepoId, {
     diagnostics: env.sidecarDiagnostics,
-    timeoutMs: 20_000,
   });
 
   // Primary regression tripwire: a regressed scoped-id lookup throws, so the
@@ -303,7 +302,6 @@ async function deployAndRunMap(opts: {
     runId,
     {
       diagnostics: env.sidecarDiagnostics,
-      timeoutMs: 30_000,
     },
   );
   expect(terminal.type).toBe("RunCompleted");

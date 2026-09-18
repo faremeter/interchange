@@ -18,8 +18,8 @@
 // per-crash `respawning after <Nms> backoff` line proves each crash was
 // counted, and a killed child's replacement is confirmed alive by a fresh,
 // stable pid before the next kill. A mistimed kill produces no such marker,
-// so the `waitFor` times out and the test fails loud rather than silently
-// mis-verifying.
+// so the wait never returns and the test's own budget fails it loud rather
+// than silently mis-verifying.
 //
 // SCOPE: the crash driver is a real SIGKILL, not a self-crashing workflow
 // body -- the declarative workflow DSL cannot express a body that crashes
@@ -121,26 +121,21 @@ const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*m/g;
  * dev-formatter wraps every interpolated value in `\x1b[..m'value'\x1b[..m`);
  * `needle` should therefore carry the dev formatter's single quotes around
  * interpolated values (e.g. `after '1000'ms`).
+ *
+ * The marker is the signal, so the wait carries no deadline of its own: a
+ * crash respawn under a loaded runner costs a backoff plus a full child
+ * spawn, and any ceiling on that is a duration bet. A needle that never
+ * arrives is a hang, which the test's own `bun test` budget fails.
  */
-async function waitForSidecarLog(
+function waitForSidecarLog(
   target: DeployFlowEnv,
   needle: string,
-  opts: { timeoutMs?: number } = {},
 ): Promise<void> {
-  const timeoutMs = opts.timeoutMs ?? 30_000;
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    // Join reconstructs lines split across raw decoded chunks, then strip
-    // ANSI so the interpolated values are contiguous with their quotes.
-    const text = target.sidecar.stderr.join("").replace(ANSI_ESCAPE_RE, "");
-    if (text.includes(needle)) return;
-    if (Date.now() > deadline) {
-      throw new Error(
-        `waitForSidecarLog: sidecar stderr never contained ${JSON.stringify(needle)} within ${String(timeoutMs)}ms\n${target.sidecarDiagnostics()}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  // Join reconstructs lines split across raw decoded chunks, then strip
+  // ANSI so the interpolated values are contiguous with their quotes.
+  return waitFor(() =>
+    target.sidecar.stderr.join("").replace(ANSI_ESCAPE_RE, "").includes(needle),
+  );
 }
 
 // The marker the recycle path logs the instant a crash-respawned child passes
@@ -171,26 +166,18 @@ function countOccurrences(text: string, needle: string): number {
  * occurrences of `needle`. Each crash-respawn logs `CRASH_CHILD_READY` exactly
  * once, so waiting for the count to reach the respawn's ordinal proves that
  * respawn's child reached `running` before the next kill.
+ *
+ * Deadline-free for the same reason as `waitForSidecarLog`.
  */
-async function waitForSidecarLogCount(
+function waitForSidecarLogCount(
   target: DeployFlowEnv,
   needle: string,
   minCount: number,
-  opts: { timeoutMs?: number } = {},
 ): Promise<void> {
-  const timeoutMs = opts.timeoutMs ?? 30_000;
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
+  return waitFor(() => {
     const text = target.sidecar.stderr.join("").replace(ANSI_ESCAPE_RE, "");
-    const count = countOccurrences(text, needle);
-    if (count >= minCount) return;
-    if (Date.now() > deadline) {
-      throw new Error(
-        `waitForSidecarLogCount: sidecar stderr contained ${JSON.stringify(needle)} ${String(count)}/${String(minCount)} times within ${String(timeoutMs)}ms\n${target.sidecarDiagnostics()}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
+    return countOccurrences(text, needle) >= minCount;
+  });
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -264,7 +251,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       await settleWorkflowRunPacks(env);
       const killed: number[] = [];
@@ -302,7 +289,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         DEPLOYMENT_ID,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(terminal.type).toBe("RunFailed");
 
@@ -312,6 +299,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // No 4th respawn: wait past the would-be 4s backoff (never scheduled --
       // the guard latched instead) plus scheduling margin, and confirm no
       // fresh child appears under the sidecar.
+      //
+      // The duration is load-bearing and must stay a sleep. The assertion is
+      // an absence, so there is no state to wait for; the only thing that
+      // makes the absence meaningful is having outlasted the window in which
+      // a 4th respawn would have been scheduled. A wait on a predicate would
+      // be satisfied immediately and prove nothing.
       await new Promise((r) => setTimeout(r, 6_000));
       const survivors = listWorkflowHostChildren(env).filter(
         (pid) => !killed.includes(pid),

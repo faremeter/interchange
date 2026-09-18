@@ -307,7 +307,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       await waitFor(
         () => env.hub.router.getConnectedSidecars().includes(SECOND_SIDECAR_ID),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Close sidecar 1's original handle so its connections entry is dropped
@@ -328,7 +328,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       sidecar1Handle.close();
       await waitFor(
         () => env.hub.router.getConnectedSidecars()[0] === SECOND_SIDECAR_ID,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Deploy the sender; it lands on sidecar 2, the pristine connection that
@@ -391,7 +391,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         RECEIVER_ID,
         RECEIVER_ID,
-        { timeoutMs: 40_000, diagnostics: dumpDiag },
+        { diagnostics: dumpDiag },
       );
       if (terminal.type !== "RunCompleted") {
         throw new Error(

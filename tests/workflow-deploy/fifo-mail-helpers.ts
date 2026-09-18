@@ -1,104 +1,25 @@
 // Shared helpers for the FIFO mail integration tests.
 //
-// The 3-mail correctness test (`fifo-mail.test.ts`) and the under-load
-// regression test (`fifo-mail-load.test.ts`) both observe the same
-// supervisor surface: the stable run's event chain via the workflow-run repo
-// and per-message consumed-envelope entries via the workflow-run
-// claim-check ref. The walking and decoding logic is identical across
-// both; this module is its single home.
+// The 3-mail correctness test (`fifo-mail.test.ts`), the under-load
+// regression test (`fifo-mail-load.test.ts`), the crash-respawn test
+// (`crash-respawn-fifo.test.ts`), and the hub-link reconnect test
+// (`hub-link-reconnect.test.ts`) all observe the same supervisor surface:
+// per-message consumed-envelope entries on the workflow-run claim-check
+// ref. The decoding logic is identical across them; this module is its
+// single home.
 //
 // The under-load test lives in a separate file because the test
 // runtime exceeds the per-iteration latency the operator is willing
-// to pay on every `make test`. Both files reference these helpers so
-// the split does not duplicate the walk logic.
+// to pay on every `make test`. Every one of those files references these
+// helpers so the split does not duplicate the decode logic.
 
 import type { RepoId } from "@intx/hub-sessions";
 
 import {
-  listRunIds,
   readClaimCheckDir,
-  readWorkflowRunEvents,
+  waitFor,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
-
-/**
- * Walk every `runs/<runId>/events/` subtree on the deployment's
- * workflow-run repo until each of `messageIds` is observed in some
- * run's `RunStarted.consumedMessageId`. Returns one
- * `{ messageId, runId }` per supplied `messageId`, preserving the
- * input order so the caller can assert FIFO mail-fire ordering
- * downstream.
- */
-export async function waitForRunsByMessageIds(
-  env: DeployFlowEnv,
-  anchorRunId: string,
-  workflowRunRepoId: RepoId,
-  messageIds: readonly string[],
-  opts: { timeoutMs?: number; diagnostics?: () => string } = {},
-): Promise<{ messageId: string; runId: string }[]> {
-  const { timeoutMs = 30_000, diagnostics } = opts;
-  const start = Date.now();
-  for (;;) {
-    const runIds = await listRunIds(env, workflowRunRepoId);
-    const byMessageId = new Map<string, string>();
-    for (const runId of runIds) {
-      const events = await readWorkflowRunEvents(env, anchorRunId, runId);
-      for (const event of events) {
-        if (event.type !== "RunStarted") continue;
-        const consumed = event.body["consumedMessageId"];
-        if (typeof consumed !== "string") continue;
-        byMessageId.set(consumed, runId);
-      }
-    }
-    const allObserved = messageIds.every((mid) => byMessageId.has(mid));
-    if (allObserved) {
-      return messageIds.map((messageId) => {
-        const runId = byMessageId.get(messageId);
-        if (runId === undefined) throw new Error("unreachable");
-        return { messageId, runId };
-      });
-    }
-    if (Date.now() - start > timeoutMs) {
-      const diag = diagnostics?.();
-      const ctx = diag ? `\n${diag}` : "";
-      const observed = [...byMessageId.keys()].join(", ");
-      const deploymentMailAddress =
-        env.deployments.get(anchorRunId)?.mailAddress ?? "";
-      const inbox = await readClaimCheckDir(
-        env,
-        workflowRunRepoId,
-        deploymentMailAddress,
-        "inbox",
-      );
-      const processing = await readClaimCheckDir(
-        env,
-        workflowRunRepoId,
-        deploymentMailAddress,
-        "processing",
-      );
-      const consumed = await readClaimCheckDir(
-        env,
-        workflowRunRepoId,
-        deploymentMailAddress,
-        "consumed",
-      );
-      const eventsByRun: string[] = [];
-      for (const runId of runIds) {
-        const evs = await readWorkflowRunEvents(env, anchorRunId, runId);
-        eventsByRun.push(`  ${runId}: ${evs.map((e) => e.type).join(" -> ")}`);
-      }
-      throw new Error(
-        `waitForRunsByMessageIds timed out after ${String(timeoutMs)}ms; expected ${messageIds.join(", ")}; observed ${observed || "<none>"};\n` +
-          `inbox: ${inbox.map((e) => e.filename).join(", ") || "<empty>"}\n` +
-          `processing: ${processing.map((e) => e.filename).join(", ") || "<empty>"}\n` +
-          `consumed: ${consumed.map((e) => e.filename).join(", ") || "<empty>"}\n` +
-          `runs:\n${eventsByRun.join("\n") || "<no runs>"}` +
-          ctx,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}
 
 /**
  * Read the `consumed/` dedup index for the deployment's mail
@@ -180,13 +101,20 @@ export async function readConsumedEntries(
  * so the writes happen in order, but the last receipt still has to traverse
  * the dispatch loop's markConsumed -> pack-push pipeline before the test can
  * observe it.
+ *
+ * The poll carries no deadline of its own: the test runner's budget is the
+ * failsafe for a receipt that never lands, and the harness `waitFor` it runs
+ * through is what puts the sidecar's output on the env teardown's report when
+ * that happens. `diagnostics` renders when the `consumed/` read itself fails --
+ * a malformed envelope is a real fault rather than a not-yet, and the sidecar's
+ * output is the context that explains it.
  */
 export async function waitForConsumedEntries(
   env: DeployFlowEnv,
   workflowRunRepoId: RepoId,
   address: string,
   messageIds: readonly string[],
-  opts: { timeoutMs?: number; diagnostics?: () => string } = {},
+  opts: { diagnostics?: () => string } = {},
 ): Promise<
   {
     messageId: string;
@@ -194,23 +122,20 @@ export async function waitForConsumedEntries(
     rejection?: { code: string; message: string };
   }[]
 > {
-  const { timeoutMs = 30_000, diagnostics } = opts;
-  const start = Date.now();
-  for (;;) {
-    const entries = await readConsumedEntries(env, workflowRunRepoId, address);
-    const seen = new Set(entries.map((e) => e.messageId));
-    if (messageIds.every((mid) => seen.has(mid))) {
-      return entries;
-    }
-    if (Date.now() - start > timeoutMs) {
+  const { diagnostics } = opts;
+  let entries: Awaited<ReturnType<typeof readConsumedEntries>> = [];
+  await waitFor(async () => {
+    try {
+      entries = await readConsumedEntries(env, workflowRunRepoId, address);
+    } catch (cause) {
       const diag = diagnostics?.();
-      const ctx = diag ? `\n${diag}` : "";
-      const observed = [...seen].join(", ") || "<none>";
       throw new Error(
-        `waitForConsumedEntries timed out after ${String(timeoutMs)}ms; expected ${messageIds.join(", ")}; observed ${observed}` +
-          ctx,
+        `waitForConsumedEntries: reading consumed/ for ${address} failed${diag === undefined ? "" : `\n${diag}`}`,
+        { cause },
       );
     }
-    await new Promise((r) => setTimeout(r, 50));
-  }
+    const seen = new Set(entries.map((e) => e.messageId));
+    return messageIds.every((mid) => seen.has(mid));
+  });
+  return entries;
 }

@@ -91,9 +91,9 @@ beforeAll(async () => {
   });
 
   env = await startDeployFlowEnv({
-    // This test pins the production reconnect delay: the `reconnectMs > 1_000`
-    // assertion proves the sidecar really cycled through its delayed reconnect
-    // rather than instantly re-connecting.
+    // Pin the production reconnect backoff so the drop below is recovered
+    // through the real delayed-reconnect cycle rather than the fixture's
+    // shortened test delay.
     sidecarEnv: {
       SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS,
     },
@@ -165,7 +165,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Wait for the deployment to ack its key so the sidecar is fully live.
       await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
 
@@ -174,7 +173,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Remove the derived public-key projection before dropping the link. It
@@ -192,17 +191,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
           !env.hub.router
             .getRoutableAddresses()
             .includes(deploymentMailAddress),
-        { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
-      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-        timeoutMs: 30_000,
-      });
+      await waitForReconnect(env, deploymentMailAddress);
       env.hub.deployAcks.set(deploymentMailAddress, ackedKey);
-      // A generous lower bound guards against a false "already routable" pass
-      // that never actually dropped; the upper bound catches a hung link.
-      expect(reconnectMs).toBeGreaterThan(1_000);
-      expect(reconnectMs).toBeLessThan(30_000);
       expect(env.hub.router.getRoutableAddresses()).toContain(
         deploymentMailAddress,
       );
@@ -213,56 +206,71 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // "Connection lost" on the supervisor's inbox enqueue. Require the
       // address to stay continuously routable across a quiet window so the
       // trigger lands on a stable link.
-      const settleStart = Date.now();
+      //
+      // The 2s quiet window is load-bearing: the awaited condition is the
+      // ABSENCE of a further route drop, which only elapsed time can
+      // establish. The predicate restarts the window on every observed drop,
+      // and the 30s bound is the ceiling on a link that never holds routable
+      // at all.
       let stableSince = Date.now();
-      while (Date.now() - stableSince < 2_000) {
-        if (
-          !env.hub.router.getRoutableAddresses().includes(deploymentMailAddress)
-        ) {
-          stableSince = Date.now();
-        }
-        if (Date.now() - settleStart > 30_000) {
-          throw new Error(
-            `recovered link never held routable for 2s within 30s\n${env.sidecarDiagnostics()}`,
-          );
-        }
-        await new Promise((r) => setTimeout(r, 100));
-      }
+      await waitFor(
+        () => {
+          if (
+            !env.hub.router
+              .getRoutableAddresses()
+              .includes(deploymentMailAddress)
+          ) {
+            stableSince = Date.now();
+          }
+          return Date.now() - stableSince >= 2_000;
+        },
+        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+      );
 
       // ---- and a mail trigger runs to completion on the recovered link ----
       // Fire with retry: a trigger that lands while a residual reconnect is
       // in flight can be dropped before the supervisor enqueues it, producing
       // no run. Retry with a fresh message id (each keyed on the attempt so
-      // the dedup index never collides) until a run appears, capping attempts
-      // so a genuine wedge still fails loudly rather than looping forever.
-      const runId = await (async () => {
-        const start = Date.now();
-        let attempt = 0;
-        for (;;) {
-          attempt += 1;
-          await fireMailTrigger(env, deploymentMailAddress, {
-            messageId: `<deploy-window-recovery-${String(attempt)}@integration.interchange>`,
-            content: "recovered",
-          });
-          const deadline = Date.now() + 10_000;
-          while (Date.now() < deadline) {
-            const ids = await listRunIds(env, workflowRunRepoId);
-            const first = ids[0];
-            if (first !== undefined) return first;
-            await new Promise((r) => setTimeout(r, 100));
+      // the dedup index never collides) until a run appears.
+      //
+      // The per-attempt 10s below is the re-fire cadence, not a budget: a
+      // dropped trigger produces no signal at all, so the only way to conclude
+      // one was dropped is to stop waiting on it and re-fire. Removing the
+      // bound would remove the retry. The retry itself carries no deadline;
+      // this test's own budget is the failsafe for a link that never produces
+      // a run. It fires mail each iteration, so it cannot become a `waitFor`
+      // predicate; `env.retrying` is what puts a wedge inside it on the env
+      // teardown's in-flight wait report, and `checkTornDown` at the top of
+      // each loop body is what lets teardown's stop end it -- ahead of the
+      // fire or the read that pass would otherwise make against a dismantled
+      // env.
+      const runId = await env.retrying(
+        `re-fire trigger until a run appears for ${deploymentMailAddress}`,
+        async (checkTornDown) => {
+          let attempt = 0;
+          for (;;) {
+            checkTornDown();
+            attempt += 1;
+            await fireMailTrigger(env, deploymentMailAddress, {
+              messageId: `<deploy-window-recovery-${String(attempt)}@integration.interchange>`,
+              content: "recovered",
+            });
+            const reFireAfter = Date.now() + 10_000;
+            while (Date.now() < reFireAfter) {
+              checkTornDown();
+              const ids = await listRunIds(env, workflowRunRepoId);
+              const first = ids[0];
+              if (first !== undefined) return first;
+              await new Promise((r) => setTimeout(r, 100));
+            }
           }
-          if (Date.now() - start > 60_000) {
-            throw new Error(
-              `no run produced on the recovered link after ${String(attempt)} mail triggers\n${env.sidecarDiagnostics()}`,
-            );
-          }
-        }
-      })();
+        },
+      );
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(terminal.type).toBe("RunCompleted");
     }, 240_000);

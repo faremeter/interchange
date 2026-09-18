@@ -222,7 +222,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         kind: "user",
       });
 
-      env = await startDeployFlowEnv({});
+      env = await startDeployFlowEnv();
 
       // Seed the monorepo source: a private workspace root plus two members, one
       // the workflow (`@wf/app`) and one its `workspace:*` dependency (`@wf/lib`).
@@ -451,7 +451,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // 3) Fire the trigger and assert the run completes. This proves the monorepo
@@ -462,14 +462,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         messageId: "<source-monorepo-e2e@integration.interchange>",
       });
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-        timeoutMs: 30_000,
         diagnostics: env.sidecarDiagnostics,
       });
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       if (terminal.type !== "RunCompleted") {
         throw new Error(
@@ -498,15 +497,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         extraEnv: { SIDECAR_DATA_DIR: restoredDataDir },
       });
+      env.registerSidecar(restartedSidecar);
 
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        {
-          timeoutMs: 30_000,
-          diagnostics: () =>
-            `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`,
-        },
+        { diagnostics: env.sidecarDiagnostics },
       );
     }, 180_000);
   },

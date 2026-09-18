@@ -232,7 +232,7 @@ async function deployAndTriggerSection(opts: {
 
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   // Fire the first event; the body parks on its author gate and the section
@@ -251,7 +251,7 @@ async function deployAndTriggerSection(opts: {
           e.body["signalName"] === SIGNAL_NAME,
       );
     },
-    { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+    { diagnostics: env.sidecarDiagnostics },
   );
   const containerRunId = await findContainerRunId(env, workflowRunRepoId);
   if (containerRunId === undefined) {
@@ -315,7 +315,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             )
           );
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const finalEvents = await readWorkflowRunEvents(
@@ -388,7 +388,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             )
           );
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const finalEvents = await readWorkflowRunEvents(

@@ -210,7 +210,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await fireMailTrigger(env, deploymentMailAddress, {
@@ -220,14 +220,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(terminal.type).toBe("RunCompleted");
 
@@ -243,7 +242,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           env.hub.outboundMail.some(
             (m) => m.senderAddress === deploymentMailAddress,
           ),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const signedSend = env.hub.outboundMail.find(
         (m) => m.senderAddress === deploymentMailAddress,

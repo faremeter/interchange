@@ -201,7 +201,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Fire all three mails in quick succession. `routeMail` is
@@ -231,7 +231,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         workflowRunRepoId,
         deploymentMailAddress,
         MESSAGE_IDS,
-        { timeoutMs: 90_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const consumedMessageIds = consumedEntries.map((e) => e.messageId);
       for (const messageId of MESSAGE_IDS) {
@@ -253,7 +253,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(terminal.type).toBe("RunCompleted");
 

@@ -265,7 +265,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const grantStore = createGrantStore(h.db);
@@ -311,7 +311,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         DEPLOYMENT_ID,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       if (terminal.type !== "RunCompleted") {
         throw new Error(

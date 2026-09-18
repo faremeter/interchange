@@ -215,7 +215,7 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
     await waitFor(
       () =>
         env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     await fireMailTrigger(env, deploymentMailAddress, {
@@ -240,7 +240,7 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
             e.body["signalName"] === "never-arrives",
         );
       },
-      { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     const runId = await findActiveRunId(env, workflowRunRepoId);
@@ -261,7 +261,7 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
       env,
       DEPLOYMENT_ID,
       runId,
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
@@ -381,7 +381,7 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
     await waitFor(
       () =>
         env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     await fireMailTrigger(env, deploymentMailAddress, {
@@ -400,7 +400,7 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
             e.body["signalName"] === "never-arrives",
         );
       },
-      { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+      { diagnostics: env.sidecarDiagnostics },
     );
     const runId = await findActiveRunId(env, workflowRunRepoId);
 
@@ -438,6 +438,12 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
     // and 60s would slip past this test -- the load-bearing
     // assertion is the cancel-mode shape, not partial-window
     // misbehaviour.
+    //
+    // The sleep cannot become a state-based wait: the property is the ABSENCE
+    // of StepFailed, and a predicate for "still absent" holds the instant it
+    // is first checked. The accumulator's clock runs in the sidecar
+    // subprocess, so no clock seam is reachable from the harness either; the
+    // duration is what sets the width of the window above.
     await new Promise((r) => setTimeout(r, 2_500));
     const eventsDuringWait = await readWorkflowRunEvents(
       env,

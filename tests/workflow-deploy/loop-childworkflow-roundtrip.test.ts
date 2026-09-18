@@ -234,7 +234,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await fireMailTrigger(env, deploymentMailAddress, {
@@ -244,7 +244,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       await waitFor(
         async () => (await findContainerRunId(workflowRunRepoId)) !== undefined,
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The loop iteration body child (`rework__0`) runs the childWorkflow spawn
@@ -258,7 +258,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "ChildSpawned");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const bodyEvents = await readWorkflowRunEvents(
@@ -290,7 +290,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "RunCompleted");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- The reachability proof: read the grandchild's own run log ----
@@ -331,7 +331,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               e.type === "StepCompleted" && e.body["stepId"] === SPAWN_STEP_ID,
           );
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const finalBodyEvents = await readWorkflowRunEvents(

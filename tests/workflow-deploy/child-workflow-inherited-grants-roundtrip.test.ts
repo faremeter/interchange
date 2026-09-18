@@ -257,7 +257,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       await waitFor(
         () => env.hub.router.getRoutableAddresses().includes(parentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Fire the parent trigger carrying both grants per run: one the child
@@ -272,7 +272,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         parentWorkflowRunRepoId,
         {
           diagnostics: env.sidecarDiagnostics,
-          timeoutMs: 20_000,
         },
       );
 
@@ -286,7 +285,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "ChildSpawned");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const parentEvents = await readWorkflowRunEvents(
@@ -322,7 +321,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         () => readRunGrantsFile(parentRepoId, childRunId) !== null,
         {
           diagnostics: env.sidecarDiagnostics,
-          timeoutMs: 20_000,
         },
       );
       const childGrantsOnDisk = readRunGrantsFile(parentRepoId, childRunId);

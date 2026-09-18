@@ -208,7 +208,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The tool grant reaches the run the way production delivers it: the
@@ -242,14 +242,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 30_000,
       });
 
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const containerEvents = await readWorkflowRunEvents(

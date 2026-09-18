@@ -170,7 +170,7 @@ async function waitForReplyInReplyTo(
           m.senderAddress === sender &&
           parseHeaderSection(m.raw).headers.get("in-reply-to") === inReplyTo,
       ),
-    { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
   const match = env.hub.outboundMail.find(
     (m) =>
@@ -250,7 +250,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // --- Turn 1: opener from userA (trigger.fire) ---------------------
@@ -264,7 +264,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       const r1Headers = await waitForReplyInReplyTo(
@@ -291,7 +290,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           inputRearmCount(
             await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId),
           ) >= 1,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // --- Turn 2: continuation from userB, dispatched as signal.deliver ---
@@ -351,7 +350,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           inputRearmCount(
             await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId),
           ) >= 2,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);

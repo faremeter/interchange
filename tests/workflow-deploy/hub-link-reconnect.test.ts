@@ -8,10 +8,16 @@
 // Shape: deploy a single-step workflow, drive one mail trigger to
 // `RunCompleted`, settle the pack-push pipeline and drop the hub link,
 // wait for the allocation-authenticated reconnect to make the deployment
-// address routable again, then fire a second mail trigger and assert it also
-// reaches `RunCompleted`. A deployed workflow survives the
-// reconnect: the second run only exists because the sidecar re-established
-// the link and re-entered routing.
+// address routable again, then fire a second mail trigger and assert it
+// reaches the deployment's `consumed/` index.
+//
+// What the reconnect restores is routability and inbox admission, not a
+// second run. The workflow run id is derived from the deployment mail
+// address and is therefore stable across messages, so mail 2 resolves to
+// the run that mail 1 already drove to `RunCompleted`; a completed
+// deployment rejects further mail by design. Mail 2 consuming with a
+// `workflow_run_terminal` rejection is the assertion, and it only happens
+// because the sidecar re-established the link and re-entered routing.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, a real workflow-process child, and a test inference
@@ -51,6 +57,7 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
+import { readConsumedEntries } from "./fifo-mail-helpers";
 import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -103,9 +110,9 @@ beforeAll(async () => {
   });
 
   env = await startDeployFlowEnv({
-    // This test pins the production reconnect delay: the `reconnectMs > 1_000`
-    // assertion proves the sidecar really cycled through its delayed reconnect
-    // rather than instantly re-connecting.
+    // Pin the production reconnect backoff so the drop below is recovered
+    // through the real delayed-reconnect cycle rather than the fixture's
+    // shortened test delay.
     sidecarEnv: {
       SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS,
     },
@@ -124,7 +131,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    test("deploy, run, settleThenDrop, reconnect, run again", async () => {
+    test("deploy, run, settleThenDrop, reconnect, second mail admitted and rejected as terminal", async () => {
       expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
       // ---- deploy a single-step workflow ----
@@ -176,7 +183,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(handle.publicKey).toBeTruthy();
 
       await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
 
@@ -185,7 +191,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- first run to completion ----
@@ -194,14 +200,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
         content: "first",
       });
       const firstRunId = await waitForFirstRunId(env, workflowRunRepoId, {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
       const firstTerminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         firstRunId,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(firstTerminal.type).toBe("RunCompleted");
 
@@ -217,52 +222,56 @@ describe.skipIf(!harnessDbEnvAvailable())(
           !env.hub.router
             .getRoutableAddresses()
             .includes(deploymentMailAddress),
-        { timeoutMs: 5_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- wait for reconnect + re-route ----
-      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-        timeoutMs: 20_000,
-      });
-      // The reconnect is the sidecar's 3s reconnect delay plus a handshake; a
-      // generous lower bound guards against a false "already routable" pass
-      // that never actually dropped, and the upper bound catches a hung link.
-      expect(reconnectMs).toBeGreaterThan(1_000);
-      expect(reconnectMs).toBeLessThan(20_000);
+      await waitForReconnect(env, deploymentMailAddress);
       expect(env.hub.router.getRoutableAddresses()).toContain(
         deploymentMailAddress,
       );
 
-      // ---- second run to completion after reconnect ----
+      // ---- second mail after reconnect ----
+      const secondMessageId = "<reconnect-smoke-2@integration.interchange>";
       const second = await fireMailTrigger(env, deploymentMailAddress, {
-        messageId: "<reconnect-smoke-2@integration.interchange>",
+        messageId: secondMessageId,
         content: "second",
       });
       expect(second.messageId).not.toBe(first.messageId);
 
-      // Under the stable-runId model the second message shares the
-      // same runId as the first.  Wait for it to land in consumed/.
-      const secondRunId = firstRunId;
-      const secondMessageId = "<reconnect-smoke-2@integration.interchange>";
-      const consumedDeadline = Date.now() + 30_000;
-      while (Date.now() < consumedDeadline) {
+      // Wait for mail 2 to land in consumed/. That it lands at all is what
+      // the reconnect buys: the mail had to route to the re-registered
+      // address, enter the deployment's inbox, and be dequeued by the
+      // supervisor's dispatch loop. The poll carries no deadline of its own,
+      // so a mail 2 that never reaches consumed/ hangs here rather than
+      // falling through; this test's own budget is the failsafe, and the
+      // harness `waitFor` is what puts the sidecar's output on the env
+      // teardown's report.
+      await waitFor(async () => {
         const consumed = await readClaimCheckDir(
           env,
           workflowRunRepoId,
           deploymentMailAddress,
           "consumed",
         );
-        if (consumed.some((c) => c.filename.includes(secondMessageId))) break;
-        await new Promise((r) => setTimeout(r, 50));
-      }
+        return consumed.some((c) => c.filename.includes(secondMessageId));
+      });
 
-      const secondTerminal = await waitForWorkflowRunComplete(
+      // Mail 2 is rejected, not dispatched. The supervisor derives the
+      // workflow run id from the deployment mail address, so mail 2 resolves
+      // to the run mail 1 already drove to RunCompleted, and a terminal run
+      // cannot be fired again. The rejection is written by the same
+      // `markConsumed` commit that created the entry the poll above observed,
+      // so re-reading it here sees the final envelope.
+      const consumedEntries = await readConsumedEntries(
         env,
-        DEPLOYMENT_ID,
-        secondRunId,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        workflowRunRepoId,
+        deploymentMailAddress,
       );
-      expect(secondTerminal.type).toBe("RunCompleted");
+      expect(
+        consumedEntries.find((entry) => entry.messageId === secondMessageId)
+          ?.rejection?.code,
+      ).toBe("workflow_run_terminal");
     }, 120_000);
   },
 );

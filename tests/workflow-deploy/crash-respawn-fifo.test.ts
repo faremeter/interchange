@@ -53,6 +53,7 @@ import {
   deployWorkflowSourceForTest,
   fireMailTrigger,
   injectSignal,
+  isWorkflowRunCompleteTimeout,
   killWorkflowHostChild,
   listRunIds,
   listWorkflowHostChildren,
@@ -189,7 +190,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Fire all three mails. Mail 0 fires the stable run; mails 1 and 2
@@ -215,7 +216,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             (e) => e.type === "SignalAwaited" && e.body["signalName"] === "go",
           );
         },
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const parked = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
@@ -256,7 +257,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           listWorkflowHostChildren(env).some(
             (pid) => !killedPids.includes(pid),
           ),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Deliver the awaited signal to the resumed run. The respawn passes
@@ -266,31 +267,46 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // signalId, delivery routes by address (always registered) and lands
       // once the respawned child is `running`, and the run completes on the
       // first "go" it receives while awaiting -- later duplicates hit a
-      // terminal run and are ignored.
-      const injectDeadline = Date.now() + 30_000;
-      let terminal: Awaited<ReturnType<typeof waitForWorkflowRunComplete>>;
-      for (;;) {
-        await injectSignal(env, DEPLOYMENT_ID, runId, "go", { resumed: true });
-        try {
-          terminal = await waitForWorkflowRunComplete(
-            env,
-            DEPLOYMENT_ID,
-            runId,
-            {
-              timeoutMs: 5_000,
-            },
-          );
-          break;
-        } catch (err) {
-          if (Date.now() > injectDeadline) {
-            throw new Error(
-              `crash-respawn: run never completed after repeated signal delivery\n${env.sidecarDiagnostics()}`,
-              { cause: err },
-            );
+      // terminal run and are ignored. The 5s per-attempt read is the retry
+      // cadence, not a budget for the respawn: the retry itself carries no
+      // deadline, so this test's own budget is the failsafe for a run that
+      // never terminates.
+      //
+      // Only the per-attempt timeout means "not terminal yet, inject again".
+      // Any other failure -- a substrate read error, a malformed event -- is a
+      // real fault, and with no deadline on this loop, retrying through it
+      // would hide it until the test budget expired and report a hang instead
+      // of the fault. So it surfaces here with the read's error as its cause.
+      //
+      // The loop injects a signal each iteration, so it cannot become a
+      // `waitFor` predicate; `env.retrying` is what puts a wedge inside it on
+      // the env teardown's in-flight wait report.
+      const terminal = await env.retrying(
+        `inject go and read until ${runId} terminates`,
+        async () => {
+          for (;;) {
+            await injectSignal(env, DEPLOYMENT_ID, runId, "go", {
+              resumed: true,
+            });
+            try {
+              return await waitForWorkflowRunComplete(
+                env,
+                DEPLOYMENT_ID,
+                runId,
+                { timeoutMs: 5_000 },
+              );
+            } catch (err) {
+              if (!isWorkflowRunCompleteTimeout(err)) {
+                throw new Error(
+                  `crash-respawn: reading the resumed run failed for a reason other than the per-attempt timeout\n${env.sidecarDiagnostics()}`,
+                  { cause: err },
+                );
+              }
+              await new Promise((r) => setTimeout(r, 1_000));
+            }
           }
-          await new Promise((r) => setTimeout(r, 1_000));
-        }
-      }
+        },
+      );
       // Explicit: `waitForWorkflowRunComplete` also accepts RunFailed as
       // terminal, so a broken resume (or a crash-loop latch) must fail here
       // rather than pass on a failed run.
@@ -311,7 +327,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         workflowRunRepoId,
         deploymentMailAddress,
         MESSAGE_IDS,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const consumedMessageIds = consumedEntries.map((e) => e.messageId);
       for (const messageId of MESSAGE_IDS) {

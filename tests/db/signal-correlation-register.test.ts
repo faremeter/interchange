@@ -11,6 +11,7 @@ import { eq, ne, sql } from "drizzle-orm";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode, signalName } from "@intx/types";
+import { waitUntil } from "@intx/types/testing";
 import {
   createApprovalStore,
   createDB,
@@ -194,7 +195,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           agentAddresses: [WF_ADDR],
         }),
       );
-      await new Promise((res) => setTimeout(res, 50));
+      await waitUntil(() => router.getRoutableAddresses().includes(WF_ADDR));
     }
 
     // Bring an arbitrary workflow address up as an owned route on `ws` through
@@ -221,7 +222,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           agentAddresses: [address],
         }),
       );
-      await new Promise((res) => setTimeout(res, 50));
+      await waitUntil(() => router.getRoutableAddresses().includes(address));
     }
 
     function buildRouter() {
@@ -252,8 +253,40 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     // Wait for the router's per-ws message chain to drain, since the register
     // frame is dispatched asynchronously through it.
-    async function drain(): Promise<void> {
-      await new Promise((res) => setTimeout(res, 50));
+    //
+    // The chain serializes every non-bypass frame in arrival order, and both
+    // `reconnect` and `signal.correlation.register` are non-bypass frames. So
+    // queueing a reconnect that claims a fresh address and waiting for that
+    // address to appear in the routing index proves the register frame queued
+    // ahead of it has already run to completion. That is the only evidence
+    // available for a register whose handler REJECTED the frame: it writes no
+    // row, so no database state can report that it finished.
+    //
+    // Each barrier claims a distinct address, because a reconnect re-claiming
+    // an already-routed one leaves the index unchanged and the wait would see
+    // its own precondition and return without the chain having advanced. The
+    // address is deliberately not a run address, so the handler's credential
+    // resync skips it and the barrier touches no table the tests assert on.
+    let barrierCount = 0;
+    async function drain(
+      router: ReturnType<typeof createSidecarRouter>,
+      ws: ReturnType<typeof createMockWs>,
+    ): Promise<void> {
+      barrierCount += 1;
+      const barrierAddress = `barrier-${String(barrierCount)}@wf.example`;
+      authenticatedAddress = barrierAddress;
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "reconnect",
+          sidecarId: "sc-1",
+          token: "tok",
+          agentAddresses: [barrierAddress],
+        }),
+      );
+      await waitUntil(() =>
+        router.getRoutableAddresses().includes(barrierAddress),
+      );
     }
 
     test("co-writes the correlation and approval rows for a delivered frame", async () => {
@@ -265,7 +298,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(router.getRoutableAddresses()).toContain(WF_ADDR);
 
       router.handleMessage(ws, registerFrame());
-      await drain();
+      await drain(router, ws);
 
       const correlations = await h.db.select().from(signalCorrelation);
       expect(correlations).toHaveLength(1);
@@ -352,7 +385,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await reconnectAndVerify(router, ws, kp.privateKey);
 
       router.handleMessage(ws, registerFrame());
-      await drain();
+      await drain(router, ws);
 
       const run = (
         await h.db
@@ -427,7 +460,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await reconnectAndVerify(router, ws, kp.privateKey);
 
       router.handleMessage(ws, registerFrame());
-      await drain();
+      await drain(router, ws);
 
       const firstCorr = await h.db.select().from(signalCorrelation);
       const firstAppr = await h.db.select().from(approval);
@@ -446,7 +479,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // Redeliver the identical frame: reconnect replay / supervisor restart.
       router.handleMessage(ws, registerFrame());
-      await drain();
+      await drain(router, ws);
 
       const secondCorr = await h.db.select().from(signalCorrelation);
       const secondAppr = await h.db.select().from(approval);
@@ -486,7 +519,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The default registerFrame targets WF_ADDR, which this connection does
       // not own.
       router.handleMessage(ws, registerFrame());
-      await drain();
+      await drain(router, ws);
 
       const correlations = await h.db
         .select()
@@ -529,7 +562,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           snapshot: SNAPSHOT,
         }),
       );
-      await drain();
+      await drain(router, ws);
 
       const correlations = await h.db.select().from(signalCorrelation);
       expect(correlations).toHaveLength(0);
@@ -559,7 +592,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .where(eq(workflowRun.id, DEPLOYMENT));
 
       router.handleMessage(ws, registerFrame());
-      await drain();
+      await drain(router, ws);
 
       const correlations = await h.db.select().from(signalCorrelation);
       expect(correlations).toHaveLength(0);
@@ -631,9 +664,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
           // Wait until the register backend is blocked specifically by the
           // teardown backend, or has already settled without blocking (the
-          // pre-lock behavior, which writes the orphan). The cap stays well
-          // under bun's 5s default per-test timeout for tests/db.
-          for (let i = 0; i < 150 && !settled; i++) {
+          // pre-lock behavior, which writes the orphan). The lock state lives
+          // in PostgreSQL and a query is the only way to read it, while
+          // `settled` reports the alternative from in-process. The 12ms is the
+          // interval between reads and decides nothing -- the block persists
+          // until this transaction commits, so a slow poll cannot sample past
+          // it. A register blocked by some THIRD backend would loop here
+          // rather than fail, which the lane timeout catches; nothing else in
+          // this per-file schema holds a lock on the anchor run row.
+          for (;;) {
             const blocked = await h.db.execute(
               sql`SELECT pg_blocking_pids(${registerPid}) @> ARRAY[${teardownPid}]::int[] AS blocked`,
             );
@@ -641,6 +680,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               sawBlock = true;
               break;
             }
+            if (settled) break;
             await new Promise((res) => setTimeout(res, 12));
           }
           // Returning commits the teardown (status = "cancelled") and releases

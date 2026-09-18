@@ -28,6 +28,9 @@
 //   * The `1.eml` blob is ABSENT from the tip tree (physically expunged) but
 //     still reachable through an ancestor commit: the audit bytes survive in
 //     git history, not the live tree. `2.eml` remains in the tip tree.
+//   * The `mail_wait` tool_result the agent answered carries mail 2's sender,
+//     which is what proves mail 2's arrival woke the wait rather than the wait
+//     expiring on its own timer.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -58,6 +61,7 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
+import { toolResultTexts } from "./nested-tool-invoke-helpers";
 import { singleStepMailInboxEntry } from "./fixtures/single-step-mail-inbox-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -79,9 +83,10 @@ const MAIL2_FROM = "bystander-7c4e21@integration.interchange";
 const MAIL2_BODY = "An unflagged bystander that must survive the expunge.";
 
 const RESULT_MARKER = "FLAG-EXPUNGE-DONE";
-// mail_wait's own timeout, kept far above a healthy notify-wake so that a run
-// completing inside the shorter waitForWorkflowRunComplete budget proves the
-// wait resolved from mail 2's arrival, not from a wait expiry.
+// mail_wait's own timeout, kept far above a healthy notify-wake so the wait
+// resolves from mail 2's arrival rather than from its own expiry. Which of the
+// two actually happened is proved by the tool_result content assertion, not by
+// this number.
 const MAIL_WAIT_TIMEOUT_S = 90;
 
 // The agent waits for mail 2, then flags mail 1 (uid 1) \Deleted and expunges.
@@ -299,7 +304,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Fire mail 1: it opens the run and eager-commits as uid 1. The agent's
@@ -314,15 +319,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       // Wait for the mail_wait turn to issue (the run's first inference), then
       // settle so its watch is registered before mail 2 arrives.
       await waitFor(() => env.inference.requests.length >= 1, {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
+      // The observable above is the request ARRIVING at the mock. The watch is
+      // armed only after the mock answers it, the child runs mail_wait, and
+      // `transport.watch` registers -- all inside the workflow-child process,
+      // which reports none of it to the harness, so the 300ms stands in for
+      // that registration. It is a cadence bet, not a correctness one:
+      // `makeMailWaitHandler` searches the mailbox before installing the
+      // watch, so a mail 2 that lands early still resolves the wait and the
+      // flag/expunge assertions below hold either way.
       await new Promise((r) => setTimeout(r, 300));
 
       // Fire mail 2 while the run blocks in mail_wait: it eager-commits as uid 2
@@ -340,7 +351,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       if (terminal.type !== "RunCompleted") {
         const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
@@ -349,6 +360,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
         throw new Error(
           `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(failed?.body)}\n${env.sidecarDiagnostics()}`,
+        );
+      }
+
+      // Mail 2's ARRIVAL woke the wait, rather than the wait expiring on its
+      // own timer. `makeMailWaitHandler` resolves a match with `{ ref, from,
+      // subject, content }` and an expiry with `{ error, code: "timeout" }`,
+      // and the scripted mock advances on a tool_result's PRESENCE either way
+      // -- so an expired wait still reaches the flag and expunge turns and
+      // still satisfies every mailbox assertion below. The result's text is
+      // the only thing that separates the two. `mail_flag` returns
+      // `{ ok: true }` and `mail_expunge` returns `{ ok: true, expungedUids }`,
+      // so the wait's match is the only result in this run that can carry a
+      // sender address.
+      const toolResults = env.inference.requests.flatMap(toolResultTexts);
+      if (!toolResults.some((t) => t.includes(MAIL2_FROM))) {
+        throw new Error(
+          `mail_wait did not resolve from mail 2: no tool_result carried ${MAIL2_FROM}; observed ${JSON.stringify(toolResults)}\n${env.sidecarDiagnostics()}`,
         );
       }
 

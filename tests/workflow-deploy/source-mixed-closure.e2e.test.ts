@@ -466,21 +466,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await fireMailTrigger(env, deploymentMailAddress, {
         messageId: "<source-mixed-e2e@integration.interchange>",
       });
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-        timeoutMs: 30_000,
         diagnostics: env.sidecarDiagnostics,
       });
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       if (terminal.type !== "RunCompleted") {
         throw new Error(

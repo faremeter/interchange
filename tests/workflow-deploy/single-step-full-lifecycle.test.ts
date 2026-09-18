@@ -266,7 +266,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // 4.1 identity preserved: the deploy-ack fired for the run's
       // `run_<hex>` address and persisted a public key.
       await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
       const ackKey = env.hub.deployAcks.get(deploymentMailAddress);
@@ -281,7 +280,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- STAGE 2 + 3: MAIL IN + TOOL-DRIVEN SIGNED REPLY (4.2 + 4.3) ----
@@ -294,14 +293,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const firstRunId = await waitForFirstRunId(env, workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       const firstTerminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         firstRunId,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       if (firstTerminal.type !== "RunCompleted") {
         const events = await readWorkflowRunEvents(
@@ -361,7 +359,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       await waitFor(
         async () => (await readSnapshotUserTexts(agentStateDir)).length >= 1,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const afterBoundary = await readSnapshotUserTexts(agentStateDir);
       expect(afterBoundary.some((t) => t.includes(FIRST_BODY))).toBe(true);
@@ -454,7 +452,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               e.sid === SESSION_ID &&
               isInferenceStart(e.event),
           ),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const inferenceStart = env.hub.agentEvents.find(
         (e) =>

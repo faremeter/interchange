@@ -209,7 +209,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // First message: a KNOWN body. The runId the supervisor mints from
@@ -228,14 +228,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const firstRunId = await waitForFirstRunId(env, workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       const firstTerminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         firstRunId,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(firstTerminal.type).toBe("RunCompleted");
 
@@ -366,7 +365,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The driving message: an attachment with an EMPTY conversation body.
@@ -382,14 +381,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID_2,
         runId,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       // The load-bearing assertion: the non-text message COMPLETED the run
       // instead of failing it. A regression surfaces as RunFailed here.

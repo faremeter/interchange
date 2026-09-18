@@ -412,7 +412,7 @@ async function deployProbeSource(opts: {
   // routability is asynchronous. Wait for it before firing the trigger.
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(mailAddress),
-    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   return {
@@ -436,10 +436,8 @@ async function runOnce(
   await fireMailTrigger(env, mailAddress, { messageId, grants });
   const runId = await waitForFirstRunId(env, workflowRunRepoId, {
     diagnostics: env.sidecarDiagnostics,
-    timeoutMs: 20_000,
   });
   const terminal = await waitForWorkflowRunComplete(env, anchorRunId, runId, {
-    timeoutMs: 20_000,
     diagnostics: env.sidecarDiagnostics,
   });
   return { runId, terminal };

@@ -190,7 +190,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Fire mail 1: opens the run. Its sender does not match the wait query.
@@ -204,7 +204,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       // The turn is parked in mail_wait: the run started, the mail_wait
@@ -217,7 +216,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           env.inference.requests.some((r) =>
             r.tools?.some((t) => t.name === "mail_wait"),
           ),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const isTerminal = async (): Promise<boolean> => {
         const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
@@ -233,18 +232,40 @@ describe.skipIf(!harnessDbEnvAvailable())(
         return events.some((e) => e.type === "RunStarted");
       };
       await waitFor(started, {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
-      const settleUntil = Date.now() + 1_000;
-      while (Date.now() < settleUntil) {
-        if (await isTerminal()) {
-          throw new Error(
-            "run reached a terminal state before mail 2 was fired; mail_wait did not block on the unmatched trigger",
-          );
-        }
-        await new Promise((r) => setTimeout(r, 50));
-      }
+      // The 1s window is load-bearing and cannot become a state-based wait:
+      // the property under test is the ABSENCE of a terminal event, and no
+      // state proves an absence -- a predicate for "still not terminal" holds
+      // the instant it is first checked and would prove nothing. There is no
+      // positive signal ordered after "the run would have wrongly terminated"
+      // to await instead, and the supervisor's clock lives in the sidecar
+      // subprocess, so no clock seam is reachable from here. The duration
+      // therefore sets how wide a regression window this test can see: a
+      // mail_wait that terminated the run within 1s of arming fails here, one
+      // that terminated later would slip past.
+      //
+      // The loop stays hand-rolled for that reason -- `waitFor` exits when its
+      // predicate holds, which here is the failure -- and runs inside
+      // `env.retrying` so the env teardown's in-flight wait report covers it.
+      // The `checkTornDown` at the top of the loop is what lets that teardown's
+      // stop end it: a window that runs out against an env being dismantled
+      // would report the run stayed blocked when nothing was left to observe.
+      await env.retrying(
+        "mail_wait stays blocked for 1s",
+        async (checkTornDown) => {
+          const settleUntil = Date.now() + 1_000;
+          while (Date.now() < settleUntil) {
+            checkTornDown();
+            if (await isTerminal()) {
+              throw new Error(
+                "run reached a terminal state before mail 2 was fired; mail_wait did not block on the unmatched trigger",
+              );
+            }
+            await new Promise((r) => setTimeout(r, 50));
+          }
+        },
+      );
 
       // Fire mail 2 from the awaited sender WHILE the turn is blocked in
       // mail_wait. The supervisor eager-commits it and fires mailbox.notify.
@@ -261,7 +282,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
       if (terminal.type !== "RunCompleted") {

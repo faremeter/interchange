@@ -210,7 +210,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Fire the inbound mail with the known identity + body, plus the per-run
@@ -225,14 +225,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       if (terminal.type !== "RunCompleted") {
         const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
@@ -276,7 +275,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               m.senderAddress === deploymentMailAddress &&
               m.recipients.includes(INBOUND_FROM),
           ),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const replyOut = env.hub.outboundMail.find(
         (m) =>

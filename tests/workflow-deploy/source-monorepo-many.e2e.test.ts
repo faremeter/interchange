@@ -413,21 +413,20 @@ async function deployAndRun(spec: {
 
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(spec.address),
-    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   await fireMailTrigger(env, spec.address, {
     messageId: `<source-monorepo-many-${spec.workflowId}@integration.interchange>`,
   });
   const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-    timeoutMs: 30_000,
     diagnostics: env.sidecarDiagnostics,
   });
   const terminal = await waitForWorkflowRunComplete(
     env,
     spec.anchorRunId,
     runId,
-    { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
   if (terminal.type !== "RunCompleted") {
     throw new Error(

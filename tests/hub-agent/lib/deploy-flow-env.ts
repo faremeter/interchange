@@ -19,8 +19,11 @@
 //
 // The fixture exposes the hub handle, the inference request capture, the
 // sidecar process handle, and a `sidecarDiagnostics()` callback that
-// surfaces sidecar stderr and hub state-pack receive failures on `waitFor`
-// timeouts.
+// surfaces sidecar stderr and hub state-pack receive failures. A wait helper
+// given a `timeoutMs` renders it when that bound lapses; `teardown()` renders
+// it when a wait is still in flight, which is what a wedged test leaves
+// behind, and then stops that wait so it does not poll on into the env
+// teardown is dismantling (see the in-flight wait registry below).
 //
 // Shared constants
 // ----------------
@@ -66,7 +69,12 @@ import {
   type WorkflowRunHubPrincipal,
   type WsHandle,
 } from "@intx/hub-sessions";
-import { base64Encode, deriveWorkflowRunId, hexEncode } from "@intx/types";
+import {
+  base64Encode,
+  deriveWorkflowRunId,
+  hasCode,
+  hexEncode,
+} from "@intx/types";
 import type { CredentialCipher } from "@intx/types";
 import type { WireGrantRule } from "@intx/types/grant-wire";
 import {
@@ -108,8 +116,9 @@ export const TOKEN = "test-token";
 
 // The production hub-link reconnect backoff (see `DEFAULT_RECONNECT_DELAY_MS`
 // in `@intx/hub-agent`'s hub-link). The fixture's default sidecar env replaces
-// it with a short test delay (see `startSidecarSubprocess`), so a test that
-// asserts the delay itself (e.g. `reconnectMs > 1_000`) opts back in via
+// it with a short test delay (see `startSidecarSubprocess`), so a test whose
+// recovery must run through the real delayed-reconnect cycle rather than the
+// shortened one pins it back via
 // `sidecarEnv: { SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS }`.
 export const PRODUCTION_RECONNECT_DELAY_MS = "3000";
 
@@ -141,19 +150,198 @@ export const PRIMARY_ALLOCATION_TARGET = {
   generation: 1,
 } as const;
 
+// ---- In-flight harness waits ----
+//
+// Every wait helper below, and every `retrying` block, registers on entry and
+// deregisters in a `finally`. `startDeployFlowEnv`'s `teardown()` dumps the
+// sidecar output when anything is still registered, then stops what it found.
+//
+// An outstanding wait at teardown IS a wedge, not a proxy for one. When the
+// runner's per-test budget lapses, bun abandons the test body's promise, but
+// nothing aborts the poll loop the body was suspended in: the loop keeps
+// polling and never reaches its `finally`. Every other way out of a helper --
+// returning, throwing, a guarded `timeoutMs` expiring -- runs the `finally`,
+// so a clean finish leaves the registry empty.
+//
+// That abandoned loop is the reason teardown stops what it reports. Left
+// running, it polls on into an env whose deployments, sidecar, servers and
+// tempdirs teardown has already dismantled, and the fault it eventually hits
+// is a fault of the dismantling, not of the test: a read through
+// `requireDeployment` after `deployments.clear()` reports that a test forgot
+// to register its deployment. Bun charges that rejection to whichever test is
+// running when it settles, so the report names an innocent test or no test at
+// all. `stopOutstandingWaits` ends the loop at its next iteration instead,
+// with an error that says what actually happened.
+//
+// The registry is module-scoped because `waitFor` takes no env, so an
+// abandoned record outlives the file that made it (`--no-isolate` keeps one
+// module registry per worker across that worker's files). `currentWaitMark`
+// fences that off: an env reports and stops only registrations at or after
+// its creation.
+
+type InFlightWait = { seq: number; label: string; envTornDown: boolean };
+
+let nextWaitSeq = 0;
+const inFlightWaits = new Set<InFlightWait>();
+
+/**
+ * A marker for "every wait registered from here on". Pass it to
+ * `renderOutstandingWaitReport` to report only those, or to
+ * `stopOutstandingWaits` to report and stop them.
+ */
+export function currentWaitMark(): number {
+  return nextWaitSeq;
+}
+
+function registerWait(label: string): InFlightWait {
+  const record = { seq: nextWaitSeq, label, envTornDown: false };
+  nextWaitSeq += 1;
+  inFlightWaits.add(record);
+  return record;
+}
+
+function deregisterWait(record: InFlightWait): void {
+  inFlightWaits.delete(record);
+}
+
+/**
+ * Throw when the env a wait belongs to was torn down while the wait was still
+ * in flight. Every poll loop below calls this at the top of each iteration,
+ * ahead of the read or predicate that iteration would perform, so a stopped
+ * loop neither reads dismantled fixture state nor returns a result the
+ * dismantling produced -- a quiescence wait, for one, goes quiet precisely
+ * because teardown killed the sidecar.
+ */
+function throwIfEnvTornDown(record: InFlightWait): void {
+  if (!record.envTornDown) return;
+  throw new Error(
+    `deploy-flow env: torn down while ${record.label} was still in flight; ` +
+      `the wait was stopped instead of polling on against a dismantled env`,
+  );
+}
+
+// Cap on the predicate source a `waitFor` label carries. Long enough to tell
+// one predicate in a test file from another, short enough that a handful of
+// outstanding labels stay readable above the sidecar output they precede.
+const PREDICATE_LABEL_MAX_CHARS = 140;
+
+/**
+ * Render a `waitFor` predicate for its label. `waitFor` receives a closure and
+ * no other distinguishing argument, so the source text is the only thing that
+ * tells one of a file's several bare `waitFor` calls from the next.
+ */
+function describePredicate(
+  predicate: () => boolean | Promise<boolean>,
+): string {
+  const source = String(predicate).replace(/\s+/gu, " ").trim();
+  return source.length > PREDICATE_LABEL_MAX_CHARS
+    ? `${source.slice(0, PREDICATE_LABEL_MAX_CHARS)}...`
+    : source;
+}
+
+/**
+ * The harness waits registered at or after `mark` that have not deregistered,
+ * rendered one per line, or `null` when there are none.
+ */
+export function renderOutstandingWaitReport(mark: number): string | null {
+  const outstanding = [...inFlightWaits].filter((wait) => wait.seq >= mark);
+  if (outstanding.length === 0) return null;
+  const lines = outstanding.map((wait) => `  ${wait.label}`).join("\n");
+  return (
+    `deploy-flow env torn down with ${String(outstanding.length)} harness ` +
+    `wait(s) still in flight:\n${lines}`
+  );
+}
+
+/**
+ * Stop every harness wait registered at or after `mark`: each one's poll loop
+ * throws at its next iteration rather than polling on into an env teardown is
+ * dismantling. Returns the report `renderOutstandingWaitReport` renders for
+ * the same mark, taken before the waits were stopped, so the caller reports
+ * the wedge it is about to end. Reporting and stopping are one call because
+ * the report is the only record of what was stopped.
+ *
+ * A wait that returned or threw deregistered on its way out, so it is not in
+ * the registry and nothing here can reach it. What is still registered when
+ * an env tears down was abandoned rather than awaited, which is why stopping
+ * it cannot disturb a test that passed.
+ */
+export function stopOutstandingWaits(mark: number): string | null {
+  const report = renderOutstandingWaitReport(mark);
+  for (const wait of inFlightWaits) {
+    if (wait.seq >= mark) wait.envTornDown = true;
+  }
+  return report;
+}
+
+/**
+ * Run `fn` registered under `label`, so a wedge inside it reaches the teardown
+ * report the way a wedge inside `waitFor` does. For the retry loops `waitFor`
+ * cannot express: one that performs an action each iteration (inject a signal,
+ * then read) rather than reading a predicate, and one whose exit is an elapsed
+ * window rather than a state.
+ *
+ * Callers reach it as `env.retrying`. It is exported so an env assembled by
+ * hand wires this registration rather than a stub that registers nothing.
+ *
+ * `fn` is opaque to the registry, so teardown cannot reach inside it on its
+ * own. Two things let it in. A loop `fn` runs through one of the helpers here
+ * is stopped through that helper. A loop that polls on its own gets
+ * `checkTornDown`, the same check `waitFor` runs at the top of each of its
+ * iterations, bound to this registration: calling it first thing in the loop
+ * body throws there instead of performing that pass's read against an env
+ * teardown is dismantling.
+ *
+ * A loop that does neither is not interrupted, and the guarantee that remains
+ * is on the way out: `fn` completing after the env was torn down throws
+ * instead of returning a value read out of a dismantled env.
+ */
+export async function retrying<T>(
+  label: string,
+  fn: (checkTornDown: () => void) => Promise<T>,
+): Promise<T> {
+  const registration = registerWait(`retrying(${label})`);
+  const checkTornDown = (): void => {
+    throwIfEnvTornDown(registration);
+  };
+  try {
+    const result = await fn(checkTornDown);
+    checkTornDown();
+    return result;
+  } finally {
+    deregisterWait(registration);
+  }
+}
+
+/**
+ * Poll `predicate` until it is true. Carries no deadline unless the caller
+ * supplies `timeoutMs`, so a slow machine makes the wait slower and never
+ * makes it fail; a hang is failed by the lane budget in the `Makefile` target.
+ *
+ * Pass `timeoutMs` only where expiry is the behavior under test -- a wait that
+ * must prove an address never becomes routable needs the bound, because the
+ * expiry is its pass condition.
+ */
 export async function waitFor(
   predicate: () => boolean | Promise<boolean>,
   opts: { timeoutMs?: number; diagnostics?: () => string } = {},
 ): Promise<void> {
-  const { timeoutMs = 10_000, diagnostics } = opts;
-  const start = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - start > timeoutMs) {
-      const diag = diagnostics?.();
-      const ctx = diag ? `\n${diag}` : "";
-      throw new Error(`waitFor timed out after ${timeoutMs}ms${ctx}`);
+  const { timeoutMs, diagnostics } = opts;
+  const registration = registerWait(`waitFor(${describePredicate(predicate)})`);
+  try {
+    const start = Date.now();
+    for (;;) {
+      throwIfEnvTornDown(registration);
+      if (await predicate()) return;
+      if (timeoutMs !== undefined && Date.now() - start > timeoutMs) {
+        const diag = diagnostics?.();
+        const ctx = diag ? `\n${diag}` : "";
+        throw new Error(`waitFor timed out after ${timeoutMs}ms${ctx}`);
+      }
+      await new Promise((r) => setTimeout(r, 50));
     }
-    await new Promise((r) => setTimeout(r, 50));
+  } finally {
+    deregisterWait(registration);
   }
 }
 
@@ -1013,7 +1201,52 @@ export type SidecarHandle = {
   dataDir: string;
   /** Rolling stderr buffer; capped at 500 chunks. */
   stderr: readonly string[];
+  /**
+   * The env this subprocess was spawned with -- the object handed to
+   * `Bun.spawn`, not a re-derivation of it. `assertPinnedSidecarEnvReached`
+   * reads it to check a caller's pin against what the process actually got,
+   * which is only sound because this is the spawned value.
+   */
+  env: Readonly<Record<string, string | undefined>>;
 };
+
+// The env the fixture hands a spawned sidecar. Separated from the spawn so a
+// test can read the variables the fixture would pass without paying for a
+// subprocess -- `SIDECAR_RECONNECT_DELAY_MS` is the one whose value a
+// reconnect test's behavior depends on, and nothing else in this fixture
+// reports which of the two delays is in effect.
+//
+// `extraEnv` is written last and may override any key the fixture sets.
+// Callers use it to inject opt-in flags, but the override contract is
+// uniform across every fixture-owned key so a future caller can also point
+// the sidecar at a different hub or data directory without the fixture
+// silently winning.
+export function buildSidecarSubprocessEnv(opts: {
+  hubPort: number;
+  dataDir: string;
+  extraEnv?: Record<string, string>;
+}): Record<string, string | undefined> {
+  return {
+    PATH: process.env["PATH"],
+    HOME: process.env["HOME"],
+    TMPDIR: process.env["TMPDIR"],
+    HUB_WS_URL: `ws://localhost:${String(opts.hubPort)}/ws`,
+    SIDECAR_ID,
+    SIDECAR_TOKEN: TOKEN,
+    SIDECAR_DATA_DIR: opts.dataDir,
+    // A fixed test key so the spawned sidecar boots with a REAL cipher and
+    // every deployed e2e exercises the at-rest credential sealing, rather than
+    // a noop that would let a plaintext-sealing regression pass green.
+    SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
+      "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+    // Fast reconnect backoff for tests that do not assert the delay itself
+    // (recovery semantics are independent of the backoff duration); a test
+    // that pins the production 3s delay passes
+    // `sidecarEnv: { SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS }`.
+    SIDECAR_RECONNECT_DELAY_MS: TEST_RECONNECT_DELAY_MS,
+    ...(opts.extraEnv ?? {}),
+  };
+}
 
 // Spawn a real sidecar subprocess pointed at the supplied hub. The
 // caller passes the hub's port so the sidecar reaches the hub over
@@ -1034,31 +1267,11 @@ export async function startSidecarSubprocess(opts: {
 
   const stderr: string[] = [];
 
-  // `extraEnv` is written last and may override any key the fixture
-  // sets. Callers use it to inject opt-in flags, but the override
-  // contract is uniform across every fixture-owned key so a future
-  // caller can also point the sidecar at a different hub or data
-  // directory without the fixture silently winning.
-  const env: Record<string, string | undefined> = {
-    PATH: process.env["PATH"],
-    HOME: process.env["HOME"],
-    TMPDIR: process.env["TMPDIR"],
-    HUB_WS_URL: `ws://localhost:${String(hubPort)}/ws`,
-    SIDECAR_ID,
-    SIDECAR_TOKEN: TOKEN,
-    SIDECAR_DATA_DIR: dataDir,
-    // A fixed test key so the spawned sidecar boots with a REAL cipher and
-    // every deployed e2e exercises the at-rest credential sealing, rather than
-    // a noop that would let a plaintext-sealing regression pass green.
-    SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
-      "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
-    // Fast reconnect backoff for tests that do not assert the delay itself
-    // (recovery semantics are independent of the backoff duration); a test
-    // that pins the production 3s delay passes
-    // `sidecarEnv: { SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS }`.
-    SIDECAR_RECONNECT_DELAY_MS: TEST_RECONNECT_DELAY_MS,
-    ...(opts.extraEnv ?? {}),
-  };
+  const env = buildSidecarSubprocessEnv({
+    hubPort,
+    dataDir,
+    ...(opts.extraEnv !== undefined ? { extraEnv: opts.extraEnv } : {}),
+  });
 
   // --conditions=intx-src resolves @intx/* to source; the spawned sidecar
   // runs from the workspace, where the dev loop builds no dist.
@@ -1094,7 +1307,42 @@ export async function startSidecarSubprocess(opts: {
     }
   })();
 
-  return { proc, dataDir, stderr };
+  return { proc, dataDir, stderr, env };
+}
+
+/**
+ * Throw unless every variable `pinned` names carries that exact value in
+ * `spawned`, the env a sidecar subprocess was actually started with.
+ *
+ * A caller that passes `sidecarEnv` is claiming the subprocess runs with those
+ * variables. Nothing downstream re-states the claim: the fixture's own
+ * defaults are the same shape as an override, so a break anywhere in the
+ * `sidecarEnv` -> `extraEnv` -> spawned-env chain leaves the subprocess
+ * running on a fixture default that looks deliberate. A reconnect test pinning
+ * `SIDECAR_RECONNECT_DELAY_MS` to the production delay is the case that
+ * motivates this -- it would silently run at the short test delay, and its
+ * recovery assertions hold at either delay, so nothing would fail.
+ *
+ * Keyed off the caller's own variables rather than any particular one, so it
+ * covers a pin of any value of any variable. A caller that passes no
+ * `sidecarEnv` makes no claim and has no keys here, so there is nothing for
+ * this to check and it cannot fire on that path.
+ */
+export function assertPinnedSidecarEnvReached(
+  pinned: Record<string, string>,
+  spawned: Readonly<Record<string, string | undefined>>,
+): void {
+  const mismatches = Object.entries(pinned)
+    .filter(([key, value]) => spawned[key] !== value)
+    .map(
+      ([key, value]) =>
+        `${key}: pinned ${value}, subprocess env has ${spawned[key] === undefined ? "no value" : spawned[key]}`,
+    );
+  if (mismatches.length > 0) {
+    throw new Error(
+      `deploy-flow env: sidecarEnv did not reach the sidecar subprocess -- ${mismatches.join("; ")}`,
+    );
+  }
 }
 
 function pidAlive(pid: number): boolean {
@@ -1230,6 +1478,12 @@ export type DeployFlowEnv = {
   hub: HubEnv;
   inference: MockInference;
   sidecar: SidecarHandle;
+  /**
+   * Sidecar stderr plus hub state-pack receive failures, rendered for a
+   * failing wait. Reports every sidecar registered on the env, so a restart
+   * test's replacement process is covered by every wait that already passes
+   * this function -- including `waitForReconnect`, which wires it itself.
+   */
   sidecarDiagnostics: () => string;
   /** Per-deployment handles populated by `deployWorkflowSourceForTest`. */
   deployments: Map<string, DeploymentHandle>;
@@ -1240,6 +1494,22 @@ export type DeployFlowEnv = {
    * helpers can resolve the handle by `anchorRunId`.
    */
   registerDeployment(handle: DeploymentHandle): void;
+  /**
+   * Register a sidecar the test spawned itself, so `sidecarDiagnostics`
+   * reports its output too. A restart test spawns a replacement sidecar
+   * against the crashed process's data dir and registers it here.
+   *
+   * Registration covers diagnostics only. `teardown()` terminates the primary
+   * sidecar it spawned and no other, so the caller still owns the registered
+   * handle's lifetime.
+   */
+  registerSidecar(handle: SidecarHandle): void;
+  /**
+   * Run a retry loop that `waitFor` cannot express under the in-flight wait
+   * registry, so a wedge inside it reaches this env's teardown report. See
+   * `retrying`.
+   */
+  retrying: typeof retrying;
   teardown: () => Promise<void>;
 };
 
@@ -1250,6 +1520,10 @@ export type StartDeployFlowEnvOpts = {
    * `SIDECAR_ID`, `SIDECAR_TOKEN`, `SIDECAR_DATA_DIR`, and the
    * inherited `PATH`/`HOME`/`TMPDIR`, so callers can both inject new
    * flags and override any fixture default.
+   *
+   * Every variable named here is verified against the env the subprocess was
+   * spawned with; a value that does not arrive throws rather than letting the
+   * test run on the fixture default. See `assertPinnedSidecarEnvReached`.
    */
   sidecarEnv?: Record<string, string>;
   /**
@@ -1332,6 +1606,9 @@ export type StartDeployFlowEnvOpts = {
 export async function startDeployFlowEnv(
   opts: StartDeployFlowEnvOpts = {},
 ): Promise<DeployFlowEnv> {
+  // Every harness wait registered from here on belongs to this env; see the
+  // in-flight wait registry above for why the mark is needed at all.
+  const waitMark = currentWaitMark();
   const tempDirs: string[] = [];
   const registerTempDir = (dir: string): void => {
     tempDirs.push(dir);
@@ -1382,10 +1659,32 @@ export async function startDeployFlowEnv(
     ...(opts.sidecarEnv !== undefined ? { extraEnv: opts.sidecarEnv } : {}),
   });
 
+  // This layer owns the `sidecarEnv` -> `extraEnv` -> spawned-env wiring, so
+  // it is the one that can check the caller's pin against what the process
+  // got. Checked after the spawn and against `sidecar.env` rather than before
+  // and against a rebuilt map, so a break at either hop is caught instead of
+  // being reproduced by the check.
+  if (opts.sidecarEnv !== undefined) {
+    assertPinnedSidecarEnvReached(opts.sidecarEnv, sidecar.env);
+  }
+
+  // The primary sidecar plus every handle a test registered later, in spawn
+  // order. `sidecarDiagnostics` reports all of them, so a restart test's
+  // replacement process rides every wait the primary already rode.
+  const sidecars: SidecarHandle[] = [sidecar];
+  const registerSidecar = (handle: SidecarHandle): void => {
+    if (sidecars.includes(handle)) {
+      throw new Error("deploy-flow env: sidecar handle is already registered");
+    }
+    sidecars.push(handle);
+  };
+
   const sidecarDiagnostics = (): string => {
     const parts: string[] = [];
-    if (sidecar.stderr.length > 0) {
-      parts.push(`sidecar stderr:\n${sidecar.stderr.slice(-300).join("")}`);
+    for (const [index, handle] of sidecars.entries()) {
+      if (handle.stderr.length === 0) continue;
+      const label = index === 0 ? "sidecar" : `sidecar #${String(index)}`;
+      parts.push(`${label} stderr:\n${handle.stderr.slice(-300).join("")}`);
     }
     const failures = hub.statePackReceiveFailures;
     if (failures.length > 0) {
@@ -1415,6 +1714,31 @@ export async function startDeployFlowEnv(
   };
 
   const teardown = async (): Promise<void> => {
+    // A wait helper renders its `diagnostics` only when its own `timeoutMs`
+    // lapses, and almost every caller supplies none, so a test that hangs
+    // inside a deadline-free poll loop is ended by the runner's per-test budget
+    // with nothing printed. Bun runs `afterAll` after that budget lapses, and
+    // this hook is what `afterAll` calls, so it is the remaining place that can
+    // report what the sidecar said.
+    //
+    // The in-flight wait registry is the gate: a wedged test leaves the helper
+    // it was suspended in registered, and a test that returned or threw leaves
+    // nothing registered, so a clean run prints nothing. A test that passed
+    // while one of these waits was still in flight also trips it. That is not
+    // a false positive: CONVENTIONS.md requires a test to own every async
+    // operation it starts, and this is the gate that can see the violation.
+    //
+    // Reporting and stopping are the same call, so the waits the rest of this
+    // hook is about to dismantle the env underneath are always the ones the
+    // report named. Each stopped wait throws at its next iteration; nothing
+    // here awaits that, because the promise it rejects was already abandoned.
+    const outstanding = stopOutstandingWaits(waitMark);
+    if (outstanding !== null) {
+      const diagnostics = sidecarDiagnostics();
+      process.stderr.write(
+        `\n${outstanding}\n${diagnostics.length > 0 ? `${diagnostics}\n` : ""}`,
+      );
+    }
     // Close every tracked hub-side WebSocket handle before killing the
     // sidecar so no live link lingers. Then terminate the sidecar and reap
     // its process subtree (`terminateSidecarSubprocess`) before removing its
@@ -1445,6 +1769,8 @@ export async function startDeployFlowEnv(
     sidecarDiagnostics,
     deployments,
     registerDeployment,
+    registerSidecar,
+    retrying,
     teardown,
   };
 }
@@ -1938,6 +2264,12 @@ export async function readWorkflowRunEvents(
  * `waitFor` so the helper composes the same diagnostic surface.
  */
 export type WaitForWorkflowRunCompleteOpts = {
+  /**
+   * Bound on the wait. Omitted, the helper polls until the terminal event
+   * lands and never throws; a caller that must distinguish "not terminal yet"
+   * from a fault supplies it and discriminates on
+   * `isWorkflowRunCompleteTimeout`.
+   */
   timeoutMs?: number;
   diagnostics?: () => string;
 };
@@ -1950,8 +2282,42 @@ export const WORKFLOW_RUN_TERMINAL_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * `code` marker on the error `waitForWorkflowRunComplete` throws when its
+ * budget lapses with no terminal event on the log.
+ */
+export const WORKFLOW_RUN_COMPLETE_TIMEOUT_CODE =
+  "workflow_run_complete_timeout";
+
+/** The timeout `waitForWorkflowRunComplete` throws, carrying its marker. */
+export interface WorkflowRunCompleteTimeout extends Error {
+  readonly code: typeof WORKFLOW_RUN_COMPLETE_TIMEOUT_CODE;
+}
+
+/**
+ * True only for that timeout. A caller that retries
+ * `waitForWorkflowRunComplete` has to tell "no terminal event yet, read
+ * again" apart from a real fault -- a substrate read error, a deployment the
+ * fixture never registered -- so it can surface the fault instead of
+ * retrying through it until its own budget lapses and reports a hang.
+ *
+ * Discriminate on this, never on the error's message. The message carries
+ * interpolated diagnostics and exists to be read by a human, so matching it
+ * would reclassify every fault as a timeout the first time it is reworded.
+ */
+export function isWorkflowRunCompleteTimeout(
+  err: unknown,
+): err is WorkflowRunCompleteTimeout {
+  return (
+    err instanceof Error &&
+    hasCode(err) &&
+    err.code === WORKFLOW_RUN_COMPLETE_TIMEOUT_CODE
+  );
+}
+
+/**
  * Poll the deployment's workflow-run event log until the run's
- * terminal event lands. Returns the terminal event.
+ * terminal event lands. Returns the terminal event. Carries no deadline
+ * unless the caller supplies `timeoutMs`.
  */
 export async function waitForWorkflowRunComplete(
   env: DeployFlowEnv,
@@ -1959,28 +2325,39 @@ export async function waitForWorkflowRunComplete(
   runId: string,
   opts: WaitForWorkflowRunCompleteOpts = {},
 ): Promise<WorkflowRunEvent> {
-  const { timeoutMs = 10_000, diagnostics } = opts;
-  const start = Date.now();
-  for (;;) {
-    const events = await readWorkflowRunEvents(env, anchorRunId, runId);
-    const terminal = events.find((e) =>
-      WORKFLOW_RUN_TERMINAL_TYPES.has(e.type),
-    );
-    if (terminal !== undefined) {
-      const handle = env.deployments.get(anchorRunId);
-      if (handle !== undefined) {
-        terminalDeployments.set(handle, true);
-      }
-      return terminal;
-    }
-    if (Date.now() - start > timeoutMs) {
-      const diag = diagnostics?.();
-      const ctx = diag ? `\n${diag}` : "";
-      throw new Error(
-        `waitForWorkflowRunComplete timed out after ${String(timeoutMs)}ms for ${anchorRunId}/${runId}${ctx}`,
+  const { timeoutMs, diagnostics } = opts;
+  const registration = registerWait(
+    `waitForWorkflowRunComplete(${anchorRunId}/${runId})`,
+  );
+  try {
+    const start = Date.now();
+    for (;;) {
+      throwIfEnvTornDown(registration);
+      const events = await readWorkflowRunEvents(env, anchorRunId, runId);
+      const terminal = events.find((e) =>
+        WORKFLOW_RUN_TERMINAL_TYPES.has(e.type),
       );
+      if (terminal !== undefined) {
+        const handle = env.deployments.get(anchorRunId);
+        if (handle !== undefined) {
+          terminalDeployments.set(handle, true);
+        }
+        return terminal;
+      }
+      if (timeoutMs !== undefined && Date.now() - start > timeoutMs) {
+        const diag = diagnostics?.();
+        const ctx = diag ? `\n${diag}` : "";
+        throw Object.assign(
+          new Error(
+            `waitForWorkflowRunComplete timed out after ${String(timeoutMs)}ms for ${anchorRunId}/${runId}${ctx}`,
+          ),
+          { code: WORKFLOW_RUN_COMPLETE_TIMEOUT_CODE },
+        );
+      }
+      await new Promise((r) => setTimeout(r, 50));
     }
-    await new Promise((r) => setTimeout(r, 50));
+  } finally {
+    deregisterWait(registration);
   }
 }
 
@@ -2031,6 +2408,40 @@ export type FireMailTriggerOpts = {
    */
   references?: string[];
 };
+
+/**
+ * `code` marker on the errors `fireMailTrigger` throws when the hub declines
+ * to route a frame at the target address -- `sendRunGrants` or `routeMail`
+ * returned false, meaning the address had neither a live connection nor a
+ * disconnect queue to ride.
+ */
+export const MAIL_TRIGGER_UNROUTABLE_CODE = "mail_trigger_unroutable";
+
+/** The unroutable-address failure `fireMailTrigger` throws, carrying its marker. */
+export interface MailTriggerUnroutableError extends Error {
+  readonly code: typeof MAIL_TRIGGER_UNROUTABLE_CODE;
+}
+
+/**
+ * True only for that failure. A caller that re-fires a trigger across a
+ * reconnect has to tell "the address is not routable yet, fire again" apart
+ * from a real fault -- a signing failure, a malformed address -- so it can
+ * surface the fault instead of re-firing through it until its own budget
+ * lapses and reports a hang.
+ *
+ * Discriminate on this, never on the error's message. The message interpolates
+ * the address and exists to be read by a human, so matching it would
+ * reclassify every fault as unroutable the first time it is reworded.
+ */
+export function isMailTriggerUnroutableError(
+  err: unknown,
+): err is MailTriggerUnroutableError {
+  return (
+    err instanceof Error &&
+    hasCode(err) &&
+    err.code === MAIL_TRIGGER_UNROUTABLE_CODE
+  );
+}
 
 /**
  * Construct a signed mail message and route it via the hub's
@@ -2110,8 +2521,11 @@ export async function fireMailTrigger(
     senderIdentities,
   );
   if (!grantsDelivered) {
-    throw new Error(
-      `fireMailTrigger: sendRunGrants returned false for ${address}; address is not routable on the hub`,
+    throw Object.assign(
+      new Error(
+        `fireMailTrigger: sendRunGrants returned false for ${address}; address is not routable on the hub`,
+      ),
+      { code: MAIL_TRIGGER_UNROUTABLE_CODE },
     );
   }
 
@@ -2121,8 +2535,11 @@ export async function fireMailTrigger(
   // check.
   const delivered = env.hub.router.routeMail(address, base64, from);
   if (!delivered) {
-    throw new Error(
-      `fireMailTrigger: routeMail returned false for ${address}; address is not routable on the hub`,
+    throw Object.assign(
+      new Error(
+        `fireMailTrigger: routeMail returned false for ${address}; address is not routable on the hub`,
+      ),
+      { code: MAIL_TRIGGER_UNROUTABLE_CODE },
     );
   }
   return { messageId };
@@ -2322,28 +2739,37 @@ export async function readClaimCheckDir(
 
 /**
  * Poll until at least one run id is present under `runs/` and return
- * the first one found, or throw on timeout. Used by integration tests
- * that don't know the runId upfront because the supervisor mints it.
+ * the first one found. Used by integration tests that don't know the runId
+ * upfront because the supervisor mints it. Carries no deadline unless the
+ * caller supplies `timeoutMs`.
  */
 export async function waitForFirstRunId(
   env: DeployFlowEnv,
   workflowRunRepoId: RepoId,
   opts: { timeoutMs?: number; diagnostics?: () => string } = {},
 ): Promise<string> {
-  const { timeoutMs = 10_000, diagnostics } = opts;
-  const start = Date.now();
-  for (;;) {
-    const ids = await listRunIds(env, workflowRunRepoId);
-    const first = ids[0];
-    if (first !== undefined) return first;
-    if (Date.now() - start > timeoutMs) {
-      const diag = diagnostics?.();
-      const ctx = diag ? `\n${diag}` : "";
-      throw new Error(
-        `waitForFirstRunId timed out after ${String(timeoutMs)}ms for ${workflowRunRepoId.id}${ctx}`,
-      );
+  const { timeoutMs, diagnostics } = opts;
+  const registration = registerWait(
+    `waitForFirstRunId(${workflowRunRepoId.id})`,
+  );
+  try {
+    const start = Date.now();
+    for (;;) {
+      throwIfEnvTornDown(registration);
+      const ids = await listRunIds(env, workflowRunRepoId);
+      const first = ids[0];
+      if (first !== undefined) return first;
+      if (timeoutMs !== undefined && Date.now() - start > timeoutMs) {
+        const diag = diagnostics?.();
+        const ctx = diag ? `\n${diag}` : "";
+        throw new Error(
+          `waitForFirstRunId timed out after ${String(timeoutMs)}ms for ${workflowRunRepoId.id}${ctx}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 50));
     }
-    await new Promise((r) => setTimeout(r, 50));
+  } finally {
+    deregisterWait(registration);
   }
 }
 
@@ -2385,33 +2811,40 @@ export function dropHubLink(env: DeployFlowEnv): void {
 /** Options for `waitForReconnect`. */
 export type WaitForReconnectOpts = {
   /**
-   * Ceiling on the reconnect wait. Defaults to `20_000`, comfortably above
-   * the observed reconnect (the sidecar's reconnect delay plus a handshake;
-   * the fixture shortens the delay to `TEST_RECONNECT_DELAY_MS` unless a test
-   * pins the production 3s value).
+   * Ceiling on the reconnect wait. Omitted, the helper waits for the address
+   * to return to the routing index however long that takes.
    */
   timeoutMs?: number;
 };
 
 /**
- * Poll until `address` is routable on the hub again, then return the
- * elapsed milliseconds. A deployment address can only re-enter the hub's
- * routing index after its reconnect passes durable identity revalidation and
- * the current allocation-generation fence, so "routable again" is a sound
- * proxy for completed reconnect registration.
+ * Poll until `address` is routable on the hub again. A deployment address can
+ * only re-enter the hub's routing index after its reconnect passes durable
+ * identity revalidation and the current allocation-generation fence, so
+ * "routable again" is a sound proxy for completed reconnect registration.
+ *
+ * Returns nothing, and deliberately does not report how long the wait took.
+ * Which delay the sidecar cycled through is pinned at the seam that receives
+ * it, so an elapsed figure from here would be evidence of nothing a caller
+ * may assert on -- reporting one would only invite a caller to bound it.
  */
 export async function waitForReconnect(
   env: DeployFlowEnv,
   address: string,
   opts: WaitForReconnectOpts = {},
-): Promise<number> {
-  const timeoutMs = opts.timeoutMs ?? 20_000;
-  const start = Date.now();
-  await waitFor(() => env.hub.router.getRoutableAddresses().includes(address), {
-    timeoutMs,
-    diagnostics: env.sidecarDiagnostics,
-  });
-  return Date.now() - start;
+): Promise<void> {
+  const registration = registerWait(`waitForReconnect(${address})`);
+  try {
+    await waitFor(
+      () => env.hub.router.getRoutableAddresses().includes(address),
+      {
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+        diagnostics: env.sidecarDiagnostics,
+      },
+    );
+  } finally {
+    deregisterWait(registration);
+  }
 }
 
 /** Options for `settleThenDrop`. */
@@ -2424,9 +2857,10 @@ export type SettleThenDropOpts = {
    */
   quietMs?: number;
   /**
-   * Ceiling on the settle wait. Defaults to `10_000`. If the pack stream
-   * never goes quiet within this window the helper throws rather than
-   * dropping into an in-flight push.
+   * Ceiling on the settle wait. Omitted, the helper waits for the quiet
+   * window however long the pack stream takes to reach it. Supplied, it
+   * throws instead of dropping into an in-flight push once the ceiling
+   * passes.
    */
   timeoutMs?: number;
 };
@@ -2455,24 +2889,30 @@ export async function settleThenDrop(
   opts: SettleThenDropOpts = {},
 ): Promise<void> {
   const quietMs = opts.quietMs ?? 500;
-  const timeoutMs = opts.timeoutMs ?? 10_000;
-  const start = Date.now();
-  let lastCount = env.hub.workflowRunPackReceipts.count;
-  let lastChange = Date.now();
-  for (;;) {
-    const current = env.hub.workflowRunPackReceipts.count;
-    if (current !== lastCount) {
-      lastCount = current;
-      lastChange = Date.now();
+  const { timeoutMs } = opts;
+  const registration = registerWait(`settleThenDrop(${address})`);
+  try {
+    const start = Date.now();
+    let lastCount = env.hub.workflowRunPackReceipts.count;
+    let lastChange = Date.now();
+    for (;;) {
+      throwIfEnvTornDown(registration);
+      const current = env.hub.workflowRunPackReceipts.count;
+      if (current !== lastCount) {
+        lastCount = current;
+        lastChange = Date.now();
+      }
+      if (Date.now() - lastChange >= quietMs) break;
+      if (timeoutMs !== undefined && Date.now() - start > timeoutMs) {
+        throw new Error(
+          `settleThenDrop: workflow-run pack stream did not go quiet for ${String(quietMs)}ms within ${String(timeoutMs)}ms for ${address}` +
+            `\n${env.sidecarDiagnostics()}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 50));
     }
-    if (Date.now() - lastChange >= quietMs) break;
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(
-        `settleThenDrop: workflow-run pack stream did not go quiet for ${String(quietMs)}ms within ${String(timeoutMs)}ms for ${address}` +
-          `\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
+  } finally {
+    deregisterWait(registration);
   }
   dropHubLink(env);
 }
@@ -2483,30 +2923,39 @@ export async function settleThenDrop(
  * Used before a mid-run child SIGKILL so no pack push is mid-flight when
  * the child dies -- killing mid-push risks stranding pack state and
  * flaking the respawn. "Quiet" is `quietMs` with no newly-accepted
- * workflow-run pack (`env.hub.workflowRunPackReceipts`).
+ * workflow-run pack (`env.hub.workflowRunPackReceipts`). Carries no deadline
+ * unless the caller supplies `timeoutMs`.
  */
 export async function settleWorkflowRunPacks(
   env: DeployFlowEnv,
   opts: { quietMs?: number; timeoutMs?: number } = {},
 ): Promise<void> {
   const quietMs = opts.quietMs ?? 500;
-  const timeoutMs = opts.timeoutMs ?? 10_000;
-  const start = Date.now();
-  let lastCount = env.hub.workflowRunPackReceipts.count;
-  let lastChange = Date.now();
-  for (;;) {
-    const current = env.hub.workflowRunPackReceipts.count;
-    if (current !== lastCount) {
-      lastCount = current;
-      lastChange = Date.now();
+  const { timeoutMs } = opts;
+  const registration = registerWait(
+    `settleWorkflowRunPacks(quietMs=${String(quietMs)})`,
+  );
+  try {
+    const start = Date.now();
+    let lastCount = env.hub.workflowRunPackReceipts.count;
+    let lastChange = Date.now();
+    for (;;) {
+      throwIfEnvTornDown(registration);
+      const current = env.hub.workflowRunPackReceipts.count;
+      if (current !== lastCount) {
+        lastCount = current;
+        lastChange = Date.now();
+      }
+      if (Date.now() - lastChange >= quietMs) return;
+      if (timeoutMs !== undefined && Date.now() - start > timeoutMs) {
+        throw new Error(
+          `settleWorkflowRunPacks: pack stream did not go quiet for ${String(quietMs)}ms within ${String(timeoutMs)}ms\n${env.sidecarDiagnostics()}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 50));
     }
-    if (Date.now() - lastChange >= quietMs) return;
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(
-        `settleWorkflowRunPacks: pack stream did not go quiet for ${String(quietMs)}ms within ${String(timeoutMs)}ms\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
+  } finally {
+    deregisterWait(registration);
   }
 }
 

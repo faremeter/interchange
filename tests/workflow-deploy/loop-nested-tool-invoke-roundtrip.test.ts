@@ -136,23 +136,23 @@ afterAll(async () => {
   if (h !== undefined) await h.close();
 });
 
-// The `ChildSpawned` count on a run's log, polled until it reaches `target` or
-// the deadline passes. Returning the last count read rather than throwing lets
-// the caller assert on it, so a short count reports as a value mismatch.
-const CHILD_SPAWN_POLL_TIMEOUT_MS = 30_000;
-
+// The `ChildSpawned` count on a run's log, read until it reaches `target`. The
+// child packs those records incrementally, so a single read races replication.
+// Returning the count rather than asserting inside lets the caller pin the
+// exact value. The poll carries no deadline of its own: the test runner's
+// budget is the failsafe for a count that never arrives, and the harness
+// `waitFor` is what puts the sidecar's output on the env teardown's report.
 async function countChildSpawns(
   runId: string,
   target: number,
 ): Promise<number> {
-  const deadline = Date.now() + CHILD_SPAWN_POLL_TIMEOUT_MS;
   let count = 0;
-  for (;;) {
+  await waitFor(async () => {
     const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
     count = events.filter((e) => e.type === "ChildSpawned").length;
-    if (count >= target || Date.now() > deadline) return count;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
+    return count >= target;
+  });
+  return count;
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -234,7 +234,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The innermost step's tool grant reaches the run the way production
@@ -270,7 +270,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         async () =>
           (await findContainerRunId(env, workflowRunRepoId)) !== undefined,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const runId = await findContainerRunId(env, workflowRunRepoId);
       if (runId === undefined) throw new Error("unreachable");
@@ -279,7 +279,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Read the two nested body run logs first: a body step's failure is

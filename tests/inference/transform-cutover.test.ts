@@ -120,28 +120,10 @@ function makeInboundMessage(
   };
 }
 
-function waitForEvent(
-  events: ReactorEmittedEvent[],
-  predicate: (e: ReactorEmittedEvent) => boolean,
-  timeoutMs = 5000,
-): Promise<ReactorEmittedEvent> {
-  return new Promise((resolve, reject) => {
-    const deadline = setTimeout(
-      () => reject(new Error("Timed out waiting for event")),
-      timeoutMs,
-    );
-    function check() {
-      const found = events.find(predicate);
-      if (found !== undefined) {
-        clearTimeout(deadline);
-        resolve(found);
-        return;
-      }
-      setTimeout(check, 10);
-    }
-    check();
-  });
-}
+type EventWaiter = {
+  predicate: (e: ReactorEmittedEvent) => boolean;
+  resolve: (e: ReactorEmittedEvent) => void;
+};
 
 type RunHandle = {
   reactor: Reactor;
@@ -160,6 +142,7 @@ async function startReactor(opts: {
 }): Promise<RunHandle> {
   const store = opts.store ?? (await createIsogitStore(opts.dir));
   const events: ReactorEmittedEvent[] = [];
+  const waiters: EventWaiter[] = [];
   const contextStore: ContextStore = store;
   const sizeCap = createSizeCapTransform({ maxChars: 100, contextStore });
 
@@ -175,7 +158,16 @@ async function startReactor(opts: {
     },
     toolRunner: opts.toolRunner,
     contextStore,
-    onEvent: (e) => events.push(e),
+    onEvent: (e) => {
+      events.push(e);
+      const stillWaiting: EventWaiter[] = [];
+      for (const waiter of waiters) {
+        if (waiter.predicate(e)) waiter.resolve(e);
+        else stillWaiting.push(waiter);
+      }
+      waiters.length = 0;
+      waiters.push(...stillWaiting);
+    },
     deps: opts.deps ?? createDefaultDependencies(),
     readMaterial: () => ({ secret: "test-secret" }),
     shutdownTimeoutMs: 200,
@@ -185,7 +177,16 @@ async function startReactor(opts: {
   function waitFor(
     type: ReactorEmittedEvent["type"],
   ): Promise<ReactorEmittedEvent> {
-    return waitForEvent(events, (e) => e.type === type);
+    const predicate = (e: ReactorEmittedEvent) => e.type === type;
+    // Callers reach a `waitFor` after the awaited event has already been
+    // emitted -- `reactor.done` lands while the test is still awaiting an
+    // earlier step. The already-collected scan covers that; the waiter list
+    // covers the event that has yet to arrive.
+    const emitted = events.find(predicate);
+    if (emitted !== undefined) return Promise.resolve(emitted);
+    return new Promise<ReactorEmittedEvent>((resolve) => {
+      waiters.push({ predicate, resolve });
+    });
   }
 
   reactor.start();

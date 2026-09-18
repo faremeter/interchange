@@ -16,7 +16,7 @@ import git from "isomorphic-git";
 import { eq } from "drizzle-orm";
 
 import { generateKeyPair } from "@intx/crypto";
-import { configureSync, getConfig, resetSync } from "@intx/log";
+import { configureSync, getConfig } from "@intx/log";
 import { collectReachableObjects } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
 import type { DB } from "@intx/db";
@@ -81,11 +81,17 @@ function installErrorCapture(sink: string[]): () => void {
     loggers: [{ category: [], lowestLevel: "error", sinks: ["capture"] }],
   });
   return () => {
-    if (savedConfig) {
-      configureSync({ reset: true, ...savedConfig });
-    } else {
-      resetSync();
+    // A null capture means this file loaded without `@intx/log` having
+    // installed its default sink, which cannot happen -- importing the
+    // package runs the install. Resetting here instead would leave the
+    // worker with no logging configuration at all, and the install
+    // cannot re-fire to repair it.
+    if (!savedConfig) {
+      throw new Error(
+        "no logging configuration was captured before this suite replaced it",
+      );
     }
+    configureSync({ reset: true, ...savedConfig });
   };
 }
 
