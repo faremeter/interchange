@@ -29,6 +29,11 @@
       "intx-src": "./src/runlocal/index.ts",
       "types": "./dist/runlocal/index.d.ts",
       "default": "./dist/runlocal/index.js"
+    },
+    "./testing": {
+      "intx-src": "./src/testing/index.ts",
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
     }
   },
   "dependencies": {
