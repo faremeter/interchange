@@ -8,8 +8,9 @@ import {
 } from "bun:test";
 
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
-import { configureSync, getConfig, resetSync } from "@intx/log";
+import { configureSync, getConfig } from "@intx/log";
 import { MAX_CACHED_SENDER_ADDRESSES_FRAME } from "@intx/types/sidecar";
+import { waitUntil } from "@intx/types/testing";
 
 import {
   createSidecarRouter,
@@ -130,19 +131,19 @@ async function connect(
   return ws;
 }
 
+// Carries no attempt bound: a frame that never arrives is a hang for the lane
+// timeout to fail, not a race against a fixed number of event-loop turns.
 async function waitForFrame(
   ws: ReturnType<typeof createMockWs>,
   predicate: (frame: Record<string, unknown>) => boolean,
-  tries = 25,
 ): Promise<Record<string, unknown>> {
-  for (let attempt = 0; attempt < tries; attempt += 1) {
+  for (;;) {
     for (const raw of ws.sent) {
       const frame: Record<string, unknown> = JSON.parse(raw);
       if (predicate(frame)) return frame;
     }
     await tick();
   }
-  throw new Error("expected frame was never sent");
 }
 
 describe("SidecarRouter allocation routing", () => {
@@ -481,14 +482,6 @@ type CapturedLog = {
   message: readonly unknown[];
 };
 
-async function waitUntil(predicate: () => boolean, tries = 200): Promise<void> {
-  for (let attempt = 0; attempt < tries; attempt += 1) {
-    if (predicate()) return;
-    await tick();
-  }
-  throw new Error("condition was not met in time");
-}
-
 describe("SidecarRouter sender-key resync cap", () => {
   const capturedLogs: CapturedLog[] = [];
   let savedLogConfig: ReturnType<typeof getConfig>;
@@ -518,11 +511,17 @@ describe("SidecarRouter sender-key resync cap", () => {
   });
 
   afterAll(() => {
-    if (savedLogConfig) {
-      configureSync({ reset: true, ...savedLogConfig });
-    } else {
-      resetSync();
+    // A null capture means this file loaded without `@intx/log` having
+    // installed its default sink, which cannot happen -- importing the
+    // package runs the install. Resetting here instead would leave the
+    // worker with no logging configuration at all, and the install
+    // cannot re-fire to repair it.
+    if (!savedLogConfig) {
+      throw new Error(
+        "no logging configuration was captured before this suite replaced it",
+      );
     }
+    configureSync({ reset: true, ...savedLogConfig });
   });
 
   beforeEach(() => {

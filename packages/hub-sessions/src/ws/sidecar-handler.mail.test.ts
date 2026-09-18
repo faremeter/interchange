@@ -14,6 +14,7 @@ import {
   type SidecarAuthIdentity,
 } from "./sidecar-handler";
 import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
+import { waitUntil } from "@intx/types/testing";
 
 const TEST_SENDER = "sender@example.test";
 
@@ -31,6 +32,44 @@ function inboundCount(ws: { sent: string[] }, messageId: string): number {
   return framesOfType(ws, "mail.inbound").filter(
     (frame) => frame["messageId"] === messageId,
   ).length;
+}
+
+/**
+ * The redelivery retry timer, driven by the test.
+ *
+ * The retry interval was already injectable, but arming was not, so a test
+ * wanting N redeliveries had to shorten the interval and sleep long enough
+ * for N of them to fit -- making the assertion a bet on how much the machine
+ * got through. Firing the retries explicitly makes the count exact.
+ */
+function createManualRetries(retryIntervalMs: number): {
+  scheduleTimeout: (handler: () => void, ms: number) => () => void;
+  fireNext: () => void;
+  armedCount: () => number;
+} {
+  const armed: { ms: number; fire: () => void; cancelled: boolean }[] = [];
+  return {
+    // The router arms its connection-liveness deadline through this same
+    // seam, so the delay is what tells the two apart. Firing indiscriminately
+    // closes the socket instead of redelivering.
+    scheduleTimeout(handler, ms) {
+      const entry = { ms, fire: handler, cancelled: false };
+      armed.push(entry);
+      return () => {
+        entry.cancelled = true;
+      };
+    },
+    fireNext() {
+      const next = armed.find((e) => !e.cancelled && e.ms === retryIntervalMs);
+      if (next === undefined) {
+        throw new Error("no armed redelivery retry to fire");
+      }
+      next.cancelled = true;
+      next.fire();
+    },
+    armedCount: () =>
+      armed.filter((e) => !e.cancelled && e.ms === retryIntervalMs).length,
+  };
 }
 
 describe("SidecarRouter allocation mail durability", () => {
@@ -51,9 +90,11 @@ describe("SidecarRouter allocation mail durability", () => {
   });
 
   test("redelivers identical bytes until the allocated sidecar acks", async () => {
+    const retries = createManualRetries(20);
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 20,
       mailAckMaxRetries: 5,
+      scheduleTimeout: retries.scheduleTimeout,
     });
     const ws = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
@@ -67,21 +108,33 @@ describe("SidecarRouter allocation mail durability", () => {
         "mid-retry",
       ),
     ).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // One redelivery, fired rather than waited for, then awaited on the
+    // socket: the retry hands off to a fire-and-forget continuation, so the
+    // send is the event. The initial delivery plus this retry is exactly two,
+    // where the pause this replaces asserted "at least two" because it could
+    // not know how many had fit.
+    retries.fireNext();
+    await ws.awaitSent(
+      (sent) =>
+        sent.filter((line) => line.includes('"messageId":"mid-retry"'))
+          .length >= 2,
+    );
 
     const deliveries = framesOfType(ws, "mail.inbound").filter(
       (frame) => frame["messageId"] === "mid-retry",
     );
-    expect(deliveries.length).toBeGreaterThanOrEqual(2);
+    expect(deliveries).toHaveLength(2);
     expect(
       deliveries.every((frame) => frame["rawMessage"] === "aGVsbG8="),
     ).toBe(true);
   });
 
   test("an acknowledgement stops connected-window redelivery", async () => {
+    const retries = createManualRetries(20);
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 20,
       mailAckMaxRetries: 5,
+      scheduleTimeout: retries.scheduleTimeout,
     });
     const ws = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
@@ -92,6 +145,8 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_SENDER,
       "mid-acked",
     );
+    // The delivery armed a retry; the ack has to take it away again.
+    expect(retries.armedCount()).toBe(1);
 
     router.handleMessage(
       ws,
@@ -101,8 +156,11 @@ describe("SidecarRouter allocation mail durability", () => {
         messageId: "mid-acked",
       }),
     );
-    await tick();
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    // Connected-window redelivery only ever runs off an armed retry, so the
+    // retry being gone is what "stops redelivery" means -- a stronger
+    // statement than the pause this replaces, which could only observe that
+    // no redelivery had arrived yet.
+    await waitUntil(() => retries.armedCount() === 0);
 
     expect(inboundCount(ws, "mid-acked")).toBe(1);
   });
@@ -163,7 +221,7 @@ describe("SidecarRouter allocation mail durability", () => {
         messageId: "mid-owned",
       }),
     );
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await waitUntil(() => inboundCount(owner, "mid-owned") >= 2);
     expect(inboundCount(owner, "mid-owned")).toBeGreaterThanOrEqual(2);
 
     router.handleMessage(
@@ -178,9 +236,11 @@ describe("SidecarRouter allocation mail durability", () => {
 
   test("retry exhaustion surfaces the mail as undelivered", async () => {
     const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+    const retries = createManualRetries(10);
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10,
       mailAckMaxRetries: 2,
+      scheduleTimeout: retries.scheduleTimeout,
     });
     router.events.on("mail.outbound.undelivered", (event) => {
       undelivered.push(event);
@@ -195,7 +255,18 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_SENDER,
       "mid-drop",
     );
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // Two fires fit inside the 2-retry budget: each redelivers and re-arms,
+    // so waiting for the re-arm is what says the redelivery completed. The
+    // third fire finds the budget spent and surfaces the mail instead. Firing
+    // the retries makes the attempt count exact, where the pause this
+    // replaces made it a function of how many intervals the machine got
+    // through in 80ms.
+    for (let redelivery = 0; redelivery < 2; redelivery += 1) {
+      retries.fireNext();
+      await waitUntil(() => retries.armedCount() === 1);
+    }
+    retries.fireNext();
+    await waitUntil(() => undelivered.length >= 1);
 
     expect(inboundCount(ws, "mid-drop")).toBe(3);
     expect(undelivered).toEqual([
@@ -207,17 +278,22 @@ describe("SidecarRouter allocation mail durability", () => {
   });
 
   test("mail without a message id is not tracked for redelivery", async () => {
+    const retries = createManualRetries(10);
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10,
       mailAckMaxRetries: 3,
+      scheduleTimeout: retries.scheduleTimeout,
     });
     const ws = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
     router.routeMail(TEST_IDENTITY.workflowRunAddress, "eXk=", TEST_SENDER);
-    await new Promise((resolve) => setTimeout(resolve, 50));
 
+    // Tracking a mail is what arms its redelivery retry, so no armed retry is
+    // the untracked state itself -- there is nothing left that could redeliver
+    // later. The pause this replaces could only report that none had yet.
+    expect(retries.armedCount()).toBe(0);
     expect(framesOfType(ws, "mail.inbound")).toHaveLength(1);
   });
 
@@ -250,9 +326,21 @@ describe("SidecarRouter allocation mail durability", () => {
   });
 
   test("drops retained mail after the disconnect retention TTL", async () => {
+    // The retention timer surfaces every entry it drops as
+    // `mail.outbound.undelivered`, and it drops the whole pending set before
+    // emitting. That event is therefore the expiry's own report: awaiting it
+    // says the drop has happened, where the pause it replaces only said 50ms
+    // of a 20ms TTL had elapsed on an unloaded machine.
+    let reportExpired!: () => void;
+    const expired = new Promise<void>((resolve) => {
+      reportExpired = resolve;
+    });
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10_000,
       disconnectQueueTTLMs: 20,
+    });
+    router.events.on("mail.outbound.undelivered", () => {
+      reportExpired();
     });
     const first = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
@@ -264,7 +352,7 @@ describe("SidecarRouter allocation mail durability", () => {
       "mid-expired",
     );
     router.handleClose(first);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expired;
 
     const second = await connectAllocated(
       router,
@@ -588,9 +676,11 @@ describe("SidecarRouter allocation mail durability", () => {
       signalKeyRequested = resolve;
     });
     let resolveCalls = 0;
+    const retries = createManualRetries(20);
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 20,
       mailAckMaxRetries: 5,
+      scheduleTimeout: retries.scheduleTimeout,
       lookups: {
         async resolveSenderKey() {
           resolveCalls += 1;
@@ -614,7 +704,8 @@ describe("SidecarRouter allocation mail durability", () => {
     expect(inboundCount(ws, "mid-ack-race")).toBe(1);
     expect(resolveCalls).toBe(0);
 
-    // Let the retry macrotask fire and park on the deferred resolveSenderKey.
+    // Fire the retry so its replay parks on the deferred resolveSenderKey.
+    retries.fireNext();
     await keyRequested;
     expect(resolveCalls).toBe(1);
 
@@ -631,13 +722,17 @@ describe("SidecarRouter allocation mail durability", () => {
     await tick();
 
     // Release the resolve; the guard must see the entry is gone and skip.
+    // Everything between the release and the guard is microtask work -- the
+    // parked promise, the async frames around it -- so the macrotask `tick`
+    // resumes only once the guard has run.
     releaseKey(hexKey);
     await tick();
-    await new Promise((resolve) => setTimeout(resolve, 50));
 
     // No redelivery: still exactly the one initial mail.inbound, no
     // sender.key.refresh pushed for the aborted replay, and no re-armed retry
-    // (resolveSenderKey was called only for the single parked replay).
+    // (re-arming is the last statement of the redelivery path, so the fired
+    // retry staying the only one says the path exited at the guard).
+    expect(retries.armedCount()).toBe(0);
     expect(inboundCount(ws, "mid-ack-race")).toBe(1);
     expect(framesOfType(ws, "sender.key.refresh")).toHaveLength(0);
     expect(resolveCalls).toBe(1);

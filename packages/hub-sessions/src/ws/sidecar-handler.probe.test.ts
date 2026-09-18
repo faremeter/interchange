@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+import { waitUntil } from "@intx/types/testing";
 import {
   createSidecarRouter,
   type SendProbeArgs,
@@ -71,9 +72,9 @@ async function registerBareSidecar(
   return ws;
 }
 
-// Pull the correlation id off the outbound `workflow.probe.request` the router
-// sent to the fake sidecar, so a reply can be minted against it.
-function probeRequestId(ws: ReturnType<typeof createMockWs>): string {
+function findProbeRequestId(
+  ws: ReturnType<typeof createMockWs>,
+): string | undefined {
   for (const raw of ws.sent) {
     const frame: unknown = JSON.parse(raw);
     if (
@@ -87,7 +88,26 @@ function probeRequestId(ws: ReturnType<typeof createMockWs>): string {
       return frame.requestId;
     }
   }
-  throw new Error("router sent no workflow.probe.request frame");
+  return undefined;
+}
+
+// Pull the correlation id off the outbound `workflow.probe.request` the router
+// sent to the fake sidecar, so a reply can be minted against it. `sendProbe`
+// resolves the connection on an async path, so the frame is not on the socket
+// the instant it is called: wait for the frame itself rather than for a turn
+// of the event loop to have been enough.
+async function probeRequestId(
+  ws: ReturnType<typeof createMockWs>,
+): Promise<string> {
+  let requestId: string | undefined;
+  await waitUntil(() => {
+    requestId = findProbeRequestId(ws);
+    return requestId !== undefined;
+  });
+  if (requestId === undefined) {
+    throw new Error("router sent no workflow.probe.request frame");
+  }
+  return requestId;
 }
 
 const source: WorkflowDefinitionSource = {
@@ -144,7 +164,7 @@ describe("SidecarRouter workflow probe", () => {
         agentAddresses: ["workflow@example.test"],
       }),
     );
-    await tick();
+    await waitUntil(() => ws.closed);
 
     expect(ws.closed).toBe(true);
   });
@@ -165,7 +185,7 @@ describe("SidecarRouter workflow probe", () => {
         recipients: ["outside@example.test"],
       }),
     );
-    await tick();
+    await waitUntil(() => ws.closed);
 
     expect(ws.closed).toBe(true);
   });
@@ -178,8 +198,7 @@ describe("SidecarRouter workflow probe", () => {
     const ws = await registerBareSidecar(router, "sc-1");
 
     const promise = sendProbe(router, probeArgs);
-    await tick();
-    const requestId = probeRequestId(ws);
+    const requestId = await probeRequestId(ws);
 
     const grants = ["tool:send_mail", "mail.address:wf@local"];
     const wireHash = "abc123";
@@ -227,8 +246,7 @@ describe("SidecarRouter workflow probe", () => {
     const ws = await registerBareSidecar(router, "sc-1");
 
     const promise = sendProbe(router, probeArgs);
-    await tick();
-    const requestId = probeRequestId(ws);
+    const requestId = await probeRequestId(ws);
 
     router.handleMessage(
       ws,
@@ -263,7 +281,9 @@ describe("SidecarRouter workflow probe", () => {
     const ws = await registerBareSidecar(router, "sc-1");
 
     const promise = sendProbe(router, probeArgs);
-    await tick();
+    // The request frame on the socket says the probe is registered as pending:
+    // the tracker stores its entry before the frame is sent.
+    await probeRequestId(ws);
     // The probe never enters the address maps, so handleClose's ws-keyed sweep
     // is its only disconnect cleanup.
     router.handleClose(ws);
