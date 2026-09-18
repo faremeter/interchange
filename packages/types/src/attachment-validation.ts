@@ -8,12 +8,13 @@ import type { MessageAttachment } from "./runtime";
 import type { AttachmentError } from "./sessions";
 
 /**
- * A single attachment as it arrives on the request body: a MIME type, the
- * base64-encoded bytes, and an optional filename.
+ * A single attachment as it arrives at a boundary: a MIME type, the bytes,
+ * and an optional filename. A string `data` is base64 (the request-body
+ * form); a caller that already holds the bytes passes them as-is.
  */
 export type AttachmentInput = {
   mimeType: string;
-  data: string;
+  data: string | Uint8Array;
   name?: string;
 };
 
@@ -45,7 +46,8 @@ export type AttachmentValidationResult =
   | { ok: true; attachments: MessageAttachment[] }
   | { ok: false; error: AttachmentError };
 
-function decode(data: string): Uint8Array | null {
+function decode(data: string | Uint8Array): Uint8Array | null {
+  if (typeof data !== "string") return data;
   try {
     return base64Decode(data.replace(/\s+/g, ""));
   } catch {
