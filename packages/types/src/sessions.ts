@@ -121,6 +121,11 @@ export const AttachmentError = type.or(
     attachmentIndex: "number",
   },
   {
+    code: "'invalid_encoding'",
+    message: "string",
+    attachmentIndex: "number",
+  },
+  {
     code: "'oversize_total'",
     message: "string",
     totalBytes: "number",
