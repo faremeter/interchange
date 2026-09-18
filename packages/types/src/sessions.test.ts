@@ -80,6 +80,11 @@ describe("AttachmentError schema", () => {
       },
       { code: "malformed_base64", message: "bad", attachmentIndex: 2 },
       {
+        code: "invalid_encoding",
+        message: "not text",
+        attachmentIndex: 2,
+      },
+      {
         code: "invalid_attachment_name",
         message: "bad name",
         attachmentIndex: 3,
