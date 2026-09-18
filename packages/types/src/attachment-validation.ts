@@ -1,11 +1,11 @@
 import {
-  base64Decode,
   isAllowedMimeType,
   PER_ATTACHMENT_LIMIT_BYTES,
   PER_MESSAGE_TOTAL_LIMIT_BYTES,
-  type AttachmentError,
-} from "@intx/types";
-import type { MessageAttachment } from "@intx/types/runtime";
+} from "./attachments";
+import { base64Decode } from "./base64";
+import type { MessageAttachment } from "./runtime";
+import type { AttachmentError } from "./sessions";
 
 /**
  * A single attachment as it arrives on the request body: a MIME type, the

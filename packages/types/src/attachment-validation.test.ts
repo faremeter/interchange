@@ -1,12 +1,11 @@
 import { describe, test, expect } from "bun:test";
 
-import { base64Encode } from "@intx/types";
-
 import {
   validateAttachments,
   type AttachmentInput,
   type AttachmentPolicy,
 } from "./attachment-validation";
+import { base64Encode } from "./base64";
 
 function b64(bytes: number[]): string {
   return base64Encode(new Uint8Array(bytes));
