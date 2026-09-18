@@ -1,3 +1,4 @@
+import type { AttachmentError } from "@intx/types";
 import type { ToolResult } from "@intx/types/runtime";
 
 export type MailToolErrorCode =
@@ -5,6 +6,8 @@ export type MailToolErrorCode =
   | "invalid_query"
   | "invalid_mailbox"
   | "invalid_part"
+  // Codes the attachment validator returns, forwarded unchanged.
+  | AttachmentError["code"]
   // The referenced message is gone, or its uid never named one.
   | "not_found"
   | "no_reply_address"
