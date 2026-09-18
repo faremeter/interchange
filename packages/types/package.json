@@ -64,6 +64,11 @@
       "intx-src": "./src/workflow-sources.ts",
       "types": "./dist/workflow-sources.d.ts",
       "default": "./dist/workflow-sources.js"
+    },
+    "./testing": {
+      "intx-src": "./src/testing/index.ts",
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
     }
   },
   "dependencies": {

@@ -16,3 +16,4 @@
 
 export { noopAuditStore } from "./audit-noop";
 export { permissiveAuthorize } from "./authorize-allow";
+export { waitForReactorDone } from "./reactor-waiters";
