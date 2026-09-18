@@ -44,7 +44,10 @@ describe("awaitSignal timeout", () => {
         wait: awaitSignal({ name: "approve", timeout: 30 }),
       },
     });
-    const result = await runLocal(def, { authorize: allowAll }).complete;
+    const result = await runLocal(def, {
+      authorize: allowAll,
+      hasUpstreamSignalResolver: true,
+    }).complete;
     expect(result.terminalStatus).toBe("failed");
     const stepFailed = result.events.find(
       (e) => e.kind === "StepFailed" && e.stepId === "wait",
@@ -75,7 +78,10 @@ describe("awaitSignal timeout", () => {
         wait: awaitSignal({ name: "approve", timeout: 5000 }),
       },
     });
-    const run = runLocal(def, { authorize: allowAll });
+    const run = runLocal(def, {
+      authorize: allowAll,
+      hasUpstreamSignalResolver: true,
+    });
     await run.signal("approve", { ok: true });
     const result = await run.complete;
     expect(result.terminalStatus).toBe("completed");

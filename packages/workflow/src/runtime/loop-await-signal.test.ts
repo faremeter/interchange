@@ -92,6 +92,7 @@ describe("loop body awaitSignal (in-process park)", () => {
     };
     const run = runLocal(loopAwaitWorkflow(3), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     });
@@ -119,6 +120,7 @@ describe("loop body awaitSignal (in-process park)", () => {
     };
     const run = runLocal(loopAwaitWorkflow(5), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     });

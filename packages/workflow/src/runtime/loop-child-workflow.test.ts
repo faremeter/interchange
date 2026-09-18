@@ -126,6 +126,7 @@ describe("childWorkflow inside a loop body", () => {
   test("a loop body spawns a grandchild that runs to completion", async () => {
     const result = await runLocal(cwLoopParent, {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       loopFns,
     }).complete;
 
@@ -142,6 +143,7 @@ describe("childWorkflow inside a loop body", () => {
   test("a grandchild inside a nested loop body runs to completion", async () => {
     const result = await runLocal(nestedCwParent, {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       loopFns,
     }).complete;
 

@@ -154,7 +154,11 @@ describe("cancellation log invariants", () => {
         resolveStep = resolve;
       });
 
-    const run = runLocal(def, { authorize: allowAll, invokeStep });
+    const run = runLocal(def, {
+      authorize: allowAll,
+      hasUpstreamSignalResolver: true,
+      invokeStep,
+    });
     // Wait a tick for StepStarted to commit and the runner to land
     // on env.invokeStep.
     await new Promise<void>((resolve) => {

@@ -81,12 +81,15 @@ export interface RunLocalOptions extends RuntimeRunOptions {
   /** Inject a deterministic id generator for tests. */
   newId?: (prefix: string) => string;
   /**
-   * Whether a park in this run can be answered from outside it. Defaults to
-   * true: a top-level local run is the addressable one, and its caller holds
-   * the handle that delivers. The terminal-child spawner passes false, since
-   * nothing can address a child run.
+   * Whether a park in this run tree can be answered from outside it. Required
+   * rather than defaulted, because an absent value would have to mean
+   * permissive and a call site that forgot it would silently inherit a park
+   * nothing can answer. Pass true for a run the control plane can address: a
+   * top-level local run, whose caller holds the handle that delivers. The
+   * terminal-child spawner passes false, since nothing can address a child
+   * run.
    */
-  hasUpstreamSignalResolver?: boolean;
+  hasUpstreamSignalResolver: boolean;
 }
 
 /**
@@ -154,7 +157,7 @@ export function runLocal(
     clock,
     newId,
     drain: createNoopDrainController(rewritten),
-    hasUpstreamSignalResolver: options.hasUpstreamSignalResolver ?? true,
+    hasUpstreamSignalResolver: options.hasUpstreamSignalResolver,
   };
   // Wired after construction because the loop-iteration executor closes over
   // the env it belongs to, so each iteration's body runs under the parent's

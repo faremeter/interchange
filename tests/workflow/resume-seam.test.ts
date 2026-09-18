@@ -61,6 +61,7 @@ describe("resume-from-log seam", () => {
     const run1 = runLocal(def, {
       authorize: allowAll,
       triggerPayload: { initial: true },
+      hasUpstreamSignalResolver: true,
       invokeStep,
     });
     const result1 = await run1.complete;

@@ -100,6 +100,7 @@ function build(maxIterations: number, downstreamPath: string) {
 function runWith(maxIterations: number, downstreamPath: string) {
   return runLocal(build(maxIterations, downstreamPath), {
     authorize: allowAll,
+    hasUpstreamSignalResolver: true,
     actionResolver,
     loopFns,
   }).complete;
