@@ -171,7 +171,12 @@ export function createLSPManager(opts: LSPManagerOptions): LSPManager {
       (c) => c.root === root && c.serverID === server.id,
     );
     if (race !== undefined) {
-      handle.process.kill();
+      // A concurrent call registered first, so this client is discarded. It
+      // never reaches `state.clients`, so the manager's own dispose can never
+      // reach it either -- this is its only cleanup. Killing the process
+      // alone would leave the connection listening on a dead pipe, which is
+      // how an orphan write becomes a rejection charged to a later test.
+      await client.shutdown();
       return race;
     }
     state.clients.push(client);

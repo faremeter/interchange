@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createLSPClient, type LSPClient } from "./client";
+import { waitUntil } from "@intx/types/testing";
 
 const FAKE_SERVER_PATH = join(import.meta.dir, "fake-lsp-server.ts");
 
@@ -154,8 +155,12 @@ describe("createLSPClient", () => {
     await client.shutdown();
 
     const exitCode = await exitPromise;
-    // Process exits cleanly (0) or was killed by signal (null) -- both are OK
-    expect(exitCode === 0 || exitCode === null).toBe(true);
+    // Exactly 0: shutdown awaits the `exit` notification and then gives the
+    // server a window to act on it, so one that honors the protocol leaves on
+    // its own instead of racing the kill. This fixture exits in about 2ms
+    // against a window three orders of magnitude larger, so a signal death
+    // here means either the graceful path broke or the fixture got far slower.
+    expect(exitCode).toBe(0);
   });
 
   test("initialization with config sends didChangeConfiguration", async () => {
@@ -190,8 +195,12 @@ describe("createLSPClient", () => {
 
     const version = await client.notify.open({ path: filePath });
 
-    // Wait a bit for the seeded diagnostics to arrive
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // The seeded first publish records its diagnostics and returns without
+    // notifying listeners, so a listener-based wait would not see it -- the
+    // recorded map is the signal that it arrived. waitForDiagnostics below
+    // then short-circuits on the already-recorded push, which is the
+    // no-double-wait behavior this test covers.
+    await waitUntil(() => client.diagnostics.size > 0);
 
     // Diagnostics should still be present (seeded)
     await client.waitForDiagnostics({
