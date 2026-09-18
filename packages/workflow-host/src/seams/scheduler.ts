@@ -112,13 +112,34 @@ export type SchedulerOpts = {
    * callbacks and to skip past-due cron entries on recovery.
    */
   clock: () => Date;
+  /**
+   * Arms a one-shot timer and returns its canceller. Defaults to the global
+   * timer, which is what production wants.
+   *
+   * The clock above decides WHEN a timer should fire; this decides what
+   * actually fires it. Without both, a caller can compute a deterministic
+   * delay and still have to wait out the real interval to observe the
+   * firing -- which left this module's own tests waiting past a `fireAt`,
+   * and, in one case, waiting longer than a cancelled timer's delay to argue
+   * from silence that the cancel had worked.
+   */
+  scheduleTimeout?: (handler: () => void, ms: number) => () => void;
 };
 
 type QueuedTimer = {
   runId: string;
   timerId: string;
   fireAtMs: number;
-  timeout: ReturnType<typeof setTimeout>;
+  /**
+   * Disarms this timer.
+   *
+   * Runs at most once per queued timer, which is why it need not be
+   * idempotent and `scheduleTimeout` does not ask its implementations for
+   * that: `stop` and `cancelQueued` drop the queue entry in the same
+   * synchronous block as the cancel, and a fired timer drops its own entry
+   * before awaiting anything, so nothing can reach it to cancel it again.
+   */
+  cancelTimeout: () => void;
   cron: boolean;
 };
 
@@ -162,6 +183,16 @@ export type SchedulerHandle = {
 export function createWorkflowHostScheduler(
   opts: SchedulerOpts,
 ): SchedulerHandle {
+  // Production arms the global timer; a caller supplying its own can fire a
+  // queued timer on demand instead of waiting out its delay.
+  const schedule =
+    opts.scheduleTimeout ??
+    ((handler: () => void, ms: number) => {
+      const handle = setTimeout(handler, ms);
+      return () => {
+        clearTimeout(handle);
+      };
+    });
   const queues = new Map<string, QueuedTimer>();
   const liveSubscriptions: {
     abort: AbortController;
@@ -194,7 +225,7 @@ export function createWorkflowHostScheduler(
     const key = queueKey(runId, timerId);
     if (queues.has(key)) return; // idempotent
     const delayMs = Math.max(0, fireAtMs - opts.clock().getTime());
-    const timeout = setTimeout(() => {
+    const cancelTimeout = schedule(() => {
       void fireTimer(runId, timerId).catch((cause) => {
         // The scheduler's commit failed. Surface as unhandled so
         // operators see it; the runtime body's awaiter will hang
@@ -206,7 +237,7 @@ export function createWorkflowHostScheduler(
             );
       });
     }, delayMs);
-    queues.set(key, { runId, timerId, fireAtMs, timeout, cron });
+    queues.set(key, { runId, timerId, fireAtMs, cancelTimeout, cron });
   }
 
   function startLiveSubscription(repoId: RepoId): void {
@@ -327,7 +358,7 @@ export function createWorkflowHostScheduler(
     async stop() {
       if (stopped) return;
       stopped = true;
-      for (const t of queues.values()) clearTimeout(t.timeout);
+      for (const t of queues.values()) t.cancelTimeout();
       queues.clear();
       for (const sub of liveSubscriptions.splice(0)) {
         sub.abort.abort();
@@ -340,7 +371,7 @@ export function createWorkflowHostScheduler(
       const key = queueKey(runId, timerId);
       const entry = queues.get(key);
       if (entry === undefined) return;
-      clearTimeout(entry.timeout);
+      entry.cancelTimeout();
       queues.delete(key);
     },
     queuedTimers() {

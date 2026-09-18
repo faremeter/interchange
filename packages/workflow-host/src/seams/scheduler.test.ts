@@ -11,6 +11,7 @@ import type {
   KindHandler,
   Principal,
   RepoId,
+  RepoStore,
   ValidatePushResult,
 } from "@intx/hub-sessions";
 
@@ -58,6 +59,96 @@ function permissiveHandler(directoryPrefix: string): KindHandler {
 const allowAll: AuthorizeFn = () => ({ allowed: true });
 const principal: Principal = { kind: "test" };
 const REF = "refs/heads/main";
+
+/**
+ * A timer the test arms and fires. The scheduler decides WHEN from its clock;
+ * this decides what actually fires, so a test can observe a queued timer
+ * firing without waiting out its delay, and can assert a cancelled one is
+ * disarmed rather than arguing from silence after a longer pause.
+ */
+function createManualTimeouts(): {
+  scheduleTimeout: (handler: () => void, ms: number) => () => void;
+  armed: () => readonly { ms: number; cancelled: boolean }[];
+  fireAll: () => void;
+} {
+  const entries: { ms: number; handler: () => void; cancelled: boolean }[] = [];
+  return {
+    scheduleTimeout(handler, ms) {
+      const entry = { ms, handler, cancelled: false };
+      entries.push(entry);
+      return () => {
+        entry.cancelled = true;
+      };
+    },
+    armed: () => entries.map((e) => ({ ms: e.ms, cancelled: e.cancelled })),
+    fireAll() {
+      for (const entry of entries) {
+        if (entry.cancelled) continue;
+        entry.cancelled = true;
+        entry.handler();
+      }
+    },
+  };
+}
+
+/**
+ * The store the scheduler writes through, wrapped so a test can await the
+ * scheduler's TimerFired commit instead of waiting for the blob to appear.
+ *
+ * `commitTimerFired` is the scheduler's only write and it goes through
+ * `writeTreePreservingPrefix`. The substrate materializes the working tree
+ * inside that call, before it resolves, so a resolved commit proves the blob
+ * `readTimerFiredBlobs` reads off disk is already there.
+ *
+ * A rejected commit is re-surfaced to the waiter. The scheduler fires a timer
+ * from a callback and can only rethrow into an unhandled rejection, so a
+ * waiter on the commit alone would sit out the runner's budget over a failure
+ * that had already been decided.
+ */
+function observeSchedulerCommits(store: RepoStore): {
+  repoStore: RepoStore;
+  whenCommitted: () => Promise<void>;
+} {
+  type Outcome = { ok: true } | { ok: false; cause: unknown };
+  // The first commit is the one every caller here waits on, so a later one
+  // does not overwrite an outcome a waiter has not read yet.
+  let settled: Outcome | undefined;
+  const waiters: ((outcome: Outcome) => void)[] = [];
+  function record(outcome: Outcome): void {
+    if (settled !== undefined) return;
+    settled = outcome;
+    for (const resolve of waiters.splice(0)) resolve(outcome);
+  }
+  return {
+    repoStore: {
+      ...store,
+      async writeTreePreservingPrefix(
+        ...args: Parameters<RepoStore["writeTreePreservingPrefix"]>
+      ) {
+        try {
+          const result = await store.writeTreePreservingPrefix(...args);
+          record({ ok: true });
+          return result;
+        } catch (cause) {
+          record({ ok: false, cause });
+          throw cause;
+        }
+      },
+    },
+    async whenCommitted() {
+      const outcome =
+        settled ??
+        (await new Promise<Outcome>((resolve) => {
+          waiters.push(resolve);
+        }));
+      if (!outcome.ok) {
+        throw new Error(`scheduler commit rejected: ${String(outcome.cause)}`, {
+          cause: outcome.cause,
+        });
+      }
+    },
+  };
+}
 
 async function seedTimerSet(
   store: ReturnType<typeof createRepoStore>,
@@ -132,24 +223,28 @@ describe("workflow-host scheduler", () => {
       const fireAtMs = Date.now() + 40;
       await seedTimerSet(store, repoId, runId, 0, "t-oneshot", fireAtMs);
 
+      const timeouts = createManualTimeouts();
+      const commits = observeSchedulerCommits(store);
       const scheduler = createWorkflowHostScheduler({
-        repoStore: store,
+        repoStore: commits.repoStore,
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
         clock: () => new Date(),
+        scheduleTimeout: timeouts.scheduleTimeout,
       });
       try {
         await scheduler.start();
-        // The recovery walk queued the timer.
+        // The recovery walk queued the timer, which armed one timeout.
         const queued = scheduler.queuedTimers();
         expect(queued).toHaveLength(1);
         expect(queued[0]?.timerId).toBe("t-oneshot");
+        expect(timeouts.armed()).toHaveLength(1);
 
-        // Wait past the fireAt + commit latency.
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 250);
-        });
+        // Fire the armed timer and await the commit it makes, instead of
+        // waiting out its delay plus however long the commit takes.
+        timeouts.fireAll();
+        await commits.whenCommitted();
 
         const fired = await readTimerFiredBlobs(
           store.getRepoDir(repoId),
@@ -486,23 +581,31 @@ describe("workflow-host scheduler", () => {
       const fireAtMs = Date.now() + 1_000;
       await seedTimerSet(store, repoId, runId, 0, "t-stopped", fireAtMs);
 
+      const timeouts = createManualTimeouts();
       const scheduler = createWorkflowHostScheduler({
         repoStore: store,
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
         clock: () => new Date(),
+        scheduleTimeout: timeouts.scheduleTimeout,
       });
       await scheduler.start();
       expect(scheduler.queuedTimers()).toHaveLength(1);
       await scheduler.stop();
       expect(scheduler.queuedTimers()).toHaveLength(0);
 
-      // Give the previously-queued setTimeout time to fire if not
-      // properly cancelled, then verify no TimerFired blob landed.
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 1200);
-      });
+      // The cancel is the observable fact: stop() disarms the timer it
+      // queued. Waiting longer than the delay and finding no blob argued the
+      // same thing from silence, and would have argued it just as
+      // convincingly had the timer been armed but slow.
+      // Not the delay: that is `fireAt` minus the clock at arming time, so
+      // asserting it would be asserting how long the lines above took.
+      expect(timeouts.armed()).toHaveLength(1);
+      expect(timeouts.armed()[0]?.cancelled).toBe(true);
+
+      // Firing anyway must still commit nothing.
+      timeouts.fireAll();
       const fired = await readTimerFiredBlobs(
         store.getRepoDir(repoId),
         runId,
@@ -540,8 +643,13 @@ describe("workflow-host scheduler", () => {
         message: "RunStarted",
       });
 
+      // This test keeps the production `scheduleTimeout` -- the global timer
+      // `createWorkflowHostScheduler` falls back to -- so the arming path the
+      // host actually runs stays covered; its siblings drive the seam. The
+      // delay still decides nothing, because the wait below is on the commit.
+      const commits = observeSchedulerCommits(store);
       const scheduler = createWorkflowHostScheduler({
-        repoStore: store,
+        repoStore: commits.repoStore,
         principal,
         listActiveDeployments: () => [repoId],
         ref: REF,
@@ -567,25 +675,15 @@ describe("workflow-host scheduler", () => {
           message: "TimerSet t-live",
         });
 
-        // Poll for the TimerFired blob landing without restarting the
-        // scheduler. The total budget covers the subscribe-notify
-        // latency, the wall-clock delay, and the TimerFired commit.
-        const deadline = Date.now() + 2000;
-        let fired: {
-          seq: number;
-          bodySeq: number | undefined;
-          timerId: string;
-        }[] = [];
-        while (Date.now() < deadline) {
-          fired = await readTimerFiredBlobs(
-            store.getRepoDir(repoId),
-            runId,
-          ).catch(() => []);
-          if (fired.length > 0) break;
-          await new Promise<void>((resolve) => {
-            setTimeout(resolve, 25);
-          });
-        }
+        // The TimerFired commit is the proof the live subscription ingested
+        // the TimerSet and the timer fired, all without a restart. Awaiting
+        // it covers the subscribe-notify latency, the timer's delay, and the
+        // commit itself, with no number standing in for any of them.
+        await commits.whenCommitted();
+        const fired = await readTimerFiredBlobs(
+          store.getRepoDir(repoId),
+          runId,
+        );
         expect(fired).toHaveLength(1);
         expect(fired[0]?.timerId).toBe("t-live");
         expect(fired[0]?.bodySeq).toBe(fired[0]?.seq);
@@ -632,43 +730,39 @@ describe("workflow-host scheduler against workflowRunKindHandler", () => {
         message: "seed TimerSet against real handler",
       });
 
-      // Capture any unhandled rejection raised by the scheduler's
-      // fire-and-forget commit path so the pre-fix run reports a clean
-      // assertion failure (no TimerFired landed) rather than crashing
-      // the test runner on the path_violation that surfaces inside
-      // setTimeout.
+      // The scheduler's commit runs from a timer callback, so a validatePush
+      // refusal reaches the runtime only as an unhandled rejection. Capture
+      // it: `whenCommitted` below reports the refusal as the test's failure,
+      // and this keeps the same refusal from crashing the runner as well.
       const captured: unknown[] = [];
       const handler = (reason: unknown) => {
         captured.push(reason);
       };
       process.on("unhandledRejection", handler);
 
+      const timeouts = createManualTimeouts();
+      const commits = observeSchedulerCommits(store);
       const scheduler = createWorkflowHostScheduler({
-        repoStore: store,
+        repoStore: commits.repoStore,
         principal: hubPrincipal,
         listActiveDeployments: () => [repoId],
         ref: REF,
         clock: () => new Date(),
+        scheduleTimeout: timeouts.scheduleTimeout,
       });
       try {
         await scheduler.start();
+        // The recovery walk queued the seeded TimerSet, which armed one
+        // timeout. Fire it and await the commit, rather than waiting out its
+        // delay plus however long the real handler's validatePush takes.
+        expect(timeouts.armed()).toHaveLength(1);
+        timeouts.fireAll();
+        await commits.whenCommitted();
 
-        const deadline = Date.now() + 2000;
-        let fired: {
-          seq: number;
-          bodySeq: number | undefined;
-          timerId: string;
-        }[] = [];
-        while (Date.now() < deadline) {
-          fired = await readTimerFiredBlobs(
-            store.getRepoDir(repoId),
-            runId,
-          ).catch(() => []);
-          if (fired.length > 0) break;
-          await new Promise<void>((resolve) => {
-            setTimeout(resolve, 25);
-          });
-        }
+        const fired = await readTimerFiredBlobs(
+          store.getRepoDir(repoId),
+          runId,
+        );
         expect(fired).toHaveLength(1);
         expect(fired[0]?.timerId).toBe("t-real");
         // TimerFired must land at a seq strictly greater than the
