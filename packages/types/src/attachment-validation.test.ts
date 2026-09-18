@@ -46,6 +46,26 @@ describe("validateAttachments", () => {
     });
   });
 
+  test("already-decoded bytes pass through the same checks", () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    expect(
+      validateAttachments([{ mimeType: "image/png", data: bytes }], policy),
+    ).toEqual({
+      ok: true,
+      attachments: [
+        { name: "attachment-0", contentType: "image/png", data: bytes },
+      ],
+    });
+
+    const result = validateAttachments(
+      [{ mimeType: "image/png", data: new Uint8Array(101) }],
+      policy,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("oversize_attachment");
+  });
+
   test("empty input is valid", () => {
     expect(validateAttachments([], policy)).toEqual({
       ok: true,
