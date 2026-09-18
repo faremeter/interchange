@@ -51,6 +51,13 @@ import type { MailboxEvent } from "@intx/types/runtime";
 import { emitParkNotify, emitTerminalEvent } from "./run-child";
 import type { RunResult, WorkflowPark } from "@intx/workflow";
 import {
+  createChangeNotifier,
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  waitForUpstreamPayload,
+  type ChangeNotifier,
+} from "@intx/workflow-host/testing";
+import {
   createControlChannelSender,
   generateChannelId,
   generateHmacKey,
@@ -58,10 +65,6 @@ import {
   receiveEventChannel,
   type ControlChannelSender,
   type ControlPayload,
-  type FrameReader,
-  type FrameWriter,
-  type NdjsonReader,
-  type NdjsonWriter,
 } from "../ipc/index";
 
 async function makeTempDir(prefix: string): Promise<string> {
@@ -84,106 +87,6 @@ function textMail(body: string): Mail {
     parts: [
       { contentType: "text/plain", ref: "mail-part:///r/m/0-text", text: body },
     ],
-  };
-}
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    flushed(): readonly string[] {
-      return buffer.slice();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("frame buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: FrameWriter = {
-    write(bytes: Uint8Array) {
-      buffer.push(bytes);
-      wake();
-    },
-  };
-  return {
-    reader,
-    writer,
-    flushed(): readonly Uint8Array[] {
-      return buffer.slice();
-    },
-    close() {
-      done = true;
-      wake();
-    },
   };
 }
 
@@ -673,16 +576,10 @@ describe("runWorkflowChild", () => {
       bindings,
     });
 
-    // Wait briefly for the child to emit `ready`. The upstream
-    // sender's seq starts at 1 so the supervisor's receiver iterator
-    // can decode it without rejecting a seq gap.
-    let readyLine: string | undefined;
-    for (let i = 0; i < 200 && readyLine === undefined; i += 1) {
-      const flushed = childToSupervisor.flushed();
-      if (flushed.length > 0) readyLine = flushed[0];
-      else await new Promise((r) => setTimeout(r, 5));
-    }
-    expect(readyLine).toBeDefined();
+    // Wait for the child's own `ready` frame. The upstream sender's seq
+    // starts at 1 so the supervisor's receiver iterator can decode it
+    // without rejecting a seq gap.
+    await waitForUpstreamPayload(childToSupervisor, "ready");
 
     await supervisorSender.send({
       type: "trigger.fire",
@@ -734,9 +631,16 @@ describe("runWorkflowChild", () => {
       writer: supervisorToChild.writer,
     });
 
+    // The watch callback is the delivery signal: `fire` schedules it on a
+    // microtask, so the test reports the arrival from the callback rather
+    // than waiting for the microtask to have run.
     const registry = createMailboxWatchRegistry();
     const received: MailboxEvent[] = [];
-    registry.watch("INBOX", (event) => received.push(event));
+    const delivered = createChangeNotifier();
+    registry.watch("INBOX", (event) => {
+      received.push(event);
+      delivered.notify();
+    });
 
     const runPromise = runWorkflowChild({
       env,
@@ -747,13 +651,7 @@ describe("runWorkflowChild", () => {
       mailboxWatchRegistry: registry,
     });
 
-    let readyLine: string | undefined;
-    for (let i = 0; i < 200 && readyLine === undefined; i += 1) {
-      const flushed = childToSupervisor.flushed();
-      if (flushed.length > 0) readyLine = flushed[0];
-      else await new Promise((r) => setTimeout(r, 5));
-    }
-    expect(readyLine).toBeDefined();
+    await waitForUpstreamPayload(childToSupervisor, "ready");
 
     await supervisorSender.send({
       type: "mailbox.notify",
@@ -769,9 +667,7 @@ describe("runWorkflowChild", () => {
         },
       },
     });
-    // Give the child time to route the frame and the registry's microtask time
-    // to deliver.
-    await new Promise((r) => setTimeout(r, 50));
+    await delivered.until(() => received.length >= 1);
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },
@@ -815,7 +711,32 @@ describe("runWorkflowChild", () => {
         closurePackageDir,
       }),
     );
-    const bindings = buildBindings({ baseDir, childKeyPair });
+    // Every prefix the child asked the substrate to commit, recorded at the
+    // call rather than after it. The non-dropped `signal.deliver` path fires
+    // the deliver off the control loop, so its commit COMPLETES at an
+    // unbounded later point -- but `SignalChannel.deliver` reaches
+    // `writeTreePreservingPrefix` with no await before it, so the call itself
+    // lands inside the frame's own dispatch. Recording the call therefore
+    // makes "the commit never started" observable by the time the child has
+    // processed the following `shutdown`.
+    const writtenPrefixes: string[] = [];
+    const base = buildBindings({ baseDir, childKeyPair });
+    const bindings: RunWorkflowChildBindings = {
+      ...base,
+      substrate: new Proxy(base.substrate, {
+        get(target, prop, receiver) {
+          if (prop !== "writeTreePreservingPrefix") {
+            return Reflect.get(target, prop, receiver);
+          }
+          return (
+            ...args: Parameters<RepoStore["writeTreePreservingPrefix"]>
+          ) => {
+            writtenPrefixes.push(args[3].preservePrefix);
+            return target.writeTreePreservingPrefix(...args);
+          };
+        },
+      }),
+    };
     const supervisorSender = createControlChannelSender({
       privateKeySeed: supervisorKeyPair.privateKey,
       channelId,
@@ -830,13 +751,7 @@ describe("runWorkflowChild", () => {
       bindings,
     });
 
-    let readyLine: string | undefined;
-    for (let i = 0; i < 200 && readyLine === undefined; i += 1) {
-      const flushed = childToSupervisor.flushed();
-      if (flushed.length > 0) readyLine = flushed[0];
-      else await new Promise((r) => setTimeout(r, 5));
-    }
-    expect(readyLine).toBeDefined();
+    await waitForUpstreamPayload(childToSupervisor, "ready");
 
     // No trigger.fire was sent, so "ghost-run" is not in `runsInFlight`.
     await supervisorSender.send({
@@ -848,8 +763,6 @@ describe("runWorkflowChild", () => {
         payload: { x: 1 },
       },
     });
-    // Give a hypothetical non-dropped fire-and-forget deliver time to commit.
-    await new Promise((r) => setTimeout(r, 50));
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },
@@ -859,8 +772,11 @@ describe("runWorkflowChild", () => {
     const result = await runPromise;
     expect(result.triggeredRunIds).toEqual([]);
 
-    // The guard dropped the delivery: no events subtree was written for the
-    // unknown run.
+    // The guard dropped the delivery: the child never asked the substrate to
+    // commit under the unknown run's prefix.
+    expect(writtenPrefixes).not.toContain("runs/ghost-run/events/");
+
+    // ... and no events subtree exists on disk for it.
     const ghostEventsDir = path.join(
       baseDir,
       "workflow-run",
@@ -914,12 +830,15 @@ describe("runWorkflowChild", () => {
     // Record every runId the run-loop asks to reclaim, in order. A run's
     // entry must appear only after that run reaches its terminal status,
     // and exactly once -- proving run (not step) granularity and that no
-    // in-flight run's subtree is touched.
+    // in-flight run's subtree is touched. The callback reports each
+    // reclamation so the test waits on the reclamation itself.
     const cleaned: string[] = [];
+    const reclaimed = createChangeNotifier();
     const bindings: RunWorkflowChildBindings = {
       ...buildBindings({ baseDir, childKeyPair }),
       cleanupRunStorage: (runId: string) => {
         cleaned.push(runId);
+        reclaimed.notify();
         return Promise.resolve();
       },
     };
@@ -938,7 +857,7 @@ describe("runWorkflowChild", () => {
       bindings,
     });
 
-    await waitForTriggeredRun(childToSupervisor, (lines) => lines.length > 0);
+    await waitForUpstreamPayload(childToSupervisor, "ready");
 
     // Two independent runs. The stub `invokeStep` returns immediately, so
     // each run reaches terminal on its own; the run-loop fires cleanup per
@@ -965,9 +884,7 @@ describe("runWorkflowChild", () => {
     // in each run's completion continuation. Wait for both reclamations
     // before tearing the loop down so the assertion observes the per-run
     // firing rather than racing the shutdown.
-    for (let i = 0; i < 400 && cleaned.length < 2; i += 1) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
+    await reclaimed.until(() => cleaned.length >= 2);
     await supervisorSender.send({
       type: "shutdown",
       data: { reason: "test done" },
@@ -1357,8 +1274,9 @@ describe("runWorkflowChild", () => {
       });
 
       // Wait for the run's terminal, counting every terminal.event for the
-      // runId. Break on the first terminal, then drain any residual frames
-      // below to prove no second one lands.
+      // runId. Breaking here finalizes the generator, so this is the only
+      // pass over the stream -- see the at-least-one assertion below for why
+      // a second pass is not what this test needs.
       for await (const payload of recvIter) {
         if (payload.type === "terminal.event" && payload.data.runId === runId) {
           terminals.push(payload.data.seq);
@@ -1374,14 +1292,6 @@ describe("runWorkflowChild", () => {
 
       result = await runPromise;
       childToSupervisor.close();
-
-      // Drain the rest of the upstream stream; no SECOND terminal for the
-      // runId may appear -- exactly one driver emitted exactly one terminal.
-      for await (const payload of recvIter) {
-        if (payload.type === "terminal.event" && payload.data.runId === runId) {
-          terminals.push(payload.data.seq);
-        }
-      }
     } finally {
       // eslint-disable-next-line no-console -- restore the spied method
       console.error = originalConsoleError;
@@ -1397,14 +1307,12 @@ describe("runWorkflowChild", () => {
     expect(
       capturedErrors.some((line) => line.includes("TransitionError")),
     ).toBe(false);
-    // At least one terminal.event for the runId. The one-driver guard
-    // prevents two CONCURRENT drivers (the TransitionError check above); it
-    // does not force a strict single terminal. A re-fire that arrives after
-    // the resumed driver already settled misses the guard, spawns a second
-    // driver that terminal-short-circuits (no re-invocation) and benignly
-    // re-emits the terminal; the supervisor tolerates a duplicate terminal
-    // idempotently. The guarantee the code makes is at-least-one, not
-    // exactly-one.
+    // A terminal.event for the runId arrived. The single pass above breaks on
+    // the first one, so this counts nothing beyond that -- at-least-one is
+    // also all the code promises: the guard prevents two CONCURRENT drivers,
+    // not a duplicate terminal from a re-fire that arrives after the resumed
+    // driver settled, which short-circuits without re-invoking and re-emits
+    // benignly for the supervisor to absorb.
     expect(terminals.length).toBeGreaterThanOrEqual(1);
     // The crashed step settled without re-invoking the agent (commit 2a's
     // at-most-once refusal); the load-bearing zero-invocation assertion.
@@ -1824,6 +1732,12 @@ interface WarmAgentSpy {
     sources: InferenceSource[];
     defaultSource: string;
   }[];
+  /**
+   * Fires after every recorded mutation above. The spy's arrays are mutated
+   * in place, so there is no event for a test to await; this is the spy
+   * reporting its own change instead.
+   */
+  readonly changed: ChangeNotifier;
 }
 
 /**
@@ -1842,6 +1756,7 @@ function buildWarmAgentSpy(): { agent: Agent; spy: WarmAgentSpy } {
     conversation: [],
     replies: [],
     sourceRotations: [],
+    changed: createChangeNotifier(),
   };
   let endStream: () => void = () => undefined;
   const streamEnded = new Promise<void>((resolve) => {
@@ -1863,6 +1778,7 @@ function buildWarmAgentSpy(): { agent: Agent; spy: WarmAgentSpy } {
       spy.conversation.push(text);
       const reply = `r${String(spy.conversation.length)}:${spy.conversation.join("|")}`;
       spy.replies.push(reply);
+      spy.changed.notify();
       return {
         type: "reply",
         reply,
@@ -1894,6 +1810,7 @@ function buildWarmAgentSpy(): { agent: Agent; spy: WarmAgentSpy } {
       // sources-updated round-trip can assert the swap reached the agent
       // in place rather than rebuilding it.
       spy.sourceRotations.push({ sources, defaultSource });
+      spy.changed.notify();
     },
     async history() {
       return [];
@@ -1999,17 +1916,6 @@ async function seedProcessingEntryInDir(
     path.join(dir, `${String(opts.receivedAt)}-${opts.messageId}.json`),
     JSON.stringify(envelope),
   );
-}
-
-async function waitForTriggeredRun(
-  childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>,
-  predicate: (lines: readonly string[]) => boolean,
-): Promise<void> {
-  for (let i = 0; i < 400; i += 1) {
-    if (predicate(childToSupervisor.flushed())) return;
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  throw new Error("timed out waiting for the child's upstream frames");
 }
 
 describe("warm-agent round-trip (Phase 4.4)", () => {
@@ -2169,8 +2075,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       bindings,
     });
 
-    // Wait for ready.
-    await waitForTriggeredRun(childToSupervisor, (lines) => lines.length > 0);
+    await waitForUpstreamPayload(childToSupervisor, "ready");
 
     // First message.
     await supervisorSender.send({
@@ -2182,7 +2087,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         payload: textMail("alpha body"),
       },
     });
-    await waitForTriggeredRun(childToSupervisor, () => spy.replies.length >= 1);
+    await spy.changed.until(() => spy.replies.length >= 1);
 
     // After one message the agent was built exactly once, the LSP is
     // alive (no teardown between messages), and nothing was closed.
@@ -2200,7 +2105,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         payload: textMail("bravo body"),
       },
     });
-    await waitForTriggeredRun(childToSupervisor, () => spy.replies.length >= 2);
+    await spy.changed.until(() => spy.replies.length >= 2);
 
     // STILL one build -- the warm agent was reused, not rebuilt -- and
     // the LSP subprocess was spawned once and never torn down between
@@ -2355,7 +2260,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       bindings,
     });
 
-    await waitForTriggeredRun(childToSupervisor, (lines) => lines.length > 0);
+    await waitForUpstreamPayload(childToSupervisor, "ready");
 
     // Build the warm agent with one message so the cache holds an entry.
     await supervisorSender.send({
@@ -2367,7 +2272,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
         payload: textMail("alpha body"),
       },
     });
-    await waitForTriggeredRun(childToSupervisor, () => spy.replies.length >= 1);
+    await spy.changed.until(() => spy.replies.length >= 1);
     expect(factoryCalls).toBe(1);
 
     // Rotate the sources on the live warm agent.
@@ -2384,10 +2289,7 @@ describe("warm-agent round-trip (Phase 4.4)", () => {
       type: "sources-updated",
       data: { sources: rotated, defaultSource: "rotated" },
     });
-    for (let i = 0; i < 400; i += 1) {
-      if (spy.sourceRotations.length >= 1) break;
-      await new Promise((r) => setTimeout(r, 5));
-    }
+    await spy.changed.until(() => spy.sourceRotations.length >= 1);
 
     // The swap reached the built agent in place, carrying the frame's list
     // and default, and did NOT rebuild the agent.

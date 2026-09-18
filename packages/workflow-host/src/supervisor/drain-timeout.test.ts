@@ -35,6 +35,7 @@ import {
   createDrainTimeoutAccumulator,
   DEFAULT_DRAIN_TIMEOUT_MS,
 } from "./drain-timeout";
+import { waitUntil } from "@intx/types/testing";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -256,7 +257,7 @@ describe("createDrainTimeoutAccumulator", () => {
     expect(accumulator.escalated).toBe(false);
     clock.advance(1);
     await host.fireDue(clock);
-    await new Promise<void>((r) => setTimeout(r, 5));
+    await waitUntil(() => accumulator.escalated);
     expect(accumulator.escalated).toBe(true);
   });
 
@@ -316,7 +317,7 @@ describe("createDrainTimeoutAccumulator", () => {
     accumulator.start();
     clock.advance(1_000);
     await host.fireDue(clock);
-    await new Promise<void>((r) => setTimeout(r, 5));
+    await waitUntil(() => signSpy.calls.length >= 1);
     expect(signSpy.calls.length).toBe(1);
     const signedBytes = signSpy.calls[0]?.payload;
     expect(signedBytes).toBeDefined();
@@ -562,7 +563,7 @@ describe("createDrainTimeoutAccumulator", () => {
     accumulator.start();
     accumulator.stop();
     // The iterator's return() is invoked as part of stop().
-    await new Promise<void>((r) => setTimeout(r, 5));
+    await waitUntil(() => returnCalled);
     expect(returnCalled).toBe(true);
   });
 });

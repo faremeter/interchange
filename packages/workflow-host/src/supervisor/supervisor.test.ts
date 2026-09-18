@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,20 @@ import { isMail } from "@intx/types/runtime";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import { StaleInboxEnqueueError } from "@intx/hub-sessions";
 import type { EnqueueInboxOutcome } from "@intx/hub-sessions";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  createSupervisorReaper,
+  createMockMailBus,
+  type MockMailBus,
+  createSpawnObserver,
+  parseTriggerFireRunIds,
+  waitForTriggerFireRunIds,
+  waitForUpstreamPayload,
+  waitForUpstreamPayloads,
+  createChangeNotifier,
+  type UpstreamFrameSource,
+} from "@intx/workflow-host/testing";
 
 import {
   createWorkflowSupervisor,
@@ -40,31 +54,7 @@ import {
   SignedEnvelope,
   generateHmacKey,
   generateChannelId,
-  type FrameReader,
-  type NdjsonReader,
-  type NdjsonWriter,
 } from "../ipc/index";
-
-/**
- * Parse the `runId` carried on each `trigger.fire` frame the
- * supervisor wrote to the in-memory child control stream. Validates
- * every signed envelope's payload through the canonical `ControlPayload`
- * narrow so the helper does not need to `as`-cast at the boundary.
- */
-function parseTriggerFireRunIds(lines: readonly string[]): string[] {
-  const ids: string[] = [];
-  for (const line of lines) {
-    if (!line.includes("trigger.fire")) continue;
-    const raw: unknown = JSON.parse(line);
-    const signed = SignedEnvelope(raw);
-    if (signed instanceof type.errors) continue;
-    const payload = ControlPayload(signed.envelope.payload);
-    if (payload instanceof type.errors) continue;
-    if (payload.type !== "trigger.fire") continue;
-    ids.push(payload.data.runId);
-  }
-  return ids;
-}
 
 /**
  * The frame `type`s the supervisor writes to the child control stream, in
@@ -157,50 +147,24 @@ function parseMailboxNotifies(lines: readonly string[]): {
 }
 
 /**
- * Parse every `mailbox.mutate.response` frame the supervisor wrote back to the
- * child, in write order. Used to assert a child flag write / expunge round-trips
- * with the applied-mutation result.
- */
-function parseMailboxMutateResponses(
-  lines: readonly string[],
-): Extract<ControlPayload, { type: "mailbox.mutate.response" }>["data"][] {
-  const out: Extract<
-    ControlPayload,
-    { type: "mailbox.mutate.response" }
-  >["data"][] = [];
-  for (const line of lines) {
-    if (!line.includes("mailbox.mutate.response")) continue;
-    const raw: unknown = JSON.parse(line);
-    const signed = SignedEnvelope(raw);
-    if (signed instanceof type.errors) continue;
-    const payload = ControlPayload(signed.envelope.payload);
-    if (payload instanceof type.errors) continue;
-    if (payload.type !== "mailbox.mutate.response") continue;
-    out.push(payload.data);
-  }
-  return out;
-}
-
-/**
- * Poll the supervisor's flushed control frames for the `mailbox.mutate.response`
- * answering `requestId`, or throw on timeout. `flushed` returns the cumulative
- * frame lines the supervisor wrote to the child.
+ * Resolve with the `mailbox.mutate.response` frame answering `requestId`.
+ *
+ * Waits on the write that carries the frame rather than re-reading the
+ * buffer on a tick, so nothing here decides the outcome but the frame's
+ * arrival; a response that never comes is caught by the lane timeout.
  */
 async function awaitMutateResponse(
-  flushed: () => readonly string[],
+  stream: UpstreamFrameSource,
   requestId: string,
 ): Promise<
   Extract<ControlPayload, { type: "mailbox.mutate.response" }>["data"]
 > {
-  const deadline = Date.now() + 2000;
-  while (Date.now() < deadline) {
-    const found = parseMailboxMutateResponses(flushed()).find(
-      (r) => r.requestId === requestId,
-    );
-    if (found !== undefined) return found;
-    await new Promise((r) => setTimeout(r, 2));
-  }
-  throw new Error(`no mailbox.mutate.response for ${requestId}`);
+  const payload = await waitForUpstreamPayload(
+    stream,
+    "mailbox.mutate.response",
+    (p) => p.data.requestId === requestId,
+  );
+  return payload.data;
 }
 
 /**
@@ -393,184 +357,37 @@ async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    flushed(): readonly string[] {
-      return buffer.slice();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("frame buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    inject(bytes: Uint8Array) {
-      buffer.push(bytes);
-      wake();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMockMailBus(): MailBusBindings & {
-  registered(): readonly string[];
-  deliver(address: string, message: Uint8Array): void;
-} {
-  const registered: string[] = [];
-  const subscribers = new Map<
-    string,
-    Set<(rawMessage: Uint8Array) => Promise<void>>
-  >();
-  return {
-    registerAddress(address: string) {
-      registered.push(address);
-    },
-    unregisterAddress(address: string) {
-      const idx = registered.lastIndexOf(address);
-      if (idx >= 0) registered.splice(idx, 1);
-      subscribers.delete(address);
-    },
-    subscribeMailForAddress(
-      address: string,
-      handler: (rawMessage: Uint8Array) => Promise<void>,
-    ) {
-      let set = subscribers.get(address);
-      if (set === undefined) {
-        set = new Set();
-        subscribers.set(address, set);
-      }
-      set.add(handler);
-      return () => {
-        const current = subscribers.get(address);
-        current?.delete(handler);
-      };
-    },
-    sendOutbound() {
-      throw new Error("sendOutbound not exercised in this test");
-    },
-    registered(): readonly string[] {
-      return registered.slice();
-    },
-    deliver(address: string, message: Uint8Array) {
-      const set = subscribers.get(address);
-      if (set === undefined) return;
-      for (const handler of set) void handler(message).catch(() => undefined);
-    },
-  };
-}
-
 // A mail bus that exposes the durable settlement of a delivery via `settle`
 // (the subscribed handler's returned promise), so the ack/withhold mapping can
-// be asserted directly. It RETAINS the subscribed handler after the disposer
-// runs, so a test can drive `onMailMessage`'s own phase gate after teardown --
-// the belt that guards the racy "mail arrives while the deployment is stopping"
-// window. Structurally a superset of `createMockMailBus`'s shape so it drops
+// be asserted directly. `settle` reads the `handlers` map below, which nothing
+// here ever deletes from, so it still reaches the handler after the
+// supervisor's shutdown has called the subscription disposer and
+// `unregisterAddress`. That is what lets a test drive `onMailMessage`'s own
+// phase gate after teardown -- the belt that guards the racy "mail arrives
+// while the deployment is stopping" window. The inherited `deliver` is not
+// that belt: it reads the base's `subscribers`, which both the base disposer
+// and `unregisterAddress` empty, and it discards the handler's promise, so it
+// can carry neither a post-teardown delivery nor the rejection such a test
+// asserts. Structurally a superset of `createMockMailBus`'s shape so it drops
 // into the same spawn fixture.
-function createSettleableMailBus(): ReturnType<typeof createMockMailBus> & {
+function createSettleableMailBus(): MockMailBus & {
   settle(address: string, message: Uint8Array): Promise<void>;
 } {
-  const registered: string[] = [];
+  // Composed on the shared double rather than reimplementing it, so the
+  // registration waiter and the register/unregister history keep working.
+  // The only thing added is a handle on the subscribed handler: `deliver`
+  // fires and forgets, while a test asserting on what the enqueue path
+  // returned has to await the delivery it triggered.
+  const base = createMockMailBus();
   const handlers = new Map<string, (m: Uint8Array) => Promise<void>>();
   return {
-    registerAddress(address: string) {
-      registered.push(address);
-    },
-    unregisterAddress(address: string) {
-      const idx = registered.lastIndexOf(address);
-      if (idx >= 0) registered.splice(idx, 1);
-    },
+    ...base,
     subscribeMailForAddress(
       address: string,
       handler: (rawMessage: Uint8Array) => Promise<void>,
     ) {
       handlers.set(address, handler);
-      return () => undefined;
-    },
-    sendOutbound() {
-      throw new Error("sendOutbound not exercised in this test");
-    },
-    registered(): readonly string[] {
-      return registered.slice();
-    },
-    deliver(address: string, message: Uint8Array) {
-      const handler = handlers.get(address);
-      if (handler === undefined) return;
-      void handler(message).catch(() => undefined);
+      return base.subscribeMailForAddress(address, handler);
     },
     settle(address: string, message: Uint8Array): Promise<void> {
       const handler = handlers.get(address);
@@ -861,6 +678,8 @@ export type MemoryInboxState = {
 export type MemoryInboxPrimitives = InboxPrimitives & {
   /** Snapshot the in-memory state for a given address (testing only). */
   snapshot(address: string): MemoryInboxState;
+  /** Resolve once the predicate holds over the snapshots. */
+  awaitState(predicate: () => boolean): Promise<void>;
 };
 
 function filenameKey(receivedAt: number, messageId: string): string {
@@ -868,6 +687,9 @@ function filenameKey(receivedAt: number, messageId: string): string {
 }
 
 function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
+  // Reports every mutation so a test can wait for the state it needs
+  // instead of re-reading the maps on a timer.
+  const changes = createChangeNotifier();
   const byAddress = new Map<string, MemoryInboxState>();
   function getOrCreate(address: string): MemoryInboxState {
     let entry = byAddress.get(address);
@@ -882,6 +704,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
     return entry;
   }
   return {
+    awaitState: changes.until,
     snapshot(address: string): MemoryInboxState {
       return getOrCreate(address);
     },
@@ -912,6 +735,7 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
           : {}),
       };
       state.inbox.set(key, envelope);
+      changes.notify();
       return {
         outcome: "enqueued",
         commitSha: "memory-inbox",
@@ -937,7 +761,9 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
       if (head === undefined) throw new Error("unreachable");
       const [key, envelope] = head;
       state.inbox.delete(key);
+      changes.notify();
       state.processing.set(key, envelope);
+      changes.notify();
       return {
         commitSha: "memory-inbox",
         key,
@@ -969,11 +795,13 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
         );
       }
       state.processing.delete(foundKey);
+      changes.notify();
       const consumedEntry: MemoryInboxEntry = {
         ...envelope,
         ...(args.rejection !== undefined ? { rejection: args.rejection } : {}),
       };
       state.consumed.set(args.messageId, consumedEntry);
+      changes.notify();
       return {
         commitSha: "memory-inbox",
         envelope: {
@@ -1001,9 +829,17 @@ function createMemoryInboxPrimitives(): MemoryInboxPrimitives {
           );
         }
         state.inbox.set(key, value);
+        changes.notify();
         replayedKeys.push(key);
       }
       state.processing.clear();
+      // The per-entry notify above fires while `processing` still holds the
+      // entry, and a woken waiter re-reads its predicate only on a microtask,
+      // so with no await between that notify and this clear it happens to
+      // re-read after the clear. This notify reports the clear itself, so an
+      // await landing in between would not strand a waiter on `processing`
+      // emptying.
+      changes.notify();
       return { commitSha: "memory-inbox", replayedKeys };
     },
   };
@@ -1069,6 +905,10 @@ async function seedStepGrants(
   );
 }
 
+const supervisors = createSupervisorReaper();
+
+afterEach(supervisors.reap);
+
 describe("createWorkflowSupervisor", () => {
   test("factory accepts the documented WorkflowSupervisorBindings shape", async () => {
     const baseDir = await makeTempDir("supervisor-bindings-");
@@ -1083,7 +923,7 @@ describe("createWorkflowSupervisor", () => {
       }),
       mailBus: createMockMailBus(),
     });
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
     expect(typeof supervisor.spawn).toBe("function");
     expect(typeof supervisor.requestCancel).toBe("function");
     expect(typeof supervisor.shutdown).toBe("function");
@@ -1119,10 +959,14 @@ describe("createWorkflowSupervisor", () => {
     let killed = false;
 
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     let observedBinary: string | undefined;
     const spawner: SubprocessSpawner = ({ binaryPath, env }) => {
       observedBinary = binaryPath;
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 4321,
         controlWriter: supervisorToChild.writer,
@@ -1155,7 +999,7 @@ describe("createWorkflowSupervisor", () => {
       ...baseBindings,
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const eventsObserved: { type: string }[] = [];
     const spawnPromise = supervisor.spawn({
@@ -1171,9 +1015,7 @@ describe("createWorkflowSupervisor", () => {
     // been invoked (so we have the channelId), then sign a `ready`
     // frame with the controlled IPC private key and inject it into
     // the child-to-supervisor stream.
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -1191,9 +1033,7 @@ describe("createWorkflowSupervisor", () => {
     // bus so the delivers below land inside the supervisor's
     // subscription handler -- a deliver before subscription is a
     // no-op against the mock bus.
-    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await mailBus.awaitRegistered("run_deployment-x@example.com");
     // Deliver mail while the supervisor is still in `starting`; the
     // supervisor buffers it and replays it after `ready` lands.
     mailBus.deliver(
@@ -1236,16 +1076,7 @@ describe("createWorkflowSupervisor", () => {
     // The first buffered mail fires the stable top-level run. The FIFO
     // claim-check pipeline holds the second until that run terminates, then
     // rejects it rather than issuing a second trigger.fire.
-    const waitForTriggerFires = async (n: number): Promise<string[]> => {
-      const deadline = Date.now() + 500;
-      while (Date.now() < deadline) {
-        const ids = parseTriggerFireRunIds(supervisorToChild.flushed());
-        if (ids.length >= n) return ids;
-        await new Promise((r) => setTimeout(r, 1));
-      }
-      return parseTriggerFireRunIds(supervisorToChild.flushed());
-    };
-    const firstFired = await waitForTriggerFires(1);
+    const firstFired = await waitForTriggerFireRunIds(supervisorToChild, 1);
     expect(firstFired.length).toBeGreaterThanOrEqual(1);
     const firstRunId = firstFired[0];
     if (firstRunId === undefined) throw new Error("first runId missing");
@@ -1258,12 +1089,9 @@ describe("createWorkflowSupervisor", () => {
         at: "test",
       },
     });
-    const consumedDeadline = Date.now() + 500;
-    while (Date.now() < consumedDeadline) {
-      if (inbox.snapshot("run_deployment-x@example.com").consumed.size >= 2)
-        break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await inbox.awaitState(
+      () => inbox.snapshot("run_deployment-x@example.com").consumed.size >= 2,
+    );
     expect(parseTriggerFireRunIds(supervisorToChild.flushed())).toEqual([
       firstRunId,
     ]);
@@ -1312,8 +1140,12 @@ describe("createWorkflowSupervisor", () => {
     });
 
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       return {
         pid: 7777,
         controlWriter: supervisorToChild.writer,
@@ -1356,16 +1188,14 @@ describe("createWorkflowSupervisor", () => {
           }
         : {}),
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-barrier",
       warmKeep: false,
       onInferenceEvent: () => undefined,
     });
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -1379,9 +1209,7 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await mailBus.awaitRegistered("run_deployment-x@example.com");
     await childSender.send({
       type: "ready",
       data: {
@@ -1404,11 +1232,16 @@ describe("createWorkflowSupervisor", () => {
   test("delivering inbound mail eager-commits an INBOX entry and emits mailbox.notify", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-commit-");
     const writes: CapturedWrite[] = [];
+    // The recorded write is the event these tests wait on: the mailbox index
+    // they assert against only changes when one lands.
+    const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
       statefulWrites: true,
-      onWrite: (args) =>
-        writes.push({ preservePrefix: args.preservePrefix, files: args.files }),
+      onWrite: (args) => {
+        writes.push({ preservePrefix: args.preservePrefix, files: args.files });
+        writeChanges.notify();
+      },
     });
 
     const raw = buildInboundMail({
@@ -1420,12 +1253,8 @@ describe("createWorkflowSupervisor", () => {
     });
     wired.mailBus.deliver(MAILBOX_ADDRESS, raw);
 
-    const notifyDeadline = Date.now() + 1000;
-    let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    while (notifies.length < 1 && Date.now() < notifyDeadline) {
-      await new Promise((r) => setTimeout(r, 2));
-      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
+    const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     expect(notifies).toHaveLength(1);
     const notify = notifies[0];
     if (notify === undefined) throw new Error("mailbox.notify missing");
@@ -1458,12 +1287,8 @@ describe("createWorkflowSupervisor", () => {
 
     // Regression: the step-input trigger.fire is unchanged -- it still carries a
     // Mail payload, and the notify's runId matches the run the trigger fired.
-    const fireDeadline = Date.now() + 1000;
-    let fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-    while (fireIds.length < 1 && Date.now() < fireDeadline) {
-      await new Promise((r) => setTimeout(r, 2));
-      fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "trigger.fire", 1);
+    const fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
     expect(fireIds).toHaveLength(1);
     const firstFireId = fireIds[0];
     if (firstFireId === undefined)
@@ -1500,18 +1325,11 @@ describe("createWorkflowSupervisor", () => {
     // Deliver sequentially so the arrival order (and thus the assigned uids) is
     // deterministic, then confirm each arrival eager-committed on its own.
     wired.mailBus.deliver(MAILBOX_ADDRESS, m1);
-    const firstDeadline = Date.now() + 1000;
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    while (notifies.length < 1 && Date.now() < firstDeadline) {
-      await new Promise((r) => setTimeout(r, 2));
-      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    }
     wired.mailBus.deliver(MAILBOX_ADDRESS, m2);
-    const secondDeadline = Date.now() + 1000;
-    while (notifies.length < 2 && Date.now() < secondDeadline) {
-      await new Promise((r) => setTimeout(r, 2));
-      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 2);
+    notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     // Both messages committed with fresh, monotonic uids even though FIFO
     // dispatch holds the second until the first run terminates.
     expect(notifies.map((n) => n.uid)).toEqual([1, 2]);
@@ -1522,6 +1340,12 @@ describe("createWorkflowSupervisor", () => {
 
     // FIFO dispatch is unchanged: exactly one trigger.fire. The second message
     // waits for the run to terminate and is then rejected, never fired.
+    //
+    // Wait for the first fire before counting. The notify waits above return
+    // on the commit, which happens before dispatch forwards anything, so
+    // counting straight after them reads zero. The old poll for notifies
+    // carried a one-second deadline and incidentally gave dispatch that time.
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     const fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
     expect(fireIds).toHaveLength(1);
     const runId = fireIds[0];
@@ -1530,13 +1354,9 @@ describe("createWorkflowSupervisor", () => {
       type: "terminal.event",
       data: { runId, seq: 0, kind: "RunCompleted", at: "test" },
     });
-    const consumedDeadline = Date.now() + 1000;
-    while (Date.now() < consumedDeadline) {
-      if (wired.inboxPrimitives.snapshot(MAILBOX_ADDRESS).consumed.size >= 2) {
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(MAILBOX_ADDRESS).consumed.size >= 2,
+    );
     expect(wired.inboxPrimitives.snapshot(MAILBOX_ADDRESS).consumed.size).toBe(
       2,
     );
@@ -1550,11 +1370,16 @@ describe("createWorkflowSupervisor", () => {
   test("a dispatched message's mailbox entry is flagged Seen and Processed", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-flags-");
     const writes: CapturedWrite[] = [];
+    // The recorded write is the event these tests wait on: the mailbox index
+    // they assert against only changes when one lands.
+    const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
       statefulWrites: true,
-      onWrite: (args) =>
-        writes.push({ preservePrefix: args.preservePrefix, files: args.files }),
+      onWrite: (args) => {
+        writes.push({ preservePrefix: args.preservePrefix, files: args.files });
+        writeChanges.notify();
+      },
     });
 
     const raw = buildInboundMail({
@@ -1566,12 +1391,8 @@ describe("createWorkflowSupervisor", () => {
     });
     wired.mailBus.deliver(MAILBOX_ADDRESS, raw);
 
-    const fireDeadline = Date.now() + 1000;
-    let fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-    while (fireIds.length < 1 && Date.now() < fireDeadline) {
-      await new Promise((r) => setTimeout(r, 2));
-      fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "trigger.fire", 1);
+    const fireIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
     const runId = fireIds[0];
     if (runId === undefined) throw new Error("runId missing");
     await wired.childSender.send({
@@ -1581,19 +1402,14 @@ describe("createWorkflowSupervisor", () => {
 
     // The on-dispatch flag mark (fire-and-forget) flushes the \Seen/$Processed
     // flags onto the entry; poll the committed index until they land.
-    const flagDeadline = Date.now() + 1000;
     const latest = () => {
       const all = mailboxIndexes(writes);
       return all[all.length - 1];
     };
-    let index = latest();
-    while (
-      Date.now() < flagDeadline &&
-      !(index?.messages[0]?.flags ?? []).includes("$Processed")
-    ) {
-      await new Promise((r) => setTimeout(r, 2));
-      index = latest();
-    }
+    await writeChanges.until(() =>
+      (latest()?.messages[0]?.flags ?? []).includes("$Processed"),
+    );
+    const index = latest();
     if (index === undefined) throw new Error("no mailbox index committed");
     expect(index.messages).toHaveLength(1);
     const flags = index.messages[0]?.flags ?? [];
@@ -1606,11 +1422,16 @@ describe("createWorkflowSupervisor", () => {
   test("a child mailbox mutation flags and expunges the owned INBOX", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-mutate-");
     const writes: CapturedWrite[] = [];
+    // The recorded write is the event these tests wait on: the mailbox index
+    // they assert against only changes when one lands.
+    const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
       statefulWrites: true,
-      onWrite: (args) =>
-        writes.push({ preservePrefix: args.preservePrefix, files: args.files }),
+      onWrite: (args) => {
+        writes.push({ preservePrefix: args.preservePrefix, files: args.files });
+        writeChanges.notify();
+      },
     });
 
     // Seed the mailbox: deliver a message so the eager commit assigns uid 1.
@@ -1622,16 +1443,12 @@ describe("createWorkflowSupervisor", () => {
       body: "body",
     });
     wired.mailBus.deliver(MAILBOX_ADDRESS, raw);
-    const notifyDeadline = Date.now() + 1000;
-    let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    while (notifies.length < 1 && Date.now() < notifyDeadline) {
-      await new Promise((r) => setTimeout(r, 2));
-      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
+    const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     expect(notifies[0]?.uid).toBe(1);
 
     const awaitResponse = (requestId: string) =>
-      awaitMutateResponse(() => wired.supervisorToChild.flushed(), requestId);
+      awaitMutateResponse(wired.supervisorToChild, requestId);
 
     // A mutation targeting a mailbox the agent does not own is rejected -- the
     // supervisor owns only INBOX and must not silently mutate it under another
@@ -1683,13 +1500,9 @@ describe("createWorkflowSupervisor", () => {
       const all = mailboxIndexes(writes);
       return all[all.length - 1];
     };
-    const flagDeadline = Date.now() + 1000;
-    while (
-      Date.now() < flagDeadline &&
-      !(latest()?.messages[0]?.flags ?? []).includes("\\Deleted")
-    ) {
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await writeChanges.until(() =>
+      (latest()?.messages[0]?.flags ?? []).includes("\\Deleted"),
+    );
     expect(latest()?.messages[0]?.flags ?? []).toContain("\\Deleted");
 
     // Expunge sweeps every \Deleted message out of the live INBOX and reports
@@ -1707,13 +1520,7 @@ describe("createWorkflowSupervisor", () => {
     expect(expunged.result.ok).toBe(true);
     if (!expunged.result.ok) throw new Error("expected success");
     expect(expunged.result.expungedUids).toEqual([1]);
-    const expungeDeadline = Date.now() + 1000;
-    while (
-      Date.now() < expungeDeadline &&
-      (latest()?.messages.length ?? 1) > 0
-    ) {
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await writeChanges.until(() => (latest()?.messages.length ?? 1) === 0);
     const finalIndex = latest();
     if (finalIndex === undefined) throw new Error("no mailbox index committed");
     expect(finalIndex.messages).toHaveLength(0);
@@ -1725,11 +1532,16 @@ describe("createWorkflowSupervisor", () => {
   test("a removeFlags mutation clears a flag from the owned INBOX entry", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-removeflags-");
     const writes: CapturedWrite[] = [];
+    // The recorded write is the event these tests wait on: the mailbox index
+    // they assert against only changes when one lands.
+    const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
       statefulWrites: true,
-      onWrite: (args) =>
-        writes.push({ preservePrefix: args.preservePrefix, files: args.files }),
+      onWrite: (args) => {
+        writes.push({ preservePrefix: args.preservePrefix, files: args.files });
+        writeChanges.notify();
+      },
     });
 
     wired.mailBus.deliver(
@@ -1742,12 +1554,8 @@ describe("createWorkflowSupervisor", () => {
         body: "body",
       }),
     );
-    const notifyDeadline = Date.now() + 1000;
-    let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    while (notifies.length < 1 && Date.now() < notifyDeadline) {
-      await new Promise((r) => setTimeout(r, 2));
-      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
+    const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     expect(notifies[0]?.uid).toBe(1);
 
     const latest = () => {
@@ -1769,17 +1577,9 @@ describe("createWorkflowSupervisor", () => {
       },
     });
     expect(
-      (
-        await awaitMutateResponse(
-          () => wired.supervisorToChild.flushed(),
-          "rmf-add",
-        )
-      ).result.ok,
+      (await awaitMutateResponse(wired.supervisorToChild, "rmf-add")).result.ok,
     ).toBe(true);
-    const addDeadline = Date.now() + 1000;
-    while (Date.now() < addDeadline && !flagsNow().includes("\\Flagged")) {
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await writeChanges.until(() => flagsNow().includes("\\Flagged"));
     expect(flagsNow()).toContain("\\Flagged");
 
     await wired.childSender.send({
@@ -1794,17 +1594,10 @@ describe("createWorkflowSupervisor", () => {
       },
     });
     expect(
-      (
-        await awaitMutateResponse(
-          () => wired.supervisorToChild.flushed(),
-          "rmf-clear",
-        )
-      ).result.ok,
+      (await awaitMutateResponse(wired.supervisorToChild, "rmf-clear")).result
+        .ok,
     ).toBe(true);
-    const clearDeadline = Date.now() + 1000;
-    while (Date.now() < clearDeadline && flagsNow().includes("\\Flagged")) {
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await writeChanges.until(() => !flagsNow().includes("\\Flagged"));
     expect(flagsNow()).not.toContain("\\Flagged");
 
     await wired.supervisor.shutdown();
@@ -1813,11 +1606,16 @@ describe("createWorkflowSupervisor", () => {
   test("an expunge sweeps every \\Deleted message and reports all their uids", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-multi-expunge-");
     const writes: CapturedWrite[] = [];
+    // The recorded write is the event these tests wait on: the mailbox index
+    // they assert against only changes when one lands.
+    const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
       statefulWrites: true,
-      onWrite: (args) =>
-        writes.push({ preservePrefix: args.preservePrefix, files: args.files }),
+      onWrite: (args) => {
+        writes.push({ preservePrefix: args.preservePrefix, files: args.files });
+        writeChanges.notify();
+      },
     });
 
     // Deliver two messages so the eager-commit assigns uids 1 and 2.
@@ -1831,12 +1629,8 @@ describe("createWorkflowSupervisor", () => {
         body: "one",
       }),
     );
-    const firstDeadline = Date.now() + 1000;
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
     let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    while (notifies.length < 1 && Date.now() < firstDeadline) {
-      await new Promise((r) => setTimeout(r, 2));
-      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    }
     wired.mailBus.deliver(
       MAILBOX_ADDRESS,
       buildInboundMail({
@@ -1847,11 +1641,8 @@ describe("createWorkflowSupervisor", () => {
         body: "two",
       }),
     );
-    const secondDeadline = Date.now() + 1000;
-    while (notifies.length < 2 && Date.now() < secondDeadline) {
-      await new Promise((r) => setTimeout(r, 2));
-      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 2);
+    notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     expect(notifies.map((n) => n.uid)).toEqual([1, 2]);
 
     // Flag both \Deleted, then expunge: the sweep removes both and reports both.
@@ -1870,7 +1661,7 @@ describe("createWorkflowSupervisor", () => {
       expect(
         (
           await awaitMutateResponse(
-            () => wired.supervisorToChild.flushed(),
+            wired.supervisorToChild,
             `mx-flag-${String(uid)}`,
           )
         ).result.ok,
@@ -1887,7 +1678,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
     const expunged = await awaitMutateResponse(
-      () => wired.supervisorToChild.flushed(),
+      wired.supervisorToChild,
       "mx-expunge",
     );
     expect(expunged.result.ok).toBe(true);
@@ -1898,10 +1689,7 @@ describe("createWorkflowSupervisor", () => {
       const all = mailboxIndexes(writes);
       return all[all.length - 1];
     };
-    const emptyDeadline = Date.now() + 1000;
-    while (Date.now() < emptyDeadline && (latest()?.messages.length ?? 2) > 0) {
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await writeChanges.until(() => (latest()?.messages.length ?? 2) === 0);
     expect(latest()?.messages ?? []).toHaveLength(0);
 
     await wired.supervisor.shutdown();
@@ -1910,11 +1698,16 @@ describe("createWorkflowSupervisor", () => {
   test("an expunge with no \\Deleted message is a no-op that reports no uids", async () => {
     const baseDir = await makeTempDir("supervisor-mailbox-empty-expunge-");
     const writes: CapturedWrite[] = [];
+    // The recorded write is the event these tests wait on: the mailbox index
+    // they assert against only changes when one lands.
+    const writeChanges = createChangeNotifier();
     const wired = await spawnWithRunStart({
       baseDir,
       statefulWrites: true,
-      onWrite: (args) =>
-        writes.push({ preservePrefix: args.preservePrefix, files: args.files }),
+      onWrite: (args) => {
+        writes.push({ preservePrefix: args.preservePrefix, files: args.files });
+        writeChanges.notify();
+      },
     });
 
     wired.mailBus.deliver(
@@ -1927,12 +1720,8 @@ describe("createWorkflowSupervisor", () => {
         body: "body",
       }),
     );
-    const notifyDeadline = Date.now() + 1000;
-    let notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    while (notifies.length < 1 && Date.now() < notifyDeadline) {
-      await new Promise((r) => setTimeout(r, 2));
-      notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
+    const notifies = parseMailboxNotifies(wired.supervisorToChild.flushed());
     expect(notifies[0]?.uid).toBe(1);
 
     // Nothing is flagged \Deleted, so the sweep removes nothing and the message
@@ -1947,7 +1736,7 @@ describe("createWorkflowSupervisor", () => {
       },
     });
     const expunged = await awaitMutateResponse(
-      () => wired.supervisorToChild.flushed(),
+      wired.supervisorToChild,
       "ee-expunge",
     );
     expect(expunged.result.ok).toBe(true);
@@ -2000,18 +1789,12 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("barrier-m1"),
     );
 
-    const deadline = Date.now() + 1000;
-    let firedRunId: string | undefined;
-    while (Date.now() < deadline) {
-      const ids = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-      if (ids.length >= 1) {
-        firedRunId = ids[0];
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    const [firedRunId] = await waitForTriggerFireRunIds(
+      wired.supervisorToChild,
+      1,
+    );
     if (firedRunId === undefined) {
-      throw new Error("no trigger.fire observed within deadline");
+      throw new Error("trigger.fire frame carried no runId");
     }
 
     // The barrier is load-bearing on ordering: the run's grants-updated
@@ -2144,15 +1927,7 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("barrier-creds-m1"),
     );
 
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (
-        parseTriggerFireRunIds(wired.supervisorToChild.flushed()).length >= 1
-      ) {
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
 
     // The material lands on the child's control stream STRICTLY before the
     // trigger, so a tool that resolves a credential on the first step already
@@ -2233,15 +2008,7 @@ describe("createWorkflowSupervisor", () => {
       "run_deployment-x@example.com",
       new TextEncoder().encode("revoke-durable-m1"),
     );
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (
-        parseTriggerFireRunIds(wired.supervisorToChild.flushed()).length >= 1
-      ) {
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
 
     // The barrier's re-assertion (the last credentials-updated frame) carries
     // the post-revoke set: cred_a is gone (material AND its binding), cred_b
@@ -2276,11 +2043,9 @@ describe("createWorkflowSupervisor", () => {
     // The failed run is settled through the claim-check pipeline: the
     // message moves to `consumed`. Wait on that observable settle.
     const address = "run_deployment-x@example.com";
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     // The barrier suppressed the trigger: NO trigger.fire and NO
@@ -2431,6 +2196,9 @@ describe("createWorkflowSupervisor", () => {
     type FakeTimer = { cb: () => void; ms: number; cancelled: boolean };
     const timers = new Set<FakeTimer>();
     const createdTimers: FakeTimer[] = [];
+    // Arming a timer is the event `waitForReadyDeadline` waits on; the
+    // registry it reads only grows when `setTimer` is called.
+    const timerChanges = createChangeNotifier();
 
     const baseDir = await makeTempDir("supervisor-ready-timeout-");
     const supervisorIpcKeyPair = await generateKeyPair();
@@ -2474,6 +2242,7 @@ describe("createWorkflowSupervisor", () => {
         const t: FakeTimer = { cb, ms, cancelled: false };
         timers.add(t);
         createdTimers.push(t);
+        timerChanges.notify();
         return t;
       },
       clearTimer: (handle) => {
@@ -2487,16 +2256,18 @@ describe("createWorkflowSupervisor", () => {
         }
       },
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     // Resolve once the spawn has armed its ready deadline (which happens
     // after the spawner is invoked, so this also confirms the child spawned).
     async function waitForReadyDeadline(): Promise<FakeTimer> {
-      for (;;) {
-        const t = createdTimers.find((x) => x.ms === readyTimeoutMs);
-        if (t !== undefined) return t;
-        await new Promise((r) => setTimeout(r, 1));
+      const armed = () => createdTimers.find((x) => x.ms === readyTimeoutMs);
+      await timerChanges.until(() => armed() !== undefined);
+      const deadline = armed();
+      if (deadline === undefined) {
+        throw new Error("ready deadline timer missing after it was armed");
       }
+      return deadline;
     }
 
     return { supervisor, killSignals, childToSupervisor, waitForReadyDeadline };
@@ -2613,7 +2384,7 @@ describe("createWorkflowSupervisor", () => {
         : {}),
     };
     return {
-      supervisor: createWorkflowSupervisor(bindings),
+      supervisor: supervisors.track(createWorkflowSupervisor(bindings)),
       killSignals,
       registered: mailBus.registered,
     };
@@ -2669,8 +2440,12 @@ describe("createWorkflowSupervisor", () => {
       resolveExit = resolve;
     });
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 9999,
         controlWriter: supervisorToChild.writer,
@@ -2746,7 +2521,7 @@ describe("createWorkflowSupervisor", () => {
       drainTimeoutAccumulatorFactory: factory,
       drainTimeoutMs: 7_500,
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
@@ -2757,9 +2532,7 @@ describe("createWorkflowSupervisor", () => {
         /* unused in this test */
       },
     });
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -2773,9 +2546,7 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await mailBus.awaitRegistered("run_deployment-x@example.com");
     // Two pre-ready messages. The supervisor's FIFO inbox queue
     // serializes dispatch: only one run is in-flight at a time. By
     // the time `drain()` is called below, the second message may
@@ -2807,12 +2578,7 @@ describe("createWorkflowSupervisor", () => {
     // without polling for the forwarded frame the test would call
     // `drain()` while `cohortRunIds` is still empty and no
     // accumulator would arm.
-    const triggerFireDeadline = Date.now() + 500;
-    while (Date.now() < triggerFireDeadline) {
-      const ids = parseTriggerFireRunIds(supervisorToChild.flushed());
-      if (ids.length >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForTriggerFireRunIds(supervisorToChild, 1);
     expect(
       parseTriggerFireRunIds(supervisorToChild.flushed()).length,
     ).toBeGreaterThanOrEqual(1);
@@ -2906,8 +2672,12 @@ describe("createWorkflowSupervisor", () => {
       resolveExit = resolve;
     });
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 8888,
         controlWriter: supervisorToChild.writer,
@@ -2932,6 +2702,9 @@ describe("createWorkflowSupervisor", () => {
       ref: string;
       files: Record<string, string | Uint8Array>;
     }[] = [];
+    // The captured commit is the event the escalation assertion waits on: the
+    // accumulator's CancelRequested reaches this test only as a write.
+    const writeChanges = createChangeNotifier();
 
     const mailBus = createMockMailBus();
     const baseBindings = await buildBindings({
@@ -2942,7 +2715,10 @@ describe("createWorkflowSupervisor", () => {
         principalKind: "supervisor",
       }),
       mailBus,
-      onWrite: (args) => observedWrites.push(args),
+      onWrite: (args) => {
+        observedWrites.push(args);
+        writeChanges.notify();
+      },
     });
     const bindings: WorkflowSupervisorBindings = {
       ...baseBindings,
@@ -2965,7 +2741,7 @@ describe("createWorkflowSupervisor", () => {
         }
       },
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
@@ -2976,9 +2752,7 @@ describe("createWorkflowSupervisor", () => {
         /* unused in this test */
       },
     });
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -2992,9 +2766,7 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await mailBus.awaitRegistered("run_deployment-x@example.com");
     mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("escalate-msg"),
@@ -3012,12 +2784,7 @@ describe("createWorkflowSupervisor", () => {
     // `trigger.fire` so the run is in `cohortRunIds` when `drain()`
     // arms its accumulator. With the H-S1 replayDone gate the first
     // dispatch is no longer synchronous with `await spawnPromise`.
-    const triggerFireDeadline = Date.now() + 500;
-    while (Date.now() < triggerFireDeadline) {
-      const ids = parseTriggerFireRunIds(supervisorToChild.flushed());
-      if (ids.length >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForTriggerFireRunIds(supervisorToChild, 1);
     expect(
       parseTriggerFireRunIds(supervisorToChild.flushed()).length,
     ).toBeGreaterThanOrEqual(1);
@@ -3033,16 +2800,16 @@ describe("createWorkflowSupervisor", () => {
       timers.delete(t);
       t.cb();
     }
-    // Allow the async escalate commit to settle.
-    await new Promise<void>((r) => setTimeout(r, 5));
-
     // The accumulator's escalation committed a CancelRequested event
     // through the supervisor's substrate handle. Filter to the write that
     // carries the event rather than coupling this assertion to other
     // substrate maintenance writes.
-    const writesWithEvents = observedWrites.filter((w) =>
-      Object.keys(w.files).some((k) => k.includes("/events/")),
-    );
+    const eventWrites = () =>
+      observedWrites.filter((w) =>
+        Object.keys(w.files).some((k) => k.includes("/events/")),
+      );
+    await writeChanges.until(() => eventWrites().length >= 1);
+    const writesWithEvents = eventWrites();
     expect(writesWithEvents.length).toBe(1);
     const write = writesWithEvents[0];
     if (write === undefined) {
@@ -3097,7 +2864,7 @@ describe("createWorkflowSupervisor", () => {
       mailBus: createMockMailBus(),
       onWrite: (args) => observedWrites.push(args),
     });
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const origins = [
       "self",
@@ -3173,8 +2940,12 @@ describe("createWorkflowSupervisor", () => {
       resolveExit = resolve;
     });
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       return {
         pid: 7777,
         controlWriter: supervisorToChild.writer,
@@ -3238,7 +3009,7 @@ describe("createWorkflowSupervisor", () => {
       drainTimeoutAccumulatorFactory: factory,
       drainTimeoutMs: 5_000,
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
@@ -3247,9 +3018,7 @@ describe("createWorkflowSupervisor", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -3263,9 +3032,7 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await mailBus.awaitRegistered("run_deployment-x@example.com");
     mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("term-msg-A"),
@@ -3282,12 +3049,7 @@ describe("createWorkflowSupervisor", () => {
     // `trigger.fire` so the run is in `cohortRunIds` when `drain()`
     // arms its accumulator. The H-S1 replayDone gate moves the first
     // dispatch off the `await spawnPromise` critical path.
-    const triggerFireDeadline = Date.now() + 500;
-    while (Date.now() < triggerFireDeadline) {
-      const ids = parseTriggerFireRunIds(supervisorToChild.flushed());
-      if (ids.length >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForTriggerFireRunIds(supervisorToChild, 1);
     expect(
       parseTriggerFireRunIds(supervisorToChild.flushed()).length,
     ).toBeGreaterThanOrEqual(1);
@@ -3331,8 +3093,12 @@ describe("createWorkflowSupervisor", () => {
       resolveExit = resolve;
     });
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       return {
         pid: 6666,
         controlWriter: supervisorToChild.writer,
@@ -3396,7 +3162,7 @@ describe("createWorkflowSupervisor", () => {
       drainTimeoutAccumulatorFactory: factory,
       drainTimeoutMs: 5_000,
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
@@ -3405,9 +3171,7 @@ describe("createWorkflowSupervisor", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -3421,9 +3185,7 @@ describe("createWorkflowSupervisor", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await mailBus.awaitRegistered("run_deployment-x@example.com");
     mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("no-term-msg"),
@@ -3440,12 +3202,7 @@ describe("createWorkflowSupervisor", () => {
     // `trigger.fire` so the run is in `cohortRunIds` when `drain()`
     // arms its accumulator. The H-S1 replayDone gate moves the first
     // dispatch off the `await spawnPromise` critical path.
-    const triggerFireDeadline = Date.now() + 500;
-    while (Date.now() < triggerFireDeadline) {
-      const ids = parseTriggerFireRunIds(supervisorToChild.flushed());
-      if (ids.length >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForTriggerFireRunIds(supervisorToChild, 1);
     expect(
       parseTriggerFireRunIds(supervisorToChild.flushed()).length,
     ).toBeGreaterThanOrEqual(1);
@@ -3514,10 +3271,12 @@ describe("createWorkflowSupervisor", () => {
       }),
       mailBus: createMockMailBus(),
     });
-    const supervisor = createWorkflowSupervisor({
-      ...bindings,
-      drainTimeoutAccumulatorFactory: accumulatorFactory,
-    });
+    const supervisor = supervisors.track(
+      createWorkflowSupervisor({
+        ...bindings,
+        drainTimeoutAccumulatorFactory: accumulatorFactory,
+      }),
+    );
     await supervisor.drain({ deadlineMs: 5_000 });
     expect(accumulatorInvocations).toHaveLength(0);
   });
@@ -3541,7 +3300,7 @@ describe("createWorkflowSupervisor", () => {
       }),
       mailBus: createMockMailBus(),
     });
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
     await expect(
       supervisor.deliverSignal({
         runId: "run-stale",
@@ -3569,7 +3328,7 @@ describe("createWorkflowSupervisor", () => {
       }),
       mailBus: createMockMailBus(),
     });
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
     await expect(
       supervisor.deliverSources({
         sources: [
@@ -3605,8 +3364,12 @@ describe("createWorkflowSupervisor", () => {
     });
 
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 4321,
         controlWriter: supervisorToChild.writer,
@@ -3632,7 +3395,7 @@ describe("createWorkflowSupervisor", () => {
       ...baseBindings,
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
@@ -3641,9 +3404,7 @@ describe("createWorkflowSupervisor", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -3709,8 +3470,12 @@ describe("createWorkflowSupervisor", () => {
     });
 
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       return {
         pid: 4321,
         controlWriter: supervisorToChild.writer,
@@ -3755,7 +3520,7 @@ describe("createWorkflowSupervisor", () => {
         ],
       },
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     // Revoke cred_a while the supervisor is idle (no child spawned yet). It must
     // resolve without throwing and send nothing.
@@ -3775,9 +3540,7 @@ describe("createWorkflowSupervisor", () => {
       warmKeep: true,
       onInferenceEvent: () => undefined,
     });
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -3832,8 +3595,12 @@ describe("createWorkflowSupervisor", () => {
     });
 
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 4321,
         controlWriter: supervisorToChild.writer,
@@ -3859,7 +3626,7 @@ describe("createWorkflowSupervisor", () => {
       ...baseBindings,
       ipcKeyPairFactory: () => Promise.resolve(supervisorIpcKeyPair),
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
 
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
@@ -3867,9 +3634,7 @@ describe("createWorkflowSupervisor", () => {
       warmKeep: true,
       onInferenceEvent: () => undefined,
     });
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -3952,9 +3717,11 @@ describe("createWorkflowSupervisor", () => {
     );
 
     // In the unified-dispatch path markConsumed waits for the child to
-    // reach terminal or park before consuming the message.  Drive the
-    // mock child to terminal so the dispatch loop can proceed.
-    await new Promise((r) => setTimeout(r, 100));
+    // reach terminal or park before consuming the message. Drive the mock
+    // child to terminal so the dispatch loop can proceed -- after the
+    // forwarded trigger, which is what names the run the event settles and
+    // is written while the terminal watcher is already subscribed.
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     await wired.childSender.send({
       type: "terminal.event",
       data: {
@@ -3966,11 +3733,9 @@ describe("createWorkflowSupervisor", () => {
     });
 
     const address = "run_deployment-x@example.com";
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
@@ -4006,9 +3771,11 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
-    // Let the dispatch loop forward trigger.fire and enter
-    // waitForRunTerminalOrPark before the run parks.
-    await new Promise((r) => setTimeout(r, 10));
+    // The park names a run, so it has to follow the forwarded trigger that
+    // starts one. A park landing before the dispatch loop arms its waiter is
+    // still observed: the wait compares the park generation against the one
+    // its caller captured before forwarding.
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
 
     // The run's first step parks on an APPROVAL gate -- not an input park and
     // not a terminal. An approval park must release the dispatch wait the same
@@ -4024,11 +3791,9 @@ describe("createWorkflowSupervisor", () => {
     });
 
     const address = "run_deployment-x@example.com";
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     // markConsumed only runs once the dispatch wait returns; a wait still
     // hanging on the approval park would leave this at 0 until the backstop.
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
@@ -4068,7 +3833,7 @@ describe("createWorkflowSupervisor", () => {
 
     // Wait for trigger.fire to land before parking, then send park.notify
     // so the unified-dispatch path can complete markConsumed.
-    await new Promise((r) => setTimeout(r, 10));
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
 
     const address = "run_deployment-x@example.com";
 
@@ -4082,11 +3847,9 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    let deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     wired.mailBus.deliver(
@@ -4098,16 +3861,19 @@ describe("createWorkflowSupervisor", () => {
     // sent (which arms the durable-consume watcher), then complete the
     // resumed run: markConsumed for a signal now holds until the child has
     // durably taken it up (re-parks or terminates), mirroring trigger.fire.
-    deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (parseSignalDelivers(wired.supervisorToChild.flushed()).length >= 1) {
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    // The signal is sent but the run has not taken it up: markConsumed must
-    // still be held, so only msg-1 is consumed. A brief settle window would
-    // let a premature consume land if the contract regressed.
+    await waitForUpstreamPayload(wired.supervisorToChild, "signal.deliver");
+    // The signal is sent but the run has not taken it up, so msg-2's
+    // markConsumed is held until it re-parks or terminates. Only msg-1 is
+    // consumed.
+    //
+    // The wait above is the positive barrier this window sits behind: the
+    // signal has been written upstream, so the dispatch loop has reached the
+    // point where a regressed markConsumed would run. Production emits
+    // nothing for the take-up itself -- it parks in
+    // `waitForRunTerminalOrPark` -- so there is no later signal to await
+    // instead. The forbidden event is a premature consume, and a window is
+    // sound in front of it because overshooting only gives that consume more
+    // room to land: a slow worker weakens this check, it cannot invert it.
     await new Promise((r) => setTimeout(r, 25));
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
@@ -4121,11 +3887,9 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 2) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 2,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(2);
 
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
@@ -4165,9 +3929,11 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
-    // In the unified-dispatch path markConsumed waits for the child to
-    // park or reach terminal.  Nothing is consumed yet.
-    await new Promise((r) => setTimeout(r, 50));
+    // In the unified-dispatch path markConsumed waits for the child to park
+    // or reach terminal. The trigger has been forwarded, and neither a park
+    // nor a terminal has been sent, so nothing is consumed yet and nothing
+    // can consume it until the park below.
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
 
     const address = "run_deployment-x@example.com";
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(0);
@@ -4178,8 +3944,13 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-2"),
     );
 
-    // Wait a short beat so the dispatch loop has a chance to process it.
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait for msg-2 to reach the inbox. That enqueue is all that can
+    // happen to it while the loop is held on msg-1's terminal-or-park wait,
+    // so the state the assertions below read is settled rather than merely
+    // not-yet-arrived.
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).inbox.size >= 1,
+    );
 
     // Still no signal.deliver and still nothing consumed because the
     // channel is unknown and the first run has not parked.
@@ -4197,13 +3968,9 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    // Wait for the queued message to be flushed.
-    let deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      signals = parseSignalDelivers(wired.supervisorToChild.flushed());
-      if (signals.length >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    // Wait for the queued message to reach the child stream.
+    await waitForUpstreamPayload(wired.supervisorToChild, "signal.deliver");
+    signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBeGreaterThanOrEqual(1);
     const firstSignal = signals[0];
     if (firstSignal === undefined) throw new Error("unreachable");
@@ -4211,6 +3978,15 @@ describe("createWorkflowSupervisor", () => {
 
     // msg-1 is consumed off its park, but msg-2's signal is not yet taken up
     // by the run, so its markConsumed is still held.
+    //
+    // The wait above is the positive barrier this window sits behind: the
+    // signal has been written upstream, so the dispatch loop has reached the
+    // point where a regressed markConsumed would run. Production emits
+    // nothing for the take-up itself -- it parks in
+    // `waitForRunTerminalOrPark` -- so there is no later signal to await
+    // instead. The forbidden event is msg-2 consuming early, and a window is
+    // sound in front of it because overshooting only gives that consume more
+    // room to land: a slow worker weakens this check, it cannot invert it.
     await new Promise((r) => setTimeout(r, 25));
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
@@ -4227,11 +4003,9 @@ describe("createWorkflowSupervisor", () => {
     });
 
     // Both messages are consumed.
-    deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 2) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 2,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(2);
     await wired.supervisor.shutdown();
   });
@@ -4272,8 +4046,12 @@ describe("createWorkflowSupervisor", () => {
     );
 
     // Park the run so markConsumed can proceed and the run enters the
-    // runtime-determined parked state that drain should skip.
-    await new Promise((r) => setTimeout(r, 10));
+    // runtime-determined parked state that drain should skip. The park names
+    // a run, so it has to follow the trigger that starts one: ten
+    // milliseconds was long enough on an idle machine and not on a loaded
+    // one, where the notification landed first and the mail was never
+    // consumed.
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     await wired.childSender.send({
       type: "park.notify",
       data: {
@@ -4284,11 +4062,9 @@ describe("createWorkflowSupervisor", () => {
     });
 
     const address = "run_deployment-x@example.com";
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     await wired.supervisor.drain({ deadlineMs: 5_000 });
@@ -4316,26 +4092,13 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
-    // In the unified-dispatch path markConsumed waits for the child to
-    // reach terminal or park before consuming the message.  Drive the
-    // mock child to terminal so the dispatch loop can proceed.
-    await new Promise((r) => setTimeout(r, 100));
-    await wired.childSender.send({
-      type: "terminal.event",
-      data: {
-        runId: "run_deployment-x",
-        seq: 0,
-        kind: "RunCompleted",
-        at: new Date().toISOString(),
-      },
-    });
-
+    // A failed barrier fans out a synthesized RunFailed to the run's own
+    // watcher, so the dispatch reaches markConsumed without the child
+    // reporting anything: nothing here has to drive the mock child.
     const address = "run_deployment-x@example.com";
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
@@ -4372,8 +4135,11 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
-    // Drive the run to terminal so markConsumed can proceed.
-    await new Promise((r) => setTimeout(r, 10));
+    // Drive the run to terminal so markConsumed can proceed. The terminal
+    // event names the run the trigger started, so it follows the forwarded
+    // trigger; the watcher is subscribed before that forward, so the frame
+    // cannot arrive too early to be seen.
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     await wired.childSender.send({
       type: "terminal.event",
       data: {
@@ -4385,11 +4151,9 @@ describe("createWorkflowSupervisor", () => {
     });
 
     const address = "run_deployment-x@example.com";
-    let deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     // Second message arrives after the deployment's one top-level run
@@ -4399,11 +4163,9 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-2"),
     );
 
-    deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 2) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 2,
+    );
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
     expect(runIds).toEqual(["run_deployment-x"]);
@@ -4448,7 +4210,13 @@ describe("createWorkflowSupervisor", () => {
       data: { runIds: ["run_deployment-x"] },
     });
     wired.mailBus.deliver(address, new TextEncoder().encode("waiting mail"));
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    // The dispatch loop moves the mail to `processing` and then waits for the
+    // live run to park or terminate: it forwards neither a trigger nor a
+    // signal from that branch, and the entry stays in `processing` until the
+    // terminal below, so this is the settled state the assertions describe.
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).processing.size >= 1,
+    );
     expect(parseTriggerFireRunIds(wired.supervisorToChild.flushed())).toEqual(
       [],
     );
@@ -4464,11 +4232,9 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((resolve) => setTimeout(resolve, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(parseTriggerFireRunIds(wired.supervisorToChild.flushed())).toEqual(
       [],
     );
@@ -4509,12 +4275,7 @@ describe("createWorkflowSupervisor", () => {
       new TextEncoder().encode("msg-1"),
     );
 
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      const ids = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
-      if (ids.length >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
 
     const runIds = parseTriggerFireRunIds(wired.supervisorToChild.flushed());
     expect(runIds.length).toBe(1);
@@ -4565,11 +4326,9 @@ describe("createWorkflowSupervisor", () => {
     const address = "run_deployment-x@example.com";
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
 
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(parseTriggerFireRunIds(wired.supervisorToChild.flushed())).toEqual(
       [],
     );
@@ -4607,9 +4366,11 @@ describe("createWorkflowSupervisor", () => {
     const address = "run_deployment-x@example.com";
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
 
-    // Park immediately; the generation check must handle either side of the
-    // dispatch loop arming its waiter.
-    await new Promise((r) => setTimeout(r, 20));
+    // Park as soon as the run exists; the generation check must handle either
+    // side of the dispatch loop arming its waiter, and waiting on the
+    // forwarded trigger rather than on a duration puts the park in that
+    // window instead of betting on where 20ms lands.
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     await wired.childSender.send({
       type: "park.notify",
       data: {
@@ -4620,11 +4381,9 @@ describe("createWorkflowSupervisor", () => {
     });
 
     // The loop must proceed and consume msg-1 despite the lost park wake.
-    const deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     await wired.supervisor.shutdown();
@@ -4652,25 +4411,28 @@ describe("createWorkflowSupervisor", () => {
       },
     });
     const address = "run_deployment-x@example.com";
-    const waitConsumed = async (n: number) => {
-      const deadline = Date.now() + 2000;
-      while (Date.now() < deadline) {
-        if (wired.inboxPrimitives.snapshot(address).consumed.size >= n) break;
-        await new Promise((r) => setTimeout(r, 2));
-      }
-    };
-    const waitSignals = async (n: number) => {
-      const deadline = Date.now() + 2000;
-      while (Date.now() < deadline) {
-        const s = parseSignalDelivers(wired.supervisorToChild.flushed());
-        if (s.length >= n) break;
-        await new Promise((r) => setTimeout(r, 2));
-      }
-    };
+    // Both waits used to give up at a deadline and return, so a state that
+    // never arrived surfaced as whichever assertion read it next rather than
+    // as the wait that failed. Neither carries a deadline now; the lane
+    // timeout is the failsafe.
+    const waitConsumed = (n: number) =>
+      wired.inboxPrimitives.awaitState(
+        () => wired.inboxPrimitives.snapshot(address).consumed.size >= n,
+      );
+    const waitSignals = (n: number) =>
+      waitForUpstreamPayload(wired.supervisorToChild, "signal.deliver", () => {
+        return (
+          parseSignalDelivers(wired.supervisorToChild.flushed()).length >= n
+        );
+      });
 
-    // Trigger msg-1 and park the run on corr-1.
+    // Trigger msg-1 and park the run on corr-1. The park notification is only
+    // meaningful once the run it names exists, so this waits for the
+    // forwarded trigger rather than for ten milliseconds -- which under load
+    // let the notification arrive first, leaving the mail unconsumed and the
+    // assertion below reading zero.
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
-    await new Promise((r) => setTimeout(r, 10));
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     await wired.childSender.send({
       type: "park.notify",
       data: {
@@ -4761,13 +4523,7 @@ describe("createWorkflowSupervisor", () => {
 
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
 
-    const deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
-      if (parseSignalDelivers(wired.supervisorToChild.flushed()).length >= 1) {
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "signal.deliver", 1);
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(1);
     expect(signals[0]?.signalName).toBe(signalName("corr-input-1"));
@@ -4826,13 +4582,7 @@ describe("createWorkflowSupervisor", () => {
     );
     wired.mailBus.deliver(address, mail);
 
-    const deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
-      if (parseSignalDelivers(wired.supervisorToChild.flushed()).length >= 1) {
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "signal.deliver", 1);
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(1);
     // The frame carries the decoded Mail, resolved at the dispatch site, not
@@ -4935,11 +4685,9 @@ describe("createWorkflowSupervisor", () => {
     );
     wired.mailBus.deliver(address, bad);
 
-    let deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
     expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(0);
     // No signal was delivered for the poison mail.
@@ -4952,13 +4700,7 @@ describe("createWorkflowSupervisor", () => {
       "Content-Type: text/plain\r\n\r\nhello",
     );
     wired.mailBus.deliver(address, good);
-    deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
-      if (parseSignalDelivers(wired.supervisorToChild.flushed()).length >= 1) {
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await waitForUpstreamPayloads(wired.supervisorToChild, "signal.deliver", 1);
     const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
     expect(signals.length).toBe(1);
     expect(signals[0]?.signalName).toBe(signalName("corr-input-1"));
@@ -4985,12 +4727,18 @@ describe("createWorkflowSupervisor", () => {
       defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
       [{ resource: "thing", action: "read" }],
     );
+    // The injected fault is the event this test waits on: the dispatch
+    // iteration it fails is the one the assertions describe.
+    const partsFaults = createChangeNotifier();
+    let partsFaultCount = 0;
     const wired = await spawnWithRunStart({
       baseDir,
       // Fail ONLY the mail-parts commit -- credential and cancel writes still
       // succeed -- to model a transient substrate fault reaching prepareMail.
       beforeWrite: ({ preservePrefix }) => {
         if (preservePrefix.includes("/parts/")) {
+          partsFaultCount += 1;
+          partsFaults.notify();
           throw new Error("substrate boom (transient)");
         }
       },
@@ -5025,8 +4773,11 @@ describe("createWorkflowSupervisor", () => {
     );
     wired.mailBus.deliver(address, good);
 
-    // Give the dispatch loop time to dequeue, fail the commit, and move on.
-    await new Promise((r) => setTimeout(r, 200));
+    // The commit fault is raised after the dequeue and before the signal is
+    // sent, and a faulted iteration parks the loop on the dispatch wake
+    // without replaying the entry -- so once the fault has been raised the
+    // three states below are settled, not merely not-yet-changed.
+    await partsFaults.until(() => partsFaultCount >= 1);
 
     const snap = wired.inboxPrimitives.snapshot(address);
     expect(snap.consumed.size).toBe(0);
@@ -5048,10 +4799,16 @@ describe("createWorkflowSupervisor", () => {
     );
     const memoryInbox = createMemoryInboxPrimitives();
     let failMarkConsumed = true;
+    // The injected failure is the event this test waits on: the refusal is
+    // what leaves the entry in `processing`, and nothing else reports it.
+    const markConsumedFaults = createChangeNotifier();
+    let markConsumedFaultCount = 0;
     const failingInbox: MemoryInboxPrimitives = {
       ...memoryInbox,
       markConsumed: async (...args) => {
         if (failMarkConsumed) {
+          markConsumedFaultCount += 1;
+          markConsumedFaults.notify();
           throw new Error("injected markConsumed failure");
         }
         return memoryInbox.markConsumed(...args);
@@ -5074,8 +4831,11 @@ describe("createWorkflowSupervisor", () => {
     const address = "run_deployment-x@example.com";
 
     // Drive a run to terminal so dispatch reaches markConsumed, which throws.
+    // The terminal event names the run the trigger started, so it follows the
+    // forwarded trigger; the watcher is subscribed before that forward, so the
+    // frame cannot arrive too early to be seen.
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
-    await new Promise((r) => setTimeout(r, 10));
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     await wired.childSender.send({
       type: "terminal.event",
       data: {
@@ -5089,28 +4849,19 @@ describe("createWorkflowSupervisor", () => {
     // The failure propagates into the dispatch fault handler rather than being
     // swallowed: the mail is NOT recorded consumed -- it stays in processing/,
     // reclaimable -- and the dispatch loop survives the throw.
-    await new Promise((r) => setTimeout(r, 100));
+    await markConsumedFaults.until(() => markConsumedFaultCount >= 1);
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(0);
     expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(1);
 
     // Loop is alive: a second mail, once markConsumed recovers, is consumed.
+    // The run this deployment fires is already terminal, so msg-2 is rejected
+    // on that basis rather than firing again -- and the recovered markConsumed
+    // records the rejection, which is the survival this asserts.
     failMarkConsumed = false;
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-2"));
-    await new Promise((r) => setTimeout(r, 10));
-    await wired.childSender.send({
-      type: "terminal.event",
-      data: {
-        runId: "run_deployment-x",
-        seq: 1,
-        kind: "RunCompleted",
-        at: "test",
-      },
-    });
-    const deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(
       wired.inboxPrimitives.snapshot(address).consumed.size,
     ).toBeGreaterThanOrEqual(1);
@@ -5126,7 +4877,12 @@ describe("createWorkflowSupervisor", () => {
       [{ resource: "thing", action: "read" }],
     );
     const address = "run_deployment-x@example.com";
-    const mailBus = createMockMailBus();
+    // The settleable bus hands back the arrival handler's own promise, which
+    // is what makes the deliver below land INSIDE this dispatch iteration:
+    // the handler wakes the loop as its last step, so awaiting it is awaiting
+    // the wake. `deliver` fires and forgets, which is what the sleep it
+    // replaces was standing in for.
+    const mailBus = createSettleableMailBus();
     const memoryInbox = createMemoryInboxPrimitives();
     let armed = true;
     const racingInbox: MemoryInboxPrimitives = {
@@ -5139,8 +4895,7 @@ describe("createWorkflowSupervisor", () => {
           // settle, then report the inbox empty so dispatchOne returns false.
           // With the capture-after bug the fired wake is lost and this mail
           // sleeps forever; capture-before catches it on the next loop.
-          mailBus.deliver(address, new TextEncoder().encode("msg-1"));
-          await new Promise((r) => setTimeout(r, 50));
+          await mailBus.settle(address, new TextEncoder().encode("msg-1"));
           return null;
         }
         return memoryInbox.dequeueToProcessing(...args);
@@ -5162,9 +4917,10 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    // Let the racing dequeue fire the wake and the loop re-dequeue msg-1's run,
-    // then drive it to terminal so it can be consumed.
-    await new Promise((r) => setTimeout(r, 120));
+    // The forwarded trigger is the proof the wake was not lost: the loop
+    // re-dequeued msg-1 and fired its run. Drive that run to terminal so the
+    // mail can be consumed.
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     await wired.childSender.send({
       type: "terminal.event",
       data: {
@@ -5174,11 +4930,9 @@ describe("createWorkflowSupervisor", () => {
         at: "test",
       },
     });
-    const deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     await wired.supervisor.shutdown();
@@ -5207,15 +4961,7 @@ describe("createWorkflowSupervisor", () => {
     const address = "run_deployment-x@example.com";
     wired.mailBus.deliver(address, new TextEncoder().encode("msg-1"));
 
-    const triggerDeadline = Date.now() + 1000;
-    while (Date.now() < triggerDeadline) {
-      if (
-        parseTriggerFireRunIds(wired.supervisorToChild.flushed()).length > 0
-      ) {
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForTriggerFireRunIds(wired.supervisorToChild, 1);
     // The watcher is subscribed before trigger.fire, so an immediate terminal
     // frame cannot be lost between forwarding the trigger and entering wait.
     await wired.childSender.send({
@@ -5230,11 +4976,9 @@ describe("createWorkflowSupervisor", () => {
 
     // The wait releases and the mail is consumed WITHOUT the (minutes-long)
     // backstop firing.
-    const deadline = Date.now() + 3000;
-    while (Date.now() < deadline) {
-      if (wired.inboxPrimitives.snapshot(address).consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
     expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
 
     await wired.supervisor.shutdown();
@@ -5397,11 +5141,10 @@ describe("IPC integration smoke", () => {
     const eventSender = createEventChannelSender({
       hmacKey,
       channelId,
-      writer: {
-        write(bytes: Uint8Array) {
-          eventStream.inject(bytes);
-        },
-      },
+      // The sender terminates each frame itself, so its bytes go through the
+      // writer verbatim. Routing them through `inject` would append a second
+      // terminator.
+      writer: eventStream.writer,
     });
     await eventSender.send({
       type: "message.run.started",
@@ -5464,8 +5207,12 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       resolveExit = resolve;
     });
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const spawner: SubprocessSpawner = ({ env }) => {
       observedEnv = env;
+      spawnObserver.record(env);
       const handle: SubprocessHandle = {
         pid: 11111,
         controlWriter: supervisorToChild.writer,
@@ -5495,7 +5242,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
         ? { deriveMailAuditRef: opts.deriveMailAuditRef }
         : {}),
     };
-    const supervisor = createWorkflowSupervisor(bindings);
+    const supervisor = supervisors.track(createWorkflowSupervisor(bindings));
     const spawnPromise = supervisor.spawn({
       stepOrder: ["step-1"],
       definitionHash: "def-hash-abc",
@@ -5503,9 +5250,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) {
       throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -5519,9 +5264,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
         },
       },
     });
-    while (!mailBus.registered().includes("run_deployment-x@example.com")) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await mailBus.awaitRegistered("run_deployment-x@example.com");
     await childSender.send({
       type: "ready",
       data: {
@@ -5548,23 +5291,20 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       "run_deployment-x@example.com",
       new TextEncoder().encode("audit-default-1"),
     );
-    // Wait for the enqueue to land in the in-memory inbox. The
-    // dispatch loop may pull the entry into `processing` before the
-    // assertion fires (the loop dequeues immediately once the
-    // supervisor's spawn handshake completes), so the check covers
-    // every claim-check substate.
-    const deadline = Date.now() + 500;
-    while (Date.now() < deadline) {
+    // Wait for the enqueue to land in the in-memory inbox, which reports
+    // every mutation it makes. The dispatch loop may pull the entry into
+    // `processing` before the assertion fires (the loop dequeues immediately
+    // once the supervisor's spawn handshake completes), so the wait covers
+    // every claim-check substate -- and the entry never leaves all three, so
+    // a later move cannot take the state back out from under it.
+    await inbox.awaitState(() => {
       const snap = inbox.snapshot("run_deployment-x@example.com");
-      if (
+      return (
         snap.inbox.size > 0 ||
         snap.processing.size > 0 ||
         snap.consumed.size > 0
-      ) {
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
+      );
+    });
     const snapshot = inbox.snapshot("run_deployment-x@example.com");
     const all = [
       ...snapshot.consumed.values(),
@@ -5582,11 +5322,15 @@ describe("supervisor inbox FIFO dispatch loop", () => {
   test("deriveMailAuditRef override is invoked with messageId and stamps the envelope", async () => {
     const inbox = createMemoryInboxPrimitives();
     const observed: { messageId: string; len: number }[] = [];
+    // The override being invoked is the event; the poll it replaces re-read
+    // the array on a timer until something landed in it.
+    const observedChanges = createChangeNotifier();
     const { supervisor, mailBus } = await buildFifoTestFixture({
       label: "fifo-override-audit-",
       inbox,
       deriveMailAuditRef: (messageId, rawMessage) => {
         observed.push({ messageId, len: rawMessage.byteLength });
+        observedChanges.notify();
         return {
           store: "test-audit",
           path: `deployment-x/${messageId}`,
@@ -5595,10 +5339,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     });
     const payload = new TextEncoder().encode("audit-override-1");
     mailBus.deliver("run_deployment-x@example.com", payload);
-    const deadline = Date.now() + 500;
-    while (Date.now() < deadline && observed.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await observedChanges.until(() => observed.length > 0);
     expect(observed.length).toBe(1);
     const observedEntry = observed[0];
     if (observedEntry === undefined) throw new Error("unreachable");
@@ -5648,11 +5389,7 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       return parseTriggerFireRunIds(supervisorToChild.flushed());
     }
     // Wait for the first trigger.fire to land on the child stream.
-    const deadlineOne = Date.now() + 500;
-    while (Date.now() < deadlineOne) {
-      if (triggerRunIds().length >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForTriggerFireRunIds(supervisorToChild, 1);
     let firedIds = triggerRunIds();
     expect(firedIds.length).toBe(1);
     // Release the first run's terminal event. The dispatch loop
@@ -5668,12 +5405,9 @@ describe("supervisor inbox FIFO dispatch loop", () => {
         at: "test",
       },
     });
-    const deadlineTwo = Date.now() + 500;
-    while (Date.now() < deadlineTwo) {
-      if (inbox.snapshot("run_deployment-x@example.com").consumed.size >= 2)
-        break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await inbox.awaitState(
+      () => inbox.snapshot("run_deployment-x@example.com").consumed.size >= 2,
+    );
     firedIds = triggerRunIds();
     expect(firedIds).toEqual([firstRunId]);
     const consumed = inbox.snapshot("run_deployment-x@example.com").consumed;
@@ -5710,20 +5444,18 @@ describe("supervisor inbox FIFO dispatch loop", () => {
       });
     // Wait for the dispatch loop to pull the recovered inbox entry
     // and send the trigger.fire.
-    const deadline = Date.now() + 500;
-    while (Date.now() < deadline) {
-      const flushed = supervisorToChild.flushed();
-      const triggerFires = flushed.filter((f) => f.includes("trigger.fire"));
-      if (triggerFires.length >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    // Decoding the frame rather than substring-matching the line: a
+    // "trigger.fire" appearing anywhere in an unrelated payload would have
+    // satisfied the filter this replaces.
+    await waitForTriggerFireRunIds(supervisorToChild, 1);
     const triggerFires = supervisorToChild
       .flushed()
       .filter((f) => f.includes("trigger.fire"));
     expect(triggerFires.length).toBeGreaterThanOrEqual(1);
 
-    // Drive the run to terminal so markConsumed can proceed.
-    await new Promise((r) => setTimeout(r, 10));
+    // Drive the run to terminal so markConsumed can proceed. The wait above
+    // already observed the forwarded trigger, and the terminal watcher is
+    // subscribed before that forward, so this frame cannot be missed.
     await childSender.send({
       type: "terminal.event",
       data: {
@@ -5737,12 +5469,9 @@ describe("supervisor inbox FIFO dispatch loop", () => {
     // The processing entry was moved back to inbox during spawn,
     // then dequeued by the dispatch loop and forwarded as trigger.fire.
     // After the child reaches terminal, markConsumed moves it to consumed.
-    const consumedDeadline = Date.now() + 1000;
-    while (Date.now() < consumedDeadline) {
-      const snapshot = inbox.snapshot("run_deployment-x@example.com");
-      if (snapshot.consumed.size >= 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await inbox.awaitState(
+      () => inbox.snapshot("run_deployment-x@example.com").consumed.size >= 1,
+    );
     const snapshot = inbox.snapshot("run_deployment-x@example.com");
     expect(snapshot.consumed.size).toBe(1);
     const consumedEntry = [...snapshot.consumed.values()][0];

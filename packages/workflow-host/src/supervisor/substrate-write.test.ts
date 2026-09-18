@@ -41,164 +41,37 @@ import {
   beforeAll,
   afterAll,
   beforeEach,
+  afterEach,
 } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { type } from "arktype";
-
 import { generateKeyPair } from "@intx/crypto";
-import { configureSync, getConfig, resetSync } from "@intx/log";
 import { hexEncode } from "@intx/types";
 import type { NewlyTerminalRun, RepoId, RepoStore } from "@intx/hub-sessions";
+import {
+  createLogCapture,
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  createSupervisorReaper,
+  createMockMailBus,
+  waitForUpstreamPayload,
+} from "@intx/workflow-host/testing";
 
 import {
   createWorkflowSupervisor,
   type InboxPrimitives,
-  type MailBusBindings,
   type SignedPayload,
   type SubprocessHandle,
   type SubprocessSpawner,
   type WorkflowSupervisorBindings,
 } from "./index";
 import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
-import {
-  ControlPayload,
-  SignedEnvelope,
-  createControlChannelSender,
-  type FrameReader,
-  type NdjsonReader,
-  type NdjsonWriter,
-} from "../ipc/index";
+import { createControlChannelSender } from "../ipc/index";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
-}
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    flushed(): readonly string[] {
-      return buffer.slice();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let done = false;
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("frame buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => setTimeout(resolve, 1));
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    close() {
-      done = true;
-    },
-  };
-}
-
-function createMockMailBus(): MailBusBindings & {
-  registered(): readonly string[];
-  deliver(address: string, message: Uint8Array): void;
-} {
-  const registered: string[] = [];
-  const subscribers = new Map<
-    string,
-    Set<(rawMessage: Uint8Array) => Promise<void>>
-  >();
-  return {
-    registerAddress(address: string) {
-      registered.push(address);
-    },
-    unregisterAddress(address: string) {
-      const idx = registered.lastIndexOf(address);
-      if (idx >= 0) registered.splice(idx, 1);
-      subscribers.delete(address);
-    },
-    subscribeMailForAddress(address, handler) {
-      let set = subscribers.get(address);
-      if (set === undefined) {
-        set = new Set();
-        subscribers.set(address, set);
-      }
-      set.add(handler);
-      return () => {
-        const current = subscribers.get(address);
-        current?.delete(handler);
-      };
-    },
-    sendOutbound() {
-      throw new Error("sendOutbound not exercised in this test");
-    },
-    registered(): readonly string[] {
-      return registered.slice();
-    },
-    deliver(address: string, message: Uint8Array) {
-      const set = subscribers.get(address);
-      if (set === undefined) return;
-      for (const handler of set) void handler(message).catch(() => undefined);
-    },
-  };
 }
 
 type WriteCapture = {
@@ -482,6 +355,9 @@ type BootSupervisorOpts = {
     reason: string;
   }) => void;
 };
+const supervisors = createSupervisorReaper();
+
+afterEach(supervisors.reap);
 
 // The supervisor after spawn but before the child's `ready` frame: the
 // receiver is already draining the child's control stream, yet the phase
@@ -492,7 +368,6 @@ type SupervisorSeam = Omit<SupervisorHarness, "spawnResult"> & {
   spawnPromise: Promise<{ pid: number; channelId: string }>;
   sendReady: () => Promise<void>;
 };
-
 async function bootSupervisorToReady(
   opts: BootSupervisorOpts,
 ): Promise<SupervisorSeam> {
@@ -512,9 +387,13 @@ async function bootSupervisorToReady(
   const exited = new Promise<number>((resolve) => {
     resolveExit = resolve;
   });
-  let observedEnv: Record<string, string> | undefined;
+  // The spawner being called IS the event the boot helper waits for, so it
+  // reports the env through this rather than leaving the helper to re-read a
+  // mutable binding on a timer until it is populated. A respawn calls the
+  // spawner again, so only the first call settles this.
+  const spawned = Promise.withResolvers<Record<string, string>>();
   const spawner: SubprocessSpawner = ({ env }) => {
-    observedEnv = env;
+    spawned.resolve(env);
     const handle: SubprocessHandle = {
       pid: 7777,
       controlWriter: supervisorToChild.writer,
@@ -568,6 +447,7 @@ async function bootSupervisorToReady(
   };
 
   const supervisor = createWorkflowSupervisor(bindings);
+  supervisors.track(supervisor);
   const spawnPromise = supervisor.spawn({
     stepOrder: ["step-1"],
     definitionHash: "def-hash-abc",
@@ -577,10 +457,8 @@ async function bootSupervisorToReady(
       /* unused */
     },
   });
-  while (observedEnv === undefined) {
-    await new Promise((r) => setTimeout(r, 1));
-  }
-  const channelId = observedEnv.IPC_CHANNEL_ID;
+  const spawnEnv = await spawned.promise;
+  const channelId = spawnEnv.IPC_CHANNEL_ID;
   if (channelId === undefined) {
     throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
   }
@@ -593,9 +471,7 @@ async function bootSupervisorToReady(
       },
     },
   });
-  while (!mailBus.registered().includes("deployment-x@example.com")) {
-    await new Promise((r) => setTimeout(r, 1));
-  }
+  await mailBus.awaitRegistered("deployment-x@example.com");
   const sendReady = (): Promise<void> =>
     childSender.send({
       type: "ready",
@@ -637,38 +513,6 @@ async function bootSupervisor(
   };
 }
 
-/**
- * Parse every signed envelope on the supervisor-to-child stream that
- * decodes to a payload of the supplied type. Returns the matching
- * payloads in arrival order. Skips frames that fail envelope/payload
- * validation so a test asserting on a specific payload kind is not
- * fooled by an unrelated frame (e.g. an unrelated `grants-updated`).
- */
-function readPayloadsOfType<T extends string>(
-  lines: readonly string[],
-  type_: T,
-): Extract<typeof ControlPayload.infer, { type: T }>[] {
-  const out: Extract<typeof ControlPayload.infer, { type: T }>[] = [];
-  for (const line of lines) {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const signed = SignedEnvelope(raw);
-    if (signed instanceof type.errors) continue;
-    const payload = ControlPayload(signed.envelope.payload);
-    if (payload instanceof type.errors) continue;
-    if (payload.type !== type_) continue;
-    // The `Extract` narrow above pins T to a known discriminator; the
-    // payload's runtime type matches by construction.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- arktype narrow above pins the discriminator; the cast walks the union to the matching branch
-    out.push(payload as Extract<typeof ControlPayload.infer, { type: T }>);
-  }
-  return out;
-}
-
 describe("substrate-write authz: supervisor overrides the child's claim", () => {
   test("the supervisor presents its bindings-pinned workflow-process principal regardless of what the child claims", async () => {
     // The substrate.write.request wire frame does not carry a
@@ -677,9 +521,16 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
     // time). Pin that override here by observing the principal the
     // supervisor presents to the substrate's writeTreePreservingPrefix.
     const writes: WriteCapture[] = [];
+    // The capture callback is the signal that a write reached the substrate;
+    // the test previously inferred it by re-reading `writes.length` on a
+    // timer until a deadline expired.
+    const firstWrite = Promise.withResolvers<boolean>();
     const harness = await bootSupervisor({
       prefix: "authz-override-",
-      onWriteAttempt: (cap) => writes.push(cap),
+      onWriteAttempt: (cap) => {
+        writes.push(cap);
+        firstWrite.resolve(true);
+      },
       invokeMerge: true,
     });
 
@@ -702,15 +553,11 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
     // upstream. We satisfy it immediately with an empty file set so
     // the substrate's writeTreePreservingPrefix resolves and the
     // captured principal is observable.
-    const mergeDeadline = Date.now() + 2_000;
-    while (Date.now() < mergeDeadline) {
-      const merges = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.merge.request",
-      );
-      if (merges.some((m) => m.data.requestId === requestId)) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.merge.request",
+      (m) => m.data.requestId === requestId,
+    );
     await harness.childSender.send({
       type: "substrate.merge.response",
       data: {
@@ -718,10 +565,7 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
         result: { ok: true, files: [] },
       },
     });
-    const writeDeadline = Date.now() + 2_000;
-    while (writes.length === 0 && Date.now() < writeDeadline) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await firstWrite.promise;
     expect(writes.length).toBeGreaterThanOrEqual(1);
     const first = writes[0];
     if (first === undefined) throw new Error("no write captured");
@@ -762,26 +606,18 @@ describe("substrate-write authz: supervisor overrides the child's claim", () => 
         message: "wrong-kind write",
       },
     });
-    const responseDeadline = Date.now() + 2_000;
-    let rejection: {
+    const matchedRejection = await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.write.response",
+      (r) => r.data.requestId === requestId,
+    );
+    const rejection: {
       requestId: string;
       result: { ok: boolean; reason?: string };
-    } | null = null;
-    while (rejection === null && Date.now() < responseDeadline) {
-      const responses = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.write.response",
-      );
-      const matched = responses.find((r) => r.data.requestId === requestId);
-      if (matched !== undefined) {
-        rejection = {
-          requestId: matched.data.requestId,
-          result: matched.data.result,
-        };
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    } = {
+      requestId: matchedRejection.data.requestId,
+      result: matchedRejection.data.result,
+    };
     if (rejection === null) {
       throw new Error(
         "supervisor did not surface a rejection response in time",
@@ -827,20 +663,13 @@ describe("substrate-write cohort abort cleanup", () => {
     // supervisor-to-child stream, then trigger shutdown without
     // sending the matching response. The merge resolver is what the
     // HIGH cleanup must reject through `rejectCohortAwaiters`.
-    const mergeDeadline = Date.now() + 2_000;
-    let mergeRequestSeen = false;
-    while (!mergeRequestSeen && Date.now() < mergeDeadline) {
-      const merges = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.merge.request",
-      );
-      if (merges.some((m) => m.data.requestId === requestId)) {
-        mergeRequestSeen = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    expect(mergeRequestSeen).toBe(true);
+    // Reaching the next line is the merge request having arrived, so
+    // the flag and its assertion have nothing left to add.
+    await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.merge.request",
+      (m) => m.data.requestId === requestId,
+    );
 
     // Issue shutdown. The HIGH cleanup runs inside `shutdownInternal`
     // after the cohort abort; it iterates `pendingMerges` and resolves
@@ -850,33 +679,20 @@ describe("substrate-write cohort abort cleanup", () => {
     // lands on the supervisor-to-child stream with the abort reason.
     const shutdownPromise = harness.supervisor.shutdown();
 
-    const responseDeadline = Date.now() + 5_000;
-    let abortResponse: {
-      requestId: string;
-      result: { ok: boolean; reason?: string };
-    } | null = null;
-    while (abortResponse === null && Date.now() < responseDeadline) {
-      const responses = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.write.response",
-      );
-      const matched = responses.find((r) => r.data.requestId === requestId);
-      if (matched !== undefined) {
-        abortResponse = {
-          requestId: matched.data.requestId,
-          result: matched.data.result,
-        };
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 5));
+    // Waiting for the response rather than for five seconds to pass. The
+    // explicit null check this replaces was the one deadline in the file that
+    // failed loudly, but "in time" was still the thing it measured; a
+    // response that never comes now ends the run at the lane timeout.
+    const abortResponse = await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.write.response",
+      (r) => r.data.requestId === requestId,
+    );
+    const abortResult = abortResponse.data.result;
+    if (abortResult.ok) {
+      throw new Error("expected the cohort-aborted write to fail");
     }
-    if (abortResponse === null) {
-      throw new Error(
-        "supervisor did not surface a cohort-aborted substrate.write.response in time",
-      );
-    }
-    expect(abortResponse.result.ok).toBe(false);
-    expect(abortResponse.result.reason).toMatch(/cohort aborted/);
+    expect(abortResult.reason).toMatch(/cohort aborted/);
 
     await shutdownPromise;
   });
@@ -909,20 +725,13 @@ describe("substrate-write malformed merge response", () => {
         message: "write whose merge response carries malformed base64",
       },
     });
-    const badMergeDeadline = Date.now() + 2_000;
-    let badMergeSeen = false;
-    while (!badMergeSeen && Date.now() < badMergeDeadline) {
-      const merges = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.merge.request",
-      );
-      if (merges.some((m) => m.data.requestId === badRequestId)) {
-        badMergeSeen = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    expect(badMergeSeen).toBe(true);
+    // Reaching the next line is the merge request having arrived, so
+    // the flag and its assertion have nothing left to add.
+    await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.merge.request",
+      (m) => m.data.requestId === badRequestId,
+    );
     await harness.childSender.send({
       type: "substrate.merge.response",
       data: {
@@ -936,26 +745,18 @@ describe("substrate-write malformed merge response", () => {
       },
     });
 
-    const badResponseDeadline = Date.now() + 2_000;
-    let badResponse: {
+    const matchedBadResponse = await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.write.response",
+      (r) => r.data.requestId === badRequestId,
+    );
+    const badResponse: {
       requestId: string;
       result: { ok: boolean; reason?: string };
-    } | null = null;
-    while (badResponse === null && Date.now() < badResponseDeadline) {
-      const responses = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.write.response",
-      );
-      const matched = responses.find((r) => r.data.requestId === badRequestId);
-      if (matched !== undefined) {
-        badResponse = {
-          requestId: matched.data.requestId,
-          result: matched.data.result,
-        };
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    } = {
+      requestId: matchedBadResponse.data.requestId,
+      result: matchedBadResponse.data.result,
+    };
     if (badResponse === null) {
       throw new Error(
         "supervisor did not surface a substrate.write.response for the malformed merge in time",
@@ -978,20 +779,13 @@ describe("substrate-write malformed merge response", () => {
         message: "subsequent write proving the pump survived",
       },
     });
-    const goodMergeDeadline = Date.now() + 2_000;
-    let goodMergeSeen = false;
-    while (!goodMergeSeen && Date.now() < goodMergeDeadline) {
-      const merges = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.merge.request",
-      );
-      if (merges.some((m) => m.data.requestId === goodRequestId)) {
-        goodMergeSeen = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    expect(goodMergeSeen).toBe(true);
+    // Reaching the next line is the merge request having arrived, so
+    // the flag and its assertion have nothing left to add.
+    await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.merge.request",
+      (m) => m.data.requestId === goodRequestId,
+    );
     await harness.childSender.send({
       type: "substrate.merge.response",
       data: {
@@ -999,26 +793,18 @@ describe("substrate-write malformed merge response", () => {
         result: { ok: true, files: [] },
       },
     });
-    const goodResponseDeadline = Date.now() + 2_000;
-    let goodResponse: {
+    const matchedGoodResponse = await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.write.response",
+      (r) => r.data.requestId === goodRequestId,
+    );
+    const goodResponse: {
       requestId: string;
       result: { ok: boolean; reason?: string };
-    } | null = null;
-    while (goodResponse === null && Date.now() < goodResponseDeadline) {
-      const responses = readPayloadsOfType(
-        harness.supervisorToChild.flushed(),
-        "substrate.write.response",
-      );
-      const matched = responses.find((r) => r.data.requestId === goodRequestId);
-      if (matched !== undefined) {
-        goodResponse = {
-          requestId: matched.data.requestId,
-          result: matched.data.result,
-        };
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    } = {
+      requestId: matchedGoodResponse.data.requestId,
+      result: matchedGoodResponse.data.result,
+    };
     if (goodResponse === null) {
       throw new Error(
         "upstream pump did not process the subsequent write; it appears to have torn down",
@@ -1031,73 +817,23 @@ describe("substrate-write malformed merge response", () => {
 });
 
 // Capture LogTape records file-wide so the crash-handler tests can assert
-// on the interpolated reason. configureSync is process-global, so the
-// prior config is saved and restored around this file.
-const captured: {
-  category: readonly string[];
-  level: string;
-  message: string;
-}[] = [];
-
-const savedConfig = getConfig();
+// on the interpolated reason, and so a test can await a record the
+// supervisor emits rather than poll for its effect. `configureSync` is
+// process-global, so the prior configuration is saved and restored around
+// this file.
+const logs = createLogCapture();
 
 beforeAll(() => {
-  configureSync({
-    reset: true,
-    sinks: {
-      capture: (record) => {
-        const message = Array.isArray(record.message)
-          ? record.message
-              .map((part) =>
-                typeof part === "string" ? part : JSON.stringify(part),
-              )
-              .join("")
-          : String(record.message);
-        captured.push({
-          category: record.category,
-          level: record.level,
-          message,
-        });
-      },
-    },
-    loggers: [
-      { category: [], lowestLevel: "debug", sinks: ["capture"] },
-      {
-        category: ["logtape", "meta"],
-        lowestLevel: "warning",
-        sinks: ["capture"],
-      },
-    ],
-  });
+  logs.install();
 });
 
 afterAll(() => {
-  if (savedConfig) {
-    configureSync({ reset: true, ...savedConfig });
-  } else {
-    resetSync();
-  }
+  logs.restore();
 });
 
 beforeEach(() => {
-  captured.length = 0;
+  logs.reset();
 });
-
-function capturedErrors(): string[] {
-  return captured.filter((r) => r.level === "error").map((r) => r.message);
-}
-
-async function waitForCapturedError(
-  needle: string,
-): Promise<string | undefined> {
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    const match = capturedErrors().find((m) => m.includes(needle));
-    if (match !== undefined) return match;
-    await new Promise((r) => setTimeout(r, 1));
-  }
-  return undefined;
-}
 
 describe("onChildCrash logs the interpolated crash reason", () => {
   test("running-phase crash logs the reason, not a literal placeholder", async () => {
@@ -1117,11 +853,10 @@ describe("onChildCrash logs the interpolated crash reason", () => {
       },
     });
 
-    const record = await waitForCapturedError(
+    await logs.waitForError(
       "forcing child down to respawn: substrate.write.request repoId failed validation",
     );
-    expect(record).toBeDefined();
-    expect(capturedErrors().some((m) => m.includes("{reason}"))).toBe(false);
+    expect(logs.errors().some((m) => m.includes("{reason}"))).toBe(false);
 
     // Cancel the respawn backoff the kill() scheduled.
     await harness.supervisor.shutdown();
@@ -1137,11 +872,19 @@ describe("onChildCrash logs the interpolated crash reason", () => {
 
     await expect(seam.spawnPromise).rejects.toThrow();
 
-    const record = await waitForCapturedError(
+    await logs.waitForError(
       "channel crash: control channel received non-JSON line",
     );
-    expect(record).toBeDefined();
-    expect(capturedErrors().some((m) => m.includes("{reason}"))).toBe(false);
+    expect(logs.errors().some((m) => m.includes("{reason}"))).toBe(false);
+
+    // `onChildCrash` launches its teardown fire-and-forget, so returning here
+    // would leave it unwinding into the next test, where its records land
+    // after that test's `reset` and are indistinguishable from the next
+    // test's own. Await this teardown's completion so every record it emits
+    // belongs to the test that caused it.
+    await logs.waitForRecord(
+      'supervisor shutdown complete (control channel received non-JSON line: JSON Parse error: Unexpected identifier "not"',
+    );
   });
 
   test("a pre-ready channel crash does not fire onSelfTerminate", async () => {
@@ -1159,11 +902,36 @@ describe("onChildCrash logs the interpolated crash reason", () => {
     // deploy unwind owns -- not a self-termination of a registered deployment
     // the host must reclaim, so the sink must stay silent even though the
     // teardown lands in `stopped`.
-    seam.childToSupervisor.inject("not-json{{{");
+    // The leading token is what the parse error quotes into the crash reason,
+    // and the reason is what distinguishes one teardown's completion record
+    // from another's. A token the sibling test does not use keeps the needle
+    // below matched by this test's teardown alone.
+    seam.childToSupervisor.inject("noselfterm-json{{{");
     await expect(seam.spawnPromise).rejects.toThrow();
 
-    // Give any errant fire a chance to land before asserting silence.
-    await new Promise((r) => setTimeout(r, 20));
+    // The rejection above does not license asserting silence: `onChildCrash`
+    // launches its teardown fire-and-forget, so the rejection can arrive
+    // while that teardown is still unwinding. Wait for the teardown's own
+    // completion record instead. `shutdownInternal` fires the
+    // `onSelfTerminate` sink and then logs this line in the same synchronous
+    // block, sink first, with no await between them -- so the record is a
+    // happens-after: had the sink been going to fire for this teardown, it
+    // already did.
+    //
+    // The needle carries the crash's own reason because the failed spawn
+    // handshake runs a second, independent `shutdownInternal` and logs the
+    // same line under `spawn failed during startup`. That one is awaited
+    // before `spawnPromise` rejects, so a needle matching either would be
+    // satisfied by the wrong teardown and barrier nothing.
+    await logs.waitForRecord(
+      'supervisor shutdown complete (control channel received non-JSON line: JSON Parse error: Unexpected identifier "noselfterm"',
+    );
+
+    // The sink fires only when `selfTerminated` is set, and `onChildCrash`
+    // derives that from an allowlist admitting `recycling` alone. This crash
+    // lands in `starting` -- the INITIAL spawn failing, which the deploy
+    // unwind owns, not a self-termination of a registered deployment the host
+    // must reclaim. That allowlist is what this test pins.
     expect(selfTerminations).toEqual([]);
   });
 });

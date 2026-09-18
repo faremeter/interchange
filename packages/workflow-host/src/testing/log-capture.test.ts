@@ -128,6 +128,26 @@ describe("createLogCapture", () => {
     await expect(abandoned).rejects.toThrow(/never-logged/);
   });
 
+  test("a record arriving after reset satisfies a wait, so needles must be unique per test", async () => {
+    const capture = startCapture();
+
+    // Stands in for work a previous test left running: `reset` marks the
+    // boundary, and this record lands on the far side of it, exactly as a
+    // fire-and-forget teardown's does. Nothing in the record says which test
+    // caused it, so the wait below cannot refuse it.
+    capture.reset();
+    logger.info`teardown finished for the previous subject`;
+
+    await capture.waitForRecord("teardown finished");
+
+    // That is why `waitForRecord`'s contract puts the burden on the caller:
+    // the needle has to be unique to its own test, and a test that starts
+    // fire-and-forget work has to await that work before it returns. This
+    // test pins the hazard those two rules exist for, so a change that
+    // claims to remove them has something to contradict.
+    expect(capture.records()).toHaveLength(1);
+  });
+
   test("installing a capture twice throws", () => {
     const capture = startCapture();
     expect(() => capture.install()).toThrow(/already installed/);

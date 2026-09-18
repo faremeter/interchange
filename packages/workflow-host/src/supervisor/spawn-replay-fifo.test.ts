@@ -31,190 +31,33 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { type } from "arktype";
-
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  createMockMailBus,
+  createSpawnObserver,
+  readPayloadsOfType,
+  waitForUpstreamPayloads,
+  createStubRepoStore,
+} from "@intx/workflow-host/testing";
 
 import {
   createWorkflowSupervisor,
   type InboxPrimitives,
-  type MailBusBindings,
   type SignedPayload,
   type SubprocessHandle,
   type SubprocessSpawner,
   type WorkflowSupervisorBindings,
 } from "./index";
 import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
-import {
-  ControlPayload,
-  SignedEnvelope,
-  createControlChannelSender,
-  type FrameReader,
-  type NdjsonReader,
-  type NdjsonWriter,
-} from "../ipc/index";
+import { createControlChannelSender } from "../ipc/index";
+import { waitUntil } from "@intx/types/testing";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
-}
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    flushed(): readonly string[] {
-      return buffer.slice();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("frame buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMockMailBus(): MailBusBindings & {
-  registered(): readonly string[];
-  deliver(address: string, message: Uint8Array): void;
-} {
-  const registered: string[] = [];
-  const subscribers = new Map<
-    string,
-    Set<(rawMessage: Uint8Array) => Promise<void>>
-  >();
-  return {
-    registerAddress(address: string) {
-      registered.push(address);
-    },
-    unregisterAddress(address: string) {
-      const idx = registered.lastIndexOf(address);
-      if (idx >= 0) registered.splice(idx, 1);
-      subscribers.delete(address);
-    },
-    subscribeMailForAddress(address, handler) {
-      let set = subscribers.get(address);
-      if (set === undefined) {
-        set = new Set();
-        subscribers.set(address, set);
-      }
-      set.add(handler);
-      return () => {
-        const current = subscribers.get(address);
-        current?.delete(handler);
-      };
-    },
-    sendOutbound() {
-      throw new Error("sendOutbound not exercised in this test");
-    },
-    registered(): readonly string[] {
-      return registered.slice();
-    },
-    deliver(address: string, message: Uint8Array) {
-      const set = subscribers.get(address);
-      if (set === undefined) return;
-      for (const handler of set) void handler(message).catch(() => undefined);
-    },
-  };
-}
-
-function createStubRepoStore(baseDir: string): RepoStore {
-  const stub: Partial<RepoStore> = {
-    getRepoDir(repoId: RepoId): string {
-      return path.join(baseDir, repoId.kind, repoId.id);
-    },
-    async writeTreePreservingPrefix(_principal, _repoId, _ref, _args) {
-      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
-    },
-  };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy
-  return new Proxy(stub as RepoStore, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (value !== undefined) return value;
-      return () => {
-        throw new Error(
-          `stub RepoStore: ${String(prop)} not implemented for this test`,
-        );
-      };
-    },
-  });
 }
 
 async function seedStepGrants(
@@ -458,29 +301,6 @@ async function seedOrphanedProcessing(
   }
 }
 
-function readPayloadsOfType<T extends string>(
-  lines: readonly string[],
-  type_: T,
-): Extract<typeof ControlPayload.infer, { type: T }>[] {
-  const out: Extract<typeof ControlPayload.infer, { type: T }>[] = [];
-  for (const line of lines) {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const signed = SignedEnvelope(raw);
-    if (signed instanceof type.errors) continue;
-    const payload = ControlPayload(signed.envelope.payload);
-    if (payload instanceof type.errors) continue;
-    if (payload.type !== type_) continue;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- arktype narrow above pins the discriminator
-    out.push(payload as Extract<typeof ControlPayload.infer, { type: T }>);
-  }
-  return out;
-}
-
 type Harness = {
   supervisor: ReturnType<typeof createWorkflowSupervisor>;
   childSender: ReturnType<typeof createControlChannelSender>;
@@ -528,8 +348,12 @@ async function boot(opts: { prefix: string }): Promise<
     resolveExit = resolve;
   });
   let observedEnv: Record<string, string> | undefined;
+  // Scoped here, not to the file: `first()` must resolve with THIS
+  // fixture's spawn, not whichever spawn happened earliest in the run.
+  const spawnObserver = createSpawnObserver();
   const spawner: SubprocessSpawner = ({ env }) => {
     observedEnv = env;
+    spawnObserver.record(env);
     const handle: SubprocessHandle = {
       pid: 7777,
       controlWriter: supervisorToChild.writer,
@@ -547,7 +371,7 @@ async function boot(opts: { prefix: string }): Promise<
 
   const mailBus = createMockMailBus();
   const gatedInbox = createGatedInboxPrimitives();
-  const repoStore = createStubRepoStore(baseDir);
+  const repoStore = createStubRepoStore(baseDir, { writeTree: true });
   const workflowRunRepoId: RepoId = {
     kind: "workflow-run",
     id: "run_deployment-x",
@@ -586,9 +410,7 @@ async function boot(opts: { prefix: string }): Promise<
       /* unused */
     },
   });
-  while (observedEnv === undefined) {
-    await new Promise((r) => setTimeout(r, 1));
-  }
+  observedEnv = await spawnObserver.first();
   const channelId = observedEnv.IPC_CHANNEL_ID;
   if (channelId === undefined) {
     throw new Error("IPC_CHANNEL_ID not set in spawn-time env");
@@ -604,9 +426,7 @@ async function boot(opts: { prefix: string }): Promise<
   });
   // Wait until the mail bus has been registered so the test's
   // `deliver()` will route into the supervisor's onMailMessage.
-  while (!mailBus.registered().includes(deploymentMailAddress)) {
-    await new Promise((r) => setTimeout(r, 1));
-  }
+  await mailBus.awaitRegistered(deploymentMailAddress);
   const childPublicKey = hexEncode(childIpcKeyPair.publicKey);
   return {
     supervisor,
@@ -684,12 +504,11 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     // race condition is fully armed before we inspect.
     const freshMessage = new TextEncoder().encode("fresh@example.com");
     harness.mailBus.deliver(harness.deploymentMailAddress, freshMessage);
-    const armDeadline = Date.now() + 2_000;
-    while (Date.now() < armDeadline) {
-      const snap = harness.gatedInbox.snapshot(harness.deploymentMailAddress);
-      if (snap.inbox.length === 1) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitUntil(
+      () =>
+        harness.gatedInbox.snapshot(harness.deploymentMailAddress).inbox
+          .length >= 1,
+    );
 
     // CRITICAL ASSERTION (H-S1): the orphan is still in `processing/`
     // and the fresh mail is in `inbox/`. The dispatch loop's first
@@ -729,14 +548,7 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     // Wait for the first `trigger.fire`. Its messageId identifies which
     // claim-check entry won the FIFO race even though both entries share the
     // deployment's stable runId.
-    const firstTriggerDeadline = Date.now() + 2_000;
-    while (
-      readPayloadsOfType(harness.supervisorToChild.flushed(), "trigger.fire")
-        .length < 1 &&
-      Date.now() < firstTriggerDeadline
-    ) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForUpstreamPayloads(harness.supervisorToChild, "trigger.fire", 1);
     const triggers = readPayloadsOfType(
       harness.supervisorToChild.flushed(),
       "trigger.fire",
@@ -760,14 +572,11 @@ describe("supervisor spawn-time replay FIFO contract", () => {
       },
     });
 
-    const signalDeadline = Date.now() + 2_000;
-    while (
-      readPayloadsOfType(harness.supervisorToChild.flushed(), "signal.deliver")
-        .length < 1 &&
-      Date.now() < signalDeadline
-    ) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForUpstreamPayloads(
+      harness.supervisorToChild,
+      "signal.deliver",
+      1,
+    );
     const signals = readPayloadsOfType(
       harness.supervisorToChild.flushed(),
       "signal.deliver",
@@ -792,14 +601,11 @@ describe("supervisor spawn-time replay FIFO contract", () => {
         at: "test",
       },
     });
-    const consumedDeadline = Date.now() + 2_000;
-    while (
-      harness.gatedInbox.snapshot(harness.deploymentMailAddress).consumed
-        .length < 2 &&
-      Date.now() < consumedDeadline
-    ) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitUntil(
+      () =>
+        harness.gatedInbox.snapshot(harness.deploymentMailAddress).consumed
+          .length >= 2,
+    );
     expect(
       harness.gatedInbox.snapshot(harness.deploymentMailAddress).consumed,
     ).toEqual([ORPHAN_ID, freshId]);
@@ -842,22 +648,34 @@ describe("supervisor spawn-time replay FIFO contract", () => {
       ORPHAN_RECEIVED_AT,
     );
 
-    // Concurrently call `shutdown()`. Capture when its promise
-    // settles. A `shutdownSettledAt` of `-1` while the gate is
-    // still held proves the shutdown path is blocked on
-    // `replayDone`.
-    let shutdownSettledAt = -1;
-    let replaySettledAt = -1;
+    // Concurrently call `shutdown()`. Record the ORDER the two
+    // promises settle in, not the wall-clock instant of each: two
+    // settles inside the same millisecond read the same
+    // `Date.now()`, and a `>=` comparison on equal readings holds
+    // whichever way round they actually happened, so the ordering
+    // evidence this test rests on was passable with the order
+    // inverted. An empty `settleOrder` while the gate is still held
+    // proves the shutdown path is blocked on `replayDone`.
+    const settleOrder: string[] = [];
     const shutdownPromise = harness.supervisor.shutdown().then(() => {
-      shutdownSettledAt = Date.now();
+      settleOrder.push("shutdown");
     });
     void harness.gatedInbox.replaySettled().then(() => {
-      replaySettledAt = Date.now();
+      settleOrder.push("replay");
     });
 
-    // Wait ~20ms and assert shutdown is still pending.
+    // The assertion below is a negative -- shutdown has NOT settled
+    // -- so there is no state to poll for and the sleep stays. In
+    // phase `starting` the shutdown path emits nothing observable
+    // before its `await prior.replayDone`: the dispatch loop is
+    // null, no drain accumulator exists, and the child kill that
+    // rejects `spawnPromise` runs in the `finally` AFTER that await.
+    // So no positive signal is orderable ahead of the settle we are
+    // denying. Overshooting the 20ms under load only gives shutdown
+    // more opportunity to settle, which strengthens the check
+    // instead of making it spurious.
     await new Promise((r) => setTimeout(r, 20));
-    expect(shutdownSettledAt).toBe(-1);
+    expect(settleOrder).toEqual([]);
     expect(harness.gatedInbox.released()).toBe(false);
 
     // Release the gate and let everything unwind.
@@ -866,8 +684,6 @@ describe("supervisor spawn-time replay FIFO contract", () => {
     await shutdownPromise;
 
     // Shutdown must have settled AFTER the replay -- i.e. it waited.
-    expect(shutdownSettledAt).toBeGreaterThanOrEqual(0);
-    expect(replaySettledAt).toBeGreaterThanOrEqual(0);
-    expect(shutdownSettledAt).toBeGreaterThanOrEqual(replaySettledAt);
+    expect(settleOrder).toEqual(["replay", "shutdown"]);
   });
 });

@@ -23,137 +23,26 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { type } from "arktype";
-
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  createSpawnObserver,
+  createStubRepoStore,
+  waitForUpstreamPayload,
+} from "@intx/workflow-host/testing";
 
 import { createWorkflowSupervisor, type InboxPrimitives } from "./index";
 import { wrapHubTransportAsMailBus } from "../mail-bus/index";
 import {
-  ControlPayload,
-  SignedEnvelope,
   createControlChannelSender,
   type ControlChannelSender,
-  type FrameReader,
-  type NdjsonReader,
-  type NdjsonWriter,
 } from "../ipc/index";
 
 const AGENT_ADDRESS = "run_outbound-agent@integration.example";
 const RECIPIENT_ADDRESS = "recipient@integration.example";
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("buffer shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    flushed(): readonly string[] {
-      return buffer.slice();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("frame shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-/**
- * Minimal `RepoStore` stub: the supervisor's `spawn` consults
- * `getRepoDir` (credentials assembly). No outbound-mail path touches the
- * substrate, so every other method throws to surface an accidental
- * untested code path precisely.
- */
-function createStubRepoStore(baseDir: string): RepoStore {
-  const stub: Partial<RepoStore> = {
-    getRepoDir(repoId: RepoId): string {
-      return path.join(baseDir, repoId.kind, repoId.id);
-    },
-  };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only getRepoDir is exercised and any other method throws via the proxy
-  return new Proxy(stub as RepoStore, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (value !== undefined) return value;
-      return () => {
-        throw new Error(`stub RepoStore: ${String(prop)} not implemented`);
-      };
-    },
-  });
-}
 
 /**
  * No-op inbox primitives. This test exercises only the OUTBOUND path,
@@ -177,29 +66,6 @@ function createNoopInboxPrimitives(): InboxPrimitives {
       return { commitSha: "noop", replayedKeys: [] };
     },
   };
-}
-
-/**
- * Parse the `outbound.result` frame the supervisor wrote back to the
- * child for the given requestId. Validates each signed envelope through
- * the canonical `ControlPayload` narrow.
- */
-function findOutboundResult(
-  lines: readonly string[],
-  requestId: string,
-): Extract<ControlPayload, { type: "outbound.result" }>["data"] | null {
-  for (const line of lines) {
-    if (!line.includes("outbound.result")) continue;
-    const raw: unknown = JSON.parse(line);
-    const signed = SignedEnvelope(raw);
-    if (signed instanceof type.errors) continue;
-    const payload = ControlPayload(signed.envelope.payload);
-    if (payload instanceof type.errors) continue;
-    if (payload.type !== "outbound.result") continue;
-    if (payload.data.requestId !== requestId) continue;
-    return payload.data;
-  }
-  return null;
 }
 
 describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
@@ -237,6 +103,9 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
     });
 
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const supervisor = createWorkflowSupervisor({
       repoStore: createStubRepoStore(baseDir),
       signAsPrincipal: async () => ({
@@ -246,6 +115,7 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
       mailBus,
       subprocessSpawner: ({ env }) => {
         observedEnv = env;
+        spawnObserver.record(env);
         return {
           pid: 9100,
           controlWriter: supervisorToChild.writer,
@@ -286,9 +156,7 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
       onInferenceEvent: () => undefined,
     });
 
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) throw new Error("IPC_CHANNEL_ID missing");
 
@@ -331,22 +199,19 @@ describe("supervisor-backed outbound signed send (Phase 4.3)", () => {
       },
     });
 
-    // Wait for the supervisor's `outbound.result` reply.
-    const waitForResult = async (): Promise<
-      Extract<ControlPayload, { type: "outbound.result" }>["data"]
-    > => {
-      const deadline = Date.now() + 2000;
-      while (Date.now() < deadline) {
-        const found = findOutboundResult(
-          supervisorToChild.flushed(),
-          requestId,
-        );
-        if (found !== null) return found;
-        await new Promise((r) => setTimeout(r, 2));
-      }
-      throw new Error("supervisor did not reply with outbound.result in time");
-    };
-    const result = await waitForResult();
+    // Wait for the supervisor's `outbound.result` reply. The wait is driven
+    // by the stream double reporting each write and re-reading the buffer
+    // then, so nothing is re-parsed on a tick and no duration decides the
+    // outcome. `waitForUpstreamPayload` validates each frame through the
+    // canonical `SignedEnvelope` + `ControlPayload` narrows, as the local
+    // parser this replaced did.
+    const result = (
+      await waitForUpstreamPayload(
+        supervisorToChild,
+        "outbound.result",
+        (payload) => payload.data.requestId === requestId,
+      )
+    ).data;
 
     // The supervisor performed the signed send through the host transport.
     if (!result.result.ok) {

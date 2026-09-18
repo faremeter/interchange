@@ -19,7 +19,17 @@ import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
-import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import type { RepoId } from "@intx/hub-sessions";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  createMockMailBus,
+  parseTriggerFireRunIds,
+  createChangeNotifier,
+  waitForTriggerFireRunIds,
+  waitForUpstreamPayload,
+  createStubRepoStore,
+} from "@intx/workflow-host/testing";
 
 import {
   createWorkflowSupervisor,
@@ -37,31 +47,7 @@ import {
   createControlChannelSender,
   ControlPayload,
   SignedEnvelope,
-  type FrameReader,
-  type NdjsonReader,
-  type NdjsonWriter,
 } from "../ipc/index";
-
-/**
- * Parse the `runId` carried on each `trigger.fire` frame written to
- * the in-memory child control stream. Validates every signed envelope
- * through the canonical `ControlPayload` narrow so the helper does not
- * need to `as`-cast at the boundary.
- */
-function parseTriggerFireRunIds(lines: readonly string[]): string[] {
-  const ids: string[] = [];
-  for (const line of lines) {
-    if (!line.includes("trigger.fire")) continue;
-    const raw: unknown = JSON.parse(line);
-    const signed = SignedEnvelope(raw);
-    if (signed instanceof type.errors) continue;
-    const payload = ControlPayload(signed.envelope.payload);
-    if (payload instanceof type.errors) continue;
-    if (payload.type !== "trigger.fire") continue;
-    ids.push(payload.data.runId);
-  }
-  return ids;
-}
 
 function parseSignalDeliverRunIds(lines: readonly string[]): string[] {
   const ids: string[] = [];
@@ -80,173 +66,6 @@ function parseSignalDeliverRunIds(lines: readonly string[]): string[] {
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
-}
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    flushed(): readonly string[] {
-      return buffer.slice();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("frame buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMockMailBus(): MailBusBindings & {
-  registered(): readonly string[];
-  deliver(address: string, message: Uint8Array): void;
-  registrationHistory(): readonly string[];
-} {
-  const registered: string[] = [];
-  const history: string[] = [];
-  const subscribers = new Map<
-    string,
-    Set<(rawMessage: Uint8Array) => Promise<void>>
-  >();
-  return {
-    registerAddress(address: string) {
-      registered.push(address);
-      history.push(`register:${address}`);
-    },
-    unregisterAddress(address: string) {
-      const idx = registered.lastIndexOf(address);
-      if (idx >= 0) registered.splice(idx, 1);
-      subscribers.delete(address);
-      history.push(`unregister:${address}`);
-    },
-    subscribeMailForAddress(
-      address: string,
-      handler: (rawMessage: Uint8Array) => Promise<void>,
-    ) {
-      let set = subscribers.get(address);
-      if (set === undefined) {
-        set = new Set();
-        subscribers.set(address, set);
-      }
-      set.add(handler);
-      return () => {
-        const current = subscribers.get(address);
-        current?.delete(handler);
-      };
-    },
-    sendOutbound() {
-      throw new Error("sendOutbound not exercised in this test");
-    },
-    registered(): readonly string[] {
-      return registered.slice();
-    },
-    deliver(address: string, message: Uint8Array) {
-      const set = subscribers.get(address);
-      if (set === undefined) return;
-      for (const handler of set) void handler(message).catch(() => undefined);
-    },
-    registrationHistory(): readonly string[] {
-      return history.slice();
-    },
-  };
-}
-
-function createStubRepoStore(baseDir: string): RepoStore {
-  const stub: Partial<RepoStore> = {
-    getRepoDir(repoId: RepoId): string {
-      return path.join(baseDir, repoId.kind, repoId.id);
-    },
-    async writeTreePreservingPrefix(_principal, _repoId, _ref, _args) {
-      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
-    },
-  };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy
-  return new Proxy(stub as RepoStore, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (value !== undefined) return value;
-      return () => {
-        throw new Error(
-          `stub RepoStore: ${String(prop)} not implemented for this test`,
-        );
-      };
-    },
-  });
 }
 
 async function seedStepGrants(
@@ -286,6 +105,12 @@ type SpawnTracker = {
   children: FakeChild[];
   spawnEnvs: Record<string, string>[];
   totalSpawns: number;
+  /**
+   * Resolve once the spawner has produced at least `count` children. A
+   * recycle spawns the replacement asynchronously, so a test driving the new
+   * child's handshake has to wait for it to exist.
+   */
+  awaitChildren(count: number): Promise<void>;
 };
 
 function createSpawnTracker(opts: {
@@ -294,6 +119,9 @@ function createSpawnTracker(opts: {
 }): SpawnTracker {
   const children: FakeChild[] = [];
   const spawnEnvs: Record<string, string>[] = [];
+  // Reports each spawn so a test can wait for the child rather than re-read
+  // the array on a timer.
+  const changes = createChangeNotifier();
   const spawner: SubprocessSpawner = ({ env }) => {
     spawnEnvs.push(env);
     const supervisorToChild = createMemoryNdjsonStream();
@@ -315,6 +143,7 @@ function createSpawnTracker(opts: {
       exited,
     };
     children.push(child);
+    changes.notify();
     const handle: SubprocessHandle = {
       pid: child.pid,
       controlWriter: supervisorToChild.writer,
@@ -345,6 +174,8 @@ function createSpawnTracker(opts: {
     get totalSpawns() {
       return children.length;
     },
+    awaitChildren: (count: number) =>
+      changes.until(() => children.length >= count),
   };
 }
 
@@ -507,7 +338,7 @@ async function buildBindings(opts: {
   recyclePolicy?: RecyclePolicyBounds;
   inboxPrimitives?: InboxPrimitives;
 }): Promise<WorkflowSupervisorBindings> {
-  const repoStore = createStubRepoStore(opts.baseDir);
+  const repoStore = createStubRepoStore(opts.baseDir, { writeTree: true });
   return {
     repoStore,
     signAsPrincipal: async (): Promise<SignedPayload> => ({
@@ -573,9 +404,7 @@ async function spawnSupervisor(opts: {
   });
   // Wait until the spawner has been invoked and the channelId is
   // known, then drive the synthetic child's `ready` frame.
-  while (opts.tracker.children.length === 0) {
-    await new Promise((r) => setTimeout(r, 1));
-  }
+  await opts.tracker.awaitChildren(1);
   const first = opts.tracker.children[0];
   if (first === undefined) {
     throw new Error("tracker.children[0] missing");
@@ -735,9 +564,7 @@ describe("supervisor spawn: dynamic env", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (tracker.children.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(1);
     const firstChild = tracker.children[0];
     if (firstChild === undefined) throw new Error("first child missing");
     await driveReady(firstChild, ipcKeypair);
@@ -748,9 +575,7 @@ describe("supervisor spawn: dynamic env", () => {
     // then a recycle respawns the child.
     hostRevised = "after-rotation";
     const recyclePromise = supervisor.recycle({ reason: "dynenv" });
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(2);
     const secondChild = tracker.children[1];
     if (secondChild === undefined) throw new Error("second child missing");
     await driveReady(secondChild, ipcKeypair);
@@ -781,9 +606,7 @@ describe("supervisor recycle: operator-initiated", () => {
     });
 
     const recyclePromise = supervisor.recycle({ reason: "env-contract" });
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(2);
     const secondChild = tracker.children[1];
     if (secondChild === undefined) {
       throw new Error("second child missing after recycle spawn");
@@ -823,9 +646,7 @@ describe("supervisor recycle: operator-initiated", () => {
     // Kick the recycle. Drive the second child's `ready` once it
     // spawns.
     const recyclePromise = supervisor.recycle({ reason: "operator-asked" });
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(2);
     const secondChild = tracker.children[1];
     if (secondChild === undefined) {
       throw new Error("second child missing after recycle spawn");
@@ -884,9 +705,7 @@ describe("supervisor recycle: failure after the cohort handoff", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (tracker.children.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(1);
     const first = tracker.children[0];
     if (first === undefined) {
       throw new Error("tracker.children[0] missing");
@@ -955,9 +774,7 @@ describe("supervisor recycle: respawn handshake bound", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (tracker.children.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(1);
     const first = tracker.children[0];
     if (first === undefined) throw new Error("first child missing");
     await driveReady(first, ipcKeypair);
@@ -1024,18 +841,14 @@ describe("supervisor recycle: respawn handshake bound", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (tracker.children.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(1);
     const first = tracker.children[0];
     if (first === undefined) throw new Error("first child missing");
     await driveReady(first, ipcKeypair);
     await spawnPromise;
 
     const recyclePromise = supervisor.recycle({ reason: "ready-failed-test" });
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(2);
     const second = tracker.children[1];
     if (second === undefined) throw new Error("second child missing");
     // End the new child's control channel before it emits ready: the
@@ -1085,9 +898,7 @@ describe("supervisor recycle: deliverSignal phase guard", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (tracker.children.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(1);
     const first = tracker.children[0];
     if (first === undefined) throw new Error("first child missing");
     await driveReady(first, ipcKeypair);
@@ -1099,9 +910,7 @@ describe("supervisor recycle: deliverSignal phase guard", () => {
     // leaving the supervisor in `recycling` for the deliverSignal
     // call to observe.
     const recyclePromise = supervisor.recycle({ reason: "guard-test" });
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(2);
     const second = tracker.children[1];
     if (second === undefined) throw new Error("second child missing");
 
@@ -1147,9 +956,7 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
     // Wait for the new child to be spawned; mail delivered now sits
     // in the supervisor's buffer because the second child has not
     // emitted `ready` yet.
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(2);
     mailBus.deliver(
       "run_deployment-x@example.com",
       new TextEncoder().encode("gap-1"),
@@ -1178,12 +985,9 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
     // queue in FIFO order. The first message fires the deployment's stable
     // top-level run. Once that run parks, the second message resumes it as a
     // signal; it must not fire a second top-level run.
+    await waitForTriggerFireRunIds(secondChild.supervisorToChild, 1);
     const flushedTriggerRunIds = (): string[] =>
       parseTriggerFireRunIds(secondChild.supervisorToChild.flushed());
-    const firstDeadline = Date.now() + 1_000;
-    while (flushedTriggerRunIds().length < 1 && Date.now() < firstDeadline) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
     const firstRunIds = flushedTriggerRunIds();
     expect(firstRunIds.length).toBeGreaterThanOrEqual(1);
     const firstRunId = firstRunIds[0];
@@ -1197,12 +1001,12 @@ describe("supervisor recycle: mail buffered during the kill/respawn gap", () => 
       },
     });
 
+    await waitForUpstreamPayload(
+      secondChild.supervisorToChild,
+      "signal.deliver",
+    );
     const flushedSignalRunIds = (): string[] =>
       parseSignalDeliverRunIds(secondChild.supervisorToChild.flushed());
-    const signalDeadline = Date.now() + 1_000;
-    while (flushedSignalRunIds().length < 1 && Date.now() < signalDeadline) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
     expect(flushedTriggerRunIds()).toEqual([firstRunId]);
     expect(flushedSignalRunIds()).toEqual([firstRunId]);
 
@@ -1302,9 +1106,7 @@ describe("supervisor recycle: child self-initiated via recycle.request", () => {
     });
 
     // Wait for the supervisor to spawn the replacement child.
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(2);
     const secondChild = tracker.children[1];
     if (secondChild === undefined) {
       throw new Error("second child missing for self-recycle test");
@@ -1339,9 +1141,7 @@ describe("supervisor recycle: channelId rotation on respawn", () => {
       const recyclePromise = supervisor.recycle({
         reason: `rotation-${String(i)}`,
       });
-      while (tracker.children.length < i + 2) {
-        await new Promise((r) => setTimeout(r, 1));
-      }
+      await tracker.awaitChildren(i + 2);
       const nextChild = tracker.children[i + 1];
       if (nextChild === undefined) {
         throw new Error(`expected child at index ${String(i + 1)}`);
@@ -1390,9 +1190,7 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (tracker.children.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(1);
     const first = tracker.children[0];
     if (first === undefined) throw new Error("first child missing");
     await driveReady(first, ipcKeypair);
@@ -1405,7 +1203,10 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
       "run_deployment-x@example.com",
       new TextEncoder().encode("cohort-pre-recycle"),
     );
-    await new Promise((r) => setTimeout(r, 5));
+    // The drain below only arms an accumulator for a run already in flight,
+    // and the forwarded trigger is what says the run exists. The pause this
+    // replaces was a guess at the same thing.
+    await waitForTriggerFireRunIds(first.supervisorToChild, 1);
     await supervisor.drain({ deadlineMs: 5_000 });
 
     // Recycle. The installNewChild path aborts the prior cohort,
@@ -1416,15 +1217,11 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
     // the supervisor accepts a fresh inbound mail and the new
     // cohort's broadcaster handles its dispatch end-to-end.
     const recyclePromise = supervisor.recycle({ reason: "cohort-finalise" });
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(2);
     const second = tracker.children[1];
     if (second === undefined) throw new Error("second child missing");
     await driveReady(second, ipcKeypair);
     await recyclePromise;
-    // Give the cohort abort microtask a chance to land.
-    await new Promise((r) => setTimeout(r, 5));
 
     // The new cohort still operates: deliver a fresh mail and
     // confirm the supervisor forwards a trigger.fire through the
@@ -1435,12 +1232,10 @@ describe("supervisor recycle: terminal-event broadcaster cohort", () => {
       "run_deployment-x@example.com",
       new TextEncoder().encode("cohort-post-recycle"),
     );
-    const deadline = Date.now() + 1_000;
-    while (Date.now() < deadline) {
-      const flushed = second.supervisorToChild.flushed();
-      if (flushed.some((f) => f.includes("trigger.fire"))) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    // Decoded rather than substring-matched: the text "trigger.fire"
+    // appearing in an unrelated payload would have satisfied the filter this
+    // replaces.
+    await waitForTriggerFireRunIds(second.supervisorToChild, 1);
     const triggerFires = second.supervisorToChild
       .flushed()
       .filter((f) => f.includes("trigger.fire"));
@@ -1480,7 +1275,6 @@ describe("supervisor recycle: drain-side processing replay", () => {
       ipcKeypair,
       inboxPrimitives: recordingInbox,
     });
-    const originalKill = tracker.children;
     // Wrap the spawner so we can hook kill to record the call order.
     const wrappedSpawner: SubprocessSpawner = (args) => {
       const handle = tracker.spawner(args);
@@ -1505,10 +1299,8 @@ describe("supervisor recycle: drain-side processing replay", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (originalKill.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    const first = originalKill[0];
+    await tracker.awaitChildren(1);
+    const first = tracker.children[0];
     if (first === undefined) throw new Error("first child missing");
     await driveReady(first, ipcKeypair);
     await spawnPromise;
@@ -1517,10 +1309,8 @@ describe("supervisor recycle: drain-side processing replay", () => {
     calls.length = 0;
 
     const recyclePromise = supervisor.recycle({ reason: "ordering-test" });
-    while (originalKill.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    const second = originalKill[1];
+    await tracker.awaitChildren(2);
+    const second = tracker.children[1];
     if (second === undefined) throw new Error("second child missing");
     await driveReady(second, ipcKeypair);
     await recyclePromise;
@@ -1565,9 +1355,7 @@ describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (tracker.children.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(1);
     const first = tracker.children[0];
     if (first === undefined) {
       throw new Error("tracker.children[0] missing");
@@ -1581,9 +1369,7 @@ describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
     // `await waitForReady`. The second child's ready frame is NOT
     // driven yet, so the recycle parks.
     const recyclePromise = supervisor.recycle({ reason: "race-test" });
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(2);
     const second = tracker.children[1];
     if (second === undefined) {
       throw new Error("tracker.children[1] missing");
@@ -1651,9 +1437,7 @@ describe("supervisor recycle: external drain phase guard", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (tracker.children.length === 0) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(1);
     const first = tracker.children[0];
     if (first === undefined) throw new Error("first child missing");
     await driveReady(first, ipcKeypair);
@@ -1665,9 +1449,7 @@ describe("supervisor recycle: external drain phase guard", () => {
     // kill -> spawn -> waitForReady; the second child has not been
     // driven to `ready` yet, so the supervisor parks in `recycling`.
     const recyclePromise = supervisor.recycle({ reason: "drain-guard-test" });
-    while (tracker.children.length < 2) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await tracker.awaitChildren(2);
     const second = tracker.children[1];
     if (second === undefined) throw new Error("second child missing");
 

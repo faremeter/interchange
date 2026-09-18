@@ -28,6 +28,8 @@ import type {
   MailPartReader,
 } from "@intx/types/runtime";
 
+import { createChangeNotifier } from "@intx/workflow-host/testing";
+
 import { createWorkflowStepInvoker, type StepEnvBase } from "./step-invoker";
 import {
   createWarmAgentCache,
@@ -296,13 +298,18 @@ describe("workflow-host StepInvoker adapter - warm source rotation", () => {
     const buildGate = new Promise<void>((resolve) => {
       releaseBuild = resolve;
     });
-    let buildStarted = false;
+    // The factory reports its own entry, so the rotation below lands inside
+    // the build window without the test guessing when that window opens.
+    let announceBuildStarted!: () => void;
+    const buildStarted = new Promise<void>((resolve) => {
+      announceBuildStarted = resolve;
+    });
 
     const invoker = createWorkflowStepInvoker({
       workflowAuthorize,
       buildEnv: async () => stubBuildEnv(),
       agentFactory: async () => {
-        buildStarted = true;
+        announceBuildStarted();
         await buildGate;
         return stub.agent;
       },
@@ -311,9 +318,7 @@ describe("workflow-host StepInvoker adapter - warm source rotation", () => {
     });
 
     const invokePromise = invoker(buildRequest({ input: { goal: "ping" } }));
-    while (!buildStarted) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await buildStarted;
     // A rotation lands DURING the build: the run-loop updates the ref and
     // calls applySources -- a no-op here because the cache is still empty.
     sourcesRef.current = { "step-1": [rotated] };
@@ -1012,6 +1017,13 @@ interface ReplyDriveHarness {
   drainSettled(): boolean;
   /** Advance the settled count by one, releasing a waiter on this turn's reply. */
   settle(outcome: WarmReplySettlement): void;
+  /**
+   * Resolve once the invoker has asked to wait on a reply at least `count`
+   * times. `waitForReplyAfter` is the last thing the invoker does before it
+   * blocks, so this is the signal that the turn has reached the barrier --
+   * everything the barrier is meant to gate has already happened.
+   */
+  awaitBarrier(count: number): Promise<void>;
 }
 
 /**
@@ -1034,6 +1046,8 @@ function buildReplyDriveHarness(opts?: {
   const seqSnapshots: number[] = [];
   let calls = 0;
   let drainDone = false;
+  let barrierCalls = 0;
+  const barrierReached = createChangeNotifier();
 
   function settlementAt(index: number): WarmReplySettlement {
     const settlement = settlements[index];
@@ -1075,7 +1089,10 @@ function buildReplyDriveHarness(opts?: {
       }
       // Extra async gap after the stream ends so a test can prove the invoker
       // folded `done` into the warm entry the cache awaits: `evictAll` returns
-      // only after this settles.
+      // only after this settles. This delay is the double's own simulated
+      // work, not a bet on how fast the machine is: a loaded machine only
+      // makes the gap longer, which makes an `evictAll` that fails to await
+      // `done` more visible rather than less.
       await new Promise((resolve) => setTimeout(resolve, 20));
       drainDone = true;
     })();
@@ -1086,6 +1103,8 @@ function buildReplyDriveHarness(opts?: {
         return settledCount;
       },
       waitForReplyAfter(n: number): Promise<WarmReplySettlement> {
+        barrierCalls += 1;
+        barrierReached.notify();
         if (settledCount > n) return Promise.resolve(settlementAt(n));
         return new Promise<WarmReplySettlement>((resolve) => {
           waiters.push({ target: n, resolve });
@@ -1102,6 +1121,7 @@ function buildReplyDriveHarness(opts?: {
     driveCalls: () => calls,
     drainSettled: () => drainDone,
     settle,
+    awaitBarrier: (count) => barrierReached.until(() => barrierCalls >= count),
   };
 }
 
@@ -1280,8 +1300,10 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
       settled = true;
       return result;
     });
-    // Let the send resolve and the invoker reach the barrier await.
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The barrier report fires after the send resolved and before the invoker
+    // blocks, so reaching it orders everything the `settled` check must not
+    // have observed.
+    await harness.awaitBarrier(1);
     // The step has NOT returned: it is gated on this turn's reply being sent.
     expect(settled).toBe(false);
     // The invoker snapshotted the sequence before the send (0 replies settled).
@@ -1354,7 +1376,7 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
     const sendCause = new Error("outbound bridge rejected the reply");
     const pending = invoker(buildRequest({ input: "hello" }));
     // Let the invoker reach the barrier await, then fail the reply send.
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await harness.awaitBarrier(1);
     harness.settle({ ok: false, cause: sendCause });
 
     // The step rejects rather than returning: the run's claim-check replays
