@@ -10,9 +10,12 @@ BUN := bun --conditions=intx-src
 # `make test-workflow WF_PARALLEL=8` (~16% faster on 8 cores).
 WF_PARALLEL ?= 4
 
-# Worker count for the unit pass (default 4; CI caps at 2). Workers are
-# light, so cost is startup + module loading, not RAM; on a 32-core guest
-# 16 workers were ~45% faster than 4, but 32 flaked the 2s waitFor timers.
+# Worker count for the unit pass. CI overrides this to 2 (see the job env
+# for why). Locally, 4 is a conservative default that leaves a workstation
+# responsive; on a 32-core guest 16 measured ~45% faster, and 32 surfaced
+# tests that wait on a duration rather than a signal. Such a failure is a
+# test to fix under "Synchronizing on State, Not Time" in CONVENTIONS.md,
+# not a reason to hold the count down.
 # Raise via `make test-unit UNIT_PARALLEL=16`.
 UNIT_PARALLEL ?= 4
 
@@ -62,9 +65,13 @@ test-unit: FORCE
 # own unique Postgres schema), so the pass is wall-clock bound by process
 # boot and reconnect waits rather than CPU. The default of 4 stays within
 # 16GB-RAM guests (worker + sidecar subprocess + workflow-process child per
-# file) and leaves headroom for the suite's wall-clock timing tests (3s
-# reconnects, 10s waitFor budgets); see WF_PARALLEL above for how to raise
-# it locally.
+# file); see WF_PARALLEL above for how to raise it locally. This pass leans
+# on polling deadlines carried by the shared fixture helpers, which
+# "Synchronizing on State, Not Time" in CONVENTIONS.md rules against and
+# which are a backlog to make signal-driven; a failure at a higher worker
+# count is one of those tests, not a ceiling. The pinned 3s reconnect is a
+# different case and stays -- it drives a production duration through an env
+# seam the rest of the suite shortens.
 #
 # --no-isolate keeps one global and module registry per worker across that
 # worker's files, so the large @intx/* module graph is imported once per

@@ -585,6 +585,8 @@ return new Promise<void>((resolve, reject) => {
 });
 ```
 
+A timeout here bounds a peer you do not control, so the duration is part of the contract with it. A test waiting on its own process is a different problem, and a timeout is the wrong tool for it; see [Synchronizing on State, Not Time](#synchronizing-on-state-not-time).
+
 ---
 
 ## Module Organization
@@ -703,6 +705,25 @@ Focus test coverage on logic specific to this codebase:
 
 Do not write tests that merely verify functionality provided by external libraries. Trust well-maintained libraries to do their job.
 
+### Synchronizing on State, Not Time
+
+A duration is an assertion about how fast the machine is, and a test does not own the machine. A number that is generous on an idle workstation is not generous on a shared CI runner with several workers and a Postgres instance on it. A test therefore waits on a signal that proves the awaited state was reached, not on a duration chosen to be long enough.
+
+This rule governs what a wall-clock number is allowed to decide. It does not forbid clocks. Production code that must abandon an unresponsive peer needs one, and [Timeouts](#timeouts) covers that case. A test whose subject is a deadline needs one too, and it drives that deadline rather than waiting out the real one.
+
+- **Await the signal; do not poll a predicate.** When production code emits an event, resolves a promise, or appends to a record on the transition you care about, await that. An injected callback the test already supplies is a signal: resolve a promise from it rather than polling for its effect. A test that spawns a real process awaits a readiness signal from the child, because a sleep there makes the test a function of process start-up cost. Where genuinely no signal exists, exposing one is the fix; a polling loop is a stopgap, and it should carry no deadline of its own — leave it to the runner's budget to fail, as the next rule requires.
+- **No wall-clock number decides the outcome of a run that would otherwise pass.** A budget's only job is to turn a hang into a failure, so it belongs where the test runner owns it: the `Makefile` test targets, sized for the slowest legitimate run, raised for an individual test that is legitimately slower. A deadline inside a wait helper is not a failsafe; it is a race the test loses under load, and `timeoutMs = 2000` in a per-file helper is the shape this rule exists to stop.
+- **Elapsed time is not evidence.** Do not bound elapsed time to prove work was concurrent or fast, and do not sleep to prove something has not happened yet — a sleep guarantees a minimum delay and nothing more, so a contended event loop overshoots it and the negative assertion inverts. Where the timing is itself the behavior under test, drive it with an injected clock.
+- **A test owns every async operation it starts**, and either awaits it or handles its failure explicitly. An unawaited rejection settles after the test that started it has finished, so the runner charges it to whichever test is running at that moment, and the reported failure names an innocent test or no test at all.
+
+Deleting the timing assertion is often the right fix, and it is the first thing to consider. Most elapsed-time bounds prove nothing a reader needs proven; where a deterministic assertion already covers the property, the timing bound is the redundant one and it is the one to remove. If observing the property would require new production surface, reconsider whether the property needs asserting at all.
+
+A time source is often already a dependency of the code under test, so look for that seam before reaching for a real delay. The shape that works here is the one `packages/inference/src/harness.ts` takes: a `Scheduler` whose `setTimeout` returns a canceller, alongside a monotonic `now`. Production supplies the real one and a test substitutes its own, which is what `createClock()` in `@intx/inference-testing` is for. Match that shape rather than the name — other modules use `Scheduler` for a differently shaped dependency.
+
+Where a test genuinely must exercise a production duration, the number belongs in an injected seam that the rest of the suite overrides with a short value, and any bound the test asserts should be several times the duration it surrounds, so the test fails on the behavior rather than on the margin.
+
+For consuming a signal, the shape to copy is `waitForReactorDone` in `packages/agent/src/audit-integration.test.ts`: it consumes the event stream until the terminal event arrives, with no deadline and no polling, and throws if the stream ends first. Copy the shape, not the name — `waitFor` is reused across this tree and many of those helpers carry their own deadline, so read one before trusting it.
+
 ### Test File Locations
 
 Two locations are used for tests:
@@ -720,6 +741,8 @@ Tests that cannot run inside the fast unit pass (they spawn servers, perform rea
 CI runs the three passes as separate parallel jobs (see `.github/workflows/ci.yml`), which is why they are distinct targets rather than one. Bun's `[test].pathIgnorePatterns` field is documented but non-functional in bun 1.2.22; positive enumeration via positional args is the only mechanism that works. Two guards keep the enumeration honest: `bin/check-test-enumeration.ts` fails `make lint` if any `*.test.ts` is not reachable from an enumerating target, and `bin/check-ci-test-jobs.ts` fails it if any enumerating pass is not run by a CI job or any job escapes the required "make all" gate.
 
 Especially slow tests (e.g. the FIFO mail load case) live in their own files and run via a dedicated `make test-load` target with an even longer timeout, so `make test` stays fast for routine iteration. The load target is run on demand, not by the PR CI graph.
+
+Each pass's `--timeout` is the hang failsafe that [Synchronizing on State, Not Time](#synchronizing-on-state-not-time) refers to. `test-unit` sets none, so it inherits bun's default rather than a value chosen for this suite; a test in that pass needing longer raises its own budget instead.
 
 ---
 
@@ -819,6 +842,24 @@ Do not reference external tracking artifacts in code comments. Comments like `//
 - Non-obvious workarounds or edge cases
 - TODO/FIXME/XXX markers for future work
 - Business logic that requires explanation
+
+### Claims in Comments
+
+Where the previous section decides whether a comment should exist, this one is the bar for the ones that do. A comment asserting a property a caller could rely on says what makes that property true, and what makes it true is either visible in the code or named as a premise. Intent is not a claim and is not covered, and none of this is a reason to add a comment that was not there.
+
+Where the code can make the claim true, make it true; that is the fix, not better wording. "Safe to call twice" is a claim about the code, so if the second call returns early, write the early return. Only where the property depends on something the code does not own — the kernel, a peer, the scheduler — is naming the premise the answer, and then the claim degrades along with it. The deliverable is weaker words, not the same words plus a footnote.
+
+A premise is worth writing down when a later change could violate it, so that the change has something to violate; an unstated one is invisible, and the comment goes on reading as true after it stops being so. A guard added only to make a comment true is the wrong direction, and deleting an unearned claim is usually cheaper than either fix.
+
+```typescript
+// Bad - holds only if the kernel has not recycled the pid, which the
+// code neither checks nor mentions
+// Safe to call twice: a subtree walk from a dead pid finds nothing.
+
+// Good - demoted to what the code actually provides
+// The second call is a no-op unless the pid was recycled, which the
+// walk cannot distinguish from a live one.
+```
 
 ---
 
