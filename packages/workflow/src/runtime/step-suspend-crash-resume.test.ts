@@ -26,7 +26,6 @@ import {
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
   createInMemoryScheduler,
-  createInMemorySignalChannel,
   createNoopDrainController,
   defineWorkflow,
   runtimeRun,
@@ -38,6 +37,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { createObservedSignalChannel } from "@intx/workflow/testing";
 
 const agent = defineAgent({
   id: "a",
@@ -89,7 +89,7 @@ const at = new Date().toISOString();
 describe("step suspend crash-resume", () => {
   test("a step left awaiting-signal by a crash re-parks on the reserved channel and completes on a signal delivered after restart", async () => {
     const runId = "run-crash";
-    const channel = createInMemorySignalChannel();
+    const channel = createObservedSignalChannel();
     const invocations: StepInvokeRequest[] = [];
     // The pre-crash process already sent the original input and parked; on
     // resume the ONLY invocation must be the resume re-invocation. A send
@@ -146,10 +146,19 @@ describe("step suspend crash-resume", () => {
     const handle = runtimeRun(oneStep, env, { runId, resumeFromEvents: seed });
 
     // (i) The re-driven run re-parks rather than throwing
-    // RuntimeResumeUnsupportedError. Let the re-park land, then confirm the
-    // step is back awaiting-signal on the same channel with no new
-    // SignalAwaited minted (the durable one is re-adopted).
-    await new Promise((r) => setTimeout(r, 50));
+    // RuntimeResumeUnsupportedError. The re-park re-adopts the durable
+    // SignalAwaited and commits nothing, so the channel registration is what
+    // marks it -- a log waiter would resolve off the seed and the assertions
+    // below would read pre-crash state. Once parked, confirm the step is back
+    // awaiting-signal on the same channel with no new SignalAwaited minted.
+    //
+    // The zero is what makes that wait a barrier rather than a formality: the
+    // observer counts `awaitNext` calls, the seed is log events and calls
+    // `awaitNext` for nothing, so seeded state cannot satisfy the wait and the
+    // negative assertions below cannot hold vacuously.
+    expect(channel.awaitedCount(signalName("corr-1"))).toBe(0);
+    await channel.awaitAwaitedCount(signalName("corr-1"), 1);
+    expect(channel.awaitedCount(signalName("corr-1"))).toBe(1);
     const parked = await env.repoStore.read(runId);
     expect(parked.filter((e) => e.kind === "SignalAwaited").length).toBe(1);
     expect(parked.some((e) => e.kind === "StepCompleted")).toBe(false);

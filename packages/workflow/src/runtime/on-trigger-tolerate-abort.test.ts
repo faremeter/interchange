@@ -37,6 +37,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { waitForEvent } from "@intx/workflow/testing";
 
 const noopInvokeStep: StepInvoker = () => {
   throw new Error("test: invokeStep must not be called");
@@ -79,19 +80,6 @@ function toleratingSection(): WorkflowDefinition {
     onBodyFailure: "tolerate",
   };
   return defineWorkflow({ id: "on-trigger-tolerate", steps: { section } });
-}
-
-async function waitForEvent(
-  repoStore: RepoStore,
-  runId: string,
-  pred: (e: { kind: string }) => boolean,
-): Promise<void> {
-  for (let i = 0; i < 200; i += 1) {
-    const events = await repoStore.read(runId);
-    if (events.some(pred)) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error("timed out waiting for event");
 }
 
 describe("tolerate section on a parent-abort local teardown", () => {
@@ -139,16 +127,23 @@ describe("tolerate section on a parent-abort local teardown", () => {
     await waitForEvent(repoStore, runId, (e) => e.kind === "ChildSpawned");
     await run.cancel("supervisor-operator", "operator teardown");
 
-    const outcome = await Promise.race([
-      run.complete
-        .then((r) => `settled:${r.terminalStatus}`)
-        .catch((e) => `err:${String(e)}`),
-      new Promise<string>((r) => setTimeout(() => r("HANG"), 2000)),
-    ]);
+    // The regression this guards is a re-arm onto an input park whose signal is
+    // already aborted: the section would never end, so this await would never
+    // resolve. A hang is caught by the lane timeout, which is where
+    // CONVENTIONS.md puts that failsafe and which can be raised for a test that
+    // is legitimately slow; racing a wall-clock deadline here would instead
+    // fail a run that was merely slow.
+    const result = await run.complete;
+    expect(result.terminalStatus).toBe("cancelled");
 
-    // The operator teardown terminates the run. A HANG -- a re-arm waiting for a
-    // next event that never comes -- is the regression this guards.
-    expect(outcome).not.toBe("HANG");
+    // Ended, not re-armed -- the same pair the crash-resume sibling asserts. A
+    // re-arm would spawn a second body for the next event and park the
+    // container on an input signal; neither is in the log.
+    const log = await repoStore.read(runId);
+    expect(log.filter((e) => e.kind === "ChildSpawned").length).toBe(1);
+    expect(
+      log.some((e) => e.kind === "SignalAwaited" && e.parkKind === "input"),
+    ).toBe(false);
   });
 
   test("crash-resume of an abort-teardown tolerate section stays ended, does not resurrect", async () => {

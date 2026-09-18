@@ -26,8 +26,15 @@ import {
 import { createInMemoryBlobSubstrate } from "../runlocal/blob-substrate";
 import { createInMemoryRepoStore } from "../runlocal/repo-store";
 import { createInMemoryScheduler } from "../runlocal/scheduler";
+import { commit } from "./commit-chain";
+import { waitForEvent } from "@intx/workflow/testing";
 import { createInMemorySignalChannel } from "../runlocal/signal-channel";
-import type { StepInvoker, WorkflowRuntimeEnv } from "./env";
+import type {
+  RepoStore,
+  Scheduler,
+  StepInvoker,
+  WorkflowRuntimeEnv,
+} from "./env";
 import { runtimeRun } from "./run";
 import {
   createNoopDrainController,
@@ -48,15 +55,106 @@ function makeAgent(id: string) {
 
 function createControllableDrain(
   definition: WorkflowDefinition,
-): DrainController & { trigger: () => void } {
+): DrainController & {
+  trigger: () => void;
+  observed: () => Promise<string>;
+} {
   const controller = new AbortController();
+  // `shouldAbortForDrain` returns early while the signal is unfired, so it
+  // reaches `behaviorFor` only after the drain has fired. Every call here is
+  // therefore an observation of a fired drain at one of the four points, which
+  // is the event a test needs to wait for -- including the wait-mode case,
+  // where the runtime observes the drain and deliberately does nothing, so
+  // no event reaches the log to wait on instead.
+  const waiters: ((stepId: string) => void)[] = [];
   return {
     signal: controller.signal,
     behaviorFor(stepId) {
+      // Take the whole waiter list before resolving any of it: a waiter that
+      // arms a fresh `observed()` in its own continuation must wait for the
+      // NEXT observation, not be woken by this one.
+      for (const wake of waiters.splice(0)) wake(stepId);
       return resolveDrainBehavior(definition, stepId);
     },
     trigger() {
       controller.abort();
+    },
+    /** Resolves with the step id at the next observation of a fired drain. */
+    observed() {
+      return new Promise<string>((resolve) => {
+        waiters.push(resolve);
+      });
+    },
+  };
+}
+
+/**
+ * A scheduler that records what the runtime arms and fires nothing by itself.
+ *
+ * The two tests below whose subject is what happens *while* a run sits in a
+ * timer wait cannot use the real scheduler: with it, the run leaves the wait
+ * once the duration elapses, so whether the drain lands inside the wait is
+ * decided by how quickly the test reaches the trigger. Holding the timer
+ * unfired holds the run at the observation point for as long as the test
+ * needs, and the test fires the timer itself when it wants the run to
+ * proceed.
+ */
+function createManualScheduler(): {
+  factory: (repoStore: RepoStore, clock: () => Date) => Scheduler;
+  fireAll: () => Promise<void>;
+  armedCount: () => number;
+  nextArmed: () => Promise<void>;
+} {
+  const armed: { runId: string; timerId: string; disposed: boolean }[] = [];
+  let armWaiters: (() => void)[] = [];
+  let store: RepoStore | undefined;
+  let now: (() => Date) | undefined;
+  return {
+    factory(repoStore, clock) {
+      store = repoStore;
+      now = clock;
+      return {
+        scheduleIn(runId, timerId) {
+          const entry = { runId, timerId, disposed: false };
+          armed.push(entry);
+          const waiters = armWaiters;
+          armWaiters = [];
+          for (const waiter of waiters) waiter();
+          return () => {
+            entry.disposed = true;
+          };
+        },
+      };
+    },
+    armedCount: () => armed.filter((a) => !a.disposed).length,
+    /**
+     * Resolve once the runtime has armed a timer, so a caller knows the run
+     * is inside the wait rather than merely past the marker that precedes
+     * it. The timer is armed after the wait's drain entry check, so a drain
+     * triggered once this resolves takes the mid-wait path.
+     */
+    nextArmed(): Promise<void> {
+      // Arm before checking, so a timer armed in between is not missed.
+      const changed = new Promise<void>((resolve) => {
+        armWaiters.push(resolve);
+      });
+      if (armed.some((a) => !a.disposed)) return Promise.resolve();
+      return changed;
+    },
+    async fireAll() {
+      if (store === undefined || now === undefined) {
+        throw new Error("the scheduler factory was never invoked");
+      }
+      for (const entry of armed) {
+        if (entry.disposed) continue;
+        entry.disposed = true;
+        await commit({ repoStore: store }, entry.runId, {
+          kind: "TimerFired",
+          seq: 0,
+          at: now().toISOString(),
+          timerId: entry.timerId,
+        });
+      }
     },
   };
 }
@@ -65,12 +163,18 @@ function buildEnv(
   _definition: WorkflowDefinition,
   invokeStep: StepInvoker,
   drain: DrainController,
+  opts: {
+    scheduler?: (repoStore: RepoStore, clock: () => Date) => Scheduler;
+  } = {},
 ): WorkflowRuntimeEnv {
   const clock = () => new Date();
   const repoStore = createInMemoryRepoStore();
   return {
     repoStore,
-    scheduler: createInMemoryScheduler({ repoStore, clock }),
+    scheduler:
+      opts.scheduler === undefined
+        ? createInMemoryScheduler({ repoStore, clock })
+        : opts.scheduler(repoStore, clock),
     signalChannel: createInMemorySignalChannel(),
     blobs: createInMemoryBlobSubstrate(),
     directors: createDefaultDirectorRegistry(),
@@ -252,11 +356,11 @@ describe("observation point #1: main loop entry", () => {
       },
     });
     const drain = createControllableDrain(def);
-    let stepInvoked = false;
+    const invoked = Promise.withResolvers<boolean>();
     let stepAborted = false;
     const invokeStep: StepInvoker = ({ signal }) =>
       new Promise((_resolve, reject) => {
-        stepInvoked = true;
+        invoked.resolve(true);
         if (signal.aborted) {
           stepAborted = true;
           reject(new Error("aborted before start"));
@@ -269,9 +373,11 @@ describe("observation point #1: main loop entry", () => {
       });
     const env = buildEnv(def, invokeStep, drain);
     const run = runtimeRun(def, env);
-    // Let StepStarted commit and the runner land on invokeStep.
-    await new Promise<void>((r) => setTimeout(r, 10));
-    expect(stepInvoked).toBe(true);
+    // The invoker resolves this as its first act, so awaiting it is the
+    // runner landing on invokeStep -- the state the drain must interrupt.
+    // It also subsumes the `stepInvoked` flag this replaces: reaching the
+    // next line is the proof the flag used to assert.
+    await invoked.promise;
     drain.trigger();
     const result = await run.complete;
     expect(stepAborted).toBe(true);
@@ -292,13 +398,25 @@ describe("observation point #1: main loop entry", () => {
     });
     const drain = createControllableDrain(def);
     const env = buildEnv(def, async () => ({ output: null }), drain);
-    const run = runtimeRun(def, env);
-    await new Promise<void>((r) => setTimeout(r, 10));
+    const runId = "wait-await-run";
+    const run = runtimeRun(def, env, { runId });
+    // The park is committed before the runtime reads drain, so awaiting the
+    // marker puts the run at the observation point under test.
+    await waitForEvent(env.repoStore, runId, (e) => e.kind === "SignalAwaited");
+    // Arm before triggering: the observation can land in the same turn as
+    // the abort, and a latch armed afterwards would miss it.
+    const seen = drain.observed();
     drain.trigger();
-    // Wait briefly to confirm the run is still in flight (the
-    // awaitSignal is wait-mode and ignores drain).
-    await new Promise<void>((r) => setTimeout(r, 20));
-    // Now deliver the signal so the run can complete normally.
+    // A fixed pause cannot establish that the run is still in flight: it
+    // guarantees a minimum only, and under load it overshoots into whatever
+    // happens next. Awaiting the observation establishes that the runtime
+    // read the fired drain -- no more than that, since the latch resolves on
+    // any behaviorFor call and this discards the step id it returns. That it
+    // is THIS step's observation, and that the run is still parked, comes
+    // from the definition under test: an awaitSignal cannot advance until the
+    // deliver below, so the parked runAwaitSignal site is the only thing that
+    // can be asking.
+    await seen;
     await env.signalChannel.deliver("go", null);
     const result = await run.complete;
     expect(result.terminalStatus).toBe("completed");
@@ -325,13 +443,33 @@ describe("observation point #2: retry-between-attempts in runStep", () => {
       attempts += 1;
       throw new Error("attempt fails");
     };
-    const env = buildEnv(def, invokeStep, drain);
-    const run = runtimeRun(def, env);
-    // Wait for first attempt to commit StepFailed and enter retry
-    // backoff (200ms initialBackoffMs leaves plenty of room).
-    await new Promise<void>((r) => setTimeout(r, 50));
+    const timers = createManualScheduler();
+    const env = buildEnv(def, invokeStep, drain, { scheduler: timers.factory });
+    const runId = "retry-drain-run";
+    const run = runtimeRun(def, env, { runId });
+    // The retry path commits TimerSet then AttemptScheduled and only then
+    // enters waitForTimer, so the second marker is the boundary this test
+    // wants: the first attempt has failed and the backoff is armed.
+    //
+    // Reaching the marker is not enough on its own. With the real scheduler
+    // the run leaves the wait when the declared backoff elapses, so whether
+    // the drain arrives during the backoff is decided by whether the test
+    // gets there first -- a worker slower than the backoff sees the second
+    // attempt launch and fails on a count. The scheduler here fires nothing,
+    // so the run stays in the wait until this test acts.
+    await waitForEvent(
+      env.repoStore,
+      runId,
+      (e) => e.kind === "AttemptScheduled",
+    );
+    // The marker precedes the wait; the arming is inside it. Waiting for the
+    // arm is what puts the run at observation point #2 rather than merely
+    // near it.
+    await timers.nextArmed();
     expect(attempts).toBe(1);
+    const seen = drain.observed();
     drain.trigger();
+    await seen;
     const result = await run.complete;
     // The retry was inside `waitForTimer` when drain fired; the
     // observation aborts before launching the next invokeStep.
@@ -351,18 +489,17 @@ describe("observation point #3: waitForTimer", () => {
     });
     const drain = createControllableDrain(def);
     const env = buildEnv(def, async () => ({ output: null }), drain);
-    const run = runtimeRun(def, env);
-    await new Promise<void>((r) => setTimeout(r, 10));
+    const runId = "sleep-drain-run";
+    const run = runtimeRun(def, env, { runId });
+    // TimerSet is committed on the way into waitForTimer, which is the
+    // observation point this test exercises.
+    await waitForEvent(env.repoStore, runId, (e) => e.kind === "TimerSet");
     drain.trigger();
-    const result = await Promise.race([
-      run.complete,
-      new Promise<{ terminalStatus: string }>((_, reject) =>
-        setTimeout(
-          () => reject(new Error("sleep did not abort within 100ms of drain")),
-          100,
-        ),
-      ),
-    ]);
+    // No race against a 100ms rejection. The sleep is 60 seconds, so a drain
+    // that fails to abort it does not finish early enough to fool this
+    // assertion -- it never finishes, and the lane timeout says so. The
+    // rejection could only ever fire on a runner too busy to abort in time.
+    const result = await run.complete;
     expect(result.terminalStatus).toBe("failed");
   });
 
@@ -375,10 +512,26 @@ describe("observation point #3: waitForTimer", () => {
       },
     });
     const drain = createControllableDrain(def);
-    const env = buildEnv(def, async () => ({ output: null }), drain);
-    const run = runtimeRun(def, env);
-    await new Promise<void>((r) => setTimeout(r, 5));
+    const timers = createManualScheduler();
+    const env = buildEnv(def, async () => ({ output: null }), drain, {
+      scheduler: timers.factory,
+    });
+    const runId = "wait-sleep-run";
+    const run = runtimeRun(def, env, { runId });
+    await waitForEvent(env.repoStore, runId, (e) => e.kind === "TimerSet");
+    // The step's declared 30ms would otherwise decide this test: with the
+    // real scheduler a run that reaches the trigger late has already slept,
+    // completed, and satisfied the assertion below without a drain ever
+    // being read. Nothing fires here until this test fires it, so the run is
+    // still in the sleep when the drain lands.
+    await timers.nextArmed();
+    const seen = drain.observed();
     drain.trigger();
+    await seen;
+    // Observed against a wait-mode step and ignored: the run is still
+    // parked, so it can only finish once the timer this test controls fires.
+    expect(timers.armedCount()).toBe(1);
+    await timers.fireAll();
     const result = await run.complete;
     expect(result.terminalStatus).toBe("completed");
   });
@@ -395,21 +548,15 @@ describe("observation point #4: runAwaitSignal entry", () => {
     });
     const drain = createControllableDrain(def);
     const env = buildEnv(def, async () => ({ output: null }), drain);
-    const run = runtimeRun(def, env);
-    await new Promise<void>((r) => setTimeout(r, 10));
+    const runId = "await-cancel-run";
+    const run = runtimeRun(def, env, { runId });
+    await waitForEvent(env.repoStore, runId, (e) => e.kind === "SignalAwaited");
     drain.trigger();
-    const result = await Promise.race([
-      run.complete,
-      new Promise<{ terminalStatus: string }>((_, reject) =>
-        setTimeout(
-          () =>
-            reject(
-              new Error("awaitSignal did not abort within 100ms of drain"),
-            ),
-          100,
-        ),
-      ),
-    ]);
+    // The signal is never delivered, so a drain that fails to abort leaves
+    // the run parked forever rather than completing -- the lane timeout is
+    // the failsafe, and the 100ms rejection this replaces could only fire
+    // on a runner too busy to abort within it.
+    const result = await run.complete;
     expect(result.terminalStatus).toBe("failed");
   });
 
@@ -423,10 +570,12 @@ describe("observation point #4: runAwaitSignal entry", () => {
     });
     const drain = createControllableDrain(def);
     const env = buildEnv(def, async () => ({ output: null }), drain);
-    const run = runtimeRun(def, env);
-    await new Promise<void>((r) => setTimeout(r, 10));
+    const runId = "await-wait-run";
+    const run = runtimeRun(def, env, { runId });
+    await waitForEvent(env.repoStore, runId, (e) => e.kind === "SignalAwaited");
+    const seen = drain.observed();
     drain.trigger();
-    await new Promise<void>((r) => setTimeout(r, 20));
+    await seen;
     await env.signalChannel.deliver("go", null);
     const result = await run.complete;
     expect(result.terminalStatus).toBe("completed");

@@ -46,6 +46,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { waitForEvent, waitForNthEvent } from "@intx/workflow/testing";
 
 import { resolveDrainBehavior, type DrainController } from "./drain";
 
@@ -106,26 +107,26 @@ function buildEnv(args: {
   return env;
 }
 
-// Poll the durable log until the container step has parked `count` times on the
-// given kind, mirroring on-trigger-run.test.ts's waitForPark.
+// Wait for the container step's `count`-th park on the given kind, mirroring
+// on-trigger-run.test.ts's waitForPark. Strict equality on the optional
+// `parkKind` field: the reducer reads an absent parkKind as "approval", this
+// does not, and no caller here relies on the reducer's reading.
 async function waitForContainerPark(
   repoStore: RepoStore,
   runId: string,
   parkKind: "approval" | "signal-relay",
   count: number,
 ): Promise<string> {
-  for (let i = 0; i < 200; i += 1) {
-    const events = await repoStore.read(runId);
-    const awaits = events.filter(
-      (e) => e.kind === "SignalAwaited" && e.parkKind === parkKind,
-    );
-    const latest = awaits[awaits.length - 1];
-    if (awaits.length >= count && latest?.kind === "SignalAwaited") {
-      return latest.signalName;
-    }
-    await new Promise((r) => setTimeout(r, 10));
+  const event = await waitForNthEvent(
+    repoStore,
+    runId,
+    (e) => e.kind === "SignalAwaited" && e.parkKind === parkKind,
+    count,
+  );
+  if (event.kind !== "SignalAwaited") {
+    throw new Error(`expected SignalAwaited, got ${event.kind}`);
   }
-  throw new Error(`timed out waiting for ${parkKind} park #${String(count)}`);
+  return event.signalName;
 }
 
 // Copy a captured child log verbatim into the resume store so the re-spawned
@@ -333,15 +334,18 @@ describe("loop iteration suspend crash-resume", () => {
     // Wait until BOTH body gates are durably parked, then until the container
     // has relayed one (so there is a relay await to truncate before).
     const bodyRunId = loopBodyRunId(runId, "rework", 0);
-    for (let i = 0; i < 200; i += 1) {
-      const log = await repoStore1.read(bodyRunId);
-      const names = new Set<string>();
-      for (const e of log) {
-        if (e.kind === "SignalAwaited") names.add(e.signalName);
-      }
-      if (names.has("goA") && names.has("goB")) break;
-      await new Promise((r) => setTimeout(r, 10));
-    }
+    // Both gates park independently, so each commits its own SignalAwaited;
+    // awaiting them one after the other is order-independent.
+    await waitForEvent(
+      repoStore1,
+      bodyRunId,
+      (e) => e.kind === "SignalAwaited" && e.signalName === "goA",
+    );
+    await waitForEvent(
+      repoStore1,
+      bodyRunId,
+      (e) => e.kind === "SignalAwaited" && e.signalName === "goB",
+    );
     await waitForContainerPark(repoStore1, runId, "signal-relay", 1);
 
     const bodyLog = await repoStore1.read(bodyRunId);
@@ -938,14 +942,8 @@ describe("loop iteration drain", () => {
     await waitForContainerPark(repoStore, runId, "signal-relay", 1);
 
     // Under an explicit `wait`, the drain observation leaves the container
-    // running, so the parked iteration keeps waiting and the run does not
-    // settle while drain is pending.
+    // running, so the parked iteration keeps waiting rather than shedding.
     drain.trigger();
-    const early = await Promise.race([
-      run.complete.then(() => "settled"),
-      new Promise<string>((r) => setTimeout(() => r("pending"), 75)),
-    ]);
-    expect(early).toBe("pending");
 
     // A signal delivered after the drain still resumes the iteration.
     await run.signal("go", { done: true }, "sig-1");
@@ -955,6 +953,26 @@ describe("loop iteration drain", () => {
       outcome: "converged",
       iterations: 1,
     });
+
+    // The run was still live when the signal arrived, which is the property
+    // that separates `wait` from `cancel` here. It is asserted as an ordering
+    // fact in the durable log rather than inferred from elapsed time: the
+    // container consumed the relayed signal BEFORE the run reached its
+    // terminal event. A drain that settled the run early would leave the
+    // terminal first and the SignalReceived after it or absent -- and it would
+    // do so while `terminalStatus` was still `completed`, so the assertions
+    // above would not catch it on their own.
+    const log = await repoStore.read(runId);
+    const receivedIdx = log.findIndex((e) => e.kind === "SignalReceived");
+    const terminalIdx = log.findIndex(
+      (e) =>
+        e.kind === "RunCompleted" ||
+        e.kind === "RunFailed" ||
+        e.kind === "RunCancelled",
+    );
+    expect(receivedIdx).toBeGreaterThan(-1);
+    expect(terminalIdx).toBeGreaterThan(-1);
+    expect(receivedIdx).toBeLessThan(terminalIdx);
   });
 
   test("drain sheds a parked nested loop chain", async () => {

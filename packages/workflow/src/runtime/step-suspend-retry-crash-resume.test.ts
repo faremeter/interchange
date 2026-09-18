@@ -35,7 +35,6 @@ import {
   createInMemoryBlobSubstrate,
   createInMemoryRepoStore,
   createInMemoryScheduler,
-  createInMemorySignalChannel,
   createNoopDrainController,
   defineWorkflow,
   runtimeRun,
@@ -47,6 +46,7 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { createObservedSignalChannel } from "@intx/workflow/testing";
 
 const agent = defineAgent({
   id: "a",
@@ -102,7 +102,7 @@ const at = new Date().toISOString();
 describe("step suspend retry crash-resume", () => {
   test("a step that retried before suspending crash-resumes on the recovered attempt and completes on a signal delivered after restart", async () => {
     const runId = "run-retry-crash";
-    const channel = createInMemorySignalChannel();
+    const channel = createObservedSignalChannel();
     const invocations: StepInvokeRequest[] = [];
     // Pre-crash, the process ran attempt 1 (failed), retried to attempt 2,
     // sent the input, and parked. On resume the ONLY invocation must be the
@@ -202,7 +202,17 @@ describe("step suspend retry crash-resume", () => {
     // RuntimeResumeUnsupportedError, and does NOT re-invoke the agent merely
     // to re-park. Only one SignalAwaited (the durable one re-adopted); no
     // StepCompleted; no invocation yet.
-    await new Promise((r) => setTimeout(r, 50));
+    //
+    // The re-park re-adopts the durable SignalAwaited and commits nothing, so
+    // the channel registration is what marks it; a log waiter would resolve
+    // off the seed, before the run had re-parked.
+    //
+    // The zero is what makes that wait a barrier: the observer counts
+    // `awaitNext` calls and the seed calls it for nothing, so the assertions
+    // below are read after the re-park rather than before it.
+    expect(channel.awaitedCount(signalName("corr-1"))).toBe(0);
+    await channel.awaitAwaitedCount(signalName("corr-1"), 1);
+    expect(channel.awaitedCount(signalName("corr-1"))).toBe(1);
     const parked = await env.repoStore.read(runId);
     expect(parked.filter((e) => e.kind === "SignalAwaited").length).toBe(1);
     expect(parked.some((e) => e.kind === "StepCompleted")).toBe(false);
