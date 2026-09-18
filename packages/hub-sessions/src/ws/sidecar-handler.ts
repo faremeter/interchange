@@ -2663,6 +2663,19 @@ export function createSidecarRouter(
     disconnectAllocation(target);
     allocationFences.delete(target.allocationId);
 
+    // The fence is gone, so a lingering attempt can never settle normally.
+    // Fail it here rather than leaving a marker that blocks the address.
+    for (const attempt of [...allocatedKeyRecordInFlight.values()]) {
+      if (
+        attempt.allocationId === target.allocationId &&
+        attempt.generation <= target.generation
+      ) {
+        noteSenderDeploySettled(attempt, {
+          failed: `Allocation ${target.allocationId} generation ${String(target.generation)} retired`,
+        });
+      }
+    }
+
     const waiters = allocationWaiters.get(target.allocationId);
     if (waiters === undefined) return;
     allocationWaiters.delete(target.allocationId);

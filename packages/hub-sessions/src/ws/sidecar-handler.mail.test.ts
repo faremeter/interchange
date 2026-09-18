@@ -814,6 +814,57 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
   });
 
+  test("retiring an allocation fails its in-flight sender attempt", async () => {
+    const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+    const router = createAllocatedRouter({
+      lookups: {
+        async materializeMailTriggeredRunGrants() {
+          return { outcome: "materialized", stepGrants: [] };
+        },
+        async resolveSenderKey() {
+          return null;
+        },
+      },
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.noteSenderDeployStarted(TEST_IDENTITY.workflowRunAddress, {
+      ...TEST_TARGET,
+      leaseId: "sender-deploy",
+    });
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        rawMessage: "aGVsbG8=",
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      }),
+    );
+    await tick();
+
+    router.retireAllocation(TEST_TARGET);
+
+    expect(undelivered).toEqual([
+      {
+        rawMessage: "aGVsbG8=",
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      },
+    ]);
+    expect(framesOfType(ws, "mail.inbound")).toHaveLength(0);
+    expect(() =>
+      router.noteSenderDeployStarted(TEST_IDENTITY.workflowRunAddress, {
+        ...TEST_TARGET,
+        leaseId: "sender-deploy-retry",
+      }),
+    ).not.toThrow();
+  });
+
   test("fails a rejected workflow recipient closed", async () => {
     const router = createAllocatedRouter({
       lookups: {
