@@ -28,16 +28,17 @@ import {
   type RunWorkflowChildBindings,
 } from "@intx/workflow-host";
 import { computeLiveDefinitionHash } from "@intx/workflow";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  waitForUpstreamPayload,
+} from "@intx/workflow-host/testing";
 
 import {
   createControlChannelSender,
   generateChannelId,
   generateHmacKey,
   receiveControlChannel,
-  type FrameReader,
-  type FrameWriter,
-  type NdjsonReader,
-  type NdjsonWriter,
 } from "../ipc/index";
 import { parseSpawnTimeEnv, runWorkflowChild } from "./index";
 
@@ -150,93 +151,6 @@ async function materializeFixtureClosure(
 // ---------------------------------------------------------------------------
 // Minimal in-memory IPC + substrate harness (mirrors run-child.test.ts).
 // ---------------------------------------------------------------------------
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("buffer shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    flushed: (): readonly string[] => buffer.slice(),
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("frame shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: FrameWriter = {
-    write(bytes: Uint8Array) {
-      buffer.push(bytes);
-      wake();
-    },
-  };
-  return {
-    reader,
-    writer,
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
 
 async function readPrefixEntries(
   repoDir: string,
@@ -458,17 +372,6 @@ function makeSourceRefEnv(opts: {
     STEP_COUNT: "1",
     CLOSURE_PACKAGE_DIR: opts.closurePackageDir,
   };
-}
-
-async function waitForFirstFrame(
-  childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>,
-): Promise<string | undefined> {
-  for (let i = 0; i < 400; i += 1) {
-    const flushed = childToSupervisor.flushed();
-    if (flushed.length > 0) return flushed[0];
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  return undefined;
 }
 
 describe("source-ref run child", () => {
@@ -752,8 +655,9 @@ describe("source-ref run child", () => {
       bindings,
     });
 
-    const readyLine = await waitForFirstFrame(childToSupervisor);
-    expect(readyLine).toBeDefined();
+    // The child announces its control loop is pumping with `ready`; the
+    // shutdown below must not overtake that.
+    await waitForUpstreamPayload(childToSupervisor, "ready");
 
     await supervisorSender.send({
       type: "shutdown",

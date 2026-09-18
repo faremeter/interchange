@@ -7,6 +7,10 @@ import { generateKeyPair } from "@intx/crypto";
 import { hexDecode, hexEncode } from "@intx/types";
 import { APPROVAL_SNAPSHOT_MAX_BYTES } from "@intx/types/runtime";
 import type { Mail } from "@intx/types/runtime";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+} from "@intx/workflow-host/testing";
 
 import {
   ControlPayload,
@@ -27,12 +31,8 @@ import {
   verifyEd25519,
   verifyHmac,
 } from "./index";
-import type {
-  FrameReader,
-  FrameWriter,
-  NdjsonReader,
-  NdjsonWriter,
-} from "./index";
+import type {} from "./index";
+import { waitUntil } from "@intx/types/testing";
 
 /**
  * Synthetic `childPublicKey` hex used to populate `ready` payloads
@@ -60,130 +60,6 @@ function textMail(body: string): Mail {
     parts: [
       { contentType: "text/plain", ref: "mail-part:///r/m/0-text", text: body },
     ],
-  };
-}
-
-function createMemoryNdjsonStream(): {
-  writer: NdjsonWriter;
-  reader: NdjsonReader;
-  close: () => void;
-  inject: (line: string) => void;
-} {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    writer: {
-      write(line: string) {
-        buffer.push(line.replace(/\n$/, ""));
-        wake();
-      },
-    },
-    reader,
-    inject(line: string) {
-      buffer.push(line);
-      wake();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream(): {
-  writer: FrameWriter;
-  reader: FrameReader;
-  close: () => void;
-  inject: (bytes: Uint8Array) => void;
-  injectRaw: (bytes: Uint8Array) => void;
-} {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    writer: {
-      write(bytes: Uint8Array) {
-        buffer.push(bytes);
-        wake();
-      },
-    },
-    reader,
-    inject(bytes: Uint8Array) {
-      // Simulate one complete frame arriving on the wire. The event
-      // channel is newline-delimited (`createEventChannelSender`
-      // terminates every frame with `\n`); the receiver splits on that
-      // terminator, so an injected raw frame must carry it too. Callers
-      // pass the JSON envelope bytes; the terminator is appended here so
-      // the injected bytes form exactly one wire frame.
-      const framed = new Uint8Array(bytes.length + 1);
-      framed.set(bytes, 0);
-      framed[bytes.length] = 0x0a;
-      buffer.push(framed);
-      wake();
-    },
-    injectRaw(bytes: Uint8Array) {
-      // Push bytes onto the wire verbatim, with no frame terminator
-      // appended. Used to simulate the kernel coalescing several frames
-      // into one read chunk or splitting one frame across chunks -- the
-      // exact byte-stream behaviour the newline framing must survive.
-      buffer.push(bytes);
-      wake();
-    },
-    close() {
-      done = true;
-      wake();
-    },
   };
 }
 
@@ -481,29 +357,24 @@ describe("Control channel", () => {
       writer,
     });
 
-    const waitForWrites = async (n: number) => {
-      for (let i = 0; i < 200; i++) {
-        if (writes.length >= n) return;
-        await new Promise((resolve) => setTimeout(resolve, 1));
-      }
-      throw new Error(
-        `timed out waiting for ${n} writes, got ${writes.length}`,
-      );
-    };
-
     // Fire both sends without awaiting either.
     const first = sender.send({ type: "drain", data: { deadlineMs: 1 } });
     const second = sender.send({ type: "drain", data: { deadlineMs: 2 } });
 
-    // After signing settles, only the first send has written; the second
-    // is held at the lock behind the first send's unresolved write.
-    await waitForWrites(1);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The lock is taken synchronously inside `send`, so the second send is
+    // parked before it assigns a seq. With the first write unresolved, a
+    // `seq` of 1 is the settled state rather than a state that has not
+    // arrived yet: the second send has not entered the critical section, so
+    // it has neither signed nor written, and it cannot until the release
+    // below. A sender that assigned seq before taking the lock would read 2
+    // here.
+    await waitUntil(() => writes.length >= 1);
+    expect(sender.seq).toBe(1);
     expect(writes.length).toBe(1);
 
     // Releasing the first write lets the second send proceed.
     gates[0]?.();
-    await waitForWrites(2);
+    await waitUntil(() => writes.length >= 2);
     expect(writes.length).toBe(2);
     gates[1]?.();
     await Promise.all([first, second]);
@@ -985,16 +856,6 @@ describe("Event channel", () => {
     };
     const sender = createEventChannelSender({ hmacKey, channelId, writer });
 
-    const waitForWrites = async (n: number) => {
-      for (let i = 0; i < 200; i++) {
-        if (writes.length >= n) return;
-        await new Promise((resolve) => setTimeout(resolve, 1));
-      }
-      throw new Error(
-        `timed out waiting for ${n} writes, got ${writes.length}`,
-      );
-    };
-
     // Fire both sends without awaiting either.
     const first = sender.send({
       type: "inference.start",
@@ -1007,15 +868,20 @@ describe("Event channel", () => {
       data: { model: "y" },
     });
 
-    // After signing settles, only the first send has written; the second
-    // is held at the lock behind the first send's unresolved write.
-    await waitForWrites(1);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The lock is taken synchronously inside `send`, so the second send is
+    // parked before it assigns a seq. With the first write unresolved, a
+    // `seq` of 1 is the settled state rather than a state that has not
+    // arrived yet: the second send has not entered the critical section, so
+    // it has neither MACed nor written, and it cannot until the release
+    // below. A sender that assigned seq before taking the lock would read 2
+    // here.
+    await waitUntil(() => writes.length >= 1);
+    expect(sender.seq).toBe(1);
     expect(writes.length).toBe(1);
 
     // Releasing the first write lets the second send proceed.
     gates[0]?.();
-    await waitForWrites(2);
+    await waitUntil(() => writes.length >= 2);
     expect(writes.length).toBe(2);
     gates[1]?.();
     await Promise.all([first, second]);
@@ -1193,17 +1059,27 @@ describe("Event channel", () => {
 
     const limit = 4;
     let consumerStarted = false;
-    const _consumer = (async () => {
+    // Resolved by onCrash, so the assertions below wait for the overrun
+    // itself rather than for a window long enough to assume it happened.
+    const overrunReported = Promise.withResolvers<boolean>();
+    // Holds the consumer inside the loop body so the receiver's buffer fills
+    // behind it. Released at teardown, which is what lets the loop -- and so
+    // the consumer promise -- finish and be awaited.
+    const release = Promise.withResolvers<boolean>();
+    const consumer = (async () => {
       consumerStarted = true;
       for await (const _ of receiveEventChannel({
         hmacKey: key,
         channelId,
         reader: stream.reader,
         bufferLimit: limit,
-        onCrash: (r) => crashes.push(r),
+        onCrash: (r) => {
+          crashes.push(r);
+          overrunReported.resolve(true);
+        },
       })) {
-        // do not pump; let the buffer fill
-        await new Promise<void>((r) => setTimeout(r, 1_000_000));
+        // Do not drain: parking here is what makes the buffer overrun.
+        await release.promise;
       }
     })();
     expect(consumerStarted).toBe(true);
@@ -1223,12 +1099,26 @@ describe("Event channel", () => {
       await emitMacedFrame(i);
     }
 
-    // Give the pump a chance to read and crash.
-    await new Promise<void>((r) => setTimeout(r, 50));
-    stream.close();
-
-    expect(crashes.length).toBe(1);
-    expect(crashes[0]).toMatch(/buffer overrun/);
+    // Own the consumer this test started on every exit, not only the passing
+    // one. The crash ends the iterator but cannot unpark a body suspended
+    // between yields, so the release below is the only thing that lets the
+    // loop -- and the consumer promise -- finish; a failing assertion inside
+    // the `try` would otherwise strand it exactly as the unawaited original
+    // stranded a timer.
+    try {
+      // The overrun is the signal. The previous 50ms window had to be long
+      // enough for six frames to be read and the overrun detected, and
+      // decided the outcome: too busy a worker and the assertion read zero.
+      await overrunReported.promise;
+      // The reason, not the count: the wait above resolves on any crash, and
+      // the pump stops on the first, so a seq-gap or HMAC crash arriving
+      // instead is what this distinguishes.
+      expect(crashes[0]).toMatch(/buffer overrun/);
+    } finally {
+      release.resolve(true);
+      stream.close();
+      await consumer;
+    }
   });
 
   test("rejects a control-shaped payload over the event channel", async () => {
@@ -1345,8 +1235,13 @@ describe("Event channel", () => {
     const cut = Math.floor(wire.length / 2);
 
     stream.injectRaw(wire.subarray(0, cut));
-    // The first chunk has no terminator; nothing is delivered yet.
-    await new Promise<void>((r) => setTimeout(r, 10));
+    // An empty buffer means the receiver took the chunk, which is what makes
+    // the assertion below meaningful -- a sleep proves only that time passed,
+    // not that the receiver ever looked. The chunk carries no terminator, so
+    // the decoder's split finds no complete line and the pump returns to
+    // reading; the only path to a delivery runs through the line loop and is
+    // unreachable until the terminator arrives.
+    await waitUntil(() => stream.flushed().length === 0);
     expect(received.length).toBe(0);
     stream.injectRaw(wire.subarray(cut));
     stream.close();

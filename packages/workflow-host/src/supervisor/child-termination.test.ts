@@ -8,6 +8,7 @@ import {
   defaultSetTimer,
 } from "./child-termination";
 import type { SubprocessHandle } from "./types";
+import { waitUntil } from "@intx/types/testing";
 
 const logger = getLogger(["workflow-host", "supervisor", "child-termination"]);
 
@@ -138,7 +139,7 @@ describe("waitDeadline", () => {
     defaultSetTimer(() => {
       fired = true;
     }, 1);
-    await new Promise((r) => setTimeout(r, 15));
+    await waitUntil(() => fired);
     expect(fired).toBe(true);
   });
 });

@@ -36,150 +36,27 @@ import path from "node:path";
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  createMockMailBus,
+  createChangeNotifier,
+  waitForTriggerFireRunIds,
+} from "@intx/workflow-host/testing";
 
 import {
   createWorkflowSupervisor,
   type InboxPrimitives,
-  type MailBusBindings,
   type SignedPayload,
   type SubprocessHandle,
   type SubprocessSpawner,
   type WorkflowSupervisorBindings,
 } from "./index";
 import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
-import {
-  createControlChannelSender,
-  type FrameReader,
-  type NdjsonReader,
-  type NdjsonWriter,
-} from "../ipc/index";
+import { createControlChannelSender } from "../ipc/index";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
-}
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("buffer shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    flushed(): readonly string[] {
-      return buffer.slice();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("undef");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMockMailBus() {
-  const registered: string[] = [];
-  const subs = new Map<string, Set<(b: Uint8Array) => void>>();
-  return {
-    registerAddress(a: string) {
-      registered.push(a);
-    },
-    unregisterAddress(a: string) {
-      const i = registered.lastIndexOf(a);
-      if (i >= 0) registered.splice(i, 1);
-      subs.delete(a);
-    },
-    subscribeMailForAddress(a: string, h: (b: Uint8Array) => void) {
-      let s = subs.get(a);
-      if (s === undefined) {
-        s = new Set();
-        subs.set(a, s);
-      }
-      s.add(h);
-      return () => {
-        subs.get(a)?.delete(h);
-      };
-    },
-    sendOutbound() {
-      throw new Error("sendOutbound not exercised in this test");
-    },
-    registered(): readonly string[] {
-      return registered.slice();
-    },
-    deliver(a: string, m: Uint8Array) {
-      for (const h of subs.get(a) ?? []) h(m);
-    },
-  } as MailBusBindings & {
-    registered(): readonly string[];
-    deliver(a: string, m: Uint8Array): void;
-  };
 }
 
 function createStubRepoStore(baseDir: string): RepoStore {
@@ -357,6 +234,9 @@ type FakeChild = {
 
 function createSpawnTracker() {
   const children: FakeChild[] = [];
+  // Reports each spawn so a test can wait for the child rather than re-read
+  // the array on a timer.
+  const spawnChanges = createChangeNotifier();
   const spawner: SubprocessSpawner = ({ env }) => {
     const s2c = createMemoryNdjsonStream();
     const c2s = createMemoryNdjsonStream();
@@ -377,6 +257,7 @@ function createSpawnTracker() {
       closeOnKill: true,
     };
     children.push(child);
+    spawnChanges.notify();
     const handle: SubprocessHandle = {
       pid: child.pid,
       controlWriter: s2c.writer,
@@ -395,7 +276,12 @@ function createSpawnTracker() {
     };
     return handle;
   };
-  return { spawner, children };
+  return {
+    spawner,
+    children,
+    awaitChildren: (count: number) =>
+      spawnChanges.until(() => children.length >= count),
+  };
 }
 
 async function driveReady(
@@ -437,10 +323,14 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     );
 
     const consumedRecord: string[] = [];
+    // The markConsumed callback is the event; the poll it replaces re-read
+    // this array every ten milliseconds against a one-second deadline.
+    const consumedChanges = createChangeNotifier();
     const wrappedInbox: InboxPrimitives = {
       ...inbox,
       async markConsumed(s, p, r, args) {
         consumedRecord.push(args.messageId);
+        consumedChanges.notify();
         return inbox.markConsumed(s, p, r, args);
       },
     };
@@ -476,8 +366,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
 
       onInferenceEvent: () => undefined,
     });
-    while (tracker.children.length === 0)
-      await new Promise((r) => setTimeout(r, 1));
+    await tracker.awaitChildren(1);
     const childA = tracker.children[0];
     if (childA === undefined) throw new Error("tracker.children[0] missing");
     // Disable closeOnKill on cohort A so we can inject stale frames AFTER kill.
@@ -489,8 +378,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     // this test (we want to keep it alive so the OLD pump can still
     // dequeue frames after the recycle returns).
     const recycleP = supervisor.recycle({ reason: "h-s2-probe" });
-    while (tracker.children.length < 2)
-      await new Promise((r) => setTimeout(r, 1));
+    await tracker.awaitChildren(2);
     const childB = tracker.children[1];
     if (childB === undefined) throw new Error("tracker.children[1] missing");
     const senderB = await driveReady(childB, ipcKp);
@@ -516,12 +404,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
 
     // Wait until cohort B has forwarded the trigger.fire (which means
     // the cohort B broadcaster has a listener for the stable runId).
-    const deadline = Date.now() + 1_000;
-    while (Date.now() < deadline) {
-      const flushed = childB.s2c.flushed();
-      if (flushed.some((f) => f.includes("trigger.fire"))) break;
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitForTriggerFireRunIds(childB.s2c, 1);
     expect(childB.s2c.flushed().some((f) => f.includes("trigger.fire"))).toBe(
       true,
     );
@@ -531,6 +414,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
     // picks it up. `pumpUpstreamControl` notifies the broadcaster it
     // captured at pump-start — cohort A's, which the recycle disposed —
     // so the notify drops and cohort B's listener is untouched.
+    const readsBeforeStale = childA.c2s.readCount();
     await senderA.send({
       type: "terminal.event",
       data: {
@@ -541,8 +425,12 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
       },
     });
 
-    // Wait briefly so the OLD pump has time to process the stale frame.
-    await new Promise((r) => setTimeout(r, 50));
+    // The assertion below is that the stale frame changed nothing, which is
+    // only worth making once the old pump has actually read it. The stream
+    // reports the read, so that is the wait; a pause would have let the
+    // assertion run against a frame still sitting in the buffer, where
+    // "nothing happened" is true for the wrong reason.
+    await childA.c2s.awaitReadCount(readsBeforeStale + 1);
 
     // Under unified dispatch markConsumed is gated on
     // waitForRunTerminalOrPark.  The stale terminal.event from cohort A
@@ -565,11 +453,7 @@ describe("H-S2 stale-cohort routing pinch-point", () => {
 
     // The real terminal event from cohort B resolves
     // waitForRunTerminalOrPark, allowing markConsumed to run.
-    const consumedDeadline2 = Date.now() + 1_000;
-    while (Date.now() < consumedDeadline2) {
-      if (consumedRecord.includes(TEST_MESSAGE_ID)) break;
-      await new Promise((r) => setTimeout(r, 10));
-    }
+    await consumedChanges.until(() => consumedRecord.includes(TEST_MESSAGE_ID));
     expect(consumedRecord).toContain(TEST_MESSAGE_ID);
 
     childA.c2s.close();

@@ -20,7 +20,13 @@ import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
-import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import type { RepoId } from "@intx/hub-sessions";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  createMockMailBus,
+  createStubRepoStore,
+} from "@intx/workflow-host/testing";
 
 import {
   createWorkflowSupervisor,
@@ -32,175 +38,11 @@ import {
   type WorkflowSupervisorBindings,
 } from "./index";
 import { defaultStepRepoId, STEP_GRANTS_PATH } from "./credentials";
-import {
-  createControlChannelSender,
-  type FrameReader,
-  type NdjsonReader,
-  type NdjsonWriter,
-} from "../ipc/index";
+import { createControlChannelSender } from "../ipc/index";
+import { waitUntil } from "@intx/types/testing";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
-}
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    flushed(): readonly string[] {
-      return buffer.slice();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) {
-              throw new Error("frame buffer shift returned undefined");
-            }
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMockMailBus(): MailBusBindings & {
-  registered(): readonly string[];
-  deliver(address: string, message: Uint8Array): void;
-} {
-  const registered: string[] = [];
-  const subscribers = new Map<
-    string,
-    Set<(rawMessage: Uint8Array) => Promise<void>>
-  >();
-  return {
-    registerAddress(address: string) {
-      registered.push(address);
-    },
-    unregisterAddress(address: string) {
-      const idx = registered.lastIndexOf(address);
-      if (idx >= 0) registered.splice(idx, 1);
-      subscribers.delete(address);
-    },
-    subscribeMailForAddress(
-      address: string,
-      handler: (rawMessage: Uint8Array) => Promise<void>,
-    ) {
-      let set = subscribers.get(address);
-      if (set === undefined) {
-        set = new Set();
-        subscribers.set(address, set);
-      }
-      set.add(handler);
-      return () => {
-        const current = subscribers.get(address);
-        current?.delete(handler);
-      };
-    },
-    sendOutbound() {
-      throw new Error("sendOutbound not exercised in this test");
-    },
-    registered(): readonly string[] {
-      return registered.slice();
-    },
-    deliver(address: string, message: Uint8Array) {
-      const set = subscribers.get(address);
-      if (set === undefined) return;
-      for (const handler of set) void handler(message).catch(() => undefined);
-    },
-  };
-}
-
-function createStubRepoStore(baseDir: string): RepoStore {
-  const stub: Partial<RepoStore> = {
-    getRepoDir(repoId: RepoId): string {
-      return path.join(baseDir, repoId.kind, repoId.id);
-    },
-    async writeTreePreservingPrefix(_principal, _repoId, _ref, _args) {
-      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
-    },
-  };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface a precise failure via the proxy
-  return new Proxy(stub as RepoStore, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (value !== undefined) return value;
-      return () => {
-        throw new Error(
-          `stub RepoStore: ${String(prop)} not implemented for this test`,
-        );
-      };
-    },
-  });
 }
 
 async function seedStepGrants(
@@ -338,7 +180,7 @@ async function buildBindings(opts: {
   ipcKeypair: { privateKey: Uint8Array; publicKey: Uint8Array };
 }): Promise<WorkflowSupervisorBindings> {
   return {
-    repoStore: createStubRepoStore(opts.baseDir),
+    repoStore: createStubRepoStore(opts.baseDir, { writeTree: true }),
     signAsPrincipal: async (): Promise<SignedPayload> => ({
       sig: new Uint8Array(64),
       principalKind: "supervisor",
@@ -450,9 +292,9 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     // generator but no consumer has subscribed -- both frames injected
     // below sit in the reader's internal buffer until the generator
     // pulls them.
-    while (children.length === 0 || children[0]?.channelId === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitUntil(
+      () => children.length > 0 && children[0]?.channelId !== undefined,
+    );
     const first = children[0];
     if (first === undefined || first.channelId === undefined) {
       throw new Error("first child not minted");
@@ -489,10 +331,7 @@ describe("waitForReady -> pumpUpstreamControl iterator handoff (Gap A)", () => {
     // were unhealed (e.g. `for await ... return` over the receiver
     // generator), the buffered `recycle.request` would be silently
     // dropped and `children.length` would never reach 2.
-    const deadline = Date.now() + 1000;
-    while (children.length < 2 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await waitUntil(() => children.length >= 2);
     expect(children.length).toBeGreaterThanOrEqual(2);
     const second = children[1];
     if (second === undefined || second.channelId === undefined) {
@@ -591,12 +430,8 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     // Wait for the spawn to be in flight and registered with the
     // mail bus so we know the supervisor is past `wireChild` and
     // mid-handshake.
-    while (
-      !spawnerInvoked ||
-      !mailBus.registered().includes("deployment-x@example.com")
-    ) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    await mailBus.awaitRegistered("deployment-x@example.com");
+    await waitUntil(() => spawnerInvoked);
 
     // Concurrently trigger shutdown. The shutdown's `prior.handle.kill()`
     // closes the control reader; the supervisor's `waitForReady`

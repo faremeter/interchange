@@ -66,22 +66,20 @@ describe("terminal-broadcaster: in-flight event from disposed cohort", () => {
     // The broadcaster's contract: notify after dispose is a no-op.
     expect(() => a.notify("run-x", COMPLETED)).not.toThrow();
 
-    // B's iterator must still be pending: the only notify that lands
-    // is one that the supervisor's pump explicitly routes to B (which
-    // would happen on a `terminal.event` from B's cohort, not A's).
-    let b_settled = false;
-    void b_next.then(() => {
-      b_settled = true;
-    });
-    await new Promise((r) => setTimeout(r, 5));
-    expect(b_settled).toBe(false);
-
-    // Now cohort B's own child emits a terminal event; the supervisor
-    // routes it through B's broadcaster, and B's iterator settles.
-    b.notify("run-x", COMPLETED);
+    // B's iterator must not have taken A's event: the only notify
+    // that lands on B is one the supervisor's pump explicitly routes
+    // to B (which would happen on a `terminal.event` from B's cohort,
+    // not A's). The evidence is the VALUE B settles with, not a
+    // sleep: `notify` fans out synchronously -- it calls each
+    // matching listener's `onEvent` in the same turn -- so a
+    // cross-cohort leak would already have settled `b_next` with A's
+    // COMPLETED above. Cohort B's own child then emits a
+    // distinguishable FAILED, and a listener settles exactly once, so
+    // FAILED arriving here proves A's notify never reached B.
+    b.notify("run-x", FAILED);
     const b_resolved = await b_next;
     expect(b_resolved.done).toBe(false);
-    expect(b_resolved.value).toEqual(COMPLETED);
+    expect(b_resolved.value).toEqual(FAILED);
 
     b.dispose();
   });
@@ -154,15 +152,15 @@ describe("terminal-broadcaster: per-cohort isolation under concurrent dispose", 
     // has reached the broadcaster-swap point).
     a.dispose();
 
-    // B's iterator must still be pending: A's notify cannot influence
-    // B's listener set.
-    let b_settled = false;
-    void b_next.then(() => {
-      b_settled = true;
-    });
-    await new Promise((r) => setTimeout(r, 5));
-    expect(b_settled).toBe(false);
-
+    // B's iterator must not have taken A's event: A's notify cannot
+    // influence B's listener set. `notify` fans out synchronously, so
+    // a leak would already have settled `b_next` with COMPLETED by
+    // this point. Disposing B finalises its pending iterator with
+    // `done: true`, and that is the positive signal ordered after the
+    // leak this test denies -- a leak surfaces here as a value
+    // instead of `done`.
     b.dispose();
+    const b_result = await b_next;
+    expect(b_result.done).toBe(true);
   });
 });

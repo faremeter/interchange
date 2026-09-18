@@ -18,7 +18,11 @@ import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import type { ApprovalSnapshot } from "@intx/types/runtime";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  createStubRepoStore,
+} from "@intx/workflow-host/testing";
 
 import {
   createWorkflowSupervisor,
@@ -33,10 +37,8 @@ import {
   createControlChannelSender,
   receiveControlChannel,
   type ControlPayload,
-  type NdjsonReader,
-  type NdjsonWriter,
-  type FrameReader,
 } from "../ipc/index";
+import { waitUntil } from "@intx/types/testing";
 
 const AGENT_ADDRESS = "run_reemit-agent@integration.example";
 const DEPLOYMENT_ID = "reemit-dep";
@@ -64,112 +66,6 @@ function registrationFor(entry: ParkedEntry): SuspensionRegistration {
     agentAddress: AGENT_ADDRESS,
     approvalSnapshot: entry.snapshot,
   };
-}
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("buffer shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("frame shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-/**
- * Minimal `RepoStore` stub: `spawn` consults `getRepoDir` for credentials
- * assembly. No re-emit path touches the substrate, so every other method
- * throws to surface an accidental untested code path.
- */
-function createStubRepoStore(baseDir: string): RepoStore {
-  const stub: Partial<RepoStore> = {
-    getRepoDir(repoId: RepoId): string {
-      return path.join(baseDir, repoId.kind, repoId.id);
-    },
-  };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only getRepoDir is exercised and any other method throws via the proxy
-  return new Proxy(stub as RepoStore, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (value !== undefined) return value;
-      return () => {
-        throw new Error(`stub RepoStore: ${String(prop)} not implemented`);
-      };
-    },
-  });
 }
 
 function createNoopInboxPrimitives(): InboxPrimitives {
@@ -252,15 +148,18 @@ function createSpawnTracker() {
 /**
  * Drive a cohort's `ready` handshake and start a mock child loop that answers
  * `parked-correlations.request` from the shared `nextReply` ref (a `null` ref
- * means never reply, to exercise the watchdog). Calls `onReply` after each
- * answer so a test can await the fire-and-forget Trigger A effect
- * deterministically.
+ * means never reply, to exercise the watchdog). Calls `onRequest` as each
+ * query arrives and `onReply` after each answer, so a test can await the
+ * fire-and-forget Trigger A effect deterministically. The two are distinct
+ * reports because the watchdog path answers nothing: a test asserting a query
+ * is in flight has only `onRequest` to go on.
  */
 async function driveReadyAndAnswer(
   child: FakeChild,
   ipcKp: { privateKey: Uint8Array; publicKey: Uint8Array },
   nextReply: { current: ParkedEntry[] | null },
   onReply: () => void,
+  onRequest: () => void,
 ): Promise<void> {
   if (child.channelId === undefined) throw new Error("no channelId");
   const childSender = createControlChannelSender({
@@ -286,6 +185,7 @@ async function driveReadyAndAnswer(
   void (async () => {
     for await (const payload of receiver) {
       if (payload.type !== "parked-correlations.request") continue;
+      onRequest();
       const reply = nextReply.current;
       if (reply === null) continue; // watchdog path: never answer
       const response: ControlPayload = {
@@ -305,16 +205,9 @@ interface Harness {
   children: FakeChild[];
   ipcKp: { privateKey: Uint8Array; publicKey: Uint8Array };
   waitForRegistrations: (n: number) => Promise<void>;
+  /** How many `parked-correlations.request` frames cohort A has received. */
+  queriesReceived: () => number;
   cleanup: () => Promise<void>;
-}
-
-async function poll(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 2000;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((r) => setTimeout(r, 2));
-  }
-  throw new Error("condition not met in time");
 }
 
 /**
@@ -342,6 +235,7 @@ async function setup(opts: {
     current: opts.initialReply,
   };
   let replies = 0;
+  let queriesReceived = 0;
 
   const supervisor = createWorkflowSupervisor({
     repoStore: createStubRepoStore(baseDir),
@@ -381,17 +275,25 @@ async function setup(opts: {
     onInferenceEvent: () => undefined,
   });
 
-  await poll(() => tracker.children.length >= 1);
+  await waitUntil(() => tracker.children.length >= 1);
   const childA = tracker.children[0];
   if (childA === undefined) throw new Error("cohort A missing");
-  await driveReadyAndAnswer(childA, ipcKp, nextReply, () => {
-    replies += 1;
-  });
+  await driveReadyAndAnswer(
+    childA,
+    ipcKp,
+    nextReply,
+    () => {
+      replies += 1;
+    },
+    () => {
+      queriesReceived += 1;
+    },
+  );
   await spawnPromise;
   // Await the spawn-seam Trigger A round-trip (unless the cohort withholds its
   // reply) so a later `nextReply` change cannot race the auto-emit.
   if (nextReply.current !== null) {
-    await poll(() => replies >= 1);
+    await waitUntil(() => replies >= 1);
   }
 
   return {
@@ -400,7 +302,8 @@ async function setup(opts: {
     nextReply,
     children: tracker.children,
     ipcKp,
-    waitForRegistrations: (n) => poll(() => registrations.length >= n),
+    waitForRegistrations: (n) => waitUntil(() => registrations.length >= n),
+    queriesReceived: () => queriesReceived,
     cleanup: async () => {
       await supervisor.shutdown();
       for (const child of tracker.children) {
@@ -455,13 +358,21 @@ describe("supervisor reEmitParkedCorrelations", () => {
     harness.nextReply.current = [recycled];
 
     const recycleP = harness.supervisor.recycle({ reason: "test-recycle" });
-    await poll(() => harness.children.length >= 2);
+    await waitUntil(() => harness.children.length >= 2);
     const childB = harness.children[1];
     if (childB === undefined) throw new Error("cohort B missing");
     let cohortBReplies = 0;
-    await driveReadyAndAnswer(childB, harness.ipcKp, harness.nextReply, () => {
-      cohortBReplies += 1;
-    });
+    await driveReadyAndAnswer(
+      childB,
+      harness.ipcKp,
+      harness.nextReply,
+      () => {
+        cohortBReplies += 1;
+      },
+      () => {
+        /* cohort B's query count is not part of this assertion. */
+      },
+    );
     await recycleP;
 
     // The recycle-seam re-emit registered the new cohort's parked correlation.
@@ -563,20 +474,20 @@ describe("supervisor reEmitParkedCorrelations", () => {
         rejected = true;
       });
 
-    await new Promise((r) => setTimeout(r, 20));
+    // Wait on the query REACHING the child rather than on a duration. The
+    // spawn-seam query is the first one (`setup` awaited its reply), so the
+    // second arrival is this driver's. The child withholds its answer, so at
+    // that point the supervisor is parked on a response that will never come
+    // -- which is what "in flight" means here.
+    await waitUntil(() => harness.queriesReceived() >= 2);
     expect(settled).toBe(false); // still pending: proves the query was in flight
 
     await harness.supervisor.shutdown();
 
-    await Promise.race([
-      inflight,
-      new Promise((_r, reject) =>
-        setTimeout(
-          () => reject(new Error("in-flight query hung after shutdown")),
-          1000,
-        ),
-      ),
-    ]);
+    // No deadline on this await: a query that stays unsettled after shutdown
+    // is a hang, and the lane timeout is where CONVENTIONS.md puts that
+    // failsafe. A 1s race here just loses under load.
+    await inflight;
 
     expect(settled).toBe(true);
     expect(rejected).toBe(false);

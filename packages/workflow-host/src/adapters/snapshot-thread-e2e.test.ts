@@ -50,6 +50,8 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 
+import { waitUntil } from "@intx/types/testing";
+
 import { createWorkflowStepInvoker, type StepEnvBase } from "./step-invoker";
 
 const TOOL_NAME = "charge_card";
@@ -193,8 +195,15 @@ async function runOnce(
   };
 
   const handle = runtimeRun(workflowDef, env, { runId: `run-${effect}` });
-  // Let the step build the agent, dispatch the tool, hit the ask gate, and park.
-  await new Promise((r) => setTimeout(r, 250));
+  // The step builds the agent and dispatches the tool, and then the authz
+  // decision splits the arms: `ask` suspends before the tool body and the
+  // park reaches `onPark`, `allow` lets the body run and bump the counter.
+  // Wait for whichever of those this arm expects. Each lands AFTER the
+  // decision, so the counterpart assertion the caller makes ("the tool did
+  // not run" / "nothing parked") reads state the decision has settled.
+  await waitUntil(() =>
+    effect === "ask" ? parks.length >= 1 : toolRunCount >= 1,
+  );
   await handle.cancel("self", "captured park");
   await handle.complete.catch(() => undefined);
   for (const dir of workdirs) rmSync(dir, { recursive: true, force: true });

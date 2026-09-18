@@ -63,6 +63,20 @@ export type LogCapture = {
    * `needle`, whether it was logged before this call or arrives after it.
    * Carries no deadline: a record that never arrives is caught by the lane
    * timeout, per "Synchronizing on State, Not Time" in CONVENTIONS.md.
+   *
+   * `needle` must identify the record uniquely within its own test. Matching
+   * on a message some other test also emits is what makes this a barrier in
+   * name only: `reset` clears the records a previous test logged, but it
+   * cannot exclude the ones still arriving from work that test left running,
+   * and nothing in a record says which test caused it. A wait satisfied by
+   * such a straggler returns before the awaited work has happened, and the
+   * assertion behind it reads pre-barrier state and passes. Where two tests
+   * exercise the same path, vary an input the record carries -- see the
+   * crash-reason token in `substrate-write.test.ts`.
+   *
+   * A test that triggers fire-and-forget work owes the next test the same
+   * courtesy: await that work's own completion record before returning, so
+   * it cannot straggle across the boundary in the first place.
    */
   waitForRecord(needle: string): Promise<CapturedLogRecord>;
   /** As `waitForRecord`, restricted to records at the `error` level. */

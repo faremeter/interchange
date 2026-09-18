@@ -16,7 +16,13 @@ import path from "node:path";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { hexEncode } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import type { RepoId, RepoStore } from "@intx/hub-sessions";
+import {
+  createChangeNotifier,
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+  createSpawnObserver,
+  createStubRepoStore,
+} from "@intx/workflow-host/testing";
 
 import {
   createWorkflowSupervisor,
@@ -27,119 +33,10 @@ import { wrapHubTransportAsMailBus } from "../mail-bus/index";
 import {
   createControlChannelSender,
   type ControlChannelSender,
-  type NdjsonReader,
-  type NdjsonWriter,
-  type FrameReader,
 } from "../ipc/index";
 
 const AGENT_ADDRESS = "run_park-agent@integration.example";
 const DEPLOYMENT_ID = "park-dep";
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("buffer shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    write(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-  };
-  return {
-    writer,
-    reader,
-    inject(line: string) {
-      buffer.push(line.replace(/\n$/, ""));
-      wake();
-    },
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  function wake() {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  }
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("frame shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  return {
-    reader,
-    close() {
-      done = true;
-      wake();
-    },
-  };
-}
-
-/**
- * Minimal `RepoStore` stub: the supervisor's `spawn` consults `getRepoDir`
- * (credentials assembly). No park.notify path touches the substrate, so
- * every other method throws to surface an accidental untested code path.
- */
-function createStubRepoStore(baseDir: string): RepoStore {
-  const stub: Partial<RepoStore> = {
-    getRepoDir(repoId: RepoId): string {
-      return path.join(baseDir, repoId.kind, repoId.id);
-    },
-  };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; only getRepoDir is exercised and any other method throws via the proxy
-  return new Proxy(stub as RepoStore, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (value !== undefined) return value;
-      return () => {
-        throw new Error(`stub RepoStore: ${String(prop)} not implemented`);
-      };
-    },
-  });
-}
 
 function createNoopInboxPrimitives(): InboxPrimitives {
   return {
@@ -181,8 +78,14 @@ describe("supervisor park.notify arm", () => {
     });
 
     const registrations: SuspensionRegistration[] = [];
+    // `onSuspensionRegister` is the signal the supervisor already hands this
+    // test: report each arrival rather than re-reading the array on a tick.
+    const registered = createChangeNotifier();
 
     let observedEnv: Record<string, string> | undefined;
+    // Scoped here, not to the file: `first()` must resolve with THIS
+    // fixture's spawn, not whichever spawn happened earliest in the run.
+    const spawnObserver = createSpawnObserver();
     const supervisor = createWorkflowSupervisor({
       repoStore: createStubRepoStore(baseDir),
       signAsPrincipal: async () => ({
@@ -192,9 +95,11 @@ describe("supervisor park.notify arm", () => {
       mailBus,
       onSuspensionRegister: (registration) => {
         registrations.push(registration);
+        registered.notify();
       },
       subprocessSpawner: ({ env }) => {
         observedEnv = env;
+        spawnObserver.record(env);
         return {
           pid: 9200,
           controlWriter: supervisorToChild.writer,
@@ -231,9 +136,7 @@ describe("supervisor park.notify arm", () => {
       onInferenceEvent: () => undefined,
     });
 
-    while (observedEnv === undefined) {
-      await new Promise((r) => setTimeout(r, 1));
-    }
+    observedEnv = await spawnObserver.first();
     const channelId = observedEnv.IPC_CHANNEL_ID;
     if (channelId === undefined) throw new Error("IPC_CHANNEL_ID missing");
 
@@ -266,16 +169,11 @@ describe("supervisor park.notify arm", () => {
       },
     });
 
-    const waitForRegistration = async (): Promise<SuspensionRegistration> => {
-      const deadline = Date.now() + 2000;
-      while (Date.now() < deadline) {
-        const found = registrations[0];
-        if (found !== undefined) return found;
-        await new Promise((r) => setTimeout(r, 2));
-      }
-      throw new Error("supervisor did not invoke onSuspensionRegister in time");
-    };
-    const registration = await waitForRegistration();
+    await registered.until(() => registrations[0] !== undefined);
+    const registration = registrations[0];
+    if (registration === undefined) {
+      throw new Error("supervisor did not invoke onSuspensionRegister");
+    }
 
     // The child-supplied fields ride through verbatim; the supervisor stamped
     // its own deployment identity onto them. A park with no snapshot forwards
@@ -306,16 +204,11 @@ describe("supervisor park.notify arm", () => {
         snapshot,
       },
     });
-    const waitForSecond = async (): Promise<SuspensionRegistration> => {
-      const deadline = Date.now() + 2000;
-      while (Date.now() < deadline) {
-        const found = registrations[1];
-        if (found !== undefined) return found;
-        await new Promise((r) => setTimeout(r, 2));
-      }
+    await registered.until(() => registrations[1] !== undefined);
+    const withSnapshot = registrations[1];
+    if (withSnapshot === undefined) {
       throw new Error("supervisor did not forward the second registration");
-    };
-    const withSnapshot = await waitForSecond();
+    }
     expect(withSnapshot).toEqual({
       runId: "run-parked-2",
       correlationId: "corr-100",
