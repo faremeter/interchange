@@ -305,6 +305,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           SIDECAR_TOKEN: SECOND_TOKEN,
         },
       });
+      // Register it so a wedge anywhere below reports BOTH sidecars' stderr.
+      // The sender runs here, so without this the diagnostic on a hang covers
+      // only the receiver's sidecar and the sending half is invisible.
+      env.registerSidecar(sidecar2);
       await waitFor(
         () => env.hub.router.getConnectedSidecars().includes(SECOND_SIDECAR_ID),
         { diagnostics: env.sidecarDiagnostics },
@@ -387,11 +391,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
         `${env.sidecarDiagnostics()}\n--- sidecar 2 (sender) stderr ---\n${
           sidecar2?.stderr.join("") ?? "(none)"
         }`;
+      // This wait carries a bound because its expiry is how the triage note
+      // above discriminates: the note tells a reader which failure class they
+      // are in by WHICH wait gave up, and `dumpDiag` -- the only rendering of
+      // both sidecars' stderr -- is emitted by that expiry. Without it the
+      // test dies on the runner's budget instead, which prints neither.
       const terminal = await waitForWorkflowRunComplete(
         env,
         RECEIVER_ID,
         RECEIVER_ID,
-        { diagnostics: dumpDiag },
+        { timeoutMs: 60_000, diagnostics: dumpDiag },
       );
       if (terminal.type !== "RunCompleted") {
         throw new Error(
