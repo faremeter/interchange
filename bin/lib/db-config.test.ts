@@ -51,4 +51,28 @@ describe("resolveDbConfig", () => {
       resolveDbConfig({ ...baseEnv, DB_PORT: "not-a-number" }),
     ).toThrow("DB_PORT must be a positive integer");
   });
+
+  test("threads DB_STATEMENT_TIMEOUT_MS when set", () => {
+    expect(
+      resolveDbConfig({ ...baseEnv, DB_STATEMENT_TIMEOUT_MS: "120000" })
+        .statementTimeoutMs,
+    ).toBe(120000);
+  });
+
+  test("omits the statement timeout when DB_STATEMENT_TIMEOUT_MS is unset or empty", () => {
+    expect("statementTimeoutMs" in resolveDbConfig(baseEnv)).toBe(false);
+    expect(
+      "statementTimeoutMs" in
+        resolveDbConfig({ ...baseEnv, DB_STATEMENT_TIMEOUT_MS: "" }),
+    ).toBe(false);
+  });
+
+  test("rejects a non-positive-integer DB_STATEMENT_TIMEOUT_MS", () => {
+    expect(() =>
+      resolveDbConfig({ ...baseEnv, DB_STATEMENT_TIMEOUT_MS: "0" }),
+    ).toThrow("DB_STATEMENT_TIMEOUT_MS must be a positive integer");
+    expect(() =>
+      resolveDbConfig({ ...baseEnv, DB_STATEMENT_TIMEOUT_MS: "soon" }),
+    ).toThrow("DB_STATEMENT_TIMEOUT_MS must be a positive integer");
+  });
 });

@@ -13,6 +13,7 @@ export type DbConfig = {
   password: string;
   database: string;
   schema?: string;
+  statementTimeoutMs?: number;
 };
 
 /**
@@ -22,12 +23,15 @@ export type DbConfig = {
  * environment fails at the boundary rather than surfacing as an opaque
  * database-config error. `PG_SCHEMA` is threaded through only when set,
  * matching how the hub pins its connection schema.
+ * `DB_STATEMENT_TIMEOUT_MS` is likewise optional; when set it must be a
+ * positive integer, matching the hub's reading of the same variable.
  */
 export function resolveDbConfig(
   env: Record<string, string | undefined>,
 ): DbConfig {
   const port = requireIntVar(env, "DB_PORT");
   const schema = env["PG_SCHEMA"];
+  const statementTimeout = env["DB_STATEMENT_TIMEOUT_MS"];
 
   return {
     host: requireEnvVar(env, "DB_HOST"),
@@ -36,5 +40,9 @@ export function resolveDbConfig(
     password: requireEnvVar(env, "DB_PASSWORD"),
     database: requireEnvVar(env, "DB_NAME"),
     ...(schema !== undefined && schema !== "" && { schema }),
+    ...(statementTimeout !== undefined &&
+      statementTimeout !== "" && {
+        statementTimeoutMs: requireIntVar(env, "DB_STATEMENT_TIMEOUT_MS"),
+      }),
   };
 }
