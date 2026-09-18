@@ -33,6 +33,10 @@ import {
   type WorkflowPark,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import {
+  createObservedSignalChannel,
+  waitForEvent,
+} from "@intx/workflow/testing";
 
 const agent = defineAgent({
   id: "a",
@@ -84,6 +88,38 @@ function buildEnv(
     newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
     drain: createNoopDrainController(def),
     onPark: opts.onPark,
+  };
+}
+
+// `env.onPark` is the runtime's own report of the notify, so a test that needs
+// a park to have been transmitted resolves off the callback rather than
+// polling for its effect. `first` resolves with the first reported park
+// whether it arrived before or after the call, and a later park is a no-op
+// against the settled promise. `parks` stays the full record the count and
+// shape assertions read.
+function createParkSink(): {
+  onPark: (park: WorkflowPark) => void;
+  parks: WorkflowPark[];
+  first: () => Promise<WorkflowPark>;
+} {
+  const parks: WorkflowPark[] = [];
+  let announce: ((park: WorkflowPark) => void) | undefined;
+  const firstPark = new Promise<WorkflowPark>((resolve) => {
+    announce = resolve;
+  });
+  return {
+    parks,
+    onPark: (park) => {
+      parks.push(park);
+      // The executor above runs synchronously, so `announce` is assigned
+      // before this function can be handed to an env. An unset latch is an
+      // internal invariant violation, not a condition to absorb.
+      if (announce === undefined) {
+        throw new Error("onPark fired before the park sink's latch was armed");
+      }
+      announce(park);
+    },
+    first: () => firstPark,
   };
 }
 
@@ -187,11 +223,20 @@ describe("env.onPark at a control-plane suspension", () => {
 
     const handle = runtimeRun(gateWorkflow, env, { runId: "run-2" });
 
-    // Let the gate park on its author-chosen signal channel.
-    await new Promise((r) => setTimeout(r, 50));
+    // The gate flushes its SignalAwaited durably before it waits on its
+    // author-chosen channel, so that event is the park.
+    await waitForEvent(
+      env.repoStore,
+      "run-2",
+      (e) => e.kind === "SignalAwaited",
+    );
 
     // The gate parked (SignalAwaited committed) but no control-plane notify
     // fired -- "human-approval" is not a reserved `signalName(...)` channel.
+    // `parkOnSignal` derives that from the name itself: a non-reserved name
+    // takes the `onSignalPark` branch, which this env leaves unset, so no
+    // ordering against `onPark` is needed here -- the notify has no branch to
+    // fire from at all.
     const parked = await env.repoStore.read("run-2");
     expect(parked.some((e) => e.kind === "SignalAwaited")).toBe(true);
     expect(parks).toEqual([]);
@@ -210,7 +255,7 @@ describe("env.onPark at a control-plane suspension", () => {
       steps: { s: step({ agent }) },
     });
     const channel = createInMemorySignalChannel();
-    const parks: WorkflowPark[] = [];
+    const sink = createParkSink();
     const invokeStep: StepInvoker = async (req) => {
       if (req.resume === undefined) {
         return {
@@ -226,15 +271,15 @@ describe("env.onPark at a control-plane suspension", () => {
     const env = buildEnv(oneStep, {
       invokeStep,
       signalChannel: channel,
-      onPark: (park) => parks.push(park),
+      onPark: sink.onPark,
     });
 
     const handle = runtimeRun(oneStep, env, { runId: "run-snap" });
-    await new Promise((r) => setTimeout(r, 50));
+    await sink.first();
 
     // The live park carries the snapshot the suspend returned, alongside the
     // correlation and approval kind.
-    expect(parks).toEqual([
+    expect(sink.parks).toEqual([
       {
         runId: "run-snap",
         correlationId: "corr-snap",
@@ -250,7 +295,7 @@ describe("env.onPark at a control-plane suspension", () => {
     );
     const result = await handle.complete;
     expect(result.terminalStatus).toBe("completed");
-    expect(parks).toHaveLength(1);
+    expect(sink.parks).toHaveLength(1);
   });
 
   test("a fresh control-plane park notifies the host only after the suspension is durable", async () => {
@@ -269,7 +314,7 @@ describe("env.onPark at a control-plane suspension", () => {
     });
     const runId = "run-durable-notify";
     const channel = createInMemorySignalChannel();
-    const parks: WorkflowPark[] = [];
+    const sink = createParkSink();
     let durableAtNotify: Promise<boolean> | undefined;
     const invokeStep: StepInvoker = async (req) => {
       if (req.resume === undefined) {
@@ -293,7 +338,6 @@ describe("env.onPark at a control-plane suspension", () => {
       invokeStep,
       signalChannel: channel,
       onPark: (park) => {
-        parks.push(park);
         if (holder.env === undefined) {
           throw new Error("onPark fired before env was assigned");
         }
@@ -306,16 +350,19 @@ describe("env.onPark at a control-plane suspension", () => {
                 correlationIdFromSignalName(e.signalName) !== undefined,
             ),
           );
+        // Record with the sink LAST so `durableAtNotify` is already assigned
+        // for anything that resumes on the sink's latch.
+        sink.onPark(park);
       },
     });
     holder.env = env;
 
     const handle = runtimeRun(oneStep, env, { runId });
-    await new Promise((r) => setTimeout(r, 50));
+    await sink.first();
 
     // The host was notified exactly once, and the control-plane SignalAwaited
     // was already durable at that instant.
-    expect(parks).toHaveLength(1);
+    expect(sink.parks).toHaveLength(1);
     expect(durableAtNotify).toBeDefined();
     expect(await durableAtNotify).toBe(true);
 
@@ -326,7 +373,7 @@ describe("env.onPark at a control-plane suspension", () => {
     );
     const result = await handle.complete;
     expect(result.terminalStatus).toBe("completed");
-    expect(parks).toHaveLength(1);
+    expect(sink.parks).toHaveLength(1);
   });
 
   test("resuming a durable park re-parks without re-firing onPark", async () => {
@@ -336,7 +383,7 @@ describe("env.onPark at a control-plane suspension", () => {
       steps: { s: step({ agent }) },
     });
     const runId = "run-resume-park";
-    const channel = createInMemorySignalChannel();
+    const channel = createObservedSignalChannel();
     const parks: WorkflowPark[] = [];
     const invokeStep: StepInvoker = async (req) => {
       if (req.resume === undefined) {
@@ -383,7 +430,17 @@ describe("env.onPark at a control-plane suspension", () => {
     ];
 
     const handle = runtimeRun(oneStep, env, { runId, resumeFromEvents: seed });
-    await new Promise((r) => setTimeout(r, 50));
+    // The re-park commits nothing (the durable SignalAwaited is re-adopted),
+    // so the channel registration is the only thing that marks it. Once it has
+    // happened, no onPark has fired: `parkOnSignal` captures the park to notify
+    // only on the fresh-emit branch this resume skipped.
+    //
+    // The zero is what makes that wait a barrier: the observer counts
+    // `awaitNext` calls and the seed calls it for nothing, so the empty
+    // `parks` below is read after the re-park rather than before it.
+    expect(channel.awaitedCount(signalName(corr))).toBe(0);
+    await channel.awaitAwaitedCount(signalName(corr), 1);
+    expect(channel.awaitedCount(signalName(corr))).toBe(1);
     expect(parks).toEqual([]);
 
     await channel.deliver(signalName(corr), { outcome: "approved" }, "sig-2");

@@ -35,6 +35,8 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { waitForEvent, waitForNthEvent } from "@intx/workflow/testing";
+import { waitUntil } from "@intx/types/testing";
 
 const at = new Date().toISOString();
 
@@ -312,18 +314,19 @@ async function waitForPark(
   parkKind: "input" | "approval" | "signal-relay",
   count: number,
 ): Promise<string> {
-  for (let i = 0; i < 200; i += 1) {
-    const events = await repoStore.read(runId);
-    const awaits = events.filter(
-      (e) => e.kind === "SignalAwaited" && e.parkKind === parkKind,
-    );
-    const latest = awaits[awaits.length - 1];
-    if (awaits.length >= count && latest?.kind === "SignalAwaited") {
-      return latest.signalName;
-    }
-    await new Promise((r) => setTimeout(r, 10));
+  // Strict equality on an optional field. The reducer reads an absent
+  // parkKind as "approval"; this does not, matching the poll it replaced, and
+  // no caller relies on the reducer's reading.
+  const event = await waitForNthEvent(
+    repoStore,
+    runId,
+    (e) => e.kind === "SignalAwaited" && e.parkKind === parkKind,
+    count,
+  );
+  if (event.kind !== "SignalAwaited") {
+    throw new Error(`expected SignalAwaited, got ${event.kind}`);
   }
-  throw new Error(`timed out waiting for ${parkKind} park #${String(count)}`);
+  return event.signalName;
 }
 
 describe("runOnTrigger", () => {
@@ -1086,21 +1089,17 @@ describe("runOnTrigger", () => {
           stage += 1;
           if (stage === 1) {
             // Wait until the plain `gate` sibling is parked on "go" so the guard
-            // deterministically observes the collision, then signal-park.
-            for (let i = 0; i < 300; i += 1) {
-              const events = await repoStore.read(runId);
-              if (
-                events.some(
-                  (e) =>
-                    e.kind === "SignalAwaited" &&
-                    e.stepId === "gate" &&
-                    e.signalName === "go",
-                )
-              ) {
-                break;
-              }
-              await new Promise((r) => setTimeout(r, 10));
-            }
+            // deterministically observes the collision, then signal-park. The
+            // gate flushes its SignalAwaited durably before it waits on the
+            // channel, so that event is the park.
+            await waitForEvent(
+              repoStore,
+              runId,
+              (e) =>
+                e.kind === "SignalAwaited" &&
+                e.stepId === "gate" &&
+                e.signalName === "go",
+            );
             signalParked = true;
             return { kind: "signal-park", name: "go" };
           }
@@ -1125,9 +1124,7 @@ describe("runOnTrigger", () => {
     // guard, but its StepFailed stays BUFFERED while the plain gate keeps the run
     // parked (a failed sibling does not auto-cancel a live awaiter), so cancel to
     // flush the durable log and unwind.
-    for (let i = 0; i < 500 && !signalParked; i += 1) {
-      await new Promise((r) => setTimeout(r, 10));
-    }
+    await waitUntil(() => signalParked);
     expect(signalParked).toBe(true);
     await run.cancel("supervisor-operator", "test done");
     const result = await run.complete.catch(() => undefined);

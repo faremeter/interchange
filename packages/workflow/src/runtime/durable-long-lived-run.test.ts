@@ -43,6 +43,7 @@ import {
   type WorkflowDefinition,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { waitForNthEvent } from "@intx/workflow/testing";
 
 // ---------------------------------------------------------------------------
 // The durable conversation store the run rehydrates from. In production this
@@ -166,27 +167,28 @@ function chatWorkflow(triggers: number | "unbounded"): WorkflowDefinition {
 
 // The reserved channels the runtime mints per re-arm are opaque to the caller
 // (a `corr-<random>` id). The delivering owner discovers the CURRENT one from
-// the reduced state; here we read it from the durable log: wait until the
-// step has re-armed for the Nth time (N input `SignalAwaited`s) and return
-// the latest input channel's name, the channel the next trigger is delivered
-// on.
+// the reduced state; here we read it from the durable log: wait for the Nth
+// input `SignalAwaited` -- the step's Nth re-arm -- and return its channel
+// name, the channel the next trigger is delivered on.
+//
+// Strict equality on the optional `parkKind` field: the reducer reads an
+// absent parkKind as "approval", this does not, and no caller here relies on
+// the reducer's reading.
 async function waitForInputPark(
   repoStore: RepoStore,
   runId: string,
   count: number,
 ): Promise<string> {
-  for (let i = 0; i < 200; i += 1) {
-    const events = await repoStore.read(runId);
-    const inputAwaits = events.filter(
-      (e) => e.kind === "SignalAwaited" && e.parkKind === "input",
-    );
-    const latest = inputAwaits[inputAwaits.length - 1];
-    if (inputAwaits.length >= count && latest?.kind === "SignalAwaited") {
-      return latest.signalName;
-    }
-    await new Promise((r) => setTimeout(r, 10));
+  const event = await waitForNthEvent(
+    repoStore,
+    runId,
+    (e) => e.kind === "SignalAwaited" && e.parkKind === "input",
+    count,
+  );
+  if (event.kind !== "SignalAwaited") {
+    throw new Error(`expected SignalAwaited, got ${event.kind}`);
   }
-  throw new Error(`timed out waiting for input park #${String(count)}`);
+  return event.signalName;
 }
 
 describe("step trigger budget drives re-arm", () => {

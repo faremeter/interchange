@@ -28,6 +28,7 @@ import {
   type WorkflowDefinition,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { waitForEvent } from "@intx/workflow/testing";
 
 const agent = defineAgent({
   id: "a",
@@ -104,9 +105,14 @@ describe("step suspend/resume bridge", () => {
 
     const handle = runtimeRun(oneStep, env, { runId: "run-1" });
 
-    // Let the first invocation land and the step park on the signal
-    // channel before delivering the decision.
-    await new Promise((r) => setTimeout(r, 50));
+    // The park flushes its SignalAwaited durably before it waits on the
+    // channel, so that event arriving is the first invocation having landed
+    // and the step being parked.
+    await waitForEvent(
+      env.repoStore,
+      "run-1",
+      (e) => e.kind === "SignalAwaited",
+    );
 
     // (i) The step parked awaiting-signal, and (ii) SignalAwaited was
     // committed under signalName("corr-1").
@@ -187,11 +193,22 @@ describe("step suspend/resume bridge", () => {
 
     const handle = runtimeRun(oneStep, env, { runId: "run-2" });
 
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForEvent(
+      env.repoStore,
+      "run-2",
+      (e) =>
+        e.kind === "SignalAwaited" && e.signalName === signalName("corr-A"),
+    );
     await channel.deliver(signalName("corr-A"), { step: "A" }, "sig-A");
 
-    // Let the re-park land before delivering the second signal.
-    await new Promise((r) => setTimeout(r, 50));
+    // The second park is a FRESH correlation, so it emits its own
+    // SignalAwaited; wait for that one before delivering the second signal.
+    await waitForEvent(
+      env.repoStore,
+      "run-2",
+      (e) =>
+        e.kind === "SignalAwaited" && e.signalName === signalName("corr-B"),
+    );
     const parked = await env.repoStore.read("run-2");
     const awaitedNames = parked
       .filter((e) => e.kind === "SignalAwaited")

@@ -38,6 +38,10 @@ import {
   type WorkflowEvent,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import {
+  createObservedSignalChannel,
+  waitForEvent,
+} from "@intx/workflow/testing";
 
 const gateOnly = defineWorkflow({
   id: "wait-resume",
@@ -160,7 +164,7 @@ function runStartedSeed(runId: string): WorkflowEvent {
 describe("resume awaiting signal", () => {
   test("resumes a seed whose tail is SignalAwaited (no signal yet): re-parks and a live deliver drives it to completion", async () => {
     const runId = "run-await";
-    const channel = createInMemorySignalChannel();
+    const channel = createObservedSignalChannel();
     const env = buildEnv(gateOnly, { signalChannel: channel });
     const seed: WorkflowEvent[] = [
       runStartedSeed(runId),
@@ -180,8 +184,17 @@ describe("resume awaiting signal", () => {
       resumeFromEvents: seed,
     });
     // The resumed run re-parks on the signal channel; deliver the awaited
-    // signal so the re-armed awaiter resolves and the step completes.
-    await new Promise((r) => setTimeout(r, 50));
+    // signal so the RE-ARMED AWAITER resolves it -- delivering before the
+    // re-park would instead queue the payload for `awaitNext` to drain, which
+    // is a different path and not the one this case is about. The re-park
+    // commits nothing, so the channel registration is what marks it.
+    //
+    // The zero is what makes that wait a barrier: the seed names "go" in a
+    // SignalAwaited, but the observer counts `awaitNext` calls, which only a
+    // live park makes -- so the deliver below lands on the re-armed awaiter.
+    expect(channel.awaitedCount("go")).toBe(0);
+    await channel.awaitAwaitedCount("go", 1);
+    expect(channel.awaitedCount("go")).toBe(1);
     await channel.deliver("go", { resumed: true }, "sig-live");
 
     const result = await handle.complete;
@@ -702,9 +715,14 @@ describe("resume awaiting signal", () => {
       runId: liveRunId,
       triggerPayload: null,
     });
-    // Let the gate park on the channel, then deliver so the runtime emits its
-    // own SignalAwaited then SignalReceived and moves the gate in-flight.
-    await new Promise((r) => setTimeout(r, 50));
+    // A fresh run, so the gate's park emits its OWN SignalAwaited and flushes
+    // it durably before waiting on the channel. Wait for that, then deliver so
+    // the runtime emits its own SignalReceived and moves the gate in-flight.
+    await waitForEvent(
+      liveEnv.repoStore,
+      liveRunId,
+      (e) => e.kind === "SignalAwaited" && e.signalName === "go",
+    );
     await channel.deliver("go", { delivered: "organically" }, "sig-organic");
     const liveResult = await live.complete;
     expect(liveResult.terminalStatus).toBe("completed");

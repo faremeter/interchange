@@ -343,8 +343,23 @@ describe("re-fire adopts a crashed step from the durable log", () => {
       },
     });
 
+    // The step being entered is the in-flight transition, and `invokeStep` is
+    // the runtime's own report of it. The durable log cannot report it here: a
+    // step's `StepStarted` is committed BUFFERED and only flushes at a segment
+    // boundary, which a step that blocks forever never reaches. So latch on
+    // the invoker instead.
+    let markEntered: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
     const blockingInvokeStep: StepInvoker = async ({ signal }) =>
       new Promise((_resolve, reject) => {
+        // The executor above runs synchronously, so `markEntered` is assigned
+        // before this invoker can be handed to an env.
+        if (markEntered === undefined) {
+          throw new Error("invokeStep ran before the entered latch was armed");
+        }
+        markEntered();
         if (signal.aborted) {
           reject(new Error("aborted"));
           return;
@@ -375,8 +390,8 @@ describe("re-fire adopts a crashed step from the durable log", () => {
     };
 
     const handle = runtimeRun(def, env1);
-    // Let the step reach in-flight, then cancel so it settles cancelled.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The step has reached in-flight; cancel so it settles cancelled.
+    await entered;
     await handle.cancel("self", "test cancel");
     const result1 = await handle.complete;
     expect(result1.terminalStatus).toBe("cancelled");

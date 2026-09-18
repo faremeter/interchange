@@ -38,6 +38,7 @@ import {
   type WorkflowDefinition,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { waitForEvent, waitForNthEvent } from "@intx/workflow/testing";
 
 function textOf(turn: ConversationTurn): string {
   return turn.content.map((b) => (b.type === "text" ? b.text : "")).join("");
@@ -120,40 +121,25 @@ function chatWorkflow(triggers: number | "unbounded"): WorkflowDefinition {
   });
 }
 
+// The reserved channel each re-arm mints is a random `corr-<id>`, so the
+// delivering owner discovers it from the log. Strict equality on the optional
+// `parkKind` field: the reducer reads an absent parkKind as "approval", this
+// does not, and no caller here relies on the reducer's reading.
 async function waitForInputPark(
   repoStore: RepoStore,
   runId: string,
   count: number,
 ): Promise<string> {
-  for (let i = 0; i < 200; i += 1) {
-    const events = await repoStore.read(runId);
-    const inputAwaits = events.filter(
-      (e) => e.kind === "SignalAwaited" && e.parkKind === "input",
-    );
-    const latest = inputAwaits[inputAwaits.length - 1];
-    if (inputAwaits.length >= count && latest?.kind === "SignalAwaited") {
-      return latest.signalName;
-    }
-    await new Promise((r) => setTimeout(r, 10));
+  const event = await waitForNthEvent(
+    repoStore,
+    runId,
+    (e) => e.kind === "SignalAwaited" && e.parkKind === "input",
+    count,
+  );
+  if (event.kind !== "SignalAwaited") {
+    throw new Error(`expected SignalAwaited, got ${event.kind}`);
   }
-  throw new Error(`timed out waiting for input park #${String(count)}`);
-}
-
-async function waitForApprovalPark(
-  repoStore: RepoStore,
-  runId: string,
-  name: string,
-): Promise<void> {
-  for (let i = 0; i < 200; i += 1) {
-    const events = await repoStore.read(runId);
-    if (
-      events.some((e) => e.kind === "SignalAwaited" && e.signalName === name)
-    ) {
-      return;
-    }
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timed out waiting for approval park ${name}`);
+  return event.signalName;
 }
 
 function createChatInvoker(store: Store): StepInvoker {
@@ -343,7 +329,12 @@ describe("finite trigger-budget seed across a respawn", () => {
     );
 
     // Approve the gate; turn 1 completes and the step re-arms (park #1).
-    await waitForApprovalPark(repoStore, runId, signalName("corr-appr"));
+    await waitForEvent(
+      repoStore,
+      runId,
+      (e) =>
+        e.kind === "SignalAwaited" && e.signalName === signalName("corr-appr"),
+    );
     await channelA.deliver(signalName("corr-appr"), { text: "one" }, "sig-a");
     const ch1 = await waitForInputPark(repoStore, runId, 1);
 
