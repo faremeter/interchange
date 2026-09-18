@@ -106,6 +106,7 @@ export async function main(
     // about this machine, not about the workflow -- reaches the action
     // handler that needs it without being baked into the definition.
     triggerPayload: { tagline, maxWords: MAX_WORDS, outputPath },
+    hasUpstreamSignalResolver: true,
     loopFns,
     actionResolver,
     invokeStep: createAgentStepInvoker({

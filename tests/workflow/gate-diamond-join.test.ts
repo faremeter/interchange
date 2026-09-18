@@ -80,8 +80,11 @@ describe("gate-skip sentinel", () => {
       return { output: input };
     };
 
-    const result = await runLocal(def, { authorize: allowAll, invokeStep })
-      .complete;
+    const result = await runLocal(def, {
+      authorize: allowAll,
+      hasUpstreamSignalResolver: true,
+      invokeStep,
+    }).complete;
     expect(result.terminalStatus).toBe("completed");
     expect(seenAgents).toContain("a");
     expect(seenAgents).not.toContain("b");

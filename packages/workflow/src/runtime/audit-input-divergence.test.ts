@@ -56,6 +56,7 @@ describe("audit/invoker input agreement", () => {
     const result = await runLocal(def, {
       authorize: allowAll,
       triggerPayload: { field: undefined },
+      hasUpstreamSignalResolver: true,
       invokeStep,
     }).complete;
     expect(result.terminalStatus).toBe("completed");

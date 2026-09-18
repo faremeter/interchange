@@ -29,19 +29,31 @@ const oneStep = defineWorkflow({
 describe("run id validation", () => {
   test("rejects a caller run id with a path separator", () => {
     expect(() =>
-      runLocal(oneStep, { authorize: allowAll, runId: "runs/../escape" }),
+      runLocal(oneStep, {
+        authorize: allowAll,
+        runId: "runs/../escape",
+        hasUpstreamSignalResolver: true,
+      }),
     ).toThrow(/run id .* must match/);
   });
 
   test("rejects a caller run id with an at sign", () => {
     expect(() =>
-      runLocal(oneStep, { authorize: allowAll, runId: "a@b" }),
+      runLocal(oneStep, {
+        authorize: allowAll,
+        runId: "a@b",
+        hasUpstreamSignalResolver: true,
+      }),
     ).toThrow(/run id .* must match/);
   });
 
   test("accepts a run id of letters, digits, underscores, and hyphens", () => {
     expect(() =>
-      runLocal(oneStep, { authorize: allowAll, runId: "run-1_a__body__0" }),
+      runLocal(oneStep, {
+        authorize: allowAll,
+        runId: "run-1_a__body__0",
+        hasUpstreamSignalResolver: true,
+      }),
     ).not.toThrow();
   });
 });

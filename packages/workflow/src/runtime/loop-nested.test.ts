@@ -120,6 +120,7 @@ describe("nested loop", () => {
 
     const result = await runLocal(nested, {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;
@@ -194,6 +195,7 @@ describe("nested loop awaitSignal (in-process park)", () => {
 
     const run = runLocal(outer, {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     });
@@ -253,6 +255,7 @@ describe("nested loop routing", () => {
 
     const result = await runLocal(nested, {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns: fns,
     }).complete;
@@ -283,6 +286,7 @@ describe("nested loop routing", () => {
 
     const result = await runLocal(nested, {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;
@@ -358,6 +362,7 @@ describe("nested loop routing", () => {
 
     const result = await runLocal(nested, {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns: fns,
     }).complete;

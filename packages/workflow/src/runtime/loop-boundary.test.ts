@@ -103,6 +103,7 @@ describe("loop boundary", () => {
     // iteration.
     const result = await runLocal(build(3), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;
@@ -116,6 +117,7 @@ describe("loop boundary", () => {
   test("cap one below convergence exhausts (cap=2)", async () => {
     const result = await runLocal(build(2), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;
@@ -127,6 +129,7 @@ describe("loop boundary", () => {
   test("cap=1 runs exactly one iteration then exhausts", async () => {
     const result = await runLocal(build(1), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;

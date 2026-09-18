@@ -67,13 +67,16 @@ describe("childWorkflow runtime depth guard (runLocal)", () => {
     const result = await runLocal(nestedChain(), {
       authorize: allowAll,
       maxChildSpawnDepth: 2,
+      hasUpstreamSignalResolver: true,
     }).complete;
     expect(result.terminalStatus).toBe("failed");
   });
 
   test("the same chain completes under the default ceiling", async () => {
-    const result = await runLocal(nestedChain(), { authorize: allowAll })
-      .complete;
+    const result = await runLocal(nestedChain(), {
+      authorize: allowAll,
+      hasUpstreamSignalResolver: true,
+    }).complete;
     expect(result.terminalStatus).toBe("completed");
   });
 
@@ -85,6 +88,7 @@ describe("childWorkflow runtime depth guard (runLocal)", () => {
     const result = await runLocal(nestedChain(), {
       authorize: allowAll,
       maxChildSpawnDepth: 1_000_000,
+      hasUpstreamSignalResolver: true,
     }).complete;
     expect(result.terminalStatus).toBe("completed");
   });
