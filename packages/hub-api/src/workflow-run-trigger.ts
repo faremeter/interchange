@@ -36,6 +36,7 @@ import {
   deriveWorkflowRunId,
   isSidecarAllocationDispatchable,
   SendMessage,
+  validateAttachments,
   type AttachmentError,
 } from "@intx/types";
 import type { RunGrantsFrame } from "@intx/types/sidecar";
@@ -57,7 +58,6 @@ import {
   stageRunGrantsFromSnapshot,
 } from "./run-grant-materialization";
 import type { MaterializedGrantRow } from "./grant-materialization";
-import { validateAttachments } from "./attachment-validation";
 import { readDurableWorkflowRunLifecycle } from "./workflow-run-lifecycle";
 
 // DoS guard on the trigger route body. Sized identically to the agent
