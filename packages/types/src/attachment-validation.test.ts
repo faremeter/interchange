@@ -1,12 +1,11 @@
 import { describe, test, expect } from "bun:test";
 
-import { base64Encode } from "@intx/types";
-
 import {
   validateAttachments,
   type AttachmentInput,
   type AttachmentPolicy,
 } from "./attachment-validation";
+import { base64Encode } from "./base64";
 
 function b64(bytes: number[]): string {
   return base64Encode(new Uint8Array(bytes));
@@ -45,6 +44,26 @@ describe("validateAttachments", () => {
         },
       ],
     });
+  });
+
+  test("already-decoded bytes pass through the same checks", () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    expect(
+      validateAttachments([{ mimeType: "image/png", data: bytes }], policy),
+    ).toEqual({
+      ok: true,
+      attachments: [
+        { name: "attachment-0", contentType: "image/png", data: bytes },
+      ],
+    });
+
+    const result = validateAttachments(
+      [{ mimeType: "image/png", data: new Uint8Array(101) }],
+      policy,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("oversize_attachment");
   });
 
   test("empty input is valid", () => {

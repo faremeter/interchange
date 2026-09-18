@@ -16,9 +16,16 @@ import type {
   ToolCall,
   ToolResult,
   OutboundMessage,
+  InboundMessage,
+  MessageAttachment,
   SearchQuery,
 } from "@intx/types/runtime";
 import { InterchangeType } from "@intx/types/runtime";
+import {
+  base64Encode,
+  isTextLikeMimeType,
+  validateAttachments,
+} from "@intx/types";
 
 export type ToolHandler = (
   call: ToolCall,
@@ -29,6 +36,18 @@ export type ToolHandler = (
 // Argument schemas
 // ---------------------------------------------------------------------------
 
+// A tool-facing attachment: plain text unless `encoding` says otherwise. The
+// model never has to hand-encode base64 for a text file -- `content` is the
+// text itself, and `encoding` only exists to opt into base64 (or to force it
+// for a text-like type the caller already has base64-encoded).
+const AttachmentInput = type({
+  name: "string",
+  contentType: "string",
+  content: "string",
+  "encoding?": "'utf-8' | 'base64'",
+});
+type AttachmentInput = typeof AttachmentInput.infer;
+
 const SendArgs = type({
   to: "string | string[]",
   "type?": InterchangeType,
@@ -36,6 +55,7 @@ const SendArgs = type({
   "payload?": "Record<string, unknown>",
   "subject?": "string",
   "inReplyTo?": "string",
+  "attachments?": AttachmentInput.array(),
 });
 
 const ReplyArgs = type({
@@ -43,6 +63,7 @@ const ReplyArgs = type({
   "type?": InterchangeType,
   "content?": "string",
   "payload?": "Record<string, unknown>",
+  "attachments?": AttachmentInput.array(),
 });
 
 const SearchArgs = type({
@@ -71,6 +92,88 @@ const FlagArgs = type({
 const ExpungeArgs = type({});
 
 // ---------------------------------------------------------------------------
+// Attachment decoding
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate tool-supplied attachments against the system attachment policy.
+ * Text-like content types carry plain-text `content` by default and
+ * everything else base64; an explicit `encoding` overrides the inference.
+ */
+function decodeAttachments(inputs: readonly AttachmentInput[]) {
+  // Text under a binary content type is almost always base64 the model
+  // mislabelled; sending it would deliver a corrupt file with no error.
+  const mislabelled = inputs.findIndex(
+    (input) =>
+      input.encoding === "utf-8" && !isTextLikeMimeType(input.contentType),
+  );
+  if (mislabelled !== -1) {
+    return {
+      ok: false as const,
+      error: {
+        code: "invalid_encoding",
+        message: `attachment ${String(mislabelled)} is not a text type, so its content must be base64`,
+      },
+    };
+  }
+
+  return validateAttachments(
+    inputs.map((input) => {
+      const encoding =
+        input.encoding ??
+        (isTextLikeMimeType(input.contentType) ? "utf-8" : "base64");
+      return {
+        name: input.name,
+        mimeType: input.contentType,
+        data:
+          encoding === "base64"
+            ? input.content
+            : new TextEncoder().encode(input.content),
+      };
+    }),
+  );
+}
+
+/**
+ * Decode bytes as UTF-8 only when that loses nothing: a malformed sequence
+ * yields `undefined` rather than replacement characters, and a leading BOM
+ * is kept rather than dropped.
+ */
+function decodeStrictUTF8(bytes: Uint8Array): string | undefined {
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      bytes,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The `attachments` field of a `mail_read` response, or nothing when the
+ * message carries none: enough for the model to know an attachment arrived
+ * and how to fetch it with a MIME part path, without inlining the
+ * (possibly large) payload.
+ *
+ * Part numbering matches the writer (MESSAGE.md § Mail Tools): BODY[1.1] is
+ * always the text part, so attachments start at BODY[1.2]. Mail laid out
+ * any other way would be numbered incorrectly.
+ */
+function attachmentsField(message: InboundMessage) {
+  if (message.attachments === undefined || message.attachments.length === 0) {
+    return {};
+  }
+  return {
+    attachments: message.attachments.map((att, index) => ({
+      name: att.name,
+      contentType: att.contentType,
+      size: att.data.length,
+      part: `1.${index + 2}`,
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Individual tool handlers
 // ---------------------------------------------------------------------------
 
@@ -90,6 +193,15 @@ export function makeMailSendHandler(transport: MessageTransport): ToolHandler {
       );
     }
 
+    let attachments: MessageAttachment[] | undefined;
+    if (args.attachments !== undefined) {
+      const decoded = decodeAttachments(args.attachments);
+      if (!decoded.ok) {
+        return errorResult(call.id, decoded.error.message, decoded.error.code);
+      }
+      attachments = decoded.attachments;
+    }
+
     const outbound: OutboundMessage = {
       to: args.to,
       type: args.type ?? "conversation.message",
@@ -106,6 +218,9 @@ export function makeMailSendHandler(transport: MessageTransport): ToolHandler {
     }
     if (args.inReplyTo !== undefined) {
       outbound.inReplyTo = args.inReplyTo;
+    }
+    if (attachments !== undefined) {
+      outbound.attachments = attachments;
     }
 
     let receipt;
@@ -152,6 +267,15 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
       );
     }
 
+    let attachments: MessageAttachment[] | undefined;
+    if (args.attachments !== undefined) {
+      const decoded = decodeAttachments(args.attachments);
+      if (!decoded.ok) {
+        return errorResult(call.id, decoded.error.message, decoded.error.code);
+      }
+      attachments = decoded.attachments;
+    }
+
     const outbound: OutboundMessage = {
       to: parentHeaders.from,
       type: args.type ?? "conversation.message",
@@ -177,6 +301,9 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
     }
     if (payload !== undefined) {
       outbound.payload = payload;
+    }
+    if (attachments !== undefined) {
+      outbound.attachments = attachments;
     }
 
     let receipt;
@@ -286,6 +413,7 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
           payload: message.payload,
           signatureStatus: message.signatureStatus,
           flags: message.flags,
+          ...attachmentsField(message),
         },
       };
     }
@@ -303,7 +431,10 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
       }
 
       if (message.payload !== undefined) {
-        return { callId: call.id, content: { payload: message.payload } };
+        return {
+          callId: call.id,
+          content: { payload: message.payload, ...attachmentsField(message) },
+        };
       }
       // Conversation message — return content field.
       return {
@@ -311,6 +442,7 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
         content: {
           content: message.content,
           interchangeType: message.headers.interchangeType,
+          ...attachmentsField(message),
         },
       };
     }
@@ -327,12 +459,18 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
       );
     }
 
+    // Text comes back as text; anything else as base64, since decoding
+    // arbitrary bytes as UTF-8 would corrupt them. Mirrors the `content` /
+    // `encoding` pair the send tools accept.
+    const text = isTextLikeMimeType(part.contentType)
+      ? decodeStrictUTF8(part.content)
+      : undefined;
     return {
       callId: call.id,
       content: {
         contentType: part.contentType,
-        encoding: part.encoding,
-        content: new TextDecoder().decode(part.content),
+        encoding: text === undefined ? "base64" : "utf-8",
+        content: text ?? base64Encode(part.content),
       },
     };
   };
