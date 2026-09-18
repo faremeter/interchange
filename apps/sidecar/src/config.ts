@@ -64,6 +64,38 @@ export function readRegistryMaxTarballBytes(): number {
   return n;
 }
 
+// Hub-link reconnect backoff, in milliseconds. Absent or whitespace-only
+// yields `undefined`, which leaves the delay to the hub link's
+// `DEFAULT_RECONNECT_DELAY_MS`; the constant therefore lives at one site
+// instead of being restated here. A present value must be a positive
+// integer, and anything else throws, so a typo fails the boot rather than
+// silently reverting to the link's default: `Number` rejects the whole
+// string rather than reading a leading numeric prefix, so a unit suffix
+// like "3000ms" throws instead of arriving as 3000, and `Number.isInteger`
+// rejects a fractional value rather than truncating it.
+//
+// Production never sets this. The deploy-flow test harness sets a short
+// value so reconnect-survival tests that do not assert the delay itself
+// (they assert the reconnect's recovery semantics, not the backoff
+// duration) do not burn 3s of wall clock per dropped link.
+//
+// Takes the raw string rather than reading `process.env` itself: the
+// sidecar's only caller is its module-top-level boot, which cannot be
+// imported without booting a sidecar, so the validation rule is reachable
+// from a test only as a pure function of its input.
+export function parseReconnectDelayMs(
+  raw: string | undefined,
+): number | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(
+      `SIDECAR_RECONNECT_DELAY_MS must be a positive integer (milliseconds), got ${raw}`,
+    );
+  }
+  return n;
+}
+
 // Operator-configured custom inference adapter manifest. The value is
 // TRUSTED operator input read only from this process's environment;
 // `import(specifier)` is arbitrary code execution, so a specifier must

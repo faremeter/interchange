@@ -1102,12 +1102,15 @@ describe("sidecar↔hub integration", () => {
     const reconnectEnv = startTestServer();
 
     // Inject a fake scheduler so we can observe the reconnect callback
-    // directly rather than waiting for a real timer. The cancel
-    // function nils the captured callback; after close() the callback
-    // must be gone, otherwise the bug is present.
+    // and the delay it was scheduled with directly, rather than waiting
+    // for a real timer. The cancel function nils the captured callback;
+    // after close() the callback must be gone, otherwise the bug is
+    // present.
     let pendingReconnect: (() => void) | null = null;
-    const fakeScheduleReconnect: ReconnectScheduler = (cb) => {
+    const scheduledDelays: number[] = [];
+    const fakeScheduleReconnect: ReconnectScheduler = (cb, delayMs) => {
       pendingReconnect = cb;
+      scheduledDelays.push(delayMs);
       return () => {
         pendingReconnect = null;
       };
@@ -1140,11 +1143,65 @@ describe("sidecar↔hub integration", () => {
       await reconnectEnv.server.stop(true);
       await waitUntil(() => pendingReconnect !== null);
 
+      // This link supplies no `reconnectDelayMs`, so the delay the seam
+      // receives is the link's own `DEFAULT_RECONNECT_DELAY_MS`. Reading
+      // it off the injected scheduler is what pins that constant --
+      // nothing here measures elapsed time.
+      expect(scheduledDelays).toEqual([3_000]);
+
       // close() must cancel the scheduled reconnect. Without the fix
       // the cancel function never runs and pendingReconnect stays
       // non-null.
       client.close();
       expect(pendingReconnect).toBeNull();
+    } finally {
+      client.close();
+      await reconnectEnv.server.stop(true);
+    }
+  });
+
+  test("a configured reconnectDelayMs is the delay the reconnect is scheduled with", async () => {
+    const reconnectEnv = startTestServer();
+
+    // The other half of the pin above: the sidecar's
+    // `SIDECAR_RECONNECT_DELAY_MS` arrives here as `reconnectDelayMs`, so
+    // this is where a link that drops the option -- or substitutes its own
+    // default for a supplied one -- is caught. The scheduler seam reports
+    // the delay as a number, so the assertion needs no clock.
+    const configuredDelayMs = 250;
+    const scheduledDelays: number[] = [];
+    const fakeScheduleReconnect: ReconnectScheduler = (_cb, delayMs) => {
+      scheduledDelays.push(delayMs);
+      // The callback is never fired, so no second connect attempt runs and
+      // there is nothing for close() to cancel.
+      return () => undefined;
+    };
+
+    const transport = createInMemoryTransport();
+    const sessions = createMockSessionManager();
+    const client = createHubLink({
+      hubURL: `ws://localhost:${reconnectEnv.server.port}/ws`,
+      sidecarId: "sc-reconnect-delay",
+      token: "test-token",
+      transport,
+      sessions,
+      ...withTestDeployBindings(),
+      reconnectDelayMs: configuredDelayMs,
+      scheduleReconnect: fakeScheduleReconnect,
+    });
+
+    try {
+      client.connect();
+      await waitUntil(() =>
+        reconnectEnv.router
+          .getConnectedSidecars()
+          .includes("sc-reconnect-delay"),
+      );
+
+      await reconnectEnv.server.stop(true);
+      await waitUntil(() => scheduledDelays.length > 0);
+
+      expect(scheduledDelays).toEqual([configuredDelayMs]);
     } finally {
       client.close();
       await reconnectEnv.server.stop(true);

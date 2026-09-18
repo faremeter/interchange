@@ -23,6 +23,7 @@ import { createTarballCache } from "@intx/tool-packaging";
 import { loadAdapterRegistry } from "@intx/inference/providers";
 
 import {
+  parseReconnectDelayMs,
   readAdapterManifest,
   readCacheMaxBytes,
   readCredentialEncryptionKey,
@@ -207,24 +208,13 @@ if (readyTimeoutRaw !== undefined && readyTimeoutRaw.trim() !== "") {
   readyTimeoutMs = parsed;
 }
 
-// Hub-link reconnect backoff (ms). Resolved here at the boot edge -- the
-// single layer that owns operator config -- and forwarded to the
-// orchestrator's hub link. Absent or empty => the link's 3s
-// `DEFAULT_RECONNECT_DELAY_MS`. Production never sets this; the deploy-flow
-// test harness sets a short value so reconnect-survival tests that do not
-// assert the delay itself (they assert the reconnect's recovery semantics,
-// not the backoff duration) do not burn 3s of wall clock per dropped link.
-const reconnectDelayRaw = process.env["SIDECAR_RECONNECT_DELAY_MS"];
-let reconnectDelayMs: number | undefined;
-if (reconnectDelayRaw !== undefined && reconnectDelayRaw.trim() !== "") {
-  const parsed = Number.parseInt(reconnectDelayRaw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(
-      `SIDECAR_RECONNECT_DELAY_MS must be a positive integer (milliseconds), got ${reconnectDelayRaw}`,
-    );
-  }
-  reconnectDelayMs = parsed;
-}
+// Hub-link reconnect backoff. Resolved here at the boot edge -- the single
+// layer that owns operator config -- and forwarded to the orchestrator's hub
+// link below. `parseReconnectDelayMs` owns the validation rule and the
+// absent-means-link-default semantics.
+const reconnectDelayMs = parseReconnectDelayMs(
+  process.env["SIDECAR_RECONNECT_DELAY_MS"],
+);
 
 // Sweep any tmp staging directories left behind by a `put` or
 // `extractTarball` that crashed between staging and the final rename
