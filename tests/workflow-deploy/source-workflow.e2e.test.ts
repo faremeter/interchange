@@ -184,7 +184,7 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
 
     // No registry env: a source deploy delivers the asset inline on the frame
     // and the sidecar checks the subtree out of the indexed pack.
-    env = await startDeployFlowEnv({});
+    env = await startDeployFlowEnv();
 
     // Seed the source asset: write the workflow package as RAW SOURCE at the
     // repo root (package.json declaring interchange.workflow + the bundled
@@ -394,7 +394,7 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
     await waitFor(
       () =>
         env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     // 3) Fire the mail trigger and assert the run reaches RunCompleted. This
@@ -406,14 +406,13 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
       messageId: "<source-skeleton-e2e@integration.interchange>",
     });
     const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-      timeoutMs: 30_000,
       diagnostics: env.sidecarDiagnostics,
     });
     const terminal = await waitForWorkflowRunComplete(
       env,
       DEPLOYMENT_ID,
       runId,
-      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
     if (terminal.type !== "RunCompleted") {
       throw new Error(
@@ -450,15 +449,12 @@ describe.skipIf(!harnessDbEnvAvailable())("source-sourced workflow e2e", () => {
       },
       extraEnv: { SIDECAR_DATA_DIR: restoredDataDir },
     });
+    env.registerSidecar(restartedSidecar);
 
     await waitFor(
       () =>
         env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      {
-        timeoutMs: 30_000,
-        diagnostics: () =>
-          `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`,
-      },
+      { diagnostics: env.sidecarDiagnostics },
     );
   }, 180_000);
 });

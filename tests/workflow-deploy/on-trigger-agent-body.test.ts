@@ -210,7 +210,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Fire the event; the section spawns the body child, whose agent step runs
@@ -225,7 +225,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await waitFor(
           async () =>
             (await findContainerRunId(workflowRunRepoId)) !== undefined,
-          { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+          { diagnostics: env.sidecarDiagnostics },
         );
         const id = await findContainerRunId(workflowRunRepoId);
         if (id === undefined) throw new Error("no container run");
@@ -241,7 +241,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return hasChildCompleted(events, BODY_CHILD_RUN_ID);
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- The reachability proof: read the BODY child's own run log ----
@@ -288,7 +288,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             (e) =>
               e.addr === deploymentMailAddress && isLiveInferenceEvent(e.event),
           ),
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 10_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The section re-arms on its input park for the next event and never

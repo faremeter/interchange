@@ -107,39 +107,54 @@ function noopToolRunner(): ToolRunner {
   };
 }
 
+type EventWaiter = {
+  predicate: (e: ReactorEmittedEvent) => boolean;
+  resolve: (e: ReactorEmittedEvent) => void;
+};
+
+/**
+ * Accumulate the reactor's emitted events and hand out waiters over them.
+ * `onEvent` is the reactor's own emit callback, so it is the signal a waiter
+ * resolves from. `events` stays a plain array because the assertions read the
+ * whole history back out of it after the wait.
+ */
 function collectEvents(): {
   events: ReactorEmittedEvent[];
   onEvent: (e: ReactorEmittedEvent) => void;
+  waitFor: (type: ReactorEmittedEvent["type"]) => Promise<ReactorEmittedEvent>;
 } {
   const events: ReactorEmittedEvent[] = [];
+  const waiters: EventWaiter[] = [];
+
+  function waitFor(
+    type: ReactorEmittedEvent["type"],
+  ): Promise<ReactorEmittedEvent> {
+    const predicate = (e: ReactorEmittedEvent) => e.type === type;
+    // Callers reach a `waitFor` after the awaited event has already been
+    // emitted -- driving the harness clock runs the reactor to `reactor.done`
+    // before the test awaits it. The already-collected scan covers that; the
+    // waiter list covers the event that has yet to arrive.
+    const emitted = events.find(predicate);
+    if (emitted !== undefined) return Promise.resolve(emitted);
+    return new Promise<ReactorEmittedEvent>((resolve) => {
+      waiters.push({ predicate, resolve });
+    });
+  }
+
   return {
     events,
-    onEvent: (e: ReactorEmittedEvent) => events.push(e),
-  };
-}
-
-function waitForEvent(
-  events: ReactorEmittedEvent[],
-  predicate: (e: ReactorEmittedEvent) => boolean,
-  timeoutMs = 2000,
-): Promise<ReactorEmittedEvent> {
-  return new Promise((resolve, reject) => {
-    const deadline = setTimeout(
-      () => reject(new Error("Timed out waiting for event")),
-      timeoutMs,
-    );
-
-    function check() {
-      const found = events.find(predicate);
-      if (found !== undefined) {
-        clearTimeout(deadline);
-        resolve(found);
-        return;
+    onEvent: (e: ReactorEmittedEvent) => {
+      events.push(e);
+      const stillWaiting: EventWaiter[] = [];
+      for (const waiter of waiters) {
+        if (waiter.predicate(e)) waiter.resolve(e);
+        else stillWaiting.push(waiter);
       }
-      setTimeout(check, 10);
-    }
-    check();
-  });
+      waiters.length = 0;
+      waiters.push(...stillWaiting);
+    },
+    waitFor,
+  };
 }
 
 function makeInboundMessage(correlationId?: string): InboundMessage {
@@ -217,16 +232,13 @@ type TestReactorOverrides = {
 type TestReactorHandle = {
   reactor: Reactor;
   events: ReactorEmittedEvent[];
-  waitFor: (
-    type: ReactorEmittedEvent["type"],
-    timeoutMs?: number,
-  ) => Promise<ReactorEmittedEvent>;
+  waitFor: (type: ReactorEmittedEvent["type"]) => Promise<ReactorEmittedEvent>;
 };
 
 function createTestReactor(
   overrides: TestReactorOverrides = {},
 ): TestReactorHandle {
-  const { events, onEvent } = collectEvents();
+  const { events, onEvent, waitFor } = collectEvents();
   const sessionId = overrides.sessionId ?? `test-sess-${++testSessionCounter}`;
 
   const config: ReactorConfig = {
@@ -269,13 +281,6 @@ function createTestReactor(
   };
 
   const reactor = createReactor(config);
-
-  function waitFor(
-    type: ReactorEmittedEvent["type"],
-    timeoutMs = 2000,
-  ): Promise<ReactorEmittedEvent> {
-    return waitForEvent(events, (e) => e.type === type, timeoutMs);
-  }
 
   return { reactor, events, waitFor };
 }

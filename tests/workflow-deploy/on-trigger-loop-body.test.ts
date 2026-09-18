@@ -175,7 +175,7 @@ async function deployAndAssertBodyCompletes(opts: {
 
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   await fireMailTrigger(env, deploymentMailAddress, {
@@ -187,7 +187,7 @@ async function deployAndAssertBodyCompletes(opts: {
     await waitFor(
       async () =>
         (await findContainerRunId(handle.workflowRunRepoId)) !== undefined,
-      { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+      { diagnostics: env.sidecarDiagnostics },
     );
     const id = await findContainerRunId(handle.workflowRunRepoId);
     if (id === undefined) throw new Error("no container run");
@@ -206,7 +206,7 @@ async function deployAndAssertBodyCompletes(opts: {
       );
       return hasChildCompleted(events, BODY_CHILD_RUN_ID);
     },
-    { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   // The loop body's agent step actually reached the mock provider: the reply is

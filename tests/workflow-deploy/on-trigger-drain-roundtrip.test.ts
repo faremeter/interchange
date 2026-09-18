@@ -181,7 +181,7 @@ async function deployDrainSection(opts: {
 
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
   return { workflowRunRepoId: handle.workflowRunRepoId, deploymentMailAddress };
 }
@@ -217,7 +217,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId,
         runId,
         {
-          timeoutMs: 30_000,
           diagnostics: env.sidecarDiagnostics,
         },
       );
@@ -261,7 +260,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // so the drain lands while the container awaits the body terminal.
       const runId = await waitFor(
         async () => (await containerRunId(workflowRunRepoId)) !== undefined,
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       ).then(() => containerRunId(workflowRunRepoId));
       if (runId === undefined) throw new Error("no container run");
       await waitFor(
@@ -273,7 +272,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "TimerSet");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       initiateDrain(env, anchorRunId, { deadlineMs: DRAIN_DEADLINE_MS });
@@ -285,7 +284,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId,
         runId,
         {
-          timeoutMs: 30_000,
           diagnostics: env.sidecarDiagnostics,
         },
       );
@@ -302,7 +300,7 @@ async function waitForContainerSignalRelay(
   // and the run id in the reads below.
   const containerId = await waitFor(
     async () => (await containerRunId(workflowRunRepoId)) !== undefined,
-    { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+    { diagnostics: env.sidecarDiagnostics },
   ).then(() => containerRunId(workflowRunRepoId));
   if (containerId === undefined) throw new Error("no container run");
   await waitFor(
@@ -313,7 +311,7 @@ async function waitForContainerSignalRelay(
           e.type === "SignalAwaited" && e.body["parkKind"] === "signal-relay",
       );
     },
-    { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+    { diagnostics: env.sidecarDiagnostics },
   );
   return containerId;
 }

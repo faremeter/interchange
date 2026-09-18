@@ -606,7 +606,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     await waitFor(
       () =>
         env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     // 3) Fire the mail trigger and assert the run reaches RunCompleted.
@@ -615,7 +615,6 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     });
 
     const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-      timeoutMs: 30_000,
       diagnostics: env.sidecarDiagnostics,
     });
     const terminal = await waitForWorkflowRunComplete(
@@ -623,7 +622,6 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       DEPLOYMENT_ID,
       runId,
       {
-        timeoutMs: 30_000,
         diagnostics: env.sidecarDiagnostics,
       },
     );
@@ -790,7 +788,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
         env.hub.router
           .getRoutableAddresses()
           .includes(bodyDeploymentMailAddress),
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
     // The retired staging path writes no plaintext file to disk.
     const legacyBodySourcesPath = path.join(
@@ -820,7 +818,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
       await waitFor(
         async () =>
           (await findBodyContainerRunId(workflowRunRepoId)) !== undefined,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const id = await findBodyContainerRunId(workflowRunRepoId);
       if (id === undefined) throw new Error("no container run id");
@@ -838,7 +836,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
           findChildCompleted(events, BODY_CHILD_RUN_ID_FIRST) !== undefined
         );
       },
-      { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     // The container recorded the body child completed; the body child's own

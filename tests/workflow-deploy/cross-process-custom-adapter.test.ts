@@ -225,7 +225,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const mail = await fireMailTrigger(env, deploymentMailAddress, {
@@ -235,7 +235,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       const terminal = await waitForWorkflowRunComplete(
@@ -243,7 +242,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId,
         runId,
         {
-          timeoutMs: 20_000,
           diagnostics: env.sidecarDiagnostics,
         },
       );

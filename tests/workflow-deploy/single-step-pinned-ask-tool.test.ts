@@ -219,7 +219,7 @@ describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
     await waitFor(
       () =>
         env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     await fireMailTrigger(env, deploymentMailAddress, {
@@ -229,7 +229,6 @@ describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
 
     const runId = await waitForFirstRunId(env, workflowRunRepoId, {
       diagnostics: env.sidecarDiagnostics,
-      timeoutMs: 20_000,
     });
 
     // The run parks on the tool's approval gate: a `SignalAwaited` event
@@ -242,7 +241,7 @@ describe.skipIf(!harnessDbEnvAvailable())("single-step ask-marked tool", () => {
         const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
         return events.some((e) => e.type === "SignalAwaited");
       },
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     const parkedEvents = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);

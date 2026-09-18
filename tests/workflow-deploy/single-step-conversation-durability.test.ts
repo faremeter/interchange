@@ -42,6 +42,7 @@ import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
+import { waitUntil } from "@intx/types/testing";
 import { computeLiveDefinitionHash } from "@intx/workflow";
 import {
   createDefaultDirectorRegistry,
@@ -70,6 +71,10 @@ import {
 } from "@intx/hub-sessions";
 import { assembleMessage, assembleSignedContent } from "@intx/mime";
 import {
+  createMemoryFrameStream,
+  createMemoryNdjsonStream,
+} from "@intx/workflow-host/testing";
+import {
   createControlChannelSender,
   createWorkflowStepInvoker,
   generateChannelId,
@@ -80,10 +85,6 @@ import {
   discoverInFlightRuns,
   createWorkflowRunRepoStore,
   type ChildStepInvoker,
-  type FrameReader,
-  type FrameWriter,
-  type NdjsonReader,
-  type NdjsonWriter,
   type RunWorkflowChildBindings,
   type StepEnvBase,
 } from "@intx/workflow-host";
@@ -173,93 +174,6 @@ async function readSnapshotUserTexts(
     }
   }
   return texts;
-}
-
-function createMemoryNdjsonStream() {
-  const buffer: string[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  const wake = (): void => {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  };
-  const reader: NdjsonReader = {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("buffer shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: NdjsonWriter = {
-    async write(line: string): Promise<void> {
-      buffer.push(line);
-      wake();
-    },
-  };
-  return {
-    reader,
-    writer,
-    flushed: (): readonly string[] => buffer.slice(),
-    close: (): void => {
-      done = true;
-      wake();
-    },
-  };
-}
-
-function createMemoryFrameStream() {
-  const buffer: Uint8Array[] = [];
-  let waiter: (() => void) | null = null;
-  let done = false;
-  const wake = (): void => {
-    const w = waiter;
-    waiter = null;
-    if (w) w();
-  };
-  const reader: FrameReader = {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        while (true) {
-          if (buffer.length > 0) {
-            const next = buffer.shift();
-            if (next === undefined) throw new Error("frame shift undefined");
-            yield next;
-            continue;
-          }
-          if (done) return;
-          await new Promise<void>((resolve) => {
-            waiter = resolve;
-          });
-        }
-      })();
-    },
-  };
-  const writer: FrameWriter = {
-    write(bytes: Uint8Array): void {
-      buffer.push(bytes);
-      wake();
-    },
-  };
-  return {
-    reader,
-    writer,
-    close: (): void => {
-      done = true;
-      wake();
-    },
-  };
 }
 
 function assembleConversationMessage(to: string, text: string): Uint8Array {
@@ -497,14 +411,6 @@ interface ChildHandles {
   builds: () => number;
 }
 
-async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let i = 0; i < 600; i += 1) {
-    if (predicate()) return;
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  throw new Error("timed out waiting for condition");
-}
-
 describe("single-step conversation durability across respawn (Phase 4.5)", () => {
   test("warm agent restores its conversation from the substrate after respawn", async () => {
     const baseDir = await fs.mkdtemp(
@@ -711,7 +617,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
 
     // --- Child #1: two-turn conversation (local store under baseDir) ---
     const child1 = startChild(await generateKeyPair(), baseDir);
-    await waitFor(() => child1.childToSupervisor.flushed().length > 0);
+    await waitUntil(() => child1.childToSupervisor.flushed().length > 0);
 
     await child1.supervisorSender.send({
       type: "trigger.fire",
@@ -722,7 +628,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         payload: textMail("alpha"),
       },
     });
-    await waitFor(() =>
+    await waitUntil(() =>
       child1.childToSupervisor.flushed().some((l) => l.includes("run-1")),
     );
 
@@ -735,7 +641,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         payload: textMail("bravo"),
       },
     });
-    await waitFor(() =>
+    await waitUntil(() =>
       child1.childToSupervisor.flushed().some((l) => l.includes("run-2")),
     );
 
@@ -801,7 +707,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     expect(await dirExists(freshLocalStoreDir)).toBe(false);
 
     const child2 = startChild(await generateKeyPair(), freshLocalDataDir);
-    await waitFor(() => child2.childToSupervisor.flushed().length > 0);
+    await waitUntil(() => child2.childToSupervisor.flushed().length > 0);
 
     await child2.supervisorSender.send({
       type: "trigger.fire",
@@ -812,7 +718,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         payload: textMail("charlie"),
       },
     });
-    await waitFor(() =>
+    await waitUntil(() =>
       child2.childToSupervisor.flushed().some((l) => l.includes("run-3")),
     );
 

@@ -608,7 +608,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const runGrants = deriveWireRunGrants(snapshot);
@@ -618,14 +618,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-        timeoutMs: 30_000,
         diagnostics: env.sidecarDiagnostics,
       });
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       if (terminal.type !== "RunCompleted") {
         const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);

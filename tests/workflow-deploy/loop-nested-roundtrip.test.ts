@@ -88,19 +88,21 @@ afterAll(async () => {
   if (h !== undefined) await h.close();
 });
 
+// The `ChildSpawned` count on a run's log, read until it reaches `target`. The
+// child packs those records incrementally, so a single read races replication.
+// The poll carries no deadline of its own: the caller's test budget is the
+// failsafe for a count that never arrives, and the harness `waitFor` is what
+// puts the sidecar's output on the env teardown's report.
 async function countChildSpawns(
   runId: string,
   target: number,
-  timeoutMs: number,
 ): Promise<number> {
   let count = 0;
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
+  await waitFor(async () => {
     const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
     count = events.filter((e) => e.type === "ChildSpawned").length;
-    if (count >= target || Date.now() > deadline) break;
-    await new Promise((r) => setTimeout(r, 100));
-  }
+    return count >= target;
+  });
   return count;
 }
 
@@ -158,7 +160,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await fireMailTrigger(env, deploymentMailAddress, {
@@ -167,7 +169,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
 
@@ -175,19 +176,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(terminal.type).toBe("RunCompleted");
 
       // The outer loop spawned three iteration child runs on the top-level run.
-      const outerSpawns = await countChildSpawns(runId, 3, 30_000);
+      const outerSpawns = await countChildSpawns(runId, 3);
       expect(outerSpawns).toBe(3);
 
       // The outer loop's first iteration body run spawned three inner-loop
       // iteration child runs -- the nested loop actually ran on the deployed
       // path, resolving its body ref from the shared bodies map.
       const outerBodyRunId = loopBodyRunId(runId, OUTER_LOOP_STEP_ID, 0);
-      const innerSpawns = await countChildSpawns(outerBodyRunId, 3, 30_000);
+      const innerSpawns = await countChildSpawns(outerBodyRunId, 3);
       expect(innerSpawns).toBe(3);
 
       // The inner iteration body run is keyed under the outer iteration's run id.

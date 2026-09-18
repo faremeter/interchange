@@ -196,7 +196,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       await waitFor(
         () => env.hub.router.getRoutableAddresses().includes(parentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await fireMailTrigger(env, parentMailAddress, {
@@ -206,7 +206,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const parentRunId = await waitForFirstRunId(
         env,
         handle.workflowRunRepoId,
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await waitFor(
@@ -218,7 +218,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "ChildSpawned");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const parentEvents = await readWorkflowRunEvents(
@@ -249,7 +249,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               e.type === "StepCompleted" && e.body["stepId"] === "childStep",
           );
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The child's agent executed the tool and re-inferenced with its result:

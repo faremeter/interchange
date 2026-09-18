@@ -184,7 +184,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await fireMailTrigger(env, deploymentMailAddress, {
@@ -197,7 +197,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         async () => (await topLevelRunId(workflowRunRepoId)) !== undefined,
         {
           diagnostics: env.sidecarDiagnostics,
-          timeoutMs: 20_000,
         },
       );
       const runId = await topLevelRunId(workflowRunRepoId);
@@ -211,7 +210,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             (e) => e.type === "SignalAwaited" && e.body["signalName"] === "go",
           );
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The run is parked, not failed, before the drain.
@@ -229,7 +228,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(terminal.type).toBe("RunFailed");
 

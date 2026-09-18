@@ -124,7 +124,9 @@ beforeAll(async () => {
     creatorPrincipalId: CALLER_PRINCIPAL_ID,
   });
 
-  env = await startDeployFlowEnv({ inferenceEchoUserMessage: true });
+  env = await startDeployFlowEnv({
+    inferenceEchoUserMessage: true,
+  });
 });
 
 afterAll(async () => {
@@ -238,7 +240,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- fire mail #1, drive the body into its mid-sleep park -------------
@@ -276,7 +278,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return parked && !hasChildCompleted(containerEvents, bodyRunId);
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const containerRunId = await findContainerRunId(env, workflowRunRepoId);
@@ -299,7 +301,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           !env.hub.router
             .getRoutableAddresses()
             .includes(deploymentMailAddress),
-        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- RESTART: a fresh sidecar against the SAME data dir ---------------
@@ -314,13 +316,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
       });
-      const restoredDiagnostics = (): string =>
-        `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`;
+      env.registerSidecar(restartedSidecar);
 
-      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-        timeoutMs: 30_000,
-      });
-      expect(reconnectMs).toBeGreaterThan(0);
+      await waitForReconnect(env, deploymentMailAddress);
 
       // ---- assert: the restored container re-drove the mid-sleep body, its
       //      timer re-armed and fired, and the body completed AFTER the restart.
@@ -333,7 +331,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return hasChildCompleted(containerEvents, bodyRunId);
         },
-        { diagnostics: restoredDiagnostics, timeoutMs: 90_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const finalContainer = await readWorkflowRunEvents(

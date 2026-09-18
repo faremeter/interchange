@@ -231,7 +231,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Fire all mails in quick succession. The supervisor's dispatch
@@ -258,7 +258,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         workflowRunRepoId,
         deploymentMailAddress,
         LOAD_MESSAGE_IDS,
-        { timeoutMs: 240_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(consumedEntries.length).toBe(LOAD_MAIL_COUNT);
       expect(
@@ -321,7 +321,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID_LOAD,
         runId,
-        { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(terminal.type).toBe("RunCompleted");
 

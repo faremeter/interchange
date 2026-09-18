@@ -182,7 +182,7 @@ async function runGrandchildDrainTest(opts: {
 
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   await fireMailTrigger(env, deploymentMailAddress, {
@@ -200,7 +200,7 @@ async function runGrandchildDrainTest(opts: {
       );
       return events.some((e) => e.type === "ChildSpawned");
     },
-    { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
+    { diagnostics: env.sidecarDiagnostics },
   );
   const bodyEvents = await readWorkflowRunEvents(
     env,
@@ -228,7 +228,7 @@ async function runGrandchildDrainTest(opts: {
       );
       return events.some((e) => e.type === opts.inFlightEventType);
     },
-    { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   const runId = await topLevelRunId(workflowRunRepoId, childWorkflowId);
@@ -241,7 +241,6 @@ async function runGrandchildDrainTest(opts: {
   initiateDrain(env, anchorRunId, { deadlineMs: DRAIN_DEADLINE_MS });
 
   const terminal = await waitForWorkflowRunComplete(env, anchorRunId, runId, {
-    timeoutMs: 30_000,
     diagnostics: env.sidecarDiagnostics,
   });
   expect(terminal.type).toBe("RunFailed");

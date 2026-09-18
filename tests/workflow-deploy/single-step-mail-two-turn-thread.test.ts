@@ -27,9 +27,10 @@
 //   * A reply threaded onto mail 2: In-Reply-To == m2, To == userB.
 //   * The whole exchange ran under ONE run: a single RunStarted, consuming
 //     m1; mail 2 never opened a RunStarted of its own -- it was consumed
-//     mid-run by mail_wait, the continuation. The run completes well within
-//     mail_wait's timeout, so its resolution came from mail 2's arrival, not a
-//     wait expiry.
+//     mid-run by mail_wait, the continuation.
+//   * The `mail_wait` tool_result the agent answered carries mail 2's sender,
+//     which is what proves mail 2's arrival resolved the wait rather than the
+//     wait expiring on its own timer.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
@@ -57,6 +58,7 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
+import { toolResultTexts } from "./nested-tool-invoke-helpers";
 import { singleStepMailInboxEntry } from "./fixtures/single-step-mail-inbox-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -74,9 +76,10 @@ const MAIL2_FROM = "usertwo-9b7e10@integration.interchange";
 const MAIL2_BODY = "Turn two continuation body marker mail-2t-9b7e10.";
 const REPLY2_BODY = "Reply to the continuation, threaded on mail two.";
 
-// mail_wait's own timeout. Kept far above a healthy notify-wake so that a run
-// completing inside the (shorter) waitForWorkflowRunComplete budget proves the
-// wait resolved from mail 2's arrival rather than from a wait expiry.
+// mail_wait's own timeout, kept far above a healthy notify-wake so the wait
+// resolves from mail 2's arrival rather than from its own expiry. Which of the
+// two actually happened is proved by the tool_result content assertion, not by
+// this number.
 const MAIL_WAIT_TIMEOUT_S = 90;
 
 const ALL_TOOL_NAMES = [
@@ -186,7 +189,7 @@ async function waitForReplyInReplyTo(
           m.senderAddress === sender &&
           parseHeaderSection(m.raw).headers.get("in-reply-to") === inReplyTo,
       ),
-    { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
   const match = env.hub.outboundMail.find(
     (m) =>
@@ -257,7 +260,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // --- Turn 1: opener from userA ------------------------------------
@@ -287,9 +290,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // result lands: a second inference request). Wait for that, then fire
       // mail 2 so it arrives while the run is blocked in the wait.
       await waitFor(() => env.inference.requests.length >= 2, {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
+      // The observable above is the request ARRIVING at the mock. The watch is
+      // armed only after the mock answers it, the child runs mail_wait, and
+      // `transport.watch` registers -- all inside the workflow-child process,
+      // which reports none of it to the harness, so the 300ms stands in for
+      // that registration. It is a cadence bet, not a correctness one:
+      // `makeMailWaitHandler` searches the mailbox before installing the
+      // watch, so a mail 2 that lands early still resolves the wait, via the
+      // search path rather than the mid-turn wake this test means to drive.
       await new Promise((r) => setTimeout(r, 300));
 
       // --- Turn 2: continuation from userB, delivered mid-run -----------
@@ -314,15 +324,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // --- One run held open across both exchanges ----------------------
       const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
-      // Completing inside this budget (well under mail_wait's 90s timeout)
-      // proves the wait resolved from mail 2's arrival, not a timeout expiry.
       const terminal = await waitForWorkflowRunComplete(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 40_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
       if (terminal.type !== "RunCompleted") {
@@ -331,6 +338,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
         throw new Error(
           `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(failed?.body)}\n${env.sidecarDiagnostics()}`,
+        );
+      }
+
+      // Mail 2's ARRIVAL resolved the wait, rather than the wait expiring on
+      // its own timer. `makeMailWaitHandler` resolves a match with `{ ref,
+      // from, subject, content }` and an expiry with `{ error, code:
+      // "timeout" }`, and the scripted mock advances on a tool_result's
+      // PRESENCE either way -- so an expired wait still reaches turn 2, whose
+      // scripted `inReplyTo` is MAIL2_MESSAGE_ID, and still satisfies every
+      // threading assertion above. The result's text is the only thing that
+      // separates the two. Both `mail_send` results carry `{ messageId }` and
+      // nothing else -- the recipient is tool_use INPUT, which
+      // `toolResultTexts` does not read -- so the wait's match is the only
+      // result in this run that can carry a sender address.
+      const toolResults = env.inference.requests.flatMap(toolResultTexts);
+      if (!toolResults.some((t) => t.includes(MAIL2_FROM))) {
+        throw new Error(
+          `mail_wait did not resolve from mail 2: no tool_result carried ${MAIL2_FROM}; observed ${JSON.stringify(toolResults)}\n${env.sidecarDiagnostics()}`,
         );
       }
 

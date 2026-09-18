@@ -177,7 +177,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await fireMailTrigger(env, deploymentMailAddress, {
@@ -186,7 +186,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       const runId = await waitForFirstRunId(env, handle.workflowRunRepoId, {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
 
@@ -194,7 +193,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       // The failure routed, so the run completes rather than failing.
       expect(terminal.type).toBe("RunCompleted");

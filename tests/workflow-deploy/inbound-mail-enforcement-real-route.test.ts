@@ -226,7 +226,7 @@ async function deployEnforcementWorkflow(opts: {
 
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(opts.mailAddress),
-    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   return { workflowRunRepoId: handle.workflowRunRepoId };
@@ -363,7 +363,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         D1_DEPLOYMENT_ID,
         d1RunId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       if (validTerminal.type !== "RunCompleted") {
         throw new Error(
@@ -375,7 +375,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         d1.workflowRunRepoId,
         d1MailAddress,
         `${trigger.messageId}.json`,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
       );
       expect(validConsumed.map((e) => e.filename)).toContain(
         `${trigger.messageId}.json`,
@@ -431,7 +430,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           const fresh = env.sidecarDiagnostics().slice(diagBeforeDrop.length);
           return /Rejecting inbound mail/.test(fresh) && /missing/.test(fresh);
         },
-        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ABSENCE signal: a dropped message is never dispatched, so no
@@ -504,7 +503,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         D2_DEPLOYMENT_ID,
         d2RunId,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       if (admittedTerminal.type !== "RunCompleted") {
         throw new Error(
@@ -528,7 +527,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         d2.workflowRunRepoId,
         d2MailAddress,
         `${admittedMessageId}.json`,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
       );
       expect(admittedConsumed.map((e) => e.filename)).toContain(
         `${admittedMessageId}.json`,
@@ -577,42 +575,47 @@ function buildMinimalMail(opts: {
  * run's terminal-event observation, so a test that observes terminal then reads
  * consumed/ in one shot can race the supervisor's pack pipeline. Mirrors the
  * local helper in `mail-edge-cases.test.ts`.
+ *
+ * The awaited state is the dedup entry appearing, so the wait carries no
+ * budget of its own: an entry that never lands is a hang, which the test's own
+ * `bun test` budget fails. Runs through the harness `waitFor` so a hang here
+ * reaches the env teardown's in-flight wait report.
  */
 async function waitForConsumedFilename(
   env: DeployFlowEnv,
   workflowRunRepoId: RepoId,
   address: string,
   expected: string,
-  opts: { timeoutMs?: number; diagnostics?: () => string } = {},
 ): Promise<{ filename: string; bytes: Uint8Array }[]> {
-  const { timeoutMs = 10_000, diagnostics } = opts;
-  const start = Date.now();
-  for (;;) {
-    const entries = await readClaimCheckDir(
+  let found: { filename: string; bytes: Uint8Array }[] = [];
+  await waitFor(async () => {
+    found = await readClaimCheckDir(
       env,
       workflowRunRepoId,
       address,
       "consumed",
     );
-    if (entries.some((e) => e.filename === expected)) {
-      return entries;
-    }
-    if (Date.now() - start > timeoutMs) {
-      const diag = diagnostics?.();
-      const ctx = diag ? `\n${diag}` : "";
-      const observed = entries.map((e) => e.filename).join(", ") || "<empty>";
-      throw new Error(
-        `waitForConsumedFilename timed out after ${String(timeoutMs)}ms; expected ${expected}; observed ${observed}${ctx}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
+    return found.some((e) => e.filename === expected);
+  });
+  return found;
 }
 
 /**
  * Assert a filename never appears in the deployment's `consumed/` subtree over a
  * bounded settle window. A dropped inbound message is never dispatched, so it is
  * never consumed; this is the ABSENCE counterpart to `waitForConsumedFilename`.
+ *
+ * `windowMs` is load-bearing: the assertion is an absence, so elapsed time is
+ * the only thing that makes it meaningful, and a predicate over the same
+ * condition would hold on the first read and prove nothing. Callers scope the
+ * window to the settle they want covered.
+ *
+ * The loop stays hand-rolled for that reason -- `waitFor` exits when its
+ * predicate holds, which here is the failure -- and runs inside `env.retrying`
+ * so the env teardown's in-flight wait report still covers it. The
+ * `checkTornDown` at the top of the loop is what lets that teardown's stop end
+ * it: an absence observed against an env being dismantled proves nothing, so
+ * the window must throw rather than run out.
  */
 async function assertConsumedFilenameAbsent(
   env: DeployFlowEnv,
@@ -622,22 +625,28 @@ async function assertConsumedFilenameAbsent(
   opts: { windowMs?: number; diagnostics?: () => string } = {},
 ): Promise<void> {
   const { windowMs = 2_000, diagnostics } = opts;
-  const start = Date.now();
-  for (;;) {
-    const entries = await readClaimCheckDir(
-      env,
-      workflowRunRepoId,
-      address,
-      "consumed",
-    );
-    if (entries.some((e) => e.filename === forbidden)) {
-      const diag = diagnostics?.();
-      const ctx = diag ? `\n${diag}` : "";
-      throw new Error(
-        `expected ${forbidden} to never be consumed, but it appeared${ctx}`,
-      );
-    }
-    if (Date.now() - start > windowMs) return;
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  await env.retrying(
+    `assertConsumedFilenameAbsent(${forbidden})`,
+    async (checkTornDown) => {
+      const start = Date.now();
+      for (;;) {
+        checkTornDown();
+        const entries = await readClaimCheckDir(
+          env,
+          workflowRunRepoId,
+          address,
+          "consumed",
+        );
+        if (entries.some((e) => e.filename === forbidden)) {
+          const diag = diagnostics?.();
+          const ctx = diag ? `\n${diag}` : "";
+          throw new Error(
+            `expected ${forbidden} to never be consumed, but it appeared${ctx}`,
+          );
+        }
+        if (Date.now() - start > windowMs) return;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    },
+  );
 }

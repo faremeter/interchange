@@ -132,19 +132,52 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return pid;
     }
 
-    async function waitForBlockedBackend(pid: number): Promise<void> {
-      for (let attempt = 0; attempt < 200; attempt += 1) {
+    // Report whether `promise` has settled, without consuming it. The lock
+    // waits below watch for a state that only exists while the other side is
+    // still in flight, so that side settling is the signal that the state will
+    // never appear -- which is exactly the fencing regression each test pins.
+    // Both outcomes are handled here, so this second handler cannot turn a
+    // rejection the test still awaits into an unhandled one.
+    function settleReporter(promise: Promise<unknown>): () => boolean {
+      let settled = false;
+      const mark = (): void => {
+        settled = true;
+      };
+      void promise.then(mark, mark);
+      return () => settled;
+    }
+
+    // Wait until backend `pid` is blocked by another backend. The lock state
+    // lives in PostgreSQL, not in this process, so a query is the only way to
+    // read it; the 10ms is the interval between reads and decides nothing,
+    // because the loop ends on observed state rather than on a budget. The
+    // block persists until the caller releases the holder, so a slow poll
+    // cannot sample past it.
+    async function waitForBlockedBackend(
+      pid: number,
+      blockedSideSettled: () => boolean,
+    ): Promise<void> {
+      for (;;) {
         const rows = await h.db.execute(
           sql`select cardinality(pg_blocking_pids(${pid})) > 0 as blocked`,
         );
         if (rows[0]?.["blocked"] === true) return;
+        if (blockedSideSettled()) {
+          throw new Error(
+            `PostgreSQL backend ${pid} finished without ever blocking`,
+          );
+        }
         await Bun.sleep(10);
       }
-      throw new Error(`PostgreSQL backend ${pid} did not become blocked`);
     }
 
-    async function waitForBackendBlockedBy(pid: number): Promise<void> {
-      for (let attempt = 0; attempt < 200; attempt += 1) {
+    // The mirror of the above: wait until SOME backend is blocked by `pid`.
+    // Same deadline-free loop, same release ordering.
+    async function waitForBackendBlockedBy(
+      pid: number,
+      blockedSideSettled: () => boolean,
+    ): Promise<void> {
+      for (;;) {
         const rows = await h.db.execute(sql`
           select exists (
             select 1
@@ -153,9 +186,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ) as blocked
         `);
         if (rows[0]?.["blocked"] === true) return;
+        if (blockedSideSettled()) {
+          throw new Error(
+            `No PostgreSQL backend became blocked by backend ${pid}`,
+          );
+        }
         await Bun.sleep(10);
       }
-      throw new Error(`No PostgreSQL backend became blocked by backend ${pid}`);
     }
 
     test("replacement waits until an accepted pack finishes advancing the ref", async () => {
@@ -186,7 +223,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       try {
-        await waitForBlockedBackend(await replacementStarted.promise);
+        await waitForBlockedBackend(
+          await replacementStarted.promise,
+          settleReporter(replacementPromise),
+        );
       } finally {
         releasePack.resolve(true);
       }
@@ -225,7 +265,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const replacementPid = await replacementHolding.promise;
       const receivePromise = receivePack(agentRepoStore);
       try {
-        await waitForBackendBlockedBy(replacementPid);
+        await waitForBackendBlockedBy(
+          replacementPid,
+          settleReporter(receivePromise),
+        );
       } finally {
         releaseReplacement.resolve(true);
       }

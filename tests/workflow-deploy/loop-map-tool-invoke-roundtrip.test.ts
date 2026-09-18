@@ -211,7 +211,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The map agent's tool grant reaches the run the way production delivers
@@ -247,7 +247,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         async () =>
           (await findContainerRunId(env, workflowRunRepoId)) !== undefined,
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const runId = await findContainerRunId(env, workflowRunRepoId);
       if (runId === undefined) throw new Error("unreachable");
@@ -256,7 +256,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Read the body run's own log first: a body step's failure is recorded

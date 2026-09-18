@@ -186,7 +186,6 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // runId === deployment address. Wait for `RunStarted` to land.
     await routeRaw(env, ctx.deploymentMailAddress, raw);
     await waitForWorkflowRunComplete(env, NO_HEADER_DEPLOYMENT_ID, runId, {
-      timeoutMs: 30_000,
       diagnostics: env.sidecarDiagnostics,
     });
 
@@ -222,7 +221,6 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
       ctx.workflowRunRepoId,
       ctx.deploymentMailAddress,
       `${messageId}.json`,
-      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
     );
     const consumedMessageIds = consumedBefore
       .map((e) => /^(.+)\.json$/.exec(e.filename)?.[1])
@@ -246,7 +244,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
           .slice(diagBeforeDuplicate.length);
         return /already durably present/.test(fresh);
       },
-      { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     const consumedAfter = await readClaimCheckDir(
@@ -287,7 +285,6 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     await routeRaw(env, ctx.deploymentMailAddress, raw);
 
     await waitForWorkflowRunComplete(env, MALFORMED_DEPLOYMENT_ID, runId, {
-      timeoutMs: 30_000,
       diagnostics: env.sidecarDiagnostics,
     });
 
@@ -332,7 +329,6 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
 
     await routeRaw(env, ctx.deploymentMailAddress, raw1);
     await waitForWorkflowRunComplete(env, DUPLICATE_DEPLOYMENT_ID, runId, {
-      timeoutMs: 30_000,
       diagnostics: env.sidecarDiagnostics,
     });
 
@@ -347,7 +343,6 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
       ctx.workflowRunRepoId,
       ctx.deploymentMailAddress,
       `${messageId}.json`,
-      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
     );
     const consumedNamesBefore = new Set(consumedBefore.map((e) => e.filename));
     expect(consumedNamesBefore).toContain(`${messageId}.json`);
@@ -370,7 +365,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
           .slice(diagBeforeDuplicate.length);
         return /already durably present/.test(fresh);
       },
-      { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     const consumedAfter = await readClaimCheckDir(
@@ -423,9 +418,14 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // Keep the deployment stably routable for a beat so the drop lands well
     // clear of the deploy window, so setup races do not confound the mail
     // retention behavior.
-    const settleStart = Date.now();
+    //
+    // The 1s quiet window is load-bearing: the awaited condition is the
+    // ABSENCE of a route change, which only elapsed time can establish. The
+    // predicate restarts the window on every observed drop, so the wait
+    // carries no ceiling -- a deployment that never holds routable is a hang,
+    // which the test's own `bun test` budget fails.
     let stableSince = Date.now();
-    while (Date.now() - stableSince < 1_000) {
+    await waitFor(() => {
       if (
         !env.hub.router
           .getRoutableAddresses()
@@ -433,13 +433,8 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
       ) {
         stableSince = Date.now();
       }
-      if (Date.now() - settleStart > 20_000) {
-        throw new Error(
-          `deployment never held routable for 1s\n${env.sidecarDiagnostics()}`,
-        );
-      }
-      await new Promise((r) => setTimeout(r, 50));
-    }
+      return Date.now() - stableSince >= 1_000;
+    });
 
     const messageId = "<connected-window-1@integration.interchange>";
     const raw = buildMinimalMail({
@@ -454,6 +449,11 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // Deliver the run's grants and let them land durably on the sidecar before
     // the drop (there is no run.grants ack to wait on, so allow a generous
     // beat; the frame lands over localhost in well under this window).
+    //
+    // The duration is load-bearing and cannot become a state wait. The
+    // sidecar's `handleRunGrants` writes the grants into its own workflow-run
+    // repo under `SIDECAR_DATA_DIR` and sends no reply frame, so the write
+    // completing changes nothing the harness process holds a handle on.
     const grantsDelivered = env.hub.router.sendRunGrants(
       ctx.deploymentMailAddress,
       runId,
@@ -478,9 +478,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     dropHubLink(env);
 
     // The sidecar reconnects; the hub redelivers the retained pending mail.
-    await waitForReconnect(env, ctx.deploymentMailAddress, {
-      timeoutMs: 30_000,
-    });
+    await waitForReconnect(env, ctx.deploymentMailAddress);
 
     // NO-LOSS: the run reaches terminal completion -- only the reconnect
     // redelivery could have gotten the dropped mail to the sidecar.
@@ -488,7 +486,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
       env,
       CONNECTED_WINDOW_DEPLOYMENT_ID,
       runId,
-      { timeoutMs: 60_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
     expect(terminal.type).toBe("RunCompleted");
 
@@ -509,7 +507,6 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
       ctx.workflowRunRepoId,
       ctx.deploymentMailAddress,
       `${messageId}.json`,
-      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
     );
     expect(consumed.map((e) => e.filename)).toEqual([`${messageId}.json`]);
   }, 180_000);
@@ -603,7 +600,7 @@ async function deployEdgeWorkflow(
 
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   return { deploymentMailAddress, workflowRunRepoId };
@@ -701,34 +698,27 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
  * lands strictly after the run's terminal-event observation, so a
  * test that observes terminal then reads consumed/ in one shot can
  * race the supervisor's pack pipeline.
+ *
+ * The awaited state is the dedup entry appearing, so the wait carries no
+ * budget of its own: an entry that never lands is a hang, which the test's own
+ * `bun test` budget fails. Runs through the harness `waitFor` so a hang here
+ * reaches the env teardown's in-flight wait report.
  */
 async function waitForConsumedFilename(
   env: DeployFlowEnv,
   workflowRunRepoId: RepoId,
   address: string,
   expected: string,
-  opts: { timeoutMs?: number; diagnostics?: () => string } = {},
 ): Promise<{ filename: string; bytes: Uint8Array }[]> {
-  const { timeoutMs = 10_000, diagnostics } = opts;
-  const start = Date.now();
-  for (;;) {
-    const entries = await readClaimCheckDir(
+  let found: { filename: string; bytes: Uint8Array }[] = [];
+  await waitFor(async () => {
+    found = await readClaimCheckDir(
       env,
       workflowRunRepoId,
       address,
       "consumed",
     );
-    if (entries.some((e) => e.filename === expected)) {
-      return entries;
-    }
-    if (Date.now() - start > timeoutMs) {
-      const diag = diagnostics?.();
-      const ctx = diag ? `\n${diag}` : "";
-      const observed = entries.map((e) => e.filename).join(", ") || "<empty>";
-      throw new Error(
-        `waitForConsumedFilename timed out after ${String(timeoutMs)}ms; expected ${expected}; observed ${observed}${ctx}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
+    return found.some((e) => e.filename === expected);
+  });
+  return found;
 }

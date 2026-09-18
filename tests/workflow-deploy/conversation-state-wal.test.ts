@@ -31,6 +31,7 @@ import type {
   PendingOperation,
   TokenUsage,
 } from "@intx/types/runtime";
+import { waitUntil } from "@intx/types/testing";
 import type {
   RepoId,
   RepoStore,
@@ -620,6 +621,12 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     // Let a would-be-concurrent second mirror reach its append before the
     // first is released. Under serialization the second has not started, so
     // only the first append is held here.
+    //
+    // The duration is load-bearing and must stay a sleep: it IS the interleave
+    // window this test measures. Under the correct implementation nothing
+    // happens during it, so there is no state to wait for -- a predicate would
+    // hold immediately and the second append would land after the release,
+    // where it can no longer collide.
     await new Promise((resolve) => setTimeout(resolve, 40));
     releaseFirstAppend();
     await both;
@@ -688,6 +695,10 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     // (parsed from the append's commit message) so a same-seq clobber fails
     // loud even if a future change masks the turn-loss symptom.
     const seqsWritten: number[] = [];
+    // Substrate writes that have RETURNED, as opposed to the entries recorded
+    // in `seqsWritten` on the way in. The reentrant mirror is fire-and-forget,
+    // so this is how the assertions below know its append landed.
+    let writesCompleted = 0;
     let releaseFirstAppend!: () => void;
     const firstAppendHeld = new Promise<void>((resolve) => {
       releaseFirstAppend = resolve;
@@ -701,12 +712,14 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
           heldOnce = true;
           await firstAppendHeld;
         }
-        return h.substrate.writeTreePreservingPrefix(
+        const result = await h.substrate.writeTreePreservingPrefix(
           principal,
           repoId,
           ref,
           args,
         );
+        writesCompleted += 1;
+        return result;
       };
     const wrappedSubstrate = new Proxy(h.substrate, {
       get(target, prop, receiver): unknown {
@@ -732,9 +745,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     expect(restored).toBe(true);
     // Wait until the reentrant mirror's append is parked, so it is
     // unambiguously the first (held) WAL append.
-    for (let i = 0; i < 200 && !heldOnce; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await waitUntil(() => heldOnce);
     expect(heldOnce).toBe(true);
 
     // A real mirror carrying a genuinely new turn `c`, enqueued behind the
@@ -753,11 +764,23 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
 
     // Let a would-be-concurrent `c` mirror reach and pass its own append
     // before the reentrant one is released.
+    //
+    // The duration is load-bearing and must stay a sleep: it IS the interleave
+    // window this test measures. Under the correct implementation the `c`
+    // mirror is queued behind the parked reentrant one and does nothing during
+    // it, so there is no state to wait for.
     await new Promise((resolve) => setTimeout(resolve, 40));
     releaseFirstAppend();
     await cMirror;
-    // The reentrant mirror is fire-and-forget; let it settle after release.
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    // The reentrant mirror is fire-and-forget, so await its append landing on
+    // the substrate rather than a delay. Exactly two writes run through the
+    // wrapper: `runMirror` appends one WAL entry per boundary unconditionally
+    // (turnless boundaries included), and the live WAL never reaches
+    // CHECKPOINT_INTERVAL here, so neither mirror adds a compaction write.
+    // `heldOnce` proves the first entered and `await cMirror` proves the
+    // second completed, so the count reaches two once the released reentrant
+    // write returns.
+    await waitUntil(() => writesCompleted >= 2);
 
     const reconstructed = await reconstructDurableConversation(
       h.agentStateDir,

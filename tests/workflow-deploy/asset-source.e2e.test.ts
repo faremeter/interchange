@@ -442,7 +442,7 @@ describe.skipIf(!harnessDbEnvAvailable())("asset-sourced workflow e2e", () => {
     await waitFor(
       () =>
         env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-      { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
 
     // 3) Fire the mail trigger and assert the run reaches RunCompleted. This is
@@ -455,14 +455,13 @@ describe.skipIf(!harnessDbEnvAvailable())("asset-sourced workflow e2e", () => {
       messageId: "<asset-skeleton-e2e@integration.interchange>",
     });
     const runId = await waitForFirstRunId(env, workflowRunRepoId, {
-      timeoutMs: 30_000,
       diagnostics: env.sidecarDiagnostics,
     });
     const terminal = await waitForWorkflowRunComplete(
       env,
       DEPLOYMENT_ID,
       runId,
-      { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+      { diagnostics: env.sidecarDiagnostics },
     );
     if (terminal.type !== "RunCompleted") {
       throw new Error(

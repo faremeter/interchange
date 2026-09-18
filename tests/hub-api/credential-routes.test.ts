@@ -20,6 +20,7 @@ import { pgErrorCode } from "@intx/db";
 import { credential, grant as grantTable } from "@intx/db/schema";
 import type { GrantRule } from "@intx/types/authz";
 import { credentialAad } from "@intx/types";
+import { waitUntil } from "@intx/types/testing";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -124,18 +125,6 @@ function capturingCredentialsRouter(): {
       },
     },
   };
-}
-
-// The revoke broadcast fires fire-and-forget from the route, so the response
-// returns before it runs; poll until it lands.
-async function waitUntil(pred: () => boolean, timeoutMs = 2000): Promise<void> {
-  const start = Date.now();
-  while (!pred()) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error("timed out waiting for the async credential broadcast");
-    }
-    await new Promise((r) => setTimeout(r, 5));
-  }
 }
 
 function createMockSessionService(): SessionService {
@@ -812,9 +801,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(res.status).toBe(204);
 
+      // pushCredentialRevoke enumerates its address set in one query, then
+      // calls sendCredentialsUpdate for every address in one synchronous map,
+      // so the call list is complete the moment it reaches two. A broadcast to
+      // the completed run would already be recorded here, which is why the
+      // exact-length assertion below needs no settling delay ahead of it.
       await waitUntil(() => cap.calls.length >= 2);
-      // Give any erroneous extra broadcast (e.g. to the completed run) a tick.
-      await new Promise((r) => setTimeout(r, 20));
 
       expect(cap.calls).toHaveLength(2);
       expect(new Set(cap.calls.map((c) => c.address))).toEqual(
@@ -843,8 +835,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(res.status).toBe(200);
 
+      // One enumerate-then-fan-out, as in the DELETE case above: reaching two
+      // calls means the revoke pushed to exactly the addresses it resolved.
       await waitUntil(() => cap.calls.length >= 2);
-      await new Promise((r) => setTimeout(r, 20));
 
       expect(cap.calls).toHaveLength(2);
       for (const call of cap.calls) {
@@ -869,8 +862,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(res.status).toBe(200);
 
-      // No secret rotation and no revocation, so nothing is pushed. Give any
-      // stray async push a tick to appear before asserting none did.
+      // No secret rotation and no revocation, so the route starts no push at
+      // all: there is no promise to await and no state that a predicate could
+      // poll, because the awaited outcome is the absence of a call. Elapsed
+      // time is the only evidence available for this negative, so the sleep
+      // stays. It is safe in the one direction that matters -- a loaded machine
+      // makes the window longer in real terms, so the sleep can only
+      // under-detect a stray push, never fail a correct run.
       await new Promise((r) => setTimeout(r, 30));
       expect(cap.calls).toHaveLength(0);
     });

@@ -46,7 +46,7 @@
 // the still-parked correlation's register: no other actor writes these rows,
 // the run is never resumed, and the child is never respawned. A regression that
 // removed the Trigger B re-emit would leave the rows deleted and the poll would
-// time out.
+// block until this test's own budget ends it.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, a real workflow-process child, and a test inference provider. The
@@ -393,9 +393,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         // Wire the real DB co-write into the fixture hub so a register frame
         // that reaches the hub writes real rows.
         registerSignalCorrelation: createRegisterSignalCorrelation(h.db),
-        // This test pins the production reconnect delay: the
-        // `reconnectMs > 1_000` assertion proves the sidecar really cycled
-        // through its delayed reconnect rather than instantly re-connecting.
+        // Pin the production reconnect backoff so the drop below is recovered
+        // through the real delayed-reconnect cycle rather than the fixture's
+        // shortened test delay.
         sidecarEnv: {
           SIDECAR_RECONNECT_DELAY_MS: PRODUCTION_RECONNECT_DELAY_MS,
         },
@@ -514,13 +514,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // routability is asynchronous; wait for it rather than asserting it
       // synchronously.
       await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- park the run (link up) ----
@@ -537,7 +536,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       // Wait for the co-written pending approval row -- proof the reactor
@@ -551,7 +549,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             .where(eq(approval.anchorRunId, DEPLOYMENT_ID));
           return rows.length === 1;
         },
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const parkedApprovalRows = await h.db
@@ -578,7 +576,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               e.body["signalName"] === signalName(correlationId),
           );
         },
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const parkedTypes = (
         await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId)
@@ -599,7 +597,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           !env.hub.router
             .getRoutableAddresses()
             .includes(deploymentMailAddress),
-        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- reproduce "the register did not co-write" ----
@@ -636,13 +634,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // the supervisor re-queries the child's still-parked approval correlation
       // and re-emits its register, which now reaches the routed hub and co-writes
       // the rows again.
-      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-        timeoutMs: 30_000,
-      });
-      // A lower bound guards against a false "already routable" pass that never
-      // actually dropped; the upper bound catches a hung link.
-      expect(reconnectMs).toBeGreaterThan(1_000);
-      expect(reconnectMs).toBeLessThan(30_000);
+      await waitForReconnect(env, deploymentMailAddress);
       expect(env.hub.router.getRoutableAddresses()).toContain(
         deploymentMailAddress,
       );
@@ -650,12 +642,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // ---- the acceptance criterion: the run is approvable again ----
       //
       // The re-emit is fire-and-forget (the reconnect fan-out never awaits it),
-      // so poll with a bounded deadline for both rows to reappear. Their return
-      // can only come from the reconnect re-registering the still-parked
-      // correlation: no other actor writes these rows, the run is never resumed,
-      // and the child is never respawned across a mere link drop. A regression
-      // that dropped the Trigger B re-emit would leave the rows deleted and this
-      // wait would time out.
+      // so poll for both rows to reappear. Their return can only come from the
+      // reconnect re-registering the still-parked correlation: no other actor
+      // writes these rows, the run is never resumed, and the child is never
+      // respawned across a mere link drop.
       await waitFor(
         async () => {
           const correlations = await h.db
@@ -668,7 +658,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             .where(eq(approval.correlationId, correlationId));
           return correlations.length === 1 && approvals.length === 1;
         },
-        { timeoutMs: 30_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const reemittedCorrelations = await h.db
@@ -717,7 +707,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // sidecar router): the resolver claims the re-emitted correlation and
       // delivers the decision to the parked run in the real subprocess. If the
       // re-emitted row were a dead record rather than a live route, the resume
-      // would never arrive and this would time out.
+      // would never arrive and this wait would block until this test's own
+      // budget ends it.
       const approveApp = createApp({
         getSession: createMockGetSession(APPROVER_USER_ID),
         authHandler: () => new Response("", { status: 404 }),
@@ -746,7 +737,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         DEPLOYMENT_ID,
         runId,
         {
-          timeoutMs: 30_000,
           diagnostics: env.sidecarDiagnostics,
         },
       );

@@ -191,7 +191,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // Per-step `agent-state` repos materialize on the hub: one per
@@ -246,7 +246,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             (e) => e.type === "SignalAwaited" && e.body["signalName"] === "go",
           );
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const runId = await findActiveRunId(env, workflowRunRepoId);
@@ -296,7 +296,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         DEPLOYMENT_ID,
         runId,
         {
-          timeoutMs: 20_000,
           diagnostics: env.sidecarDiagnostics,
         },
       );

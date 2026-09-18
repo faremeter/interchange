@@ -526,7 +526,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The sentinel path in the warm single-step agent's stable workspace.
@@ -570,7 +570,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       // ---- Assertion 1: parked before approval ----
@@ -586,7 +585,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             .where(eq(approval.anchorRunId, DEPLOYMENT_ID));
           return rows.length === 1;
         },
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const pendingApprovalRows = await h.db
@@ -654,7 +653,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               e.body["signalName"] === signalName(correlationId),
           );
         },
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const parkedEvents = await readWorkflowRunEvents(
@@ -717,7 +716,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       if (terminal.type !== "RunCompleted") {
         const events = await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId);
@@ -803,7 +802,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           (await readTurns())
             .flatMap((t) => t.content)
             .some((b) => b.type === "tool_result"),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const turns = await readTurns();

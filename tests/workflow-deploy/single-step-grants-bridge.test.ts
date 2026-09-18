@@ -236,7 +236,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // captured ack for this address proves the identity survived the
       // child re-route.
       await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
-        timeoutMs: 20_000,
         diagnostics: env.sidecarDiagnostics,
       });
       const ackKey = env.hub.deployAcks.get(deploymentMailAddress);
@@ -301,7 +300,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // (c) behavioral: drive a mail message. The model turn calls the
@@ -316,7 +315,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const runId = await waitForFirstRunId(env, workflowRunRepoId, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
 
       const terminal = await waitForWorkflowRunComplete(
@@ -324,7 +322,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         DEPLOYMENT_ID,
         runId,
         {
-          timeoutMs: 20_000,
           diagnostics: env.sidecarDiagnostics,
         },
       );
@@ -372,7 +369,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               e.sid === SESSION_ID &&
               isInferenceStart(e.event),
           ),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const inferenceStart = env.hub.agentEvents.find(
         (e) =>

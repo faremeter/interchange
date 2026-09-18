@@ -67,6 +67,7 @@ import {
   SIDECAR_ID,
   deployWorkflowSourceForTest,
   fireMailTrigger,
+  isMailTriggerUnroutableError,
   listRunIds,
   readWorkflowRunEvents,
   settleWorkflowRunPacks,
@@ -124,7 +125,9 @@ beforeAll(async () => {
     creatorPrincipalId: CALLER_PRINCIPAL_ID,
   });
 
-  env = await startDeployFlowEnv({ inferenceEchoUserMessage: true });
+  env = await startDeployFlowEnv({
+    inferenceEchoUserMessage: true,
+  });
 });
 
 afterAll(async () => {
@@ -241,7 +244,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- event 0: fire mail #1, drive to the between-events input park ----
@@ -261,7 +264,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             )
           );
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const containerRunId = await findContainerRunId(env, workflowRunRepoId);
@@ -301,7 +304,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           !env.hub.router
             .getRoutableAddresses()
             .includes(deploymentMailAddress),
-        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- RESTART: a fresh sidecar against the SAME data dir ----
@@ -316,13 +319,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
       });
-      const restoredDiagnostics = (): string =>
-        `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`;
-
-      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-        timeoutMs: 30_000,
-      });
-      expect(reconnectMs).toBeGreaterThan(0);
+      env.registerSidecar(restartedSidecar);
+      await waitForReconnect(env, deploymentMailAddress);
       expect(env.hub.router.getRoutableAddresses()).toContain(
         deploymentMailAddress,
       );
@@ -333,40 +331,65 @@ describe.skipIf(!harnessDbEnvAvailable())(
       //
       // Robustness: right after the restart the restored sidecar's hub link can
       // blip while its restore packs flush, so the event-1 mail can race a
-      // transient drop ("Connection lost" on enqueue). Settle the restore pack
-      // pipeline first, then fire -- retrying on the SAME messageId, which the run
-      // dedups by signalId, so a retried delivery is idempotent and never spawns a
-      // second event (the [section__0, section__1] assertion below stays exact).
-      await settleWorkflowRunPacks(env, { timeoutMs: 30_000 });
+      // transient drop that takes the address out of the hub's routing index.
+      // Settle the restore pack pipeline first, then fire -- retrying on the SAME
+      // messageId, which the run dedups by signalId, so a retried delivery is
+      // idempotent and never spawns a second event (the
+      // [section__0, section__1] assertion below stays exact).
+      await settleWorkflowRunPacks(env);
 
+      // The 12s inner window is the re-fire cadence, not a budget for the
+      // recovery: it decides how long one delivery attempt is given before the
+      // next fire, and the retry itself carries no deadline. This test's own
+      // budget is the failsafe for an event that is never serviced.
+      //
+      // Only an unroutable address means "the link is still blipping, fire
+      // again". Any other failure -- a signing failure, a malformed address --
+      // is a real fault, and with no deadline on this loop, re-firing through
+      // it would hide it until the test budget expired and report a hang
+      // instead of the fault. So it surfaces here with the fire's error as its
+      // cause.
+      //
+      // The loop fires mail each iteration, so it cannot become a `waitFor`
+      // predicate; `env.retrying` is what puts a wedge inside it on the env
+      // teardown's in-flight wait report, and `checkTornDown` at the top of
+      // each loop body is what lets teardown's stop end it -- ahead of the
+      // fire or the read that pass would otherwise make against a dismantled
+      // env.
       const secondMessageId =
         "<on-trigger-between-events-2@integration.interchange>";
-      const deadline = Date.now() + 90_000;
-      let serviced = false;
-      while (Date.now() < deadline && !serviced) {
-        await fireMailTrigger(env, deploymentMailAddress, {
-          messageId: secondMessageId,
-          content: SECOND_BODY,
-        }).catch(() => undefined);
-        const pollDeadline = Date.now() + 12_000;
-        while (Date.now() < pollDeadline) {
-          const events = await readWorkflowRunEvents(
-            env,
-            DEPLOYMENT_ID,
-            containerRunId,
-          );
-          if (hasChildCompleted(events, `${SECTION_ID}__1`)) {
-            serviced = true;
-            break;
+      await env.retrying(
+        `re-fire the event-1 mail until ${SECTION_ID}__1 completes`,
+        async (checkTornDown) => {
+          for (;;) {
+            checkTornDown();
+            try {
+              await fireMailTrigger(env, deploymentMailAddress, {
+                messageId: secondMessageId,
+                content: SECOND_BODY,
+              });
+            } catch (err) {
+              if (!isMailTriggerUnroutableError(err)) {
+                throw new Error(
+                  `on-trigger between-events: firing the event-1 mail failed for a reason other than an unroutable address\n${env.sidecarDiagnostics()}`,
+                  { cause: err },
+                );
+              }
+            }
+            const reFireAfter = Date.now() + 12_000;
+            while (Date.now() < reFireAfter) {
+              checkTornDown();
+              const events = await readWorkflowRunEvents(
+                env,
+                DEPLOYMENT_ID,
+                containerRunId,
+              );
+              if (hasChildCompleted(events, `${SECTION_ID}__1`)) return;
+              await new Promise((r) => setTimeout(r, 200));
+            }
           }
-          await new Promise((r) => setTimeout(r, 200));
-        }
-      }
-      if (!serviced) {
-        throw new Error(
-          `event 1 was not serviced after the restart within budget\n${restoredDiagnostics()}`,
-        );
-      }
+        },
+      );
 
       // ---- assert: one long-lived run serviced both events across the crash --
       const finalEvents = await readWorkflowRunEvents(

@@ -344,7 +344,6 @@ async function deployParent(opts: {
   expect(handle.publicKey).toBeTruthy();
 
   await waitFor(() => env.hub.router.getRoutableAddresses().includes(address), {
-    timeoutMs: 20_000,
     diagnostics: env.sidecarDiagnostics,
   });
   return { workflowRunRepoId: handle.workflowRunRepoId, address };
@@ -431,7 +430,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         parentWorkflowRunRepoId,
         {
           diagnostics: env.sidecarDiagnostics,
-          timeoutMs: 20_000,
         },
       );
 
@@ -444,7 +442,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "ChildSpawned");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const parentEvents = await readWorkflowRunEvents(
@@ -471,7 +469,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "RunCompleted");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const finalParentEvents = await readWorkflowRunEvents(
@@ -638,7 +636,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         parentWorkflowRunRepoId,
         {
           diagnostics: env.sidecarDiagnostics,
-          timeoutMs: 20_000,
         },
       );
 
@@ -651,7 +648,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "ChildSpawned");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const parentEvents = await readWorkflowRunEvents(
@@ -680,7 +677,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               e.type === "StepCompleted" && e.body["stepId"] === "childStep",
           );
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const childEvents = await readWorkflowRunEvents(
@@ -766,7 +763,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         parentWorkflowRunRepoId,
         {
           diagnostics: env.sidecarDiagnostics,
-          timeoutMs: 20_000,
         },
       );
 
@@ -779,7 +775,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "RunCompleted");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The child's live inference event reached the hub's agent-event stream on
@@ -792,7 +788,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             (e) =>
               e.addr === parentMailAddress && isLiveInferenceEvent(e.event),
           ),
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 10_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
       const childLiveEvents = env.hub.agentEvents.filter(
         (e) => e.addr === parentMailAddress && isLiveInferenceEvent(e.event),
@@ -851,7 +847,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       await waitFor(
         () => env.hub.router.getRoutableAddresses().includes(parentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await fireMailTrigger(env, parentMailAddress, {
@@ -861,7 +857,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const parentRunId = await waitForFirstRunId(
         env,
         handle.workflowRunRepoId,
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       await waitFor(
@@ -873,7 +869,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "ChildSpawned");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const parentEvents = await readWorkflowRunEvents(
@@ -899,7 +895,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "RunCompleted");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 30_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const childEvents = await readWorkflowRunEvents(
@@ -1036,7 +1032,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         parentWorkflowRunRepoId,
         {
           diagnostics: env.sidecarDiagnostics,
-          timeoutMs: 30_000,
         },
       );
 
@@ -1055,7 +1050,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "RunCompleted");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 60_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const parentEvents = await readWorkflowRunEvents(
@@ -1234,7 +1229,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         parentWorkflowRunRepoId,
         {
           diagnostics: env.sidecarDiagnostics,
-          timeoutMs: 30_000,
         },
       );
 
@@ -1252,7 +1246,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           );
           return events.some((e) => e.type === "RunCompleted");
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 90_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       const parentEvents = await readWorkflowRunEvents(

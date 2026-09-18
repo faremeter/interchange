@@ -212,7 +212,6 @@ async function deploySingleStepWorkflow(
   expect(handle.publicKey).toBeTruthy();
 
   await waitFor(() => env.hub.deployAcks.has(deploymentMailAddress), {
-    timeoutMs: 20_000,
     diagnostics: env.sidecarDiagnostics,
   });
 
@@ -220,7 +219,7 @@ async function deploySingleStepWorkflow(
 
   await waitFor(
     () => env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-    { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+    { diagnostics: env.sidecarDiagnostics },
   );
 
   return { deploymentMailAddress, workflowRunRepoId };
@@ -228,28 +227,24 @@ async function deploySingleStepWorkflow(
 
 /**
  * Poll the deployment's run event log until at least one run reaches a
- * RunCompleted terminal, or throw on timeout. Returns nothing; the assertion
- * is the absence of a throw.
+ * RunCompleted terminal. Returns nothing; the assertion is that it returns at
+ * all.
+ *
+ * Carries no deadline: the caller's test budget is the failsafe for a run that
+ * never completes, and the harness `waitFor` is what puts the sidecar's output
+ * on the env teardown's report when that happens.
  */
 async function waitForAnyRunCompleted(
   anchorRunId: string,
   workflowRunRepoId: RepoId,
-  timeoutMs: number,
 ): Promise<void> {
-  const start = Date.now();
-  for (;;) {
-    const ids = await listRunIds(env, workflowRunRepoId);
-    for (const id of ids) {
+  await waitFor(async () => {
+    for (const id of await listRunIds(env, workflowRunRepoId)) {
       const events = await readWorkflowRunEvents(env, anchorRunId, id);
-      if (events.some((e) => e.type === "RunCompleted")) return;
+      if (events.some((e) => e.type === "RunCompleted")) return true;
     }
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(
-        `no run reached RunCompleted for ${anchorRunId} within ${String(timeoutMs)}ms; runIds=${JSON.stringify(ids)}\n${env.sidecarDiagnostics()}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
+    return false;
+  });
 }
 
 describe.skipIf(!harnessDbEnvAvailable())(
@@ -278,7 +273,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Wait for the interrupt to fire (armed flips back to false) and the
       // address to leave routing as the dropped link closes.
       await waitFor(() => env.hub.interrupt.armed === false, {
-        timeoutMs: 30_000,
         diagnostics: env.sidecarDiagnostics,
       });
       expect(env.hub.interrupt.interruptedRef).toBe(WORKFLOW_RUN_REF);
@@ -287,19 +281,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
           !env.hub.router
             .getRoutableAddresses()
             .includes(deploymentMailAddress),
-        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The sidecar reconnects and re-announces its deployment address.
-      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-        timeoutMs: 30_000,
-      });
-      expect(reconnectMs).toBeGreaterThan(0);
+      await waitForReconnect(env, deploymentMailAddress);
 
       // The liveness contract: the run reaches RunCompleted on its own, with
       // NO fresh mail trigger to re-drive it. Capture the run-id count so the
       // assertion below can also confirm no second run was minted.
-      await waitForAnyRunCompleted(anchorRunId, workflowRunRepoId, 60_000);
+      await waitForAnyRunCompleted(anchorRunId, workflowRunRepoId);
 
       // Exactly one run exists: the recovery re-shipped the SAME run's events,
       // it did not mint a fresh run. A second run would mean the recovery
@@ -319,22 +310,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
         messageId: "<settled-control-1@integration.interchange>",
         content: "first",
       });
-      await waitForAnyRunCompleted(anchorRunId, workflowRunRepoId, 60_000);
+      await waitForAnyRunCompleted(anchorRunId, workflowRunRepoId);
 
       // Drop the link only after the pack stream has drained (no push
       // mid-flight), then wait for the sidecar to reconnect and re-route.
       await settleThenDrop(env, deploymentMailAddress, {
         quietMs: 750,
-        timeoutMs: 30_000,
       });
       await waitFor(
         () =>
           !env.hub.router
             .getRoutableAddresses()
             .includes(deploymentMailAddress),
-        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
-      await waitForReconnect(env, deploymentMailAddress, { timeoutMs: 30_000 });
+      await waitForReconnect(env, deploymentMailAddress);
 
       // A fresh trigger on the recovered link runs to completion. Retry the
       // trigger with a fresh message id per attempt: a trigger that lands while
@@ -343,44 +333,51 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Under the stable-runId model every trigger shares the same runId.
       // Fire triggers until one lands in consumed/ (meaning the dispatch
       // loop processed it and the run reached terminal).
+      //
+      // The per-attempt 10s below is the re-fire cadence, not a budget: a
+      // dropped trigger produces no signal at all, so the only way to conclude
+      // one was dropped is to stop waiting on it and re-fire. Removing the
+      // bound would remove the retry. The retry itself carries no deadline;
+      // this test's own budget is the failsafe for a link that never accepts a
+      // trigger. It fires mail each iteration, so it cannot become a `waitFor`
+      // predicate; `env.retrying` is what puts a wedge inside it on the env
+      // teardown's in-flight wait report, and `checkTornDown` at the top of
+      // each loop body is what lets teardown's stop end it -- ahead of the
+      // fire or the read that pass would otherwise make against a dismantled
+      // env.
       const runId = deriveWorkflowRunId(deploymentMailAddress);
-      let attempt = 0;
-      let consumedMessageId = "";
-      const start = Date.now();
-      for (;;) {
-        attempt += 1;
-        const messageId = `<settled-control-recovered-${String(attempt)}@integration.interchange>`;
-        await fireMailTrigger(env, deploymentMailAddress, {
-          messageId,
-          content: "recovered",
-        });
-        const deadline = Date.now() + 10_000;
-        while (Date.now() < deadline) {
-          const consumed = await readClaimCheckDir(
-            env,
-            workflowRunRepoId,
-            deploymentMailAddress,
-            "consumed",
-          );
-          if (consumed.some((c) => c.filename.includes(messageId))) {
-            consumedMessageId = messageId;
-            break;
+      await env.retrying(
+        `re-fire trigger until one is consumed for ${deploymentMailAddress}`,
+        async (checkTornDown) => {
+          let attempt = 0;
+          for (;;) {
+            checkTornDown();
+            attempt += 1;
+            const messageId = `<settled-control-recovered-${String(attempt)}@integration.interchange>`;
+            await fireMailTrigger(env, deploymentMailAddress, {
+              messageId,
+              content: "recovered",
+            });
+            const reFireAfter = Date.now() + 10_000;
+            while (Date.now() < reFireAfter) {
+              checkTornDown();
+              const consumed = await readClaimCheckDir(
+                env,
+                workflowRunRepoId,
+                deploymentMailAddress,
+                "consumed",
+              );
+              if (consumed.some((c) => c.filename.includes(messageId))) return;
+              await new Promise((r) => setTimeout(r, 100));
+            }
           }
-          await new Promise((r) => setTimeout(r, 100));
-        }
-        if (consumedMessageId !== "") break;
-        if (Date.now() - start > 60_000) {
-          throw new Error(
-            `no fresh run produced on the recovered link after ${String(attempt)} triggers\n${env.sidecarDiagnostics()}`,
-          );
-        }
-      }
+        },
+      );
       const terminal = await waitForWorkflowRunComplete(
         env,
         anchorRunId,
         runId,
         {
-          timeoutMs: 30_000,
           diagnostics: env.sidecarDiagnostics,
         },
       );

@@ -472,15 +472,18 @@ describe("B2 run-event batching — correctness gate", () => {
   });
 });
 
+// Re-read the durable log until `predicate` holds. The read is async, so this
+// polls rather than awaiting a signal; it carries no deadline of its own,
+// leaving the caller's test budget as the failsafe for a predicate that never
+// becomes true.
 async function waitForDurable(
   store: RepoStore,
   runId: string,
   predicate: (events: readonly WorkflowEvent[]) => boolean,
 ): Promise<void> {
-  for (let i = 0; i < 600; i += 1) {
+  for (;;) {
     const events = await store.read(runId);
     if (predicate(events)) return;
     await new Promise((r) => setTimeout(r, 5));
   }
-  throw new Error(`waitForDurable timed out for run ${runId}`);
 }

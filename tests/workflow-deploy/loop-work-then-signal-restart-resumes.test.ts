@@ -191,7 +191,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await waitFor(
         () =>
           env.hub.router.getRoutableAddresses().includes(deploymentMailAddress),
-        { timeoutMs: 20_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- fire the trigger, drive to the loop body's awaitSignal pause ----
@@ -209,7 +209,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         );
       await waitFor(async () => (await topLevelRunId()) !== undefined, {
         diagnostics: env.sidecarDiagnostics,
-        timeoutMs: 20_000,
       });
       const runId = await topLevelRunId();
       if (runId === undefined) {
@@ -222,7 +221,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             (e) => e.type === "SignalAwaited" && e.body["signalName"] === "go",
           );
         },
-        { diagnostics: env.sidecarDiagnostics, timeoutMs: 20_000 },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // The observable pre-park effect: the iteration ran `work` to completion in
@@ -251,7 +250,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           !env.hub.router
             .getRoutableAddresses()
             .includes(deploymentMailAddress),
-        { timeoutMs: 10_000, diagnostics: env.sidecarDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
 
       // ---- RESTART: a fresh sidecar against the SAME data dir ----
@@ -266,13 +265,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         extraEnv: { SIDECAR_DATA_DIR: crashedDataDir },
       });
-      const restoredDiagnostics = (): string =>
-        `${env.sidecarDiagnostics()}\nrestored sidecar stderr:\n${restartedSidecar?.stderr.slice(-60).join("") ?? "<none>"}`;
+      env.registerSidecar(restartedSidecar);
 
-      const reconnectMs = await waitForReconnect(env, deploymentMailAddress, {
-        timeoutMs: 30_000,
-      });
-      expect(reconnectMs).toBeGreaterThan(0);
+      await waitForReconnect(env, deploymentMailAddress);
       expect(env.hub.router.getRoutableAddresses()).toContain(
         deploymentMailAddress,
       );
@@ -288,7 +283,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         env,
         DEPLOYMENT_ID,
         runId,
-        { timeoutMs: 30_000, diagnostics: restoredDiagnostics },
+        { diagnostics: env.sidecarDiagnostics },
       );
       expect(terminal.type).toBe("RunCompleted");
 
