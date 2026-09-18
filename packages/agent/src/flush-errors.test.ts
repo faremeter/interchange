@@ -32,6 +32,7 @@ import { defineDirector } from "./director";
 import { createDirectorRegistry } from "./director-registry";
 import type { BaseEnv } from "./env";
 import { permissiveAuthorize } from "./testing/authorize-allow";
+import { waitForReactorDone } from "./testing";
 
 // An unreachable URL causes the inference call to fail with a network
 // error, which the reactor surfaces as an `inference.error` event.
@@ -140,18 +141,6 @@ function inboundConversation(): ReturnType<typeof createInboundMessage> {
     content: "trigger",
     interchangeType: "conversation.message",
   });
-}
-
-// Drain agent.stream() until a `reactor.done` event is observed, then
-// resolve. The agent's terminal event signals the reactor has settled
-// and any pending audit-flush has had a chance to run via the
-// assembly's onShutdown hook.
-async function waitForReactorDone(
-  stream: AsyncIterable<{ type: string }>,
-): Promise<void> {
-  for await (const event of stream) {
-    if (event.type === "reactor.done") return;
-  }
 }
 
 describe("agent error flushing", () => {

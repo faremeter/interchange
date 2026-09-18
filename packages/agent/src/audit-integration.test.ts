@@ -40,6 +40,7 @@ import { defineDirector } from "./director";
 import { createDirectorRegistry } from "./director-registry";
 import type { BaseEnv } from "./env";
 import { defineTool } from "./tool";
+import { waitForReactorDone } from "./testing";
 
 // The audit pipeline needs an inference source to construct the
 // reactor, but the test director never calls infer(); the URL is
@@ -201,14 +202,6 @@ function inboundConversation(): ReturnType<typeof createInboundMessage> {
     content: "trigger",
     interchangeType: "conversation.message",
   });
-}
-
-async function waitForReactorDone(
-  stream: AsyncIterable<{ type: string }>,
-): Promise<void> {
-  for await (const event of stream) {
-    if (event.type === "reactor.done") return;
-  }
 }
 
 describe("agent audit integration", () => {

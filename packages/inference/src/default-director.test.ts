@@ -197,7 +197,10 @@ describe("DefaultDirector — afterInferenceDone hook", () => {
 
   test("hook returning a Promise is awaited", async () => {
     const hook: AfterInferenceHook = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      // Yield a full event-loop turn so the hook's promise cannot be settled
+      // when decide() receives it. The director awaits the hook, so the
+      // assertions below do not depend on how long this takes.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       const decision: AfterInferenceDecision = {
         type: "abort",
         reason: "async abort",

@@ -47,6 +47,8 @@ import {
   defineMailTools,
   type MailEnv,
 } from "./harness";
+import { waitForReactorDone } from "@intx/agent/testing";
+import { waitUntil } from "@intx/types/testing";
 
 const SOURCE: InferenceSource = {
   id: "anthropic:claude-3-5-sonnet",
@@ -59,6 +61,7 @@ const SOURCE: InferenceSource = {
 const AGENT_ADDRESS = "agent@test.local";
 
 interface MockTransportShape {
+  fire(event: { type: string; uid: number }): void;
   fireExists(uid: number): void;
   enqueue(uid: number, message: InboundMessage): void;
   watchCount(): number;
@@ -142,10 +145,13 @@ function makeMockTransport(): {
   return {
     transport,
     control: {
-      fireExists(uid: number) {
+      fire(event: { type: string; uid: number }) {
         for (const cb of callbacks) {
-          cb({ type: "exists", uid });
+          cb(event);
         }
+      },
+      fireExists(uid: number) {
+        this.fire({ type: "exists", uid });
       },
       enqueue(uid: number, message: InboundMessage) {
         messages.set(uid, message);
@@ -278,8 +284,9 @@ describe("createHarness", () => {
       control.enqueue(42, message);
       control.fireExists(42);
 
-      // Yield so the async watch callback resolves its fetch.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The watch callback's fetch runs on its own async body, so wait
+      // for the recorded fetch rather than for an interval.
+      await waitUntil(() => control.getFetchedUids().includes(42));
 
       // The harness must have fetched the message via the transport.
       // Whether it then consumes from INBOX (start/continue routing)
@@ -379,14 +386,13 @@ describe("createHarness outbound pipeline", () => {
       control.enqueue(101, stored);
       control.fireExists(101);
 
-      // Poll for the outbound send rather than relying on fixed-time
-      // sleeps; the reply drain runs on microtasks, so the assertion
-      // meets within a few iterations.
-      const deadline = Date.now() + 2000;
-      while (Date.now() < deadline) {
+      // The stubbed inference advances on the harness clock, and the
+      // reply drain that follows it runs on the real event loop, so
+      // the send needs both pumped. The loop carries no deadline: a
+      // send that never lands is the lane timeout's to report.
+      while (control.getSent().length === 0) {
         await inference.run();
-        if (control.getSent().length > 0) break;
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        await new Promise((resolve) => setTimeout(resolve, 0));
       }
 
       expect(control.getSent().length).toBeGreaterThanOrEqual(1);
@@ -599,14 +605,6 @@ function recordingDef() {
   });
 }
 
-async function waitForReactorDone(
-  stream: AsyncIterable<{ type: string }>,
-): Promise<void> {
-  for await (const event of stream) {
-    if (event.type === "reactor.done") return;
-  }
-}
-
 describe("createHarness message delivery", () => {
   let workDir: string;
 
@@ -661,16 +659,34 @@ describe("createHarness message delivery", () => {
     const harness = await createHarness(recordingDef(), env);
 
     try {
-      // The mock's `fireExists` is the only event shape that
-      // should reach a `fetchFull`. The harness's watch callback
-      // checks `event.type === "exists"` and short-circuits
-      // otherwise -- so a callback yield with no fireExists must
-      // produce no fetches and no reactor deliveries. Holding
-      // off briefly gives any erroneous async fetch a chance to
-      // land before we assert.
-      await new Promise<void>((resolve) => setTimeout(resolve, 50));
-      expect(control.getFetchedUids().length).toBe(0);
-      expect(received.count).toBe(0);
+      const message = createInboundMessage({
+        from: "alice@example.com",
+        to: AGENT_ADDRESS,
+        content: "Hello",
+        interchangeType: "conversation.message",
+      });
+      const stored: InboundMessage = {
+        ...message,
+        ref: { uid: 9, mailbox: "INBOX" },
+      };
+      control.enqueue(9, stored);
+
+      // The harness's watch callback checks `event.type === "exists"`
+      // and returns synchronously for anything else, so a non-exists
+      // event queues no work at all. Fire one, then fire a real
+      // `exists` for a different uid and wait for the fetch that one
+      // does produce. The mock invokes its callbacks in order, so that
+      // fetch is ordered after the non-exists callback returned: had
+      // the guard let the expunged event through, uid 8 would already
+      // be in the fetch record by then.
+      control.fire({ type: "expunged", uid: 8 });
+      control.fire({ type: "exists", uid: 9 });
+
+      await waitUntil(() => control.getFetchedUids().length > 0);
+      expect(control.getFetchedUids()).toEqual([9]);
+
+      await waitUntil(() => received.count >= 1);
+      expect(received.count).toBe(1);
     } finally {
       await harness.close();
     }
