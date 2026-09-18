@@ -22,6 +22,7 @@ import {
   expect,
   afterAll,
   beforeAll,
+  beforeEach,
   afterEach,
 } from "bun:test";
 import fs from "node:fs/promises";
@@ -33,7 +34,8 @@ import { type } from "arktype";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { hexDecode, hexEncode } from "@intx/types";
 import { RegisterFrame, ReconnectFrame } from "@intx/types/sidecar";
-import { configureSync, getConfig, resetSync } from "@intx/log";
+import { configureSync, getConfig } from "@intx/log";
+import { waitUntil } from "@intx/types/testing";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
@@ -110,25 +112,10 @@ afterEach(async () => {
   );
 });
 
-async function waitFor(
-  predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
-): Promise<void> {
-  const start = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-    }
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Test server: relays raw hub->sidecar frames to the connected link and records
-// the sidecar->hub frames the link sends (its register/reconnect handshake). It
-// captures the server-side send handle so a test can push an arbitrary frame;
-// the client's message listener is attached synchronously at socket creation,
-// so the handle being set means the link is ready to receive.
+// Test server: relays raw hub->sidecar frames to the connected link and hands
+// a test the handshake frame its link sent along with a send handle for that
+// same link, both keyed by the link's own sidecar id.
 // ---------------------------------------------------------------------------
 
 type ServerSend = (frame: unknown) => void;
@@ -145,50 +132,68 @@ function parseHandshake(raw: unknown): HandshakeFrame | null {
   return null;
 }
 
+type Connection = { frame: HandshakeFrame; send: ServerSend };
+
+// Connections are addressed by the `sidecarId` their handshake carries, which
+// every test here sets to a distinct value. The previous shape kept one
+// mutable slot for whichever connection was current and treated "the slot is
+// populated" as readiness, which cannot tell this test's link from the
+// previous test's not-yet-closed one -- so a test's frames went out on the
+// prior socket and its own wait expired. Registering at the handshake rather
+// than at open is also the stronger signal: the handshake arriving proves
+// that link's message chain is live, where an open socket only proves it
+// exists.
 function startTestServer(): {
   server: ReturnType<typeof Bun.serve>;
-  awaitSend: () => Promise<ServerSend>;
-  awaitHandshake: (sidecarId: string) => Promise<HandshakeFrame>;
+  awaitConnection: (sidecarId: string) => Promise<Connection>;
 } {
-  let send: ServerSend | null = null;
-  const handshakes: HandshakeFrame[] = [];
+  // A test may await its connection before or after the link handshakes, so
+  // whichever happens first creates the slot and the other settles it.
+  const slots = new Map<string, PromiseWithResolvers<Connection>>();
+
+  function slotFor(sidecarId: string): PromiseWithResolvers<Connection> {
+    const existing = slots.get(sidecarId);
+    if (existing !== undefined) return existing;
+    const created = Promise.withResolvers<Connection>();
+    slots.set(sidecarId, created);
+    return created;
+  }
 
   const app = new Hono();
   app.get(
     "/ws",
-    upgradeWebSocket(() => ({
-      onOpen(_evt, ws) {
-        send = (frame) => ws.send(JSON.stringify(frame));
-      },
-      onMessage(evt) {
-        if (typeof evt.data !== "string") return;
-        const raw: unknown = JSON.parse(evt.data);
-        const frame = parseHandshake(raw);
-        if (frame !== null) handshakes.push(frame);
-      },
-      onClose() {
-        send = null;
-      },
-    })),
+    upgradeWebSocket(() => {
+      let registered: string | undefined;
+      return {
+        onMessage(evt, ws) {
+          if (typeof evt.data !== "string") return;
+          const raw: unknown = JSON.parse(evt.data);
+          const frame = parseHandshake(raw);
+          if (frame === null) return;
+          registered = frame.sidecarId;
+          slotFor(frame.sidecarId).resolve({
+            frame,
+            send: (f) => {
+              ws.send(JSON.stringify(f));
+            },
+          });
+        },
+        onClose() {
+          // Drop the slot so a reconnect under the same id registers afresh
+          // instead of handing back a closed socket.
+          if (registered !== undefined) slots.delete(registered);
+        },
+      };
+    }),
   );
 
   const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
 
-  async function awaitSend(): Promise<ServerSend> {
-    await waitFor(() => send !== null);
-    const captured = send;
-    if (captured === null) throw new Error("server send handle disappeared");
-    return captured;
+  async function awaitConnection(sidecarId: string): Promise<Connection> {
+    return slotFor(sidecarId).promise;
   }
 
-  async function awaitHandshake(sidecarId: string): Promise<HandshakeFrame> {
-    await waitFor(() => handshakes.some((h) => h.sidecarId === sidecarId));
-    const frame = handshakes.find((h) => h.sidecarId === sidecarId);
-    if (frame === undefined) throw new Error("handshake frame disappeared");
-    return frame;
-  }
-
-  return { server, awaitSend, awaitHandshake };
+  return { server, awaitConnection };
 }
 
 const env = startTestServer();
@@ -229,12 +234,28 @@ beforeAll(() => {
   });
 });
 
+// One clear per test rather than per describe. The error assertions read a
+// module-level array, so a record left by a previous test -- or by a link that
+// had not finished closing -- would otherwise be attributed to whichever test
+// read next. Two of these clears used to sit inside test bodies and two in
+// describe hooks, which made the empty-log assertion correct only by virtue of
+// running first in its describe.
+beforeEach(() => {
+  capturedLogs.length = 0;
+});
+
 afterAll(() => {
-  if (savedLogConfig) {
-    configureSync({ reset: true, ...savedLogConfig });
-  } else {
-    resetSync();
+  // A null capture means this file loaded without `@intx/log` having
+  // installed its default sink, which cannot happen -- importing the
+  // package runs the install. Resetting here instead would leave the
+  // worker with no logging configuration at all, and the install
+  // cannot re-fire to repair it.
+  if (!savedLogConfig) {
+    throw new Error(
+      "no logging configuration was captured before this suite replaced it",
+    );
   }
+  configureSync({ reset: true, ...savedLogConfig });
 });
 
 function refreshErrors(): string[] {
@@ -295,10 +316,6 @@ function makeKey(seed: number): Uint8Array {
 }
 
 describe("hub-link sender.key.refresh", () => {
-  beforeAll(() => {
-    capturedLogs.length = 0;
-  });
-
   test("updates the cache with the refreshed key through the real edge", async () => {
     const dataDir = await tempDir();
     const cache = await createSenderKeyCache({
@@ -313,12 +330,12 @@ describe("hub-link sender.key.refresh", () => {
 
     client.connect();
     try {
-      const send = await env.awaitSend();
+      const { send } = await env.awaitConnection("sc-refresh-ok");
       const address = "usr_alice@tenant.example";
       const key = makeKey(11);
       send({ type: "sender.key.refresh", address, publicKey: hexEncode(key) });
 
-      await waitFor(() => cache.get(address) !== undefined);
+      await waitUntil(() => cache.get(address) !== undefined);
       expect(cache.get(address)).toEqual(key);
       expect(refreshErrors()).toHaveLength(0);
     } finally {
@@ -327,7 +344,6 @@ describe("hub-link sender.key.refresh", () => {
   });
 
   test("a cache-write fault is logged and does not wedge later frames", async () => {
-    capturedLogs.length = 0;
     let calls = 0;
     const recorded: string[] = [];
     const cacheSenderKey = async (address: string) => {
@@ -341,7 +357,7 @@ describe("hub-link sender.key.refresh", () => {
 
     client.connect();
     try {
-      const send = await env.awaitSend();
+      const { send } = await env.awaitConnection("sc-refresh-fault");
       const key = hexEncode(makeKey(3));
       send({
         type: "sender.key.refresh",
@@ -354,7 +370,7 @@ describe("hub-link sender.key.refresh", () => {
         publicKey: key,
       });
 
-      await waitFor(() => recorded.length > 0);
+      await waitUntil(() => recorded.length > 0);
       expect(recorded).toEqual(["usr_second@tenant.example"]);
       expect(calls).toBe(2);
       const errors = refreshErrors();
@@ -366,7 +382,6 @@ describe("hub-link sender.key.refresh", () => {
   });
 
   test("a wrong-length key is rejected without partially updating the cache", async () => {
-    capturedLogs.length = 0;
     const dataDir = await tempDir();
     const cache = await createSenderKeyCache({
       dataDir,
@@ -380,7 +395,7 @@ describe("hub-link sender.key.refresh", () => {
 
     client.connect();
     try {
-      const send = await env.awaitSend();
+      const { send } = await env.awaitConnection("sc-refresh-badkey");
       const badAddress = "usr_short@tenant.example";
       // A 31-byte key: hexDecode succeeds but put's length guard throws.
       send({
@@ -389,7 +404,7 @@ describe("hub-link sender.key.refresh", () => {
         publicKey: hexEncode(new Uint8Array(31)),
       });
 
-      await waitFor(() => refreshErrors().length > 0);
+      await waitUntil(() => refreshErrors().length > 0);
       expect(cache.get(badAddress)).toBeUndefined();
 
       // The link survived the malformed frame: a following valid frame caches.
@@ -400,7 +415,7 @@ describe("hub-link sender.key.refresh", () => {
         address: goodAddress,
         publicKey: hexEncode(goodKey),
       });
-      await waitFor(() => cache.get(goodAddress) !== undefined);
+      await waitUntil(() => cache.get(goodAddress) !== undefined);
       expect(cache.get(goodAddress)).toEqual(goodKey);
     } finally {
       client.close();
@@ -409,10 +424,6 @@ describe("hub-link sender.key.refresh", () => {
 });
 
 describe("hub-link sender.key.evict", () => {
-  beforeAll(() => {
-    capturedLogs.length = 0;
-  });
-
   test("removes the cached key through the real edge", async () => {
     const dataDir = await tempDir();
     const cache = await createSenderKeyCache({
@@ -432,10 +443,10 @@ describe("hub-link sender.key.evict", () => {
 
     client.connect();
     try {
-      const send = await env.awaitSend();
+      const { send } = await env.awaitConnection("sc-evict-ok");
       send({ type: "sender.key.evict", address });
 
-      await waitFor(() => cache.get(address) === undefined);
+      await waitUntil(() => cache.get(address) === undefined);
       expect(cache.get(address)).toBeUndefined();
       expect(evictErrors()).toHaveLength(0);
     } finally {
@@ -444,7 +455,6 @@ describe("hub-link sender.key.evict", () => {
   });
 
   test("an eviction fault is logged and does not wedge later frames", async () => {
-    capturedLogs.length = 0;
     let calls = 0;
     const evicted: string[] = [];
     const evictSenderKey = async (address: string) => {
@@ -463,11 +473,11 @@ describe("hub-link sender.key.evict", () => {
 
     client.connect();
     try {
-      const send = await env.awaitSend();
+      const { send } = await env.awaitConnection("sc-evict-fault");
       send({ type: "sender.key.evict", address: "usr_faulty@tenant.example" });
       send({ type: "sender.key.evict", address: "usr_second@tenant.example" });
 
-      await waitFor(() => evicted.length > 0);
+      await waitUntil(() => evicted.length > 0);
       expect(evicted).toEqual(["usr_second@tenant.example"]);
       expect(calls).toBe(2);
       const errors = evictErrors();
@@ -490,7 +500,7 @@ describe("hub-link cached-sender report on connect", () => {
 
     client.connect();
     try {
-      const frame = await env.awaitHandshake("sc-report-register");
+      const { frame } = await env.awaitConnection("sc-report-register");
       expect(frame.type).toBe("register");
       expect(frame.cachedSenderAddresses).toEqual(reported);
     } finally {
@@ -509,7 +519,7 @@ describe("hub-link cached-sender report on connect", () => {
 
     client.connect();
     try {
-      const frame = await env.awaitHandshake("sc-report-reconnect");
+      const { frame } = await env.awaitConnection("sc-report-reconnect");
       expect(frame.type).toBe("reconnect");
       expect(frame.cachedSenderAddresses).toEqual(reported);
     } finally {
@@ -525,7 +535,7 @@ describe("hub-link cached-sender report on connect", () => {
 
     client.connect();
     try {
-      const frame = await env.awaitHandshake("sc-report-empty");
+      const { frame } = await env.awaitConnection("sc-report-empty");
       expect(frame.type).toBe("register");
       expect(frame.cachedSenderAddresses).toBeUndefined();
     } finally {

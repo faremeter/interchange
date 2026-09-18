@@ -47,7 +47,8 @@ import {
   generateMessageId,
   type MessageHeaders,
 } from "@intx/mime";
-import { configureSync, getConfig, resetSync } from "@intx/log";
+import { configureSync, getConfig } from "@intx/log";
+import { waitUntil } from "@intx/types/testing";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
 import {
@@ -131,19 +132,6 @@ const ADMIT_ALL_INBOUND_MAIL_POLICY: ResolvedInboundMailPolicy = {
   missing: "admit",
   unknown: "admit",
 };
-
-async function waitFor(
-  predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
-): Promise<void> {
-  const start = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-    }
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
 
 type DeliveredMessage = { agentAddress: string; message: InboundMessage };
 
@@ -347,7 +335,7 @@ describe("hub-link mail.inbound throwing router", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
 
@@ -376,12 +364,12 @@ describe("hub-link mail.inbound throwing router", () => {
         ),
       ).toBe(true);
 
-      await waitFor(() => routedAfterThrow.length > 0);
+      await waitUntil(() => routedAfterThrow.length > 0);
       expect(routedAfterThrow).toHaveLength(1);
       expect(calls).toBe(2);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-mail-wedge"),
       );
     }
@@ -421,11 +409,17 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  if (savedLogConfig) {
-    configureSync({ reset: true, ...savedLogConfig });
-  } else {
-    resetSync();
+  // A null capture means this file loaded without `@intx/log` having
+  // installed its default sink, which cannot happen -- importing the
+  // package runs the install. Resetting here instead would leave the
+  // worker with no logging configuration at all, and the install
+  // cannot re-fire to repair it.
+  if (!savedLogConfig) {
+    throw new Error(
+      "no logging configuration was captured before this suite replaced it",
+    );
   }
+  configureSync({ reset: true, ...savedLogConfig });
 });
 
 function verdicts(): CapturedLog[] {
@@ -540,13 +534,13 @@ describe("hub-link mail.inbound signature enforcement", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getRoutableAddresses().includes(deploymentAddress),
       );
       await body({ deploymentAddress, routed });
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () =>
           !env.router.getConnectedSidecars().includes(`sc-enforce-${label}`),
       );
@@ -568,11 +562,11 @@ describe("hub-link mail.inbound signature enforcement", () => {
           env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
         ).toBe(true);
 
-        await waitFor(() => verdicts().length > 0);
+        await waitUntil(() => verdicts().length > 0);
         const verdict = verdicts()[0];
         expect(verdict?.properties["signature"]).toBe("valid");
         expect(verdict?.properties["fromMatch"]).toBe("match");
-        await waitFor(() => routed.length > 0);
+        await waitUntil(() => routed.length > 0);
         expect(routed).toHaveLength(1);
       },
       {
@@ -596,7 +590,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
           env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
         ).toBe(true);
 
-        await waitFor(() => verdicts().length > 0);
+        await waitUntil(() => verdicts().length > 0);
         expect(verdicts()[0]?.properties["signature"]).toBe("error");
         // error is pinned to reject in every resolved policy, so the mail is
         // dropped before the router is consulted.
@@ -624,7 +618,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
           env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
         ).toBe(true);
 
-        await waitFor(() => verdicts().length > 0);
+        await waitUntil(() => verdicts().length > 0);
         const verdict = verdicts()[0];
         // The verify still runs and the message is clean (valid/match), yet the
         // fully-closed policy of an unregistered address rejects even `clean`.
@@ -655,7 +649,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
           env.router.routeMail(deploymentAddress, base64Encode(raw), stamp),
         ).toBe(true);
 
-        await waitFor(() => verdicts().length > 0);
+        await waitUntil(() => verdicts().length > 0);
         const verdict = verdicts()[0];
         expect(verdict?.properties["signature"]).toBe("valid");
         expect(verdict?.properties["fromMatch"]).toBe("mismatch");
@@ -691,7 +685,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
         // An unparseable From also emits a debug log in the same category
         // ahead of the verdict line, so select the verdict record by its
         // `signature` property rather than taking the first record.
-        await waitFor(() =>
+        await waitUntil(() =>
           verdicts().some((r) => r.properties["signature"] !== undefined),
         );
         const verdict = verdicts().find(
@@ -729,7 +723,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
           ),
         ).toBe(true);
 
-        await waitFor(() => verdicts().length > 0);
+        await waitUntil(() => verdicts().length > 0);
         const verdict = verdicts()[0];
         expect(verdict?.properties["signature"]).toBe("missing");
         // missing -> missing, which the neutral policy rejects.
@@ -773,11 +767,11 @@ describe("hub-link mail.inbound signature enforcement", () => {
           ),
         ).toBe(true);
 
-        await waitFor(() => verdicts().length >= 2);
+        await waitUntil(() => verdicts().length >= 2);
         const signatures = verdicts().map((r) => r.properties["signature"]);
         expect(signatures).toContain("unknown");
         expect(signatures).toContain("invalid");
-        await waitFor(() => routed.length > 0);
+        await waitUntil(() => routed.length > 0);
         expect(routed).toHaveLength(1);
         expect(routed[0]).toEqual(unknownRaw);
       },
@@ -820,7 +814,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
           ),
         ).toBe(true);
 
-        await waitFor(() => routed.length > 0);
+        await waitUntil(() => routed.length > 0);
         expect(routed).toHaveLength(1);
         expect(routed[0]).toEqual(admitRaw);
       },

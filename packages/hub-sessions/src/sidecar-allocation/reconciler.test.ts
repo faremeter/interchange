@@ -1426,7 +1426,15 @@ describe("reconciliation ownership", () => {
           },
         }),
       }),
-      leaseDurationMs: 30,
+      // The throwing renewal is what must park the allocation, so the
+      // renewal has to be reached first. The heartbeat schedules it one
+      // third of the lease after it starts, and a renewal that arrives after
+      // the lease has elapsed aborts as a plain lease loss instead, which
+      // parks nothing. The slack is the remaining two thirds -- twenty
+      // milliseconds at a lease of thirty, which a loaded machine spends on
+      // scheduling delay alone. Three hundred keeps the ratio and makes it
+      // two hundred.
+      leaseDurationMs: 300,
       onReady: (_allocation, _context) => {
         return new Promise(() => {
           // The interrupted initialization never completes on its own.
@@ -1440,6 +1448,7 @@ describe("reconciliation ownership", () => {
 
   test("initialization can finish after the provider operation deadline", async () => {
     const calls: string[] = [];
+    const secondRenewal = Promise.withResolvers<boolean>();
     let renewals = 0;
     const reconciler = createSidecarAllocationReconciler({
       ...deps({
@@ -1448,6 +1457,7 @@ describe("reconciliation ownership", () => {
             allocation({ status: "allocated", generation: 1 }),
           extendReconciliationLease: async () => {
             renewals += 1;
+            if (renewals === 2) secondRenewal.resolve(true);
             return true;
           },
           markConnectionReady: async () => {
@@ -1461,25 +1471,40 @@ describe("reconciliation ownership", () => {
         }),
       }),
       operationTimeoutMs: 10,
-      leaseDurationMs: 30,
+      // The lease is scaffolding here, and it sets a real deadline against a
+      // real timer: the heartbeat schedules its first renewal one third of
+      // the lease after it starts, and that renewal must land before the
+      // lease itself elapses or the reconciliation aborts as lease-lost. The
+      // slack is the remaining two thirds -- twenty milliseconds at a lease
+      // of thirty, which a loaded machine spends on scheduling delay alone,
+      // and then nothing reaches `calls`. Three hundred keeps the same ratio
+      // and makes that slack two hundred milliseconds, while the deadline
+      // this test is about stays at ten.
+      leaseDurationMs: 300,
       onReady: async (_allocation, { signal }) => {
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        // The subject is that initialization may outlast the operation
+        // deadline while lease renewals keep the claim alive. The renewals
+        // run through the store double, so it reports the second one and
+        // this awaits that report rather than polling for it.
+        await secondRenewal.promise;
         signal.throwIfAborted();
         calls.push("initialized");
       },
     });
     await reconciler.reconcileNext();
+    // Two renewals were reported before initialization returned, and both
+    // fell after the ten-millisecond operation deadline -- so "initialized"
+    // here is initialization surviving that deadline, not merely running.
     expect(calls).toEqual(["initialized", "ready"]);
-    expect(renewals).toBeGreaterThanOrEqual(2);
   });
 
   test("cancels initialization when renewal hangs and ignores its late success", async () => {
     const renewalEntered = Promise.withResolvers<boolean>();
     const renewal = Promise.withResolvers<boolean>();
     const preparation = Promise.withResolvers<boolean>();
+    const resumed = Promise.withResolvers<boolean>();
     const calls: string[] = [];
     let signal: AbortSignal | undefined;
-    let settled = false;
     const reconciler = createSidecarAllocationReconciler({
       ...deps({
         store: fakeStore({
@@ -1507,24 +1532,37 @@ describe("reconciliation ownership", () => {
       onReady: async (_allocation, context) => {
         signal = context.signal;
         await preparation.promise;
-        context.signal.throwIfAborted();
-        calls.push("deploy");
+        try {
+          context.signal.throwIfAborted();
+          calls.push("deploy");
+        } finally {
+          // Reported from a `finally`, so the report is ordered after the
+          // hook has decided whether to record the deploy.
+          resumed.resolve(true);
+        }
       },
     });
-    const work = reconciler.reconcileNext().then(() => {
-      settled = true;
-    });
+    const work = reconciler.reconcileNext();
     try {
       await renewalEntered.promise;
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      // The renewal never reports, so the lease expires and the controller
+      // aborts. `runSidecarOperation` races the initialization against that
+      // abort, so `reconcileNext` returns on it without waiting for the hung
+      // renewal or the pending preparation -- and awaiting it is what
+      // establishes that the abort was carried all the way out.
+      // `signal.aborted` says only that the abort was raised.
+      await work;
       expect(signal?.aborted).toBe(true);
-      expect(settled).toBe(true);
       expect(calls).toEqual([]);
     } finally {
       renewal.resolve(true);
       preparation.resolve(true);
-      await work;
     }
+    // Both late arrivals are queued by the two lines above, the renewal's
+    // continuation first. The hook's report is queued behind its own
+    // resumption, so this await sits after every effect either could have
+    // had, and the empty `calls` is the late success being ignored.
+    await resumed.promise;
     expect(signal?.aborted).toBe(true);
     expect(calls).toEqual([]);
   });

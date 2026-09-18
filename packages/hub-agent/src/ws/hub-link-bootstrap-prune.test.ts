@@ -35,6 +35,7 @@ import type {
   KeyPair,
 } from "@intx/types/runtime";
 import { hexDecode } from "@intx/types";
+import { waitUntil } from "@intx/types/testing";
 
 import { createHubLink, type DeployRouter } from "./hub-link";
 import { resolveInboundMailPolicy } from "./inbound-signature";
@@ -134,19 +135,6 @@ const TEST_CONFIG: HarnessConfig = {
   ],
   defaultSource: "anthropic:claude-sonnet-5",
 };
-
-async function waitFor(
-  predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
-): Promise<void> {
-  const start = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-    }
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
 
 type TestEnv = {
   server: ReturnType<typeof Bun.serve>;
@@ -306,13 +294,13 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
 
     client.connect();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes("sc-bootstrap-prune"),
       );
 
       const agentAddress = TEST_CONFIG.agentAddress;
       await env.deployForTest(agentAddress, TEST_CONFIG);
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getRoutableAddresses().includes(agentAddress),
       );
 
@@ -341,7 +329,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       // Undeploy the agent. The fix prunes bootstrap entries owned by
       // this deployment.
       await env.router.sendAgentUndeploy(agentAddress, "test prune");
-      await waitFor(
+      await waitUntil(
         () => !env.router.getRoutableAddresses().includes(agentAddress),
       );
 
@@ -349,7 +337,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       // identical -- mirrors the disaster-recovery scenario where the
       // hub's workflow-run repo for `(kind, id, ref)` is reset.
       await env.deployForTest(agentAddress, TEST_CONFIG);
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getRoutableAddresses().includes(agentAddress),
       );
 
@@ -369,7 +357,7 @@ describe("hub-link workflow-run pack bootstrap prune", () => {
       expect(env.receiveCount.value).toBe(4);
     } finally {
       client.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-bootstrap-prune"),
       );
     }

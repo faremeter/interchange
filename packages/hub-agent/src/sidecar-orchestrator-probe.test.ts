@@ -25,6 +25,7 @@ import { createInMemoryTransport } from "@intx/mail-memory";
 import { generateKeyPair, verifySSHSignature } from "@intx/crypto";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
+import { waitUntil } from "@intx/types/testing";
 
 import { createSidecarOrchestrator } from "./sidecar-orchestrator";
 import { resolveInboundMailPolicy } from "./ws/inbound-signature";
@@ -39,19 +40,6 @@ const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
   workflowRunAddress: "workflow",
   generation: 1,
 });
-
-async function waitFor(
-  predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
-): Promise<void> {
-  const start = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-    }
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
 
 function startTestServer(): {
   server: ReturnType<typeof Bun.serve>;
@@ -187,7 +175,7 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
     env.router.fenceAllocation(`allocation-${sidecarId}`, 1);
     orchestrator.start();
     try {
-      await waitFor(() =>
+      await waitUntil(() =>
         env.router.getConnectedSidecars().includes(sidecarId),
       );
 
@@ -215,7 +203,7 @@ describe("createSidecarOrchestrator workflow-probe threading", () => {
       expect(result.grantWalkSnapshot).toEqual(fakeResult.grantWalkSnapshot);
     } finally {
       orchestrator.close();
-      await waitFor(
+      await waitUntil(
         () => !env.router.getConnectedSidecars().includes(sidecarId),
       );
     }

@@ -9,7 +9,7 @@ import {
 import { Hono } from "hono";
 
 import type { DB } from "@intx/db";
-import { configureSync, getConfig, resetSync } from "@intx/log";
+import { configureSync, getConfig } from "@intx/log";
 import { base64Encode } from "@intx/types";
 
 import { createGitTokenAuth, type GitTokenAuthEnv } from "./git-token-auth";
@@ -233,11 +233,17 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  if (savedConfig) {
-    configureSync({ reset: true, ...savedConfig });
-  } else {
-    resetSync();
+  // A null capture means this file loaded without `@intx/log` having
+  // installed its default sink, which cannot happen -- importing the
+  // package runs the install. Resetting here instead would leave the
+  // worker with no logging configuration at all, and the install
+  // cannot re-fire to repair it.
+  if (!savedConfig) {
+    throw new Error(
+      "no logging configuration was captured before this suite replaced it",
+    );
   }
+  configureSync({ reset: true, ...savedConfig });
 });
 
 beforeEach(() => {
