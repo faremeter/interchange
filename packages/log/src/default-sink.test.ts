@@ -1,18 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import path from "node:path";
 import { getConfig, getLogger, resetSync, setup } from "./index";
 import { installDefaultConsoleSink } from "./default-sink";
 
-// Snapshot taken at test-file load, before any beforeEach hooks run. This is
-// the only point at which we can observe the side effect at the bottom of
-// `default-sink.ts` directly; the hooks below reset and reinstall manually
-// for the per-test scenarios.
-//
-// Order-sensitive: any future test file in this directory that calls
-// `resetSync()` at top level *before* this file imports will null this
-// snapshot. The "importing the module installs a config" test below would
-// then throw with a misleading error pointing at this file rather than the
-// real cause.
-const moduleLoadConfig = getConfig();
+const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
+const PROBE = path.join(import.meta.dir, "default-sink-probe.ts");
 
 describe("default console sink", () => {
   const warnCaptured: string[] = [];
@@ -35,14 +27,36 @@ describe("default console sink", () => {
   });
   /* eslint-enable no-console */
 
-  test("importing the module installs a config with the default sink", () => {
-    if (!moduleLoadConfig) {
-      throw new Error(
-        "default-sink module-load side effect did not populate getConfig()",
-      );
-    }
-    expect(Object.keys(moduleLoadConfig.sinks)).toEqual(["default"]);
-  });
+  test("importing the package installs a config with the default sink", async () => {
+    // Asserted in a child process. In-process this contract is unobservable:
+    // the installer returns early when a config exists, and every package
+    // imports this one, so by the time any test here runs the install has
+    // already happened somewhere else and the reading is of that file's
+    // leftovers. This assertion passed before the probe existed even though
+    // it observed nothing -- the config it found happened to name its sink
+    // "default" too.
+    const proc = Bun.spawn(["bun", "run", "--conditions=intx-src", PROBE], {
+      cwd: REPO_ROOT,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const exitCode = await proc.exited;
+
+    // Report both streams: the default sink writes through console, so a
+    // failure to install can surface on either.
+    expect(exitCode, `stdout: ${stdout}\nstderr: ${stderr}`).toBe(0);
+    // Guards against a child that dies before reporting, which would
+    // otherwise leave the assertions below trivially satisfied.
+    expect(stdout).toContain("installed");
+    expect(JSON.parse(stdout)).toEqual({
+      installed: true,
+      sinks: ["default"],
+    });
+  }, 30_000);
 
   test("warn lands on console.warn through the default sink", () => {
     getLogger(["test-default-sink-probe"]).warn`probe`;
