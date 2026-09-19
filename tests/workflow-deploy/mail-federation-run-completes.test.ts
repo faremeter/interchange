@@ -71,6 +71,7 @@ import {
 
 import {
   SECOND_SIDECAR_ID,
+  SIDECAR_ID,
   SECOND_TOKEN,
   SESSION_ID,
   deployWorkflowSourceForTest,
@@ -289,6 +290,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: RECEIVER_TENANT_ID,
         definitionAssetId: RECEIVER_ASSET_ID,
         anchorRunId: RECEIVER_ID,
+        // Name the transport rather than letting it be inferred from which
+        // sidecar happens to be connected: the receiver and the sender must
+        // end up on DIFFERENT ones, and inference cannot guarantee that once
+        // the primary starts reconnecting underneath the placement below.
+        sidecarId: SIDECAR_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: receiverAddress,
         approvals: buildApprovals(receiverAddress, []),
@@ -352,6 +358,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
         tenantId: SENDER_TENANT_ID,
         definitionAssetId: SENDER_ASSET_ID,
         anchorRunId: SENDER_ID,
+        // The second sidecar, named. This is what makes the send remote to
+        // the sender's own transport and so routes it through
+        // deliverMailToRecipient -- the seam under test.
+        sidecarId: SECOND_SIDECAR_ID,
         deploymentDomain: DEPLOYMENT_DOMAIN,
         agentAddress: senderAddress,
         approvals: buildApprovals(senderAddress, [`tool:${MAIL_TOOL_NAME}`]),
