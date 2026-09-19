@@ -1089,6 +1089,10 @@ export function createWorkflowSupervisor(
       state.phase !== "running" ||
       spawnContext === null
     ) {
+      // The backoff above announced a respawn before parking. Report the bail
+      // too, so a deployment that stops respawning does not leave an operator
+      // with a promised respawn and no record of what happened to it.
+      logger.info`respawn backoff elapsed but the crashed cohort is no longer the running one; skipping respawn (phase=${state.phase}, armed generation ${String(armedGeneration)}, current generation ${String(childGeneration)}): ${reason}`;
       return;
     }
     const priorRunning = state;
