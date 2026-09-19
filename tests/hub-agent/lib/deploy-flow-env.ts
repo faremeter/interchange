@@ -770,6 +770,7 @@ export type HubEnv = {
   prepareAllocationIdentity(
     anchorRunId: string,
     address: string,
+    sidecarId?: string,
   ): { allocationId: string; generation: number };
   sessionService: SessionService;
   agentRepoStore: AgentRepoStore;
@@ -1170,9 +1171,28 @@ export async function startHub(
         workflowRunAddress: address,
       });
     },
-    prepareAllocationIdentity(anchorRunId, address) {
-      const usePrimary = router.getConnectedSidecars().includes(SIDECAR_ID);
-      const selected = usePrimary ? primaryIdentity : secondaryIdentity;
+    prepareAllocationIdentity(anchorRunId, address, sidecarId) {
+      // A caller that runs two sidecars must say which one it means. The
+      // fallback below infers it from whether the primary is connected, which
+      // is a fact about timing rather than intent: a primary that reconnects
+      // before this call rebinds ITS identity to `address`, so a deployment
+      // meant for the secondary lands on the primary and overwrites the
+      // binding the previous deployment is still using. Both then share one
+      // transport, which makes a send between them local.
+      const selected =
+        sidecarId === undefined
+          ? router.getConnectedSidecars().includes(SIDECAR_ID)
+            ? primaryIdentity
+            : secondaryIdentity
+          : sidecarId === SIDECAR_ID
+            ? primaryIdentity
+            : sidecarId === SECOND_SIDECAR_ID
+              ? secondaryIdentity
+              : (() => {
+                  throw new Error(
+                    `deploy-flow env: no allocation identity for sidecar ${sidecarId}; expected ${SIDECAR_ID} or ${SECOND_SIDECAR_ID}`,
+                  );
+                })();
       Object.assign(selected, {
         anchorRunId,
         workflowRunAddress: address,
@@ -1813,6 +1833,13 @@ const DEFAULT_WORKFLOW_ENTRY = "./workflow.mjs";
 
 export type DeployWorkflowSourceForTestOpts = {
   /**
+   * Which sidecar's allocation identity this deployment binds to. Required
+   * when a test runs two sidecars and needs them on separate transports;
+   * omitted, the identity is inferred from which sidecar is connected, which
+   * races a reconnect.
+   */
+  sidecarId?: string;
+  /**
    * The source entry module text to bundle. A fixture builder (e.g.
    * `singleStepAgentEntry`) produces this; the helper bundles it to a
    * self-contained `.mjs`, writes it as a `workflow`-kind source asset, and
@@ -2076,6 +2103,7 @@ export async function deployWorkflowSourceForTest(
   const allocationTarget = env.hub.prepareAllocationIdentity(
     opts.anchorRunId,
     agentAddress,
+    opts.sidecarId,
   );
   const approved = await installAndApproveWorkflowDefinition({
     source,
