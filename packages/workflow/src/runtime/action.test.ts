@@ -64,6 +64,7 @@ describe("action primitive", () => {
     const result = await runLocal(def, {
       authorize: allowAll(),
       triggerPayload: { n: 1 },
+      hasUpstreamSignalResolver: true,
       actionResolver: () => handler,
     }).complete;
     expect(result.terminalStatus).toBe("completed");
@@ -90,6 +91,7 @@ describe("action primitive", () => {
     });
     const result = await runLocal(def, {
       authorize: allowAll(),
+      hasUpstreamSignalResolver: true,
       actionResolver: () => handler,
     }).complete;
     expect(result.terminalStatus).toBe("completed");
@@ -113,6 +115,7 @@ describe("action primitive", () => {
     });
     const result = await runLocal(def, {
       authorize: allowAll(),
+      hasUpstreamSignalResolver: true,
       actionResolver: () => handler,
     }).complete;
     expect(result.terminalStatus).toBe("failed");
@@ -139,6 +142,7 @@ describe("action primitive", () => {
     });
     const result = await runLocal(def, {
       authorize: deny,
+      hasUpstreamSignalResolver: true,
       actionResolver: () => handler,
     }).complete;
     expect(result.terminalStatus).toBe("failed");
@@ -176,14 +180,22 @@ describe("action primitive", () => {
     });
     const runId = "run-dedup-fixed";
 
-    const first = await runLocal(def, { authorize, invokeAction, runId })
-      .complete;
+    const first = await runLocal(def, {
+      authorize,
+      invokeAction,
+      runId,
+      hasUpstreamSignalResolver: true,
+    }).complete;
     expect(first.terminalStatus).toBe("completed");
     expect(effectRuns).toBe(1);
     expect(first.outputs.act).toBe("sha-1");
 
-    const second = await runLocal(def, { authorize, invokeAction, runId })
-      .complete;
+    const second = await runLocal(def, {
+      authorize,
+      invokeAction,
+      runId,
+      hasUpstreamSignalResolver: true,
+    }).complete;
     expect(second.terminalStatus).toBe("completed");
     expect(effectRuns).toBe(1);
     expect(second.outputs.act).toBe("sha-1");

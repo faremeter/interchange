@@ -100,6 +100,7 @@ describe("C-B regression: cancel racing the post-loop terminal commit", () => {
       clock,
       newId: (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`,
       drain: createNoopDrainController(def),
+      hasUpstreamSignalResolver: true,
     };
     const run = runtimeRun(def, env, {
       runId: "run-resume-cancel",

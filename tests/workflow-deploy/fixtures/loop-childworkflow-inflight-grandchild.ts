@@ -1,41 +1,32 @@
-// Source-entry builder for a loop body whose `childWorkflow` grandchild PARKS on
-// an `awaitSignal` that is never delivered, so the grandchild is genuinely
-// in-flight when a drain lands. This is the childWorkflow-terminal analog of the
-// loop/onTrigger body local teardown: on the drain cascade the grandchild --
-// running in-process under the workflow-process principal, which cannot sign a
-// supervisor `CancelRequested` -- must tear down LOCALLY (its parked step fails
-// to `RunFailed`), not wedge on a rejected control-plane cancel. A wedged
+// Source-entry builder for a loop body whose `childWorkflow` grandchild is
+// mid-step on a long sleep, so the grandchild is genuinely in flight when a
+// drain lands. This is the childWorkflow-terminal analog of the loop/onTrigger
+// body local teardown: on the drain cascade the grandchild -- running
+// in-process under the workflow-process principal, which cannot sign a
+// supervisor `CancelRequested` -- must tear down LOCALLY (its step fails to
+// `RunFailed`), not wedge on a rejected control-plane cancel. A wedged
 // grandchild would leave the loop body's spawn step awaiting a terminal that
 // never comes and hang the whole run.
+//
+// A parked grandchild is not offered. A terminal child cannot hold an untimed
+// park, because nothing upstream could answer one, so a long sleep is the way
+// to hold a grandchild in flight.
 //
 // `keepGoing` converges after the first iteration, so the loop spawns the
 // grandchild exactly once.
 
-export type LoopChildWorkflowParkedFixtureParams = {
+export type LoopChildWorkflowInFlightFixtureParams = {
   /** The mail trigger's `to` address the deployment routes on. */
   address: string;
   /** The `defineWorkflow` id of the outer workflow. */
   workflowId: string;
   /** The grandchild `defineWorkflow` id. */
   childWorkflowId: string;
-  /** The author signal name the grandchild parks on (never delivered). */
-  signalName?: string;
-  /**
-   * The grandchild's single in-flight step. `"awaitSignal"` (default) leaves it
-   * idle-parked; `"sleep"` leaves it mid-step (a long timer) -- so a drain lands
-   * on a RUNNING, not parked, in-process terminal child.
-   */
-  grandchildStep?: "awaitSignal" | "sleep";
 };
 
-export function loopChildWorkflowParkedEntry(
-  params: LoopChildWorkflowParkedFixtureParams,
+export function loopChildWorkflowInFlightEntry(
+  params: LoopChildWorkflowInFlightFixtureParams,
 ): string {
-  const signalName = params.signalName ?? "grandchild-never-arrives";
-  const grandchildStep =
-    params.grandchildStep === "sleep"
-      ? `sleep({ duration: 600000 })`
-      : `awaitSignal({ name: ${JSON.stringify(signalName)} })`;
   const agentBlock = (id: string) => `defineAgent({
   id: ${JSON.stringify(id)},
   systemPrompt: ${JSON.stringify(`${id} agent`)},
@@ -44,19 +35,19 @@ export function loopChildWorkflowParkedEntry(
   inference: { sources: [{ provider: "anthropic", model: "mock-model" }] },
 })`;
   return `
-import { awaitSignal, childWorkflow, defineWorkflow, loop, sleep, step } from "@intx/workflow/definition";
+import { childWorkflow, defineWorkflow, loop, sleep, step } from "@intx/workflow/definition";
 import { defineAgent } from "@intx/agent";
 
 const child = defineWorkflow({
   id: ${JSON.stringify(params.childWorkflowId)},
   trigger: { type: "manual" },
   steps: {
-    hold: ${grandchildStep},
+    hold: sleep({ duration: 600000 }),
   },
 });
 
 const loopBody = defineWorkflow({
-  id: "authored-loop-childworkflow-parked-body",
+  id: "authored-loop-childworkflow-inflight-body",
   trigger: { type: "manual" },
   steps: {
     spawn: childWorkflow({ definition: child }),

@@ -73,6 +73,7 @@ describe("runLocal childWorkflow env inheritance", () => {
 
     const result = await runLocal(parentWithChild, {
       authorize: allow,
+      hasUpstreamSignalResolver: true,
       invokeStep,
     }).complete;
 
@@ -87,7 +88,10 @@ describe("runLocal childWorkflow env inheritance", () => {
       return { effect: "allow", matchingGrants: [], resolvedBy: null };
     };
 
-    const result = await runLocal(parentWithChild, { authorize }).complete;
+    const result = await runLocal(parentWithChild, {
+      authorize,
+      hasUpstreamSignalResolver: true,
+    }).complete;
 
     expect(result.terminalStatus).toBe("completed");
     expect(resources).toEqual(["tool:child-agent"]);
@@ -100,7 +104,10 @@ describe("runLocal childWorkflow env inheritance", () => {
       return { effect: "deny", matchingGrants: [], resolvedBy: null };
     };
 
-    const result = await runLocal(parentWithChild, { authorize }).complete;
+    const result = await runLocal(parentWithChild, {
+      authorize,
+      hasUpstreamSignalResolver: true,
+    }).complete;
 
     expect(resources).toContain("tool:child-agent");
     expect(result.terminalStatus).toBe("failed");
@@ -115,7 +122,10 @@ describe("runLocal default step invoker authorization", () => {
       resolvedBy: null,
     });
 
-    const result = await runLocal(soloStep, { authorize }).complete;
+    const result = await runLocal(soloStep, {
+      authorize,
+      hasUpstreamSignalResolver: true,
+    }).complete;
 
     expect(result.terminalStatus).toBe("failed");
   });
@@ -127,13 +137,19 @@ describe("runLocal default step invoker authorization", () => {
       resolvedBy: null,
     });
 
-    const result = await runLocal(soloStep, { authorize }).complete;
+    const result = await runLocal(soloStep, {
+      authorize,
+      hasUpstreamSignalResolver: true,
+    }).complete;
 
     expect(result.terminalStatus).toBe("failed");
   });
 
   test("an allow decision completes a top-level step", async () => {
-    const result = await runLocal(soloStep, { authorize: allow }).complete;
+    const result = await runLocal(soloStep, {
+      authorize: allow,
+      hasUpstreamSignalResolver: true,
+    }).complete;
 
     expect(result.terminalStatus).toBe("completed");
   });

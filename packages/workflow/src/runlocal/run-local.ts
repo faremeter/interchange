@@ -80,6 +80,16 @@ export interface RunLocalOptions extends RuntimeRunOptions {
   clock?: () => Date;
   /** Inject a deterministic id generator for tests. */
   newId?: (prefix: string) => string;
+  /**
+   * Whether a park in this run tree can be answered from outside it. Required
+   * rather than defaulted, because an absent value would have to mean
+   * permissive and a call site that forgot it would silently inherit a park
+   * nothing can answer. Pass true for a run the control plane can address: a
+   * top-level local run, whose caller holds the handle that delivers. The
+   * terminal-child spawner passes false, since nothing can address a child
+   * run.
+   */
+  hasUpstreamSignalResolver: boolean;
 }
 
 /**
@@ -147,6 +157,7 @@ export function runLocal(
     clock,
     newId,
     drain: createNoopDrainController(rewritten),
+    hasUpstreamSignalResolver: options.hasUpstreamSignalResolver,
   };
   // Wired after construction because the loop-iteration executor closes over
   // the env it belongs to, so each iteration's body runs under the parent's
@@ -272,6 +283,14 @@ export function createDefaultActionInvoker(
   resolver: ((ref: string) => ActionHandler) | undefined,
 ): ActionInvoker {
   return async ({ handler, input, requires, authzContext, signal }) => {
+    // Refuse before anything is constructed, so a cancelled run resolves no
+    // handler and touches no ledger. An action is single-attempt with
+    // observable side effects and there is no retry to reconsider the
+    // decision, so starting one for a run already known to be cancelled is
+    // not recoverable downstream. The step invoker refuses the same way.
+    if (signal.aborted) {
+      throw abortReason(signal);
+    }
     if (!resolver) {
       throw new Error(
         `action ${handler} requires an actionResolver; pass one to runLocal({ actionResolver })`,
@@ -343,7 +362,7 @@ export function createSpawnLoopIteration(
   };
 }
 
-function createInMemorySpawnChild(
+export function createInMemorySpawnChild(
   bodies: ReadonlyMap<string, WorkflowDefinition>,
   inherited: InheritedChildOptions,
 ): SpawnChildWorkflow {
@@ -355,6 +374,18 @@ function createInMemorySpawnChild(
     depth,
     maxChildSpawnDepth,
   }) => {
+    // Four awaits separate the child run id allocation from this call, one of
+    // them a durable flush, so a cancel can land before the spawner runs. The
+    // abort bridge below subscribes to an edge and would miss one already
+    // past, leaving the child uncancelled and this function awaiting a
+    // terminal that never comes. Refusing outright also avoids writing a whole
+    // child log subtree for a run already known to be cancelled, and matches
+    // what the deployed spawn adapter does, so a local rehearsal does not
+    // diverge from production.
+    if (signal.aborted) {
+      throw abortReason(signal);
+    }
+
     const resolved = bodies.get(definitionRef);
     if (resolved === undefined) {
       // The runtime dispatched a childWorkflow ref with no lifted definition.
@@ -377,6 +408,10 @@ function createInMemorySpawnChild(
       runId: childRunId,
       depth,
       maxChildSpawnDepth,
+      // Terminal: the parent awaits this child's terminal rather than driving
+      // it across parks, and nothing upstream can address the child run, so a
+      // park inside it could never be answered.
+      hasUpstreamSignalResolver: false,
     });
     const onParentAbort = (): void => {
       void child.cancel("supervisor-operator", "parent cancelled");
@@ -392,6 +427,16 @@ function createInMemorySpawnChild(
       signal.removeEventListener("abort", onParentAbort);
     }
   };
+}
+
+/**
+ * The error an aborted signal should surface: its own reason when it carries
+ * one, so a cancel's cause is not replaced by a generic abort.
+ */
+function abortReason(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason;
+  return new DOMException("aborted", "AbortError");
 }
 
 function defaultClock(): Date {

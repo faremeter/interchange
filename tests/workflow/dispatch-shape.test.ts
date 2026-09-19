@@ -110,6 +110,7 @@ describe("runLocal dispatch-shape fixture", () => {
     const run = runLocal(def, {
       triggerPayload: { goal: "ship it" },
       authorize,
+      hasUpstreamSignalResolver: true,
       invokeStep,
     });
 
@@ -187,6 +188,7 @@ describe("runLocal dispatch-shape fixture", () => {
     const run = runLocal(def, {
       triggerPayload: { goal: "nothing to do" },
       authorize,
+      hasUpstreamSignalResolver: true,
       invokeStep,
     });
     const result = await run.complete;

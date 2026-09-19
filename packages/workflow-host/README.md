@@ -292,7 +292,19 @@ The contract is intentionally narrow:
    factory returns `RunWorkflowChildBindings`: substrate `RepoStore`,
    principal, per-deployment repo ids, scheduler, step invoker, child
    spawner, grant evaluator. The factory consumes the typed struct,
-   never `NodeJS.ProcessEnv` directly.
+   never `NodeJS.ProcessEnv` directly. Each spawner declares
+   `hasUpstreamSignalResolver` on the runtime env it builds: `true`
+   for a run an answer can reach -- the deployment's own addressable
+   run, or a suspendable body whose container relays a decision back
+   down -- and `false` for a terminal `childWorkflow` child, which
+   carries no address and is run to its terminal rather than driven
+   across parks. The field is required, so an omission is a compile
+   error; a wrong `true` is not. Declared on a terminal-child seam it
+   type-checks and reinstates the hang the flag exists to remove. The
+   in-tree seams show both answers: `buildRuntimeEnv` declares `true`
+   for the deployment's own run, while in the sidecar's substrate
+   factory `createSidecarRunChild` declares `false` and
+   `createSidecarSpawnSuspendableChild` declares `true`.
 3. **The helper fails loudly.** A missing or malformed spawn-time
    env throws via `parseSpawnTimeEnv`; a substrate-config key the
    host listed but the supervisor did not populate throws before the

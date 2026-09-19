@@ -128,6 +128,27 @@ export interface GatePrimitive extends PrimitiveBase {
   else: string;
 }
 
+/**
+ * Parks the run until a signal named `name` is delivered, then completes with
+ * that signal's payload. This is the human gate: the run holds here while a
+ * decision is made somewhere outside it.
+ *
+ * `timeout` (milliseconds) gives the gate a second exit. Such a gate resolves
+ * on its own timer with nothing delivered, routing to the step `onTimeout`
+ * names, or failing the step when no route is declared. Because the timer runs
+ * in the same process as the gate, a timed gate needs nothing from outside the
+ * run and is valid anywhere.
+ *
+ * An untimed gate has the one exit, so it can only end where something outside
+ * the run can deliver -- a run the control plane can address, or a container
+ * relaying a decision down. In a run tree with neither, the runtime refuses the
+ * gate at the park, before any suspension is recorded, rather than waiting on a
+ * signal that can never arrive. A `childWorkflow` child is the boundary that
+ * produces such a tree; see {@link ChildWorkflowPrimitive}.
+ *
+ * The same refusal covers the parks the runtime takes on a step's behalf, so
+ * this rule is not confined to a gate an author writes here.
+ */
 export interface AwaitSignalPrimitive extends PrimitiveBase {
   kind: "awaitSignal";
   name: string;
@@ -149,6 +170,22 @@ export interface SleepPrimitive extends PrimitiveBase {
  * body and a `loop` body), so the child's grants fold into the parent's
  * approved surface and no separately-deployed asset is read. `input`
  * selects the child run's launch payload.
+ *
+ * The child is driven to its terminal, not across parks, and carries no
+ * address of its own, so nothing upstream can answer a park inside it. Every
+ * untimed park beneath this boundary -- at any depth, including inside a
+ * `loop` body in the child -- is refused at the park and fails the child. That
+ * is an untimed {@link AwaitSignalPrimitive}, and also the parks the runtime
+ * takes on a step's behalf without the author writing one: an agent step
+ * suspending on a tool declared `approval: "ask"`, and the input park a step
+ * with a trigger budget takes between deliveries. A child containing no
+ * `awaitSignal` is not thereby safe. Give such a gate a `timeout`, or hold it
+ * in a run the control plane can address.
+ *
+ * The refusal surfaces to the parent as an ordinary child failure. Routing it
+ * with `onFailure` is available only where `onFailure` is honored at all: on a
+ * direct entry of a workflow root. A spawn inside a `loop` body may not carry
+ * `onFailure`, so there the failure surfaces unrouted.
  */
 export interface ChildWorkflowPrimitive extends PrimitiveBase {
   kind: "childWorkflow";
@@ -253,7 +290,11 @@ export type ActionHandler = (
  * resume and must be side-effect free. The loop body may park on an
  * `awaitSignal` and resume, may spawn a `childWorkflow` grandchild, and
  * may contain a nested `loop` (bounded depth), but may not contain a
- * `sleep` or `onTrigger` (all enforced at definition time).
+ * `sleep` or `onTrigger` (all enforced at definition time). The
+ * grandchild is a further boundary that definition time does not
+ * police: an untimed park anywhere beneath it is refused at runtime, so
+ * what the body itself may hold, the grandchild may not. See
+ * {@link ChildWorkflowPrimitive}.
  *
  * The loop step's own output -- what `steps.<loopId>.output` selects -- is
  * `{ outcome, iterations, carry, final }`:

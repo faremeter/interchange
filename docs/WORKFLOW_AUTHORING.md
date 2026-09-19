@@ -278,7 +278,9 @@ Where it lives today: `normalize`,
 `packages/workflow/src/definition/workflow.ts`
 
 **23.** A loop body may contain `awaitSignal`, `childWorkflow` and a nested
-loop, but may NOT contain `sleep` or `onTrigger`.
+loop, but may NOT contain `sleep` or `onTrigger`. The `awaitSignal` permission
+is a definition-time one only: an untimed gate inside a `childWorkflow` the
+body spawns passes this check and is refused at runtime instead (entry 26).
 
 Where it lives today: the `LoopPrimitive` doc comment,
 `packages/workflow/src/definition/primitives.ts` (enforced by
@@ -310,3 +312,22 @@ keyed under the current derivation are handled before the derivation changes.
 Where it lives today: the `onTrigger` section path in `runOnTrigger`,
 `packages/workflow/src/runtime/run.ts`, against `loopBodyRunId`,
 `packages/workflow/src/runtime/step-scope.ts`
+
+**26.** An untimed park is REFUSED wherever nothing upstream could answer it:
+beneath a `childWorkflow` child, at any depth. A park is not only an
+`awaitSignal` an author writes: an agent step that suspends on a tool declared
+`approval: "ask"` is refused the same way, as is the input park of a step with
+a trigger budget. The child carries no address of its own and its spawner
+awaits its terminal rather than driving it across parks, so no signal can
+reach the gate. The step that asked fails, naming the gate, before any
+suspension is written. A gate carrying a `timeout` is exempt, because its own
+timer resolves it in process. The seam that spawns a run states the fact as
+`hasUpstreamSignalResolver`, which is why the deployment's own run and a
+container-driven suspendable body both keep their gates.
+
+Where it lives today: the "Crash and suspension behavior of a `loop` body"
+section of `packages/workflow/README.md`, the `hasUpstreamSignalResolver`
+doc comment, `packages/workflow/src/runtime/env.ts`, and the
+`AwaitSignalPrimitive` and `ChildWorkflowPrimitive` doc comments,
+`packages/workflow/src/definition/primitives.ts` (enforced by
+`parkOnSignalResult`, `packages/workflow/src/runtime/run.ts`)

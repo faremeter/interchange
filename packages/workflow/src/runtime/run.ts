@@ -61,6 +61,7 @@ import type {
   WorkflowRuntimeEnv,
 } from "./env";
 import { shouldAbortForDrain } from "./drain";
+import { bridgeAbort } from "./abort-bridge";
 import {
   assertSpawnDepthWithinLimit,
   resolveMaxChildSpawnDepth,
@@ -194,15 +195,9 @@ export function runtimeRun(
   // `StepFailed` -> `RunFailed`) rather than cancelling. See
   // `RuntimeRunOptions.localAbort`.
   if (options.localAbort !== undefined) {
-    if (options.localAbort.aborted) {
+    bridgeAbort(options.localAbort, () => {
       cancelController.abort();
-    } else {
-      options.localAbort.addEventListener(
-        "abort",
-        () => cancelController.abort(),
-        { once: true },
-      );
-    }
+    });
   }
   const completePromise = executeRun(
     definition,
@@ -1488,12 +1483,16 @@ async function runStep(
       stepStartedEmitted = true;
     }
 
-    // Build per-step abort: timeout AND outer cancellation both abort.
+    // Build per-step abort: timeout AND outer cancellation both abort. The
+    // durable commit above is an await, so check the outer signal's level
+    // before subscribing to its edge; an abort raised during that commit
+    // would otherwise never reach the invoker, which would then work on
+    // behalf of a run that is already cancelled.
     const stepAbort = new AbortController();
     const onOuter = () => {
       stepAbort.abort();
     };
-    abort.addEventListener("abort", onOuter, { once: true });
+    bridgeAbort(abort, onOuter);
     let timer: ReturnType<typeof setTimeout> | undefined;
     if (step.timeout !== undefined) {
       timer = setTimeout(() => {
@@ -1859,6 +1858,12 @@ async function runStep(
  * runner. The per-effect ledger is a deeper exactly-once line of defense
  * for effects routed through `perform`; the barrier here is what makes the
  * action non-re-invocable at the runtime layer.
+ *
+ * Cancellation splits along the same line. The runtime owes that a handler
+ * is never STARTED for a run already known to be cancelled, which the
+ * invoker enforces by refusing a pre-aborted signal at entry. Stopping once
+ * started is the author's half: the handler is handed the signal, and the
+ * runtime cannot make a side effect already in flight transactional.
  */
 async function runAction(
   definition: WorkflowDefinition,
@@ -1900,11 +1905,18 @@ async function runAction(
   started = await commitDurable(env, runId, startedEvent);
   void started;
 
+  // As in `runStep`: the durable commit above is an await, so check the outer
+  // signal's level before subscribing to its edge, or an abort raised during
+  // the commit never becomes observable to the handler at all.
+  //
+  // Observable is the whole of what this bridge promises. Whether a handler
+  // stops once it can see the abort is the handler's own choice, and whether
+  // the effect is started at all belongs to the invoker one layer down.
   const actionAbort = new AbortController();
   const onOuter = (): void => {
     actionAbort.abort();
   };
-  abort.addEventListener("abort", onOuter, { once: true });
+  bridgeAbort(abort, onOuter);
   let timer: ReturnType<typeof setTimeout> | undefined;
   if (primitive.timeout !== undefined) {
     timer = setTimeout(() => {
@@ -2750,11 +2762,20 @@ async function driveContainerSignalRelay(
   // owned channel -- the same way the body's leaf gate surfaced up to here.
   // Nesting composes: a loop inside a loop (or inside an onTrigger section)
   // proxies the park one layer at a time until it reaches the run whose channel
-  // has a real upstream. At the top level the sink is unset, so this is a no-op
-  // and the container awaits the real channel directly. Fired on the fresh drive
-  // only, after the durable relay await above -- the reestablish path re-drives
-  // `raceContainerSignalRelay` directly and each level re-establishes from its
-  // own durable await, so it needs no re-fire.
+  // has a real upstream. An unset sink means this run owns the outermost
+  // channel, which is true of two different runs: an addressable top-level run,
+  // whose caller delivers, and a terminal `childWorkflow` child, which nothing
+  // can address. Only the first has an upstream, so the no-op below is a
+  // genuine wait in one case and would be an endless one in the other.
+  // The second case never reaches here. `parkOnSignalResult` is the sole reader
+  // of `hasUpstreamSignalResolver` and the sole enforcement point: it refuses
+  // the body's untimed gate at the park, so the body fails instead of relaying
+  // a name up and this drive is never entered. That is why no guard is
+  // repeated here -- one invariant enforced in two places drifts apart, and the
+  // reader that must keep it is the one holding the durable park.
+  // Fired on the fresh drive only, after the durable relay await above -- the
+  // reestablish path re-drives `raceContainerSignalRelay` directly and each
+  // level re-establishes from its own durable await, so it needs no re-fire.
   if (env.onSignalPark !== undefined) {
     env.onSignalPark({ runId, name });
   }
@@ -2797,11 +2818,7 @@ async function raceContainerSignalRelay(
   const onOuterAbort = (): void => {
     raceAbort.abort();
   };
-  if (abort.aborted) {
-    raceAbort.abort();
-  } else {
-    abort.addEventListener("abort", onOuterAbort, { once: true });
-  }
+  bridgeAbort(abort, onOuterAbort);
   const pSignal = env.signalChannel
     .awaitNext(name, raceAbort.signal)
     .then((r) => ({ tag: "signal" as const, r }));
@@ -4268,6 +4285,30 @@ async function parkOnSignalResult(
   state: ReturnType<typeof resumeFromLog>,
   abort: AbortSignal,
 ): Promise<ParkResult> {
+  // An untimed park waits for a signal from outside this run, so it can only
+  // be answered where something upstream can deliver one. A terminal child has
+  // no address of its own and no container relaying decisions down to it, so
+  // the wait would never end: the child parks, the spawner waits on a terminal
+  // that never comes, and an approval nobody can see holds the whole tree.
+  //
+  // A body nested inside such a child inherits the same answer, so this fires
+  // for a gate at any depth beneath the boundary rather than only a direct
+  // one. The advice below must therefore not send an author to a loop or
+  // onTrigger body: that is where they already are.
+  //
+  // Refuse before anything durable is written, so the run fails at the step
+  // that asked for the impossible and no suspension is recorded for a
+  // correlation the control plane will never hear about. A timed gate is
+  // exempt -- its own timer resolves it in process, needing nothing upstream.
+  if (!env.hasUpstreamSignalResolver && opts.timeout === undefined) {
+    throw new Error(
+      `step ${opts.stepId} waits on ${opts.signalName} with no timeout, but ` +
+        `nothing outside this run can deliver it. A childWorkflow child is ` +
+        `run to its terminal rather than driven across parks, so no gate ` +
+        `beneath that boundary can be answered, at any depth. Give the gate ` +
+        `a timeout, or move it into a run the control plane can address`,
+    );
+  }
   // Re-emit `SignalAwaited` only when the gate is not already awaiting it.
   // On a re-park resume the gate is already `awaiting-signal` (StepStarted
   // + SignalAwaited durable), so this is skipped and the tail re-parks on
@@ -4447,7 +4488,17 @@ async function parkOnSignalResult(
   const onOuterAbort = (): void => {
     combinedAbort.abort();
   };
-  abort.addEventListener("abort", onOuterAbort, { once: true });
+  // The durable flush above is an await, so the outer signal may already have
+  // aborted by the time this bridge is built. An abort is an edge, not a
+  // level: a listener attached after the fact never fires, and the park below
+  // would then wait on a signal nothing will send.
+  //
+  // Abort the combined controller rather than throwing, which is what
+  // `waitForTimer` does from the same position. `awaitNext` consults its
+  // pre-delivery queue before the abort signal, so a signal that arrived
+  // before the park is still consumed as durable progress; throwing would
+  // discard it.
+  bridgeAbort(abort, onOuterAbort);
   // Listen for drain transitions that land mid-await.
   const onDrain = (): void => {
     if (shouldAbortForDrain(env.drain, opts.stepId)) {

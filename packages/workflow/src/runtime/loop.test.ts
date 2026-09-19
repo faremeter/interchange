@@ -95,6 +95,7 @@ describe("runLoop", () => {
     // converges after 3 iterations, well under the cap of 5.
     const result = await runLocal(dispatchWorkflow(5), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;
@@ -110,6 +111,7 @@ describe("runLoop", () => {
     // With a cap of 2 the loop exhausts (cont still true at count 1).
     const result = await runLocal(dispatchWorkflow(2), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;
@@ -132,6 +134,7 @@ describe("runLoop", () => {
     };
     const result = await runLocal(dispatchWorkflow(5), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns: throwingFns,
     }).complete;
@@ -188,6 +191,7 @@ describe("runLoop", () => {
 
     const result = await runLocal(workflow, {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver: effectResolver,
       loopFns,
     }).complete;

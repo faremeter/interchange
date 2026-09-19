@@ -192,8 +192,8 @@ operator to approve.
 `WorkflowRuntimeEnv` — in-memory event log, blob substrate, scheduler,
 signal channel — and drives the same runtime body the deployed sidecar
 drives. The caller supplies exactly what the definition left as a string
-or a declaration: `authorize`, `loopFns`, `actionResolver`,
-`invokeStep`.
+or a declaration: `authorize`, `hasUpstreamSignalResolver`, `loopFns`,
+`actionResolver`, `invokeStep`.
 
 `authorize` is **required, with no default.** The deployed authorize
 refuses to answer when it cannot resolve a decision, and the local
@@ -201,6 +201,12 @@ surface refuses to invent one — a permissive default here made an
 authorization failure invisible until the workflow was deployed. There
 is deliberately no permit-everything helper in the package's public API;
 each call site declares its own, as `allowAll` does here.
+
+`hasUpstreamSignalResolver` is required for the same reason: the caller
+states whether a park in this run tree can be answered from outside it,
+and an absent value would have to mean permissive. This run is the
+addressable one — the handle `main` holds is what would deliver a
+signal — so it declares `true`.
 
 ## Testing a workflow
 

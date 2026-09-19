@@ -95,6 +95,7 @@ describe("loop diamond routing", () => {
   test("converge: join reachable from selected AND not-selected stays live", async () => {
     const result = await runLocal(diamondWorkflow(5), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;
@@ -111,6 +112,7 @@ describe("loop diamond routing", () => {
   test("exhaust: join stays live via afterEscalate side", async () => {
     const result = await runLocal(diamondWorkflow(2), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;
@@ -148,6 +150,7 @@ describe("loop no-normal-dependent routing", () => {
   test("converge with empty selected set prunes onExhausted and completes", async () => {
     const result = await runLocal(noDepsWorkflow(5), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;
@@ -159,6 +162,7 @@ describe("loop no-normal-dependent routing", () => {
   test("exhaust with empty normal-dependent set runs onExhausted", async () => {
     const result = await runLocal(noDepsWorkflow(2), {
       authorize: allowAll,
+      hasUpstreamSignalResolver: true,
       actionResolver,
       loopFns,
     }).complete;
