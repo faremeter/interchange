@@ -1546,7 +1546,32 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
-  async function handleMessage(data: string): Promise<void> {
+  async function handleWorkflowControl(
+    connection: WebSocket,
+    frame: WorkflowControlFrame,
+  ): Promise<void> {
+    if (ws !== connection) return;
+    let error: string | undefined;
+    try {
+      if (deployRouter.control === undefined)
+        throw new Error("Workflow control is not supported by this sidecar");
+      await deployRouter.control(frame);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+    // A reply belongs to the connection that issued the request. A reconnect
+    // retries durably and must not receive a late reply from its predecessor.
+    sendOnConnection(connection, {
+      type: "workflow.control.ack",
+      requestId: frame.requestId,
+      ...(error !== undefined ? { error } : {}),
+    });
+  }
+
+  async function handleMessage(
+    data: string,
+    connection: WebSocket,
+  ): Promise<void> {
     let raw: unknown;
     try {
       raw = JSON.parse(data) as unknown;
@@ -1684,20 +1709,13 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         await handleAgentUndeploy(frame);
         break;
       case "workflow.control":
-        try {
-          if (deployRouter.control === undefined)
-            throw new Error(
-              "Workflow control is not supported by this sidecar",
-            );
-          await deployRouter.control(frame);
-          send({ type: "workflow.control.ack", requestId: frame.requestId });
-        } catch (error) {
-          send({
-            type: "workflow.control.ack",
-            requestId: frame.requestId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+        // Start in FIFO order, but leave the queue free for forced stop and
+        // heartbeats while cooperative cancellation waits for the child.
+        void handleWorkflowControl(connection, frame).catch(
+          (cause: unknown) => {
+            logger.warn`Workflow control reply failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+          },
+        );
         break;
       case "pong":
         lastPongAt = Date.now();
@@ -1835,8 +1853,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // this catch is the belt-and-braces guarantee that no future
         // unguarded arm can wedge the link.
         //
-        // This chain also serializes inbound frames: each frame's
-        // handler runs to completion before the next begins. A downstream
+        // Ordinary frame handlers run to completion before the next begins;
+        // workflow.control starts here but owns its asynchronous completion.
+        // A downstream
         // invariant depends on that ordering -- the workflow
         // source-rotation persist rolls back on failure assuming no second
         // rotation is in flight, which holds only because sources.update
@@ -1844,7 +1863,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // dispatch would break that rollback.
         const data = event.data;
         messageQueue = messageQueue.then(() =>
-          handleMessage(data).catch((err: unknown) => {
+          handleMessage(data, connection).catch((err: unknown) => {
             const msg = err instanceof Error ? err.message : String(err);
             logger.warn`Unhandled error in handleMessage: ${msg}`;
           }),

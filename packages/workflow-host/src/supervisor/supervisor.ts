@@ -242,7 +242,8 @@ export interface WorkflowSupervisor {
    * Used by the host directly for `supervisor-operator` and `hub-
    * admin` origins; the `self` origin is invoked indirectly by the
    * supervisor when the child requests cancellation over the
-   * control IPC.
+   * control IPC. An active child's runtime writer is flushed and paused before
+   * the signed append. The caller owns the deadline for an unresponsive child.
    */
   requestCancel(opts: CancelRequestOpts): Promise<CancelCommitInfo>;
   /**
@@ -1403,6 +1404,12 @@ export function createWorkflowSupervisor(
     cohortBroadcaster: TerminalBroadcaster,
   ): Promise<void> {
     for await (const payload of iter) {
+      if (payload.type === "cancel.prepared") {
+        const pending = pendingCancellations.get(payload.data.requestId);
+        if (pending?.broadcaster === cohortBroadcaster)
+          pending.resolve(payload.data.error);
+        continue;
+      }
       if (payload.type === "recycle.request") {
         logger.info`workflow-process self-initiated recycle.request: ${payload.data.reason}`;
         // Run the recycle off the iterator's loop so the iterator can
@@ -1591,6 +1598,15 @@ export function createWorkflowSupervisor(
     ) => void;
   };
   const pendingMerges = new Map<string, PendingMerge>();
+  const pendingCancellations = new Map<
+    string,
+    {
+      broadcaster: TerminalBroadcaster;
+      resolve: (error: string | undefined) => void;
+    }
+  >();
+  let cancellationSeq = 0;
+  const cancellationCommits = new Set<Promise<CancelCommitInfo>>();
 
   /**
    * Reject every pending merge round-trip and every park-notify
@@ -1602,6 +1618,9 @@ export function createWorkflowSupervisor(
    * channel will never invoke.
    */
   function rejectCohortAwaiters(reason: string): void {
+    for (const pending of pendingCancellations.values())
+      pending.resolve(`cohort aborted: ${reason}`);
+    pendingCancellations.clear();
     for (const [requestId, entry] of pendingMerges) {
       pendingMerges.delete(requestId);
       entry.resolve({ ok: false, reason: `cohort aborted: ${reason}` });
@@ -3447,24 +3466,79 @@ export function createWorkflowSupervisor(
   async function requestCancel(
     opts: CancelRequestOpts,
   ): Promise<CancelCommitInfo> {
-    const result = await commitCancelRequested({
-      substrate: bindings.repoStore,
-      repoId: bindings.workflowRunRepoId,
-      ref: bindings.workflowRunRef,
-      anchorRunId: bindings.anchorRunId,
-      runId: opts.runId,
-      origin: opts.origin,
-      reason: opts.reason,
-      at: opts.at,
-      signAsPrincipal: bindings.signAsPrincipal,
-    });
-    if (state.phase === "running") {
-      await state.controlSender.send({
-        type: "cancel.committed",
-        data: { runId: opts.runId, reason: opts.reason },
-      });
+    if (
+      state.phase === "stopping" ||
+      state.phase === "stopped" ||
+      state.phase === "crash-looping"
+    ) {
+      throw new Error("Cannot cancel a stopped workflow supervisor");
     }
-    return { commitSha: result.commitSha, seq: result.seq };
+    const commitCancellation = async () => {
+      const committing = commitCancelRequested({
+        substrate: bindings.repoStore,
+        repoId: bindings.workflowRunRepoId,
+        ref: bindings.workflowRunRef,
+        anchorRunId: bindings.anchorRunId,
+        runId: opts.runId,
+        origin: opts.origin,
+        reason: opts.reason,
+        at: opts.at,
+        signAsPrincipal: bindings.signAsPrincipal,
+      });
+      cancellationCommits.add(committing);
+      try {
+        const result = await committing;
+        return { commitSha: result.commitSha, seq: result.seq };
+      } finally {
+        cancellationCommits.delete(committing);
+      }
+    };
+    const cohort = state;
+    if (
+      cohort.phase !== "starting" &&
+      cohort.phase !== "running" &&
+      cohort.phase !== "recycling"
+    )
+      return commitCancellation();
+    const sender = cohort.controlSender;
+
+    const requestId = `cancel-${String((cancellationSeq += 1))}`;
+    const prepared = Promise.withResolvers<string | undefined>();
+    pendingCancellations.set(requestId, {
+      broadcaster: cohort.terminalBroadcaster,
+      resolve: prepared.resolve,
+    });
+    try {
+      await sender.send({
+        type: "cancel.prepare",
+        data: { requestId, runId: opts.runId, reason: opts.reason },
+      });
+      const error = await prepared.promise;
+      if (error !== undefined) throw new Error(error);
+      cohort.terminalCohortAbort.signal.throwIfAborted();
+      if (activeControlSender() !== sender)
+        throw new Error("Cancellation's workflow child was replaced");
+      const result = await commitCancellation();
+      await sender
+        .send({ type: "cancel.committed", data: { requestId } })
+        .catch((cause: unknown) => {
+          logger.warn`CancelRequested committed for ${opts.runId}, but the child wakeup failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+        });
+      return result;
+    } catch (cause) {
+      await sender
+        .send({
+          type: "cancel.committed",
+          data: {
+            requestId,
+            error: cause instanceof Error ? cause.message : String(cause),
+          },
+        })
+        .catch(() => undefined);
+      throw cause;
+    } finally {
+      pendingCancellations.delete(requestId);
+    }
   }
 
   async function shutdown(): Promise<void> {
@@ -3510,10 +3584,10 @@ export function createWorkflowSupervisor(
     // always kill it and always reach `stopped`, no matter which teardown
     // step throws. Rather than depend on every step being individually
     // non-throwing (an approach that has already leaked an escape hatch),
-    // the whole teardown body runs inside one `try`, and the two
-    // load-bearing actions -- the child kill and the `phase = "stopped"`
-    // transition -- live in the `finally`, so a throw anywhere above them
-    // still runs both. This is the documented shutdown carve-out to the
+    // the whole teardown body runs inside one `try`. It requests the child
+    // kill before waiting for teardown; `finally` requests it if that point
+    // was never reached and always completes the terminal transition.
+    // This is the documented shutdown carve-out to the
     // fail-loud rule: leaking the child or wedging the supervisor in
     // `stopping` is strictly worse than logging and continuing, so the
     // steps that can throw surface at `logger.warn` and execution proceeds.
@@ -3529,18 +3603,25 @@ export function createWorkflowSupervisor(
       prior.phase === "recycling"
     )
       childrenToStop.add(prior.handle);
+    const childTerminations: Promise<void>[] = [];
     let killRequested = false;
     function killChildren(): void {
       if (killRequested) return;
       killRequested = true;
+      // Escalate to SIGKILL: the child runs workflow code, which can trap
+      // SIGTERM and would otherwise hold the forced stop open indefinitely.
       for (const handle of childrenToStop) {
-        try {
-          handle.kill();
-        } catch (cause) {
-          const message =
-            cause instanceof Error ? cause.message : String(cause);
-          logger.warn`child kill threw during shutdown: ${message}`;
-        }
+        childTerminations.push(
+          killChildHandle(handle, DEFAULT_KILL_TIMEOUT_MS, {
+            setTimer: readySetTimer,
+            clearTimer: readyClearTimer,
+            logger,
+          }).catch((cause: unknown) => {
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.warn`child kill threw during shutdown: ${message}`;
+          }),
+        );
       }
     }
     try {
@@ -3587,6 +3668,12 @@ export function createWorkflowSupervisor(
         // some other actor woke it.
         wakeDispatch();
       }
+      // A dispatch may be blocked writing to an unresponsive child. Killing
+      // before awaiting its loop releases that pipe and the cancellation wait.
+      killChildren();
+      // An already-started signed append may finish after the child exits.
+      // Own that write through teardown before the host releases its bindings.
+      await Promise.allSettled([...cancellationCommits]);
       // Await every accumulator's `disposed()` so a pending escalation
       // commit or terminal-event watcher coroutine cannot outlive the
       // supervisor and fire against torn-down bindings.
@@ -3699,6 +3786,7 @@ export function createWorkflowSupervisor(
       // leak the child nor wedge the supervisor in `stopping`. The kill is
       // itself guarded so a throw here cannot re-escape the `finally`.
       killChildren();
+      await Promise.all(childTerminations);
       await Promise.all(
         [...childrenToStop].map((handle) =>
           handle.exited.catch(() => {

@@ -1129,6 +1129,7 @@ describe("createWorkflowSupervisor", () => {
     inboxPrimitives?: MemoryInboxPrimitives;
     mailBus?: ReturnType<typeof createMockMailBus>;
     statefulWrites?: boolean;
+    failControlWrite?: () => boolean;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -1149,7 +1150,16 @@ describe("createWorkflowSupervisor", () => {
       spawnObserver.record(env);
       return {
         pid: 7777,
-        controlWriter: supervisorToChild.writer,
+        controlWriter:
+          opts.failControlWrite === undefined
+            ? supervisorToChild.writer
+            : {
+                write(line) {
+                  if (opts.failControlWrite?.())
+                    throw new Error("Child control channel closed");
+                  return supervisorToChild.writer.write(line);
+                },
+              },
         controlReader: childToSupervisor.reader,
         eventReader: eventChildToSupervisor.reader,
         kill: () => {
@@ -2922,6 +2932,37 @@ describe("createWorkflowSupervisor", () => {
     expect(onDisk.origin).toBe("self");
     expect(onDisk.signature.principalKind).toBe("supervisor");
     expect(onDisk.signature.sig).toMatch(/^01[0-9a-f]+$/);
+  });
+
+  test("requestCancel reports a committed cancellation when the child wakeup fails", async () => {
+    const baseDir = await makeTempDir("supervisor-cancel-wakeup-");
+    let failWakeup = false;
+    let committed = 0;
+    const wired = await spawnWithRunStart({
+      baseDir,
+      failControlWrite: () => failWakeup,
+      onWrite: (args) => {
+        if (args.message.startsWith("append CancelRequested")) committed += 1;
+      },
+    });
+
+    const cancellation = wired.supervisor.requestCancel({
+      runId: "run_deployment-x",
+      origin: "supervisor-operator",
+      reason: "Stop",
+      at: new Date().toISOString(),
+    });
+    await waitForUpstreamPayloads(wired.supervisorToChild, "cancel.prepare", 1);
+    failWakeup = true;
+    await wired.childSender.send({
+      type: "cancel.prepared",
+      data: { requestId: "cancel-1" },
+    });
+
+    expect((await cancellation).commitSha).toBe("deadbeefcafef00d");
+    expect(committed).toBe(1);
+    failWakeup = false;
+    await wired.supervisor.shutdown();
   });
 
   test("drain() threads the per-cohort terminal broadcaster into each accumulator's opts", async () => {

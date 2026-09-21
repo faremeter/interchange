@@ -366,6 +366,10 @@ function startTestServer(): TestEnv {
 // Tests
 // ---------------------------------------------------------------------------
 
+// Longer than the runner's budget, so an acknowledgement, not the clock,
+// settles each workflow control request.
+const CONTROL_TIMEOUT_MS = 60_000;
+
 const env = startTestServer();
 
 afterAll(async () => {
@@ -388,6 +392,189 @@ async function provisionDeploymentKey(
 }
 
 describe("sidecar↔hub integration", () => {
+  test("a cancellation finishing after reconnect does not reply on the new connection", async () => {
+    const sockets: TestSocket[] = [];
+    const stopped = Promise.withResolvers<undefined>();
+    class TestSocket extends EventTarget {
+      static readonly OPEN = 1;
+      readyState = 1;
+      readonly sent: string[] = [];
+      constructor(_url: string | URL) {
+        super();
+        sockets.push(this);
+      }
+      send(raw: string) {
+        this.sent.push(raw);
+        const frame: unknown = JSON.parse(raw);
+        if (
+          typeof frame === "object" &&
+          frame !== null &&
+          "type" in frame &&
+          frame.type === "workflow.control.ack" &&
+          "requestId" in frame &&
+          frame.requestId === "stop"
+        ) {
+          stopped.resolve(undefined);
+        }
+      }
+      close() {
+        this.readyState = 3;
+        this.dispatchEvent(new Event("close"));
+      }
+      receive(frame: unknown) {
+        this.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify(frame) }),
+        );
+      }
+    }
+    const originalWebSocket = globalThis.WebSocket;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- controlled transport double implements the WebSocket members this link uses
+    globalThis.WebSocket = TestSocket as unknown as typeof WebSocket;
+    const started = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const finished = Promise.withResolvers<undefined>();
+    const reconnect = Promise.withResolvers<() => void>();
+    const bindings = withTestDeployBindings();
+    const client = createHubLink({
+      hubURL: "ws://localhost/control-test",
+      sidecarId: "control-reconnect",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...bindings,
+      scheduleReconnect(callback) {
+        reconnect.resolve(callback);
+        return () => undefined;
+      },
+      deployRouter: {
+        ...bindings.deployRouter,
+        async control(frame) {
+          if (frame.action === "cancel") {
+            started.resolve(undefined);
+            await release.promise;
+            finished.resolve(undefined);
+          }
+        },
+      },
+    });
+    try {
+      client.connect();
+      const first = sockets[0];
+      if (first === undefined) throw new Error("Missing first socket");
+      first.dispatchEvent(new Event("open"));
+      const command = {
+        type: "workflow.control",
+        runId: "run_control",
+        agentAddress: "run_control@example.test",
+        reason: "Stop",
+      };
+      first.receive({ ...command, action: "cancel", requestId: "cancel" });
+      await started.promise;
+      first.close();
+      (await reconnect.promise)();
+      const second = sockets[1];
+      if (second === undefined) throw new Error("Missing second socket");
+      second.dispatchEvent(new Event("open"));
+      release.resolve(undefined);
+      await finished.promise;
+      second.receive({ ...command, action: "stop", requestId: "stop" });
+      await stopped.promise;
+      expect(second.sent.map((raw) => JSON.parse(raw))).toEqual([
+        {
+          type: "register",
+          sidecarId: "control-reconnect",
+          token: "test-token",
+          agentAddresses: [],
+        },
+        { type: "workflow.control.ack", requestId: "stop" },
+      ]);
+      expect(first.sent).toHaveLength(1);
+    } finally {
+      release.resolve(undefined);
+      client.close();
+      globalThis.WebSocket = originalWebSocket;
+    }
+  });
+
+  test("forced stop passes a pending cancellation without releasing its acknowledgement early", async () => {
+    const sidecarId = "control-preemption";
+    const identity = ensureTestIdentity(sidecarId);
+    if (identity.kind !== "allocated")
+      throw new Error("Expected allocated identity");
+    const connected = Promise.withResolvers<undefined>();
+    env.router.events.on("sidecar.allocated.connected", ({ allocationId }) => {
+      if (allocationId === identity.allocationId) connected.resolve(undefined);
+    });
+    const started = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const bindings = withTestDeployBindings();
+    const client = createHubLink({
+      hubURL: `ws://localhost:${env.server.port}/ws`,
+      sidecarId,
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...bindings,
+      deployRouter: {
+        ...bindings.deployRouter,
+        async control(frame) {
+          if (frame.action === "cancel") {
+            started.resolve(undefined);
+            await release.promise;
+          }
+        },
+      },
+    });
+    client.connect();
+    await connected.promise;
+    let cancellationAcknowledged = false;
+    const cancel = env.router
+      .sendWorkflowControl(
+        identity,
+        {
+          runId: identity.anchorRunId,
+          agentAddress: identity.workflowRunAddress,
+          action: "cancel",
+          reason: "Stop",
+        },
+        CONTROL_TIMEOUT_MS,
+      )
+      .then(() => {
+        cancellationAcknowledged = true;
+      });
+    const cancelResult = cancel.catch((cause: unknown) => cause);
+    try {
+      await Promise.race([started.promise, cancelResult]);
+      await env.router.sendWorkflowControl(
+        identity,
+        {
+          runId: identity.anchorRunId,
+          agentAddress: identity.workflowRunAddress,
+          action: "stop",
+          reason: "Grace expired",
+        },
+        CONTROL_TIMEOUT_MS,
+      );
+      expect(cancellationAcknowledged).toBe(false);
+      release.resolve(undefined);
+      expect(await cancelResult).toBeUndefined();
+    } finally {
+      release.resolve(undefined);
+      await cancelResult;
+      const disconnected = Promise.withResolvers<undefined>();
+      const wasConnected = env.router
+        .getConnectedSidecars()
+        .includes(sidecarId);
+      env.router.events.on("sidecar.disconnect", ({ allocated }) => {
+        if (allocated?.allocationId === identity.allocationId)
+          disconnected.resolve(undefined);
+      });
+      client.close();
+      if (wasConnected) await disconnected.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  });
+
   test("sidecar registers with hub on connect", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();

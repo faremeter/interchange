@@ -245,8 +245,16 @@ export const ControlPayload = type.or(
     },
   },
   {
+    type: "'cancel.prepare'",
+    data: { requestId: "string", runId: "string", reason: "string" },
+  },
+  {
+    type: "'cancel.prepared'",
+    data: { requestId: "string", "error?": "string" },
+  },
+  {
     type: "'cancel.committed'",
-    data: { runId: "string", reason: "string" },
+    data: { requestId: "string", "error?": "string" },
   },
   {
     type: "'grants-updated'",
