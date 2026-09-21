@@ -1167,7 +1167,7 @@ function lifecycleService(
     }),
     releaseCapacity: async () => "pending",
     requestCancellation: async () => "pending",
-    reconcile: async () => undefined,
+    reconcileNext: async () => false,
     ...overrides,
   };
 }
