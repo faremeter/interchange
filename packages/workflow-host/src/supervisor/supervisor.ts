@@ -459,6 +459,10 @@ export function createWorkflowSupervisor(
   bindings: WorkflowSupervisorBindings,
 ): WorkflowSupervisor {
   let state: SupervisorState = { phase: "idle" };
+  let shutdownPromise: Promise<void> | null = null;
+  // Replacement processes belong to shutdown before their ready handshake
+  // transfers ownership to the active state.
+  const uninstalledChildren = new Set<SubprocessHandle>();
   // The live credential delivery to seed the child on every spawn and every
   // pre-trigger barrier. Initialized from the deploy-time delivery and MUTATED
   // by `deliverCredentials` on every runtime update, so a mid-life revocation or
@@ -3467,7 +3471,7 @@ export function createWorkflowSupervisor(
     await shutdownInternal({ reason: "shutdown requested" });
   }
 
-  async function shutdownInternal(opts: {
+  type ShutdownOptions = {
     reason: string;
     // Terminal phase the teardown lands in. Defaults to `stopped` (a clean
     // shutdown); the crash-loop latch passes `crash-looping` so the terminal
@@ -3479,13 +3483,27 @@ export function createWorkflowSupervisor(
     // fire below. The terminal phase alone cannot carry this: a self-terminated
     // and a host-requested teardown both land in `stopped`.
     selfTerminated?: boolean;
-  }): Promise<void> {
+  };
+
+  function shutdownInternal(opts: ShutdownOptions): Promise<void> {
+    if (shutdownPromise !== null) return shutdownPromise;
     if (
       state.phase === "idle" ||
       state.phase === "stopped" ||
       state.phase === "crash-looping"
     )
-      return;
+      return Promise.resolve();
+    // Publish the completion before teardown can call back into the supervisor.
+    const completion = Promise.withResolvers<undefined>();
+    shutdownPromise = completion.promise;
+    void performShutdown(opts).then(
+      () => completion.resolve(undefined),
+      completion.reject,
+    );
+    return shutdownPromise;
+  }
+
+  async function performShutdown(opts: ShutdownOptions): Promise<void> {
     const prior = state;
     state = { phase: "stopping" };
     // shutdownInternal is designed to be TOTAL: when a child is up it must
@@ -3504,6 +3522,27 @@ export function createWorkflowSupervisor(
     // by construction; they sit inside the `try` regardless so the
     // invariant survives if that ever changes.)
     const accumulatorsToDispose = [...drainAccumulators.values()];
+    const childrenToStop = new Set(uninstalledChildren);
+    if (
+      prior.phase === "starting" ||
+      prior.phase === "running" ||
+      prior.phase === "recycling"
+    )
+      childrenToStop.add(prior.handle);
+    let killRequested = false;
+    function killChildren(): void {
+      if (killRequested) return;
+      killRequested = true;
+      for (const handle of childrenToStop) {
+        try {
+          handle.kill();
+        } catch (cause) {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.warn`child kill threw during shutdown: ${message}`;
+        }
+      }
+    }
     try {
       // Stop every armed drainTimeout accumulator before tearing the child
       // down. An accumulator left running would otherwise fire its
@@ -3659,24 +3698,19 @@ export function createWorkflowSupervisor(
       // whatever happened above, so a throwing teardown step can neither
       // leak the child nor wedge the supervisor in `stopping`. The kill is
       // itself guarded so a throw here cannot re-escape the `finally`.
+      killChildren();
+      await Promise.all(
+        [...childrenToStop].map((handle) =>
+          handle.exited.catch(() => {
+            /* A non-zero child exit is expected during shutdown. */
+          }),
+        ),
+      );
       if (
         prior.phase === "starting" ||
         prior.phase === "running" ||
         prior.phase === "recycling"
       ) {
-        try {
-          prior.handle.kill();
-        } catch (cause) {
-          const message =
-            cause instanceof Error ? cause.message : String(cause);
-          logger.warn`child kill threw during shutdown: ${message}`;
-        }
-        await prior.handle.exited.catch(() => {
-          /* swallowed: the host has already been told the deployment is
-             coming down; an error surfaced from the spawner is the
-             process exiting with a non-zero code, which is what the
-             shutdown path expects. */
-        });
         await prior.eventPump.catch(() => {
           /* swallowed for the same reason as above. */
         });
@@ -3684,13 +3718,8 @@ export function createWorkflowSupervisor(
       state = { phase: opts.terminalPhase ?? "stopped" };
     }
     // Surface a self-termination to the host after the terminal transition is
-    // committed. The already-terminal early-return at the top dedups the common
-    // case, but it does NOT cover the `stopping` window, so two self-terminating
-    // callers interleaving through teardown can each fire (e.g. an onChildCrash
-    // during `recycling` plus the recycle-failure catch). The sink is therefore
-    // idempotent-required, not exactly-once; the reclaim it drives absorbs a
-    // repeat by design. Wrapped so a throwing sink cannot re-escape here and
-    // break the documented shutdown totality.
+    // committed. Concurrent shutdown callers share this teardown. Catch sink
+    // failures so they cannot escape a completed shutdown.
     if (opts.selfTerminated === true) {
       try {
         bindings.onSelfTerminate?.({
@@ -3884,7 +3913,22 @@ export function createWorkflowSupervisor(
     try {
       attempt = await triggerRecycle(
         {
-          bindings,
+          bindings: {
+            ...bindings,
+            subprocessSpawner: (spawnArgs) => {
+              if (state.phase !== "recycling") {
+                throw new Error(
+                  `Cannot spawn a replacement in supervisor phase ${state.phase}`,
+                );
+              }
+              const handle = bindings.subprocessSpawner(spawnArgs);
+              uninstalledChildren.add(handle);
+              const forgetExitedChild = () =>
+                uninstalledChildren.delete(handle);
+              void handle.exited.then(forgetExitedChild, forgetExitedChild);
+              return handle;
+            },
+          },
           stepOrder: priorContext.stepOrder,
           definitionHash: priorContext.definitionHash,
           warmKeep: priorContext.warmKeep,
@@ -3923,26 +3967,10 @@ export function createWorkflowSupervisor(
             credentialsSnapshot,
             controlIncoming,
           }) => {
-            // Phase guard: a `shutdown()` that landed during the
-            // kill/respawn gap (between `subprocessSpawner` and this
-            // callback) has flipped `state.phase` to `stopping` or
-            // `stopped`. The new child is now an orphan -- the
-            // supervisor was supposed to be tearing down, not
-            // installing a fresh cohort. Kill the new wiring's
-            // handle and bail out without registering it on
-            // `state`. `shutdownInternal`'s own teardown path has
-            // already disposed the prior cohort; there is nothing
-            // for this callback to do.
+            // Shutdown already owns the uninstalled child's kill and exit.
+            // A late ready frame must only drain its IPC resources, never
+            // install it as a new running cohort.
             if (state.phase !== "recycling") {
-              // Kill the orphan child and release its event-channel /
-              // upstream-control resources so they cannot survive as
-              // unowned promises. Without this, the eventPump and
-              // controlIncoming iterator would have no `state`
-              // bookkeeping to drive their cleanup -- a rejection
-              // inside `pumpEvents` would surface as an unhandled
-              // rejection, and the upstream control iterator's
-              // exit would never be observed.
-              wiring.handle.kill("SIGTERM");
               void wiring.eventPump.catch((cause: unknown) => {
                 const message =
                   cause instanceof Error ? cause.message : String(cause);
@@ -4014,6 +4042,7 @@ export function createWorkflowSupervisor(
               replayDone: null,
               sweepDone: prior.sweepDone,
             };
+            uninstalledChildren.delete(wiring.handle);
             // Bump the generation and arm the exit-watcher for the
             // respawned child atomically with this running transition, so
             // the predecessor's watcher (already stale by generation) never

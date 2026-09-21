@@ -514,11 +514,9 @@ export async function triggerRecycle(
 
 /**
  * Reap a respawned child that was spawned and wired but never installed
- * on `state`. Such a child is invisible to the supervisor's
- * recycle-failure teardown -- that path reaps the PRIOR cohort
- * (`state.handle` during `recycling`) -- so a respawn that fails after
- * the spawn must reap the new child here or it leaks its OS process and
- * both IPC channels.
+ * on `state`. Recycle owns startup-failure cleanup even when invoked
+ * without a supervisor. A supervisor also tracks this handle so a
+ * concurrent shutdown can stop it before the startup failure settles.
  *
  * Kill FIRST, then finalize the pumps: process death drives EOF on both
  * channels, which unparks `waitForReady`'s in-flight `iter.next()`
