@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import {
   WorkflowLifecyclePolicy,
@@ -7,7 +7,7 @@ import {
   type ResolvedWorkflowLifecyclePolicy,
 } from "@intx/types";
 
-import type { DBExecutor } from "./client";
+import type { DB, DBExecutor } from "./client";
 import {
   parseTenantConfig,
   parseWorkflowDefinitionLifecyclePolicy,
@@ -15,7 +15,26 @@ import {
 import { getAncestorChain } from "./tenant-hierarchy";
 import { tenant } from "./schema/tenants";
 import { workflowDefinition } from "./schema/workflow-definitions";
-import { isLiveWorkflowRunStatus } from "./schema/workflow-run";
+import { isLiveWorkflowRunStatus, workflowRun } from "./schema/workflow-run";
+import { sidecarAllocation } from "./schema/sidecar-allocation";
+
+export type WorkflowRunExecutionTarget = {
+  readonly allocationId: string;
+  readonly generation: number;
+  readonly sidecarId: string;
+  readonly tenantId: string;
+  readonly anchorRunId: string;
+  readonly workflowRunAddress: string;
+};
+
+export class WorkflowRunNotExecutableError extends Error {
+  readonly reason: "stopping" | "terminal";
+  constructor(runId: string, reason: "stopping" | "terminal") {
+    super(`Workflow run ${runId} is ${reason} and no longer accepts work`);
+    this.name = "WorkflowRunNotExecutableError";
+    this.reason = reason;
+  }
+}
 
 /**
  * A live run is stopping once cancellation is requested or its deadline
@@ -42,6 +61,70 @@ export function canExecuteWorkflowRun(
   now = new Date(),
 ): boolean {
   return workflowRunExecutability(run, now) === "executable";
+}
+
+/**
+ * Serialize a synchronous send with cancellation and allocation retirement
+ * through the anchor run's row lock. Pack ingestion holds only the allocation
+ * row, so a long receive does not delay delivery. This relies on every path
+ * that retires the allocation of a run that can still execute also writing the
+ * anchor row, as replacement and unrecoverable release do.
+ */
+export async function withExecutableWorkflowRun(
+  db: DB["db"],
+  target: WorkflowRunExecutionTarget,
+  send: () => boolean,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  signal?.throwIfAborted();
+  return db.transaction(async (tx) => {
+    const [run] = await tx
+      .select({
+        status: workflowRun.status,
+        expiresAt: workflowRun.expiresAt,
+        cancellationRequestedAt: workflowRun.cancellationRequestedAt,
+      })
+      .from(workflowRun)
+      .where(
+        and(
+          eq(workflowRun.id, target.anchorRunId),
+          eq(workflowRun.anchorRunId, target.anchorRunId),
+          eq(workflowRun.tenantId, target.tenantId),
+          eq(workflowRun.address, target.workflowRunAddress),
+        ),
+      )
+      .for("update");
+    signal?.throwIfAborted();
+    // Read under the anchor lock, so a retirement that committed while this
+    // send waited is visible.
+    const [allocation] = await tx
+      .select({ id: sidecarAllocation.id })
+      .from(sidecarAllocation)
+      .where(
+        and(
+          eq(sidecarAllocation.id, target.allocationId),
+          eq(sidecarAllocation.generation, target.generation),
+          eq(sidecarAllocation.ensureAcceptedGeneration, target.generation),
+          eq(sidecarAllocation.sidecarId, target.sidecarId),
+          eq(sidecarAllocation.tenantId, target.tenantId),
+          eq(sidecarAllocation.anchorRunId, target.anchorRunId),
+          eq(sidecarAllocation.status, "allocated"),
+        ),
+      );
+    signal?.throwIfAborted();
+    // Evaluate the clock after the lock, never before a potentially slow read.
+    const state =
+      run === undefined ? "terminal" : workflowRunExecutability(run);
+    // A run that cannot execute is reported as such even once its allocation
+    // is retired, so callers drop its work instead of retrying it.
+    if (state !== "executable")
+      throw new WorkflowRunNotExecutableError(target.anchorRunId, state);
+    if (allocation === undefined)
+      throw new Error(
+        `Allocation ${target.allocationId} is not available for delivery`,
+      );
+    return send();
+  });
 }
 
 export async function loadTenantLifecyclePolicies(

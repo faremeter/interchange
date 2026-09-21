@@ -141,6 +141,16 @@ nothing. Reconciliation that cannot read Git backs off and retries; an explicit
 release retries the read and answers 503 while accepted history remains
 unreconciled.
 
+Hub delivery checks lifecycle state under the anchor run's row lock, which
+cancellation and retirement of a runnable deployment's allocation also take,
+immediately before queuing restore, deployment, mail, or signal frames on the
+socket. Pack ingestion holds only the allocation row, so a long receive does not
+delay delivery. For deployment sends, initialization reservations finish before admission;
+worker acknowledgements are awaited after the lock is released. Retries and reconnect
+replay use that same check; stop and cancellation commands remain deliverable.
+This orders new sends against cancellation but cannot recall frames already
+queued before cancellation or expiry; those frames may arrive later.
+
 An explicit release request uses the same path:
 
 ```http

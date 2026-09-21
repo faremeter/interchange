@@ -41,14 +41,14 @@ describe("SidecarRouter allocation mail durability", () => {
     await connectAllocated(router, [TEST_IDENTITY.workflowRunAddress]);
 
     expect(
-      router.routeMail(
+      await router.routeMail(
         TEST_IDENTITY.workflowRunAddress,
         "aGVsbG8=",
         TEST_SENDER,
       ),
     ).toBe(true);
     expect(
-      router.routeMail("unknown@example.test", "aGVsbG8=", TEST_SENDER),
+      await router.routeMail("unknown@example.test", "aGVsbG8=", TEST_SENDER),
     ).toBe(false);
   });
 
@@ -64,7 +64,7 @@ describe("SidecarRouter allocation mail durability", () => {
     ]);
 
     expect(
-      router.routeMail(
+      await router.routeMail(
         TEST_IDENTITY.workflowRunAddress,
         "aGVsbG8=",
         TEST_SENDER,
@@ -102,7 +102,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const ws = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
-    router.routeMail(
+    await router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "aGk=",
       TEST_SENDER,
@@ -137,6 +137,7 @@ describe("SidecarRouter allocation mail durability", () => {
       workflowRunAddress: "run_secondary@tenant.example",
     };
     const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: async ({ sidecarId }) =>
         sidecarId === secondary.sidecarId ? secondary : TEST_IDENTITY,
       validateSidecarIdentity: async () => true,
@@ -170,7 +171,7 @@ describe("SidecarRouter allocation mail durability", () => {
     );
     await tick();
 
-    router.routeMail(
+    await router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "b3duZWQ=",
       TEST_SENDER,
@@ -212,7 +213,7 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
-    router.routeMail(
+    await router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "ZHJvcA==",
       TEST_SENDER,
@@ -251,7 +252,11 @@ describe("SidecarRouter allocation mail durability", () => {
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
-    router.routeMail(TEST_IDENTITY.workflowRunAddress, "eXk=", TEST_SENDER);
+    await router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "eXk=",
+      TEST_SENDER,
+    );
 
     // Tracking a mail is what arms its redelivery retry, so no armed retry is
     // the untracked state itself -- there is nothing left that could redeliver
@@ -268,7 +273,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const first = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
-    router.routeMail(
+    await router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "cmV0YWluZWQ=",
       TEST_SENDER,
@@ -308,7 +313,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const first = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
-    router.routeMail(
+    await router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "ZXhwaXJlZA==",
       TEST_SENDER,
@@ -453,7 +458,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const first = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
-    router.routeMail(
+    await router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "a2V5bGVzcw==",
       runSender,
@@ -505,7 +510,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const first = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
-    router.routeMail(
+    await router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "a2V5bGVzcw==",
       TEST_SENDER,
@@ -545,7 +550,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const first = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
-    router.routeMail(
+    await router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "Y2FwdHVyZWQ=",
       TEST_SENDER,
@@ -589,7 +594,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const first = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
-    router.routeMail(
+    await router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "Z3JhbnRsZXNz",
       runSender,
@@ -657,7 +662,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const ws = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
-    router.routeMail(
+    await router.routeMail(
       TEST_IDENTITY.workflowRunAddress,
       "cmVzb2x2ZS1yYWNl",
       runSender,
@@ -829,6 +834,113 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       { address: TEST_IDENTITY.workflowRunAddress, publicKey: hexKey },
     ]);
   });
+
+  test.each(["before", "after"] as const)(
+    "retries a committed trigger mail when reconnect is %s failed admission",
+    async (reconnectOrder) => {
+      const admissionEntered = Promise.withResolvers<undefined>();
+      const releaseAdmission = Promise.withResolvers<undefined>();
+      const retryArmed = Promise.withResolvers<undefined>();
+      const retries = createManualRetries(20);
+      let materializations = 0;
+      let admissions = 0;
+      const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+      const router = createAllocatedRouter({
+        mailAckRetryIntervalMs: 20,
+        scheduleTimeout: (handler, ms) => {
+          const cancel = retries.scheduleTimeout(handler, ms);
+          if (ms === 20) retryArmed.resolve(undefined);
+          return cancel;
+        },
+        lookups: {
+          async materializeMailTriggeredRunGrants() {
+            materializations += 1;
+            return { outcome: "materialized", stepGrants: [] };
+          },
+        },
+        withExecutableWorkflowRun: async (_target, send) => {
+          admissions += 1;
+          if (admissions === 1) {
+            admissionEntered.resolve(undefined);
+            await releaseAdmission.promise;
+          }
+          return send();
+        },
+      });
+      router.events.on("mail.outbound.undelivered", (event) => {
+        undelivered.push(event);
+      });
+      const first = await connectAllocated(router, [
+        TEST_IDENTITY.workflowRunAddress,
+      ]);
+      router.handleMessage(
+        first,
+        JSON.stringify({
+          type: "mail.outbound",
+          senderAddress: TEST_IDENTITY.workflowRunAddress,
+          rawMessage,
+          recipients: [TEST_IDENTITY.workflowRunAddress],
+        }),
+      );
+      await admissionEntered.promise;
+      expect(materializations).toBe(1);
+
+      router.handleClose(first);
+      const second =
+        reconnectOrder === "before"
+          ? await connectAllocated(
+              router,
+              [TEST_IDENTITY.workflowRunAddress],
+              "reconnect",
+            )
+          : undefined;
+      releaseAdmission.resolve(undefined);
+      await retryArmed.promise;
+      if (second !== undefined) {
+        expect(framesOfType(second, "mail.inbound")).toHaveLength(0);
+        retries.fireNext();
+      }
+      const recipient =
+        second ??
+        (await connectAllocated(
+          router,
+          [TEST_IDENTITY.workflowRunAddress],
+          "reconnect",
+        ));
+      await recipient.awaitSent((sent) =>
+        sent.some((line) => line.includes('"type":"mail.inbound"')),
+      );
+      expect(
+        parsedFrames(recipient)
+          .filter(
+            (frame): frame is Record<string, unknown> =>
+              typeof frame === "object" &&
+              frame !== null &&
+              "type" in frame &&
+              (frame.type === "run.grants" || frame.type === "mail.inbound"),
+          )
+          .map((frame) => frame["type"]),
+      ).toEqual(["run.grants", "mail.inbound"]);
+      expect(materializations).toBe(1);
+      expect(undelivered).toEqual([]);
+
+      const messageId = framesOfType(recipient, "mail.inbound")[0]?.[
+        "messageId"
+      ];
+      if (typeof messageId !== "string") throw new Error("Missing message ID");
+      router.handleMessage(
+        recipient,
+        JSON.stringify({
+          type: "mail.inbound.ack",
+          agentAddress: TEST_IDENTITY.workflowRunAddress,
+          messageId,
+        }),
+      );
+      await tick();
+      expect(retries.armedCount()).toBe(0);
+      router.handleClose(recipient);
+    },
+  );
 
   test("holds a run sender's mail while its key is unresolvable", async () => {
     // A run-address sender whose key does not resolve is treated as pre-ack: it

@@ -37,6 +37,18 @@ typed values; downstream code uses those values without
 re-casting. See `CONVENTIONS.md` for the project-wide rule against
 cast-at-callsite in DB consumers.
 
+`canExecuteWorkflowRun` checks a loaded run's status, cancellation request,
+and lifetime deadline. For delivery, use `withExecutableWorkflowRun` with the
+authenticated allocation identity and a synchronous send callback. It locks
+the anchor run, which cancellation and retirement of a runnable deployment's
+allocation also write, then reads the allocation and checks the current time.
+It takes no lock on the allocation, so a pack receive holding that row does
+not delay delivery. Finish asynchronous
+message preparation before calling it; the callback queues frames on the
+socket and must not wait for a worker acknowledgement. An ineligible run
+throws `WorkflowRunNotExecutableError`; database failures remain errors so
+callers can retry them.
+
 Connections created by `createDB` set PostgreSQL's `statement_timeout` to
 60,000 milliseconds. Override it with `statementTimeoutMs` in `DBConfig`
 (a positive integer up to 2,147,483,647 milliseconds). The Hub and the

@@ -104,6 +104,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
 
   test("rejects invalid and throwing authenticators", async () => {
     const invalid = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: async () => null,
       validateSidecarIdentity: async () => true,
     });
@@ -121,6 +122,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     await tick();
 
     const throwing = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: async () => {
         throw new Error("auth unavailable");
       },

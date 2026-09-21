@@ -894,6 +894,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         plugins: createSidecarPluginRegistry({ provisioners: [] }),
         router: createSidecarRouter({
+          withExecutableWorkflowRun: async (_target, send) => send(),
           authenticateSidecar: async () => null,
           validateSidecarIdentity: async () => false,
         }),
@@ -957,6 +958,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
       }
       const router = createSidecarRouter({
+        withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: async () => null,
         validateSidecarIdentity: async () => false,
       });

@@ -643,7 +643,7 @@ export function createWorkflowRoutes({
       }
 
       try {
-        sidecarRouter.sendSignalDeliver({
+        await sidecarRouter.sendSignalDeliver({
           agentAddress,
           runId: body.runId,
           signalName: body.signalName,

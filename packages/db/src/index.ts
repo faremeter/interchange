@@ -24,6 +24,9 @@ export {
   loadTenantLifecyclePolicies,
   canExecuteWorkflowRun,
   workflowRunExecutability,
+  withExecutableWorkflowRun,
+  WorkflowRunNotExecutableError,
+  type WorkflowRunExecutionTarget,
   resolveDeploymentLifecyclePolicy,
   validateLifecyclePolicyEdit,
 } from "./workflow-lifecycle-policy";

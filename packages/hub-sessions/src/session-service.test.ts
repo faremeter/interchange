@@ -107,7 +107,10 @@ function createMockRouter(): TestSidecarRouter & {
     handleOpen: track("handleOpen") as SidecarRouter["handleOpen"],
     handleMessage: track("handleMessage") as SidecarRouter["handleMessage"],
     handleClose: track("handleClose") as SidecarRouter["handleClose"],
-    routeMail(agentAddress: string, rawMessage: string): boolean {
+    async routeMail(
+      agentAddress: string,
+      rawMessage: string,
+    ): Promise<boolean> {
       calls.push({ method: "routeMail", args: [agentAddress, rawMessage] });
       return mock.routeMailResult;
     },
@@ -179,11 +182,11 @@ function createMockRouter(): TestSidecarRouter & {
     sendSyncRequest: track(
       "sendSyncRequest",
     ) as SidecarRouter["sendSyncRequest"],
-    sendSignalDeliver: ((
+    sendSignalDeliver: async (
       opts: Parameters<SidecarRouter["sendSignalDeliver"]>[0],
     ) => {
       calls.push({ method: "sendSignalDeliver", args: [opts] });
-    }) as SidecarRouter["sendSignalDeliver"],
+    },
     sendDrain: ((opts: Parameters<SidecarRouter["sendDrain"]>[0]) => {
       calls.push({ method: "sendDrain", args: [opts] });
     }) as SidecarRouter["sendDrain"],
