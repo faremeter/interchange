@@ -389,6 +389,7 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
       resolveExit = resolve;
     });
     let killed = false;
+    const killRequested = Promise.withResolvers<undefined>();
     const spawner: SubprocessSpawner = () => {
       spawnerInvoked = true;
       controlIn = createMemoryNdjsonStream();
@@ -403,7 +404,7 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
           killed = true;
           controlIn?.close();
           events?.close();
-          resolveExit?.(0);
+          killRequested.resolve(undefined);
         },
         exited,
       };
@@ -440,6 +441,15 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
     // observable -- a swallowed error would either hang `spawnPromise`
     // forever or let it resolve with a malformed `SpawnResult`.
     const shutdownPromise = supervisor.shutdown();
+    await killRequested.promise;
+    let concurrentShutdownFinished = false;
+    const concurrentShutdown = supervisor.shutdown().then(() => {
+      concurrentShutdownFinished = true;
+    });
+    // Drain this event-loop turn while the child's exit is explicitly held.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const returnedBeforeExit = concurrentShutdownFinished;
+    resolveExit?.(0);
 
     let spawnError: unknown;
     try {
@@ -449,6 +459,8 @@ describe("shutdownInternal vs spawn-time crash (Gap B)", () => {
       spawnError = cause;
     }
     await shutdownPromise;
+    await concurrentShutdown;
+    expect(returnedBeforeExit).toBe(false);
 
     expect(killed).toBe(true);
     expect(spawnError).toBeInstanceOf(Error);

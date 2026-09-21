@@ -1326,85 +1326,146 @@ describe("supervisor recycle: drain-side processing replay", () => {
 });
 
 describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
-  test("a shutdown landing while triggerRecycle awaits the new child's ready kills the new wiring and leaves no orphan", async () => {
-    // The race: `installNewChild` writes `state = { phase: "running",
-    // ... }` unconditionally. If `shutdown()` lands during the gap
-    // between `subprocessSpawner` (which returns a live handle) and
-    // `installNewChild` (which would register that handle on
-    // `state`), the supervisor's state has been flipped to
-    // `stopping`/`stopped` -- but the late `installNewChild` write
-    // clobbers it back to `running` and leaves the freshly spawned
-    // child running, orphaned. The fix is a phase guard at
-    // `installNewChild` that kills the new wiring when the
-    // supervisor is no longer in `recycling`.
-    const baseDir = await makeTempDir("recycle-shutdown-gap-");
+  test.each([false, true])(
+    "concurrent shutdowns wait for the replacement's exit (late ready: %s)",
+    async (lateReady) => {
+      const baseDir = await makeTempDir("recycle-shutdown-gap-");
+      const ipcKeypair = await generateKeyPair();
+      const tracker = createSpawnTracker({});
+      const replacementKill = Promise.withResolvers<undefined>();
+      let finishReplacement: (() => void) | undefined;
+      const bindings = await buildBindings({
+        baseDir,
+        spawner: (args) => {
+          const handle = tracker.spawner(args);
+          if (tracker.totalSpawns !== 2) return handle;
+          finishReplacement = () => handle.kill("SIGTERM");
+          return {
+            ...handle,
+            kill: () => replacementKill.resolve(undefined),
+          };
+        },
+        mailBus: createMockMailBus(),
+        ipcKeypair,
+      });
+      const supervisor = createWorkflowSupervisor(bindings);
+      const spawning = supervisor.spawn({
+        stepOrder: ["step-1"],
+        definitionHash: "def-hash-shutdown-race",
+        warmKeep: false,
+        onInferenceEvent: () => undefined,
+      });
+      await tracker.awaitChildren(1);
+      const first = tracker.children[0];
+      if (first === undefined) throw new Error("first child missing");
+      await driveReady(first, ipcKeypair);
+      await spawning;
+
+      const recycled = supervisor.recycle({ reason: "race-test" }).then(
+        () => null,
+        (cause: unknown) => cause,
+      );
+      await tracker.awaitChildren(2);
+      const shutdownPromise = supervisor.shutdown();
+      let concurrentShutdownFinished = false;
+      const concurrentShutdown = supervisor.shutdown().then(() => {
+        concurrentShutdownFinished = true;
+      });
+      try {
+        expect(
+          await Promise.race([
+            replacementKill.promise.then(() => "kill"),
+            shutdownPromise.then(() => "shutdown"),
+          ]),
+        ).toBe("kill");
+        // The replacement's exit is held explicitly; drain this event-loop turn.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(concurrentShutdownFinished).toBe(false);
+        if (lateReady) {
+          const second = tracker.children[1];
+          if (second === undefined)
+            throw new Error("replacement child missing");
+          await driveReady(second, ipcKeypair);
+          expect(await recycled).toBeNull();
+          await expect(
+            supervisor.deliverSignal({
+              runId: "run_deployment-x",
+              signalName: "test",
+              signalId: "late-ready",
+              payload: null,
+            }),
+          ).rejects.toThrow("phase stopping");
+          expect(concurrentShutdownFinished).toBe(false);
+        }
+      } finally {
+        finishReplacement?.();
+        await Promise.all([shutdownPromise, concurrentShutdown]);
+        const outcome = await recycled;
+        if (!lateReady) expect(outcome).toBeInstanceOf(Error);
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("shutdown fences a replacement whose key generation is still pending", async () => {
+    const baseDir = await makeTempDir("recycle-shutdown-before-spawn-");
     const ipcKeypair = await generateKeyPair();
-    const mailBus = createMockMailBus();
     const tracker = createSpawnTracker({});
     const bindings = await buildBindings({
       baseDir,
       spawner: tracker.spawner,
-      mailBus,
+      mailBus: createMockMailBus(),
       ipcKeypair,
     });
-    const supervisor = createWorkflowSupervisor(bindings);
-    const spawnPromise = supervisor.spawn({
+    const generating = Promise.withResolvers<undefined>();
+    const generated = Promise.withResolvers<typeof ipcKeypair>();
+    let generations = 0;
+    const supervisor = createWorkflowSupervisor({
+      ...bindings,
+      ipcKeyPairFactory: () => {
+        generations += 1;
+        if (generations === 1) return Promise.resolve(ipcKeypair);
+        generating.resolve(undefined);
+        return generated.promise;
+      },
+    });
+    const spawning = supervisor.spawn({
       stepOrder: ["step-1"],
-      definitionHash: "def-hash-shutdown-race",
+      definitionHash: "def-hash-shutdown-before-spawn",
       warmKeep: false,
-
       onInferenceEvent: () => undefined,
     });
     await tracker.awaitChildren(1);
     const first = tracker.children[0];
-    if (first === undefined) {
-      throw new Error("tracker.children[0] missing");
-    }
+    if (first === undefined) throw new Error("first child missing");
     await driveReady(first, ipcKeypair);
-    await spawnPromise;
-
-    // Start the recycle. `triggerRecycle` runs drain -> replay ->
-    // abortPriorCohort -> kill (the first child gets SIGTERM) ->
-    // subprocessSpawner (the second child handle materialises) ->
-    // `await waitForReady`. The second child's ready frame is NOT
-    // driven yet, so the recycle parks.
-    const recyclePromise = supervisor.recycle({ reason: "race-test" });
-    await tracker.awaitChildren(2);
-    const second = tracker.children[1];
-    if (second === undefined) {
-      throw new Error("tracker.children[1] missing");
-    }
-
-    // Concurrent shutdown. `shutdownInternal` synchronously flips
-    // `state.phase` to "stopping" at its head (supervisor.ts L1583
-    // at the time of writing). Yield a microtask so the synchronous
-    // prelude is guaranteed to have run before we drive the second
-    // child's ready -- without this yield, `installNewChild` could
-    // race `state.phase` and fire while phase is still "recycling",
-    // making the test pass by coincidence rather than by the guard
-    // catching the actual race window the fix targets.
-    const shutdownPromise = supervisor.shutdown();
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
-
-    // Release the second child's ready frame so `triggerRecycle`
-    // proceeds past `waitForReady` and calls `installNewChild`.
-    // Without the phase guard, `installNewChild` clobbers
-    // `state.phase` back to `running` and the second child stays
-    // alive. With the guard, `installNewChild` observes the
-    // shutdown-flipped phase and kills the new wiring.
-    await driveReady(second, ipcKeypair);
-
-    await Promise.allSettled([recyclePromise, shutdownPromise]);
-
-    // The orphan child must have been killed. Without the guard,
-    // `second.killSignals` is empty (the new child stays alive
-    // under a stopped supervisor).
-    expect(second.killSignals).toContain("SIGTERM");
-
-    // A subsequent shutdown is a no-op -- phase is already stopped.
+    await spawning;
+    const recycled = supervisor.recycle({ reason: "race-test" }).then(
+      () => null,
+      (cause: unknown) => cause,
+    );
+    await generating.promise;
     await supervisor.shutdown();
+    generated.resolve(ipcKeypair);
+    try {
+      expect(
+        await Promise.race([
+          recycled.then(() => "finished"),
+          tracker.awaitChildren(2).then(() => "spawned"),
+        ]),
+      ).toBe("finished");
+      expect(await recycled).toBeInstanceOf(Error);
+      expect(tracker.totalSpawns).toBe(1);
+    } finally {
+      for (const child of tracker.children) {
+        child.childToSupervisor.close();
+        child.eventChildToSupervisor.close();
+        child.resolveExit?.(0);
+      }
+      await recycled;
+      await supervisor.shutdown();
+      await fs.rm(baseDir, { recursive: true, force: true });
+    }
   });
 });
 
