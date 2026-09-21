@@ -6,6 +6,7 @@ import {
   createWorkflowRunDispatchStore,
   resolveFrameSenderKey,
   resolveSenderKey,
+  withExecutableWorkflowRun,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import {
@@ -330,6 +331,8 @@ export async function createHubServer({
     hubPublicKey: hexEncode(hubSigningKey.publicKey),
     authenticateSidecar: async ({ token }) => sidecarCredentials.resolve(token),
     validateSidecarIdentity: sidecarCredentials.isCurrent,
+    withExecutableWorkflowRun: (target, send, signal) =>
+      withExecutableWorkflowRun(db, target, send, signal),
     lookups,
     ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
   });

@@ -91,6 +91,7 @@ export function createAllocatedRouter(
   config: Partial<SidecarRouterConfig> = {},
 ) {
   const router = createSidecarRouter({
+    withExecutableWorkflowRun: async (_target, send) => send(),
     authenticateSidecar: async () => TEST_IDENTITY,
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),

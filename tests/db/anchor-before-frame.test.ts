@@ -315,6 +315,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const mailParked = Promise.withResolvers<boolean>();
         let failActivityRead = false;
         const router = createSidecarRouter({
+          withExecutableWorkflowRun: async (_target, send) => send(),
           authenticateSidecar: async () => identity,
           validateSidecarIdentity: async (candidate, use) => {
             if (failActivityRead) {
@@ -593,6 +594,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const credentials = createSidecarCredentialResolver({ db: h.db });
       const mailParked = Promise.withResolvers<boolean>();
       const router = createSidecarRouter({
+        withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: async () => identity,
         validateSidecarIdentity: async (candidate, use) =>
           credentials.isCurrent(candidate, use),

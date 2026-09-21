@@ -468,7 +468,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // then sever the link in the same tick so the ack -- which fires only after
     // the async durable write -- never round-trips.
     const base64 = base64Encode(raw);
-    const delivered = env.hub.router.routeMail(
+    const delivered = await env.hub.router.routeMail(
       ctx.deploymentMailAddress,
       base64,
       "edge@integration.interchange",
@@ -670,7 +670,7 @@ async function routeRaw(
   // The hub-verified sender is independent of the raw message's own (possibly
   // malformed) MIME From -- that independence is the point of these edge-case
   // routes -- so stamp a fixed hub-side sender the way the trigger route does.
-  const delivered = env.hub.router.routeMail(
+  const delivered = await env.hub.router.routeMail(
     address,
     base64,
     "user@integration.interchange",

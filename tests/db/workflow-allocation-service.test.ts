@@ -369,6 +369,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("reauthenticates adopted probe capacity as its allocation", async () => {
       const credentialResolver = createSidecarCredentialResolver({ db: h.db });
       const router = createSidecarRouter({
+        withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: async ({ token }) =>
           credentialResolver.resolve(token),
         validateSidecarIdentity: credentialResolver.isCurrent,

@@ -137,6 +137,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         db: h.db,
         grantStore,
         sidecarRouter: createSidecarRouter({
+          withExecutableWorkflowRun: async (_target, send) => send(),
           authenticateSidecar: acceptAnySidecar,
           validateSidecarIdentity: async () => true,
         }),

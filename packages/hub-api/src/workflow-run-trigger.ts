@@ -23,7 +23,11 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import type { DB, PrincipalKeyStore } from "@intx/db";
-import { loadFrozenGrantSnapshot, resolveFrameSenderKey } from "@intx/db";
+import {
+  loadFrozenGrantSnapshot,
+  resolveFrameSenderKey,
+  WorkflowRunNotExecutableError,
+} from "@intx/db";
 import type { GrantStore } from "@intx/types/authz";
 import {
   assembleSignedContent,
@@ -564,38 +568,25 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         ? [{ address: fromAddr, publicKey: authenticatedSenderPublicKey }]
         : undefined;
 
-    // Send the run's grants BEFORE the trigger mail. Both frames route
-    // through the same per-address channel, so same-websocket FIFO
-    // ordering guarantees the grants land at the sidecar before the mail
-    // that dispatches the run -- no ack round-trip is needed. Reserving the
-    // grants first makes concurrent deliveries converge on this exact
-    // snapshot. If routing fails, the grants-only run remains eligible for
-    // its first fire because Git has no RunStarted event yet.
-    const grantsDelivered = sidecarRouter.sendRunGrants(
-      address,
-      runId,
-      stepGrants,
-      senderIdentities,
-    );
-    if (!grantsDelivered) {
-      return {
-        ok: false,
-        status: 409,
-        body: {
-          error: {
-            code: "deployment_unreachable",
-            message: `Deployment address ${address} is not routable`,
-          },
+    // Admit grants and their mail together so a concurrent delivery cannot
+    // replace the sender's key between the two frames.
+    let delivered: boolean;
+    try {
+      delivered = await sidecarRouter.routeMail(
+        address,
+        base64,
+        fromAddr,
+        messageId,
+        {
+          runId,
+          stepGrants,
+          ...(senderIdentities !== undefined ? { senderIdentities } : {}),
         },
-      };
+      );
+    } catch (error) {
+      if (!(error instanceof WorkflowRunNotExecutableError)) throw error;
+      return runUnavailable(runId, error.reason);
     }
-
-    const delivered = sidecarRouter.routeMail(
-      address,
-      base64,
-      fromAddr,
-      messageId,
-    );
     if (!delivered) {
       return {
         ok: false,

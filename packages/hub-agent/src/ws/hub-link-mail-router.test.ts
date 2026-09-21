@@ -215,6 +215,7 @@ const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) =>
 
 function startTestServer(): TestEnv {
   const router = createSidecarRouter({
+    withExecutableWorkflowRun: async (_target, send) => send(),
     authenticateSidecar: acceptAnySidecar,
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
@@ -345,7 +346,7 @@ describe("hub-link mail.inbound throwing router", () => {
       // place, the link's switch arm catches the throw and logs it
       // without rejecting the messageQueue chain.
       expect(
-        env.router.routeMail(
+        await env.router.routeMail(
           deploymentAddress,
           encoded,
           "user@integration.interchange",
@@ -357,7 +358,7 @@ describe("hub-link mail.inbound throwing router", () => {
       // chain has been wedged by the prior rejection and the router
       // is never consulted.
       expect(
-        env.router.routeMail(
+        await env.router.routeMail(
           deploymentAddress,
           encoded,
           "user@integration.interchange",
@@ -559,7 +560,11 @@ describe("hub-link mail.inbound signature enforcement", () => {
       "clean",
       async ({ deploymentAddress, routed }) => {
         expect(
-          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
+          await env.router.routeMail(
+            deploymentAddress,
+            base64Encode(raw),
+            sender,
+          ),
         ).toBe(true);
 
         await waitUntil(() => verdicts().length > 0);
@@ -587,7 +592,11 @@ describe("hub-link mail.inbound signature enforcement", () => {
       "error",
       async ({ deploymentAddress, routed }) => {
         expect(
-          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
+          await env.router.routeMail(
+            deploymentAddress,
+            base64Encode(raw),
+            sender,
+          ),
         ).toBe(true);
 
         await waitUntil(() => verdicts().length > 0);
@@ -615,7 +624,11 @@ describe("hub-link mail.inbound signature enforcement", () => {
       "unregistered",
       async ({ deploymentAddress, routed }) => {
         expect(
-          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
+          await env.router.routeMail(
+            deploymentAddress,
+            base64Encode(raw),
+            sender,
+          ),
         ).toBe(true);
 
         await waitUntil(() => verdicts().length > 0);
@@ -646,7 +659,11 @@ describe("hub-link mail.inbound signature enforcement", () => {
       "forged",
       async ({ deploymentAddress, routed }) => {
         expect(
-          env.router.routeMail(deploymentAddress, base64Encode(raw), stamp),
+          await env.router.routeMail(
+            deploymentAddress,
+            base64Encode(raw),
+            stamp,
+          ),
         ).toBe(true);
 
         await waitUntil(() => verdicts().length > 0);
@@ -679,7 +696,11 @@ describe("hub-link mail.inbound signature enforcement", () => {
       "unparseable",
       async ({ deploymentAddress, routed }) => {
         expect(
-          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
+          await env.router.routeMail(
+            deploymentAddress,
+            base64Encode(raw),
+            sender,
+          ),
         ).toBe(true);
 
         // An unparseable From also emits a debug log in the same category
@@ -716,7 +737,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
       "missing",
       async ({ deploymentAddress, routed }) => {
         expect(
-          env.router.routeMail(
+          await env.router.routeMail(
             deploymentAddress,
             base64Encode(VALID_MESSAGE),
             sender,
@@ -751,7 +772,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
       async ({ deploymentAddress, routed }) => {
         // unknownSender has no cached key -> unknown -> admitted by the policy.
         expect(
-          env.router.routeMail(
+          await env.router.routeMail(
             deploymentAddress,
             base64Encode(unknownRaw),
             unknownSender,
@@ -760,7 +781,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
         // invalidSender's cached key did not sign the message -> invalid, which
         // this policy leaves at the default reject.
         expect(
-          env.router.routeMail(
+          await env.router.routeMail(
             deploymentAddress,
             base64Encode(invalidRaw),
             invalidSender,
@@ -798,7 +819,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
         // First frame: the resolver throws -> error -> rejected inline. The
         // inline verify + reject must not wedge the messageQueue chain.
         expect(
-          env.router.routeMail(
+          await env.router.routeMail(
             deploymentAddress,
             base64Encode(rejectRaw),
             rejectSender,
@@ -807,7 +828,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
         // Second frame: a cache miss -> unknown -> admitted by the policy, so
         // it proves the chain still processes after the reject.
         expect(
-          env.router.routeMail(
+          await env.router.routeMail(
             deploymentAddress,
             base64Encode(admitRaw),
             admitSender,

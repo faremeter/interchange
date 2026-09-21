@@ -303,7 +303,7 @@ function createMockSidecarRouter(
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
     sendSyncRequest: () => notImpl("sendSyncRequest"),
-    sendSignalDeliver: (opts) => {
+    sendSignalDeliver: async (opts) => {
       signalCalls.push(opts);
       if (deliverThrows) {
         throw new Error("no sidecar connected");

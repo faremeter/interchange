@@ -9,6 +9,7 @@ import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
 import {
   TenantConfigInvalidError,
   WorkflowRunDispatchPayloadConflictError,
+  WorkflowRunNotExecutableError,
   type PrincipalKeyStore,
 } from "@intx/db";
 import {
@@ -516,6 +517,7 @@ function createMockSidecarRouter(
   runGrantsCalls: RunGrantsCall[] = [],
   sendOrder: SendCall[] = [],
   runGrantsResult = true,
+  routeMailError?: Error,
 ): SidecarRouter {
   function notImpl(name: string): never {
     throw new Error(`mock: sidecarRouter.${name} not implemented`);
@@ -524,7 +526,23 @@ function createMockSidecarRouter(
     handleOpen: () => notImpl("handleOpen"),
     handleMessage: () => notImpl("handleMessage"),
     handleClose: () => notImpl("handleClose"),
-    routeMail: (address, rawMessage, authenticatedSender) => {
+    routeMail: async (
+      address,
+      rawMessage,
+      authenticatedSender,
+      _messageId,
+      runGrants,
+    ) => {
+      if (routeMailError !== undefined) throw routeMailError;
+      if (runGrants !== undefined) {
+        runGrantsCalls.push({
+          address,
+          runId: runGrants.runId,
+          stepGrants: runGrants.stepGrants,
+        });
+        sendOrder.push({ kind: "run.grants", address });
+        if (!runGrantsResult) return false;
+      }
       routeMailCalls.push({
         address,
         rawMessage,
@@ -544,7 +562,7 @@ function createMockSidecarRouter(
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
     sendSyncRequest: () => notImpl("sendSyncRequest"),
-    sendSignalDeliver: (opts) => {
+    sendSignalDeliver: async (opts) => {
       signalCalls.push(opts);
     },
     sendDrain: () => notImpl("sendDrain"),
@@ -771,6 +789,7 @@ type TestAppOpts = {
   signalCalls?: SignalCall[];
   routeMailCalls?: RouteMailCall[];
   routeMailResult?: boolean;
+  routeMailError?: Error;
   runGrantsCalls?: RunGrantsCall[];
   sendOrder?: SendCall[];
   runGrantsResult?: boolean;
@@ -834,6 +853,7 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.runGrantsCalls ?? [],
       opts.sendOrder ?? [],
       opts.runGrantsResult ?? true,
+      opts.routeMailError,
     ),
     sessionService: createMockSessionService(),
     ...(opts.workflowAllocationService !== undefined
@@ -2053,6 +2073,30 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     expect(await errorCode(res)).toBe("deployment_unreachable");
     expect(routeMailCalls).toHaveLength(1);
   });
+
+  test.each([
+    ["terminal", "workflow_run_terminal"],
+    ["stopping", "workflow_run_stopping"],
+  ] as const)(
+    "returns 409 when mail admission observes a %s run",
+    async (reason, code) => {
+      const app = createTestApp({
+        grants: [manageGrant()],
+        routeMailError: new WorkflowRunNotExecutableError(
+          DEPLOYMENT_ID,
+          reason,
+        ),
+        db: { deploymentRow, assetRow: workflowAssetRow },
+      });
+
+      const res = await app.fetch(
+        authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "too late" }),
+      );
+
+      expect(res.status).toBe(409);
+      expect(await errorCode(res)).toBe(code);
+    },
+  );
 
   test("rejects a caller without the workflow-run manage grant", async () => {
     const routeMailCalls: RouteMailCall[] = [];

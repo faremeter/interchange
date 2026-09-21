@@ -306,6 +306,7 @@ function startTestServer(): TestEnv {
   const sidecarFrames: TestEnv["sidecarFrames"] = [];
 
   const router = createSidecarRouter({
+    withExecutableWorkflowRun: async (_target, send) => send(),
     authenticateSidecar: acceptAnySidecar,
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
@@ -669,6 +670,7 @@ describe("sidecar↔hub integration", () => {
 
     // Stand up a hub router with an odd-length hex key to trigger hexDecode.
     const badRouter = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: acceptAnySidecar,
       validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,
@@ -748,6 +750,7 @@ describe("sidecar↔hub integration", () => {
     const hubPublicKeyHex = hexEncode(hubKp.publicKey);
 
     const deployHubRouter = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: acceptAnySidecar,
       validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,
@@ -1247,7 +1250,7 @@ describe("sidecar↔hub integration", () => {
       );
 
       const encoded = base64Encode(VALID_MESSAGE);
-      const accepted = env.router.routeMail(
+      const accepted = await env.router.routeMail(
         deploymentAddress,
         encoded,
         "user@integration.interchange",
@@ -1534,6 +1537,7 @@ describe("sidecar↔hub integration", () => {
       transferIds: string[];
     } = { transferIds: [] };
     const wfrRouter = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: acceptAnySidecar,
       validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,

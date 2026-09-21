@@ -87,7 +87,11 @@ const approvalSnapshot = {
 
 describe("SidecarRouter allocation control protocols", () => {
   test("workflow control accepts an acknowledgement only from its allocation connection", async () => {
-    const router = createAllocatedRouter();
+    const router = createAllocatedRouter({
+      withExecutableWorkflowRun: async () => {
+        throw new Error("Workflow cannot accept work");
+      },
+    });
     const ws = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
     ]);
