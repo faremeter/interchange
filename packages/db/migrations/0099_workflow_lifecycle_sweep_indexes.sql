@@ -1,0 +1,3 @@
+CREATE INDEX "sidecar_allocation_dispatchable_anchor_idx" ON "sidecar_allocation" USING btree ("anchor_run_id") WHERE "sidecar_allocation"."status" in ('pending', 'provisioning', 'allocated', 'replacing');--> statement-breakpoint
+CREATE INDEX "workflow_run_anchor_idx" ON "workflow_run" USING btree ("id") WHERE "workflow_run"."id" = "workflow_run"."anchor_run_id";--> statement-breakpoint
+CREATE INDEX "workflow_run_live_anchor_idx" ON "workflow_run" USING btree ("id") WHERE "workflow_run"."id" = "workflow_run"."anchor_run_id" and "workflow_run"."status" in ('deployed', 'running');

@@ -16,21 +16,27 @@ export type AnchorRunSweepQueries<T extends { id: string }> = {
  */
 export function createAnchorRunSweep<T extends { id: string }>(
   queries: AnchorRunSweepQueries<T>,
+  pause?: { intervalMs: number; now: () => Date },
 ) {
   const activeRuns = new Set<string>();
   let selectionTail: Promise<void> = Promise.resolve();
   let afterRunId: string | undefined;
   let passEnd: string | undefined;
+  let nextPassAt = 0;
 
   function finishPass(): void {
     afterRunId = undefined;
     passEnd = undefined;
+    if (pause !== undefined)
+      nextPassAt = pause.now().getTime() + pause.intervalMs;
   }
 
   function select(): Promise<T | null> {
     // Only selection is serialized. Each caller owns its selected run until it
     // releases it, so work on different runs proceeds concurrently.
     const selecting = selectionTail.then(async () => {
+      if (pause !== undefined && pause.now().getTime() < nextPassAt)
+        return null;
       const activeRunIds = [...activeRuns];
       if (passEnd === undefined) {
         const end = await queries.findPassEnd(activeRunIds);

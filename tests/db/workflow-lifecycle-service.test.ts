@@ -6,7 +6,8 @@ import {
   expect,
   test,
 } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
 
 import {
   createTestDb,
@@ -14,7 +15,11 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import { seedPrincipal, seedTenants } from "@intx/test-harness/seed";
-import { createSidecarAllocationStore } from "@intx/db";
+import {
+  createSidecarAllocationStore,
+  withExecutableWorkflowRun,
+} from "@intx/db";
+import * as dbSchema from "@intx/db/schema";
 import {
   principal,
   sidecar,
@@ -25,6 +30,7 @@ import {
 } from "@intx/db/schema";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import {
+  createReconciliationScheduler,
   createSidecarAllocationReconciler,
   createSidecarPluginRegistry,
   createWorkflowHistoryReceiveTracker,
@@ -53,7 +59,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
     function service(
       options: Partial<
-        Pick<WorkflowLifecycleServiceDeps, "sendControl" | "historyReceives">
+        Pick<
+          WorkflowLifecycleServiceDeps,
+          "db" | "sendControl" | "historyReceives"
+        >
       > & {
         runReader?: Partial<WorkflowRunReader>;
       } = {},
@@ -66,7 +75,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
       return createWorkflowLifecycleService({
         ...options,
-        db: h.db,
+        db: options.db ?? h.db,
         historyReceives:
           options.historyReceives ?? createWorkflowHistoryReceiveTracker(),
         runReader: {
@@ -214,6 +223,288 @@ describe.skipIf(!harnessDbEnvAvailable())(
       return Object.fromEntries(rows.map((row) => [row.id, row.status]));
     }
 
+    async function addRun(id: string, expiresAt?: Date) {
+      repoRuns.set(repoOf(id), [id]);
+      await h.db.insert(workflowRun).values({
+        id,
+        tenantId,
+        definitionId: "definition",
+        anchorRunId: id,
+        status: "running",
+        address: `${id}@example.test`,
+        createdAt,
+        lifecyclePolicy: { capacityRetention: { completed: "0s" } },
+        ...(expiresAt === undefined ? {} : { expiresAt }),
+      });
+      await h.db.insert(sidecar).values({
+        id: `sidecar_${id}`,
+        tokenHashSha256: new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id)),
+        ),
+      });
+      await h.db.insert(sidecarAllocation).values({
+        id: `allocation_${id}`,
+        tenantId,
+        anchorRunId: id,
+        provisionerId: "test",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "test:1",
+        sidecarId: `sidecar_${id}`,
+        status: "allocated",
+        generation: 1,
+        ensureAcceptedGeneration: 1,
+      });
+    }
+
+    test("the shared scheduler bounds expired runs to eight and refills a free slot independently", async () => {
+      await expire();
+      for (let index = 0; index < 9; index += 1)
+        await addRun(`run_lifecycle_${String(index)}`, current);
+      const started: string[] = [];
+      const actions: string[] = [];
+      const releases = new Map<string, () => void>();
+      const firstWave = Promise.withResolvers<undefined>();
+      const ninth = Promise.withResolvers<undefined>();
+      const finished = Promise.withResolvers<undefined>();
+      const tasks: Promise<boolean>[] = [];
+      let closing = false;
+      let active = 0;
+      let peak = 0;
+      let completed = 0;
+      const lifecycle = service({
+        sendControl: async (_target, command) => {
+          started.push(command.runId);
+          actions.push(command.action);
+          if (started.length === 8) firstWave.resolve(undefined);
+          if (started.length === 9) ninth.resolve(undefined);
+          if (closing) return;
+          const release = Promise.withResolvers<undefined>();
+          releases.set(command.runId, () => release.resolve(undefined));
+          await release.promise;
+        },
+      });
+      const scheduler = createReconciliationScheduler({
+        name: "workflow lifecycle test",
+        reconcileNext() {
+          active += 1;
+          peak = Math.max(peak, active);
+          const task = lifecycle.reconcileNext().then(
+            (worked) => {
+              active -= 1;
+              if (worked) completed += 1;
+              if (completed === 10) finished.resolve(undefined);
+              return worked;
+            },
+            (error: unknown) => {
+              active -= 1;
+              throw error;
+            },
+          );
+          tasks.push(task);
+          return task;
+        },
+      });
+      scheduler.start();
+      try {
+        await firstWave.promise;
+        expect(started).toHaveLength(8);
+        scheduler.wake();
+        scheduler.wake();
+        const second = started[1];
+        if (second === undefined) throw new Error("Missing second worker");
+        releases.get(second)?.();
+        await ninth.promise;
+        expect(completed).toBe(1);
+        expect(started).toHaveLength(9);
+        closing = true;
+        for (const release of releases.values()) release();
+        await finished.promise;
+        expect(peak).toBe(8);
+        expect(new Set(started).size).toBe(10);
+        expect(actions).toEqual(Array.from({ length: 10 }, () => "cancel"));
+        expect(await lifecycle.reconcileNext()).toBe(false);
+      } finally {
+        scheduler.stop();
+        closing = true;
+        for (const release of releases.values()) release();
+        await Promise.all(tasks);
+      }
+    });
+
+    test("a stalled history read leaves admission free while other runs progress", async () => {
+      await addRun("run_z");
+      await leavePending();
+      await leavePending("run_z");
+      const entered = Promise.withResolvers<undefined>();
+      const release = Promise.withResolvers<undefined>();
+      const reads: string[] = [];
+      const lifecycle = service({
+        runReader: {
+          readRunEvents: async (_repo, _ref, id) => {
+            reads.push(id);
+            if (id === runId) {
+              entered.resolve(undefined);
+              await release.promise;
+            }
+            return [];
+          },
+        },
+      });
+      const blocked = lifecycle.reconcileNext();
+      try {
+        await entered.promise;
+        expect(
+          await withExecutableWorkflowRun(
+            h.db,
+            {
+              allocationId,
+              generation: 1,
+              sidecarId: "sidecar",
+              tenantId,
+              anchorRunId: runId,
+              workflowRunAddress: `${runId}@example.test`,
+            },
+            () => true,
+          ),
+        ).toBe(true);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        // The stalled run is still due but stays excluded while it is active.
+        await leavePending("run_z", "wpp_run_z_later");
+        current = new Date(current.getTime() + 1_000);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+        expect(reads).toEqual([runId, "run_z", "run_z"]);
+      } finally {
+        release.resolve(undefined);
+        await blocked;
+      }
+      current = new Date(current.getTime() + 1_000);
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      expect(reads).toEqual([runId, "run_z", "run_z"]);
+      expect(await pendingIds()).toEqual([]);
+    });
+
+    test("a slow pack receive does not hold the sweep on a live run with nothing due", async () => {
+      // The receive holding the allocation lock outlived its projection's
+      // grace, so its own pending row makes the run a candidate.
+      const historyReceives = createWorkflowHistoryReceiveTracker();
+      const pending = await leavePending();
+      historyReceives.begin(pending);
+      const locked = Promise.withResolvers<undefined>();
+      const release = Promise.withResolvers<undefined>();
+      const receive = h.db.transaction(async (tx) => {
+        await tx
+          .select()
+          .from(sidecarAllocation)
+          .where(eq(sidecarAllocation.id, allocationId))
+          .for("update");
+        locked.resolve(undefined);
+        await release.promise;
+      });
+      const actions: string[] = [];
+      const lifecycle = service({
+        historyReceives,
+        sendControl: async (_target, command) => {
+          actions.push(command.action);
+        },
+      });
+      try {
+        await Promise.race([
+          locked.promise,
+          receive.then(() => {
+            throw new Error("Receive ended before locking");
+          }),
+        ]);
+        expect(await lifecycle.reconcileNext()).toBe(true);
+        expect(actions).toEqual([]);
+      } finally {
+        release.resolve(undefined);
+        await receive;
+        historyReceives.end(pending);
+      }
+    });
+
+    test("a live run is left alone until it expires", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({ expiresAt: new Date(current.getTime() + 60_000) })
+        .where(eq(workflowRun.id, runId));
+      const actions: string[] = [];
+      const lifecycle = service({
+        sendControl: async (_target, command) => {
+          actions.push(command.action);
+        },
+      });
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      current = new Date(current.getTime() + 60_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(actions).toEqual(["cancel"]);
+    });
+
+    test("retained capacity is not locked before its release time", async () => {
+      const releaseAt = new Date(current.getTime() + 900_000);
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "failed",
+          endedAt: current,
+          capacityReleaseAt: releaseAt,
+        })
+        .where(eq(workflowRun.id, runId));
+      const locked = Promise.withResolvers<undefined>();
+      const release = Promise.withResolvers<undefined>();
+      const writer = h.db.transaction(async (tx) => {
+        await tx
+          .select()
+          .from(sidecarAllocation)
+          .where(eq(sidecarAllocation.id, allocationId))
+          .for("update");
+        locked.resolve(undefined);
+        await release.promise;
+      });
+      const lifecycle = service();
+      try {
+        await Promise.race([
+          locked.promise,
+          writer.then(() => {
+            throw new Error("Writer ended before locking");
+          }),
+        ]);
+        expect(await lifecycle.reconcileNext()).toBe(false);
+      } finally {
+        release.resolve(undefined);
+        await writer;
+      }
+      current = releaseAt;
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("releasing");
+    });
+
+    test("a finished deployment without a lifecycle policy keeps its capacity until an explicit release", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({
+          status: "cancelled",
+          endedAt: current,
+          lifecyclePolicy: null,
+          cancellationRequestedAt: current,
+          cancellationDeadline: current,
+          cancellationReason: "Cancelled by request",
+        })
+        .where(eq(workflowRun.id, runId));
+      const lifecycle = service();
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe("pending");
+      current = new Date(current.getTime() + 1_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
+      ).toBe("releasing");
+    });
+
     test("healthy runs cost no Git reads and a pending projection waits out its grace", async () => {
       let reads = 0;
       const lifecycle = service({
@@ -224,20 +515,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
         },
       });
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(reads).toBe(0);
 
       complete("RunCompleted");
       await leavePending(runId, "wpp_young", 0);
       current = new Date(current.getTime() + 1_000);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(reads).toBe(0);
       expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
         "running",
       );
 
       current = new Date(current.getTime() + 30_000);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(reads).toBe(1);
       expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
         "completed",
@@ -351,79 +642,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
     });
 
-    test("history a receive settled does not lengthen a later recovery backoff", async () => {
-      await leavePending(runId, "wpp_first");
-      let reads = 0;
-      const lifecycle = service({
-        runReader: {
-          readRunEvents: async () => {
-            reads += 1;
-            throw new Error("Unreadable Git");
-          },
-        },
-      });
-      await lifecycle.reconcile();
-      expect(reads).toBe(1);
-      // The receive settled its own row; a later receive's history fails too.
-      await h.db
-        .delete(workflowPendingProjection)
-        .where(eq(workflowPendingProjection.id, "wpp_first"));
-      await leavePending(runId, "wpp_second");
-      current = new Date(current.getTime() + 5_000);
-      await lifecycle.reconcile();
-      expect(reads).toBe(2);
-      current = new Date(current.getTime() + 5_000);
-      await lifecycle.reconcile();
-      expect(reads).toBe(3);
-    });
-
-    test("repeated failures reading the same history double the recovery backoff", async () => {
-      await leavePending();
-      let reads = 0;
-      const lifecycle = service({
-        runReader: {
-          readRunEvents: async () => {
-            reads += 1;
-            throw new Error("Unreadable Git");
-          },
-        },
-      });
-      await lifecycle.reconcile();
-      current = new Date(current.getTime() + 5_000);
-      await lifecycle.reconcile();
-      expect(reads).toBe(2);
-      current = new Date(current.getTime() + 5_000);
-      await lifecycle.reconcile();
-      expect(reads).toBe(2);
-      current = new Date(current.getTime() + 5_000);
-      await lifecycle.reconcile();
-      expect(reads).toBe(3);
-    });
-
-    test("a request naming the run under another tenant leaves its recovery backoff", async () => {
-      await leavePending();
-      let reads = 0;
-      const lifecycle = service({
-        runReader: {
-          readRunEvents: async () => {
-            reads += 1;
-            throw new Error("Unreadable Git");
-          },
-        },
-      });
-      await lifecycle.reconcile();
-      current = new Date(current.getTime() + 5_000);
-      await lifecycle.reconcile();
-      expect(reads).toBe(2);
-      expect(await lifecycle.releaseCapacity("tenant_other", runId)).toBe(
-        "not_found",
-      );
-      expect(reads).toBe(2);
-      current = new Date(current.getTime() + 5_000);
-      await lifecycle.reconcile();
-      expect(reads).toBe(2);
-    });
-
     test("a missing repository keeps a receive's pending projection", async () => {
       await leavePending();
       const lifecycle = service({
@@ -432,7 +650,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           resolveRefTip: async () => null,
         },
       });
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(await pendingIds()).toEqual([`wpp_${runId}`]);
       expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe(
         "history_pending",
@@ -448,7 +666,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           hasRepository: async () => true,
         },
       });
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(await pendingIds()).toEqual([]);
       expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe("live");
     });
@@ -461,7 +679,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           resolveRefTip: async () => null,
         },
       });
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(await pendingIds()).toEqual([]);
     });
 
@@ -479,7 +697,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ],
         }),
       });
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(await runStates()).toEqual({
         [runId]: "running",
         run_child_done: "failed",
@@ -505,7 +723,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ],
         }),
       });
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(
         await h.db.query.workflowRun.findFirst({
           where: eq(workflowRun.id, "run_child_unrecorded"),
@@ -548,21 +766,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
         },
       });
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(await runStates()).toEqual({
         [runId]: "completed",
         run_child_done: "completed",
       });
       expect(await pendingIds()).toEqual([]);
       reads = 0;
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(reads).toBe(0);
     });
 
     test("repairs a missed terminal projection, deactivates its principal, and calls the bound provisioner", async () => {
       complete("RunCompleted");
       await leavePending();
-      await Promise.all([service().reconcile(), service().reconcile()]);
+      await Promise.all([service().reconcileNext(), service().reconcileNext()]);
       const state = await service().getStatus(tenantId, runId);
       expect(state?.status).toBe("completed");
       expect(state?.allocation?.status).toBe("releasing");
@@ -620,19 +838,19 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("keeps failure retention anchored to its original timestamp across restarts", async () => {
       complete("RunFailed");
       await leavePending();
-      await service().reconcile();
+      await service().reconcileNext();
       const releaseAt = new Date(current.getTime() + 900_000);
       expect(
         (await service().getStatus(tenantId, runId))?.capacityReleaseAt,
       ).toBe(releaseAt.toISOString());
       current = new Date(releaseAt.getTime() - 1);
-      await service().reconcile();
+      await service().reconcileNext();
       expect(
         (await createSidecarAllocationStore(h.db).findById(allocationId))
           ?.generation,
       ).toBe(1);
       current = releaseAt;
-      await service().reconcile();
+      await service().reconcileNext();
       expect(
         (await service().getStatus(tenantId, runId))?.allocation?.status,
       ).toBe("releasing");
@@ -643,8 +861,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await leavePending();
       expect(await service().releaseCapacity(tenantId, runId)).toBe("pending");
       expect(await service().releaseCapacity(tenantId, runId)).toBe("pending");
-      await service().reconcile();
-      await service().reconcile();
+      await service().reconcileNext();
+      await service().reconcileNext();
       expect(
         (await createSidecarAllocationStore(h.db).findById(allocationId))
           ?.generation,
@@ -686,7 +904,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await service().releaseCapacity(tenantId, runId)).toBe(
         "cleanup_failed",
       );
-      await service().reconcile();
+      await service().reconcileNext();
       expect(
         (await service().getStatus(tenantId, runId))?.allocation?.failureCode,
       ).toBe("provider_refused");
@@ -718,9 +936,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
         });
 
-        await lifecycle.reconcile();
+        await lifecycle.reconcileNext();
         current = new Date(current.getTime() + 1_000);
-        await lifecycle.reconcile();
+        await lifecycle.reconcileNext();
         expect(await lifecycle.getStatus(tenantId, runId)).toMatchObject({
           status: "running",
           allocation: { status: "allocated" },
@@ -728,7 +946,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
         reachable = true;
         current = new Date(current.getTime() + 1_000);
-        await lifecycle.reconcile();
+        await lifecycle.reconcileNext();
         expect(actions).toEqual(["cancel", "stop", "stop"]);
         expect(await lifecycle.getStatus(tenantId, runId)).toMatchObject({
           status: "cancelled",
@@ -783,9 +1001,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       });
 
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       current = new Date(current.getTime() + 1_000);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(actions).toEqual(["cancel", "stop"]);
       expect(
         (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
@@ -810,9 +1028,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       });
 
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       current = new Date(current.getTime() + 1_000);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(actions).toEqual(["cancel", "stop"]);
       expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
         "running",
@@ -820,7 +1038,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       moving = false;
       current = new Date(current.getTime() + 1_000);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(actions).toEqual(["cancel", "stop", "stop"]);
       expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
         "cancelled",
@@ -843,21 +1061,21 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
         };
         const lifecycle = service(options);
-        await lifecycle.reconcile();
+        await lifecycle.reconcileNext();
         current = new Date(current.getTime() + 1_000);
-        await lifecycle.reconcile();
+        await lifecycle.reconcileNext();
         expect(
           (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
         ).toBe("allocated");
 
         current = new Date(current.getTime() + 59_000);
-        await lifecycle.reconcile();
+        await lifecycle.reconcileNext();
         expect(
           (await lifecycle.getStatus(tenantId, runId))?.allocation?.status,
         ).toBe("allocated");
 
         current = new Date(current.getTime() + 1_000);
-        await lifecycle.reconcile();
+        await lifecycle.reconcileNext();
         expect(await lifecycle.getStatus(tenantId, runId)).toMatchObject({
           status: "running",
           allocation: {
@@ -879,16 +1097,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
             throw new WorkflowControlUnreachableError("Not connected yet");
         },
       };
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       current = new Date(current.getTime() + 600_000);
       const restarted = service(options);
-      await restarted.reconcile();
+      await restarted.reconcileNext();
       expect(
         (await restarted.getStatus(tenantId, runId))?.allocation?.status,
       ).toBe("allocated");
 
       current = new Date(current.getTime() + 60_000);
-      await restarted.reconcile();
+      await restarted.reconcileNext();
       expect(
         (await restarted.getStatus(tenantId, runId))?.allocation?.status,
       ).toBe("releasing");
@@ -915,18 +1133,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
           actions.push(command.action);
         },
       };
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       const first = await service().getStatus(tenantId, runId);
       expect(first?.status).toBe("running");
       expect(first?.cancellationRequestedAt).toBe(current.toISOString());
       expect(actions).toEqual(["cancel"]);
       current = new Date(current.getTime() + 1_000);
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       expect(actions).toEqual(["cancel", "stop"]);
       expect((await service().getStatus(tenantId, runId))?.status).toBe(
         "cancelled",
       );
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       expect(
         (await service().getStatus(tenantId, runId))?.allocation?.status,
       ).toBe("releasing");
@@ -947,8 +1165,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ];
           await leavePending();
         },
-      }).reconcile();
-      await service().reconcile();
+      }).reconcileNext();
+      await service().reconcileNext();
       expect(actions).toEqual(["cancel"]);
       expect((await service().getStatus(tenantId, runId))?.status).toBe(
         "cancelled",
@@ -978,9 +1196,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           actions.push(command.action);
         },
       };
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       current = new Date(current.getTime() + 1_000);
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       expect(actions).toEqual(["cancel", "stop"]);
       expect(await runStates()).toEqual({
         [runId]: "cancelled",
@@ -1002,9 +1220,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           throw new WorkflowControlTimeoutError("Worker did not answer");
         },
       };
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       current = new Date(current.getTime() + 1_000);
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       expect((await service().getStatus(tenantId, runId))?.status).toBe(
         "running",
       );
@@ -1015,7 +1233,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .update(sidecarAllocation)
         .set({ status: "released" })
         .where(eq(sidecarAllocation.id, allocationId));
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       expect((await service().getStatus(tenantId, runId))?.status).toBe(
         "cancelled",
       );
@@ -1051,9 +1269,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
       };
       const lifecycle = service(options);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       current = new Date(current.getTime() + 1_000);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(actions).toEqual(["cancel", "stop"]);
       expect(await runStates()).toEqual({
         [runId]: "running",
@@ -1062,7 +1280,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       unreadable = false;
       current = new Date(current.getTime() + 5_000);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(actions).toEqual(["cancel", "stop", "stop"]);
       expect(await runStates()).toEqual({
         [runId]: "cancelled",
@@ -1086,14 +1304,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
           },
         },
       });
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
         "running",
       );
 
       unreadable = false;
       current = new Date(current.getTime() + 5_000);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
         "cancelled",
       );
@@ -1110,9 +1328,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sendControl: async () => undefined,
       };
       const lifecycle = service(missingRepo);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       current = new Date(current.getTime() + 1_000);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(await pendingIds()).toEqual([`wpp_${runId}`]);
       expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
         "running",
@@ -1131,9 +1349,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         },
         sendControl: async () => undefined,
       };
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       current = new Date(current.getTime() + 1_000);
-      await service(options).reconcile();
+      await service(options).reconcileNext();
       expect(reads).toBe(0);
       expect((await service().getStatus(tenantId, runId))?.status).toBe(
         "cancelled",
@@ -1165,7 +1383,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .update(workflowDefinition)
         .set({ lifecyclePolicy: { capacityRetention: { failed: "0s" } } })
         .where(eq(workflowDefinition.id, "definition"));
-      await service().reconcile();
+      await service().reconcileNext();
       expect(
         (await service().getStatus(tenantId, runId))?.capacityReleaseAt,
       ).toBe(new Date(current.getTime() + 900_000).toISOString());
@@ -1229,7 +1447,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(provisioning?.status).toBe("provisioning");
         expect(provisioning?.reconciliationLeaseId).toBeDefined();
         await expire();
-        await service().reconcile();
+        await service().reconcileNext();
         expect(await allocationStore.findById(allocationId)).toMatchObject({
           status: "provisioning",
           generation: provisioning?.generation,
@@ -1248,15 +1466,218 @@ describe.skipIf(!harnessDbEnvAvailable())(
         (await allocationStore.findById(allocationId))?.reconciliationLeaseId,
       ).toBeUndefined();
       current = new Date(current.getTime() + 1_000);
-      await service().reconcile();
+      await service().reconcileNext();
       expect((await allocationStore.findById(allocationId))?.status).toBe(
         "releasing",
       );
       await reconciler.reconcileNext();
       expect(destroyed).toBe(true);
-      await service().reconcile();
+      await service().reconcileNext();
       expect((await service().getStatus(tenantId, runId))?.status).toBe(
         "cancelled",
+      );
+    });
+
+    test("scans past runs that stay due and revisits arrivals on both sides of the cursor after a pause", async () => {
+      await addRun("run_z");
+      // A cancellation waiting on its capacity release stays due every pass.
+      await h.db
+        .update(workflowRun)
+        .set({
+          cancellationRequestedAt: current,
+          cancellationDeadline: current,
+          cancellationReason: "Cancelled by request",
+        })
+        .where(inArray(workflowRun.id, [runId, "run_z"]));
+      await h.db
+        .update(sidecarAllocation)
+        .set({ status: "releasing" })
+        .where(inArray(sidecarAllocation.anchorRunId, [runId, "run_z"]));
+      await leavePending();
+      await leavePending("run_z");
+      const reads: string[] = [];
+      const lifecycle = service({
+        runReader: {
+          readRunEvents: async (_repo, _ref, id) => {
+            reads.push(id);
+            return [];
+          },
+        },
+      });
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      await addRun("run_a");
+      await addRun("run_zz");
+      await leavePending("run_a");
+      await leavePending("run_zz");
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      expect(reads).toEqual([runId, "run_z"]);
+      current = new Date(current.getTime() + 999);
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      current = new Date(current.getTime() + 1);
+      for (let index = 0; index < 4; index += 1)
+        expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      expect(reads).toEqual([runId, "run_z", "run_a", "run_zz"]);
+    });
+
+    test("a branch with nothing due is read once per pass, not once per candidate", async () => {
+      // Every live deployment holds an allocation the release branch passes over.
+      for (const id of ["run_a", "run_b", "run_c"]) await addRun(id, current);
+      await h.db
+        .update(workflowRun)
+        .set({ expiresAt: current })
+        .where(eq(workflowRun.id, runId));
+      let releaseReads = 0;
+      const lifecycle = service({
+        db: drizzle(h.db.$client, {
+          schema: dbSchema,
+          logger: {
+            logQuery(query) {
+              if (
+                query.includes("cross join lateral") &&
+                query.includes('from "sidecar_allocation"')
+              )
+                releaseReads += 1;
+            },
+          },
+        }),
+        sendControl: async () => undefined,
+      });
+      let visits = 0;
+      while (await lifecycle.reconcileNext()) visits += 1;
+      expect(visits).toBe(4);
+      expect(releaseReads).toBe(1);
+    });
+
+    test("work that becomes due behind a branch's next candidate is picked up by the next pass", async () => {
+      await addRun("run_a", current);
+      await addRun("run_m");
+      await addRun("run_z", current);
+      await leavePending();
+      const cancelled: string[] = [];
+      const lifecycle = service({
+        sendControl: async (_target, command) => {
+          if (command.action === "cancel") cancelled.push(command.runId);
+        },
+      });
+      // run_a, then this deployment's history, by which point the expiry
+      // branch has already moved on to run_z.
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      await h.db
+        .update(workflowRun)
+        .set({ expiresAt: current })
+        .where(eq(workflowRun.id, "run_m"));
+      while (await lifecycle.reconcileNext());
+      current = new Date(current.getTime() + 1_000);
+      while (await lifecycle.reconcileNext());
+      expect(cancelled).toContain("run_m");
+    });
+
+    test("history a receive settled does not lengthen a later recovery backoff", async () => {
+      await leavePending(runId, "wpp_first");
+      let reads = 0;
+      const lifecycle = service({
+        runReader: {
+          readRunEvents: async () => {
+            reads += 1;
+            throw new Error("Unreadable Git");
+          },
+        },
+      });
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(reads).toBe(1);
+      // The receive settled its own row; a later receive's history fails too.
+      await h.db
+        .delete(workflowPendingProjection)
+        .where(eq(workflowPendingProjection.id, "wpp_first"));
+      await leavePending(runId, "wpp_second");
+      current = new Date(current.getTime() + 5_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(reads).toBe(2);
+      current = new Date(current.getTime() + 5_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(reads).toBe(3);
+    });
+
+    test("repeated failures reading the same history double the recovery backoff", async () => {
+      await leavePending();
+      let reads = 0;
+      const lifecycle = service({
+        runReader: {
+          readRunEvents: async () => {
+            reads += 1;
+            throw new Error("Unreadable Git");
+          },
+        },
+      });
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      current = new Date(current.getTime() + 5_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(reads).toBe(2);
+      current = new Date(current.getTime() + 5_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(reads).toBe(2);
+      current = new Date(current.getTime() + 5_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(reads).toBe(3);
+    });
+
+    test("a request naming the run under another tenant leaves its recovery backoff", async () => {
+      await leavePending();
+      let reads = 0;
+      const lifecycle = service({
+        runReader: {
+          readRunEvents: async () => {
+            reads += 1;
+            throw new Error("Unreadable Git");
+          },
+        },
+      });
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      current = new Date(current.getTime() + 5_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(reads).toBe(2);
+      expect(await lifecycle.releaseCapacity("tenant_other", runId)).toBe(
+        "not_found",
+      );
+      expect(
+        await lifecycle.requestCancellation("tenant_other", runId, "Stop"),
+      ).toBe("not_found");
+      expect(reads).toBe(2);
+      current = new Date(current.getTime() + 5_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(reads).toBe(2);
+    });
+
+    test("a failed run check does not block later candidates or its next sweep", async () => {
+      await addRun("run_z", current);
+      await leavePending();
+      let unreadable = true;
+      const controlled: string[] = [];
+      const lifecycle = service({
+        runReader: {
+          readRunEvents: async (_repo, _ref, id) => {
+            if (id === runId && unreadable) throw new Error("Unreadable Git");
+            return events;
+          },
+        },
+        sendControl: async (_target, command) => {
+          controlled.push(command.runId);
+        },
+      });
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(controlled).toEqual(["run_z"]);
+      expect(await lifecycle.reconcileNext()).toBe(false);
+      unreadable = false;
+      // The failed deployment backs off before its next Git read.
+      current = new Date(current.getTime() + 5_000);
+      complete("RunCompleted");
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
+        "completed",
       );
     });
   },

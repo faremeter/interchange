@@ -78,6 +78,35 @@ describe("createAnchorRunSweep", () => {
     expect(selected.map((run) => run?.id)).toEqual(["a", "b", "c"]);
   });
 
+  test("pauses between passes when configured", async () => {
+    const { queries } = createRunTable(["a"]);
+    let clock = 0;
+    const sweep = createAnchorRunSweep(queries, {
+      intervalMs: 1_000,
+      now: () => new Date(clock),
+    });
+    expect(await selectAndRelease(sweep)).toBe("a");
+    expect(await selectAndRelease(sweep)).toBeNull();
+    clock = 999;
+    expect(await selectAndRelease(sweep)).toBeNull();
+    clock = 1_000;
+    expect(await selectAndRelease(sweep)).toBe("a");
+  });
+
+  test("pauses after finding no runs", async () => {
+    const { runs, queries } = createRunTable([]);
+    let clock = 0;
+    const sweep = createAnchorRunSweep(queries, {
+      intervalMs: 1_000,
+      now: () => new Date(clock),
+    });
+    expect(await selectAndRelease(sweep)).toBeNull();
+    runs.add("a");
+    expect(await selectAndRelease(sweep)).toBeNull();
+    clock = 1_000;
+    expect(await selectAndRelease(sweep)).toBe("a");
+  });
+
   test("keeps selecting after a query fails", async () => {
     const { queries } = createRunTable(["a"]);
     let fail = true;

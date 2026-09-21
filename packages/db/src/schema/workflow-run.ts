@@ -126,6 +126,16 @@ export const workflowRun = pgTable(
     uniqueIndex("workflow_run_address_idx")
       .on(t.address)
       .where(sql`${t.address} is not null`),
+    // The lifecycle sweep runs every second and runs are never deleted, so its
+    // lookups use these partial indexes instead of walking every run.
+    index("workflow_run_anchor_idx")
+      .on(t.id)
+      .where(sql`${t.id} = ${t.anchorRunId}`),
+    index("workflow_run_live_anchor_idx")
+      .on(t.id)
+      .where(
+        sql`${t.id} = ${t.anchorRunId} and ${t.status} in ('deployed', 'running')`,
+      ),
   ],
 );
 

@@ -67,6 +67,11 @@ export const sidecarAllocation = pgTable(
       .where(
         sql`${t.status} in ('pending', 'provisioning', 'allocated', 'replacing', 'releasing') and ${t.nextAttemptAt} is not null`,
       ),
+    index("sidecar_allocation_dispatchable_anchor_idx")
+      .on(t.anchorRunId)
+      .where(
+        sql`${t.status} in ('pending', 'provisioning', 'allocated', 'replacing')`,
+      ),
     check(
       "sidecar_allocation_status_check",
       sql`${t.status} in ('pending', 'provisioning', 'allocated', 'replacing', 'releasing', 'destroy_failed', 'released', 'failed')`,
