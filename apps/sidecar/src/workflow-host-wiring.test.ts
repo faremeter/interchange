@@ -117,7 +117,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       at: "2026-01-01T00:00:00.000Z",
     });
     expect(result.commitSha).toBe("stub-sha");
-    expect(result.seq).toBe(0);
+    expect(result.seq).toBe(1);
   });
 
   test("routeInbound rejects when no subscriber is registered so undelivered mail is withheld", async () => {

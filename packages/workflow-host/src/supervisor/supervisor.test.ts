@@ -26,6 +26,7 @@ import {
   createChangeNotifier,
   type UpstreamFrameSource,
 } from "@intx/workflow-host/testing";
+import { resumeFromLog } from "@intx/workflow/state-machine";
 
 import {
   createWorkflowSupervisor,
@@ -5088,15 +5089,15 @@ describe("commitCancelRequested (low-level)", () => {
       },
     });
     expect(signed.commitSha).toBe("deadbeefcafef00d");
-    expect(signed.seq).toBe(0);
+    expect(signed.seq).toBe(1);
     if (observedFiles === undefined) {
       throw new Error("writeTreePreservingPrefix was not invoked");
     }
     const entry = Object.entries(observedFiles).find(([k]) =>
-      k.endsWith("/events/0.json"),
+      k.endsWith("/events/1.json"),
     );
     if (entry === undefined) {
-      throw new Error("no events/0.json entry observed in commit");
+      throw new Error("no events/1.json entry observed in commit");
     }
     const [, blobBytes] = entry;
     const blobJson =
@@ -5109,6 +5110,17 @@ describe("commitCancelRequested (low-level)", () => {
     expect(blob.reason).toBe("tests pass");
     expect(blob.signature.principalKind).toBe("supervisor");
     expect(blob.signature.sig.length).toBe(128);
+    expect(
+      resumeFromLog("r1", [
+        {
+          kind: "CancelRequested",
+          seq: blob.seq,
+          origin: "self",
+          reason: blob.reason,
+          at: "2026-01-01T00:00:00.000Z",
+        },
+      ]).phase,
+    ).toBe("cancelling");
   });
 });
 

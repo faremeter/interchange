@@ -2636,11 +2636,8 @@ export const workflowRunKindHandler: KindHandler = {
       // through the tip from whatever seq the first entry uses. Without
       // this, a downstream consumer that iterates the log by seq would
       // skip past a gap silently. `entries` is sorted by filenameSeq
-      // above. The first seq is not pinned to 0 because the runtime
-      // body's emptyState carries `lastSeq = 0` and emits its first
-      // event at `seq = lastSeq + 1 = 1`, while the supervisor's
-      // self-signed CancelRequested path lands seq=0 against an empty
-      // events tree.
+      // above. Producers start new logs at seq 1; the substrate checks
+      // contiguity independently of the first entry's sequence number.
       const firstEntry = entries[0];
       if (firstEntry === undefined) throw new Error("unreachable");
       const baseSeq = firstEntry.filenameSeq;
