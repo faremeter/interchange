@@ -508,11 +508,7 @@ export async function createHubServer({
   });
   const lifecycleScheduler = createReconciliationScheduler({
     name: "Workflow lifecycle",
-    concurrency: 1,
-    reconcileNext: async () => {
-      await workflowLifecycleService.reconcile();
-      return false;
-    },
+    reconcileNext: () => workflowLifecycleService.reconcileNext(),
   });
   const dispatchScheduler = createReconciliationScheduler({
     name: "Workflow dispatch",

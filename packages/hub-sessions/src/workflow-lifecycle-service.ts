@@ -1,13 +1,19 @@
 import {
   and,
+  asc,
+  desc,
   eq,
-  exists,
+  gt,
   inArray,
   isNotNull,
+  isNull,
   lte,
   notInArray,
   or,
+  sql,
+  type SQL,
 } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 import {
   createSidecarAllocationStore,
@@ -46,8 +52,13 @@ import {
   WORKFLOW_RUN_REF,
 } from "./workflow-run-kind";
 import { projectTerminalRun } from "./workflow-run-terminal-projection";
+import {
+  createAnchorRunSweep,
+  type AnchorRunSweepQueries,
+} from "./anchor-run-sweep";
 
 const logger = getLogger(["hub", "workflow-lifecycle"]);
+const SWEEP_INTERVAL_MS = 1_000;
 // A receive clears its own pending projection within one pack transfer. The
 // sweep leaves younger rows to it so healthy deployments cost no Git reads.
 const PENDING_PROJECTION_GRACE_MS = 30_000;
@@ -538,8 +549,36 @@ export function createWorkflowLifecycleService({
     );
   }
 
+  // Pack ingestion holds a live run's allocation lock for a whole receive, so
+  // a live run with nothing due skips the locked pass. Terminal runs take it:
+  // ingestion refuses their packs without receiving under the lock.
+  async function needsLockedPass(
+    tenantId: string,
+    runId: string,
+  ): Promise<boolean> {
+    const run = await db.query.workflowRun.findFirst({
+      where: and(
+        eq(workflowRun.id, runId),
+        eq(workflowRun.tenantId, tenantId),
+        eq(workflowRun.anchorRunId, runId),
+      ),
+      columns: {
+        status: true,
+        expiresAt: true,
+        cancellationRequestedAt: true,
+      },
+    });
+    if (run === undefined) return false;
+    if (!isLiveWorkflowRunStatus(run.status)) return true;
+    return (
+      run.cancellationRequestedAt !== null ||
+      (run.expiresAt !== null && run.expiresAt <= now())
+    );
+  }
+
   async function reconcileRun(tenantId: string, runId: string): Promise<void> {
     await recoverHistory(tenantId, runId, "sweep");
+    if (!(await needsLockedPass(tenantId, runId))) return;
     const command = await withRun(
       tenantId,
       runId,
@@ -675,74 +714,227 @@ export function createWorkflowLifecycleService({
     if (command.action === "stop") await recordConfirmedStop(command);
   }
 
-  async function reconcile(): Promise<void> {
-    const candidates = await db
-      .select({ id: workflowRun.id, tenantId: workflowRun.tenantId })
-      .from(workflowRun)
-      .leftJoin(
-        sidecarAllocation,
-        eq(sidecarAllocation.anchorRunId, workflowRun.id),
-      )
-      .where(
-        and(
-          eq(workflowRun.id, workflowRun.anchorRunId),
-          or(
-            and(
-              or(
-                isNotNull(workflowRun.lifecyclePolicy),
-                isNotNull(workflowRun.capacityReleaseAt),
-                isNotNull(workflowRun.cancellationRequestedAt),
-                isNotNull(workflowRun.expiresAt),
-              ),
-              or(
-                inArray(sidecarAllocation.status, [
-                  "pending",
-                  "provisioning",
-                  "allocated",
-                  "replacing",
-                ]),
-                and(
-                  inArray(workflowRun.status, ["deployed", "running"]),
-                  or(
-                    isNotNull(workflowRun.cancellationRequestedAt),
-                    isNotNull(workflowRun.expiresAt),
-                  ),
-                ),
-              ),
-            ),
-            // Any deployment, live or not, whose accepted history may still
-            // be unprojected.
-            exists(
-              db
-                .select({ id: workflowPendingProjection.id })
-                .from(workflowPendingProjection)
-                .where(
-                  and(
-                    eq(workflowPendingProjection.anchorRunId, workflowRun.id),
-                    lte(
-                      workflowPendingProjection.createdAt,
-                      new Date(now().getTime() - PENDING_PROJECTION_GRACE_MS),
-                    ),
-                  ),
-                ),
-            ),
-          ),
-        ),
-      );
-    await Promise.all(
-      candidates.map(async (run) => {
-        try {
-          await reconcileRun(run.tenantId, run.id);
-        } catch (error) {
-          logger.error`Lifecycle reconciliation failed for ${run.id}: ${error instanceof Error ? error.message : String(error)}`;
-        }
-      }),
-    );
+  // A run whose work stays due, such as a cancellation waiting on its worker
+  // or history under backoff, remains eligible. Pause at the end of each pass
+  // so the scheduler's immediate refill cannot repeatedly scan it in a loop.
+  const sweep = createAnchorRunSweep(createLifecycleSweepQueries(db, now), {
+    intervalMs: SWEEP_INTERVAL_MS,
+    now,
+  });
+
+  async function reconcileNext(): Promise<boolean> {
+    const run = await sweep.select();
+    if (run === null) return false;
+    try {
+      await reconcileRun(run.tenantId, run.id);
+    } catch (error) {
+      logger.error`Lifecycle reconciliation failed for ${run.id}: ${error instanceof Error ? error.message : String(error)}`;
+    } finally {
+      sweep.release(run.id);
+    }
+    return true;
   }
 
-  return { getStatus, releaseCapacity, requestCancellation, reconcile };
+  return { getStatus, releaseCapacity, requestCancellation, reconcileNext };
 }
 
 export type WorkflowLifecycleService = ReturnType<
   typeof createWorkflowLifecycleService
 >;
+
+/**
+ * Selects the deployments `reconcileRun` can act on: a live run that is
+ * cancelling or past its expiry, retained capacity whose release time has
+ * passed or is not yet recorded, and accepted history left unprojected past
+ * its grace. A new action there needs a branch here. Deployments are never
+ * deleted, so each branch starts from an index over rows still active in its
+ * own sense and reaches an anchor only by key: a pass costs time in proportion
+ * to current capacity, not to every deployment ever created. Status lists are
+ * SQL literals rather than bound parameters: a plan made without parameter
+ * values could not otherwise use the partial indexes.
+ *
+ * Each branch keeps its next candidate for the rest of a pass and is read again
+ * only once the sweep takes that candidate, so a branch with nothing due is
+ * scanned once per pass rather than once per selection. Work that becomes due
+ * behind a branch's kept candidate waits for the next pass.
+ */
+export function createLifecycleSweepQueries(
+  db: DB["db"],
+  now: () => Date,
+): AnchorRunSweepQueries<{ id: string; tenantId: string }> {
+  // Selection runs once per candidate of every pass, so it is built once.
+  function prepareBranches(afterCursor: boolean) {
+    const inPass = (column: AnyPgColumn) =>
+      and(
+        ...(afterCursor ? [gt(column, sql.placeholder("afterRunId"))] : []),
+        lte(column, sql.placeholder("passEnd")),
+        sql`${column} <> all(${sql.placeholder("activeRunIds")})`,
+      );
+    // An anchor is reached only by key from a candidate row. Postgres badly
+    // underestimates `id = anchor_run_id`, and a join would let it hash every
+    // deployment instead; a limited lateral lookup cannot be flattened into one.
+    const anchorOf = (anchorRunId: AnyPgColumn, condition?: SQL) =>
+      db
+        .select({ present: sql<number>`1`.as("present") })
+        .from(workflowRun)
+        .where(
+          and(
+            eq(workflowRun.id, anchorRunId),
+            eq(workflowRun.anchorRunId, workflowRun.id),
+            condition,
+          ),
+        )
+        .limit(1)
+        .as("anchor");
+    // Retained capacity is due once its release time passes. The first visit
+    // after the run ends derives that time from the saved policy; a run
+    // without a policy has none until an explicit release sets it.
+    const releaseDue = db
+      .select({ id: sidecarAllocation.anchorRunId })
+      .from(sidecarAllocation)
+      .crossJoinLateral(
+        anchorOf(
+          sidecarAllocation.anchorRunId,
+          and(
+            notInArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+            or(
+              lte(
+                workflowRun.capacityReleaseAt,
+                sql.param(
+                  sql.placeholder("now"),
+                  workflowRun.capacityReleaseAt,
+                ),
+              ),
+              and(
+                isNull(workflowRun.capacityReleaseAt),
+                isNotNull(workflowRun.lifecyclePolicy),
+              ),
+            ),
+          ),
+        ),
+      )
+      .where(
+        and(
+          sql`${sidecarAllocation.status} in ('pending', 'provisioning', 'allocated', 'replacing')`,
+          inPass(sidecarAllocation.anchorRunId),
+        ),
+      )
+      .orderBy(asc(sidecarAllocation.anchorRunId))
+      .limit(1);
+    const liveDue = db
+      .select({ id: workflowRun.id })
+      .from(workflowRun)
+      .where(
+        and(
+          sql`${workflowRun.id} = ${workflowRun.anchorRunId} and ${workflowRun.status} in ('deployed', 'running')`,
+          or(
+            isNotNull(workflowRun.cancellationRequestedAt),
+            lte(
+              workflowRun.expiresAt,
+              sql.param(sql.placeholder("now"), workflowRun.expiresAt),
+            ),
+          ),
+          inPass(workflowRun.id),
+        ),
+      )
+      .orderBy(asc(workflowRun.id))
+      .limit(1);
+    // Any deployment, live or not, whose accepted history may still be
+    // unprojected.
+    const unprojectedHistory = db
+      .select({ id: workflowPendingProjection.anchorRunId })
+      .from(workflowPendingProjection)
+      .crossJoinLateral(anchorOf(workflowPendingProjection.anchorRunId))
+      .where(
+        and(
+          lte(
+            workflowPendingProjection.createdAt,
+            sql.param(
+              sql.placeholder("pendingCutoff"),
+              workflowPendingProjection.createdAt,
+            ),
+          ),
+          inPass(workflowPendingProjection.anchorRunId),
+        ),
+      )
+      .orderBy(asc(workflowPendingProjection.anchorRunId))
+      .limit(1);
+    const position = afterCursor ? "next" : "first";
+    return {
+      release: releaseDue.prepare(`lifecycle_sweep_release_${position}`),
+      live: liveDue.prepare(`lifecycle_sweep_live_${position}`),
+      history: unprojectedHistory.prepare(
+        `lifecycle_sweep_history_${position}`,
+      ),
+    };
+  }
+  const first = prepareBranches(false);
+  const next = prepareBranches(true);
+  const branches = (["release", "live", "history"] as const).map((name) => ({
+    first: first[name],
+    next: next[name],
+  }));
+  // Postgres picks the lowest candidate, so the choice follows the same
+  // collation as the cursor comparisons.
+  const lowest = db
+    .select({ id: workflowRun.id, tenantId: workflowRun.tenantId })
+    .from(workflowRun)
+    .where(
+      eq(
+        workflowRun.id,
+        sql`least(${sql.join(
+          branches.map(
+            (_, index) => sql`${sql.placeholder(`candidate${index}`)}::text`,
+          ),
+          sql`, `,
+        )})`,
+      ),
+    )
+    .prepare("lifecycle_sweep_lowest");
+  // Undefined until the branch is read this pass, null once it has nothing left.
+  let candidates: (string | null | undefined)[] = [];
+  return {
+    async findPassEnd() {
+      const [last] = await db
+        .select({ id: workflowRun.id })
+        .from(workflowRun)
+        .where(eq(workflowRun.id, workflowRun.anchorRunId))
+        .orderBy(desc(workflowRun.id))
+        .limit(1);
+      return last?.id;
+    },
+    async findNext({ afterRunId, passEnd, activeRunIds }) {
+      if (afterRunId === undefined) candidates = branches.map(() => undefined);
+      const at = now();
+      const values = {
+        passEnd,
+        activeRunIds,
+        now: at,
+        pendingCutoff: new Date(at.getTime() - PENDING_PROJECTION_GRACE_MS),
+      };
+      for (const [index, branch] of branches.entries()) {
+        const candidate = candidates[index];
+        if (
+          candidate === null ||
+          (candidate !== undefined && candidate !== afterRunId)
+        )
+          continue;
+        const [row] =
+          afterRunId === undefined
+            ? await branch.first.execute(values)
+            : await branch.next.execute({ ...values, afterRunId });
+        candidates[index] = row?.id ?? null;
+      }
+      if (candidates.every((candidate) => candidate === null)) return undefined;
+      const [selected] = await lowest.execute(
+        Object.fromEntries(
+          candidates.map((candidate, index) => [
+            `candidate${index}`,
+            candidate,
+          ]),
+        ),
+      );
+      return selected;
+    },
+  };
+}

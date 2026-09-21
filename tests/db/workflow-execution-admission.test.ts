@@ -198,7 +198,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               "Stop",
             );
             if (change === "stop") {
-              await lifecycle.reconcile();
+              await lifecycle.reconcileNext();
               expect(
                 (await lifecycle.getStatus(target.tenantId, target.anchorRunId))
                   ?.status,

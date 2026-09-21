@@ -424,12 +424,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
           hasRepository: async () => true,
         },
       });
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(
         (await lifecycle.getStatus(TENANT, DEPLOYMENT))?.capacityReleaseAt,
       ).toBe(releaseAt);
 
       // Recreate an accepted pack whose database projection failed.
+      current = new Date(current.getTime() + 1_000);
       await h.db
         .update(workflowRun)
         .set({ status: "running", endedAt: null, capacityReleaseAt: null })
@@ -439,7 +440,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         anchorRunId: DEPLOYMENT,
         createdAt: new Date(current.getTime() - 60_000),
       });
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       const recovered = await h.db.query.workflowRun.findFirst({
         where: eq(workflowRun.id, DEPLOYMENT),
       });
@@ -449,12 +450,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).toBe(releaseAt);
 
       current = new Date("2026-01-01T12:14:00.000Z");
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(
         (await lifecycle.getStatus(TENANT, DEPLOYMENT))?.capacityReleaseAt,
       ).toBe(releaseAt);
       current = new Date(releaseAt);
-      await lifecycle.reconcile();
+      await lifecycle.reconcileNext();
       expect(
         (await lifecycle.getStatus(TENANT, DEPLOYMENT))?.allocation?.status,
       ).toBe("releasing");
@@ -1079,7 +1080,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             DEPLOYMENT,
             "Stop confirmed",
           );
-          await lifecycle.reconcile();
+          await lifecycle.reconcileNext();
           expect((await lifecycle.getStatus(TENANT, DEPLOYMENT))?.status).toBe(
             "cancelled",
           );
@@ -1388,7 +1389,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         expect(await lifecycle.releaseCapacity(TENANT, DEPLOYMENT)).toBe(
           "pending",
         );
-        await lifecycle.reconcile();
+        await lifecycle.reconcileNext();
         expect(
           (await lifecycle.getStatus(TENANT, DEPLOYMENT))?.allocation?.status,
         ).toBe("releasing");

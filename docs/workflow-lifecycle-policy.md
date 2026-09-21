@@ -144,6 +144,20 @@ nothing. Reconciliation that cannot read Git backs off and retries; an explicit
 release retries the read and answers 503 while accepted history remains
 unreconciled.
 
+Lifecycle reconciliation uses the shared reconciliation scheduler with eight
+independent slots per Hub. Each slot selects one run at a time, and active runs
+are excluded from further selection until their work finishes. Selection
+considers only deployments with work due: a live run that is cancelling or past
+its expiry, retained capacity whose release time has passed or is not yet
+recorded, and accepted history left unprojected past its grace. A deployment
+that ended without a saved policy is released only on request. Selection walks
+run IDs up to a captured upper bound, then waits one second before another scan.
+Work that becomes due during a scan can wait for the next one, and work that
+stays due, such as a cancellation waiting on its worker, does not cause
+continuous retries. A stalled run occupies one slot while the other slots
+continue processing candidates. A live run with no cancellation or expiry to act
+on is not locked, so a pack receive in progress does not hold a slot.
+
 Dispatch outcomes are projected from Hub-owned Git after pack acceptance and
 retried independently for unresolved deliveries, even when the database has not
 yet recorded the run's terminal status or the allocation has been released.

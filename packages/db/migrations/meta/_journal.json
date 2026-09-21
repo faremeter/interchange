@@ -680,6 +680,13 @@
       "when": 1790185883370,
       "tag": "0097_workflow_dispatch_abandonment",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1790358456398,
+      "tag": "0098_workflow_lifecycle_sweep_indexes",
+      "breakpoints": true
     }
   ]
 }
