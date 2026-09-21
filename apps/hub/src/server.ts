@@ -36,6 +36,8 @@ import {
   createWorkflowDispatchService,
   createReconciliationScheduler,
   createWorkflowLifecycleService,
+  createWorkflowDispatchProjection,
+  DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY,
   createWorkflowRunReader,
   createWorkflowHistoryReceiveTracker,
   recoverSenderDeploy,
@@ -434,6 +436,10 @@ export async function createHubServer({
     sendControl: (target, command, timeoutMs) =>
       sidecarRouter.sendWorkflowControl(target, command, timeoutMs),
   });
+  const dispatchProjection = createWorkflowDispatchProjection({
+    db,
+    repoStore: agentRepoStore.repoStore,
+  });
   const workflowDispatchService = createWorkflowDispatchService({
     dispatchStore: createWorkflowRunDispatchStore(db),
     allocationStore: sidecarAllocationStore,
@@ -520,6 +526,14 @@ export async function createHubServer({
       return false;
     },
   });
+  const dispatchProjectionScheduler = createReconciliationScheduler({
+    name: "Workflow dispatch projection",
+    concurrency: DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY,
+    reconcileNext: async () => {
+      await dispatchProjection.reconcileNext();
+      return false;
+    },
+  });
   const connectionRepairScheduler = createReconciliationScheduler({
     name: "Sidecar connection repair",
     concurrency: 1,
@@ -534,6 +548,7 @@ export async function createHubServer({
   allocationScheduler.start();
   probeCleanupScheduler.start();
   lifecycleScheduler.start();
+  dispatchProjectionScheduler.start();
   dispatchScheduler.start();
   connectionRepairScheduler.start();
 

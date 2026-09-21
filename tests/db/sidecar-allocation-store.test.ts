@@ -23,6 +23,7 @@ import {
   sidecar,
   sidecarAllocation,
   workflowDefinition,
+  workflowPendingProjection,
   workflowRun,
 } from "@intx/db/schema";
 import {
@@ -1568,6 +1569,105 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(leased?.nextAttemptAt?.getTime()).toBeLessThanOrEqual(Date.now());
     });
 
+    test("confirmed release abandons outstanding dispatches while history is pending", async () => {
+      const { store, allocation, leaseId } =
+        await createClaimedAllocation("alloc-release");
+      const dispatches = createWorkflowRunDispatchStore(h.db);
+      for (const id of ["pending", "acknowledged", "settled", "failed"]) {
+        await dispatches.enqueue({
+          id,
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: id,
+          senderAddress: "sender@tenant.example",
+          rawMessage: new Uint8Array([1]),
+          stepGrants: [],
+        });
+      }
+      expect(
+        await dispatches.acknowledge({
+          allocationId: allocation.id,
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: "acknowledged",
+          generation: allocation.generation,
+        }),
+      ).toMatchObject({ status: "acknowledged" });
+      const settled = await dispatches.settle(ANCHOR_RUN_ID, "settled");
+      const failed = await dispatches.fail({
+        anchorRunId: ANCHOR_RUN_ID,
+        messageId: "failed",
+        code: "malformed_mail",
+        message: "Missing MIME bytes",
+      });
+      await h.db.insert(workflowPendingProjection).values({
+        id: "pending-release-history",
+        anchorRunId: ANCHOR_RUN_ID,
+      });
+      expect(
+        await store.beginRelease({
+          allocationId: allocation.id,
+          expectedGeneration: allocation.generation,
+          expectedStatus: "allocated",
+          expectedLeaseId: leaseId,
+        }),
+      ).toMatchObject({ status: "releasing", generation: 2 });
+      const releaseLeaseId = "lease-release";
+      expect(
+        await store.claimNextReconcilable({
+          leaseId: releaseLeaseId,
+          leaseDurationMs: 60_000,
+        }),
+      ).toMatchObject({ id: allocation.id, status: "releasing" });
+      const now = new Date();
+      const releaseArgs = {
+        allocationId: allocation.id,
+        generation: 2,
+        expectedLeaseId: releaseLeaseId,
+        now,
+      };
+      expect(
+        await store.markReleased({ ...releaseArgs, generation: 1 }),
+      ).toBeNull();
+      expect(
+        await store.markReleased({ ...releaseArgs, expectedLeaseId: "stale" }),
+      ).toBeNull();
+      expect((await dispatches.findById("pending"))?.status).toBe("pending");
+      expect((await dispatches.findById("acknowledged"))?.status).toBe(
+        "acknowledged",
+      );
+
+      expect(await store.markReleased(releaseArgs)).toMatchObject({
+        status: "released",
+        destroyAttempts: 1,
+      });
+      expect(
+        await store.markReleased({
+          ...releaseArgs,
+          now: new Date(now.getTime() + 1_000),
+        }),
+      ).toBeNull();
+      for (const id of ["pending", "acknowledged"]) {
+        expect(await dispatches.findById(id)).toMatchObject({
+          status: "abandoned",
+          failureCode: "workflow_capacity_released",
+          nextAttemptAt: now,
+          updatedAt: now,
+        });
+      }
+      expect(await dispatches.findById("settled")).toEqual(settled);
+      expect(await dispatches.findById("failed")).toEqual(failed);
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, ANCHOR_RUN_ID),
+          columns: { status: true, endedAt: true },
+        }),
+      ).toEqual({ status: "running", endedAt: null });
+      expect(
+        await h.db.query.workflowPendingProjection.findFirst({
+          where: eq(workflowPendingProjection.id, "pending-release-history"),
+        }),
+      ).toBeDefined();
+    });
+
     test("terminal allocation failure fails runs, principals, and dispatches", async () => {
       await seedPrincipal(h.db, {
         id: "prn-terminal-run",
@@ -1674,7 +1774,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         }),
       ).toEqual({ status: "deactivated" });
       expect(await dispatchStore.findById("dispatch-terminal")).toMatchObject({
-        status: "failed",
+        status: "abandoned",
         failureCode: "quota_disabled",
         failureMessage: "Provisioning is disabled for this account",
       });
@@ -1795,7 +1895,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           }),
         ).toEqual({ status: "failed" });
         expect(await dispatchStore.findById("dispatch-destroy")).toMatchObject({
-          status: "failed",
+          status: "abandoned",
           failureCode: failure.code,
           failureMessage: failure.message,
         });
@@ -2020,14 +2120,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(
         await dispatchStore.findById("dispatch-unrecoverable-pending"),
       ).toMatchObject({
-        status: "failed",
+        status: "abandoned",
         failureCode: "sidecar_connect_failed",
         failureMessage: "Automatic recovery is disabled: connect timeout",
       });
       expect(
         await dispatchStore.findById("dispatch-unrecoverable-acknowledged"),
       ).toMatchObject({
-        status: "failed",
+        status: "abandoned",
         failureCode: "sidecar_connect_failed",
         failureMessage: "Automatic recovery is disabled: connect timeout",
       });

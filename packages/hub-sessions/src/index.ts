@@ -8,6 +8,10 @@ export {
   type WorkflowHistoryReceiveTracker,
 } from "./workflow-history-receives";
 export {
+  createWorkflowDispatchProjection,
+  DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY,
+} from "./workflow-dispatch-projection";
+export {
   createAgentRepoStore,
   type AgentRepoStore,
   type DeployContent,

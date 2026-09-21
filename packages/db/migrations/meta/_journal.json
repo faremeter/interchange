@@ -680,6 +680,13 @@
       "when": 1790350332048,
       "tag": "0097_workflow_cancellation_reason",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1790350392048,
+      "tag": "0098_workflow_dispatch_abandonment",
+      "breakpoints": true
     }
   ]
 }

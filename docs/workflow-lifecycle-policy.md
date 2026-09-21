@@ -144,6 +144,29 @@ nothing. Reconciliation that cannot read Git backs off and retries; an explicit
 release retries the read and answers 503 while accepted history remains
 unreconciled.
 
+Dispatch outcomes are projected from Hub-owned Git after pack acceptance and
+retried independently for unresolved deliveries, even when the database has not
+yet recorded the run's terminal status or the allocation has been released.
+Each pass pins workflow history on `refs/heads/main` before reading consumed-mail
+outcomes on `refs/heads/events`. Proven deliveries are settled, recorded rejections
+retain their reason, and remaining examined deliveries are failed only after both
+histories are read and the pinned workflow history proves the run is terminal.
+History reads do not hold the database locks needed for cleanup.
+
+Forced stop, confirmed capacity release, and unrecoverable allocation failure
+mark outstanding delivery attempts `abandoned`: retries have stopped, but
+acceptance is unconfirmed. A confirmed release records abandonment even while
+accepted history is awaiting projection, without changing the run's outcome.
+Later Git evidence can resolve an abandoned delivery as settled or failed. If forced
+termination permanently lost that evidence, the delivery remains abandoned.
+Recorded rejections and settled deliveries are never overwritten by abandonment.
+Settled and failed records remain final; recovery scans pending, acknowledged,
+and abandoned records. An abandoned record stays in recovery until one scan
+reads its deployment's final history; if that scan finds no evidence, it
+remains abandoned and is not scanned again.
+Recovery scans use bounded independent slots; a stalled read occupies its own
+slot and is not duplicated by later polls.
+
 Hub delivery checks lifecycle state under the anchor run's row lock, which
 cancellation and retirement of a runnable deployment's allocation also take,
 immediately before queuing restore, deployment, mail, or signal frames on the

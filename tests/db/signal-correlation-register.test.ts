@@ -46,13 +46,22 @@ import {
 
 import { createMockWs } from "./sidecar-test-helpers";
 
-// The register handler never touches the repo store, so a throwing stub keeps
-// the AgentRepoStore surface satisfied without a real on-disk store.
+// The lookups factory reads repoStore when constructing dispatch projection,
+// but registerSignalCorrelation never performs a committed read.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; registerSignalCorrelation does not touch the repo store
 const stubRepoStore = new Proxy(
   {},
   {
-    get() {
+    get(_target, property) {
+      if (property === "repoStore") {
+        return {
+          openCommittedReads() {
+            throw new Error(
+              "repoStore is not used by registerSignalCorrelation",
+            );
+          },
+        };
+      }
       throw new Error(
         "agentRepoStore is not used by registerSignalCorrelation",
       );
