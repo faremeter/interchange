@@ -11,6 +11,7 @@
     }
   },
   "dependencies": {
+    "@intx/authz": "workspace:*",
     "@intx/crypto": "workspace:*",
     "@intx/db": "workspace:*",
     "@intx/hub-api": "workspace:*",

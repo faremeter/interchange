@@ -29,7 +29,7 @@ import {
   GrantRequirement,
   SidecarCapabilityPolicy,
 } from "@intx/types";
-import { InboundMailPolicy } from "@intx/types/runtime";
+import { InboundMailPolicy, MailAccept } from "@intx/types/runtime";
 import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
 import {
   authorizeUserPrincipal,
@@ -111,6 +111,11 @@ export const workflowDefinitionEnvelopeSchema = type({
   // boundary rather than passed through to later admission resolution
   // unchecked.
   "inboundMailPolicy?": InboundMailPolicy,
+  // `mailAccept` is validated here too -- same defense-in-depth rationale as
+  // inboundMailPolicy above: a malformed rule set (an unknown relation key or a
+  // toggle that is not a boolean) is rejected at the deploy boundary rather than
+  // passed through to later admission resolution unchecked.
+  "mailAccept?": MailAccept,
 }).onUndeclaredKey("ignore");
 
 const SidecarPrincipal = type({

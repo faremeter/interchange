@@ -4,6 +4,8 @@ import {
   ApprovalSnapshot,
   APPROVAL_SNAPSHOT_MAX_BYTES,
   BoundedApprovalSnapshot,
+  MailAccept,
+  isValidCoordId,
   ContentBlock,
   formatSafetyRatingText,
   InferenceEvent,
@@ -1275,5 +1277,54 @@ describe("BoundedApprovalSnapshot", () => {
     expect(serialized.length).toBeLessThan(APPROVAL_SNAPSHOT_MAX_BYTES);
     const result = BoundedApprovalSnapshot(base);
     expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("MailAccept validator", () => {
+  test("accepts well-formed explicit ids and relational toggles", () => {
+    const result = MailAccept({
+      invoker: true,
+      principals: ["prn_alice", "prn_bob"],
+      definitions: ["def_report"],
+    });
+    expect(result instanceof type.errors).toBe(false);
+  });
+
+  test("accepts an empty policy", () => {
+    expect(MailAccept({}) instanceof type.errors).toBe(false);
+  });
+
+  test("rejects an empty principals id at the boundary", () => {
+    expect(MailAccept({ principals: [""] }) instanceof type.errors).toBe(true);
+  });
+
+  test("rejects a principals id containing a colon", () => {
+    expect(MailAccept({ principals: ["prn:bad"] }) instanceof type.errors).toBe(
+      true,
+    );
+  });
+
+  test("rejects a definitions id containing a colon", () => {
+    expect(
+      MailAccept({ definitions: ["def:bad"] }) instanceof type.errors,
+    ).toBe(true);
+  });
+
+  test("rejects an undeclared key", () => {
+    expect(MailAccept({ parrent: true }) instanceof type.errors).toBe(true);
+  });
+});
+
+describe("isValidCoordId", () => {
+  test("accepts a non-empty id without a colon", () => {
+    expect(isValidCoordId("prn_alice")).toBe(true);
+  });
+
+  test("rejects an empty id", () => {
+    expect(isValidCoordId("")).toBe(false);
+  });
+
+  test("rejects an id containing a colon", () => {
+    expect(isValidCoordId("prn:bad")).toBe(false);
   });
 });

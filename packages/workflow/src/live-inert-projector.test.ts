@@ -33,7 +33,7 @@ import {
   canonicalJsonStringify,
   computeWireDefinitionHash,
 } from "@intx/types/wire-definition-hash";
-import type { InboundMailPolicy } from "@intx/types/runtime";
+import type { InboundMailPolicy, MailAccept } from "@intx/types/runtime";
 
 import {
   computeLiveDefinitionHash,
@@ -1199,6 +1199,97 @@ describe("wire validator preserves inboundMailPolicy", () => {
   test("a declared policy moves the wire hash", async () => {
     expect(
       await computeLiveDefinitionHash(policyWorkflow({ invalid: "reject" })),
+    ).not.toBe(await computeLiveDefinitionHash(baseWorkflow()));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wire boundary preserves mailAccept (the `"+": "delete"` guard)
+// ---------------------------------------------------------------------------
+
+describe("wire validator preserves mailAccept", () => {
+  function acceptWorkflow(mailAccept: MailAccept): WorkflowDefinition {
+    return defineWorkflow({
+      id: "wf_main",
+      trigger: { type: "mail", to: "wf@acme.test" },
+      steps: {
+        main: step({
+          agent: mkAgent([alphaTool], baseCapabilities, [OPENAI]),
+        }),
+      },
+      mailAccept,
+    });
+  }
+
+  test("projected accept-rules survive WorkflowProjectionDefinition validation with their sparse shape intact", () => {
+    // `WorkflowProjectionDefinition` carries `"+": "delete"`, so any key it does
+    // not declare is stripped at the wire boundary. If the projector emitted
+    // `mailAccept` but the schema omitted it, the accept-rules would vanish
+    // between the hub-resolved projection and the one the sidecar validates --
+    // silently, with no error. Round-trip a projected definition through the
+    // schema and assert the accept-rules survive with only the declared keys.
+    const projection = projectLiveToInert(
+      acceptWorkflow({ invoker: true, tenant: false }),
+    );
+    expect(projection.mailAccept).toEqual({ invoker: true, tenant: false });
+    const validated = WorkflowProjectionDefinition(projection);
+    if (validated instanceof type.errors) {
+      throw new Error(
+        `projection failed the wire schema: ${validated.summary}`,
+      );
+    }
+    expect(validated.mailAccept).toEqual({ invoker: true, tenant: false });
+    // A relation the author left unset stays absent through the wire boundary
+    // rather than being materialized to a default.
+    expect(validated.mailAccept).not.toHaveProperty("self");
+    expect(validated.mailAccept).not.toHaveProperty("correspondent");
+  });
+
+  test("malformed accept-rules are rejected, not silently stripped, at the wire boundary", () => {
+    // `WorkflowProjectionDefinition` carries `"+": "delete"`, which strips
+    // undeclared TOP-LEVEL keys. This pins the distinct tamper-evidence
+    // property: a malformed `mailAccept` is REJECTED, because the nested
+    // `onUndeclaredKey("reject")` on `MailAccept` must win over the parent's
+    // `"+": "delete"`. Build a valid projection the same way the valid test
+    // does, then inject the malformed rules and assert the schema returns an
+    // arktype error rather than a stripped-but-valid result.
+    const projection = projectLiveToInert(acceptWorkflow({ invoker: true }));
+
+    // (a) An unknown relation key such as `parrent` is not one of the declared
+    // MailAccept keys, so the nested reject rejects it.
+    const unknownKey = WorkflowProjectionDefinition({
+      ...projection,
+      mailAccept: { parrent: true },
+    });
+    expect(unknownKey instanceof type.errors).toBe(true);
+
+    // (b) A non-boolean on a declared relational toggle such as `invoker` is
+    // out of type, so the accept-rule schema rejects it.
+    const wrongType = WorkflowProjectionDefinition({
+      ...projection,
+      mailAccept: { invoker: "yes" },
+    });
+    expect(wrongType instanceof type.errors).toBe(true);
+  });
+
+  test("the projection omits the field when no accept-rules are declared", () => {
+    const projection = projectLiveToInert(baseWorkflow());
+    expect(projection).not.toHaveProperty("mailAccept");
+  });
+
+  test("absent accept-rules leave no key in the canonical form", () => {
+    // The canonical form omits an absent field, so a definition that declares
+    // no accept-rules hashes identically to one built before the field existed
+    // -- a deployment's content handle does not move for a field it never
+    // declared.
+    const projection = projectLiveToInert(baseWorkflow());
+    const canonical = canonicalJsonStringify(projection);
+    expect(canonical.includes("mailAccept")).toBe(false);
+  });
+
+  test("declared accept-rules move the wire hash", async () => {
+    expect(
+      await computeLiveDefinitionHash(acceptWorkflow({ invoker: true })),
     ).not.toBe(await computeLiveDefinitionHash(baseWorkflow()));
   });
 });

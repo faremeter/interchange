@@ -9,7 +9,7 @@
 // deploys more than one instance in a single sidecar overrides them to keep the
 // definitions distinct.
 
-import type { InboundMailPolicy } from "@intx/types/runtime";
+import type { InboundMailPolicy, MailAccept } from "@intx/types/runtime";
 
 export type SingleStepAgentFixtureParams = {
   /** The step's key in the workflow's `steps` map. */
@@ -38,6 +38,15 @@ export type SingleStepAgentFixtureParams = {
    * admitted for that deployment.
    */
   inboundMailPolicy?: InboundMailPolicy;
+  /**
+   * The workflow's author-declared relational accept-policy. Omitted by default,
+   * so the deployed definition declares no `mailAccept` and the mail-transport
+   * admission gate default-denies every sender. A caller whose run is started or
+   * fed through the sidecar deliver path (the materializer seam) sets it to
+   * admit its intended sender -- for example `{ invoker: true }` to accept the
+   * triggering sender, or `{ tenant: true }` for a same-tenant sender.
+   */
+  mailAccept?: MailAccept;
 };
 
 export function singleStepAgentEntry(
@@ -49,6 +58,10 @@ export function singleStepAgentEntry(
   const inboundMailPolicyField =
     params.inboundMailPolicy !== undefined
       ? `\n  inboundMailPolicy: ${JSON.stringify(params.inboundMailPolicy)},`
+      : "";
+  const mailAcceptField =
+    params.mailAccept !== undefined
+      ? `\n  mailAccept: ${JSON.stringify(params.mailAccept)},`
       : "";
   return `
 import { defineWorkflow, step } from "@intx/workflow/definition";
@@ -66,7 +79,7 @@ const agent = defineAgent({
 
 export const workflow = defineWorkflow({
   id: ${JSON.stringify(workflowId)},
-  trigger: { type: "mail", to: ${JSON.stringify(params.address)} },${inboundMailPolicyField}
+  trigger: { type: "mail", to: ${JSON.stringify(params.address)} },${inboundMailPolicyField}${mailAcceptField}
   steps: {
     [${JSON.stringify(params.stepId)}]: step({ agent }),
   },

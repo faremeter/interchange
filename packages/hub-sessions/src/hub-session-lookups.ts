@@ -49,9 +49,11 @@ export function createHubSessionLookups(
   Omit<
     SidecarLookups,
     | "materializeMailTriggeredRunGrants"
+    | "mintCorrespondentGrant"
     | "resyncCredentials"
     | "resolveSenderKey"
     | "resolveSenderKeyStrict"
+    | "resolveSenderPrincipal"
   >
 > {
   const { db, agentRepoStore } = deps;

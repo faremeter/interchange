@@ -607,6 +607,72 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(afterSecond?.endedAt ?? null).toEqual(settledEndedAt);
     });
 
+    test("a terminal run stays terminal against a later anchor or create on its id", async () => {
+      // Section H regression: once a run is settled terminal, no later
+      // reservation attempt on the same id may resurrect it. `markTerminal`
+      // flips the row; a following `anchorWithPrincipal` (guarded on
+      // status='deployed') updates zero rows, and `createIfAbsent` (guarded on
+      // the id conflict) returns null. The row must remain terminal throughout.
+      await seedWorkflowRun(h.db, {
+        id: "run-terminal-guard",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        status: "deployed",
+      });
+      await seedPrincipal(h.db, {
+        id: "prn-terminal-guard",
+        tenantId: TENANT,
+        kind: "workflow",
+        refId: "run-terminal-guard",
+        status: "active",
+      });
+      const store = createWorkflowRunStore(h.db);
+
+      // The seeded run's definition id, carried through the anchor attempt so it
+      // is a well-formed insert even though the row already exists.
+      const [seeded] = await h.db
+        .select({ definitionId: workflowRun.definitionId })
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-terminal-guard"));
+      const seededDefinitionId = seeded?.definitionId ?? "";
+
+      const endedAt = new Date();
+      const settled = await store.markTerminal(
+        "run-terminal-guard",
+        "completed",
+        endedAt,
+      );
+      expect(settled?.status).toBe("completed");
+
+      // A later anchor attempt (the shape a first-fire trigger uses) must not
+      // flip the terminal row back to running.
+      await store.anchorWithPrincipal({
+        id: "run-terminal-guard",
+        anchorRunId: DEPLOYMENT,
+        definitionId: seededDefinitionId,
+        tenantId: TENANT,
+        principalId: "prn-terminal-guard",
+        status: "running",
+      });
+
+      // A later createIfAbsent on the same id is a no-op: the row exists.
+      const created = await store.createIfAbsent({
+        id: "run-terminal-guard",
+        anchorRunId: DEPLOYMENT,
+        definitionId: seededDefinitionId,
+        tenantId: TENANT,
+        status: "running",
+      });
+      expect(created).toBeNull();
+
+      const [row] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-terminal-guard"));
+      expect(row?.status).toBe("completed");
+      expect(row?.endedAt).not.toBeNull();
+    });
+
     test("markTerminal settles a deployed run torn down before its first trigger", async () => {
       // A deployment can be torn down while still in its "deployed" (pre-
       // trigger) window. The live-status guard must accept "deployed" so the

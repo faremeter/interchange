@@ -14,7 +14,7 @@ import type {
   GrantRequirement,
   SidecarCapabilityPolicy,
 } from "@intx/types";
-import type { InboundMailPolicy } from "@intx/types/runtime";
+import type { InboundMailPolicy, MailAccept } from "@intx/types/runtime";
 
 import { normalizeSingularShorthand } from "./shorthand";
 import {
@@ -70,6 +70,17 @@ export interface WorkflowDefinition {
    * decisions on it.
    */
   inboundMailPolicy?: InboundMailPolicy;
+  /**
+   * The author-declared relational accept-rules governing which senders this
+   * workflow accepts inbound mail from. Present only when the workflow declares
+   * a mail trigger; accept-rules on a workflow no mail can ever reach are
+   * rejected at definition time. Sparse: an absent relational toggle is not
+   * defaulted here -- the shared accept-rule resolver supplies the default at
+   * the read edge. Nothing in this package consumes it yet -- it is carried
+   * through the projection and content hash so a later resolution step can key
+   * delivery decisions on it.
+   */
+  mailAccept?: MailAccept;
 }
 
 export interface WorkflowConfig {
@@ -82,6 +93,7 @@ export interface WorkflowConfig {
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
   inboundMailPolicy?: InboundMailPolicy;
+  mailAccept?: MailAccept;
 }
 
 export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
@@ -94,6 +106,7 @@ export interface SingularWorkflowConfig<EnvReq extends BaseEnv> {
   credentialBindings?: readonly CredentialBinding[];
   sidecarPlacement?: SidecarCapabilityPolicy;
   inboundMailPolicy?: InboundMailPolicy;
+  mailAccept?: MailAccept;
 }
 
 /**
@@ -206,6 +219,25 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
     }
   }
 
+  // Relational accept-rules govern which senders inbound mail is accepted from,
+  // so like an inboundMailPolicy they are meaningless without a mail trigger to
+  // deliver that mail. A rule set on a workflow that no mail can ever reach is a
+  // silent authoring error -- the author believes they constrained who may
+  // reach the deployment, but the constraint can never take effect. Reject it
+  // here, at the authoring boundary, rather than let it ride through the
+  // projection as a dead field. Like the policy check above, this runs after
+  // resolveTriggers so a mail trigger contributed by an onTrigger section's `on`
+  // counts, not only a top-level `trigger`/`triggers`.
+  if (config.mailAccept !== undefined) {
+    const hasMailTrigger = triggers.some((trigger) => trigger.type === "mail");
+    if (!hasMailTrigger) {
+      throw new Error(
+        `defineWorkflow ${config.id} declares a mailAccept but no mail ` +
+          `trigger; the accept-rules can never take effect`,
+      );
+    }
+  }
+
   const definition: WorkflowDefinition = {
     id: config.id,
     triggers,
@@ -223,6 +255,9 @@ function normalize(config: WorkflowConfig): WorkflowDefinition {
       : {}),
     ...(config.inboundMailPolicy !== undefined
       ? { inboundMailPolicy: config.inboundMailPolicy }
+      : {}),
+    ...(config.mailAccept !== undefined
+      ? { mailAccept: config.mailAccept }
       : {}),
   };
   return definition;
@@ -1162,6 +1197,14 @@ function projectForHash(definition: WorkflowDefinition): unknown {
     // identically to one authored before the field existed.
     ...(definition.inboundMailPolicy !== undefined
       ? { inboundMailPolicy: definition.inboundMailPolicy }
+      : {}),
+    // The relational accept-rules change which senders inbound mail is accepted
+    // from, so two definitions differing only in their accept-rules must hash
+    // differently -- include them exactly as inboundMailPolicy is included.
+    // Absent, the spread contributes nothing, so a definition without
+    // accept-rules hashes identically to one authored before the field existed.
+    ...(definition.mailAccept !== undefined
+      ? { mailAccept: definition.mailAccept }
       : {}),
     steps: Object.fromEntries(
       Object.entries(definition.steps).map(([id, primitive]) => [
