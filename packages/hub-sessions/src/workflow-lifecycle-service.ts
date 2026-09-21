@@ -473,7 +473,7 @@ export function createWorkflowLifecycleService({
         .update(principal)
         .set({ status: "deactivated", updatedAt: endedAt })
         .where(inArray(principal.id, principalIds));
-    await dispatches.failUnsettled(
+    await dispatches.abandonUnsettled(
       run.id,
       "workflow_cancelled",
       getRequestedCancellation(run).reason,

@@ -20,6 +20,7 @@ import {
 import { WireGrantRule } from "@intx/types/grant-wire";
 import { FrozenApprovalBundle, RepoAction } from "@intx/types/sidecar";
 import { ToolPackagePinArray } from "@intx/types/tool-packages";
+import { workflowRunDispatchStatuses } from "./schema/workflow-run-dispatch";
 
 import type {
   approval,
@@ -75,10 +76,7 @@ const workflowRunStatuses = [
 ] as const;
 const WorkflowRunStatusValidator = type.enumerated(...workflowRunStatuses);
 const WorkflowRunDispatchStatusValidator = type.enumerated(
-  "pending",
-  "acknowledged",
-  "settled",
-  "failed",
+  ...workflowRunDispatchStatuses,
 );
 const WorkflowRunDispatchKindValidator = type.enumerated("mail", "signal");
 

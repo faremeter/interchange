@@ -1,0 +1,5 @@
+ALTER TABLE "workflow_run_dispatch" DROP CONSTRAINT "workflow_run_dispatch_status_check";--> statement-breakpoint
+ALTER TABLE "workflow_run_dispatch" DROP CONSTRAINT "workflow_run_dispatch_mail_sender_check";--> statement-breakpoint
+CREATE INDEX "workflow_run_dispatch_unresolved_anchor_idx" ON "workflow_run_dispatch" USING btree ("anchor_run_id") WHERE "workflow_run_dispatch"."status" in ('pending', 'acknowledged') or ("workflow_run_dispatch"."status" = 'abandoned' and "workflow_run_dispatch"."next_attempt_at" is not null);--> statement-breakpoint
+ALTER TABLE "workflow_run_dispatch" ADD CONSTRAINT "workflow_run_dispatch_status_check" CHECK ("workflow_run_dispatch"."status" in ('pending', 'acknowledged', 'abandoned', 'settled', 'failed'));--> statement-breakpoint
+ALTER TABLE "workflow_run_dispatch" ADD CONSTRAINT "workflow_run_dispatch_mail_sender_check" CHECK ("workflow_run_dispatch"."kind" <> 'mail' or "workflow_run_dispatch"."status" in ('abandoned', 'settled', 'failed') or "workflow_run_dispatch"."sender_address" is not null);

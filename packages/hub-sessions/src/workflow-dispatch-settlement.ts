@@ -51,6 +51,7 @@ export type ReceivedWorkflowSignal = {
 export type AcceptedWorkflowDispatch = {
   readonly runId: string;
   readonly messageId: string;
+  /** Event source: SignalReceived also proves mail used to resume an input gate. */
   readonly kind: "mail" | "signal";
 };
 

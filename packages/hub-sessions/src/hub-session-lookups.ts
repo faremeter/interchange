@@ -12,7 +12,6 @@ import {
   createApprovalStore,
   createSignalCorrelationStore,
   createWorkflowPendingProjectionStore,
-  createWorkflowRunDispatchStore,
   createWorkflowRunStore,
 } from "@intx/db";
 import {
@@ -24,18 +23,13 @@ import {
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
 import { parseRunAddress, signalName } from "@intx/types";
-import { SignalDeliverFrame } from "@intx/types/sidecar";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore } from "./agent-repo";
 import { generateId } from "@intx/hub-common";
 import type { SidecarLookups } from "./ws/sidecar-events";
+import { createWorkflowDispatchProjection } from "./workflow-dispatch-projection";
 import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
-import {
-  listAcceptedWorkflowDispatches,
-  listConsumedWorkflowDispatches,
-} from "./workflow-dispatch-settlement";
-import { readCommittedWorkflowRunLifecycle } from "./workflow-run-kind";
 import { projectTerminalRun } from "./workflow-run-terminal-projection";
 
 const logger = getLogger(["hub", "lookups"]);
@@ -63,7 +57,10 @@ export function createHubSessionLookups(
   const approvalStore = createApprovalStore(db);
   const workflowRunStore = createWorkflowRunStore(db);
   const pendingProjections = createWorkflowPendingProjectionStore(db);
-  const workflowRunDispatchStore = createWorkflowRunDispatchStore(db);
+  const dispatchProjection = createWorkflowDispatchProjection({
+    db,
+    repoStore: agentRepoStore.repoStore,
+  });
 
   return {
     async lookupDeployRef() {
@@ -368,7 +365,6 @@ export function createHubSessionLookups(
         logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: source address has no live deployment anchor`;
         return { accepted: false, reason: "path_violation" as const };
       }
-      const anchorAddress = anchor.address;
       // The repository must exist before the row does. Recovery reads a
       // missing repository as lost history and a ref-less one as a receive
       // that never advanced Git, so a crash between the two must leave the
@@ -525,108 +521,12 @@ export function createHubSessionLookups(
         }
       }
 
-      // A sidecar-local mail ack is only receipt. The raw trigger remains in
-      // workflow_run_dispatch until the accepted Git tip proves either that
-      // the run recorded it (RunStarted / SignalReceived), or that the
-      // supervisor consumed it with an explicit rejection. Rescan the bounded
-      // retained claim-check index after every accepted pack, and search the
-      // stable run log newest-first only for currently-unsettled ids. Settlement
-      // is idempotent, and a later pack naturally retries a transient database
-      // failure here.
-      let topLevelTerminalSettlementProjected = false;
+      // Git acceptance survives projection failures. The terminal recovery pass
+      // retries these outcomes even after the allocation has been released.
       try {
-        const reads = await agentRepoStore.repoStore.openCommittedReads(
-          { kind: "hub" },
-          repoId,
-          ref,
-        );
-        if (reads !== null) {
-          const unsettledDispatches =
-            await workflowRunDispatchStore.listUnsettled(anchor.id);
-          const unsettledByMessageId = new Map(
-            unsettledDispatches.map((dispatch) => [
-              dispatch.messageId,
-              dispatch,
-            ]),
-          );
-          for (const consumed of await listConsumedWorkflowDispatches(reads)) {
-            if (consumed.address !== anchorAddress) continue;
-            const persisted = unsettledByMessageId.get(consumed.messageId);
-            if (persisted?.kind !== "mail") continue;
-            if (consumed.rejection === undefined) {
-              await workflowRunDispatchStore.settle(
-                anchor.id,
-                consumed.messageId,
-                now,
-              );
-            } else {
-              await workflowRunDispatchStore.fail({
-                anchorRunId: anchor.id,
-                messageId: consumed.messageId,
-                code: consumed.rejection.code,
-                message: consumed.rejection.message,
-                now,
-              });
-            }
-            unsettledByMessageId.delete(consumed.messageId);
-          }
-
-          // Mail is recorded on the stable deployment run, while a signal is
-          // recorded on the exact run named by its durable delivery frame.
-          // Group retained dispatches by that Git run before scanning so an
-          // internal run's SignalReceived evidence settles its own dispatch.
-          // The `runs/<runId>/` log keys on the run id (the address local
-          // part), NOT the full address: post-collapse the top-level run's id
-          // IS `anchor.id`, so mail keys on `anchor.id`; a signal keys on its
-          // frame's own run id. (The `addresses/<address>/` consumed subtree
-          // above keys on the full address -- a different subtree.)
-          const messageIdsByRun = new Map<string, Set<string>>();
-          for (const dispatch of unsettledByMessageId.values()) {
-            const runId =
-              dispatch.kind === "mail"
-                ? anchor.id
-                : SignalDeliverFrame.assert(
-                    JSON.parse(new TextDecoder().decode(dispatch.rawMessage)),
-                  ).runId;
-            const messageIds = messageIdsByRun.get(runId) ?? new Set<string>();
-            messageIds.add(dispatch.messageId);
-            messageIdsByRun.set(runId, messageIds);
-          }
-          for (const [runId, messageIds] of messageIdsByRun) {
-            for (const accepted of await listAcceptedWorkflowDispatches(
-              reads,
-              runId,
-              messageIds,
-            )) {
-              const persisted = unsettledByMessageId.get(accepted.messageId);
-              if (persisted?.kind !== accepted.kind) continue;
-              await workflowRunDispatchStore.settle(
-                anchor.id,
-                accepted.messageId,
-                now,
-              );
-              unsettledByMessageId.delete(accepted.messageId);
-            }
-          }
-          topLevelTerminalSettlementProjected =
-            (await readCommittedWorkflowRunLifecycle(reads, anchor.id)) ===
-            "terminal";
-        }
+        await dispatchProjection.project(anchor.id);
       } catch (error) {
-        logger.error`Workflow dispatch settlement failed for ${anchor.id}; accepted Git state remains authoritative and the retained payload will be retried: ${error instanceof Error ? error.message : String(error)}`;
-      }
-
-      if (topLevelTerminalSettlementProjected) {
-        try {
-          await workflowRunDispatchStore.failUnsettled(
-            anchor.id,
-            "workflow_run_terminal",
-            `Workflow run ${anchorAddress} is terminal and cannot accept this dispatch`,
-            now,
-          );
-        } catch (error) {
-          logger.error`Failed to close unsettled workflow dispatches for terminal run ${anchorAddress}: ${error instanceof Error ? error.message : String(error)}`;
-        }
+        logger.error`Workflow dispatch settlement failed for ${anchor.id}: ${error instanceof Error ? error.message : String(error)}`;
       }
 
       return { accepted: true };
