@@ -145,11 +145,21 @@ through `signAsPrincipal("supervisor", ...)` for every origin in
 the Q3 map. The `self`-origin case carries the workflow-process's
 stated reason; the supervisor wraps it into the same supervisor-
 signed shape as the operator and drain origins.
+When a child is active, it first flushes and pauses its runtime event
+writer. The supervisor commits the signed cancellation while that writer
+is paused, then releases the child to apply cancellation. A child that
+does not respond still requires the caller's forced-stop deadline.
 
 `shutdown()` unregisters the mail address, kills the child, and
 disposes subscriptions. Concurrent callers await the same teardown through
 confirmed child exit, including a replacement still awaiting readiness.
 A replacement cannot spawn once shutdown begins.
+It releases pending cancellation waits and requests the kill before waiting for
+the dispatch loop, so a child that stops reading its control pipe cannot block
+its own forced termination. The kill escalates from SIGTERM to SIGKILL after
+the kill timeout, so a child that traps SIGTERM cannot block it either.
+Already-started cancellation commits finish before the supervisor releases its
+bindings.
 
 `drain(opts)` sends the drain control mail and waits for in-flight
 runs to drain per each step's `drainBehavior`; on the drain-timeout it
