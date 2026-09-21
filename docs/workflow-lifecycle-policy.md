@@ -102,6 +102,9 @@ run. Provisioning and waiting count; restarts, replacement workers, and any
 future hibernation do not reset the clock. This also covers deployments that
 never receive their first trigger. If still live at expiry, the Hub stops the
 deployment as `cancelled`, allowing a 30-second cancellation grace period before stopping the process.
+Forced stop preempts a pending cooperative cancellation. The sidecar acknowledges
+stop only after the child exits and its restart record is removed; inspection
+state remains until allocation cleanup.
 Cancellation also removes the restart record before acknowledgement when no
 supervisor remains, preventing a later sidecar restart from reviving the run.
 If the worker cannot confirm its stop, the Hub releases its allocation and waits

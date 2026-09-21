@@ -34,6 +34,8 @@ import {
   createChangeNotifier,
   createMemoryFrameStream,
   createMemoryNdjsonStream,
+  readPayloadsOfType,
+  waitForUpstreamPayload,
 } from "@intx/workflow-host/testing";
 
 import {
@@ -84,7 +86,11 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
 }
 
 describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor down", () => {
-  test.each(["undeploy", "stop then undeploy"] as const)(
+  test.each([
+    "undeploy",
+    "stop then undeploy",
+    "repeated cancel then undeploy",
+  ] as const)(
     "%s invokes the spawned child's kill and awaits exited",
     async (operation) => {
       // Per-spawn tracking.
@@ -373,15 +379,62 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       if (operation === "stop then undeploy") {
         if (router.control === undefined)
           throw new Error("router.control is undefined");
-        await router.control({
+        const command = {
           type: "workflow.control",
           requestId: "stop-request",
           action: "stop",
           runId: "run_undeploy-supervisor",
           agentAddress: frame.agentAddress,
           reason: "Lifetime expired",
-        });
+        } as const;
+        const cancelling = router
+          .control({ ...command, action: "cancel" })
+          .catch((cause: unknown) => cause);
+        await waitForUpstreamPayload(spawn.supervisorToChild, "cancel.prepare");
+        const retry = router
+          .control({ ...command, requestId: "cancel-retry", action: "cancel" })
+          .catch((cause: unknown) => cause);
+        await Promise.all([router.control(command), router.control(command)]);
+        expect(await cancelling).toBeInstanceOf(Error);
+        expect(await retry).toBeInstanceOf(Error);
+        expect(
+          readPayloadsOfType(
+            spawn.supervisorToChild.flushed(),
+            "cancel.prepare",
+          ),
+        ).toHaveLength(1);
       } else {
+        if (operation === "repeated cancel then undeploy") {
+          if (router.control === undefined)
+            throw new Error("router.control is undefined");
+          const command = {
+            type: "workflow.control",
+            requestId: "cancel-request",
+            action: "cancel",
+            runId: "run_undeploy-supervisor",
+            agentAddress: frame.agentAddress,
+            reason: "Lifetime expired",
+          } as const;
+          const cancelling = router.control(command);
+          const prepare = await waitForUpstreamPayload(
+            spawn.supervisorToChild,
+            "cancel.prepare",
+          );
+          await childSender.send({
+            type: "cancel.prepared",
+            data: { requestId: prepare.data.requestId },
+          });
+          await cancelling;
+          // The Hub resends cancel on each sweep until the run is terminal;
+          // the resend must not sign another CancelRequested.
+          await router.control({ ...command, requestId: "cancel-resend" });
+          expect(
+            readPayloadsOfType(
+              spawn.supervisorToChild.flushed(),
+              "cancel.prepare",
+            ),
+          ).toHaveLength(1);
+        }
         await undeploy({
           type: "agent.undeploy",
           agentAddress: frame.agentAddress,
