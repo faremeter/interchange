@@ -1,7 +1,7 @@
 {
   "name": "@intx/example-workflow-quickstart",
   "description": "Example: author and ship a @intx/workflow workflow — a loop whose body calls a tool, then an action",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "license": "LGPL-2.1-only",
   "private": true,
   "type": "module",
