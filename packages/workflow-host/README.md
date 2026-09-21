@@ -147,7 +147,9 @@ stated reason; the supervisor wraps it into the same supervisor-
 signed shape as the operator and drain origins.
 
 `shutdown()` unregisters the mail address, kills the child, and
-disposes subscriptions.
+disposes subscriptions. Concurrent callers await the same teardown through
+confirmed child exit, including a replacement still awaiting readiness.
+A replacement cannot spawn once shutdown begins.
 
 `drain(opts)` sends the drain control mail and waits for in-flight
 runs to drain per each step's `drainBehavior`; on the drain-timeout it
