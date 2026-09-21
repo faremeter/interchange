@@ -29,6 +29,7 @@ import {
   sidecarAllocation,
   workflowRun,
   workflowRunDispatch,
+  unresolvedWorkflowRunDispatchStatuses,
 } from "./schema";
 
 type DBHandle = DB["db"];
@@ -432,7 +433,9 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
           and(
             eq(workflowRunDispatch.anchorRunId, anchorRunId),
             eq(workflowRunDispatch.messageId, messageId),
-            inArray(workflowRunDispatch.status, ["pending", "acknowledged"]),
+            inArray(workflowRunDispatch.status, [
+              ...unresolvedWorkflowRunDispatchStatuses,
+            ]),
           ),
         )
         .returning();
@@ -460,7 +463,9 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
           and(
             eq(workflowRunDispatch.anchorRunId, args.anchorRunId),
             eq(workflowRunDispatch.messageId, args.messageId),
-            inArray(workflowRunDispatch.status, ["pending", "acknowledged"]),
+            inArray(workflowRunDispatch.status, [
+              ...unresolvedWorkflowRunDispatchStatuses,
+            ]),
           ),
         )
         .returning();
@@ -469,7 +474,12 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
         : parseWorkflowRunDispatchRow(updated);
     },
 
-    async failUnsettled(
+    /**
+     * End attempts alongside the run/allocation transition that fences socket
+     * delivery. An abandoned row's `nextAttemptAt` marks it as owed an evidence
+     * scan; delivery never claims it, since claims require `pending`.
+     */
+    async abandonUnsettled(
       anchorRunId: string,
       code: string,
       message: string,
@@ -479,8 +489,8 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
       const rows = await (tx ?? db)
         .update(workflowRunDispatch)
         .set({
-          status: "failed",
-          nextAttemptAt: null,
+          status: "abandoned",
+          nextAttemptAt: now,
           deliveryLeaseId: null,
           deliveryLeaseExpiresAt: null,
           failureCode: code,
@@ -498,6 +508,7 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
     },
 
     async requeueUnsettled(anchorRunId: string): Promise<number> {
+      // Abandonment ends delivery attempts even if this allocation reconnects.
       const rows = await db
         .update(workflowRunDispatch)
         .set({
@@ -528,6 +539,27 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
       return row === undefined ? null : parseWorkflowRunDispatchRow(row);
     },
 
+    /** Stop scanning abandoned rows once their deployment's history is final. */
+    async concludeAbandonedScans(
+      anchorRunId: string,
+      messageIds: readonly string[],
+      now = new Date(),
+    ): Promise<number> {
+      if (messageIds.length === 0) return 0;
+      const rows = await db
+        .update(workflowRunDispatch)
+        .set({ nextAttemptAt: null, updatedAt: now })
+        .where(
+          and(
+            eq(workflowRunDispatch.anchorRunId, anchorRunId),
+            eq(workflowRunDispatch.status, "abandoned"),
+            inArray(workflowRunDispatch.messageId, [...messageIds]),
+          ),
+        )
+        .returning({ id: workflowRunDispatch.id });
+      return rows.length;
+    },
+
     async listUnsettled(anchorRunId: string): Promise<ParsedDispatch[]> {
       const rows = await db
         .select()
@@ -535,7 +567,9 @@ export function createWorkflowRunDispatchStore(db: DBHandle) {
         .where(
           and(
             eq(workflowRunDispatch.anchorRunId, anchorRunId),
-            inArray(workflowRunDispatch.status, ["pending", "acknowledged"]),
+            inArray(workflowRunDispatch.status, [
+              ...unresolvedWorkflowRunDispatchStatuses,
+            ]),
           ),
         )
         .orderBy(asc(workflowRunDispatch.createdAt));

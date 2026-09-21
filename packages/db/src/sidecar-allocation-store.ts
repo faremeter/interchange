@@ -952,7 +952,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
         if (releasing === null) return null;
 
         await failRunningRuns(tx, releasing.anchorRunId, now);
-        await workflowRunDispatchStore.failUnsettled(
+        await workflowRunDispatchStore.abandonUnsettled(
           releasing.anchorRunId,
           args.failureCode,
           args.failureMessage,
@@ -966,27 +966,39 @@ export function createSidecarAllocationStore(db: DBHandle) {
     async markReleased(
       args: MarkSidecarReleasedArgs,
     ): Promise<SidecarAllocation | null> {
-      const [updated] = await db
-        .update(sidecarAllocation)
-        .set({
-          status: "released",
-          nextAttemptAt: null,
-          reconciliationLeaseId: null,
-          reconciliationLeaseExpiresAt: null,
-          connectDeadline: null,
-          destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1`,
-          updatedAt: databaseTimestamp(args.now),
-        })
-        .where(
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, "releasing"),
-            eq(sidecarAllocation.generation, args.generation),
-            ...leaseCondition(args.expectedLeaseId),
-          ),
-        )
-        .returning();
-      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+      const now = databaseTimestamp(args.now);
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            status: "released",
+            nextAttemptAt: null,
+            reconciliationLeaseId: null,
+            reconciliationLeaseExpiresAt: null,
+            connectDeadline: null,
+            destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, "releasing"),
+              eq(sidecarAllocation.generation, args.generation),
+              ...leaseCondition(args.expectedLeaseId),
+            ),
+          )
+          .returning();
+        if (updated === undefined) return null;
+
+        await workflowRunDispatchStore.abandonUnsettled(
+          updated.anchorRunId,
+          "workflow_capacity_released",
+          "Workflow capacity was released before delivery could be confirmed",
+          now,
+          tx,
+        );
+        return parseSidecarAllocationRow(updated);
+      });
     },
 
     async markDestroyFailed(
@@ -1019,7 +1031,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
         if (updated === undefined) return null;
 
         await failRunningRuns(tx, updated.anchorRunId, now);
-        await workflowRunDispatchStore.failUnsettled(
+        await workflowRunDispatchStore.abandonUnsettled(
           updated.anchorRunId,
           args.code,
           args.message,
@@ -1062,7 +1074,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
         if (updated === undefined) return null;
 
         await failRunningRuns(executor, updated.anchorRunId, now);
-        await workflowRunDispatchStore.failUnsettled(
+        await workflowRunDispatchStore.abandonUnsettled(
           updated.anchorRunId,
           args.code,
           args.message,

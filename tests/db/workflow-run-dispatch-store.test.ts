@@ -438,7 +438,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(await store.findById("dispatch-signal-rollback")).toBeNull();
     });
 
-    test("fails only unsettled dispatches when the stable run terminates", async () => {
+    test("abandons outstanding attempts without overwriting settled deliveries", async () => {
       const store = createWorkflowRunDispatchStore(h.db);
       await store.enqueue({
         id: "dispatch-already-consumed",
@@ -462,7 +462,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await store.settle(ANCHOR_RUN_ID, "message-consumed");
 
       await expect(
-        store.failUnsettled(
+        store.abandonUnsettled(
           ANCHOR_RUN_ID,
           "workflow_run_terminal",
           "run is terminal",
@@ -472,11 +472,88 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "settled",
       );
       expect(await store.findById("dispatch-too-late")).toMatchObject({
-        status: "failed",
+        status: "abandoned",
         failureCode: "workflow_run_terminal",
         failureMessage: "run is terminal",
-        nextAttemptAt: null,
       });
+      expect(
+        (await store.findById("dispatch-too-late"))?.nextAttemptAt,
+      ).not.toBeNull();
+    });
+
+    test("abandonment cannot be retried, but can be resolved by acceptance or rejection", async () => {
+      const store = createWorkflowRunDispatchStore(h.db);
+      await seedAllocatedSidecar(1);
+      for (const id of ["accepted", "rejected", "unknown"]) {
+        await store.enqueue({
+          id,
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: id,
+          senderAddress: SENDER_ADDRESS,
+          rawMessage: new Uint8Array([1]),
+          stepGrants: [],
+        });
+      }
+      await store.fail({
+        anchorRunId: ANCHOR_RUN_ID,
+        messageId: "rejected",
+        code: "invalid_mail",
+        message: "Recorded rejection",
+      });
+      expect(
+        await store.abandonUnsettled(
+          ANCHOR_RUN_ID,
+          "workflow_cancelled",
+          "Stopped",
+        ),
+      ).toBe(2);
+      expect(
+        await store.abandonUnsettled(ANCHOR_RUN_ID, "another_reason", "Retry"),
+      ).toBe(0);
+      expect(
+        await store.acknowledge({
+          allocationId: "allocation-ack",
+          anchorRunId: ANCHOR_RUN_ID,
+          generation: 1,
+          messageId: "accepted",
+        }),
+      ).toBeNull();
+      expect(await store.requeueUnsettled(ANCHOR_RUN_ID)).toBe(0);
+      expect(
+        await store.claimNextPending({
+          leaseId: "after-abandonment",
+          leaseDurationMs: 60_000,
+        }),
+      ).toBeNull();
+      expect(
+        (await store.listUnsettled(ANCHOR_RUN_ID)).map((row) => row.status),
+      ).toEqual(["abandoned", "abandoned"]);
+      expect(await store.findById("unknown")).toMatchObject({
+        status: "abandoned",
+        failureCode: "workflow_cancelled",
+      });
+      expect((await store.settle(ANCHOR_RUN_ID, "accepted"))?.status).toBe(
+        "settled",
+      );
+      expect(await store.settle(ANCHOR_RUN_ID, "rejected")).toBeNull();
+      expect(
+        (
+          await store.fail({
+            anchorRunId: ANCHOR_RUN_ID,
+            messageId: "unknown",
+            code: "invalid_mail",
+            message: "Later recorded rejection",
+          })
+        )?.status,
+      ).toBe("failed");
+      expect(
+        await store.fail({
+          anchorRunId: ANCHOR_RUN_ID,
+          messageId: "accepted",
+          code: "workflow_cancelled",
+          message: "Must not overwrite acceptance",
+        }),
+      ).toBeNull();
     });
 
     test("rejects a live mail dispatch with no sender", async () => {
