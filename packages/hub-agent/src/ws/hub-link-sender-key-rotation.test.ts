@@ -146,6 +146,7 @@ function startRotationServer(
   }
 
   const router = createSidecarRouter({
+    withExecutableWorkflowRun: async (_target, send) => send(),
     authenticateSidecar: async ({ sidecarId }) => ensureIdentity(sidecarId),
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),

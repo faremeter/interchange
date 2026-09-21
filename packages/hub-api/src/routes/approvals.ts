@@ -384,7 +384,7 @@ export async function resolveApproval(
     return { kind: "resolved", approval: claimed.resolved };
   }
 
-  sidecarRouter.sendSignalDeliver({
+  await sidecarRouter.sendSignalDeliver({
     agentAddress: claimed.claim.agentAddress,
     runId: claimed.claim.runId,
     signalName: signalName(approval.correlationId),

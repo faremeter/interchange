@@ -473,7 +473,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // then sever the link in the same tick so the ack -- which fires only after
     // the async durable write -- never round-trips.
     const base64 = base64Encode(raw);
-    const delivered = env.hub.router.routeMail(
+    const delivered = await env.hub.router.routeMail(
       ctx.deploymentMailAddress,
       base64,
       EDGE_SENDER,
@@ -675,7 +675,11 @@ async function routeRaw(
   // The stamped sender matches the From these messages carry, because the cases
   // under test are Message-Id parsing. Admission rejects a From that disagrees
   // with the authenticated sender before the parser under test sees the bytes.
-  const delivered = env.hub.router.routeMail(address, base64, EDGE_SENDER);
+  const delivered = await env.hub.router.routeMail(
+    address,
+    base64,
+    EDGE_SENDER,
+  );
   if (!delivered) {
     throw new Error(
       `routeRaw: routeMail returned false for ${address}; address is not routable on the hub`,
