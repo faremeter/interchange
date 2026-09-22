@@ -2003,15 +2003,44 @@ export type RetryPolicy = (
 ) => RetryDecision | Promise<RetryDecision>;
 
 /**
+ * Provider-neutral reasoning effort. No provider accepts every name as a
+ * wire value, so each adapter maps the name onto what its model accepts.
+ * There is no "off": `thinking.enabled: false` already says that.
+ *
+ * (INFERENCE.md § Thinking and Reasoning)
+ */
+export const InferenceEffort = type.enumerated("low", "medium", "high", "max");
+export type InferenceEffort = typeof InferenceEffort.infer;
+
+/**
+ * The subset of `InferenceOptions` a caller may set for a single send (a
+ * workflow step's resolved `inference` selector). Excludes anything that
+ * displaces the deployed agent definition (`systemPrompt`, `tools`,
+ * `providerOptions`).
+ */
+export const PerCallInferenceOptions = type({
+  "+": "reject",
+  "maxTokens?": "number.integer > 0",
+  "temperature?": "number >= 0",
+  "thinking?": {
+    "+": "reject",
+    enabled: "boolean",
+    "budgetTokens?": "number.integer > 0",
+  },
+  // Reasoning intent. Effort and `thinking.budgetTokens` are two spellings
+  // of one intent; each adapter resolves them to the field its model
+  // accepts. When omitted the provider default applies.
+  "effort?": InferenceEffort,
+});
+export type PerCallInferenceOptions = typeof PerCallInferenceOptions.infer;
+
+/**
  * Options for a single inference call. Override the defaults from the agent
  * configuration on a per-call basis.
  *
  * (INFERENCE.md § Providers › Streaming Harness)
  */
-export type InferenceOptions = {
-  maxTokens?: number;
-  temperature?: number;
-  thinking?: { enabled: boolean; budgetTokens?: number };
+export type InferenceOptions = PerCallInferenceOptions & {
   systemPrompt?: string;
   tools?: ToolDefinition[];
   /**
