@@ -1318,11 +1318,11 @@ Source: packages/types/src/catalog.ts
 **quirks**: Opaque per-deployment adapter accommodations for this offering; the adapter factory validates the provider-specific shape. Omit when the deployment needs none.
 
 ### CreateModelProvider
-`{ baseURL: string, name: string, plugin: "anthropic" | "google-genai" | "openai" | "openai-compatible", credentialId?: string | null, walletId?: string | null }`
+`{ baseURL: string, name: string, plugin: string >= 1, credentialId?: string | null, walletId?: string | null }`
 Source: packages/types/src/catalog.ts
 
 **name**: Tenant-unique model-provider name.
-**plugin**: The inference adapter that serves this provider's models, dispatched by the runtime provider registry.
+**plugin**: The inference adapter that serves this provider's models, dispatched by the runtime provider registry: a built-in key or one registered in the sidecar's adapter manifest.
 
 ### CreateOAuthClient
 `{ clientId: string, clientSecret: string, name: string, providerId: string, defaultScopes?: string[], metadata?: { [string]: unknown }, redirectUris?: string[] }`
@@ -1436,7 +1436,7 @@ Source: packages/types/src/observability.ts
 Source: packages/types/src/observability.ts
 
 ### ModelInfo
-`{ canonicalName: string, id: string, offerings: { capabilities: ("audio-input" | "audio-input-streaming" | "code-execution" | "code-execution-streaming" | "document-input" | "document-input-streaming" | "files-api-reference" | "files-api-reference-streaming" | "function-calling" | "function-calling-multi-turn" | "function-calling-multi-turn-streaming" | "function-calling-with-thinking" | "function-calling-with-thinking-streaming" | "grounding" | "grounding-streaming" | "image-output" | "image-output-streaming" | "long-context" | "plain-text" | "plain-text-streaming" | "prompt-caching" | "reasoning-content" | "reasoning-content-streaming" | "redacted-thinking" | "redacted-thinking-streaming" | "structured-output" | "structured-output-streaming" | "video-input" | "video-input-streaming" | "vision-input" | "vision-input-streaming")[], deploymentTags: string[], offeringId: string, plugin: "anthropic" | "google-genai" | "openai" | "openai-compatible", pricing: { createdAt: string, currency: string, effectiveFrom: string, id: string, offeringId: string, tenantId: string, cacheReadTokenPrice?: string | null, cacheWriteTokenPrice?: string | null, inputTokenPrice?: string | null, outputTokenPrice?: string | null, perAudioFee?: string | null, perImageFee?: string | null, perRequestFee?: string | null, thinkingTokenPrice?: string | null }[], priority: number, providerId: string, providerName: string }[], description?: string | null, displayName?: string | null }`
+`{ canonicalName: string, id: string, offerings: { capabilities: ("audio-input" | "audio-input-streaming" | "code-execution" | "code-execution-streaming" | "document-input" | "document-input-streaming" | "files-api-reference" | "files-api-reference-streaming" | "function-calling" | "function-calling-multi-turn" | "function-calling-multi-turn-streaming" | "function-calling-with-thinking" | "function-calling-with-thinking-streaming" | "grounding" | "grounding-streaming" | "image-output" | "image-output-streaming" | "long-context" | "plain-text" | "plain-text-streaming" | "prompt-caching" | "reasoning-content" | "reasoning-content-streaming" | "redacted-thinking" | "redacted-thinking-streaming" | "structured-output" | "structured-output-streaming" | "video-input" | "video-input-streaming" | "vision-input" | "vision-input-streaming")[], deploymentTags: string[], offeringId: string, plugin: string >= 1, pricing: { createdAt: string, currency: string, effectiveFrom: string, id: string, offeringId: string, tenantId: string, cacheReadTokenPrice?: string | null, cacheWriteTokenPrice?: string | null, inputTokenPrice?: string | null, outputTokenPrice?: string | null, perAudioFee?: string | null, perImageFee?: string | null, perRequestFee?: string | null, thinkingTokenPrice?: string | null }[], priority: number, providerId: string, providerName: string }[], description?: string | null, displayName?: string | null }`
 Source: packages/types/src/models.ts
 
 **canonicalName**: The model's tenant-unique canonical name, matched against an agent's model requirements.
@@ -1451,10 +1451,10 @@ Source: packages/types/src/catalog.ts
 **quirks**: Opaque per-deployment adapter accommodations, or null when the deployment needs none.
 
 ### ModelProviderResponse
-`{ baseURL: string, createdAt: string, disabled: boolean, id: string, name: string, plugin: "anthropic" | "google-genai" | "openai" | "openai-compatible", tenantId: string, updatedAt: string, credentialId?: string | null, walletId?: string | null }`
+`{ baseURL: string, createdAt: string, disabled: boolean, id: string, name: string, plugin: string >= 1, tenantId: string, updatedAt: string, credentialId?: string | null, walletId?: string | null }`
 Source: packages/types/src/catalog.ts
 
-**plugin**: The inference adapter that serves this provider's models, dispatched by the runtime provider registry.
+**plugin**: The inference adapter that serves this provider's models, dispatched by the runtime provider registry: a built-in key or one registered in the sidecar's adapter manifest.
 
 ### ModelResponse
 `{ canonicalName: string, createdAt: string, disabled: boolean, id: string, tenantId: string, updatedAt: string, description?: string | null, displayName?: string | null }`

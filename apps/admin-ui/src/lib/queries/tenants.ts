@@ -917,7 +917,7 @@ export type CatalogModelProviderResponse = {
   id: string;
   tenantId: string;
   name: string;
-  plugin: ModelProviderPluginValue;
+  plugin: string;
   baseURL: string;
   credentialId: string | null;
   walletId: string | null;
