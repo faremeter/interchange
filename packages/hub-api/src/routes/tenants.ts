@@ -287,6 +287,7 @@ export function createTenantRoutes({
           eq(principal.tenantId, tenantId),
           eq(principal.kind, "user"),
           eq(principal.refId, user.id),
+          eq(principal.status, "active"),
         ),
       });
       if (!membership) {
