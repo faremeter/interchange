@@ -224,12 +224,21 @@ Where it lives today: `StepInvokeResult`,
 **17.** A step's `inference` selector resolves beside `input` into per-call
 options for that step's model call: `maxTokens`, `temperature`,
 `thinking: { enabled, budgetTokens }`, and `effort`
-(`low | medium | high | max`). `null` or `undefined` means the agent's
-defaults. A non-object, or any other key (`systemPrompt`, `tools`,
-`providerOptions`, ...), fails the step as a selector error: a run may not
-displace the definition approved at deploy time. The options ride that send
-alone, are not recorded on `StepStarted`, and sit beneath any option the
-director names outright.
+(`low | medium | high | max`). Each provider adapter maps `effort` onto what
+its model accepts (see `docs/INFERENCE.md`, Thinking and Reasoning). Where a
+model has no place for it -- thinking set off on classic Anthropic or Gemini,
+the Gemini image models, gpt-5.6 Chat Completions with tools -- the adapter
+drops it with a warning and the step does not fail. When the thinking budget
+an effort maps to does not fit under the output cap, the adapter refuses the
+request before it reaches the provider, the same as a provider rejecting it:
+the agent fails over to no other source, answers with an error reply, and the
+step completes with that reply as its output. On classic Anthropic, where the
+cap is 4096 unless set, an effort above `low` needs an explicit `maxTokens`.
+`null` or `undefined` means the agent's defaults. A non-object, or any other
+key (`systemPrompt`, `tools`, `providerOptions`, ...), fails the step as a
+selector error: a run may not displace the definition approved at deploy
+time. The options ride that send alone, are not recorded on `StepStarted`,
+and sit beneath any option the director names outright.
 
 Where it lives today: `resolveStepInference`,
 `packages/workflow/src/runtime/selectors.ts`; `mergeInferenceOptions`,

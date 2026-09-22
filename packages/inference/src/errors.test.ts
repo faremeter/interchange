@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import {
   classifyHTTPError,
   classifyNetworkError,
+  classifyRequestBuildError,
   classifyAbortError,
   classifyStreamError,
   classifyProtocolMismatch,
@@ -79,6 +80,16 @@ describe("classifyNetworkError", () => {
     const err = classifyNetworkError("network timeout");
     expect(err.category).toBe("retryable");
     expect(err.message).toBe("network timeout");
+  });
+});
+
+describe("classifyRequestBuildError", () => {
+  test("Error instance → fatal with message", () => {
+    const cause = new Error("set maxTokens above 8192.");
+    const err = classifyRequestBuildError(cause);
+    expect(err.category).toBe("fatal");
+    expect(err.message).toBe("set maxTokens above 8192.");
+    expect(err.raw).toBe(cause);
   });
 });
 

@@ -6341,23 +6341,27 @@ describe("createReactor — source failover", () => {
     expect(getEvent(events, "inference.done").data.source.sourceId).toBe("s1");
   });
 
-  test("does not fail over on a source-invariant error", async () => {
-    const { reactor, events, waitFor, attemptedSourceIds } = multiSourceReactor(
-      {
-        sourceIds: ["s0", "s1"],
-        resultFor: () => ({ category: "context_overflow", message: "too big" }),
-      },
-    );
-    reactor.start();
-    reactor.deliver(makeInboundMessage());
-    await waitFor("reactor.done");
+  // `fatal` covers a provider's 400 and an adapter's refusal to build the
+  // request alike.
+  test.each([["context_overflow"], ["fatal"]] as const)(
+    "does not fail over on a source-invariant %p error",
+    async (category) => {
+      const { reactor, events, waitFor, attemptedSourceIds } =
+        multiSourceReactor({
+          sourceIds: ["s0", "s1"],
+          resultFor: () => ({ category, message: "refused" }),
+        });
+      reactor.start();
+      reactor.deliver(makeInboundMessage());
+      await waitFor("reactor.done");
 
-    // context_overflow aborts the cycle; s1 is never tried.
-    expect(attemptedSourceIds).toEqual(["s0"]);
-    expect(getEvent(events, "inference.error").data.error.category).toBe(
-      "context_overflow",
-    );
-  });
+      // The error aborts the cycle; s1 is never tried.
+      expect(attemptedSourceIds).toEqual(["s0"]);
+      expect(getEvent(events, "inference.error").data.error.category).toBe(
+        category,
+      );
+    },
+  );
 
   test("surfaces the last error when every source is exhausted", async () => {
     const { reactor, events, waitFor, attemptedSourceIds } = multiSourceReactor(

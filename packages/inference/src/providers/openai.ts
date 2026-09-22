@@ -4,6 +4,7 @@ import type { InferenceEvent } from "@intx/types/inference-events";
 import type {
   ConversationTurn,
   ContentBlock,
+  InferenceEffort,
   InferenceOptions,
   LastCycleSource,
   PartialMessage,
@@ -12,6 +13,7 @@ import type {
 import { formatSafetyRatingText } from "@intx/types/format-safety-rating";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { BEARER_CREDENTIAL_SENTINEL } from "../auth";
+import { warnDroppedOption } from "../effort";
 import { ProtocolMismatchError } from "../errors";
 import {
   decodeToolName,
@@ -46,6 +48,11 @@ export const OpenAIQuirks = type({
   // through the same adapter (e.g. OpenCode Zen) still take `max_tokens`.
   // Defaults to `max_tokens` so every existing deployment is unchanged.
   "maxTokensField?": "'max_tokens' | 'max_completion_tokens'",
+  // The reasoning_effort value that an effort of "max" sends. Models differ:
+  // gpt-5.2 through gpt-5.5 top out at "xhigh", gpt-5.6-sol accepts "max",
+  // and older models accept neither. Absent, "max" sends "high", the highest
+  // value every reasoning model accepts, and the adapter warns.
+  "maxEffort?": "'xhigh' | 'max'",
   // Reject unknown keys so a mistyped quirk name fails loudly at construction
   // rather than being silently ignored and running with default behavior.
   "+": "reject",
@@ -65,11 +72,30 @@ type ResolvedOpenAIQuirks = {
   forceAssistantReasoningContent: boolean;
   reasoningFieldNames: readonly ReasoningField[];
   maxTokensField: "max_tokens" | "max_completion_tokens";
+  maxEffort: "xhigh" | "max" | null;
 };
 
 // ---------------------------------------------------------------------------
 // Request building
 // ---------------------------------------------------------------------------
+
+// low, medium, and high are reasoning_effort values every OpenAI reasoning
+// model accepts, so they pass as given. "max" names the highest level, which
+// is a per-model value the deployment supplies through the maxEffort quirk.
+function toReasoningEffort(
+  model: string,
+  effort: InferenceEffort,
+  maxEffort: "xhigh" | "max" | null,
+): string {
+  if (effort !== "max") return effort;
+  if (maxEffort !== null) return maxEffort;
+  warnDroppedOption(
+    model,
+    `effort "max"`,
+    'no maxEffort quirk on this source, so it sends "high"',
+  );
+  return "high";
+}
 
 function buildRequest(
   messages: ConversationTurn[],
@@ -92,6 +118,25 @@ function buildRequest(
     body["temperature"] = options.temperature;
   }
 
+  const hasTools = options.tools !== undefined && options.tools.length > 0;
+  // gpt-5.6 Chat Completions rejects function tools unless
+  // reasoning_effort is explicitly "none" (reasoned tool use is on
+  // the Responses API). Keep this list aligned with the discovery
+  // protocol builder's TOOL_CALL_REASONING_NONE_MODELS set.
+  const forceNoReasoning =
+    hasTools &&
+    (model === "gpt-5.6-sol" ||
+      model === "gpt-5.6-terra" ||
+      model === "gpt-5.6-luna");
+
+  if (options.effort !== undefined && !forceNoReasoning) {
+    body["reasoning_effort"] = toReasoningEffort(
+      model,
+      options.effort,
+      quirks.maxEffort,
+    );
+  }
+
   if (options.tools !== undefined && options.tools.length > 0) {
     body["tools"] = options.tools.map((t) => ({
       type: "function",
@@ -101,17 +146,19 @@ function buildRequest(
         parameters: t.inputSchema,
       },
     }));
-    // gpt-5.6 Chat Completions rejects function tools unless
-    // reasoning_effort is explicitly "none" (reasoned tool use is on
-    // the Responses API). Keep this list aligned with the discovery
-    // protocol builder's TOOL_CALL_REASONING_NONE_MODELS set.
-    if (
-      model === "gpt-5.6-sol" ||
-      model === "gpt-5.6-terra" ||
-      model === "gpt-5.6-luna"
-    ) {
-      body["reasoning_effort"] = "none";
+  }
+
+  // Set after the tools, in the key order of the discovery protocol
+  // builder's captured bodies.
+  if (forceNoReasoning) {
+    if (options.effort !== undefined) {
+      warnDroppedOption(
+        model,
+        `effort "${options.effort}"`,
+        "gpt-5.6 Chat Completions tool calls require reasoning_effort none",
+      );
     }
+    body["reasoning_effort"] = "none";
   }
 
   if (options.systemPrompt) {
@@ -1075,6 +1122,7 @@ export function createOpenAIAdapter(
     reasoningFieldNames:
       parsedQuirks.reasoningFieldNames ?? DEFAULT_REASONING_FIELDS,
     maxTokensField: parsedQuirks.maxTokensField ?? "max_tokens",
+    maxEffort: parsedQuirks.maxEffort ?? null,
   };
 
   // Per-request indexer state. Adapter instances are created per

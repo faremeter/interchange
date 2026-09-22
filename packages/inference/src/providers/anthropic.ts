@@ -14,6 +14,12 @@ import { CitationBlock as CitationBlockType } from "@intx/types/runtime-core";
 import { formatSafetyRatingText } from "@intx/types/format-safety-rating";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
+import {
+  EFFORT_THINKING_BUDGET,
+  budgetSource,
+  rejectBudgetOverCap,
+  warnDroppedOption,
+} from "../effort";
 import { ProtocolMismatchError } from "../errors";
 import {
   decodeToolName,
@@ -43,13 +49,16 @@ export const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
   "claude-sonnet-4-6",
 ]);
 
-// The effort this adapter sends on the adaptive-thinking wire in production.
-// "high" is the Anthropic API default. The discovery capture rig deliberately
-// sends "max" instead: only "max" reliably elicits a thinking block to capture,
-// so the production default and the capture value are an intentional pair, not
-// drift. ADAPTIVE_THINKING_MODELS above must match across the two layers; the
-// effort values, by contrast, are meant to differ. A guard test in the
-// discovery package checks both effort values.
+// The effort this adapter sends on the adaptive-thinking wire when thinking
+// is on and the call names no effort. "high" is the Anthropic API default for
+// every model in ADAPTIVE_THINKING_MODELS; a model whose API default differs
+// (some default to "medium") must not join that set without revisiting this.
+// The discovery capture rig deliberately sends "max" instead: only "max"
+// reliably elicits a thinking block to capture, so the production default and
+// the capture value are an intentional pair, not drift. The model set above
+// (ADAPTIVE_THINKING_MODELS) must match across the two layers; the effort
+// values, by contrast, are meant to differ. A guard test in the discovery
+// package checks both effort values.
 export const ADAPTIVE_THINKING_EFFORT = "high";
 
 // ---------------------------------------------------------------------------
@@ -77,9 +86,10 @@ function buildRequest(
     ? options.systemPrompt
     : systemText || undefined;
 
+  const maxTokens = options.maxTokens ?? 4096;
   const body: Record<string, unknown> = {
     model,
-    max_tokens: options.maxTokens ?? 4096,
+    max_tokens: maxTokens,
     messages: conversationMessages.map((msg, i) => {
       // Place a cache breakpoint on the last user message so all prior
       // turns are cached on the next request.
@@ -101,20 +111,7 @@ function buildRequest(
     ];
   }
 
-  if (options.thinking?.enabled) {
-    // Adaptive models reject the classic budget_tokens shape with
-    // invalid_request_error and require thinking:{type:"adaptive"}
-    // plus output_config.effort.
-    if (ADAPTIVE_THINKING_MODELS.has(model)) {
-      body["thinking"] = { type: "adaptive" };
-      body["output_config"] = { effort: ADAPTIVE_THINKING_EFFORT };
-    } else {
-      body["thinking"] = {
-        type: "enabled",
-        budget_tokens: options.thinking.budgetTokens ?? 1024,
-      };
-    }
-  }
+  applyReasoning(body, model, options, maxTokens);
 
   if (options.tools !== undefined && options.tools.length > 0) {
     const tools: Record<string, unknown>[] = options.tools.map((t) => ({
@@ -142,6 +139,70 @@ function buildRequest(
     },
     body: JSON.stringify(body),
   };
+}
+
+// Effort and thinking.budgetTokens are two spellings of one intent, so an
+// effort with no thinking setting turns thinking on. Adaptive models take the
+// effort name on output_config.effort, with or without thinking; classic
+// models take it as a thinking budget. An explicit thinking.enabled: false
+// wins over an effort on a classic model, where effort has no other field.
+function applyReasoning(
+  body: Record<string, unknown>,
+  model: string,
+  options: InferenceOptions,
+  maxTokens: number,
+): void {
+  const { effort, thinking } = options;
+  const effortSet = effort !== undefined;
+  const thinkingOn = thinking?.enabled ?? effortSet;
+
+  // Adaptive models reject the classic budget_tokens shape with
+  // invalid_request_error and require thinking:{type:"adaptive"}.
+  if (ADAPTIVE_THINKING_MODELS.has(model)) {
+    if (thinkingOn) {
+      body["thinking"] = { type: "adaptive" };
+    }
+    if (effort !== undefined) {
+      body["output_config"] = { effort };
+    } else if (thinkingOn) {
+      body["output_config"] = { effort: ADAPTIVE_THINKING_EFFORT };
+    }
+    if (thinking?.budgetTokens !== undefined) {
+      warnDroppedOption(
+        model,
+        `thinking.budgetTokens ${thinking.budgetTokens}`,
+        "adaptive Anthropic takes effort, not a thinking budget",
+      );
+    }
+    return;
+  }
+
+  if (!thinkingOn) {
+    if (effort !== undefined) {
+      warnDroppedOption(
+        model,
+        `effort "${effort}"`,
+        "classic Anthropic carries effort only as a thinking budget, and thinking is off",
+      );
+    }
+    return;
+  }
+
+  let budget = 1024;
+  if (thinking?.budgetTokens !== undefined) {
+    budget = thinking.budgetTokens;
+  } else if (effort !== undefined) {
+    budget = EFFORT_THINKING_BUDGET[effort];
+  }
+  if (effort !== undefined) {
+    rejectBudgetOverCap(
+      model,
+      budgetSource(effort, thinking?.budgetTokens),
+      budget,
+      maxTokens,
+    );
+  }
+  body["thinking"] = { type: "enabled", budget_tokens: budget };
 }
 
 // Anthropic's Messages API has no native structured-outputs surface.

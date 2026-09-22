@@ -10,6 +10,7 @@ import { createAnthropicAdapter } from "@intx/inference/providers";
 import type {
   ConversationTurn,
   InferenceEvent,
+  InferenceOptions,
   LastCycleSource,
 } from "@intx/types/runtime";
 
@@ -240,6 +241,116 @@ describe("Anthropic adapter: buildRequest", () => {
       expect(body.thinking).not.toHaveProperty("budget_tokens");
       expect(body.output_config).toEqual({ effort: "high" });
     }
+  });
+
+  describe("per-call effort", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Think deeply." }],
+        timestamp: 1000,
+      },
+    ];
+    const build = (model: string, options: InferenceOptions) =>
+      AnthropicRequestBody.assert(
+        JSON.parse(adapter.buildRequest(messages, model, options).body),
+      );
+    const classic = "claude-haiku-4-5-20251001";
+
+    test.each([["low"], ["medium"], ["high"], ["max"]] as const)(
+      "adaptive models send effort %p as output_config.effort",
+      (effort) => {
+        const body = build("claude-opus-5", {
+          thinking: { enabled: true },
+          effort,
+        });
+        expect(body.thinking).toEqual({ type: "adaptive" });
+        expect(body.output_config).toEqual({ effort });
+      },
+    );
+
+    test("an effort with no thinking setting turns adaptive thinking on", () => {
+      const body = build("claude-opus-5", { effort: "medium" });
+      expect(body.thinking).toEqual({ type: "adaptive" });
+      expect(body.output_config).toEqual({ effort: "medium" });
+    });
+
+    test("adaptive models with thinking off still send the effort", () => {
+      const body = build("claude-opus-5", {
+        thinking: { enabled: false },
+        effort: "low",
+      });
+      expect(body).not.toHaveProperty("thinking");
+      expect(body.output_config).toEqual({ effort: "low" });
+    });
+
+    test.each([
+      ["low", 1024, 4096],
+      ["medium", 8192, 16384],
+      ["high", 24576, 32768],
+      ["max", 24576, 32768],
+    ] as const)(
+      "classic models map effort %p to a %p-token thinking budget",
+      (effort, budget, maxTokens) => {
+        const body = build(classic, { effort, maxTokens });
+        expect(body.thinking).toEqual({
+          type: "enabled",
+          budget_tokens: budget,
+        });
+        expect(body.max_tokens).toBe(maxTokens);
+        expect(body).not.toHaveProperty("output_config");
+      },
+    );
+
+    test("an explicit budgetTokens wins over the effort's budget", () => {
+      const body = build(classic, {
+        thinking: { enabled: true, budgetTokens: 2048 },
+        effort: "high",
+      });
+      expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+    });
+
+    test("an effort whose budget does not fit the default cap throws", () => {
+      expect(() => build(classic, { effort: "medium" })).toThrow(
+        `effort "medium" on model ${classic} needs a thinking budget of ` +
+          "8192 tokens, but maxTokens is 4096; set maxTokens above 8192.",
+      );
+    });
+
+    test("the cap check uses an explicit budgetTokens", () => {
+      expect(() =>
+        build(classic, {
+          thinking: { enabled: true, budgetTokens: 6000 },
+          effort: "low",
+          maxTokens: 5000,
+        }),
+      ).toThrow(
+        `thinking.budgetTokens on model ${classic} needs a thinking budget ` +
+          "of 6000 tokens, but maxTokens is 5000; set maxTokens above 6000.",
+      );
+    });
+
+    test("thinking off on a classic model sends no thinking", () => {
+      const body = build(classic, {
+        thinking: { enabled: false },
+        effort: "high",
+      });
+      expect(body).not.toHaveProperty("thinking");
+      expect(body).not.toHaveProperty("output_config");
+    });
+
+    test("unset effort leaves the request unchanged", () => {
+      expect(build("claude-opus-5", {})).not.toHaveProperty("thinking");
+      expect(build("claude-opus-5", {})).not.toHaveProperty("output_config");
+      expect(build(classic, {}).max_tokens).toBe(4096);
+      expect(build(classic, { thinking: { enabled: true } })).toMatchObject({
+        max_tokens: 4096,
+        thinking: { type: "enabled", budget_tokens: 1024 },
+      });
+      expect(
+        build("claude-opus-5", { thinking: { enabled: true } }).output_config,
+      ).toEqual({ effort: "high" });
+    });
   });
 
   test("echoes thinking block signature back in the request body", () => {

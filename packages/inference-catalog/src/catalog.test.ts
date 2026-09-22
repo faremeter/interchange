@@ -52,6 +52,25 @@ describe("catalog offering quirks", () => {
   }
 });
 
+describe("first-party OpenAI maxEffort", () => {
+  // The adapter sends an effort of "max" as this value, so a wrong value is
+  // a provider rejection on every such call. Models with no verified value
+  // above "high" carry none, so "max" falls back to "high".
+  const expected: Record<string, unknown> = {
+    "gpt-5.2": "xhigh",
+    "gpt-5.4": "xhigh",
+    "gpt-5.5": "xhigh",
+    "gpt-5.6-sol": "max",
+  };
+  const openai = catalogProviders.find((p) => p.name === "OpenAI Direct");
+  if (openai === undefined) throw new Error("OpenAI Direct is missing");
+  for (const offering of openai.offerings) {
+    test(`${offering.model} carries the expected maxEffort`, () => {
+      expect(offering.quirks["maxEffort"]).toBe(expected[offering.model]);
+    });
+  }
+});
+
 describe("catalog offering capabilities", () => {
   for (const provider of catalogProviders) {
     for (const offering of provider.offerings) {

@@ -13,6 +13,21 @@ export const OPENAI_FIRSTPARTY_QUIRKS: Record<string, unknown> = {
   maxTokensField: "max_completion_tokens",
 };
 
+// First-party offerings whose highest reasoning_effort is above "high". The
+// adapter sends an effort of "max" as the maxEffort value, so these name the
+// highest value each model accepts: gpt-5.2, gpt-5.4, and gpt-5.5 top out at
+// "xhigh", and gpt-5.6-sol accepts "max". The mini, nano, terra, and luna
+// variants are not verified to accept either value, so they carry no
+// maxEffort, and "max" sends "high" on them.
+export const OPENAI_FIRSTPARTY_XHIGH_QUIRKS: Record<string, unknown> = {
+  ...OPENAI_FIRSTPARTY_QUIRKS,
+  maxEffort: "xhigh",
+};
+export const OPENAI_FIRSTPARTY_MAX_QUIRKS: Record<string, unknown> = {
+  ...OPENAI_FIRSTPARTY_QUIRKS,
+  maxEffort: "max",
+};
+
 // The reasoning-bearing opencode-zen relay offerings — the kimi models plus
 // qwen, deepseek, glm, and mimo — advertise reasoning_content on the wire. The
 // OpenAI adapter no longer forces reasoning content by default, so
