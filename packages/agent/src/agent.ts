@@ -61,6 +61,7 @@ import type {
   ConversationTurn,
   InboundMessage,
   InferenceSource,
+  PerCallInferenceOptions,
   ReactorDirector,
   ToolCall,
   ToolDefinition,
@@ -114,6 +115,16 @@ export type SendOptions = {
   signal?: AbortSignal;
   /** Override the default "from" header on the synthetic inbound message. */
   from?: string;
+  /**
+   * Inference options for the model calls this send drives. Applies to this
+   * send alone; a key the director names outright still wins.
+   */
+  inference?: PerCallInferenceOptions;
+};
+
+type QueuedSend = {
+  message: InboundMessage;
+  inference: PerCallInferenceOptions | undefined;
 };
 
 export type SendResult =
@@ -477,7 +488,7 @@ export async function createAgent<EnvReq extends BaseEnv>(
     // the language allows; the comment block above is what makes
     // the "assigned before any reachable read" invariant explicit.
     // eslint-disable-next-line prefer-const -- forward declaration; const cannot express this ordering
-    let sendQueue: SendQueue<InboundMessage, SendResult>;
+    let sendQueue: SendQueue<QueuedSend, SendResult>;
 
     // shutdownComplete resolves from the assembly's onShutdown hook
     // (composed after audit flush by the assembly) or, as a fallback, from
@@ -717,11 +728,11 @@ export async function createAgent<EnvReq extends BaseEnv>(
       ...(env.compactors !== undefined ? { compactors: env.compactors } : {}),
     });
 
-    sendQueue = createSendQueue<InboundMessage, SendResult>({
+    sendQueue = createSendQueue<QueuedSend, SendResult>({
       maxDepth: env.sendQueueMax ?? DEFAULT_SEND_QUEUE_MAX,
-      start: (message) => {
+      start: ({ message, inference }) => {
         activeCycle = { lastAssistantTurn: undefined };
-        reactor.deliver(message);
+        reactor.deliver(message, inference !== undefined ? { inference } : {});
       },
     });
 
@@ -760,7 +771,10 @@ export async function createAgent<EnvReq extends BaseEnv>(
       // and per the design must fail loud.
       if (closed) return Promise.reject(new AgentClosedError());
       const message = buildInboundMessage(content, opts);
-      return sendQueue.enqueue(message, opts?.signal);
+      return sendQueue.enqueue(
+        { message, inference: opts?.inference },
+        opts?.signal,
+      );
     }
 
     function stream(): AsyncIterable<ReactorEmittedEvent> {
