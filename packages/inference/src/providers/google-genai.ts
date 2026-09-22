@@ -15,6 +15,12 @@ import type {
 import { formatSafetyRatingText } from "@intx/types/format-safety-rating";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
+import {
+  EFFORT_THINKING_BUDGET,
+  budgetSource,
+  rejectBudgetOverCap,
+  warnDroppedOption,
+} from "../effort";
 import { ProtocolMismatchError } from "../errors";
 import {
   decodeToolName,
@@ -35,6 +41,25 @@ const GOOGLE_TOOL_NAME_LIMIT: ToolNameLimit = {
 const THINKING_MANDATORY_MODELS: ReadonlySet<string> = new Set([
   "gemini-2.5-pro",
   "gemini-3.6-flash",
+]);
+
+// Gemini 3 models that take thinkingConfig.thinkingLevel, whose low, medium,
+// and high levels match the effort names. Google rejects a request that
+// carries both thinkingLevel and thinkingBudget with HTTP 400, so a level
+// model sends exactly one of them.
+const THINKING_LEVEL_MODELS: ReadonlySet<string> = new Set([
+  "gemini-3-flash-preview",
+  "gemini-3.1-pro-preview",
+  "gemini-3.5-flash",
+  "gemini-3.6-flash",
+]);
+
+// Image models with no thinking setting an effort name can map to:
+// gemini-3.1-flash-image accepts only the "minimal" and "high" levels, and
+// Google documents no thinking support on gemini-2.5-flash-image.
+const NO_EFFORT_MODELS: ReadonlySet<string> = new Set([
+  "gemini-2.5-flash-image",
+  "gemini-3.1-flash-image",
 ]);
 
 // Dynamic thinking budget sentinel: the model decides how much to
@@ -502,6 +527,74 @@ function tryParseJSONObject(text: string): Record<string, unknown> | null {
 // generationConfig
 // ---------------------------------------------------------------------------
 
+// thinking.enabled === true  -> ask Gemini to surface thought parts, with a
+//                                level on a level model that names an
+//                                effort, or a budget (from budgetTokens,
+//                                else the effort's budget, else 1024)
+// thinking.enabled === false -> suppress thoughts: budget 0 when the
+//                                model allows it, or dynamic (-1) for
+//                                thinking-mandatory models that reject
+//                                a zero budget with HTTP 400
+// thinking absent            -> an effort turns thinking on as above;
+//                                with no effort, omit thinkingConfig and
+//                                Gemini uses the model's default
+function buildThinkingConfig(
+  model: string,
+  options: InferenceOptions,
+): Record<string, unknown> | undefined {
+  const { thinking } = options;
+  const effort = NO_EFFORT_MODELS.has(model) ? undefined : options.effort;
+  if (options.effort !== undefined && effort === undefined) {
+    warnDroppedOption(
+      model,
+      `effort "${options.effort}"`,
+      "this model has no thinking setting an effort maps to",
+    );
+  }
+  const effortSet = effort !== undefined;
+  if (thinking === undefined && !effortSet) return undefined;
+
+  const thinkingOn = thinking?.enabled ?? effortSet;
+  if (!thinkingOn) {
+    if (effort !== undefined) {
+      warnDroppedOption(
+        model,
+        `effort "${effort}"`,
+        "Gemini carries effort only as a thinking setting, and thinking is off",
+      );
+    }
+    return { thinkingBudget: minimalThinkingBudget(model) };
+  }
+
+  if (
+    effort !== undefined &&
+    thinking?.budgetTokens === undefined &&
+    THINKING_LEVEL_MODELS.has(model)
+  ) {
+    // "high" is the top level, so "max" maps onto it.
+    const thinkingLevel = effort === "max" ? "high" : effort;
+    return { thinkingLevel, includeThoughts: true };
+  }
+
+  let budget = 1024;
+  if (thinking?.budgetTokens !== undefined) {
+    budget = thinking.budgetTokens;
+  } else if (effort !== undefined) {
+    budget = EFFORT_THINKING_BUDGET[effort];
+  }
+  // maxOutputTokens counts thought tokens and cuts the response off, so a
+  // budget at or above it leaves no room for the answer.
+  if (effort !== undefined && options.maxTokens !== undefined) {
+    rejectBudgetOverCap(
+      model,
+      budgetSource(effort, thinking?.budgetTokens),
+      budget,
+      options.maxTokens,
+    );
+  }
+  return { thinkingBudget: budget, includeThoughts: true };
+}
+
 function buildGenerationConfig(
   model: string,
   options: InferenceOptions,
@@ -515,26 +608,9 @@ function buildGenerationConfig(
     config["temperature"] = options.temperature;
   }
 
-  // thinking.enabled === true  -> include a budget (default 1024) and
-  //                                ask Gemini to surface thought parts
-  // thinking.enabled === false -> suppress thoughts: budget 0 when the
-  //                                model allows it, or dynamic (-1) for
-  //                                thinking-mandatory models that reject
-  //                                a zero budget with HTTP 400
-  // thinking absent            -> omit thinkingConfig entirely; Gemini
-  //                                uses the model's default
-  if (options.thinking !== undefined) {
-    if (options.thinking.enabled) {
-      const thinkingBudget = options.thinking.budgetTokens ?? 1024;
-      config["thinkingConfig"] = {
-        thinkingBudget,
-        includeThoughts: true,
-      };
-    } else {
-      config["thinkingConfig"] = {
-        thinkingBudget: minimalThinkingBudget(model),
-      };
-    }
+  const thinkingConfig = buildThinkingConfig(model, options);
+  if (thinkingConfig !== undefined) {
+    config["thinkingConfig"] = thinkingConfig;
   }
 
   if (

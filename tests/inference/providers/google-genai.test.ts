@@ -40,6 +40,7 @@ import type {
   ContentBlock,
   ConversationTurn,
   InferenceEvent,
+  InferenceOptions,
   InferenceSource,
   LastCycleSource,
 } from "@intx/types/runtime";
@@ -468,6 +469,87 @@ describe("Google GenAI adapter: tools and thinking", () => {
     expect(body.generationConfig).toEqual({
       maxOutputTokens: 256,
       temperature: 0.2,
+    });
+  });
+});
+
+describe("Google GenAI adapter: per-call effort", () => {
+  const messages: ConversationTurn[] = [
+    { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 0 },
+  ];
+  const generationConfig = (model: string, options: InferenceOptions) =>
+    parseBody(adapter.buildRequest(messages, model, options).body)
+      .generationConfig;
+
+  test.each([
+    ["low", 1024],
+    ["medium", 8192],
+    ["high", 24576],
+    ["max", 24576],
+  ] as const)(
+    "Gemini 2.5 maps effort %p to a %p-token thinking budget",
+    (effort, thinkingBudget) => {
+      expect(generationConfig("gemini-2.5-flash", { effort })).toEqual({
+        thinkingConfig: { thinkingBudget, includeThoughts: true },
+      });
+    },
+  );
+
+  test.each([
+    ["low", "low"],
+    ["medium", "medium"],
+    ["high", "high"],
+    ["max", "high"],
+  ] as const)(
+    "Gemini 3 maps effort %p to thinkingLevel %p and sends no budget",
+    (effort, thinkingLevel) => {
+      for (const model of [
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview",
+        "gemini-3.5-flash",
+        "gemini-3.6-flash",
+      ]) {
+        expect(generationConfig(model, { effort })).toEqual({
+          thinkingConfig: { thinkingLevel, includeThoughts: true },
+        });
+      }
+    },
+  );
+
+  test("an explicit budgetTokens wins over the effort on Gemini 3", () => {
+    expect(
+      generationConfig("gemini-3.6-flash", {
+        thinking: { enabled: true, budgetTokens: 2048 },
+        effort: "high",
+      }),
+    ).toEqual({
+      thinkingConfig: { thinkingBudget: 2048, includeThoughts: true },
+    });
+  });
+
+  test("thinking on with no effort keeps today's budget on Gemini 3", () => {
+    expect(
+      generationConfig("gemini-3.6-flash", { thinking: { enabled: true } }),
+    ).toEqual({
+      thinkingConfig: { thinkingBudget: 1024, includeThoughts: true },
+    });
+  });
+
+  test("an effort whose budget does not fit a set cap throws", () => {
+    expect(() =>
+      generationConfig("gemini-2.5-flash", {
+        effort: "medium",
+        maxTokens: 8192,
+      }),
+    ).toThrow(
+      'effort "medium" on model gemini-2.5-flash needs a thinking budget of ' +
+        "8192 tokens, but maxTokens is 8192; set maxTokens above 8192.",
+    );
+  });
+
+  test("an effort with no cap set sends no cap", () => {
+    expect(generationConfig("gemini-2.5-flash", { effort: "high" })).toEqual({
+      thinkingConfig: { thinkingBudget: 24576, includeThoughts: true },
     });
   });
 });

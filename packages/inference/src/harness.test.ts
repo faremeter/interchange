@@ -753,6 +753,47 @@ describe("runInference — source quirks reach the adapter registry", () => {
   });
 });
 
+describe("runInference — adapter request-build failure", () => {
+  test("is a fatal error and sends nothing", async () => {
+    let fetched = false;
+    const registry: AdapterRegistry = {
+      has: () => true,
+      resolve: () => ({
+        buildRequest: () => {
+          throw new Error("set maxTokens above 8192.");
+        },
+        parseResponse: () => [],
+        parseJSONResponse: () => [],
+      }),
+    };
+    let seq = 0;
+    const events = await collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: SOURCE,
+        nextSeq: () => ++seq,
+        deps: {
+          fetch: () => {
+            fetched = true;
+            return Promise.resolve(new Response(""));
+          },
+          scheduler: createDefaultScheduler(),
+          adapters: registry,
+        },
+      }),
+    );
+    const error = events.find((e) => e.type === "inference.error");
+    expect(error?.type === "inference.error" ? error.data.error : null).toEqual(
+      {
+        category: "fatal",
+        message: "set maxTokens above 8192.",
+        raw: expect.any(Error),
+      },
+    );
+    expect(fetched).toBe(false);
+  });
+});
+
 describe("runInference — non-streaming JSON responses", () => {
   const JSON_SOURCE: InferenceSource = {
     id: "test-json:model-x",

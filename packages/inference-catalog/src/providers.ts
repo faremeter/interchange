@@ -1,5 +1,10 @@
 import type { Capability } from "./capability";
-import { OPENAI_FIRSTPARTY_QUIRKS, OPENAI_REASONING_QUIRKS } from "./quirks";
+import {
+  OPENAI_FIRSTPARTY_MAX_QUIRKS,
+  OPENAI_FIRSTPARTY_QUIRKS,
+  OPENAI_FIRSTPARTY_XHIGH_QUIRKS,
+  OPENAI_REASONING_QUIRKS,
+} from "./quirks";
 
 export type CatalogPlugin =
   | "anthropic"
@@ -313,7 +318,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
         discoverySource: { provider: "openai", model: "gpt-5.5" },
         curatedCapabilities: [],
         capabilities: OPENAI_FIRSTPARTY_CAPABILITIES,
-        quirks: OPENAI_FIRSTPARTY_QUIRKS,
+        quirks: OPENAI_FIRSTPARTY_XHIGH_QUIRKS,
       },
       {
         model: "gpt-5.6-sol",
@@ -321,7 +326,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
         discoverySource: { provider: "openai", model: "gpt-5.6-sol" },
         curatedCapabilities: [],
         capabilities: OPENAI_FIRSTPARTY_CAPABILITIES,
-        quirks: OPENAI_FIRSTPARTY_QUIRKS,
+        quirks: OPENAI_FIRSTPARTY_MAX_QUIRKS,
       },
       {
         model: "gpt-5.6-terra",
@@ -377,7 +382,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
         discoverySource: { provider: "openai", model: "gpt-5.2" },
         curatedCapabilities: [],
         capabilities: OPENAI_FIRSTPARTY_CAPABILITIES,
-        quirks: OPENAI_FIRSTPARTY_QUIRKS,
+        quirks: OPENAI_FIRSTPARTY_XHIGH_QUIRKS,
       },
       {
         model: "gpt-5.4",
@@ -385,7 +390,7 @@ export const catalogProviders: CatalogProviderSpec[] = [
         discoverySource: { provider: "openai", model: "gpt-5.4" },
         curatedCapabilities: [],
         capabilities: OPENAI_FIRSTPARTY_CAPABILITIES,
-        quirks: OPENAI_FIRSTPARTY_QUIRKS,
+        quirks: OPENAI_FIRSTPARTY_XHIGH_QUIRKS,
       },
       {
         model: "gpt-5.4-mini",
