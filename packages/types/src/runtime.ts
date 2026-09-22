@@ -2612,10 +2612,24 @@ export type RetryPolicy = (
  *
  * (INFERENCE.md § Providers › Streaming Harness)
  */
+export type InferenceEffort = "off" | "low" | "medium" | "high" | "max";
+
 export type InferenceOptions = {
   maxTokens?: number;
   temperature?: number;
   thinking?: { enabled: boolean; budgetTokens?: number };
+  /**
+   * Reasoning intent, sent as given: each adapter maps the name onto its
+   * own wire field and sends only the value the caller set, with no
+   * translation or table lookup. Adaptive Anthropic models emit
+   * `output_config.effort`; the OpenAI-compatible family emits
+   * `reasoning_effort`. Classic Anthropic and Gemini have no effort field
+   * on the wire, so an `effort` value is never sent for them -- use
+   * `thinking.budgetTokens` instead. A value the provider does not accept
+   * is the provider's rejection to make, not this type's. When omitted
+   * the provider default applies.
+   */
+  effort?: InferenceEffort;
   systemPrompt?: string;
   tools?: ToolDefinition[];
   /**
@@ -2702,6 +2716,17 @@ export type InferenceOptions = {
    */
   retryPolicy?: RetryPolicy;
 };
+
+/**
+ * The subset of `InferenceOptions` a caller may set for a single send (a
+ * workflow step's resolved `inference` selector). Excludes anything that
+ * displaces the deployed agent definition (`systemPrompt`, `tools`,
+ * `providerOptions`).
+ */
+export type PerCallInferenceOptions = Pick<
+  InferenceOptions,
+  "maxTokens" | "temperature" | "thinking" | "effort"
+>;
 
 // ---------------------------------------------------------------------------
 // Context Store (INFERENCE.md § Context Management › Context Store,
