@@ -407,6 +407,19 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
           package: { name: entry.name, version: entry.version },
         });
       }
+      // Every exported factory id must sit under the shipping package's own
+      // name: the operator approves `director:<id>` only, so the id prefix is
+      // the only thing that ties the approved grant to the package whose code
+      // runs. Same rule as the workflow-host closure loader.
+      for (const director of directors) {
+        if (!director.id.startsWith(`${entry.name}/`)) {
+          throw new ToolLoaderError({
+            category: "package.entry.invalid",
+            message: `${entry.name}@${entry.version} interchange.directors entry exports director ${JSON.stringify(director.id)} outside the package's own namespace ${JSON.stringify(entry.name)}`,
+            package: { name: entry.name, version: entry.version },
+          });
+        }
+      }
     }
 
     // Inline credential declarations: read + validate from the same
