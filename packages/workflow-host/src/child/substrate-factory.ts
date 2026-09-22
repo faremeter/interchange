@@ -126,10 +126,12 @@ import {
   type CredentialsSnapshot,
 } from "../supervisor/index";
 import {
+  loadWorkflowDirectorRegistryFromClosure,
   loadWorkflowLoopFnsFromClosure,
   loadWorkflowPluginFactoriesFromClosure,
   loadWorkflowPluginToolDefinitionsFromClosure,
 } from "../workflow-definition-loader";
+import { loadVerifiedWorkflowDefinitionFromClosure } from "./verified-definition-loader";
 import type { SubstrateFactory, SubstrateFactoryEnv } from "./from-process-env";
 import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
@@ -836,6 +838,13 @@ export interface SidecarStepBuildEnvDeps {
   closurePackageDir?: string;
   /** Pinned tool-package materialization. Unused when `sourceTools` is set. */
   materializeStepTools: MaterializeStepTools;
+  /**
+   * Director registry each step env carries; defaults to the canonical
+   * built-ins. The source-ref lineage supplies the closure-composed
+   * registry so a step agent's `director` ref resolves against a custom
+   * director shipped by any package in the frozen closure.
+   */
+  directors?: DirectorRegistry;
 }
 
 /**
@@ -1166,7 +1175,7 @@ export function createSidecarStepBuildEnv(
       // scratch dir, so the two coincide.
       toolCwd: workdir,
       audit: storage,
-      directors: createDefaultDirectorRegistry(),
+      directors: deps.directors ?? createDefaultDirectorRegistry(),
       // Resolve inference adapters through the child's boot-built
       // registry (built-ins + operator custom adapters), so a
       // custom-provider step source resolves in the child the same way
@@ -2322,6 +2331,24 @@ export function createSidecarSubstrateFactory(
     // for every later tool call it makes.
     const toolMarkFloorByStep = new Map<string, GrantRule[]>();
 
+    // The step env's director registry is the closure-composed one, built
+    // from the SAME frozen closure the run-child loads, so a step agent's
+    // `director` ref resolves to a custom director shipped by a declared
+    // dependency package. The loader resolves only the ids the definition
+    // references, so the verified definition is evaluated here too -- the
+    // import is ESM-cached, so the run-child's own verified load reuses the
+    // module and only re-pays the project-then-hash check. A definition
+    // whose hash no longer matches the approval therefore fails the lineage
+    // build here, before any child spawns.
+    const stepDefinition = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir: env.spawn.closurePackageDir,
+      approvedHash: env.spawn.definitionHash,
+    });
+    const stepDirectors = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir: env.spawn.closurePackageDir,
+      definition: stepDefinition,
+    });
+
     const buildStepEnv = createSidecarStepBuildEnv({
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
@@ -2343,9 +2370,11 @@ export function createSidecarSubstrateFactory(
       // The materialized closure dir the source arm materializes each step
       // agent's declared plugin packages from. Always present (source-ref only).
       closurePackageDir: env.spawn.closurePackageDir,
-      // Activate the warm agent's inbound mail surface. Mail tools ask the
-      // supervisor through this bundle. The spawned-child build below omits
-      // it (a spawned child owns no warm inbound mailbox).
+      directors: stepDirectors,
+      // Activate the warm agent's inbound mail surface: `mail_read` /
+      // `mail_search` / `mail_wait` resolve against the deployment's committed
+      // substrate `INBOX` through this bundle. The spawned-child build below
+      // omits it (a spawned child owns no warm inbound mailbox).
       inbound: transportInbound,
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
@@ -2409,6 +2438,7 @@ export function createSidecarSubstrateFactory(
       materializeStepTools: deps.materializeStepTools,
       sourceTools: true,
       closurePackageDir: env.spawn.closurePackageDir,
+      directors: stepDirectors,
     });
     // Spawned-child step invoker (INTR-310). It runs a real agent through
     // `createWorkflowStepInvoker`, resolving inference against the child's own
@@ -2631,6 +2661,9 @@ export function createSidecarSubstrateFactory(
       collectDeclaredCredentialConsumers:
         deps.collectDeclaredCredentialConsumers,
       filterGrantsToDeclaredResources: deps.filterGrantsToDeclaredResources,
+      // A spawned child's steps resolve `director` refs against the same
+      // closure-composed registry the parent's steps use.
+      directors: stepDirectors,
     };
     // Terminal childWorkflow executor. `run-child` builds the in-memory
     // resolver from this plus the lifted-body map it extracts after loading
