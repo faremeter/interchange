@@ -43,9 +43,7 @@ export const modelProvider = pgTable(
       .notNull()
       .references(() => tenant.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
-    plugin: text("plugin", {
-      enum: ["anthropic", "openai", "openai-compatible", "google-genai"],
-    }).notNull(),
+    plugin: text("plugin").notNull(),
     baseURL: text("base_url").notNull(),
     // A provider authenticates via exactly one of credential or wallet (the
     // check constraint below enforces the XOR). onDelete is "restrict" so a

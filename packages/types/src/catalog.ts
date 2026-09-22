@@ -8,12 +8,17 @@ export const modelProviderPlugins = [
   "openai-compatible",
   "google-genai",
 ] as const;
-export type ModelProviderPlugin = (typeof modelProviderPlugins)[number];
-export const ModelProviderPlugin = type
-  .enumerated(...modelProviderPlugins)
-  .describe(
-    "The inference adapter that serves this provider's models, dispatched by the runtime provider registry.",
-  );
+export type BuiltinModelProviderPlugin = (typeof modelProviderPlugins)[number];
+// Open-ended so an operator-registered adapter (SIDECAR_ADAPTER_MANIFEST) is
+// selectable; a key no sidecar registers fails at deploy admission. The
+// grammar excludes `:` because the key is embedded in the
+// `inference.source:<plugin>:<model>` grant identifier, which is matched as
+// one string: a colon in the plugin would let two provider/model pairs share
+// an approval.
+export const ModelProviderPlugin = type(/^[a-z0-9][a-z0-9._-]*$/).describe(
+  "The inference adapter that serves this provider's models, dispatched by the runtime provider registry: a built-in key or one registered in the sidecar's adapter manifest. Lowercase alphanumerics, `.`, `_` and `-`, starting with an alphanumeric.",
+);
+export type ModelProviderPlugin = typeof ModelProviderPlugin.infer;
 
 export const providerPreferenceModes = ["pin", "prefer"] as const;
 export type ProviderPreferenceMode = (typeof providerPreferenceModes)[number];

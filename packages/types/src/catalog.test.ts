@@ -11,15 +11,21 @@ import {
   PricingRowResponse,
 } from "./catalog";
 
-describe("ModelProviderPlugin enum", () => {
-  test("accepts each adapter key", () => {
+describe("ModelProviderPlugin", () => {
+  test("accepts each built-in adapter key", () => {
     for (const plugin of modelProviderPlugins) {
       expect(ModelProviderPlugin(plugin)).toBe(plugin);
     }
   });
 
-  test("rejects an unknown plugin", () => {
-    expect(ModelProviderPlugin("cohere") instanceof type.errors).toBe(true);
+  test("accepts an operator-registered adapter key", () => {
+    expect(ModelProviderPlugin("openai-responses")).toBe("openai-responses");
+  });
+
+  test("rejects a plugin the grant identifier cannot delimit", () => {
+    for (const plugin of ["", "   ", "a:b", "Anthropic", "-x", "a/b"]) {
+      expect(ModelProviderPlugin(plugin) instanceof type.errors).toBe(true);
+    }
   });
 });
 
