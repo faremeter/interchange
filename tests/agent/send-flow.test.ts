@@ -8,6 +8,7 @@
 // through to `connector.reply` and persists turns.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { type } from "arktype";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,6 +103,39 @@ describe("@intx/agent send-flow integration", () => {
       }
       expect(result.reply).toBe("Hi there!");
       expect(result.turn.role).toBe("assistant");
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("per-send inference options reach that send's request alone", async () => {
+    harness.scenario.replyOnce("anthropic", { text: "first" });
+    harness.scenario.replyOnce("anthropic", { text: "second" });
+    const agent = await createAgent(
+      definition(),
+      await envFor(join(workDir, "ctx"), harness),
+    );
+    const Body = type({ max_tokens: "number", "temperature?": "number" });
+
+    try {
+      const first = agent.send("Hello", {
+        inference: { maxTokens: 321, temperature: 0.3 },
+      });
+      await harness.run();
+      await first;
+      const second = agent.send("Again");
+      await harness.run();
+      await second;
+
+      const bodies = await Promise.all(
+        harness.scenario
+          .matchedRequests()
+          .map(async (r) => Body.assert(JSON.parse(await r.text()))),
+      );
+      expect(bodies.map((b) => [b.max_tokens, b.temperature])).toEqual([
+        [321, 0.3],
+        [4096, undefined],
+      ]);
     } finally {
       await agent.close();
     }

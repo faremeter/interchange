@@ -982,6 +982,16 @@ The budget is a ceiling, not a target. The provider adapter translates the on/of
 
 The reactor director can override reasoning configuration per-call if needed (for example, enabling reasoning for a complex planning step and disabling it for simple tool result processing). But the default comes from the agent definition, not from the inference package.
 
+A caller can also pass per-send options (`agent.send(content, { inference })`, which a workflow step's `inference` selector feeds). They apply to every inference call of that message run only and sit beneath the director: a key the director sets wins over the per-send value for that same key.
+
+**Effort.** `InferenceOptions.effort` (`off | low | medium | high | max`) is a plain value; the platform does not translate or validate it against a table. Each adapter maps the field name onto its own wire and sends only the value a caller set, as given:
+
+- Adaptive Anthropic models emit `output_config.effort`, replacing the fixed default (`high`) only when a caller names one; `thinking.enabled` is still what turns reasoning on.
+- Classic Anthropic and Gemini have no effort field on the wire, so `effort` is never sent for them; `thinking.budgetTokens` goes onto their thinking budget field as given.
+- The OpenAI-compatible family emits `reasoning_effort` as given. gpt-5.6 models with tools always send `none`, which their Chat Completions tool calls require, overriding a named effort.
+
+A value a provider does not accept is the provider's rejection to make, not the platform's. Unset effort leaves every request unchanged.
+
 **Cache interaction.** Changing the thinking budget between turns invalidates the message cache. Tool and system prompt caches survive, but all message-level cache entries are rebuilt. If the director toggles reasoning on and off per-call, each toggle pays a cache rebuild cost. For cost-sensitive agents, holding a consistent thinking budget across the session is preferable to dynamic adjustment. If variable reasoning depth is needed, achieve it through prompt engineering (instructing the model to think briefly vs. deeply) rather than through the API parameter, preserving the cache.
 
 ### Thinking Content

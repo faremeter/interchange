@@ -73,6 +73,18 @@ function assertNever(x: never): never {
   throw new Error(`Unhandled resume case: ${JSON.stringify(x)}`);
 }
 
+/**
+ * Layer director-named options over per-send ones; a director key wins over
+ * the per-send value for that same key.
+ */
+export function mergeInferenceOptions(
+  perSend: InferenceOptions | undefined,
+  director: InferenceOptions | undefined,
+): InferenceOptions | undefined {
+  if (perSend === undefined) return director;
+  return { ...perSend, ...director };
+}
+
 function buildHarnessOpts(
   turns: ConversationTurn[],
   source: InferenceSource,
@@ -149,11 +161,20 @@ export type ReactorConfig = {
   doomLoopThreshold?: number | false;
 };
 
+export type DeliverOptions = {
+  inference?: InferenceOptions;
+};
+
 export type Reactor = {
   /** Begin processing. Emits reactor.start. Must be called exactly once. */
   start(): void;
-  /** Inject an inbound message into the reactor. */
-  deliver(message: InboundMessage): void;
+  /**
+   * Inject an inbound message into the reactor. `opts.inference` applies to
+   * every inference call of the message run the delivery opens, or of the
+   * parked run it resumes, beneath any option the director names; it is
+   * never retained past that run.
+   */
+  deliver(message: InboundMessage, opts?: DeliverOptions): void;
   /** Initiate graceful shutdown with a reason. */
   abort(reason: AbortReason): void;
 };
@@ -344,6 +365,10 @@ export function createReactor(config: ReactorConfig): Reactor {
   // produces unambiguous start/end pairs downstream.
   let currentMessageRunId: string | null = null;
   let currentMessageId: string | null = null;
+  // Per-send inference options, keyed by the delivered message until it is
+  // dequeued (or correlated), then held for the message run it drives.
+  const deliveredInference = new WeakMap<InboundMessage, InferenceOptions>();
+  let messageRunInference: InferenceOptions | undefined;
 
   // Doom-loop detection state, scoped to the current message run. Each executed
   // tool-call turn is reduced to a batch signature; consecutive identical
@@ -377,6 +402,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     status: "completed" | "failed",
     error?: { message: string; kind?: string },
   ): void {
+    messageRunInference = undefined;
     if (currentMessageRunId === null || currentMessageId === null) return;
     const data: {
       messageRunId: string;
@@ -721,7 +747,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         const harnessOpts = buildHarnessOpts(
           prompt,
           config.source,
-          options,
+          mergeInferenceOptions(messageRunInference, options),
           signal,
           nextSeq,
           config.readMaterial,
@@ -1331,6 +1357,8 @@ export function createReactor(config: ReactorConfig): Reactor {
           closeMessageRun("completed");
         }
         openMessageRun(event.message.headers.messageId);
+        messageRunInference = deliveredInference.get(event.message);
+        deliveredInference.delete(event.message);
       }
 
       // A parked approval that ended without running its tool (rejected or
@@ -1662,6 +1690,26 @@ export function createReactor(config: ReactorConfig): Reactor {
 
   function processDelivery(message: InboundMessage): void {
     void (async () => {
+      // A correlated resume continues the parked run rather than opening a
+      // new one, and the loop may re-infer before tryCorrelate settles, so
+      // the resume's options are adopted up front whenever this message's
+      // correlation ID matches a pending operation (the parked run is the
+      // only run that can be open, so a match is that run's own resume). An
+      // uncorrelated message either finds no run open yet (harmless to set
+      // now — its own run's open at line ~1360 sets the same value) or
+      // arrives while an unrelated run is still open, in which case it must
+      // not touch that run's options and instead overwrites them when its
+      // own run opens.
+      const inference = deliveredInference.get(message);
+      if (inference !== undefined) {
+        const correlationId = message.headers.interchangeCorrelationId;
+        const correlatesToOpenRun =
+          correlationId !== undefined &&
+          correlations.lookup(correlationId) !== undefined;
+        if (correlatesToOpenRun || currentMessageRunId === null) {
+          messageRunInference = inference;
+        }
+      }
       let correlated: boolean;
       try {
         correlated = await tryCorrelate(message);
@@ -1694,8 +1742,11 @@ export function createReactor(config: ReactorConfig): Reactor {
     })();
   }
 
-  function deliver(message: InboundMessage): void {
+  function deliver(message: InboundMessage, opts?: DeliverOptions): void {
     if (done) return;
+    if (opts?.inference !== undefined) {
+      deliveredInference.set(message, opts.inference);
+    }
     if (startupDeliveries !== null) {
       startupDeliveries.push(message);
       return;

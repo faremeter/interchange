@@ -4,7 +4,7 @@ import { validateActions } from "./actions";
 import { createAuthzExtension } from "./authz-extension";
 import { createGateManager } from "./gates";
 import { createCorrelationRegistry } from "./correlation";
-import { createReactor } from "./reactor";
+import { createReactor, mergeInferenceOptions } from "./reactor";
 import { createDefaultDependencies } from "./providers";
 import { createDefaultDirector } from "./default-director";
 import { assertWellFormedToolSequence } from "./turns";
@@ -6445,5 +6445,185 @@ describe("createReactor — prompt well-formedness tripwire", () => {
     expect(error.data.error).toMatch(/duplicate tool_result for "tc-1"/);
     // The prompt never reached the inference runner.
     expect(inferenceRan).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-send inference options
+// ---------------------------------------------------------------------------
+
+describe("mergeInferenceOptions", () => {
+  test("a director-named option wins over the per-send value", () => {
+    expect(
+      mergeInferenceOptions(
+        { maxTokens: 500, effort: "low" },
+        { effort: "high", systemPrompt: "s" },
+      ),
+    ).toEqual({ maxTokens: 500, effort: "high", systemPrompt: "s" });
+  });
+
+  test("a director thinking setting does not clear a per-send effort", () => {
+    expect(
+      mergeInferenceOptions(
+        { maxTokens: 500, effort: "high" },
+        { thinking: { enabled: false } },
+      ),
+    ).toEqual({
+      maxTokens: 500,
+      effort: "high",
+      thinking: { enabled: false },
+    });
+  });
+
+  test("a director effort does not clear a per-send thinking setting", () => {
+    expect(
+      mergeInferenceOptions(
+        { thinking: { enabled: true, budgetTokens: 2048 } },
+        { effort: "off" },
+      ),
+    ).toEqual({
+      thinking: { enabled: true, budgetTokens: 2048 },
+      effort: "off",
+    });
+  });
+
+  test("absent per-send options pass the director options through", () => {
+    const director = { systemPrompt: "s" };
+    expect(mergeInferenceOptions(undefined, director)).toBe(director);
+  });
+});
+
+describe("createReactor — per-send inference options", () => {
+  test("apply beneath the director for their own message run only", async () => {
+    const seen: (InferenceHarnessOptions["inferenceOptions"] | undefined)[] =
+      [];
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      seen.push(opts.inferenceOptions);
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn: {
+            role: "assistant" as const,
+            content: [{ type: "text" as const, text: "ok" }],
+            model: "test-model",
+            timestamp: 1000,
+          },
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+    const { reactor, events } = createTestReactor({
+      inferenceRunner,
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.infer({ temperature: 0.9, systemPrompt: "director" }),
+          "inference.done": (_e, _s, caps) => caps.wait(),
+        },
+        "wait",
+      ),
+    });
+    const inferenceDone = (n: number) =>
+      waitUntil(
+        () => events.filter((e) => e.type === "inference.done").length >= n,
+      );
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage(), {
+      inference: { temperature: 0.1, maxTokens: 500, effort: "low" },
+    });
+    await inferenceDone(1);
+    reactor.deliver(makeInboundMessage());
+    await inferenceDone(2);
+
+    expect(seen).toEqual([
+      {
+        temperature: 0.9,
+        maxTokens: 500,
+        effort: "low",
+        systemPrompt: "director",
+      },
+      { temperature: 0.9, systemPrompt: "director" },
+    ]);
+    reactor.abort("admin_kill");
+  });
+
+  test("a correlated resume of a parked run adopts the resume's options", async () => {
+    // The run stays open across the park (suspend does not close the message
+    // run), so this exercises the gate-resume path distinct from the
+    // uncorrelated-message case above: options must reach the re-infer that
+    // follows the approval even though currentMessageRunId never went null.
+    const seen: (InferenceHarnessOptions["inferenceOptions"] | undefined)[] =
+      [];
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      seen.push(opts.inferenceOptions);
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn:
+            seen.length === 1
+              ? suspendToolCallTurn
+              : {
+                  role: "assistant" as const,
+                  content: [{ type: "text" as const, text: "resumed" }],
+                  model: "test-model",
+                  timestamp: 1000,
+                },
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+    const askExtension = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs: 60_000,
+    });
+
+    const { reactor, events, waitFor } = createTestReactor({
+      inferenceRunner,
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "charged",
+      })),
+      beforeToolExtensions: [askExtension],
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (_e, _s, caps) =>
+            caps.executeTools([
+              { id: "call-ask", name: "charge_card", arguments: {} },
+            ]),
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools(e.calls, false, true),
+          "tool.done": (_e, _s, caps) => caps.infer(),
+        },
+        "wait",
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage(), { inference: { temperature: 0.1 } });
+
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const correlationId = blocked.data.correlationId;
+    if (correlationId === undefined) throw new Error("expected correlationId");
+
+    reactor.deliver(makeApprovalMessage(correlationId), {
+      inference: { temperature: 0.42 },
+    });
+    await waitUntil(
+      () => events.filter((e) => e.type === "inference.done").length >= 2,
+    );
+
+    expect(seen).toEqual([{ temperature: 0.1 }, { temperature: 0.42 }]);
+    reactor.abort("admin_kill");
   });
 });
