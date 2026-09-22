@@ -211,6 +211,20 @@ park is minted exclusively by the runtime's trigger-budget re-arm.
 Where it lives today: `StepInvokeResult`,
 `packages/workflow/src/runtime/env.ts`
 
+**17.** A step's `inference` selector resolves beside `input` into per-call
+options for that step's model call: `maxTokens`, `temperature`,
+`thinking: { enabled, budgetTokens }`, and `effort`
+(`off | low | medium | high | max`). `null` or `undefined` means the agent's
+defaults. A non-object, or any other key (`systemPrompt`, `tools`,
+`providerOptions`, ...), fails the step as a selector error: a run may not
+displace the definition approved at deploy time. The options ride that send
+alone, are not recorded on `StepStarted`, and sit beneath any option the
+director names outright.
+
+Where it lives today: `resolveStepInference`,
+`packages/workflow/src/runtime/selectors.ts`; `mergeInferenceOptions`,
+`packages/inference/src/reactor.ts`
+
 ---
 
 ## Actions and effects

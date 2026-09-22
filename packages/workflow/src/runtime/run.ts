@@ -33,7 +33,11 @@ import {
   stepTriggerBudget,
   validateRetryTriggerCombination,
 } from "../definition/index";
-import { evaluate, type SelectorContext } from "./selectors";
+import {
+  evaluate,
+  resolveStepInference,
+  type SelectorContext,
+} from "./selectors";
 import {
   hasFailedStep,
   isCrashedInvocationStep,
@@ -1463,6 +1467,10 @@ async function runStep(
     // same `null` so an audit reader cannot diverge from the agent's
     // actual input.
     const input = rawInput === undefined ? null : rawInput;
+    const inference =
+      step.inference !== undefined
+        ? resolveStepInference(step.inference, selectorCtx)
+        : undefined;
     if (!stepStartedEmitted) {
       const { ref: inputRef } = await env.blobs.recordOutput(
         `${step.id}.input`,
@@ -1569,6 +1577,7 @@ async function runStep(
         const result = await env.invokeStep({
           agent: step.agent,
           input,
+          ...(inference !== undefined ? { inference } : {}),
           authzContext: {
             stepId: step.id,
             attempt,

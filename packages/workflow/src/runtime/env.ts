@@ -8,7 +8,11 @@
 // source-level test in `run.test.ts` asserts the discipline.
 
 import type { AgentDefinition, BaseEnv, DirectorRegistry } from "@intx/agent";
-import type { ApprovalSnapshot, ControlParkKind } from "@intx/types/runtime";
+import type {
+  ApprovalSnapshot,
+  ControlParkKind,
+  PerCallInferenceOptions,
+} from "@intx/types/runtime";
 
 import type {
   AuthorizeContext,
@@ -159,6 +163,12 @@ export interface StepInvokeRequest {
   agent: AgentDefinition<BaseEnv>;
   /** The materialized input the runtime resolved from the step's `input` selector. */
   input: unknown;
+  /**
+   * Per-call inference options resolved from the step's `inference`
+   * selector. Applies to this invocation's send alone. Absent means the
+   * agent's defaults.
+   */
+  inference?: PerCallInferenceOptions;
   /** Workflow-runtime context for every authz call inside the step. */
   authzContext: AuthorizeContext;
   /** Cancelled when the step is being torn down (timeout, cancellation). */

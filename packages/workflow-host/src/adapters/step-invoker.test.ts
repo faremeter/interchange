@@ -26,6 +26,7 @@ import type {
   Mail,
   MailPart,
   MailPartReader,
+  PerCallInferenceOptions,
 } from "@intx/types/runtime";
 
 import { createChangeNotifier } from "@intx/workflow-host/testing";
@@ -122,8 +123,11 @@ function buildStubAgent(): StubAgentControl {
   });
   let closed = false;
   const agent: Agent = {
-    async send(content): Promise<SendResult> {
+    async send(content, opts): Promise<SendResult> {
       events.push(`send:${typeof content === "string" ? content : "message"}`);
+      if (opts?.inference !== undefined) {
+        events.push(`inference:${JSON.stringify(opts.inference)}`);
+      }
       return pending;
     },
     stream() {
@@ -253,6 +257,7 @@ const stubEvent = (type: string): InferenceEvent =>
 function buildRequest(opts: {
   signal?: AbortSignal;
   input?: unknown;
+  inference?: PerCallInferenceOptions;
 }): StepInvokeRequest {
   const ctrl = new AbortController();
   const authzContext: AuthorizeContext = {
@@ -263,6 +268,7 @@ function buildRequest(opts: {
   return {
     agent: stubDef(),
     input: opts.input,
+    ...(opts.inference !== undefined ? { inference: opts.inference } : {}),
     authzContext,
     signal: opts.signal ?? ctrl.signal,
   };
@@ -385,6 +391,37 @@ describe("workflow-host StepInvoker adapter - happy path", () => {
     expect(expectOutput(result)).toEqual({ reply: "pong", turn });
     expect(stub.events[0]).toBe(`send:${JSON.stringify({ goal: "ping" })}`);
     expect(stub.events).toContain("close");
+  });
+
+  test("forwards per-call inference options to the send", async () => {
+    const stub = buildStubAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+    });
+    const inference = { maxTokens: 2048, effort: "medium" as const };
+
+    const sendPromise = invoker(
+      buildRequest({ input: { goal: "ping" }, inference }),
+    );
+    await Promise.resolve();
+    stub.resolveSend({
+      type: "reply",
+      reply: "pong",
+      turn: {
+        role: "assistant",
+        content: [{ type: "text", text: "pong" }],
+        model: STUB_SOURCE.model,
+        timestamp: 0,
+      },
+    });
+    await sendPromise;
+    expect(stub.events).toContain(`inference:${JSON.stringify(inference)}`);
   });
 
   test("forwards the approval snapshot from a suspended send result", async () => {
