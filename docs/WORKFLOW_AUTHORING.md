@@ -221,18 +221,32 @@ park is minted exclusively by the runtime's trigger-budget re-arm.
 Where it lives today: `StepInvokeResult`,
 `packages/workflow/src/runtime/env.ts`
 
+**17.** A step's `inference` selector resolves beside `input` into per-call
+options for that step's model call: `maxTokens`, `temperature`,
+`thinking: { enabled, budgetTokens }`, and `effort`
+(`low | medium | high | max`). `null` or `undefined` means the agent's
+defaults. A non-object, or any other key (`systemPrompt`, `tools`,
+`providerOptions`, ...), fails the step as a selector error: a run may not
+displace the definition approved at deploy time. The options ride that send
+alone, are not recorded on `StepStarted`, and sit beneath any option the
+director names outright.
+
+Where it lives today: `resolveStepInference`,
+`packages/workflow/src/runtime/selectors.ts`; `mergeInferenceOptions`,
+`packages/inference/src/reactor.ts`
+
 ---
 
 ## Actions and effects
 
-**17.** Actions get NO default-input convention. `applyDefaultInput` covers
+**18.** Actions get NO default-input convention. `applyDefaultInput` covers
 only `step` and a `map`'s inner step, so an action with no `input` selector
 receives nothing. Every action's input selector must be written out.
 
 Where it lives today: `applyDefaultInput`,
 `packages/workflow/src/definition/workflow.ts`
 
-**18.** `ctx.perform` refuses any `capability` not listed in the action's
+**19.** `ctx.perform` refuses any `capability` not listed in the action's
 `effect.requires`, calls `env.authorize` before the effect, and on a ledger
 hit returns the recorded result WITHOUT a run of the effect. The capability
 string is the author's own vocabulary. The deploy-time walk turns each one
@@ -241,7 +255,7 @@ into an `effect:<cap>` grant.
 Where it lives today: `EffectContext`,
 `packages/workflow/src/runtime/env.ts`
 
-**19.** Three handler-author obligations the runtime cannot enforce: every
+**20.** Three handler-author obligations the runtime cannot enforce: every
 external effect goes through `ctx.perform`; each effect is idempotent under
 its `effectId`, or atomic with its ledger record; and a returned output is
 deterministic given its effects' results, because a crash resume replays the
@@ -254,7 +268,7 @@ Where it lives today: the `ActionPrimitive` doc comment,
 
 ## Testing
 
-**20.** A tool call the authorize seam REFUSES still comes back to the model
+**21.** A tool call the authorize seam REFUSES still comes back to the model
 as a well-formed `tool_result` that carries the refusal text. The model
 answers it, the step completes, the loop converges, and the run reaches a
 clean terminal status. Run status, step outputs, iteration count and even the
@@ -268,7 +282,7 @@ the rule and whose callers are the deployed tool-invoke round-trips. The
 `examples/workflow-quickstart` README records it too, and the assertion in
 `tests/workflow-quickstart/cli.test.ts` depends on it.
 
-**21.** bun 1.4.2's console reporter never prints passing test NAMES. It
+**22.** bun 1.4.2's console reporter never prints passing test NAMES. It
 prints the file header (and only when the file writes output) plus aggregate
 counts. Neither a pty nor the dots reporter changes that. The junit reporter
 (`--reporter=junit --reporter-outfile`) is the only way to get a per-test name
@@ -280,7 +294,7 @@ Where it lives today: nowhere in the repository.
 
 ## Definition-time rules
 
-**22.** `defineWorkflow` REJECTS a `schedule` trigger outright (it is
+**23.** `defineWorkflow` REJECTS a `schedule` trigger outright (it is
 reserved, not implemented), and rejects an `inboundMailPolicy` on a workflow
 with no mail trigger. Every key of that policy defaults to REJECT, so a
 workflow declaring none receives only mail the signature gate found nothing
@@ -291,24 +305,24 @@ Where it lives today: [`INBOUND_MAIL_POLICY.md`](./INBOUND_MAIL_POLICY.md)
 for the policy itself; `normalize`,
 `packages/workflow/src/definition/workflow.ts` for the two rejections
 
-**23.** A loop body may contain `awaitSignal`, `childWorkflow` and a nested
+**24.** A loop body may contain `awaitSignal`, `childWorkflow` and a nested
 loop, but may NOT contain `sleep` or `onTrigger`. The `awaitSignal` permission
 is a definition-time one only: an untimed gate inside a `childWorkflow` the
-body spawns passes this check and is refused at runtime instead (entry 26).
+body spawns passes this check and is refused at runtime instead (entry 27).
 
 Where it lives today: the `LoopPrimitive` doc comment,
 `packages/workflow/src/definition/primitives.ts` (enforced by
 `validateLoopBody`, `packages/workflow/src/definition/workflow.ts`, which
 also imposes the nesting-depth bound the doc comment does not state)
 
-**24.** `defineTool` requires a package-namespaced bundle id
+**25.** `defineTool` requires a package-namespaced bundle id
 (`"@vendor/pkg/name"` or `"pkg/name"`). The model-facing tool NAME is a
 separate, unconstrained string.
 
 Where it lives today: `validateNamespacedId`,
 `packages/agent/src/namespace.ts`
 
-**25.** An `onTrigger` section body run id is
+**26.** An `onTrigger` section body run id is
 `<parentRunId>__<sectionId>__<eventIndex>`, from `sectionBodyRunId`. A body
 already recorded as `<sectionId>__<eventIndex>` stays on that recorded id.
 The next event of that parent, which has no recorded child yet, gets the
@@ -327,7 +341,7 @@ Where it lives today: `sectionBodyRunId`,
 `packages/workflow/src/runtime/run.ts`; `workflow_run.id`,
 `packages/db/src/schema/workflow-run.ts`
 
-**26.** An untimed park is REFUSED wherever nothing upstream could answer it:
+**27.** An untimed park is REFUSED wherever nothing upstream could answer it:
 beneath a `childWorkflow` child, at any depth. A park is not only an
 `awaitSignal` an author writes: an agent step that suspends on a tool declared
 `approval: "ask"` is refused the same way, as is the input park of a step with
@@ -346,7 +360,7 @@ doc comment, `packages/workflow/src/runtime/env.ts`, and the
 `packages/workflow/src/definition/primitives.ts` (enforced by
 `parkOnSignalResult`, `packages/workflow/src/runtime/run.ts`)
 
-**27.** An action step inside an `onTrigger` body or a `childWorkflow` body
+**28.** An action step inside an `onTrigger` body or a `childWorkflow` body
 runs. `buildChildRunEnv` installs `invokeAction` for that body only when the
 pre-rewrite body reaches an action: `createDefaultActionInvoker` closed over
 the body's capped authorize and a new in-memory effect ledger. Handlers for
@@ -362,7 +376,7 @@ Where it lives today: `buildChildRunEnv`,
 `createLoopIterationHandle`,
 `packages/workflow/src/runtime/loop-iteration-handle.ts`
 
-**28.** A caller addresses an `onTrigger` body's `awaitSignal` by the
+**29.** A caller addresses an `onTrigger` body's `awaitSignal` by the
 `correlationId` on the container's relay `SignalAwaited`, together with the
 author `signalName`. The relay mints that id when the park is committed.
 Resume of a park that is still open reuses the id on that event. A delivery
@@ -376,7 +390,7 @@ Where it lives today: `driveContainerSignalRelay`,
 `packages/workflow/src/state-machine/transition.ts`; `DeliverSignal`,
 `packages/hub-api/src/routes/workflows.ts`
 
-**29.** Two `onTrigger` sections may await the same author signal name.
+**30.** Two `onTrigger` sections may await the same author signal name.
 A section may also share that name with a top-level `awaitSignal` or
 with a `loop` that relays the name. The section park is correlated, so
 a name-only delivery still binds the gate or the loop and does not

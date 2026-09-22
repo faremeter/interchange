@@ -77,6 +77,13 @@ export interface StepPrimitive extends PrimitiveBase {
   kind: "step";
   agent: AgentDefinition<BaseEnv>;
   input?: Selector;
+  /**
+   * Per-call inference options for this step's model call, resolved beside
+   * `input`. Must resolve to `null`, `undefined`, or an object limited to
+   * `PerCallInferenceOptions` keys; anything else fails the step as a
+   * selector error. Absent means the agent's defaults.
+   */
+  inference?: Selector;
   reads?: readonly Selector[];
   writes?: readonly Selector[];
   retry?: RetryPolicy;
@@ -416,6 +423,8 @@ export type Primitive =
 export interface StepOpts<EnvReq extends BaseEnv> {
   agent: AgentDefinition<EnvReq>;
   input?: Selector;
+  /** See {@link StepPrimitive.inference}. */
+  inference?: Selector;
   reads?: readonly Selector[];
   writes?: readonly Selector[];
   retry?: RetryPolicy;
@@ -508,6 +517,7 @@ export function step<EnvReq extends BaseEnv>(
     agent,
     drainBehavior,
     ...(opts.input !== undefined ? { input: opts.input } : {}),
+    ...(opts.inference !== undefined ? { inference: opts.inference } : {}),
     ...(opts.reads !== undefined ? { reads: opts.reads } : {}),
     ...(opts.writes !== undefined ? { writes: opts.writes } : {}),
     ...(opts.retry !== undefined ? { retry: opts.retry } : {}),
