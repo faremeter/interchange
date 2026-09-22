@@ -45,9 +45,10 @@ export const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
   "claude-sonnet-4-6",
 ]);
 
-// The effort this adapter sends on the adaptive-thinking wire in production.
-// "high" is the Anthropic API default. The discovery capture rig deliberately
-// sends "max" instead: only "max" reliably elicits a thinking block to capture,
+// The effort this adapter sends on the adaptive-thinking wire when the call
+// names none. "high" is the Anthropic API default. The discovery capture rig
+// deliberately sends "max" instead: only "max" reliably elicits a thinking
+// block to capture,
 // so the production default and the capture value are an intentional pair, not
 // drift. ADAPTIVE_THINKING_MODELS above must match across the two layers; the
 // effort values, by contrast, are meant to differ. A guard test in the
@@ -109,7 +110,9 @@ function buildRequest(
     // plus output_config.effort.
     if (ADAPTIVE_THINKING_MODELS.has(model)) {
       body["thinking"] = { type: "adaptive" };
-      body["output_config"] = { effort: ADAPTIVE_THINKING_EFFORT };
+      body["output_config"] = {
+        effort: options.effort ?? ADAPTIVE_THINKING_EFFORT,
+      };
     } else {
       body["thinking"] = {
         type: "enabled",

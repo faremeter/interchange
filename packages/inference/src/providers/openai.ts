@@ -92,6 +92,10 @@ function buildRequest(
     body["temperature"] = options.temperature;
   }
 
+  if (options.effort !== undefined) {
+    body["reasoning_effort"] = options.effort;
+  }
+
   if (options.tools !== undefined && options.tools.length > 0) {
     body["tools"] = options.tools.map((t) => ({
       type: "function",
