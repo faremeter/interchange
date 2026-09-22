@@ -755,15 +755,19 @@ export async function runWorkflowChild(
     }
   }
 
-  // Directors resolve from the pinned closure so a custom director authored in
-  // the workflow's own package runs. Loading directors OUTSIDE the
+  // Directors resolve from the pinned closure so a custom director authored
+  // anywhere in the workflow's closure runs. Loading directors OUTSIDE the
   // definition-hash re-verify is safe: the approved hash pins each director's
   // id + config (which director runs cannot change post-approval) and the
   // closure's SRI pins its module bytes. Folding directors into the hash would
   // be redundant, so it is deliberately not done -- see
   // `loadWorkflowDirectorRegistryFromClosure`.
+  // The PRE-rewrite verified definition: the capability walk approves the
+  // director refs inline bodies carry, so the id set must be collected
+  // before onTrigger/childWorkflow bodies lift to `{ ref }` placeholders.
   const directors = await loadWorkflowDirectorRegistryFromClosure({
     packageDir: opts.env.closurePackageDir,
+    definition: verifiedDefinition,
   });
 
   // Loop `while`/`carry` functions resolve from the pinned closure's
