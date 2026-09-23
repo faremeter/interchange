@@ -1,7 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import type { LastCycleSource } from "@intx/types/runtime";
 import type { AdapterFactory, ProviderAdapter } from "../adapter";
-import type { AdapterManifest, ModuleImporter } from "../manifest";
+import type { ModuleImporter } from "../manifest";
+import type { AdapterManifest } from "@intx/types";
 import { createBuiltinRegistry, loadAdapterRegistry } from "./index";
 
 const builtinProviders = [

@@ -17,6 +17,7 @@ import { generateId } from "@intx/hub-common";
 import {
   hexEncode,
   SidecarCapabilityRule,
+  type AdapterManifest,
   type CredentialCipher,
 } from "@intx/types";
 import type { FrozenApprovalBundle } from "@intx/types/sidecar";
@@ -126,6 +127,12 @@ export type WorkflowAllocationServiceDeps = {
     | "waitForAllocatedSidecar"
   >;
   readonly hubWebSocketUrl: string;
+  /**
+   * Operator-declared custom adapter manifest forwarded to every provisioned
+   * sidecar via the ensure request. Opaque here — the sidecar's adapter
+   * registry is the authority that admits `model_provider.plugin` values.
+   */
+  readonly adapterManifest?: AdapterManifest;
   readonly createAllocationId?: () => string;
   readonly createSidecarId?: () => string;
   readonly createToken?: () => string;
@@ -212,6 +219,7 @@ export function createWorkflowAllocationService({
   probeCapabilityRules = [],
   allocationRouter,
   hubWebSocketUrl,
+  adapterManifest,
   createAllocationId = randomAllocationId,
   createSidecarId = randomSidecarId,
   createToken = randomToken,
@@ -590,6 +598,7 @@ export function createWorkflowAllocationService({
               sidecarId,
               token,
               hubWebSocketUrl,
+              ...(adapterManifest !== undefined ? { adapterManifest } : {}),
             }),
         ),
       );
