@@ -15,7 +15,7 @@ import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 
 import { generateKeyPair } from "@intx/crypto";
-import { sidecarAllocation } from "@intx/db/schema";
+import { sidecarAllocation, workflowPendingProjection } from "@intx/db/schema";
 import {
   createAgentRepoStore,
   createHubSessionLookups,
@@ -279,6 +279,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
         reason: "path_violation",
       });
       expect(receiveCalls).toBe(0);
+      expect(await h.db.select().from(workflowPendingProjection)).toEqual([]);
+    });
+
+    test("a receive that fails after it may have advanced Git keeps its pending projection", async () => {
+      const agentRepoStore = await createRepoStore(async () => {
+        throw new Error("ref-update listener failed");
+      });
+      expect(await receivePack(agentRepoStore)).toEqual({
+        accepted: false,
+        reason: "corrupt",
+      });
+      expect(
+        await h.db
+          .select({ anchorRunId: workflowPendingProjection.anchorRunId })
+          .from(workflowPendingProjection),
+      ).toEqual([{ anchorRunId: ANCHOR_RUN_ID }]);
     });
   },
 );

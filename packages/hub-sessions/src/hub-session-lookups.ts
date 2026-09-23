@@ -11,6 +11,7 @@ import type { DB } from "@intx/db";
 import {
   createApprovalStore,
   createSignalCorrelationStore,
+  createWorkflowPendingProjectionStore,
   createWorkflowRunDispatchStore,
   createWorkflowRunStore,
 } from "@intx/db";
@@ -59,6 +60,7 @@ export function createHubSessionLookups(
   const signalCorrelationStore = createSignalCorrelationStore(db);
   const approvalStore = createApprovalStore(db);
   const workflowRunStore = createWorkflowRunStore(db);
+  const pendingProjections = createWorkflowPendingProjectionStore(db);
   const workflowRunDispatchStore = createWorkflowRunDispatchStore(db);
 
   return {
@@ -364,9 +366,23 @@ export function createHubSessionLookups(
         return { accepted: false, reason: "path_violation" as const };
       }
       const anchorAddress = anchor.address;
+      // Recorded before Git can advance: Git acceptance and the run-status
+      // projection below are not atomic, and this row is the only durable
+      // trace of a projection that fails after the ref moves. It is removed
+      // here only when the receive provably left Git unchanged or every run
+      // reached a final decision.
+      const pendingId = generateId("workflowPendingProjection");
       let newlyTerminalRuns;
+      let reachedGit = false;
       try {
-        newlyTerminalRuns = await db.transaction(async (tx) => {
+        try {
+          await pendingProjections.open(pendingId, anchor.id);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: cannot record pending projection: ${msg}`;
+          return { accepted: false, reason: "corrupt" as const };
+        }
+        const received = await db.transaction(async (tx) => {
           const [allocation] = await tx
             .select()
             .from(sidecarAllocation)
@@ -382,24 +398,39 @@ export function createHubSessionLookups(
             allocation.generation !== source.generation ||
             allocation.ensureAcceptedGeneration !== source.generation
           ) {
-            return null;
+            await pendingProjections.close(pendingId, tx);
+            return {
+              rejected:
+                "source connection does not own the deployment's current allocation",
+            } as const;
           }
 
           // Replacement advances this same row. Keep its lock until the
           // repository ref has advanced so ownership cannot change after
           // validation but before the old worker's pack becomes authoritative.
-          return agentRepoStore.receiveWorkflowRunPack(
-            { kind: "workflow-run", id: workflowRunRepoId },
-            pack,
-            ref,
-            commitSha,
-          );
+          reachedGit = true;
+          return {
+            runs: await agentRepoStore.receiveWorkflowRunPack(
+              { kind: "workflow-run", id: workflowRunRepoId },
+              pack,
+              ref,
+              commitSha,
+            ),
+          } as const;
         });
-        if (newlyTerminalRuns === null) {
-          logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: source connection does not own the deployment's current allocation`;
+        if ("rejected" in received) {
+          logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${received.rejected}`;
           return { accepted: false, reason: "path_violation" as const };
         }
+        newlyTerminalRuns = received.runs;
       } catch (err) {
+        // A receive that reached Git keeps its pending row: the ref may have
+        // advanced before the failure, so only a Git read can prove nothing was
+        // lost. One that failed earlier provably left Git unchanged.
+        if (!reachedGit)
+          await pendingProjections.close(pendingId).catch((cause: unknown) => {
+            logger.warn`Cannot clear pending projection for ${anchor.id}: ${cause instanceof Error ? cause.message : String(cause)}`;
+          });
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.startsWith("path_violation")) {
           logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${msg}`;
@@ -417,17 +448,14 @@ export function createHubSessionLookups(
 
       // The substrate has already durably advanced the git ref by the time it
       // returns, so the pack is accepted regardless of what happens below. The
-      // per-run status flip and principal deactivation are a best-effort
-      // downstream side effect of that durable advance, not part of accepting
-      // the pack. A failure here leaves the run "running" in the DB with its
-      // principal still active; there is no automatic re-fire, because a
-      // redelivery of the same durable tip produces no newly-terminal signal
-      // (the substrate's per-commit walk short-circuits on an already-present
-      // tip). The failure is therefore logged at ERROR as the only record that
-      // the row needs a manual flip, and the pack verdict stays accepted so the
-      // sidecar is acked and does not wedge re-pushing a pack that already
-      // landed.
+      // per-run status flip and principal deactivation are a downstream side
+      // effect of that durable advance, not part of accepting the pack, so the
+      // verdict stays accepted and the sidecar does not wedge re-pushing a pack
+      // that already landed. A redelivery of the same durable tip produces no
+      // newly-terminal signal, so a failed flip is not retried here; its
+      // pending row stays as the durable record that the projection is owed.
       const now = new Date();
+      let decided = true;
       for (const { runId, status } of newlyTerminalRuns) {
         try {
           const outcome = await db.transaction((tx) =>
@@ -444,11 +472,18 @@ export function createHubSessionLookups(
           // Per-run isolation: a failed flip for one run must not abort the
           // rest of the batch, and must not throw out of this method -- a throw
           // would leave the sidecar with neither an ack nor a reject for a pack
-          // the substrate already accepted. This ERROR is the only signal that
-          // the run is stuck "running" in the DB with its principal active, so
-          // it carries enough to find and flip the row by hand.
+          // the substrate already accepted.
+          decided = false;
           const msg = err instanceof Error ? err.message : String(err);
-          logger.error`Terminal DB flip failed for run ${runId} (deployment ${anchor.id}, target status ${status}); run left running in the DB: ${msg}`;
+          logger.error`Terminal DB flip failed for run ${runId} (deployment ${anchor.id}, target status ${status}); its projection stays pending: ${msg}`;
+        }
+      }
+      if (decided) {
+        try {
+          await pendingProjections.close(pendingId);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn`Cannot clear pending projection for ${anchor.id}: ${msg}`;
         }
       }
 

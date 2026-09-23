@@ -68,6 +68,10 @@ export {
   type WorkflowRunDispatchStore,
 } from "./workflow-run-dispatch-store";
 export {
+  createWorkflowPendingProjectionStore,
+  type WorkflowPendingProjectionStore,
+} from "./workflow-pending-projection-store";
+export {
   createSidecarAllocationStore,
   type BeginSidecarReleaseArgs,
   type BeginSidecarReplacementArgs,
