@@ -3,6 +3,7 @@
   "include": [
     "**/*.ts",
     "../hub-agent/lib/deploy-flow-env.ts",
-    "../hub-agent/lib/bundle-workflow-entry.ts"
+    "../hub-agent/lib/bundle-workflow-entry.ts",
+    "../hub-agent/lib/synthetic-npm-package-tarball.ts"
   ]
 }
