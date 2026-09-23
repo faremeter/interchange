@@ -8,7 +8,11 @@ import {
   resolveSenderKey,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
-import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
+import {
+  AdapterManifest,
+  hexDecode,
+  type SidecarCapabilityRule,
+} from "@intx/types";
 import {
   createApp,
   createAuth,
@@ -57,6 +61,13 @@ export type CreateHubServerOpts = {
   readonly sidecarAllocationConcurrency?: number;
   /** Deadline for provider calls, allocation claims, lease validation, and connection waits. Defaults to 120 seconds. */
   readonly sidecarOperationTimeoutMs?: number;
+  /**
+   * Custom inference adapters every provisioned sidecar must load, forwarded
+   * on each ensure request. Defaults to the SIDECAR_ADAPTER_MANIFEST env var.
+   * Passed through opaquely — the sidecar's adapter registry is the authority
+   * that resolves entries and admits `model_provider.plugin` values.
+   */
+  readonly sidecarAdapterManifest?: AdapterManifest;
 };
 
 export async function createHubServer({
@@ -67,6 +78,7 @@ export async function createHubServer({
   probeSidecarCapabilityRules = [],
   sidecarAllocationConcurrency = DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
   sidecarOperationTimeoutMs,
+  sidecarAdapterManifest,
 }: CreateHubServerOpts = {}) {
   await setup();
 
@@ -197,6 +209,26 @@ export async function createHubServer({
       );
     }
     return value;
+  }
+
+  // The operator-declared adapter manifest is forwarded verbatim on every
+  // sidecar ensure request. The hub only validates its shape so a malformed
+  // declaration fails at boot; the sidecar's adapter registry stays the
+  // single authority that resolves entries and admits plugin values.
+  function readAdapterManifestEnv(): AdapterManifest | undefined {
+    const raw = process.env["SIDECAR_ADAPTER_MANIFEST"];
+    if (raw === undefined || raw.trim() === "") return undefined;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (cause) {
+      throw new Error("SIDECAR_ADAPTER_MANIFEST is not valid JSON", { cause });
+    }
+    try {
+      return AdapterManifest.assert(parsed);
+    } catch (cause) {
+      throw new Error("SIDECAR_ADAPTER_MANIFEST failed validation", { cause });
+    }
   }
 
   const agentRepoStore = createAgentRepoStore({
@@ -357,6 +389,7 @@ export async function createHubServer({
   const hubSidecarWebSocketUrl =
     process.env["HUB_SIDECAR_WEBSOCKET_URL"] ??
     `ws://127.0.0.1:${String(port)}/api/sidecars/ws`;
+  const adapterManifest = sidecarAdapterManifest ?? readAdapterManifestEnv();
   const workflowAllocationService = createWorkflowAllocationService({
     db,
     deploymentPlugins: sidecarPlugins,
@@ -366,6 +399,7 @@ export async function createHubServer({
     probeCapabilityRules: probeSidecarCapabilityRules,
     allocationRouter: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,
+    ...(adapterManifest !== undefined ? { adapterManifest } : {}),
     ...(sidecarOperationTimeoutMs !== undefined
       ? { operationTimeoutMs: sidecarOperationTimeoutMs }
       : {}),
@@ -389,6 +423,7 @@ export async function createHubServer({
     plugins: sidecarPlugins,
     router: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,
+    ...(adapterManifest !== undefined ? { adapterManifest } : {}),
     ...(sidecarOperationTimeoutMs !== undefined
       ? { operationTimeoutMs: sidecarOperationTimeoutMs }
       : {}),

@@ -23,6 +23,7 @@ export * from "./offerings";
 export * from "./models";
 export * from "./capabilities";
 export * from "./catalog";
+export * from "./adapter-manifest";
 export * from "./observability";
 export * from "./agent-address";
 export * from "./agent-data";

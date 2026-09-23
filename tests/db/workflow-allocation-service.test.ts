@@ -252,6 +252,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
           disconnectAllocation: (target) => disconnectCalls.push(target),
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        adapterManifest: [
+          {
+            provider: "openai-responses",
+            specifier: "@corbits/openai-responses",
+            export: "createAdapter",
+          },
+        ],
         createAllocationId: () => "sal-probe-adopted",
         createSidecarId: () => "sc-probe-adopted",
         createToken: () => "probe-token",
@@ -264,6 +271,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       expect(prepared.allocationId).toBe("sal-probe-adopted");
       expect(ensureCalls).toHaveLength(1);
+      expect(ensureCalls[0]).toMatchObject({
+        adapterManifest: [
+          {
+            provider: "openai-responses",
+            specifier: "@corbits/openai-responses",
+            export: "createAdapter",
+          },
+        ],
+      });
       expect(destroyCalls).toHaveLength(0);
       expect(disconnectCalls).toEqual([
         { allocationId: "sal-probe-adopted", generation: 0 },
