@@ -29,6 +29,9 @@ pull in the shapes they need:
   authenticated-data helpers for sealed credentials and signing keys.
 - `@intx/types/grants` — grant creation, update, and evaluation schemas,
   grant requirements, approval items, and effect/origin enums.
+- `@intx/types/adapter-manifest` — the operator-declared custom inference
+  adapter manifest schema and `parseAdapterManifestEnv`, the reader for
+  `SIDECAR_ADAPTER_MANIFEST`.
 - `@intx/types/authz` — grant rules, condition contexts, and
   authorization result shapes shared between `@intx/authz` and the
   hub.

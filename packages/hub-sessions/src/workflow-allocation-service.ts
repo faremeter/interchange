@@ -21,8 +21,9 @@ import {
   lifecycleDeadline,
   lifecycleDurationMs,
   SidecarCapabilityRule,
-  type ResolvedWorkflowLifecyclePolicy,
+  type AdapterManifest,
   type CredentialCipher,
+  type ResolvedWorkflowLifecyclePolicy,
 } from "@intx/types";
 import type { FrozenApprovalBundle } from "@intx/types/sidecar";
 import type { HarnessConfig } from "@intx/types/runtime";
@@ -145,6 +146,12 @@ export type WorkflowAllocationServiceDeps = {
   readonly hubWebSocketUrl: string;
   /** Fills lifecycle fields no tenant or installed workflow sets. */
   readonly defaultLifecyclePolicy: ResolvedWorkflowLifecyclePolicy;
+  /**
+   * Operator-declared custom adapter manifest forwarded to every provisioned
+   * sidecar via the ensure request. Opaque here — the sidecar's adapter
+   * registry is the authority that admits `model_provider.plugin` values.
+   */
+  readonly adapterManifest?: AdapterManifest;
   readonly createAllocationId?: () => string;
   readonly createSidecarId?: () => string;
   readonly createToken?: () => string;
@@ -233,6 +240,7 @@ export function createWorkflowAllocationService({
   allocationRouter,
   hubWebSocketUrl,
   defaultLifecyclePolicy,
+  adapterManifest,
   createAllocationId = randomAllocationId,
   createSidecarId = randomSidecarId,
   createToken = randomToken,
@@ -616,6 +624,7 @@ export function createWorkflowAllocationService({
               sidecarId,
               token,
               hubWebSocketUrl,
+              ...(adapterManifest !== undefined ? { adapterManifest } : {}),
             }),
         ),
       );
