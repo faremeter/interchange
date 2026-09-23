@@ -733,6 +733,8 @@ export const WorkflowControlFrame = type({
 });
 export type WorkflowControlFrame = typeof WorkflowControlFrame.infer;
 
+export const WORKFLOW_CONTROL_INITIALIZING_ERROR = "workflow_initializing";
+
 export const WorkflowControlAckFrame = type({
   type: "'workflow.control.ack'",
   requestId: "string",

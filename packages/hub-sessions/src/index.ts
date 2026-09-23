@@ -56,6 +56,7 @@ export {
   type AllocatedSidecarTarget,
   type SidecarAllocationRouter,
   SidecarIdentityValidationError,
+  WorkflowControlInitializingError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
   WorkflowControlUnconfirmedError,
