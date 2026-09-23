@@ -81,6 +81,7 @@ import {
   type InstallAndApproveResult,
 } from "./workflow-probe-gate";
 import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
+import { workflowSourceRepoKind } from "./workflow-source-repo-kind";
 import type { SidecarReconciliationContext } from "./sidecar-allocation/operation";
 
 const logger = getLogger(["interchange", "hub", "session-service"]);
@@ -1425,7 +1426,7 @@ export function createSessionService(
         const committed =
           await agentRepoStore.repoStore.openCommittedReadsAtCommit(
             HUB_PRINCIPAL,
-            { kind: "workflow", id: source.assetId },
+            { kind: workflowSourceRepoKind(source), id: source.assetId },
             source.package.commitSha,
           );
         if (committed === null) {
@@ -1499,7 +1500,7 @@ export function createSessionService(
     return source.kind === "asset"
       ? bindAssetAttachmentResolver(
           source.assetId,
-          source.package.format === "source" ? "workflow" : "package-registry",
+          workflowSourceRepoKind(source),
         )
       : null;
   }
