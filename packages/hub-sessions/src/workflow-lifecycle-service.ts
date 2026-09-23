@@ -705,9 +705,9 @@ export function createWorkflowLifecycleService({
       const message = error instanceof Error ? error.message : String(error);
       // A live worker that stayed silent or refused has failed to stop. Any
       // other failure is retried briefly, since this Hub may not hold the
-      // worker's connection yet or its acknowledgement may not have been
-      // processed in time. Once the grace passes, no failure can postpone the
-      // stop further.
+      // worker's connection yet, the worker may still be deploying, or its
+      // acknowledgement may not have been processed in time. Once the grace
+      // passes, no failure can postpone the stop further.
       const failedDefinitively =
         error instanceof WorkflowControlTimeoutError ||
         error instanceof WorkflowControlRejectedError;

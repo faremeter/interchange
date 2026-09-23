@@ -36,6 +36,7 @@ import {
   createWorkflowHistoryReceiveTracker,
   createWorkflowLifecycleService,
   SidecarIdentityValidationError,
+  WorkflowControlInitializingError,
   WorkflowControlTimeoutError,
   WorkflowControlUnconfirmedError,
   WorkflowControlUnreachableError,
@@ -1141,7 +1142,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
     });
 
-    test.each(["unreachable", "unconfirmed"] as const)(
+    test.each(["unreachable", "initializing", "unconfirmed"] as const)(
       "a worker that stays %s is force-released after a short grace",
       async (condition) => {
         await expire();
@@ -1151,6 +1152,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
             command: { action: "cancel" | "stop" },
           ) => {
             if (command.action !== "stop") return;
+            if (condition === "initializing")
+              throw new WorkflowControlInitializingError();
             if (condition === "unconfirmed")
               throw new WorkflowControlUnconfirmedError("Queued behind a pack");
             throw new WorkflowControlUnreachableError("Reconnecting again");
