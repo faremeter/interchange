@@ -128,6 +128,7 @@ export {
   type ParkedRunVerdict,
 } from "./parked-run";
 export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
+export { workflowSourceRepoKind } from "./workflow-source-repo-kind";
 export {
   createReconciliationScheduler,
   DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
