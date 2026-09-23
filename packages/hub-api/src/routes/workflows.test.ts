@@ -117,6 +117,12 @@ const workflowAssetRow: typeof assetTable.$inferSelect = {
   updatedAt: new Date("2025-01-01"),
 };
 
+const packageRegistryAssetRow: typeof assetTable.$inferSelect = {
+  ...workflowAssetRow,
+  kind: "package-registry",
+  name: "demo-registry",
+};
+
 const deploymentRow = {
   id: DEPLOYMENT_ID,
   tenantId: TENANT_ID,
@@ -980,6 +986,18 @@ function sourceDeployBody(
   };
 }
 
+const TARBALL_PIN = "@wf/demo@^1.0.0";
+function tarballDeployBody(): Record<string, unknown> {
+  return sourceDeployBody({
+    source: {
+      kind: "asset",
+      assetId: ASSET_ID,
+      package: { format: "tarball" },
+    },
+    pin: TARBALL_PIN,
+  });
+}
+
 test("deployment responses publish their status vocabulary in OpenAPI", async () => {
   const app = createTestApp();
   const res = await app.request("/openapi.json");
@@ -1262,7 +1280,7 @@ describe("POST /workflows/deployments", () => {
     expect(await errorCode(res)).toBe("anchor_run_missing");
   });
 
-  test("returns 404 when the workflow asset is missing", async () => {
+  test("returns 404 when the definition asset is missing", async () => {
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
       db: { assetRow: undefined },
@@ -1271,6 +1289,67 @@ describe("POST /workflows/deployments", () => {
       authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
     expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "not_found",
+        message: "Definition asset not found",
+      },
+    });
+  });
+
+  test("prepares a tarball-sourced deploy from a package-registry asset", async () => {
+    const prepared: Parameters<
+      WorkflowAllocationService["prepareProvisionedDeployment"]
+    >[0][] = [];
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      db: { assetRow: packageRegistryAssetRow, deploymentRow },
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async (args) => {
+          prepared.push(args);
+          return {
+            anchorRunId: DEPLOYMENT_ID,
+            deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
+            allocationId: "sal-test",
+            status: "pending",
+          };
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+
+    expect(res.status).toBe(201);
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]?.pin).toBe(TARBALL_PIN);
+    expect(prepared[0]?.definitionAssetId).toBe(ASSET_ID);
+  });
+
+  test("reports a tarball source naming a workflow asset as a kind mismatch", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      db: { assetRow: workflowAssetRow, deploymentRow },
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("asset_kind_mismatch");
+  });
+
+  test("reports a source-tree source naming a package-registry asset as a kind mismatch", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      db: { assetRow: packageRegistryAssetRow, deploymentRow },
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
+    );
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("asset_kind_mismatch");
   });
 });
 
