@@ -164,6 +164,11 @@
       "intx-src": "./src/grants.ts",
       "types": "./dist/grants.d.ts",
       "default": "./dist/grants.js"
+    },
+    "./adapter-manifest": {
+      "intx-src": "./src/adapter-manifest.ts",
+      "types": "./dist/adapter-manifest.d.ts",
+      "default": "./dist/adapter-manifest.js"
     }
   },
   "dependencies": {

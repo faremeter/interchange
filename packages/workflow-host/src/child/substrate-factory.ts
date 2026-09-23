@@ -38,13 +38,10 @@ import type {
   PendingOperation,
 } from "@intx/types/runtime-core";
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
+import { AdapterManifest } from "@intx/types/adapter-manifest";
 import { evaluateGrants } from "@intx/authz";
 import type { GrantRule } from "@intx/authz";
-import {
-  AdapterManifest,
-  createDependencies,
-  type AdapterRegistry,
-} from "@intx/inference";
+import { createDependencies, type AdapterRegistry } from "@intx/inference";
 import { loadAdapterRegistry } from "@intx/inference/providers";
 import type {
   AnnotatedPluginFactory,

@@ -123,6 +123,7 @@ function deps(args: {
   waitError?: Error;
   /** Why the sidecar reported the deployment stopped on its own, if it did. */
   reportedStop?: string;
+  adapterManifest?: SidecarAllocationReconcilerDeps["adapterManifest"];
   onReady?: (row: SidecarAllocation) => Promise<void>;
   classifyParkedRun?: SidecarAllocationReconcilerDeps["classifyParkedRun"];
 }): SidecarAllocationReconcilerDeps {
@@ -160,6 +161,9 @@ function deps(args: {
       },
     },
     hubWebSocketUrl: "wss://hub.example/ws/sidecar",
+    ...(args.adapterManifest !== undefined
+      ? { adapterManifest: args.adapterManifest }
+      : {}),
     ...(args.onReady !== undefined ? { onReady: args.onReady } : {}),
     ...(args.classifyParkedRun !== undefined
       ? { classifyParkedRun: args.classifyParkedRun }
@@ -351,6 +355,47 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(replacements).toEqual(["sidecar_reuse_rejected"]);
     expect(fences.at(-1)).toEqual(["alloc-1", 2]);
+  });
+
+  test("forwards the declared adapter manifest on the ensure request", async () => {
+    const pending = allocation();
+    const provisioning = allocation({
+      status: "provisioning",
+      generation: 1,
+      sidecarId: "sc-new",
+      connectDeadline: new Date(NOW.getTime() + 120_000),
+      reconciliationLeaseId: "lease-1",
+    });
+    const adapterManifest = [
+      {
+        provider: "openai-responses",
+        specifier: "@corbits/openai-responses",
+        export: "createAdapter",
+      },
+    ];
+    let claimed = false;
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return pending;
+      },
+      bindInitialSidecar: async () => provisioning,
+      parkReconciliation: async () => true,
+    });
+    let ensuredManifest: unknown;
+    const provisioner = testProvisioner({
+      async ensure(request) {
+        ensuredManifest = request.adapterManifest;
+        return { kind: "accepted" };
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({ store, provisioner, adapterManifest }),
+    );
+
+    expect(await reconciler.reconcileNext()).toBe(true);
+    expect(ensuredManifest).toEqual(adapterManifest);
   });
 
   test("parks an accepted provision without waiting for its websocket", async () => {

@@ -8,7 +8,7 @@ import {
   type SidecarAllocationStore,
 } from "@intx/db";
 import { getLogger } from "@intx/log";
-import { hexEncode } from "@intx/types";
+import { hexEncode, type AdapterManifest } from "@intx/types";
 
 import type {
   AllocatedSidecarTarget,
@@ -76,6 +76,12 @@ export type SidecarAllocationReconcilerDeps = {
     | "waitForAllocatedSidecar"
   >;
   readonly hubWebSocketUrl: string;
+  /**
+   * Operator-declared custom adapter manifest forwarded to every provisioned
+   * sidecar via the ensure request. Opaque here — the sidecar's adapter
+   * registry is the authority that admits `model_provider.plugin` values.
+   */
+  readonly adapterManifest?: AdapterManifest;
   /**
    * Resolve the previous attempt's deferred mail under the newly claimed
    * lease, before connection waits or cleanup.
@@ -183,6 +189,7 @@ export function createSidecarAllocationReconciler({
   plugins,
   router,
   hubWebSocketUrl,
+  adapterManifest,
   onInitializationRecovery,
   onReady,
   classifyParkedRun,
@@ -701,6 +708,7 @@ export function createSidecarAllocationReconciler({
               sidecarId,
               token,
               hubWebSocketUrl,
+              ...(adapterManifest !== undefined ? { adapterManifest } : {}),
             }),
           operationTimeoutMs,
         ),
