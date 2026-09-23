@@ -18,6 +18,7 @@ import {
 } from "@intx/types";
 
 import type { DB, DBExecutor } from "./client";
+import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
 import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
 import { canExecuteWorkflowRun } from "./workflow-lifecycle-policy";
 import {
@@ -300,6 +301,7 @@ function leaseCondition(expectedLeaseId?: string) {
 
 export function createSidecarAllocationStore(db: DBHandle) {
   const workflowRunDispatchStore = createWorkflowRunDispatchStore(db);
+  const pendingProjections = createWorkflowPendingProjectionStore(db);
 
   function initializationConditions(
     args: InitializationArgs,
@@ -439,6 +441,30 @@ export function createSidecarAllocationStore(db: DBHandle) {
   }
 
   async function failRunningRuns(
+    tx: DBExecutor,
+    anchorRunId: string,
+    now: Date | ReturnType<typeof sql>,
+  ): Promise<void> {
+    // A pending projection means accepted history may already hold some of
+    // these runs' outcomes. Every caller has taken the allocation out of
+    // service, so no further history can land; record when capacity was lost
+    // and fail the runs once that history is reconciled.
+    if (await pendingProjections.hasAny(anchorRunId, tx)) {
+      await tx
+        .update(workflowRun)
+        .set({ infrastructureFailedAt: now })
+        .where(
+          and(
+            eq(workflowRun.id, anchorRunId),
+            isNull(workflowRun.infrastructureFailedAt),
+          ),
+        );
+      return;
+    }
+    await failLiveRuns(tx, anchorRunId, now);
+  }
+
+  async function failLiveRuns(
     tx: DBExecutor,
     anchorRunId: string,
     now: Date | ReturnType<typeof sql>,
@@ -1084,6 +1110,29 @@ export function createSidecarAllocationStore(db: DBHandle) {
         return parseSidecarAllocationRow(updated);
       };
       return tx === undefined ? db.transaction(fail) : fail(tx);
+    },
+
+    /**
+     * Apply an infrastructure failure deferred while accepted history was
+     * unreconciled: fail the runs still live at the recorded time. Returns
+     * false while a pending projection remains.
+     */
+    async applyDeferredInfrastructureFailure(
+      anchorRunId: string,
+      tx: DBExecutor,
+    ): Promise<boolean> {
+      const [anchor] = await tx
+        .select({ failedAt: workflowRun.infrastructureFailedAt })
+        .from(workflowRun)
+        .where(eq(workflowRun.id, anchorRunId));
+      if (anchor?.failedAt == null) return true;
+      if (await pendingProjections.hasAny(anchorRunId, tx)) return false;
+      await failLiveRuns(tx, anchorRunId, anchor.failedAt);
+      await tx
+        .update(workflowRun)
+        .set({ infrastructureFailedAt: null })
+        .where(eq(workflowRun.id, anchorRunId));
+      return true;
     },
 
     async hasRunnableAnchor(

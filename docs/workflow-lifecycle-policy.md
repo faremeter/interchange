@@ -137,7 +137,10 @@ behind, for a live or finished deployment, is reconciled from Git after a
 including child runs it never recorded, and then clears it. A receive still in
 progress is never reconciled, because it may advance Git after the read. A
 forced stop records `cancelled` only while no pending projection remains; until
-then the worker is still stopped but the outcome waits. A missing repository
+then the worker is still stopped but the outcome waits. Unrecoverable capacity
+loss waits the same way: the Hub records when capacity was lost, and after
+reconciliation fails only the runs still live, ending them at that time. A
+missing repository
 under a receive's pending projection is treated as unreadable history, never as
 empty history; a repository whose ref was never written provably accepted
 nothing. Reconciliation that cannot read Git backs off and retries; an explicit
@@ -149,14 +152,15 @@ independent slots per Hub. Each slot selects one run at a time, and active runs
 are excluded from further selection until their work finishes. Selection
 considers only deployments with work due: a live run that is cancelling or past
 its expiry, retained capacity whose release time has passed or is not yet
-recorded, and accepted history left unprojected past its grace. A deployment
-that ended without a saved policy is released only on request. Selection walks
-run IDs up to a captured upper bound, then waits one second before another scan.
-Work that becomes due during a scan can wait for the next one, and work that
-stays due, such as a cancellation waiting on its worker, does not cause
-continuous retries. A stalled run occupies one slot while the other slots
-continue processing candidates. A live run with no cancellation or expiry to act
-on is not locked, so a pack receive in progress does not hold a slot.
+recorded, a capacity loss waiting on reconciliation, and accepted history left
+unprojected past its grace. A deployment that ended without a saved policy is
+released only on request. Selection walks run IDs up to a captured upper bound,
+then waits one second before another scan. Work that becomes due during a scan
+can wait for the next one, and work that stays due, such as a cancellation
+waiting on its worker, does not cause continuous retries. A
+stalled run occupies one slot while the other slots continue processing
+candidates. A live run with no cancellation, expiry, or capacity loss to act on
+is not locked, so a pack receive in progress does not hold a slot.
 
 Dispatch outcomes are projected from Hub-owned Git after pack acceptance and
 retried independently for unresolved deliveries, even when the database has not

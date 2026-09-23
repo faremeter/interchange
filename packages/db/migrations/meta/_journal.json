@@ -687,6 +687,13 @@
       "when": 1790358456398,
       "tag": "0098_workflow_lifecycle_sweep_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1790358709307,
+      "tag": "0099_workflow_infrastructure_failure",
+      "breakpoints": true
     }
   ]
 }

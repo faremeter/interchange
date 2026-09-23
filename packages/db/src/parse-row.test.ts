@@ -311,6 +311,7 @@ function makeWorkflowRunRow(
     cancellationReason: null,
     cancellationDeadline: null,
     capacityReleaseAt: null,
+    infrastructureFailedAt: null,
     createdAt: now,
     endedAt: null,
     ...overrides,

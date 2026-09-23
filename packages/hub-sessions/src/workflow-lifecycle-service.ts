@@ -375,19 +375,20 @@ export function createWorkflowLifecycleService({
       tenantId,
       runId,
       async (tx, run, allocation): Promise<ReleaseResult> => {
-        // A live row with a pending projection may be terminal in accepted
-        // history, so "live" would be a guess.
-        if (isLiveWorkflowRunStatus(run.status))
-          return (await pendingProjections.hasAny(runId, tx))
-            ? "history_pending"
-            : "live";
+        // Permanent cleanup failure needs an operator whatever history is
+        // pending, so it must not be reported as retryable.
+        if (allocation?.status === "destroy_failed") return "cleanup_failed";
+        // A pending projection may hold the anchor's or a child's accepted
+        // terminal outcome, even when the anchor row is already terminal.
+        if (await pendingProjections.hasAny(runId, tx))
+          return "history_pending";
+        if (isLiveWorkflowRunStatus(run.status)) return "live";
         if (
           allocation === undefined ||
           allocation.status === "released" ||
           allocation.status === "failed"
         )
           return "released";
-        if (allocation.status === "destroy_failed") return "cleanup_failed";
         const requestedAt = now();
         if (
           run.capacityReleaseAt === null ||
@@ -566,10 +567,15 @@ export function createWorkflowLifecycleService({
         status: true,
         expiresAt: true,
         cancellationRequestedAt: true,
+        infrastructureFailedAt: true,
       },
     });
     if (run === undefined) return false;
-    if (!isLiveWorkflowRunStatus(run.status)) return true;
+    if (
+      run.infrastructureFailedAt !== null ||
+      !isLiveWorkflowRunStatus(run.status)
+    )
+      return true;
     return (
       run.cancellationRequestedAt !== null ||
       (run.expiresAt !== null && run.expiresAt <= now())
@@ -583,6 +589,12 @@ export function createWorkflowLifecycleService({
       tenantId,
       runId,
       async (tx, original, allocation): Promise<ControlRequest | null> => {
+        // Capacity was lost for good while accepted history was unreconciled;
+        // once recovery has recorded that history, the runs still live fail.
+        if (original.infrastructureFailedAt !== null) {
+          await allocations.applyDeferredInfrastructureFailure(runId, tx);
+          return null;
+        }
         let run = original;
         if (isLiveWorkflowRunStatus(run.status)) {
           if (run.expiresAt !== null && run.expiresAt <= now()) {
@@ -745,13 +757,14 @@ export type WorkflowLifecycleService = ReturnType<
 /**
  * Selects the deployments `reconcileRun` can act on: a live run that is
  * cancelling or past its expiry, retained capacity whose release time has
- * passed or is not yet recorded, and accepted history left unprojected past
- * its grace. A new action there needs a branch here. Deployments are never
- * deleted, so each branch starts from an index over rows still active in its
- * own sense and reaches an anchor only by key: a pass costs time in proportion
- * to current capacity, not to every deployment ever created. Status lists are
- * SQL literals rather than bound parameters: a plan made without parameter
- * values could not otherwise use the partial indexes.
+ * passed or is not yet recorded, a deferred infrastructure failure, and
+ * accepted history left unprojected past its grace. A new action there needs a
+ * branch here. Deployments are never deleted, so each branch starts from an
+ * index over rows still active in its own sense and reaches an anchor only by
+ * key: a pass costs time in proportion to current capacity, not to every
+ * deployment ever created. Status lists are SQL literals rather than bound
+ * parameters: a plan made without parameter values could not otherwise use the
+ * partial indexes.
  *
  * Each branch keeps its next candidate for the rest of a pass and is read again
  * only once the sweep takes that candidate, so a branch with nothing due is
@@ -839,6 +852,18 @@ export function createLifecycleSweepQueries(
       )
       .orderBy(asc(workflowRun.id))
       .limit(1);
+    const infrastructureFailed = db
+      .select({ id: workflowRun.id })
+      .from(workflowRun)
+      .where(
+        and(
+          isNotNull(workflowRun.infrastructureFailedAt),
+          eq(workflowRun.id, workflowRun.anchorRunId),
+          inPass(workflowRun.id),
+        ),
+      )
+      .orderBy(asc(workflowRun.id))
+      .limit(1);
     // Any deployment, live or not, whose accepted history may still be
     // unprojected.
     const unprojectedHistory = db
@@ -863,6 +888,9 @@ export function createLifecycleSweepQueries(
     return {
       release: releaseDue.prepare(`lifecycle_sweep_release_${position}`),
       live: liveDue.prepare(`lifecycle_sweep_live_${position}`),
+      infrastructure: infrastructureFailed.prepare(
+        `lifecycle_sweep_infrastructure_${position}`,
+      ),
       history: unprojectedHistory.prepare(
         `lifecycle_sweep_history_${position}`,
       ),
@@ -870,10 +898,9 @@ export function createLifecycleSweepQueries(
   }
   const first = prepareBranches(false);
   const next = prepareBranches(true);
-  const branches = (["release", "live", "history"] as const).map((name) => ({
-    first: first[name],
-    next: next[name],
-  }));
+  const branches = (
+    ["release", "live", "infrastructure", "history"] as const
+  ).map((name) => ({ first: first[name], next: next[name] }));
   // Postgres picks the lowest candidate, so the choice follows the same
   // collation as the cursor comparisons.
   const lowest = db
