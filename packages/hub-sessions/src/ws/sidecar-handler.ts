@@ -22,6 +22,7 @@ import { type } from "arktype";
 import {
   MAX_MAIL_OUTBOUND_BODY_BYTES,
   SidecarFrame,
+  WORKFLOW_CONTROL_INITIALIZING_ERROR,
   type AgentDeployAckFrame,
   type AgentDeployFrame,
   type PackAckFrame,
@@ -116,6 +117,14 @@ export class WorkflowControlUnreachableError extends Error {
   }
 }
 
+/** A connected worker is still deploying and cannot process control yet. */
+export class WorkflowControlInitializingError extends Error {
+  constructor() {
+    super("Workflow deployment is still being initialized");
+    this.name = "WorkflowControlInitializingError";
+  }
+}
+
 /**
  * The worker acknowledged the control command, but the Hub could not process
  * the acknowledgement in time. The worker answered, so this never counts as
@@ -153,6 +162,10 @@ export type SidecarConnection = {
   // workflow route teardown and recovery remain explicit. `handleClose` cleans
   // both sets out of `addressIndex`.
   workflowAddresses: Set<string>;
+  // Deploy frames the worker has not answered, kept past the Hub's own deploy
+  // timeout. The worker handles frames in order, so a control frame sent
+  // behind one of these cannot start until the worker answers it.
+  unansweredDeploys: Set<string>;
   send(frame: HubFrame): void;
 };
 
@@ -1739,6 +1752,7 @@ export function createSidecarRouter(
       identity,
       agentAddresses: new Set(),
       workflowAddresses: new Set(),
+      unansweredDeploys: new Set(),
       send(frame: HubFrame) {
         ws.send(JSON.stringify(frame));
       },
@@ -3466,6 +3480,7 @@ export function createSidecarRouter(
     ws: WsHandle,
     frame: AgentDeployAckFrame,
   ): Promise<void> {
+    connections.get(ws)?.unansweredDeploys.delete(frame.agentAddress);
     const req = pendingDeploys.get(frame.agentAddress);
     if (req === undefined) {
       logger.warn`Received agent.deploy.ack for "${frame.agentAddress}" with no pending deploy`;
@@ -3505,6 +3520,7 @@ export function createSidecarRouter(
     agentAddress: string,
     error: string,
   ): void {
+    connections.get(ws)?.unansweredDeploys.delete(agentAddress);
     const req = pendingDeploys.get(agentAddress);
     if (req === undefined || req.ws !== ws) return;
     // Settle by key, not by the `req` object: a key lookup observes the
@@ -3582,6 +3598,7 @@ export function createSidecarRouter(
         hubPublicKey: hubPublicKeyHex,
         ...(workflow !== undefined ? { workflow } : {}),
       });
+      conn.unansweredDeploys.add(agentAddress);
     } catch (cause) {
       // Throw synchronously on a proven-unsent frame. Returning the response
       // promise below is the caller's evidence that the send took place.
@@ -3718,6 +3735,7 @@ export function createSidecarRouter(
         hubPublicKey: hubKey,
         provisionStep: true,
       });
+      conn.unansweredDeploys.add(agentAddress);
     });
   }
 
@@ -3829,7 +3847,11 @@ export function createSidecarRouter(
       return;
     }
     if (frame.error !== undefined)
-      fail(new WorkflowControlRejectedError(frame.error));
+      fail(
+        frame.error === WORKFLOW_CONTROL_INITIALIZING_ERROR
+          ? new WorkflowControlInitializingError()
+          : new WorkflowControlRejectedError(frame.error),
+      );
     else {
       if (entry.meta.action === "stop") {
         stoppedAllocations.set(entry.meta.allocationId, entry.meta.generation);
@@ -3888,7 +3910,9 @@ export function createSidecarRouter(
             settle();
             reject(
               error === timeoutMessage
-                ? new WorkflowControlTimeoutError(error)
+                ? conn.unansweredDeploys.size > 0
+                  ? new WorkflowControlInitializingError()
+                  : new WorkflowControlTimeoutError(error)
                 : error === unconfirmedMessage
                   ? new WorkflowControlUnconfirmedError(error)
                   : new WorkflowControlUnreachableError(error),

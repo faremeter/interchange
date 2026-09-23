@@ -1,11 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
 import { chunkPack } from "@intx/pack-transport";
-import { type RepoId, WorkflowControlFrame } from "@intx/types/sidecar";
+import {
+  type RepoId,
+  WORKFLOW_CONTROL_INITIALIZING_ERROR,
+  WorkflowControlFrame,
+} from "@intx/types/sidecar";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import {
   SidecarIdentityValidationError,
+  WorkflowControlInitializingError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
   WorkflowControlUnconfirmedError,
@@ -15,7 +20,9 @@ import {
   connectAllocated,
   createAllocatedRouter,
   parsedFrames,
+  TEST_CONFIG,
   TEST_IDENTITY,
+  TEST_TARGET,
   tick,
 } from "./sidecar-handler.test-helpers";
 
@@ -216,6 +223,81 @@ describe("SidecarRouter allocation control protocols", () => {
       }),
     );
     await expect(refused).rejects.toBeInstanceOf(WorkflowControlRejectedError);
+
+    const initializing = router.sendWorkflowControl(
+      TEST_IDENTITY,
+      command,
+      CONTROL_TIMEOUT_MS,
+    );
+    await tick();
+    const retryFrame = WorkflowControlFrame.assert(
+      framesOfType(ws, "workflow.control").at(-1),
+    );
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "workflow.control.ack",
+        requestId: retryFrame.requestId,
+        error: WORKFLOW_CONTROL_INITIALIZING_ERROR,
+      }),
+    );
+    await expect(initializing).rejects.toBeInstanceOf(
+      WorkflowControlInitializingError,
+    );
+  });
+
+  test("a silent worker still deploying the run defers control instead of timing out", async () => {
+    const router = createAllocatedRouter({ requestTimeoutMs: 5 });
+    const ws = await connectAllocated(router);
+    // The Hub stops waiting for the deploy before the worker answers it.
+    await expect(
+      router.sendAgentDeployToAllocation(
+        TEST_TARGET,
+        TEST_IDENTITY.workflowRunAddress,
+        TEST_CONFIG,
+      ),
+    ).rejects.toThrow("timed out");
+
+    await expect(
+      router.sendWorkflowControl(TEST_IDENTITY, stopCommand(), 1),
+    ).rejects.toBeInstanceOf(WorkflowControlInitializingError);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "agent.deploy.ack",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        publicKey: "b".repeat(64),
+      }),
+    );
+    await tick();
+    await expect(
+      router.sendWorkflowControl(TEST_IDENTITY, stopCommand(), 1),
+    ).rejects.toBeInstanceOf(WorkflowControlTimeoutError);
+  });
+
+  test("a deploy the worker refused no longer defers control", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router);
+    const deployed = router.sendAgentDeployToAllocation(
+      TEST_TARGET,
+      TEST_IDENTITY.workflowRunAddress,
+      TEST_CONFIG,
+    );
+    await tick();
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "agent.error",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        error: "Deploy failed",
+      }),
+    );
+    await expect(deployed).rejects.toThrow("Deploy failed");
+
+    await expect(
+      router.sendWorkflowControl(TEST_IDENTITY, stopCommand(), 1),
+    ).rejects.toBeInstanceOf(WorkflowControlTimeoutError);
   });
 
   test("a stop acknowledgement resolves only after the packs sent before it", async () => {

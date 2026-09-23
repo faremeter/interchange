@@ -67,6 +67,7 @@ import {
   type KeyPair,
 } from "@intx/types/runtime";
 import {
+  WORKFLOW_CONTROL_INITIALIZING_ERROR,
   WorkflowProjectionDefinition,
   type AgentDeployFrame,
   type CredentialDelivery,
@@ -2516,7 +2517,7 @@ export function createSidecarDeployRouter(deps: {
       const stopping = workflowStopTasks.get(frame.agentAddress);
       if (stopping !== undefined) return stopping;
       if (reservingDeployAddresses.has(frame.agentAddress)) {
-        throw new Error("Workflow deployment is still being initialized");
+        throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR);
       }
       const wired = activeSupervisors.get(frame.agentAddress);
       if (frame.action === "cancel" && wired !== undefined) {

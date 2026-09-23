@@ -21,7 +21,10 @@ import {
   type SubprocessSpawner,
 } from "@intx/workflow-host";
 import type { WorkflowDefinition } from "@intx/workflow";
-import type { AgentDeployFrame } from "@intx/types/sidecar";
+import {
+  WORKFLOW_CONTROL_INITIALIZING_ERROR,
+  type AgentDeployFrame,
+} from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
 import {
   createMemoryFrameStream,
@@ -1140,7 +1143,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       stepOrder: ["step-1", "step-2"],
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
-    const frame = makeMultistepFrame({ definition, sources });
+    const frame = makeMultistepFrame({
+      definition,
+      sources,
+      agentAddress: "run_concurrent@example.com",
+    });
     const anchorRunId = deriveDeploymentId(frame.agentAddress);
     const recordFile = path.join(
       multiDataDir,
@@ -1155,6 +1162,19 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     observedEnv = await spawnObserver.first();
     const recordBefore = await fs.readFile(recordFile, "utf8");
     expect(recordBefore.length).toBeGreaterThan(0);
+
+    if (router.control === undefined)
+      throw new Error("router.control is undefined");
+    await expect(
+      router.control({
+        type: "workflow.control",
+        requestId: "stop-during-deploy",
+        agentAddress: frame.agentAddress,
+        runId: "run_concurrent",
+        action: "stop",
+        reason: "Lifetime expired",
+      }),
+    ).rejects.toThrow(WORKFLOW_CONTROL_INITIALIZING_ERROR);
 
     // The loser is rejected at the reservation guard, not the spawn-core
     // backstop -- the guard's message is the one asserted here.
