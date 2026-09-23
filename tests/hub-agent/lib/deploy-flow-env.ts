@@ -35,7 +35,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import * as tar from "tar";
 import git from "isomorphic-git";
 import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
@@ -716,42 +715,6 @@ export function startMockInference(
 
 function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-}
-
-/**
- * Build a plain npm-package tarball (package.json + index.mjs), for serving as
- * a workflow's EXTERNAL dependency from an in-process registry. The registry
- * reads the tarball's own package.json to resolve name@version.
- */
-export async function buildSyntheticNpmPackageTarball(
-  registerTempDir: (dir: string) => void,
-  opts: { packageName: string; version: string; moduleSource: string },
-): Promise<Uint8Array> {
-  const stagingDir = await fs.promises.mkdtemp(
-    path.join(os.tmpdir(), "npm-pkg-fixture-"),
-  );
-  registerTempDir(stagingDir);
-  const packageDir = path.join(stagingDir, "package");
-  await fs.promises.mkdir(packageDir, { recursive: true });
-  await fs.promises.writeFile(
-    path.join(packageDir, "package.json"),
-    JSON.stringify({
-      name: opts.packageName,
-      version: opts.version,
-      type: "module",
-      exports: "./index.mjs",
-    }),
-  );
-  await fs.promises.writeFile(
-    path.join(packageDir, "index.mjs"),
-    opts.moduleSource,
-  );
-  const tarballPath = path.join(stagingDir, "out.tgz");
-  await tar.create({ cwd: stagingDir, gzip: true, file: tarballPath }, [
-    "package",
-  ]);
-  const bytes = await fs.promises.readFile(tarballPath);
-  return new Uint8Array(bytes);
 }
 
 export type HubEnv = {

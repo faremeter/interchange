@@ -20,7 +20,6 @@ import { dirname } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
-import * as tar from "tar";
 
 import {
   DEFAULT_ASSET_REF,
@@ -60,6 +59,10 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
+import {
+  buildSyntheticNpmPackageTarball,
+  type SyntheticNpmPackageTarball,
+} from "../hub-agent/lib/synthetic-npm-package-tarball";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = generateId("workflowRun");
@@ -68,7 +71,6 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
 
 const PACKAGE_NAME = "@wf/asset-skeleton";
 const PACKAGE_VERSION = "1.0.0";
-const PACKAGE_BASENAME = "asset-skeleton";
 const WORKFLOW_ENTRY = "./workflow.mjs";
 
 const TENANT_ID = "tnt_asset_skeleton";
@@ -112,11 +114,6 @@ export const workflow = defineWorkflow({
   },
 });
 `;
-
-interface WorkflowPackageFixture {
-  bytes: Uint8Array;
-  tarballFilename: string;
-}
 
 // Bundle the entry into one self-contained `.mjs` (its `@intx/*` imports inlined
 // to source) so the sidecar-materialized closure evaluates it with no bare
@@ -163,36 +160,20 @@ async function bundleWorkflowEntry(
 
 async function buildWorkflowPackageFixture(
   scratchDir: string,
-): Promise<WorkflowPackageFixture> {
-  const workflowJs = await bundleWorkflowEntry(scratchDir, workflowEntrySource);
-
-  const packageDir = path.join(scratchDir, "package");
-  await fs.mkdir(packageDir, { recursive: true });
-  await fs.writeFile(
-    path.join(packageDir, "package.json"),
-    JSON.stringify({
-      name: PACKAGE_NAME,
-      version: PACKAGE_VERSION,
-      interchange: { workflow: WORKFLOW_ENTRY },
-    }),
-  );
-  await fs.writeFile(path.join(packageDir, "workflow.mjs"), workflowJs);
-
-  const tarballPath = path.join(scratchDir, "out.tgz");
-  await tar.create({ cwd: scratchDir, gzip: true, file: tarballPath }, [
-    "package",
-  ]);
-  const bytes = await fs.readFile(tarballPath);
-  return {
-    bytes,
-    tarballFilename: `${PACKAGE_BASENAME}-${PACKAGE_VERSION}.tgz`,
-  };
+): Promise<SyntheticNpmPackageTarball> {
+  return buildSyntheticNpmPackageTarball({
+    packageName: PACKAGE_NAME,
+    version: PACKAGE_VERSION,
+    moduleFilename: path.basename(WORKFLOW_ENTRY),
+    moduleSource: await bundleWorkflowEntry(scratchDir, workflowEntrySource),
+    manifest: { interchange: { workflow: WORKFLOW_ENTRY } },
+  });
 }
 
 let env: DeployFlowEnv;
 let h: TestDb;
 let scratchDir: string;
-let fixture: WorkflowPackageFixture;
+let fixture: SyntheticNpmPackageTarball;
 // The seeded blob bytes, keyed by asset-root-relative path, backing the install
 // call's `readBlob`/`listBlobs` closures (the hub reads the packument by
 // synthesizing it from the asset's tarballs; no HTTP).
