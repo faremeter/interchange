@@ -17,7 +17,6 @@ import {
 import {
   agentSession,
   liveWorkflowRunStatuses,
-  principal,
   sessionMail,
   sidecarAllocation,
   workflowRun,
@@ -35,6 +34,7 @@ import {
   listConsumedWorkflowDispatches,
 } from "./workflow-dispatch-settlement";
 import { readCommittedWorkflowRunLifecycle } from "./workflow-run-kind";
+import { projectTerminalRun } from "./workflow-run-terminal-projection";
 
 const logger = getLogger(["hub", "lookups"]);
 
@@ -430,89 +430,16 @@ export function createHubSessionLookups(
       const now = new Date();
       for (const { runId, status } of newlyTerminalRuns) {
         try {
-          await db.transaction(async (tx) => {
-            // Lazily anchor the run before settling it. An internal run that
-            // parks only on a plain signal gate never reaches
-            // `registerSignalCorrelation`, the sole other path that mints an
-            // internal run row, so its terminal event can be the first the hub
-            // sees of the run. A never-minted row is ordinary bookkeeping, not
-            // a deployment-boundary violation, so mint it here against this
-            // deployment's anchor rather than letting the ownership guard below
-            // mistake absence for foreignness. The insert no-ops when any row
-            // already exists, which keeps that guard authoritative for a row
-            // that exists and anchors elsewhere. The principal is null: an
-            // internal run inherits its deployment's grants and has none of its
-            // own.
-            //
-            // The mint necessarily precedes the ownership guard, so an id the
-            // hub has never seen is claimed under THIS anchor before anything
-            // establishes it belongs here. That ordering is required -- the
-            // guard reads the row the mint may have to create -- and it is
-            // bounded rather than unbounded: internal run ids are supplied by
-            // the sidecar and accepted verbatim, so the value is
-            // caller-influenced, but it is a different population from the
-            // anchor ids the hub mints itself, and nothing resolves an
-            // internal id without also constraining the anchor or the tenant.
-            // The insert cannot take a row away from another deployment; the
-            // worst it does is create one for an id that deployment would
-            // otherwise have created later.
-            await workflowRunStore.createIfAbsent(
-              {
-                id: runId,
-                anchorRunId: anchor.id,
-                definitionId: anchor.definitionId,
-                tenantId: anchor.tenantId,
-                principalId: null,
-                status: "running",
-              },
-              tx,
-            );
-            const [ownedRun] = await tx
-              .select({ anchorRunId: workflowRun.anchorRunId })
-              .from(workflowRun)
-              .where(eq(workflowRun.id, runId))
-              .limit(1);
-            if (ownedRun?.anchorRunId !== anchor.id) {
-              logger.error`Ignoring terminal event for run ${runId}: it does not belong to source deployment ${anchor.id}`;
-              return;
-            }
-            const won = await workflowRunStore.markTerminal(
+          const outcome = await db.transaction((tx) =>
+            projectTerminalRun(tx, workflowRunStore, {
+              anchor,
               runId,
               status,
               now,
-              tx,
-            );
-            if (won === null) {
-              // The row exists (the mint above guarantees it) and belongs to
-              // this deployment (the guard above), so no running row matched
-              // only because the run is already terminal -- a benign replay
-              // against an already-settled row. Leave its settled status and
-              // `endedAt` alone.
-              return;
-            }
-            // Deactivate the run's own principal, if it has one. Externally-
-            // triggered runs carry a principal; internal, workflow-spawned runs
-            // have `principalId = null` and inherit the deployment's grants, so
-            // there is nothing to deactivate. Deactivation is gated on winning
-            // the flip -- the single claim point -- not on the principal's own
-            // status.
-            if (won.principalId !== null) {
-              await tx
-                .update(principal)
-                .set({ status: "deactivated", updatedAt: now })
-                // The `refId` clause is a defensive mirror of the per-instance
-                // teardown in instances.ts: `won.principalId` is already this
-                // run's own principal, and `principal.id` is the primary key,
-                // so the `refId` match is belt-and-suspenders that the id we
-                // won belongs to this run.
-                .where(
-                  and(
-                    eq(principal.id, won.principalId),
-                    eq(principal.refId, runId),
-                  ),
-                );
-            }
-          });
+            }),
+          );
+          if (outcome === "foreign")
+            logger.error`Ignoring terminal event for run ${runId}: it does not belong to source deployment ${anchor.id}`;
         } catch (err) {
           // Per-run isolation: a failed flip for one run must not abort the
           // rest of the batch, and must not throw out of this method -- a throw
