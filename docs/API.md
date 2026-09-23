@@ -597,7 +597,7 @@ Body: unknown
 
 201: WorkflowDeploymentResponse -- Workflow deployment accepted for provisioning
 404: ErrorResponse -- Workflow asset not found
-409: ErrorResponse -- Workflow definition or source offering chain invalid, workflow provisioning unavailable, or provisioner selection failed
+409: ErrorResponse -- Asset kind does not match the source's package format, workflow definition or source offering chain invalid, workflow provisioning unavailable, or provisioner selection failed
 500: ErrorResponse -- Deployment projection row missing after preparation
 502: ErrorResponse -- Sidecar unavailable
 

@@ -242,7 +242,7 @@ export async function stageRunGrantsFromSnapshot(
 }
 
 /**
- * Load a workflow asset's `creatorPrincipalId` -- the creator whose
+ * Load a definition asset's `creatorPrincipalId` -- the creator whose
  * authority creator-sourced grant requirements resolve against. Returns
  * `null` when the asset records no creator (the FK is `set null` on
  * principal deletion) or the asset row is absent.
@@ -253,11 +253,7 @@ export async function loadAssetCreatorPrincipalId(
   definitionAssetId: string,
 ): Promise<string | null> {
   const assetRow = await db.query.asset.findFirst({
-    where: and(
-      eq(asset.id, definitionAssetId),
-      eq(asset.tenantId, tenantId),
-      eq(asset.kind, "workflow"),
-    ),
+    where: and(eq(asset.id, definitionAssetId), eq(asset.tenantId, tenantId)),
   });
   return assetRow?.creatorPrincipalId ?? null;
 }

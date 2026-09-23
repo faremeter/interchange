@@ -330,7 +330,6 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         where: and(
           eq(asset.id, definitionAssetId),
           eq(asset.tenantId, tenant.id),
-          eq(asset.kind, "workflow"),
         ),
       });
       if (!assetRow) {
