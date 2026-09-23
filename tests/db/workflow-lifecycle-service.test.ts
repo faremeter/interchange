@@ -642,6 +642,102 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
     });
 
+    test("a terminal anchor cannot release capacity while a child's accepted history is pending", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({ status: "completed", endedAt: current, lifecyclePolicy: null })
+        .where(eq(workflowRun.id, runId));
+      await addChild("run_child");
+      await leavePending();
+      let unreadable = true;
+      const lifecycle = service({
+        runReader: {
+          readRunEvents: async (_repo, _ref, id) => {
+            if (unreadable) throw new Error("Unreadable repository");
+            return id === "run_child"
+              ? [
+                  {
+                    seq: 1,
+                    type: "RunCompleted",
+                    body: { type: "RunCompleted", at: current.toISOString() },
+                  },
+                ]
+              : [];
+          },
+        },
+      });
+
+      expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe(
+        "history_pending",
+      );
+      expect(
+        (await lifecycle.getStatus(tenantId, runId))?.capacityReleaseAt,
+      ).toBeNull();
+      expect(await pendingIds()).toEqual([`wpp_${runId}`]);
+
+      unreadable = false;
+      expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe("pending");
+      expect(await runStates()).toEqual({
+        [runId]: "completed",
+        run_child: "completed",
+      });
+      expect(await pendingIds()).toEqual([]);
+    });
+
+    test("released capacity still reports unreconciled history as pending", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({ status: "completed", endedAt: current, lifecyclePolicy: null })
+        .where(eq(workflowRun.id, runId));
+      await h.db
+        .update(sidecarAllocation)
+        .set({ status: "released" })
+        .where(eq(sidecarAllocation.id, allocationId));
+      await addChild("run_child");
+      await leavePending();
+      const lifecycle = service({
+        runReader: {
+          readRunEvents: async () => {
+            throw new Error("Unreadable repository");
+          },
+        },
+      });
+
+      expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe(
+        "history_pending",
+      );
+      expect(await pendingIds()).toEqual([`wpp_${runId}`]);
+    });
+
+    test("permanent cleanup failure is not hidden behind unreconciled history", async () => {
+      await h.db
+        .update(workflowRun)
+        .set({ status: "completed", endedAt: current, lifecyclePolicy: null })
+        .where(eq(workflowRun.id, runId));
+      await h.db
+        .update(sidecarAllocation)
+        .set({
+          status: "destroy_failed",
+          failureCode: "provider_refused",
+          failureMessage: "Manual cleanup needed",
+        })
+        .where(eq(sidecarAllocation.id, allocationId));
+      await addChild("run_child");
+      await leavePending();
+      const lifecycle = service({
+        runReader: {
+          readRunEvents: async () => {
+            throw new Error("Unreadable repository");
+          },
+        },
+      });
+
+      expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe(
+        "cleanup_failed",
+      );
+      expect(await pendingIds()).toEqual([`wpp_${runId}`]);
+    });
+
     test("a missing repository keeps a receive's pending projection", async () => {
       await leavePending();
       const lifecycle = service({
@@ -1679,6 +1775,108 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect((await lifecycle.getStatus(tenantId, runId))?.status).toBe(
         "completed",
       );
+    });
+
+    async function loseCapacity(failedAt: Date) {
+      await h.db
+        .update(sidecarAllocation)
+        .set({
+          reconciliationLeaseId: "lease",
+          reconciliationLeaseExpiresAt: new Date(Date.now() + 3_600_000),
+        })
+        .where(eq(sidecarAllocation.id, allocationId));
+      expect(
+        await createSidecarAllocationStore(h.db).beginUnrecoverableRelease({
+          allocationId,
+          expectedGeneration: 1,
+          expectedLeaseId: "lease",
+          failureCode: "sidecar_lost",
+          failureMessage: "The worker is gone",
+          now: failedAt,
+        }),
+      ).not.toBeNull();
+    }
+
+    test("an unrecoverable capacity loss waits for accepted history before failing live runs", async () => {
+      await addChild("run_child_done");
+      await leavePending();
+      const failedAt = current;
+      await loseCapacity(failedAt);
+      expect(await runStates()).toEqual({
+        [runId]: "running",
+        run_child_done: "running",
+      });
+
+      current = new Date(current.getTime() + 60_000);
+      await service({
+        runReader: childHistory({
+          run_child_done: [
+            {
+              seq: 1,
+              type: "RunCompleted",
+              body: { type: "RunCompleted", at: failedAt.toISOString() },
+            },
+          ],
+        }),
+      }).reconcileNext();
+      expect(await runStates()).toEqual({
+        [runId]: "failed",
+        run_child_done: "completed",
+      });
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, runId),
+        }),
+      ).toMatchObject({ endedAt: failedAt, infrastructureFailedAt: null });
+      expect(await pendingIds()).toEqual([]);
+    });
+
+    test("an accepted anchor completion survives unrecoverable capacity loss", async () => {
+      complete("RunCompleted");
+      await leavePending();
+      await loseCapacity(current);
+      expect(await runStates()).toEqual({ [runId]: "running" });
+
+      current = new Date(current.getTime() + 60_000);
+      await service().reconcileNext();
+      expect(await runStates()).toEqual({ [runId]: "completed" });
+      expect(
+        (
+          await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, runId),
+          })
+        )?.infrastructureFailedAt,
+      ).toBeNull();
+      expect(await pendingIds()).toEqual([]);
+    });
+
+    test("an unrecoverable capacity loss with nothing pending fails live runs immediately", async () => {
+      await addChild("run_child_live");
+      await loseCapacity(current);
+      expect(await runStates()).toEqual({
+        [runId]: "failed",
+        run_child_live: "failed",
+      });
+      expect(
+        (
+          await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, runId),
+          })
+        )?.infrastructureFailedAt,
+      ).toBeNull();
+    });
+
+    test("a deferred capacity failure is applied after an explicit request reconciles history", async () => {
+      await leavePending();
+      const failedAt = current;
+      await loseCapacity(failedAt);
+      const lifecycle = service();
+      expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe("live");
+      expect(await pendingIds()).toEqual([]);
+
+      current = new Date(current.getTime() + 1_000);
+      expect(await lifecycle.reconcileNext()).toBe(true);
+      expect(await runStates()).toEqual({ [runId]: "failed" });
     });
   },
 );

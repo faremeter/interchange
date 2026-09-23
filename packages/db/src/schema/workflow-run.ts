@@ -111,6 +111,10 @@ export const workflowRun = pgTable(
     cancellationReason: text("cancellation_reason"),
     cancellationDeadline: timestamp("cancellation_deadline"),
     capacityReleaseAt: timestamp("capacity_release_at"),
+    // When unrecoverable capacity loss happened while accepted history could
+    // still settle some runs. Set on the anchor instead of failing its live
+    // runs; they are failed at this time once that history is reconciled.
+    infrastructureFailedAt: timestamp("infrastructure_failed_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     // Nullable: a run has no end time until it reaches a terminal state.
     endedAt: timestamp("ended_at"),
@@ -136,6 +140,9 @@ export const workflowRun = pgTable(
       .where(
         sql`${t.id} = ${t.anchorRunId} and ${t.status} in ('deployed', 'running')`,
       ),
+    index("workflow_run_infrastructure_failed_idx")
+      .on(t.id)
+      .where(sql`${t.infrastructureFailedAt} is not null`),
   ],
 );
 
