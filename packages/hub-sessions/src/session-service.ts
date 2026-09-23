@@ -153,7 +153,7 @@ export type InstallAndApproveWorkflowSourceParams = {
    * and asset-`tarball` variants; omitted for the asset-`source` variant.
    */
   pin?: string;
-  /** The `workflow`-kind asset the frozen definition projects a definition over. */
+  /** The definition asset: a workflow source tree or package-registry tarball. */
   definitionAssetId: string;
   /** The exact provisioned generation that executes the probe. */
   allocationTarget: AllocatedSidecarTarget;

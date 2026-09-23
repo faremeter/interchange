@@ -1877,7 +1877,7 @@ export type DeployWorkflowSourceForTestOpts = {
   db: TestDb["db"];
   /** The definition's OWN tenant. */
   tenantId: string;
-  /** The `workflow`-kind asset the frozen definition projects over. */
+  /** The `workflow`-kind definition asset the frozen definition projects over. */
   definitionAssetId: string;
 
   /** The deployment's anchor run id. */

@@ -183,9 +183,9 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     const messageAttachments = attachmentResult.attachments;
 
     // Resolve the deployment's anchor run and, through its definition, the
-    // workflow asset the trigger's grants derive from. The inner join to the
-    // definition yields the asset id and the definition id in one read, off
-    // the run rather than the deployment projection.
+    // definition asset the trigger's grants derive from. The inner join to
+    // the definition yields the asset id and the definition id in one read,
+    // off the run rather than the deployment projection.
     const [anchor] = await db
       .select({
         definitionId: workflowRun.definitionId,
@@ -330,7 +330,6 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
         where: and(
           eq(asset.id, definitionAssetId),
           eq(asset.tenantId, tenant.id),
-          eq(asset.kind, "workflow"),
         ),
       });
       if (!assetRow) {
@@ -340,7 +339,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           body: {
             error: {
               code: "invalid_workflow",
-              message: `Workflow asset ${definitionAssetId} not found`,
+              message: `Definition asset ${definitionAssetId} not found`,
             },
           },
         };
