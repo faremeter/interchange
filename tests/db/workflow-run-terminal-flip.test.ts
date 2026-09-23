@@ -24,7 +24,12 @@ import {
   createWorkflowRunDispatchStore,
   createWorkflowRunStore,
 } from "@intx/db";
-import { principal, sidecarAllocation, workflowRun } from "@intx/db/schema";
+import {
+  principal,
+  sidecarAllocation,
+  workflowPendingProjection,
+  workflowRun,
+} from "@intx/db/schema";
 import {
   createAgentRepoStore,
   createHubSessionLookups,
@@ -324,6 +329,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .from(principal)
         .where(eq(principal.id, "prn-run"));
       expect(prn?.status).toBe("deactivated");
+      expect(await h.db.select().from(workflowPendingProjection)).toEqual([]);
     });
 
     test("maps RunFailed and RunCancelled to their statuses", async () => {
@@ -630,6 +636,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(won?.endedAt).toEqual(endedAt);
     });
 
+    test("a receive that fails before reaching Git clears its pending projection", async () => {
+      const failLockDb = new Proxy(h.db, {
+        get(target, prop, receiver) {
+          if (prop === "transaction")
+            return (): never => {
+              throw new Error("injected lock failure");
+            };
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      const { pack, tip } = await buildPack([
+        { runId: DEPLOYMENT, terminalType: "RunCompleted" },
+      ]);
+      expect(await receiveWith(failLockDb, pack, tip)).toEqual({
+        accepted: false,
+        reason: "corrupt",
+      });
+      expect(await h.db.select().from(workflowPendingProjection)).toEqual([]);
+    });
+
     test("a failed flip for one run does not block the batch or the ack", async () => {
       // The regression that proves the withdrawn crash-window is closed: with
       // two newly-terminal runs in one pack, if ONE run's DB flip throws,
@@ -715,6 +741,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expect(principalStatusById.get(`prn-${runId}`)).toBe("active");
         }
       }
+
+      // The failed flip leaves a durable record that its projection is owed.
+      expect(await h.db.select().from(workflowPendingProjection)).toHaveLength(
+        1,
+      );
     });
   },
 );
