@@ -67,6 +67,10 @@ function spawnSidecarProcess({
         SIDECAR_DATA_DIR: dataDir,
         SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
           "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        // The ensure request is the declaration channel; setting it
+        // unconditionally keeps an ambient manifest in process.env from
+        // leaking into a spawned sidecar the hub did not configure.
+        SIDECAR_ADAPTER_MANIFEST: JSON.stringify(request.adapterManifest ?? []),
       },
       stdin: "ignore",
       stdout: "inherit",

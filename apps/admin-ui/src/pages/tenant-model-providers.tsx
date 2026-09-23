@@ -48,9 +48,7 @@ const PLUGINS: ModelProviderPluginValue[] = [
   "google-genai",
 ];
 
-function isPlugin(v: string): v is ModelProviderPluginValue {
-  return (PLUGINS as string[]).includes(v);
-}
+const CUSTOM_PLUGIN = "__custom__";
 
 export function TenantModelProvidersPage() {
   const { tenantId } = useParams({
@@ -71,15 +69,18 @@ export function TenantModelProvidersPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
-  const [createPlugin, setCreatePlugin] =
-    useState<ModelProviderPluginValue>("anthropic");
+  const [createPlugin, setCreatePlugin] = useState("anthropic");
+  const [createCustomPlugin, setCreateCustomPlugin] = useState("");
   const [createBaseURL, setCreateBaseURL] = useState("");
   const [createCredentialId, setCreateCredentialId] = useState("");
   const selectedCredentialId = createCredentialId || credentials?.[0]?.id || "";
+  const createPluginValue =
+    createPlugin === CUSTOM_PLUGIN ? createCustomPlugin.trim() : createPlugin;
 
   function resetCreateForm() {
     setCreateName("");
     setCreatePlugin("anthropic");
+    setCreateCustomPlugin("");
     setCreateBaseURL("");
     setCreateCredentialId("");
   }
@@ -182,7 +183,7 @@ export function TenantModelProvidersPage() {
               e.preventDefault();
               const body: CreateModelProviderBody = {
                 name: createName.trim(),
-                plugin: createPlugin,
+                plugin: createPluginValue,
                 baseURL: createBaseURL.trim(),
                 credentialId: selectedCredentialId,
               };
@@ -202,12 +203,7 @@ export function TenantModelProvidersPage() {
             </div>
             <div className="grid gap-2">
               <Label>Plugin</Label>
-              <Select
-                value={createPlugin}
-                onValueChange={(v) => {
-                  if (isPlugin(v)) setCreatePlugin(v);
-                }}
-              >
+              <Select value={createPlugin} onValueChange={setCreatePlugin}>
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -217,8 +213,24 @@ export function TenantModelProvidersPage() {
                       {p}
                     </SelectItem>
                   ))}
+                  <SelectItem value={CUSTOM_PLUGIN}>
+                    Custom (operator-registered)
+                  </SelectItem>
                 </SelectContent>
               </Select>
+              {createPlugin === CUSTOM_PLUGIN && (
+                <Input
+                  value={createCustomPlugin}
+                  onChange={(e) => setCreateCustomPlugin(e.target.value)}
+                  placeholder="Adapter manifest provider key, e.g. openai-responses"
+                  required
+                />
+              )}
+              <p className="text-xs text-muted-foreground">
+                A custom key names an adapter registered in the operator's
+                sidecar adapter manifest; a key no sidecar registers fails
+                deployment.
+              </p>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="provider-baseurl">Base URL</Label>
@@ -259,6 +271,7 @@ export function TenantModelProvidersPage() {
                 disabled={
                   createMut.isPending ||
                   !createName.trim() ||
+                  !createPluginValue ||
                   !createBaseURL.trim() ||
                   !selectedCredentialId
                 }

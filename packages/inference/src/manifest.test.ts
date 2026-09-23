@@ -1,10 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import type { AdapterFactory, ProviderAdapter } from "./adapter";
-import {
-  loadAdapterFactories,
-  type AdapterManifest,
-  type ModuleImporter,
-} from "./manifest";
+import type { AdapterManifest } from "@intx/types";
+import { loadAdapterFactories, type ModuleImporter } from "./manifest";
 
 function createStubAdapter(): ProviderAdapter {
   return {
