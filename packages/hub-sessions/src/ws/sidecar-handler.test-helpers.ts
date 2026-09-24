@@ -87,6 +87,12 @@ export function createMockWs(): WsHandle & {
   };
 }
 
+/** The ref tips a stopped test worker reports, which the test Hub holds. */
+export const TEST_REF_TIPS = {
+  "refs/heads/main": "c".repeat(40),
+  "refs/heads/events": null,
+};
+
 export function createAllocatedRouter(
   config: Partial<SidecarRouterConfig> = {},
 ) {
@@ -97,6 +103,10 @@ export function createAllocatedRouter(
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
     ...config,
+    lookups: {
+      readWorkflowRunRefTips: async () => TEST_REF_TIPS,
+      ...config.lookups,
+    },
   });
   router.fenceAllocation(TEST_TARGET.allocationId, TEST_TARGET.generation);
   return router;

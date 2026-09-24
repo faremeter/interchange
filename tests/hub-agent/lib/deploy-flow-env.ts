@@ -59,6 +59,7 @@ import {
   installAndApproveWorkflowDefinition,
   DEFAULT_ASSET_REF,
   parseAgentId,
+  readWorkflowRunRefTips,
   type AgentRepoStore,
   type InstallAndApproveResult,
   type RepoId,
@@ -1017,6 +1018,10 @@ export async function startHub(
         outboundMail.push({ senderAddress, recipients, raw });
         return Promise.resolve([]);
       },
+      // The Hub's own history tips, so a stop is confirmed against the
+      // commits this Hub actually received, as in production.
+      readWorkflowRunRefTips: (agentAddress) =>
+        readWorkflowRunRefTips(agentRepoStore.repoStore, agentAddress),
       // Co-write the signal_correlation + approval rows when a suspending
       // agent step's `signal.correlation.register` frame arrives. Only the
       // approval capstone wires this (against a real DB); every other test

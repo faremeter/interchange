@@ -56,6 +56,7 @@ export {
   type AllocatedSidecarTarget,
   type SidecarAllocationRouter,
   SidecarIdentityValidationError,
+  WorkflowControlHistoryPendingError,
   WorkflowControlInitializingError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
@@ -226,6 +227,7 @@ export {
   type WorkflowRunSupervisorPrincipal,
 } from "./workflow-run-kind";
 export {
+  readWorkflowRunRefTips,
   restoreWorkflowRunToAllocation,
   WORKFLOW_RUN_RESTORE_REFS,
 } from "./workflow-run-restore";

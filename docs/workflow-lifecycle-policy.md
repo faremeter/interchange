@@ -104,11 +104,17 @@ never receive their first trigger. If still live at expiry, the Hub stops the
 deployment as `cancelled`, allowing a 30-second cancellation grace period before stopping the process.
 Forced stop preempts a pending cooperative cancellation. The sidecar acknowledges
 stop only after the child exits and its restart record is removed; inspection
-state remains until allocation cleanup.
+state remains until allocation cleanup. The acknowledgement reports the tip of
+each workflow-history ref, and the sidecar pushes any commit the Hub has not
+acknowledged. The Hub confirms the stop only once it holds those tips; until
+then the stop is retried until 60 seconds past the cancellation deadline, or
+past Hub startup if that is later.
 Cancellation also removes the restart record before acknowledgement when no
 supervisor remains, preventing a later sidecar restart from reviving the run.
 If the worker cannot confirm its stop, the Hub releases its allocation and waits
-for confirmed destruction before recording cancellation. Enforcement resumes
+for confirmed destruction before recording cancellation. History the Hub never
+received is destroyed with the worker, so the recorded outcome then reflects only
+accepted history, even if the worker had committed a different one. Enforcement resumes
 after a Hub outage; the deadline does not promise an exact destruction time.
 
 `capacityRetention` starts when the top-level run becomes terminal. Here, failure

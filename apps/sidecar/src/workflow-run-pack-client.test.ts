@@ -4,6 +4,7 @@ import type { InferenceSource } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/sidecar";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import { waitUntil } from "@intx/types/testing";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import {
   createDeploymentAddressRegistry,
@@ -16,7 +17,9 @@ import {
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
 
-function createRecordingUnderlyingRepoStore(): {
+function createRecordingUnderlyingRepoStore(
+  refTips: Record<string, string | null> = {},
+): {
   store: RepoStore;
   preserveCalls: {
     principal: { kind: string };
@@ -53,13 +56,14 @@ function createRecordingUnderlyingRepoStore(): {
         newlyTerminalRuns: [],
       };
     },
-    async resolveRef(_principal, _repoId, _ref) {
+    async resolveRef(_principal, _repoId, ref) {
       // The client's empty-delta guard compares the current ref tip against
       // the last commit it acked. Return a fixed tip distinct from the
       // `createPack` sha so the guard never short-circuits these tests: the
       // client acks `stub-pack-sha`, so a tip of `stub-tip-sha` always has
       // un-shipped work.
-      return "stub-tip-sha";
+      const tip = refTips[ref];
+      return tip === undefined ? "stub-tip-sha" : tip;
     },
     async createPack(principal, repoId, ref) {
       packs.push({ principal, repoId, ref });
@@ -547,6 +551,66 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     // The re-drive re-shipped the un-acked commits; the second attempt
     // succeeds, so the latched error clears and flush resolves cleanly.
     expect(pushCount).toBe(2);
+  });
+
+  test("reportWorkflowRunRefTips reports every ref's tip and pushes the refs that exist", async () => {
+    const { store } = createRecordingUnderlyingRepoStore({
+      "refs/heads/main": "main-tip",
+      "refs/heads/events": null,
+    });
+    const pushed: { agentAddress: string; repoId: RepoId; ref: string }[] = [];
+    // No registered deployment: a stop after a sidecar restart still ships
+    // the history it finds on disk.
+    const facade = createWorkflowRunPackPushingRepoStore({
+      underlying: store,
+      packClient: {
+        async push(opts) {
+          pushed.push(opts);
+        },
+      },
+      registry: createDeploymentAddressRegistry(),
+    });
+    const agentAddress = "run_reported@example.com";
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(agentAddress),
+    };
+
+    expect(await facade.reportWorkflowRunRefTips(agentAddress)).toEqual({
+      "refs/heads/main": "main-tip",
+      "refs/heads/events": null,
+    });
+    await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
+    expect(pushed).toEqual([{ agentAddress, repoId, ref: "refs/heads/main" }]);
+  });
+
+  test("reportWorkflowRunRefTips ships a stopped deployment's history after a disconnect blocked it", async () => {
+    const { store } = createRecordingUnderlyingRepoStore({
+      "refs/heads/main": "main-tip",
+      "refs/heads/events": null,
+    });
+    const pushed: { agentAddress: string; repoId: RepoId; ref: string }[] = [];
+    const facade = createWorkflowRunPackPushingRepoStore({
+      underlying: store,
+      packClient: {
+        async push(opts) {
+          pushed.push(opts);
+        },
+      },
+      registry: createDeploymentAddressRegistry(),
+    });
+    const agentAddress = "run_stopped_blocked@example.com";
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(agentAddress),
+    };
+
+    // The link dropped while the deployment was stopping. The reconnect will
+    // not announce the stopped address, so nothing else lifts this block.
+    facade.markAddressUnroutable(agentAddress);
+    await facade.reportWorkflowRunRefTips(agentAddress);
+    await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
+    expect(pushed).toEqual([{ agentAddress, repoId, ref: "refs/heads/main" }]);
   });
 
   test("notifyAddressRoutable is a no-op for a slot with nothing un-shipped", async () => {

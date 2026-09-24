@@ -1,4 +1,7 @@
+import type { WorkflowRunRefTips } from "@intx/types/sidecar";
+
 import type { AgentRepoStore } from "./agent-repo";
+import type { RepoStore } from "./repo-store";
 import {
   workflowRunRepoIdForAddress,
   WORKFLOW_RUN_REF,
@@ -12,6 +15,18 @@ export const WORKFLOW_RUN_RESTORE_REFS = [
   WORKFLOW_RUN_REF,
   "refs/heads/events",
 ] as const;
+
+/** Read the Hub's tip of each authoritative ref of a deployment's history. */
+export async function readWorkflowRunRefTips(
+  repoStore: Pick<RepoStore, "resolveRef">,
+  agentAddress: string,
+): Promise<WorkflowRunRefTips> {
+  const repoId = workflowRunRepoIdForAddress(agentAddress);
+  const tips: WorkflowRunRefTips = {};
+  for (const ref of WORKFLOW_RUN_RESTORE_REFS)
+    tips[ref] = await repoStore.resolveRef({ kind: "hub" }, repoId, ref);
+  return tips;
+}
 
 /**
  * Replay every authoritative workflow-run ref the runtime understands onto an
