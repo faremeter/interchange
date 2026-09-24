@@ -4,6 +4,7 @@ import type {
   InferenceOptions,
   LastCycleSource,
 } from "@intx/types/runtime";
+import type { ResponseKind } from "@intx/types/content-type";
 
 // The request shape the harness passes to fetch.
 export type BuiltRequest = {
@@ -72,12 +73,25 @@ export type RetryAfterExtractor = (headers: Headers) => number | undefined;
 // wait before the next request, or undefined if no pacing is needed.
 export type PacingExtractor = (headers: Headers) => number | undefined;
 
+// Names the response protocol of a 2xx whose Content-Type the harness could
+// not classify on its own (absent, or neither SSE nor JSON). The harness
+// consults it only after its own detection fails, so a response with a
+// recognised Content-Type never reaches it. Returning undefined declines,
+// and the harness surfaces the protocol mismatch exactly as it would
+// without the hook. It exists for backends that omit the header on a
+// stream the adapter itself requested, where the adapter is the one party
+// that knows what it asked for.
+export type ResponseKindClassifier = (
+  headers: Headers,
+) => ResponseKind | undefined;
+
 export type ProviderAdapter = {
   buildRequest: RequestBuilder;
   parseResponse: ResponseParser;
   parseJSONResponse: JSONResponseParser;
   extractRetryAfterMs?: RetryAfterExtractor;
   extractPacingDelayMs?: PacingExtractor;
+  classifyResponse?: ResponseKindClassifier;
 };
 
 // Builds a fresh adapter for one inference call. Invoked per call so the
