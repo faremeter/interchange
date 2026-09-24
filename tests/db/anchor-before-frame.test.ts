@@ -64,6 +64,7 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+import type { ResolvedWorkflowLifecyclePolicy } from "@intx/types";
 import type {
   HarnessConfig,
   InferenceSource,
@@ -88,6 +89,11 @@ import {
   waitFor,
 } from "../hub-agent/lib/deploy-flow-env";
 import { createMockWs } from "./sidecar-test-helpers";
+
+const TEST_DEFAULT_LIFECYCLE_POLICY: ResolvedWorkflowLifecyclePolicy = {
+  maxLifetime: "7d",
+  capacityRetention: { completed: "30m", failed: "24h", cancelled: "1h" },
+};
 
 const TENANT_ID = "tnt_anchor_before_frame";
 const DEFINITION_ID = "def_anchor_before_frame";
@@ -494,6 +500,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             allocationRouter: router,
             credentialCipher: createNoopCredentialCipher(),
             hubWebSocketUrl: "ws://unused",
+            defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
           });
           const reconciler = createSidecarAllocationReconciler({
             allocationStore: store,

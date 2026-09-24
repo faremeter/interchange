@@ -65,6 +65,14 @@ export const WorkflowLifecyclePolicy = type({
 }).onUndeclaredKey("reject");
 export type WorkflowLifecyclePolicy = typeof WorkflowLifecyclePolicy.infer;
 
+/** A policy with every field set, as a deployment's effective policy is. */
+export type ResolvedWorkflowLifecyclePolicy = {
+  maxLifetime: LifecycleDuration;
+  capacityRetention: Required<
+    NonNullable<WorkflowLifecyclePolicy["capacityRetention"]>
+  >;
+};
+
 export type WorkflowLifecyclePolicyResolution =
   | { ok: true; policy: WorkflowLifecyclePolicy }
   | { ok: false; field: string; requested: string; limit: string };

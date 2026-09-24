@@ -4,6 +4,7 @@ import {
   WorkflowLifecyclePolicy,
   clampWorkflowLifecyclePolicy,
   resolveWorkflowLifecyclePolicy,
+  type ResolvedWorkflowLifecyclePolicy,
 } from "@intx/types";
 
 import type { DBExecutor } from "./client";
@@ -51,11 +52,16 @@ export async function validateLifecyclePolicyEdit(
   ]);
 }
 
+/**
+ * `defaults` fills fields no tenant or installed workflow sets. Unlike a
+ * tenant value it is not a ceiling, so either level may set a longer duration.
+ */
 export async function resolveDeploymentLifecyclePolicy(
   db: DBExecutor,
   tenantId: string,
   definitionId: string,
-) {
+  defaults: ResolvedWorkflowLifecyclePolicy,
+): Promise<ResolvedWorkflowLifecyclePolicy> {
   const policies = await loadTenantLifecyclePolicies(db, tenantId);
   const [definition] = await db
     .select({
@@ -68,5 +74,12 @@ export async function resolveDeploymentLifecyclePolicy(
     throw new Error("Workflow definition does not belong to deployment tenant");
   }
   policies.push(parseWorkflowDefinitionLifecyclePolicy(definition.policy));
-  return clampWorkflowLifecyclePolicy(policies);
+  const policy = clampWorkflowLifecyclePolicy(policies);
+  return {
+    maxLifetime: policy.maxLifetime ?? defaults.maxLifetime,
+    capacityRetention: {
+      ...defaults.capacityRetention,
+      ...policy.capacityRetention,
+    },
+  };
 }
