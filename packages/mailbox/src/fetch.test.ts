@@ -131,6 +131,43 @@ function rawMultipart(body: string): Uint8Array {
   );
 }
 
+/** Conversation mail whose text/plain attachment is quoted-printable `caf=E9`. */
+function rawQuotedPrintableAttachment(): Uint8Array {
+  return encoder.encode(
+    [
+      "From: alice@x",
+      "To: bob@y",
+      "Subject: QP",
+      "Message-ID: <qp@x>",
+      "Date: Thu, 01 Jan 2026 00:00:00 +0000",
+      "Interchange-Type: conversation.message",
+      `Content-Type: multipart/signed; protocol="application/pgp-signature"; micalg=pgp-sha512; boundary="outer"`,
+      "",
+      "--outer",
+      `Content-Type: multipart/mixed; boundary="inner"`,
+      "",
+      "--inner",
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: 7bit",
+      "",
+      "see attached",
+      "--inner",
+      "Content-Type: text/plain",
+      "Content-Transfer-Encoding: quoted-printable",
+      `Content-Disposition: attachment; filename="cafe.txt"`,
+      "",
+      "caf=E9",
+      "--inner--",
+      "--outer",
+      "Content-Type: application/pgp-signature",
+      "",
+      "FAKE",
+      "--outer--",
+      "",
+    ].join("\r\n"),
+  );
+}
+
 /**
  * A multipart/mixed message whose single part declares `encoding`. The part
  * declares a bare `text/plain` with no parameters, so the type `fetchPart`
@@ -488,6 +525,72 @@ describe("async fetch projections route through readRaw", () => {
       expect(new TextDecoder().decode(whole?.content)).toBe(c.content);
       expect(whole?.contentType).toBe(c.contentType);
     }
+  });
+
+  test("fetchPart undoes quoted-printable the same way listing does", async () => {
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      rawQuotedPrintableAttachment(),
+      envelopeFor({
+        messageId: "<qp@x>",
+        subject: "QP",
+        interchangeType: "conversation.message",
+      }),
+      [],
+    );
+    const ref = { uid, mailbox: "INBOX" };
+    const listed = await fetchFull(ref, store, () => undefined);
+    const attachment = listed.attachments?.[0];
+    if (attachment === undefined)
+      throw new Error("expected a listed attachment");
+    expect(Array.from(attachment.data)).toEqual([0x63, 0x61, 0x66, 0xe9]);
+
+    const fetched = await fetchPart(ref, attachment.part ?? "1.2", store);
+    expect(Array.from(fetched.content)).toEqual(Array.from(attachment.data));
+  });
+
+  test("fetchFull undoes the text body's transfer encoding like fetchPart", async () => {
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      encoder.encode(
+        [
+          "From: alice@x",
+          "To: bob@y",
+          "Subject: QP body",
+          "Message-ID: <qpbody@x>",
+          "Date: Thu, 01 Jan 2026 00:00:00 +0000",
+          "Interchange-Type: conversation.message",
+          `Content-Type: multipart/signed; protocol="application/pgp-signature"; micalg=pgp-sha512; boundary="outer"`,
+          "",
+          "--outer",
+          `Content-Type: multipart/mixed; boundary="inner"`,
+          "",
+          "--inner",
+          "Content-Type: text/plain; charset=utf-8",
+          "Content-Transfer-Encoding: quoted-printable",
+          "",
+          "Bonjour, caf=C3=A9",
+          "--inner--",
+          "--outer",
+          "Content-Type: application/pgp-signature",
+          "",
+          "FAKE",
+          "--outer--",
+          "",
+        ].join("\r\n"),
+      ),
+      envelopeFor({
+        messageId: "<qpbody@x>",
+        interchangeType: "conversation.message",
+      }),
+      [],
+    );
+    const ref = { uid, mailbox: "INBOX" };
+    const full = await fetchFull(ref, store, () => undefined);
+    expect(full.content).toBe("Bonjour, café");
+
+    const part = await fetchPart(ref, "1.1", store);
+    expect(new TextDecoder().decode(part.content)).toBe("Bonjour, café");
   });
 
   test("fetch projections reject an absent uid", async () => {

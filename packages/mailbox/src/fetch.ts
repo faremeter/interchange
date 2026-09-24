@@ -69,8 +69,10 @@ export async function fetchStructure(
 }
 
 /**
- * Fetch a single MIME part by dot-separated path. `contentType` carries the
- * RFC 2045 §6.4 relabel, since an undecodable part arrives undecoded.
+ * Fetch a single MIME part by dot-separated path. `content` is the
+ * CTE-decoded bytes, matching `extractAttachments` / `decodeMail`, and
+ * `contentType` carries the RFC 2045 §6.4 relabel, since an undecodable
+ * part arrives undecoded.
  */
 export async function fetchPart(
   ref: MessageRef,
