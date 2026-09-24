@@ -57,67 +57,92 @@ function decode(data: string | Uint8Array): Uint8Array | null {
 }
 
 /**
- * Validate and decode request-body attachments against a policy.
+ * Validate and decode attachments against a policy at either boundary
+ * (mail tools or the request body).
  *
- * The most specific error wins, in this priority order so the caller sees
- * the most actionable failure: per-attachment oversize, then disallowed
- * MIME type, then invalid name, then malformed base64, then per-message
- * total oversize. On success the decoded `MessageAttachment[]` is returned
- * with names defaulted to `attachment-{index}` by request-body position.
+ * Encoded base64 is size-checked from its string length before decode —
+ * decoded bytes never exceed 3/4 of the encoded length — and the first
+ * error returns without decoding later entries. Remaining checks, in
+ * encounter order: per-attachment oversize, disallowed MIME type, invalid
+ * name, malformed base64. After every attachment passes, the per-message
+ * total is checked. On success the decoded `MessageAttachment[]` is
+ * returned with names defaulted to `attachment-{index}` by input position.
  */
 export function validateAttachments(
   inputs: readonly AttachmentInput[],
   policy: AttachmentPolicy = DEFAULT_ATTACHMENT_POLICY,
 ): AttachmentValidationResult {
-  let oversize: AttachmentValidationError | undefined;
-  let disallowed: AttachmentValidationError | undefined;
-  let invalidName: AttachmentValidationError | undefined;
-  let malformed: AttachmentValidationError | undefined;
   const decoded: MessageAttachment[] = [];
 
   for (const [index, input] of inputs.entries()) {
+    if (typeof input.data === "string") {
+      const encodedUpperBound = Math.floor((input.data.length * 3) / 4);
+      if (encodedUpperBound > policy.perAttachmentLimitBytes) {
+        return {
+          ok: false,
+          error: {
+            code: "oversize_attachment",
+            message: `attachment ${index} is ${encodedUpperBound} bytes, over the ${policy.perAttachmentLimitBytes}-byte limit`,
+            attachmentIndex: index,
+            byteLength: encodedUpperBound,
+            limitBytes: policy.perAttachmentLimitBytes,
+          },
+        };
+      }
+    }
+
     const bytes = decode(input.data);
     if (bytes === null) {
-      malformed ??= {
-        code: "malformed_base64",
-        message: `attachment ${index} is not valid base64`,
-        attachmentIndex: index,
+      return {
+        ok: false,
+        error: {
+          code: "malformed_base64",
+          message: `attachment ${index} is not valid base64`,
+          attachmentIndex: index,
+        },
       };
-      continue;
     }
     if (bytes.length > policy.perAttachmentLimitBytes) {
-      oversize ??= {
-        code: "oversize_attachment",
-        message: `attachment ${index} is ${bytes.length} bytes, over the ${policy.perAttachmentLimitBytes}-byte limit`,
-        attachmentIndex: index,
-        byteLength: bytes.length,
-        limitBytes: policy.perAttachmentLimitBytes,
+      return {
+        ok: false,
+        error: {
+          code: "oversize_attachment",
+          message: `attachment ${index} is ${bytes.length} bytes, over the ${policy.perAttachmentLimitBytes}-byte limit`,
+          attachmentIndex: index,
+          byteLength: bytes.length,
+          limitBytes: policy.perAttachmentLimitBytes,
+        },
       };
-      continue;
     }
     const mimeType = mimeTypeAndSubtype(input.mimeType);
     if (!policy.isAllowed(mimeType)) {
-      disallowed ??= {
-        code: "disallowed_mime_type",
-        message: `attachment ${index} has unsupported content type "${input.mimeType}"`,
-        attachmentIndex: index,
-        mimeType: input.mimeType,
+      return {
+        ok: false,
+        error: {
+          code: "disallowed_mime_type",
+          message: `attachment ${index} has unsupported content type "${input.mimeType}"`,
+          attachmentIndex: index,
+          mimeType: input.mimeType,
+        },
       };
-      continue;
     }
     // A user-supplied name becomes the MIME part's quoted filename, so it
     // must not contain characters that would break out of the header
-    // (line breaks or a double quote). The default name is always safe.
+    // (line breaks or a double quote). Empty and whitespace-only names
+    // cannot round-trip through `filename=""`. The default name is always
+    // safe.
     if (
       input.name !== undefined &&
       (input.name.trim() === "" || /[\r\n"]/.test(input.name))
     ) {
-      invalidName ??= {
-        code: "invalid_attachment_name",
-        message: `attachment ${index} has a name with invalid characters (no quotes or line breaks)`,
-        attachmentIndex: index,
+      return {
+        ok: false,
+        error: {
+          code: "invalid_attachment_name",
+          message: `attachment ${index} has a name with invalid characters (no quotes or line breaks)`,
+          attachmentIndex: index,
+        },
       };
-      continue;
     }
     decoded.push({
       name: input.name ?? `attachment-${index}`,
@@ -125,11 +150,6 @@ export function validateAttachments(
       data: bytes,
     });
   }
-
-  if (oversize !== undefined) return { ok: false, error: oversize };
-  if (disallowed !== undefined) return { ok: false, error: disallowed };
-  if (invalidName !== undefined) return { ok: false, error: invalidName };
-  if (malformed !== undefined) return { ok: false, error: malformed };
 
   const totalBytes = decoded.reduce((sum, a) => sum + a.data.length, 0);
   if (totalBytes > policy.perMessageTotalLimitBytes) {

@@ -151,7 +151,7 @@ describe("validateAttachments", () => {
 
   test("rejects an oversize attachment with byte length and limit", () => {
     const result = validateAttachments(
-      [{ mimeType: "image/png", data: bytesOfLength(101) }],
+      [{ mimeType: "image/png", data: new Uint8Array(101) }],
       policy,
     );
     expect(result).toMatchObject({
@@ -160,6 +160,25 @@ describe("validateAttachments", () => {
         code: "oversize_attachment",
         attachmentIndex: 0,
         byteLength: 101,
+        limitBytes: 100,
+      },
+    });
+  });
+
+  test("rejects encoded base64 whose length already exceeds the decoded limit", () => {
+    // floor(len * 3 / 4) is an upper bound on decoded size; 200 chars of
+    // junk cannot decode to ≤100 bytes, so this fails before base64Decode.
+    const encoded = "x".repeat(200);
+    const result = validateAttachments(
+      [{ mimeType: "image/png", data: encoded }],
+      policy,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "oversize_attachment",
+        attachmentIndex: 0,
+        byteLength: Math.floor((encoded.length * 3) / 4),
         limitBytes: 100,
       },
     });
@@ -184,8 +203,8 @@ describe("validateAttachments", () => {
     // most specific error and must win over oversize_total.
     const result = validateAttachments(
       [
-        { mimeType: "image/png", data: bytesOfLength(200) },
-        { mimeType: "application/pdf", data: bytesOfLength(10) },
+        { mimeType: "image/png", data: new Uint8Array(200) },
+        { mimeType: "application/pdf", data: new Uint8Array(10) },
       ],
       policy,
     );
@@ -200,22 +219,20 @@ describe("validateAttachments", () => {
     });
   });
 
-  test("oversize wins over disallowed mimeType and malformed base64", () => {
+  test("returns the first error without decoding later entries", () => {
     const result = validateAttachments(
       [
-        { mimeType: "image/tiff", data: b64([1]) }, // disallowed
-        { mimeType: "image/png", data: "@@bad@@" }, // malformed
-        { mimeType: "image/png", data: bytesOfLength(200) }, // oversize
+        { mimeType: "image/tiff", data: b64([1]) },
+        { mimeType: "image/png", data: "x".repeat(200) },
       ],
       policy,
     );
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: "oversize_attachment",
-        attachmentIndex: 2,
-        byteLength: 200,
-        limitBytes: 100,
+        code: "disallowed_mime_type",
+        attachmentIndex: 0,
+        mimeType: "image/tiff",
       },
     });
   });
