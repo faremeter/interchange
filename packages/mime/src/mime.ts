@@ -1356,7 +1356,8 @@ export function decodePartBytes(
 
 /**
  * Extract conversation attachments from raw message bytes as
- * `MessageAttachment[]` with decoded payloads.
+ * `MessageAttachment[]` with decoded payloads and the IMAP part path
+ * of each sibling (`part`), matching `extractPartByPath` numbering.
  *
  * The conversation signed content is a multipart/mixed whose first part is
  * the text body and whose remaining attachment parts (Content-Disposition:
@@ -1388,7 +1389,10 @@ export function extractAttachments(raw: Uint8Array): MessageAttachment[] {
   if (innerBoundary === undefined) return [];
 
   const attachments: MessageAttachment[] = [];
-  for (const subPartBytes of parseMultipart(signed.body, innerBoundary)) {
+  for (const [index, subPartBytes] of parseMultipart(
+    signed.body,
+    innerBoundary,
+  ).entries()) {
     const subPart = parseMimePart(subPartBytes);
     if (!isAttachmentPart(subPart.contentType, subPart.headers)) continue;
     attachments.push({
@@ -1398,6 +1402,7 @@ export function extractAttachments(raw: Uint8Array): MessageAttachment[] {
         subPart.headers,
       ),
       data: decodePartBytes(subPart.body, subPart.headers),
+      part: `1.${String(index + 1)}`,
     });
   }
   return attachments;
