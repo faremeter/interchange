@@ -137,6 +137,11 @@ export type MessageAttachment = {
   name: string;
   contentType: string;
   data: Uint8Array;
+  /**
+   * IMAP BODY section of this part, stamped by `extractAttachments` from
+   * the parsed sibling numbering. Absent on outbound attachments.
+   */
+  part?: string;
 };
 
 /**

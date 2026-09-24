@@ -39,3 +39,7 @@ message is sent. `mail_read` surfaces received attachments as
 responses; a follow-up `mail_read` with that `part` path returns the
 attachment as text (`encoding: "utf-8"`) for text-like types whose
 bytes are valid UTF-8 and as base64 (`encoding: "base64"`) otherwise.
+`part` is the parsed IMAP sibling path stamped from the message (the
+same numbering `fetchPart` uses), not `1.${attachmentIndex+2}`. Writer-
+shaped conversation mail still starts attachments at `1.2`; extra inline
+siblings (for example `text/html`) shift later files.

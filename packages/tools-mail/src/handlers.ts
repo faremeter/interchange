@@ -155,21 +155,26 @@ function decodeStrictUTF8(bytes: Uint8Array): string | undefined {
  * and how to fetch it with a MIME part path, without inlining the
  * (possibly large) payload.
  *
- * Part numbering matches the writer (MESSAGE.md § Mail Tools): BODY[1.1] is
- * always the text part, so attachments start at BODY[1.2]. Mail laid out
- * any other way would be numbered incorrectly.
+ * Part numbering is the parsed IMAP path stamped on each attachment by
+ * `@intx/mime` `extractAttachments` — the same sibling numbering
+ * `extractPartByPath` uses, including skipped inline html/text siblings.
+ * Do not recompute `1.${index+2}` here: that only matches writer-shaped
+ * mail with no extra parts.
  */
 function attachmentsField(message: InboundMessage) {
   if (message.attachments === undefined || message.attachments.length === 0) {
     return {};
   }
   return {
-    attachments: message.attachments.map((att, index) => ({
-      name: att.name,
-      contentType: att.contentType,
-      size: att.data.length,
-      part: `1.${index + 2}`,
-    })),
+    attachments: message.attachments.map((att) => {
+      const listed = {
+        name: att.name,
+        contentType: att.contentType,
+        size: att.data.length,
+      };
+      if (att.part === undefined) return listed;
+      return { ...listed, part: att.part };
+    }),
   };
 }
 

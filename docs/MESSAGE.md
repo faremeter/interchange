@@ -65,8 +65,10 @@ IMAP FETCH addresses MIME parts by position using dot-separated numeric paths (R
 | --------- | --------------------------------------------- |
 | `1`       | The `multipart/mixed` payload (all sub-parts) |
 | `1.1`     | The `text/plain` message body                 |
-| `1.2+`    | Attachments (if present)                      |
+| `1.2+`    | Further siblings of the mixed part            |
 | `2`       | The `application/pgp-signature`               |
+
+Writer-emitted conversation attachments start at `1.2`. Inbound mail may insert extra inline parts (for example `text/html`); the path advertised on each attachment is the parsed sibling number, not an index into the attachments array.
 
 **Structured messages:**
 
@@ -569,7 +571,7 @@ fetchFull(ref: MessageRef): Promise<InboundMessage>
 
 `fetchStructure` retrieves the MIME tree metadata (IMAP `BODYSTRUCTURE`): content types, sizes, dispositions, parameters for every part. No content transferred.
 
-`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or just an attachment (`1.2+`) without downloading the entire message.
+`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or a listed attachment by the path stamped on it, without downloading the entire message. Writer-shaped conversation attachments start at `1.2`; that is a consequence of the writer's sibling layout, not a formula for every inbound message.
 
 `fetchFull` retrieves the complete message, parses the MIME structure, verifies the PGP signature, and returns a fully parsed `InboundMessage` with structured payload, headers, and attachments. The returned `InboundMessage` includes a `signatureStatus` field: `"valid"` (signature verified against sender's public key), `"invalid"` (signature check failed — tampering or wrong key), `"unknown"` (public key not available for verification), or `"missing"` (message was not signed). The harness decides policy based on this field — cross-tenant messages with `"invalid"` or `"missing"` status should be rejected; intra-tenant messages may be accepted with reduced trust depending on tenant policy.
 
@@ -682,7 +684,7 @@ Parameters:
 - `ref`: message reference (from search results)
 - `parts`: which parts to fetch — `"headers"`, `"payload"`, `"full"`, or a specific MIME part path like `"1.3"` (default: `"payload"`)
 
-Returns: the requested content. For `"payload"`, returns the parsed `application/vnd.interchange+json` object. For `"full"`, returns the complete parsed message including signature status. Both `"payload"` and `"full"` include an `attachments` array of `{ name, contentType, size, part }` when the message carries any — `part` is the MIME part path (e.g. `"1.2"`) to pass back to `mail.read` to fetch that attachment. A part path returns `{ contentType, encoding, content }` with the transfer encoding already undone: `content` is text and `encoding` is `"utf-8"` for text-like parts whose bytes are valid UTF-8, otherwise `content` is base64 and `encoding` is `"base64"`, so the bytes are never altered.
+Returns: the requested content. For `"payload"`, returns the parsed `application/vnd.interchange+json` object. For `"full"`, returns the complete parsed message including signature status. Both `"payload"` and `"full"` include an `attachments` array of `{ name, contentType, size, part }` when the message carries any — `part` is the parsed IMAP path of that MIME sibling (the same numbering `fetchPart` uses), which may be later than `"1.2"` when extra inline parts sit between the body and the file. A part path returns `{ contentType, encoding, content }` with the transfer encoding already undone: `content` is text and `encoding` is `"utf-8"` for text-like parts whose bytes are valid UTF-8, otherwise `content` is base64 and `encoding` is `"base64"`, so the bytes are never altered.
 
 Returns on error: `{ error: string, code: string }`. Error codes: `not_found` (message no longer exists), `invalid_part` (requested MIME part does not exist).
 

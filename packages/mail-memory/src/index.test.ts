@@ -400,7 +400,9 @@ describe("fetchFull", () => {
     if (ref === undefined) throw new Error("expected a delivered message");
     const msg = await betaTransport.fetchFull(ref);
     expect(msg.signatureStatus).toBe("valid");
-    expect(msg.attachments).toEqual(attachments);
+    expect(msg.attachments).toEqual(
+      attachments.map((att, i) => ({ ...att, part: `1.${String(i + 2)}` })),
+    );
   });
 
   test("send rejects attachments on a structured message", async () => {
