@@ -18,3 +18,26 @@ export function detectResponseKind(headers: Headers): ResponseKind {
     `Unsupported response Content-Type: ${raw}. Expected text/event-stream or application/json.`,
   );
 }
+
+/**
+ * Names the protocol of a response body when the header alone cannot. A
+ * recognisable Content-Type wins; otherwise a body that parses as JSON is
+ * JSON and anything else is taken as SSE. This is a labelling heuristic
+ * for capture and recording tools that must persist whatever a backend
+ * sends, not a substitute for the harness's strict detection.
+ */
+export function sniffResponseKind(
+  headers: Headers,
+  body: Uint8Array,
+): ResponseKind {
+  try {
+    return detectResponseKind(headers);
+  } catch {
+    try {
+      JSON.parse(new TextDecoder().decode(body));
+      return "json";
+    } catch {
+      return "sse";
+    }
+  }
+}
