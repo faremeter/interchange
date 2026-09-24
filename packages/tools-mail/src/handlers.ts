@@ -15,6 +15,7 @@ import { getLogger } from "@intx/log";
 import {
   base64Encode,
   isTextLikeMimeType,
+  mimeTypeAndSubtype,
   validateAttachments,
   type AttachmentValidationResult,
 } from "@intx/types";
@@ -843,6 +844,17 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
       part = await transport.fetchPart(messageRef, parts, signal);
     } catch (cause) {
       return await readFailure(cause, "invalid_part");
+    }
+
+    // Composite parts are valid IMAP (fetchFull uses BODY[1]) but not a
+    // leaf the model can attach or quote. Refuse after fetch by type, not
+    // by guessing at the path string — `1.1` is a documented leaf.
+    if (mimeTypeAndSubtype(part.contentType).startsWith("multipart/")) {
+      return errorResult(
+        call.id,
+        `invalid_part: ${parts} is a composite MIME part`,
+        "invalid_part",
+      );
     }
 
     // Text comes back as text; anything else as base64, since decoding
