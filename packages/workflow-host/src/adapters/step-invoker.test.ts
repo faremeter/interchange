@@ -30,7 +30,11 @@ import type {
 
 import { createChangeNotifier } from "@intx/workflow-host/testing";
 
-import { createWorkflowStepInvoker, type StepEnvBase } from "./step-invoker";
+import {
+  assertInboundMailProjectable,
+  createWorkflowStepInvoker,
+  type StepEnvBase,
+} from "./step-invoker";
 import {
   createWarmAgentCache,
   type WarmReplyDrive,
@@ -1838,6 +1842,74 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     expect(msg.headers.messageId).toMatch(/^<[^<>\s@]+@[^<>\s@]+>$/);
     expect(msg.headers.inReplyTo).toBeUndefined();
     expect(msg.headers.references).toEqual(["<valid@example.com>"]);
+  });
+
+  test("treats an empty Subject header as absent instead of failing the step", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+    // A `Subject:` header with no text decodes to ""; createInboundMessage
+    // rejects an empty string, so the projection must omit it the same way it
+    // omits empty content -- the step still receives the mail.
+    const emptySubject: Mail = {
+      ...mail([
+        {
+          contentType: "text/plain",
+          ref: "mail-part:///r/m/0-text",
+          text: "still delivers",
+        },
+      ]),
+      headers: { ...mail([]).headers, subject: "" },
+    };
+    await invoker(buildRequest({ input: emptySubject }));
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    expect(msg.headers.subject).toBeUndefined();
+    expect(msg.content).toBe("still delivers");
+  });
+
+  test("treats a whitespace-only Subject header as absent", async () => {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+    const blankSubject: Mail = {
+      ...mail([
+        {
+          contentType: "text/plain",
+          ref: "mail-part:///r/m/0-text",
+          text: "body",
+        },
+      ]),
+      headers: { ...mail([]).headers, subject: "   " },
+    };
+    await invoker(buildRequest({ input: blankSubject }));
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    expect(msg.headers.subject).toBeUndefined();
+  });
+
+  test("assertInboundMailProjectable accepts a blank-subject mail and rejects an unprojectable sender", () => {
+    // The supervisor's dispatch gate: a mail whose headers cannot become an
+    // InboundMessage must fail the delivery, never the resumed step. A
+    // blank subject is projectable (it is omitted); a From whose extracted
+    // addr-spec is not a valid address is not.
+    const headers = mail([]).headers;
+    expect(() =>
+      assertInboundMailProjectable({ ...headers, subject: "" }),
+    ).not.toThrow();
+    expect(() =>
+      assertInboundMailProjectable({ ...headers, from: "Bob <a b@c>" }),
+    ).toThrow(/`from` must be an RFC 5322 address/);
   });
 
   test("routes an attachment-disposition text part and an html part to attachments", async () => {

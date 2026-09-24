@@ -61,7 +61,12 @@ import {
   type SendResult,
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
-import { createInboundMessage, extractAddrSpec, isMessageId } from "@intx/mime";
+import {
+  createInboundMessage,
+  extractAddrSpec,
+  isMessageId,
+  type CreateInboundMessageOpts,
+} from "@intx/mime";
 import type {
   InboundMessage,
   InferenceEvent,
@@ -69,6 +74,7 @@ import type {
   Mail,
   MailPartReader,
   MessageAttachment,
+  MessageHeaders,
 } from "@intx/types/runtime";
 import { isMail } from "@intx/types/runtime";
 import type {
@@ -809,31 +815,58 @@ async function buildInboundMessageFromMail(
     });
   }
   const content = textPieces.join("\n").trim();
+  return createInboundMessage({
+    ...inboundMailHeaderOpts(mail.headers),
+    ...(content.length > 0 ? { content } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+  });
+}
+
+/**
+ * The header-level `createInboundMessage` options a decoded mail projects to.
+ * Shared between the full projection (which adds the body `content` and
+ * `attachments` after the part loop) and `assertInboundMailProjectable`, the
+ * supervisor's dispatch-boundary check: one projection site, so a header that
+ * would fail `createInboundMessage` inside the resumed step fails the DELIVERY
+ * instead.
+ */
+function inboundMailHeaderOpts(
+  headers: MessageHeaders,
+): CreateInboundMessageOpts {
   // Forward the mail's Message-ID / In-Reply-To / References for threading, but
   // only the well-formed RFC 2822 identifiers. Inbound mail can carry a
   // headerless-derived (sha256) or malformed Message-Id -- a valid claim-check
   // key but not a valid identifier -- and passing it to createInboundMessage
   // would throw and fail the step. When the messageId is omitted here,
   // createInboundMessage synthesizes a valid one; such mail cannot thread.
-  const validReferences = mail.headers.references?.filter(isMessageId) ?? [];
-  return createInboundMessage({
-    from: safeAddr(mail.headers.from, "trigger@local"),
-    to: safeAddr(mail.headers.to[0], "agent@local"),
-    ...(mail.headers.subject !== undefined
-      ? { subject: mail.headers.subject }
-      : {}),
-    ...(isMessageId(mail.headers.messageId)
-      ? { messageId: mail.headers.messageId }
-      : {}),
-    ...(mail.headers.inReplyTo !== undefined &&
-    isMessageId(mail.headers.inReplyTo)
-      ? { inReplyTo: mail.headers.inReplyTo }
+  const validReferences = headers.references?.filter(isMessageId) ?? [];
+  const subject = headers.subject;
+  return {
+    from: safeAddr(headers.from, "trigger@local"),
+    to: safeAddr(headers.to[0], "agent@local"),
+    // A `Subject:` header with no text decodes to `""`, which
+    // createInboundMessage rejects; treat a blank subject as absent, the same
+    // way empty content is omitted.
+    ...(subject !== undefined && subject.trim() !== "" ? { subject } : {}),
+    ...(isMessageId(headers.messageId) ? { messageId: headers.messageId } : {}),
+    ...(headers.inReplyTo !== undefined && isMessageId(headers.inReplyTo)
+      ? { inReplyTo: headers.inReplyTo }
       : {}),
     ...(validReferences.length > 0 ? { references: validReferences } : {}),
-    ...(content.length > 0 ? { content } : {}),
-    ...(attachments.length > 0 ? { attachments } : {}),
     interchangeType: "conversation.message",
-  });
+  };
+}
+
+/**
+ * Throw when a decoded inbound mail's headers cannot be projected into an
+ * `InboundMessage` -- the same failure `buildInboundMessageFromMail` would
+ * raise inside a resumed step. The supervisor runs this at the dispatch
+ * boundary (before committing the mail's parts) so a malformed signal mail
+ * fails that DELIVERY and is recorded as such, rather than poisoning the
+ * parked run that receives it.
+ */
+export function assertInboundMailProjectable(headers: MessageHeaders): void {
+  createInboundMessage(inboundMailHeaderOpts(headers));
 }
 
 /**

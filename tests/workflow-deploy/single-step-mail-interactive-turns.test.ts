@@ -43,10 +43,15 @@
 //   (d) connector cc-accumulation: R2 cc-includes userA, the prior turn's
 //       participant carried forward -- the connector thread continued across the
 //       two dispatched turns rather than restarting on mail 2.
+//   (e) mail 3 carries a `Subject:` header with no text (decodes to `""`): the
+//       parked unbounded step receives it as turn 3 and the run CONTINUES --
+//       a third input re-arm and a reply threaded onto mail 3 -- rather than
+//       recording StepFailed/RunFailed (INTR-577).
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 import { parseHeaderSection } from "@intx/mime";
+import { isMail } from "@intx/types/runtime";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import type { WireGrantRule } from "@intx/types/grant-wire";
 import { deriveRunAddress } from "@intx/workflow-deploy";
@@ -84,6 +89,10 @@ const MAIL1_BODY = "Turn one opener body marker mail-int-7c4e21.";
 const MAIL2_MESSAGE_ID = "<mail-int-m2-7c4e21@integration.interchange>";
 const MAIL2_FROM = "usertwo-7c4e21@integration.interchange";
 const MAIL2_BODY = "Turn two continuation body marker mail-int-7c4e21.";
+
+const MAIL3_MESSAGE_ID = "<mail-int-m3-7c4e21@integration.interchange>";
+const MAIL3_FROM = "userthree-7c4e21@integration.interchange";
+const MAIL3_BODY = "Turn three empty-subject body marker mail-int-7c4e21.";
 
 // A plain text reply per turn: the step produces an OUTPUT (so the unbounded
 // step re-arms on an input park) and calls no tool (so it never stays inside a
@@ -344,12 +353,54 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(r1References).toEqual([MAIL1_MESSAGE_ID]);
 
       // Wait for turn 2 to complete its own re-arm so the event log reflects
-      // both serviced turns before the structural assertions read it.
+      // both serviced turns before mail 3 lands on the signal.deliver rail.
       await waitFor(
         async () =>
           inputRearmCount(
             await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId),
           ) >= 2,
+        { diagnostics: env.sidecarDiagnostics },
+      );
+
+      // --- Turn 3: a mail with a `Subject:` header carrying no text ---------
+      // The reproducer from INTR-577: the empty header decodes to `subject: ""`,
+      // which the inbound projection forwards verbatim; createInboundMessage
+      // rejects it, so before the fix this turn recorded
+      // StepFailed{retriesExhausted} -> RunFailed and ended the conversation.
+      const r2MessageId = r2Headers.get("message-id");
+      if (r2MessageId === undefined) {
+        throw new Error("R2 carried no Message-Id");
+      }
+      const mail3 = await fireMailTrigger(env, deploymentMailAddress, {
+        messageId: MAIL3_MESSAGE_ID,
+        from: MAIL3_FROM,
+        content: MAIL3_BODY,
+        subject: "",
+        inReplyTo: r2MessageId,
+        references: [
+          MAIL1_MESSAGE_ID,
+          r1MessageId,
+          MAIL2_MESSAGE_ID,
+          r2MessageId,
+        ],
+        grants: ALL_TOOL_GRANTS,
+      });
+      expect(mail3.messageId).toBe(MAIL3_MESSAGE_ID);
+
+      // The run CONTINUES: turn 3 produces a reply threaded onto mail 3, and
+      // the unbounded step re-arms a third time rather than going terminal.
+      const r3Headers = await waitForReplyInReplyTo(
+        env,
+        deploymentMailAddress,
+        MAIL3_MESSAGE_ID,
+      );
+      expect(r3Headers.get("to")).toBe(MAIL3_FROM);
+
+      await waitFor(
+        async () =>
+          inputRearmCount(
+            await readWorkflowRunEvents(env, DEPLOYMENT_ID, runId),
+          ) >= 3,
         { diagnostics: env.sidecarDiagnostics },
       );
 
@@ -388,8 +439,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
       expect(signalReceived.length).toBeGreaterThanOrEqual(1);
 
-      // Two turns serviced: one input re-arm per completed turn.
-      expect(inputRearmCount(events)).toBeGreaterThanOrEqual(2);
+      // Mail 3's SignalReceived proves the empty `Subject:` header survived
+      // the wire as `""` -- the decode that used to fail the projection.
+      const emptySubjectSignals = events.filter(
+        (e) =>
+          e.type === "SignalReceived" &&
+          e.body["signalId"] === MAIL3_MESSAGE_ID,
+      );
+      expect(emptySubjectSignals.length).toBeGreaterThanOrEqual(1);
+      const mail3Payload = emptySubjectSignals[0]?.body["payload"];
+      if (!isMail(mail3Payload)) {
+        throw new Error("mail 3 SignalReceived payload is not a Mail");
+      }
+      expect(mail3Payload.headers.subject).toBe("");
+
+      // Three turns serviced: one input re-arm per completed turn.
+      expect(inputRearmCount(events)).toBeGreaterThanOrEqual(3);
 
       // Each mail was serviced as exactly ONE turn: exactly one delivered
       // outbound reply threads onto each inbound. A mail double-dispatched as
@@ -403,6 +468,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ).length;
       expect(repliesThreadedOn(MAIL1_MESSAGE_ID)).toBe(1);
       expect(repliesThreadedOn(MAIL2_MESSAGE_ID)).toBe(1);
+      expect(repliesThreadedOn(MAIL3_MESSAGE_ID)).toBe(1);
     });
   },
 );
