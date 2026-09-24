@@ -1,10 +1,12 @@
 import { describe, test, expect } from "bun:test";
 
 import {
+  DEFAULT_ATTACHMENT_POLICY,
   validateAttachments,
   type AttachmentInput,
   type AttachmentPolicy,
 } from "./attachment-validation";
+import { PER_ATTACHMENT_LIMIT_BYTES } from "./attachments";
 import { base64Encode } from "./base64";
 
 function b64(bytes: number[]): string {
@@ -155,7 +157,7 @@ describe("validateAttachments", () => {
 
   test("rejects an oversize attachment with byte length and limit", () => {
     const result = validateAttachments(
-      [{ mimeType: "image/png", data: bytesOfLength(101) }],
+      [{ mimeType: "image/png", data: new Uint8Array(101) }],
       policy,
     );
     expect(result).toMatchObject({
@@ -164,6 +166,87 @@ describe("validateAttachments", () => {
         code: "oversize_attachment",
         attachmentIndex: 0,
         byteLength: 101,
+        limitBytes: 100,
+      },
+    });
+  });
+
+  test("accepts compact base64 of exactly the per-attachment limit", () => {
+    const bytes = new Uint8Array(policy.perAttachmentLimitBytes);
+    expect(
+      validateAttachments([{ mimeType: "image/png", data: bytes }], policy).ok,
+    ).toBe(true);
+
+    const encoded = base64Encode(bytes);
+    const result = validateAttachments(
+      [{ mimeType: "image/png", data: encoded }],
+      policy,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.attachments[0]?.data.length).toBe(
+      policy.perAttachmentLimitBytes,
+    );
+  });
+
+  test("rejects compact base64 one byte over the per-attachment limit", () => {
+    const encoded = base64Encode(
+      new Uint8Array(policy.perAttachmentLimitBytes + 1),
+    );
+    const result = validateAttachments(
+      [{ mimeType: "image/png", data: encoded }],
+      policy,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "oversize_attachment",
+        attachmentIndex: 0,
+        byteLength: policy.perAttachmentLimitBytes + 1,
+        limitBytes: policy.perAttachmentLimitBytes,
+      },
+    });
+  });
+
+  test("accepts compact base64 of exactly 10MiB under the default policy", () => {
+    const bytes = new Uint8Array(PER_ATTACHMENT_LIMIT_BYTES);
+    const encoded = base64Encode(bytes);
+    const result = validateAttachments([
+      { mimeType: "image/png", data: encoded },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.attachments[0]?.data.length).toBe(
+      DEFAULT_ATTACHMENT_POLICY.perAttachmentLimitBytes,
+    );
+  });
+
+  test("accepts whitespace-padded compact base64 of an in-policy payload", () => {
+    const encoded = ` ${base64Encode(new Uint8Array(policy.perAttachmentLimitBytes))} \n`;
+    const result = validateAttachments(
+      [{ mimeType: "image/png", data: encoded }],
+      policy,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.attachments[0]?.data.length).toBe(
+      policy.perAttachmentLimitBytes,
+    );
+  });
+
+  test("rejects encoded base64 whose length already exceeds the decoded limit", () => {
+    // 200 alphabet chars → 150 decoded bytes before atob (floor(200/4)*3).
+    const encoded = "x".repeat(200);
+    const result = validateAttachments(
+      [{ mimeType: "image/png", data: encoded }],
+      policy,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "oversize_attachment",
+        attachmentIndex: 0,
+        byteLength: 150,
         limitBytes: 100,
       },
     });
@@ -188,8 +271,8 @@ describe("validateAttachments", () => {
     // most specific error and must win over oversize_total.
     const result = validateAttachments(
       [
-        { mimeType: "image/png", data: bytesOfLength(200) },
-        { mimeType: "application/pdf", data: bytesOfLength(10) },
+        { mimeType: "image/png", data: new Uint8Array(200) },
+        { mimeType: "application/pdf", data: new Uint8Array(10) },
       ],
       policy,
     );
@@ -204,22 +287,20 @@ describe("validateAttachments", () => {
     });
   });
 
-  test("oversize wins over disallowed mimeType and malformed base64", () => {
+  test("returns the first error without decoding later entries", () => {
     const result = validateAttachments(
       [
-        { mimeType: "image/tiff", data: b64([1]) }, // disallowed
-        { mimeType: "image/png", data: "@@bad@@" }, // malformed
-        { mimeType: "image/png", data: bytesOfLength(200) }, // oversize
+        { mimeType: "image/tiff", data: b64([1]) },
+        { mimeType: "image/png", data: "x".repeat(200) },
       ],
       policy,
     );
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: "oversize_attachment",
-        attachmentIndex: 2,
-        byteLength: 200,
-        limitBytes: 100,
+        code: "disallowed_mime_type",
+        attachmentIndex: 0,
+        mimeType: "image/tiff",
       },
     });
   });
