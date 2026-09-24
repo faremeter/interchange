@@ -27,8 +27,8 @@ Both tenants and installed workflows would accept a `lifecycle` field with this
 shape. Validate durations at the API boundary as non-negative whole numbers
 with a unit, at most `36500d` (the same limit applies in seconds, minutes, or
 hours); `maxLifetime` must be greater than zero. This fixed range leaves room
-for adding deployment and terminal timestamps. Omit a field to schedule no action
-when it is absent throughout the hierarchy.
+for adding deployment and terminal timestamps. Omit a field to inherit it, or
+to take the platform default when it is absent throughout the hierarchy.
 
 A tenant could set:
 
@@ -65,8 +65,19 @@ deployment: a descendant or installed-workflow value it now exceeds is capped at
 the inherited limit when a deployment is created. Inherited limits are visible
 below the tenant that sets them: a deployment's saved policy reflects them, and
 an edit that exceeds one is rejected. A field absent throughout the
-hierarchy schedules no automatic action. The example durations are not platform
-defaults.
+hierarchy takes the platform default. The Hub reads each default from an
+optional environment variable at startup and refuses to start if one is not a
+valid duration or the maximum lifetime is zero:
+
+| Field                         | Environment variable                   | Default |
+| ----------------------------- | -------------------------------------- | ------- |
+| `maxLifetime`                 | `WORKFLOW_DEFAULT_MAX_LIFETIME`        | `7d`    |
+| `capacityRetention.completed` | `WORKFLOW_DEFAULT_RETENTION_COMPLETED` | `30m`   |
+| `capacityRetention.failed`    | `WORKFLOW_DEFAULT_RETENTION_FAILED`    | `24h`   |
+| `capacityRetention.cancelled` | `WORKFLOW_DEFAULT_RETENTION_CANCELLED` | `1h`    |
+
+The platform default is not a ceiling: a tenant or installed workflow may set a
+longer duration. To effectively disable an action, set its field to `36500d`.
 
 `maxLifetime` measures wall-clock time from creation of the deployment's anchor
 run. Provisioning and waiting count; restarts, replacement workers, and any

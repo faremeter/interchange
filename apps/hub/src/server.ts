@@ -8,7 +8,13 @@ import {
   resolveSenderKey,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
-import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
+import {
+  hexDecode,
+  LifecycleDuration,
+  lifecycleDurationMs,
+  type ResolvedWorkflowLifecyclePolicy,
+  type SidecarCapabilityRule,
+} from "@intx/types";
 import {
   createApp,
   createAuth,
@@ -199,6 +205,42 @@ export async function createHubServer({
     return value;
   }
 
+  function readLifecycleDurationEnv(name: string, fallback: string): string {
+    const raw = process.env[name];
+    if (raw === undefined || raw.trim() === "") return fallback;
+    try {
+      return LifecycleDuration.assert(raw.trim());
+    } catch (cause) {
+      throw new Error(
+        `${name} must be a lifecycle duration such as 30m or 7d; got ${JSON.stringify(raw)}`,
+        { cause },
+      );
+    }
+  }
+
+  const defaultLifecyclePolicy: ResolvedWorkflowLifecyclePolicy = {
+    maxLifetime: readLifecycleDurationEnv(
+      "WORKFLOW_DEFAULT_MAX_LIFETIME",
+      "7d",
+    ),
+    capacityRetention: {
+      completed: readLifecycleDurationEnv(
+        "WORKFLOW_DEFAULT_RETENTION_COMPLETED",
+        "30m",
+      ),
+      failed: readLifecycleDurationEnv(
+        "WORKFLOW_DEFAULT_RETENTION_FAILED",
+        "24h",
+      ),
+      cancelled: readLifecycleDurationEnv(
+        "WORKFLOW_DEFAULT_RETENTION_CANCELLED",
+        "1h",
+      ),
+    },
+  };
+  if (lifecycleDurationMs(defaultLifecyclePolicy.maxLifetime) === 0)
+    throw new Error("WORKFLOW_DEFAULT_MAX_LIFETIME must be greater than zero");
+
   const agentRepoStore = createAgentRepoStore({
     dataDir: hubDataDir,
     signingKey: hubSigningKey,
@@ -366,6 +408,7 @@ export async function createHubServer({
     probeCapabilityRules: probeSidecarCapabilityRules,
     allocationRouter: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,
+    defaultLifecyclePolicy,
     ...(sidecarOperationTimeoutMs !== undefined
       ? { operationTimeoutMs: sidecarOperationTimeoutMs }
       : {}),

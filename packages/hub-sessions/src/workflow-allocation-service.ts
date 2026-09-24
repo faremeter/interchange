@@ -19,6 +19,7 @@ import {
   hexEncode,
   lifecycleDeadline,
   SidecarCapabilityRule,
+  type ResolvedWorkflowLifecyclePolicy,
   type CredentialCipher,
 } from "@intx/types";
 import type { FrozenApprovalBundle } from "@intx/types/sidecar";
@@ -128,6 +129,8 @@ export type WorkflowAllocationServiceDeps = {
     | "waitForAllocatedSidecar"
   >;
   readonly hubWebSocketUrl: string;
+  /** Fills lifecycle fields no tenant or installed workflow sets. */
+  readonly defaultLifecyclePolicy: ResolvedWorkflowLifecyclePolicy;
   readonly createAllocationId?: () => string;
   readonly createSidecarId?: () => string;
   readonly createToken?: () => string;
@@ -214,6 +217,7 @@ export function createWorkflowAllocationService({
   probeCapabilityRules = [],
   allocationRouter,
   hubWebSocketUrl,
+  defaultLifecyclePolicy,
   createAllocationId = randomAllocationId,
   createSidecarId = randomSidecarId,
   createToken = randomToken,
@@ -400,6 +404,7 @@ export function createWorkflowAllocationService({
         tx,
         request.tenantId,
         approved.approval.definitionId,
+        defaultLifecyclePolicy,
       );
       await tx.insert(workflowRun).values({
         id: request.anchorRunId,
@@ -409,10 +414,7 @@ export function createWorkflowAllocationService({
         address: deploymentAddress,
         status: "deployed",
         lifecyclePolicy: lifecycle,
-        expiresAt:
-          lifecycle.maxLifetime === undefined
-            ? null
-            : lifecycleDeadline(createdAt, lifecycle.maxLifetime),
+        expiresAt: lifecycleDeadline(createdAt, lifecycle.maxLifetime),
         createdAt,
       });
       await tx.insert(grant).values({
