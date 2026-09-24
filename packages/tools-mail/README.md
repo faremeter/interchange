@@ -42,4 +42,9 @@ bytes are valid UTF-8 and as base64 (`encoding: "base64"`) otherwise.
 `part` is the parsed IMAP sibling path stamped from the message (the
 same numbering `fetchPart` uses), not `1.${attachmentIndex+2}`. Writer-
 shaped conversation mail still starts attachments at `1.2`; extra inline
-siblings (for example `text/html`) shift later files.
+siblings (for example `text/html`) shift later files. A follow-up
+`mail_read` of a `multipart/*` part returns `invalid_part`. For mail
+Interchange assembles itself, path `1.1` is the text body and stays
+fetchable; another producer may nest a `multipart/alternative` there,
+and then `1.1` is refused too. The tool does not refuse the string
+`"1"` before fetching.
