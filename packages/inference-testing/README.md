@@ -529,14 +529,15 @@ captured session for a regression test.
   mis-serving the inner result to the reactor. The recording
   harness rejects this shape at write time; the replay harness
   rejects it at load time.
-- **Response content-types must be `text/event-stream` or
-  `application/json`.** The recording wrapper buffers the response
-  via `detectResponseKind` from `@intx/types/content-type`, which
-  throws on missing or unrecognised content-types. The current
-  inference adapters only ever produce SSE or JSON responses;
-  recording another shape (`text/plain`, `application/octet-stream`)
-  raises a load-time error rather than capturing the body as raw
-  bytes.
+- **Response content-types are labelled, never rejected.** The
+  recording wrapper labels the capture via `sniffResponseKind` from
+  `@intx/types/content-type`: a recognised `text/event-stream` or
+  `application/json` header sets the label; otherwise the body is
+  sniffed, and one that parses as JSON is labelled `json` while
+  anything else is labelled `sse`. The bytes are written verbatim
+  either way, so no content-type (`text/plain`,
+  `application/octet-stream`, or none at all) causes a recording
+  error.
 - **The first dispatch failure wins.** If two recording-time
   dispatches reject concurrently, the harness stashes the first
   rejection and surfaces it through the iterator or `finalize`;

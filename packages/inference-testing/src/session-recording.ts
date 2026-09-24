@@ -22,7 +22,7 @@ import {
   type Dependencies,
   type InferenceHarnessOptions,
 } from "@intx/inference";
-import { detectResponseKind } from "@intx/types/content-type";
+import { sniffResponseKind } from "@intx/types/content-type";
 import { createBuiltinRegistry } from "@intx/inference/providers";
 import type { CredentialMaterialResolver } from "@intx/types";
 import type { InferenceEvent } from "@intx/types/runtime";
@@ -283,33 +283,15 @@ function responseHeadersToRecord(response: Response): Record<string, string> {
 async function bufferResponseBody(
   response: Response,
 ): Promise<{ captured: ResponseBody; reconstructed: Uint8Array }> {
-  const kind = detectResponseKind(response.headers);
   const buf = await response.arrayBuffer();
   const bytes = new Uint8Array(buf);
-  if (kind === "sse") {
-    return { captured: { kind: "sse", bytes }, reconstructed: bytes };
-  }
-  // A malformed JSON response is something the production adapter
-  // would surface from its own parser. The recording wrapper should
-  // not crash differently than production would; fall back to SSE-
-  // shaped raw capture when JSON.parse rejects so the response bytes
-  // still make it to disk verbatim.
-  const text = new TextDecoder().decode(bytes);
-  try {
-    // Parse only to classify the body: a JSON response is written to
-    // response.json, a parse failure falls through to the SSE-shaped raw
-    // capture below. The decoded value itself is not retained.
-    JSON.parse(text);
-    return {
-      captured: { kind: "json", bytes },
-      reconstructed: bytes,
-    };
-  } catch {
-    return {
-      captured: { kind: "sse", bytes },
-      reconstructed: bytes,
-    };
-  }
+  // The recorder only labels the capture; the bytes go to disk verbatim
+  // either way. A response the header cannot classify is one the
+  // production harness leaves to the adapter's classifyResponse hook, and
+  // a recording is how such a quirk gets a fixture in the first place, so
+  // the body decides the label rather than the exchange being refused.
+  const kind = sniffResponseKind(response.headers, bytes);
+  return { captured: { kind, bytes }, reconstructed: bytes };
 }
 
 function dispatchFilename(index: number, toolName: string): string {
