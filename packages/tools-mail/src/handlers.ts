@@ -24,6 +24,7 @@ import { InterchangeType } from "@intx/types/runtime";
 import {
   base64Encode,
   isTextLikeMimeType,
+  mimeTypeAndSubtype,
   validateAttachments,
 } from "@intx/types";
 
@@ -460,6 +461,17 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
       return errorResult(
         call.id,
         `invalid_part: ${cause instanceof Error ? cause.message : String(cause)}`,
+        "invalid_part",
+      );
+    }
+
+    // Composite parts are valid IMAP (fetchFull uses BODY[1]) but not a
+    // leaf the model can attach or quote. Refuse after fetch by type, not
+    // by guessing at the path string — `1.1` is a documented leaf.
+    if (mimeTypeAndSubtype(part.contentType).startsWith("multipart/")) {
+      return errorResult(
+        call.id,
+        `invalid_part: ${parts} is a composite MIME part`,
         "invalid_part",
       );
     }

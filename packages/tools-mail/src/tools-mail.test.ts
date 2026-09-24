@@ -998,6 +998,41 @@ describe("mail_read handler", () => {
     });
   });
 
+  test("refuses a composite MIME part after fetch, without refusing path 1.1", async () => {
+    const ref: MessageRef = { uid: 4, mailbox: "INBOX" };
+    const transport = makeMockTransport();
+    transport.enqueuePart("1", {
+      contentType: "multipart/mixed",
+      content: new TextEncoder().encode("not a leaf"),
+    });
+    transport.enqueuePart("1.1", {
+      contentType: "text/plain",
+      content: new TextEncoder().encode("the body"),
+    });
+    const handler = makeMailReadHandler(transport);
+
+    const composite = await handler(
+      { id: "rc1", name: "mail_read", arguments: { ref, parts: "1" } },
+      signal,
+    );
+    expect(composite.isError).toBe(true);
+    if (typeof composite.content === "string") {
+      throw new Error("expected object content");
+    }
+    expect(composite.content["code"]).toBe("invalid_part");
+
+    const leaf = await handler(
+      { id: "rc2", name: "mail_read", arguments: { ref, parts: "1.1" } },
+      signal,
+    );
+    expect(leaf.isError).toBeUndefined();
+    expect(leaf.content).toEqual({
+      contentType: "text/plain",
+      encoding: "utf-8",
+      content: "the body",
+    });
+  });
+
   test("fetches full message when parts='full'", async () => {
     const transport = makeMockTransport();
     const ref: MessageRef = { uid: 5, mailbox: "INBOX" };

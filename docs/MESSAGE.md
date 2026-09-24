@@ -686,7 +686,7 @@ Parameters:
 
 Returns: the requested content. For `"payload"`, returns the parsed `application/vnd.interchange+json` object. For `"full"`, returns the complete parsed message including signature status. Both `"payload"` and `"full"` include an `attachments` array of `{ name, contentType, size, part }` when the message carries any — `part` is the parsed IMAP path of that MIME sibling (the same numbering `fetchPart` uses), which may be later than `"1.2"` when extra inline parts sit between the body and the file. A part path returns `{ contentType, encoding, content }` with the transfer encoding already undone: `contentType` is type/subtype (parameters such as charset are spent once the bytes are decoded), `content` is text and `encoding` is `"utf-8"` for text-like parts whose bytes are valid UTF-8, otherwise `content` is base64 and `encoding` is `"base64"`, so the bytes are never altered.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `not_found` (message no longer exists), `invalid_part` (requested MIME part does not exist).
+Returns on error: `{ error: string, code: string }`. Error codes: `not_found` (message no longer exists), `invalid_part` (requested MIME part does not exist, or is a composite `multipart/*` part). `1.1` remains a documented leaf. The tool does not refuse the path string `"1"` as a heuristic; `mailbox.fetchPart("1")` stays valid IMAP (`fetchFull` uses it).
 
 **mail.threads** — Get conversation threads.
 

@@ -89,6 +89,183 @@ describe("attachments through a real transport", () => {
     });
   });
 
+  test("mail_read refuses the signed mixed wrapper and still fetches 1.1", async () => {
+    const { alpha, beta } = await createMailboxes();
+    const send = makeMailSendHandler(alpha);
+    const read = makeMailReadHandler(beta);
+    const sent = await send(
+      {
+        id: "send",
+        name: "mail_send",
+        arguments: {
+          to: "beta@test.interchange",
+          content: "the body",
+          attachments: [
+            { name: "notes.txt", contentType: "text/plain", content: "file" },
+          ],
+        },
+      },
+      signal,
+    );
+    expect(sent.isError).toBeUndefined();
+    const [ref] = await beta.search("INBOX", {});
+    if (ref === undefined) throw new Error("expected a delivered message");
+
+    const mixed = await read(
+      { id: "mixed", name: "mail_read", arguments: { ref, parts: "1" } },
+      signal,
+    );
+    expect(mixed.isError).toBe(true);
+    if (typeof mixed.content === "string") {
+      throw new Error("expected object content");
+    }
+    expect(mixed.content["code"]).toBe("invalid_part");
+
+    const body = await read(
+      { id: "body", name: "mail_read", arguments: { ref, parts: "1.1" } },
+      signal,
+    );
+    expect(body.isError).toBeUndefined();
+    expect(body.content).toMatchObject({
+      encoding: "utf-8",
+      content: "the body",
+    });
+  });
+
+  test("read-then-send round-trips advertised attachment bytes", async () => {
+    const { alpha, beta } = await createMailboxes();
+    const sendAlpha = makeMailSendHandler(alpha);
+    const readBeta = makeMailReadHandler(beta);
+    const first = await sendAlpha(
+      {
+        id: "send1",
+        name: "mail_send",
+        arguments: {
+          to: "beta@test.interchange",
+          content: "see attached",
+          attachments: [
+            {
+              name: "notes.txt",
+              contentType: "text/plain; charset=utf-8",
+              content: "café",
+            },
+          ],
+        },
+      },
+      signal,
+    );
+    expect(first.isError).toBeUndefined();
+    const [ref] = await beta.search("INBOX", {});
+    if (ref === undefined) throw new Error("expected a delivered message");
+
+    const listed = await readBeta(
+      { id: "full", name: "mail_read", arguments: { ref, parts: "full" } },
+      signal,
+    );
+    expect(listed.isError).toBeUndefined();
+    if (typeof listed.content === "string") {
+      throw new Error("expected object content");
+    }
+    const attachments = listed.content["attachments"];
+    if (!Array.isArray(attachments) || attachments[0] === undefined) {
+      throw new Error("expected one listed attachment");
+    }
+    const advertised = attachments[0];
+    if (
+      typeof advertised !== "object" ||
+      advertised === null ||
+      !("part" in advertised) ||
+      typeof advertised.part !== "string" ||
+      !("name" in advertised) ||
+      typeof advertised.name !== "string" ||
+      !("contentType" in advertised) ||
+      typeof advertised.contentType !== "string"
+    ) {
+      throw new Error("expected listed attachment metadata");
+    }
+
+    const fetched = await readBeta(
+      {
+        id: "part",
+        name: "mail_read",
+        arguments: { ref, parts: advertised.part },
+      },
+      signal,
+    );
+    expect(fetched.isError).toBeUndefined();
+    if (typeof fetched.content === "string") {
+      throw new Error("expected object content");
+    }
+    const encoding = fetched.content["encoding"];
+    const content = fetched.content["content"];
+    if (typeof encoding !== "string" || typeof content !== "string") {
+      throw new Error("expected fetched part content");
+    }
+
+    const sendBeta = makeMailSendHandler(beta);
+    const resent = await sendBeta(
+      {
+        id: "send2",
+        name: "mail_send",
+        arguments: {
+          to: "alpha@test.interchange",
+          content: "forwarded",
+          attachments: [
+            {
+              name: advertised.name,
+              contentType: advertised.contentType,
+              content,
+              encoding,
+            },
+          ],
+        },
+      },
+      signal,
+    );
+    expect(resent.isError).toBeUndefined();
+
+    const readAlpha = makeMailReadHandler(alpha);
+    const [back] = await alpha.search("INBOX", {});
+    if (back === undefined) throw new Error("expected a resent message");
+    const backListed = await readAlpha(
+      {
+        id: "back",
+        name: "mail_read",
+        arguments: { ref: back, parts: "full" },
+      },
+      signal,
+    );
+    expect(backListed.isError).toBeUndefined();
+    if (typeof backListed.content === "string") {
+      throw new Error("expected object content");
+    }
+    const backAtts = backListed.content["attachments"];
+    if (!Array.isArray(backAtts) || backAtts[0] === undefined) {
+      throw new Error("expected resent attachment");
+    }
+    const backAtt = backAtts[0];
+    if (
+      typeof backAtt !== "object" ||
+      backAtt === null ||
+      !("part" in backAtt) ||
+      typeof backAtt.part !== "string"
+    ) {
+      throw new Error("expected resent part path");
+    }
+    const backPart = await readAlpha(
+      {
+        id: "back-part",
+        name: "mail_read",
+        arguments: { ref: back, parts: backAtt.part },
+      },
+      signal,
+    );
+    expect(backPart.content).toMatchObject({
+      encoding: "utf-8",
+      content: "café",
+    });
+  });
+
   test("empty attachments round-trip at size zero", async () => {
     const { readPart } = await exchange([
       { name: "empty.txt", contentType: "text/plain", content: "" },
