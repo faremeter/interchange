@@ -278,6 +278,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       assertSourceBuildable: () => undefined,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
+      reportDeploymentRefTips: async () => ({}),
     });
 
     const STEP_ADDR = "run_abc-step1@example.com";
@@ -717,6 +718,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       runId: string;
       agentAddress: string;
     }) => void;
+    reportDeploymentRefTips?: Parameters<
+      typeof createSidecarDeployRouter
+    >[0]["reportDeploymentRefTips"];
     assertSourceBuildable?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["assertSourceBuildable"];
@@ -853,6 +857,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         (() => {
           /* no-op */
         }),
+      reportDeploymentRefTips:
+        opts.reportDeploymentRefTips ?? (async () => ({})),
       multistepSubprocessSpawner: opts.spawner,
       ...(opts.multistepBinaryPath !== undefined
         ? { multistepBinaryPath: opts.multistepBinaryPath }
@@ -1214,6 +1220,42 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
     expect(registered).toEqual([frame.agentAddress]);
     expect(router.activeAddresses()).toEqual([frame.agentAddress]);
+  });
+
+  test("a stop reports the deployment's ref tips and a cancellation reports none", async () => {
+    const agentAddress = "run_stoptips@example.com";
+    const reported: string[] = [];
+    const { router } = await buildMultistepFixture({
+      spawner: () => {
+        throw new Error("control must not spawn");
+      },
+      reportDeploymentRefTips: async (address) => {
+        reported.push(address);
+        return { "refs/heads/main": "main-tip", "refs/heads/events": null };
+      },
+    });
+    if (router.control === undefined)
+      throw new Error("router.control is undefined");
+    const command = {
+      type: "workflow.control",
+      requestId: "stop-tips",
+      agentAddress,
+      runId: "run_stoptips",
+      action: "stop",
+      reason: "Lifetime expired",
+    } as const;
+
+    expect(await router.control(command)).toEqual({
+      refTips: { "refs/heads/main": "main-tip", "refs/heads/events": null },
+    });
+    expect(
+      await router.control({
+        ...command,
+        requestId: "cancel-tips",
+        action: "cancel",
+      }),
+    ).toEqual({});
+    expect(reported).toEqual([agentAddress]);
   });
 
   test("registers a multistepMailRouter handler against the deployment address once spawn succeeds", async () => {

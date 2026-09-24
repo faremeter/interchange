@@ -106,6 +106,8 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       };
       const spawns: Spawn[] = [];
       const spawnsChanges = createChangeNotifier();
+      const refTipReports: { agentAddress: string; childKilled: boolean }[] =
+        [];
 
       const spawner: SubprocessSpawner = ({ env }) => {
         const supervisorToChild = createMemoryNdjsonStream();
@@ -207,6 +209,13 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         },
         unregisterDeployment: () => {
           /* no-op */
+        },
+        reportDeploymentRefTips: async (agentAddress) => {
+          refTipReports.push({
+            agentAddress,
+            childKilled: spawns.every((entry) => entry.killed),
+          });
+          return { "refs/heads/main": "main-tip" };
         },
         multistepSubprocessSpawner: spawner,
         multistepSubstrateEnv: {
@@ -394,7 +403,19 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         const retry = router
           .control({ ...command, requestId: "cancel-retry", action: "cancel" })
           .catch((cause: unknown) => cause);
-        await Promise.all([router.control(command), router.control(command)]);
+        const stopped = await Promise.all([
+          router.control(command),
+          router.control(command),
+        ]);
+        // Each stop reports the ref tips only after the child has exited.
+        expect(stopped).toEqual([
+          { refTips: { "refs/heads/main": "main-tip" } },
+          { refTips: { "refs/heads/main": "main-tip" } },
+        ]);
+        expect(refTipReports).toEqual([
+          { agentAddress: frame.agentAddress, childKilled: true },
+          { agentAddress: frame.agentAddress, childKilled: true },
+        ]);
         expect(await cancelling).toBeInstanceOf(Error);
         expect(await retry).toBeInstanceOf(Error);
         expect(

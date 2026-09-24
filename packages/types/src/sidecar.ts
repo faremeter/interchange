@@ -735,10 +735,19 @@ export type WorkflowControlFrame = typeof WorkflowControlFrame.infer;
 
 export const WORKFLOW_CONTROL_INITIALIZING_ERROR = "workflow_initializing";
 
+/** The tip of each authoritative workflow-run ref, `null` for an absent ref. */
+export const WorkflowRunRefTips = type({ "[string]": "string | null" });
+export type WorkflowRunRefTips = typeof WorkflowRunRefTips.infer;
+
 export const WorkflowControlAckFrame = type({
   type: "'workflow.control.ack'",
   requestId: "string",
   "error?": "string",
+  /**
+   * A stopped worker's ref tips, read after its child exited. The Hub
+   * confirms the stop only once it holds the same tips.
+   */
+  "refTips?": WorkflowRunRefTips,
 });
 export type WorkflowControlAckFrame = typeof WorkflowControlAckFrame.infer;
 

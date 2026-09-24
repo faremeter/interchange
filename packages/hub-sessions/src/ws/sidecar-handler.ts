@@ -34,6 +34,7 @@ import {
   type RunGrantsFrame,
   type WorkflowControlFrame,
   type WorkflowControlAckFrame,
+  type WorkflowRunRefTips,
   type SignalCorrelationRegisterFrame,
   type CredentialDelivery,
   type WorkflowSourceAssetMount,
@@ -153,6 +154,17 @@ export class WorkflowControlRejectedError extends Error {
   }
 }
 
+/**
+ * The worker stopped, but the Hub does not hold the history it reported. The
+ * stop stays unconfirmed and unfenced, so that history can still land.
+ */
+export class WorkflowControlHistoryPendingError extends Error {
+  constructor(message: string) {
+    super(`Workflow history has not reached the Hub: ${message}`);
+    this.name = "WorkflowControlHistoryPendingError";
+  }
+}
+
 export type SidecarConnection = {
   sidecarId: string;
   identity: SidecarAuthIdentity;
@@ -187,7 +199,9 @@ function connOwnsAddress(conn: SidecarConnection, address: string): boolean {
  * Bind pack writes to the repository implied by the authenticated address.
  * An allocated credential is narrower still: it may only write its one
  * deployment's workflow-run repository and never a standalone agent-state
- * repository.
+ * repository. That credential authorizes the write even when the address is
+ * not routed: a stopped worker no longer announces its address, but its stop
+ * is confirmed only once its remaining history reaches the Hub.
  */
 function connCanPushRepo(
   conn: SidecarConnection,
@@ -2504,6 +2518,12 @@ export function createSidecarRouter(
       agentStatePackReceiver.cancelByAgent(addr);
       workflowRunPackReceiver.cancelByAgent(addr);
     }
+    // An own-repository transfer needs no route, so the owned addresses above
+    // can miss it. A successor for this allocation closes this connection while
+    // registering, before handling any frame of its own, so this cannot cancel
+    // the successor's transfer.
+    if (conn.identity.kind === "allocated")
+      workflowRunPackReceiver.cancelByAgent(conn.identity.workflowRunAddress);
 
     events.emit("sidecar.disconnect", {
       ownedAddresses: [...owned],
@@ -2698,11 +2718,16 @@ export function createSidecarRouter(
     const conn = connections.get(ws);
     if (conn === undefined) return;
     if (rejectStoppedWorkflowRunPack(conn, frame)) return;
-    if (!connOwnsAddress(conn, frame.agentAddress)) {
+    const ownRepository = connCanPushRepo(
+      conn,
+      frame.agentAddress,
+      frame.repoId,
+    );
+    if (!ownRepository && !connOwnsAddress(conn, frame.agentAddress)) {
       logger.warn`Received repo.pack.push for unrouted agent ${frame.agentAddress}`;
       return;
     }
-    if (!connCanPushRepo(conn, frame.agentAddress, frame.repoId)) {
+    if (!ownRepository) {
       logger.warn`Rejected repo.pack.push outside sidecar ${conn.sidecarId}'s authenticated repository scope`;
       conn.send({
         type: "repo.pack.reject",
@@ -2747,11 +2772,16 @@ export function createSidecarRouter(
     const conn = connections.get(ws);
     if (conn === undefined) return;
     if (rejectStoppedWorkflowRunPack(conn, frame)) return;
-    if (!connOwnsAddress(conn, frame.agentAddress)) {
+    const ownRepository = connCanPushRepo(
+      conn,
+      frame.agentAddress,
+      frame.repoId,
+    );
+    if (!ownRepository && !connOwnsAddress(conn, frame.agentAddress)) {
       logger.warn`Received repo.pack.done for unrouted agent ${frame.agentAddress}`;
       return;
     }
-    if (!connCanPushRepo(conn, frame.agentAddress, frame.repoId)) {
+    if (!ownRepository) {
       logger.warn`Rejected repo.pack.done outside sidecar ${conn.sidecarId}'s authenticated repository scope`;
       conn.send({
         type: "repo.pack.reject",
@@ -3854,11 +3884,49 @@ export function createSidecarRouter(
       );
     else {
       if (entry.meta.action === "stop") {
+        // Confirming the stop fences the worker's packs, so it must wait until
+        // the Hub holds the history the worker reported. A generation already
+        // confirmed is fenced, so the history it holds is final.
+        const unreceived =
+          stoppedAllocations.get(entry.meta.allocationId) ===
+          entry.meta.generation
+            ? null
+            : await findUnreceivedWorkflowHistory(
+                entry.meta.agentAddress,
+                frame.refTips,
+              );
+        if (unreceived !== null) {
+          fail(new WorkflowControlHistoryPendingError(unreceived));
+          return;
+        }
         stoppedAllocations.set(entry.meta.allocationId, entry.meta.generation);
         removeAgentAddress(ws, entry.meta.agentAddress);
       }
       pendingWorkflowControls.resolve(frame.requestId, undefined);
     }
+  }
+
+  // Describes the first ref whose reported tip the Hub does not hold, or
+  // returns null when the Hub holds the worker's whole history.
+  async function findUnreceivedWorkflowHistory(
+    agentAddress: string,
+    reported: WorkflowRunRefTips | undefined,
+  ): Promise<string | null> {
+    if (reported === undefined) return "the worker did not report its ref tips";
+    if (lookups.readWorkflowRunRefTips === undefined)
+      return "the Hub cannot read workflow history";
+    let received: WorkflowRunRefTips;
+    try {
+      received = await lookups.readWorkflowRunRefTips(agentAddress);
+    } catch (cause) {
+      return `the Hub cannot read workflow history: ${cause instanceof Error ? cause.message : String(cause)}`;
+    }
+    for (const [ref, tip] of Object.entries(received)) {
+      const reportedTip = reported[ref];
+      if (reportedTip !== tip)
+        return `${ref} is at ${tip ?? "no commit"} on the Hub and ${reportedTip ?? "no commit"} on the worker`;
+    }
+    return null;
   }
 
   async function sendWorkflowControl(

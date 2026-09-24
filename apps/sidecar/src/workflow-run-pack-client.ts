@@ -18,13 +18,19 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { SourcesUpdatedData } from "@intx/workflow-host";
 import type { InferenceSource } from "@intx/types/runtime";
-import { CredentialDelivery, type SenderIdentity } from "@intx/types/sidecar";
-import type {
-  RepoId,
-  RepoStore,
-  WorkflowRunSupervisorPrincipal,
+import {
+  CredentialDelivery,
+  type SenderIdentity,
+  type WorkflowRunRefTips,
+} from "@intx/types/sidecar";
+import {
+  WORKFLOW_RUN_RESTORE_REFS,
+  type RepoId,
+  type RepoStore,
+  type WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions";
 import type { HubLink } from "@intx/hub-agent";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 const logger = getLogger([
   "interchange",
@@ -660,13 +666,23 @@ export type WorkflowRunPackPushingRepoStore = RepoStore & {
   notifyAddressRoutable: (agentAddress: string) => void;
   /**
    * Block workflow-run pushes for `agentAddress` until the next
-   * `notifyAddressRoutable`. Called when the hub-link observes its WS drop:
-   * the address's hub route is gone until the authenticated reconnect restores
-   * it, so a push shipped in the interim is dropped by the hub as
-   * "unrouted". Holding the push at the block -- rather than shipping and
-   * failing -- is what lets the reconnect re-ship wait for route restoration.
+   * `notifyAddressRoutable`, or until a stop reports the address's tips.
+   * Called when the hub-link observes its WS drop: a held push waits for the
+   * authenticated reconnect instead of queueing pack frames on a link that
+   * cannot deliver them.
    */
   markAddressUnroutable: (agentAddress: string) => void;
+  /**
+   * Read the local tip of each authoritative ref of the deployment's
+   * workflow-run repo, `null` for an absent ref, and schedule a push of every
+   * existing ref without waiting for it. The push ships commits the hub has not
+   * acknowledged, including ones written outside this facade's write hooks,
+   * such as run grants. It lifts a disconnect's block on the address: a stopped
+   * deployment is never announced again, so no reconnect would lift it.
+   */
+  reportWorkflowRunRefTips: (
+    agentAddress: string,
+  ) => Promise<WorkflowRunRefTips>;
 };
 
 export function createWorkflowRunPackPushingRepoStore(
@@ -693,11 +709,10 @@ export function createWorkflowRunPackPushingRepoStore(
   // first-connect state (a deployment routes via its `agent.deploy`, not a
   // reconnect, so it is never blocked before its first push). An address is
   // added on `markAddressUnroutable` (WS disconnect) and removed on
-  // `notifyAddressRoutable` (reconnect sent). A push for a blocked address
-  // is held: the coalescing loop pauses with `dirty` still set rather than
-  // shipping to a hub that has not yet re-routed the address -- which is what
-  // makes the reconnect re-ship wait for route restoration instead of racing
-  // ahead of it and being dropped as "unrouted".
+  // `notifyAddressRoutable` (reconnect sent) or when a stop reports its tips.
+  // A push for a blocked address is held: the coalescing loop pauses with
+  // `dirty` still set rather than queueing pack frames on a dropped link, and
+  // the reconnect re-drives it.
   const blockedAddresses = new Set<string>();
 
   function notifySettled(slot: Slot): void {
@@ -711,8 +726,6 @@ export function createWorkflowRunPackPushingRepoStore(
     // Hold the push while the address is not routable (dropped, awaiting the
     // authenticated reconnect). Leave `dirty` set and start no loop: the loop
     // resumes when `notifyAddressRoutable` clears the block and re-arms it.
-    // Shipping now would race ahead of the hub re-routing the address, and
-    // the frames would be dropped as "unrouted".
     if (blockedAddresses.has(slot.agentAddress)) return;
     slot.inFlight = (async () => {
       while (slot.dirty) {
@@ -836,6 +849,27 @@ export function createWorkflowRunPackPushingRepoStore(
     }
   }
 
+  async function reportWorkflowRunRefTips(
+    agentAddress: string,
+  ): Promise<WorkflowRunRefTips> {
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(agentAddress),
+    };
+    const principal: WorkflowRunSupervisorPrincipal = {
+      kind: "supervisor",
+      anchorRunId: repoId.id,
+    };
+    blockedAddresses.delete(agentAddress);
+    const tips: WorkflowRunRefTips = {};
+    for (const ref of WORKFLOW_RUN_RESTORE_REFS) {
+      const tip = await underlying.resolveRef(principal, repoId, ref);
+      tips[ref] = tip;
+      if (tip !== null) schedulePush(agentAddress, repoId, ref);
+    }
+    return tips;
+  }
+
   const wrapped: WorkflowRunPackPushingRepoStore = {
     initRepo: underlying.initRepo.bind(underlying),
     writeTree: underlying.writeTree.bind(underlying),
@@ -853,6 +887,7 @@ export function createWorkflowRunPackPushingRepoStore(
     flushWorkflowRunPushes,
     notifyAddressRoutable,
     markAddressUnroutable,
+    reportWorkflowRunRefTips,
     async writeTreePreservingPrefix(principal, repoId, ref, args) {
       if (repoId.kind === "workflow-run") {
         const latched = takeLatchedError(repoId, ref);
