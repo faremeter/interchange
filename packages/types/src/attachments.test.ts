@@ -20,6 +20,14 @@ describe("attachment allowlist", () => {
     expect(isAllowedMimeType("")).toBe(false);
   });
 
+  test("Content-Type parameters are not part of allowlist identity", () => {
+    expect(isAllowedMimeType("text/plain; charset=utf-8")).toBe(true);
+    expect(isAllowedMimeType("TEXT/PLAIN; charset=UTF-8")).toBe(true);
+    expect(isAllowedMimeType("image/png; name=shot.png")).toBe(true);
+    expect(isAllowedMimeType("image/tiff; charset=utf-8")).toBe(false);
+    expect(attachmentCategory("text/plain; charset=utf-8")).toBe("document");
+  });
+
   test("category dispatch maps each major type and the document category", () => {
     expect(attachmentCategory("image/png")).toBe("image");
     expect(attachmentCategory("video/mp4")).toBe("video");
