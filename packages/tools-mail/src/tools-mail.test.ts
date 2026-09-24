@@ -615,6 +615,41 @@ describe("mail_send handler", () => {
     expect(transport.getSentMessages()).toHaveLength(0);
   });
 
+  test("accepts an allowlisted type with Content-Type parameters", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailSendHandler(transport);
+
+    const result = await handler(
+      {
+        id: "s7b",
+        name: "mail_send",
+        arguments: {
+          to: "user@test",
+          content: "hi",
+          attachments: [
+            {
+              name: "notes.txt",
+              contentType: "text/plain; charset=utf-8",
+              content: "hello",
+            },
+          ],
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    const sent = transport.getSentMessages()[0];
+    if (sent === undefined) throw new Error("no sent message");
+    expect(sent.attachments).toEqual([
+      {
+        name: "notes.txt",
+        contentType: "text/plain",
+        data: new TextEncoder().encode("hello"),
+      },
+    ]);
+  });
+
   test("rejects an unsafe attachment name", async () => {
     const transport = makeMockTransport();
     const handler = makeMailSendHandler(transport);

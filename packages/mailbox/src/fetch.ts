@@ -74,8 +74,9 @@ export async function fetchPart(
   const raw = await store.readRaw(ref.uid);
   const partBytes = extractPartByPath(raw, partPath);
   const part = parseMimePart(partBytes);
+  const [rawType] = part.contentType.split(";");
   return {
-    contentType: part.contentType,
+    contentType: (rawType ?? part.contentType).trim().toLowerCase(),
     content: decodeAttachmentBytes(part.body, part.headers),
   };
 }

@@ -1,5 +1,6 @@
 import {
   isAllowedMimeType,
+  mimeTypeAndSubtype,
   PER_ATTACHMENT_LIMIT_BYTES,
   PER_MESSAGE_TOTAL_LIMIT_BYTES,
 } from "./attachments";
@@ -94,7 +95,8 @@ export function validateAttachments(
       };
       continue;
     }
-    if (!policy.isAllowed(input.mimeType)) {
+    const mimeType = mimeTypeAndSubtype(input.mimeType);
+    if (!policy.isAllowed(mimeType)) {
       disallowed ??= {
         code: "disallowed_mime_type",
         message: `attachment ${index} has unsupported content type "${input.mimeType}"`,
@@ -116,7 +118,7 @@ export function validateAttachments(
     }
     decoded.push({
       name: input.name ?? `attachment-${index}`,
-      contentType: input.mimeType,
+      contentType: mimeType,
       data: bytes,
     });
   }

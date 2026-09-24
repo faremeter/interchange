@@ -73,6 +73,26 @@ describe("validateAttachments", () => {
     });
   });
 
+  test("an allowlisted type with parameters is stored as type/subtype", () => {
+    const result = validateAttachments([
+      {
+        mimeType: "text/plain; charset=utf-8",
+        data: new TextEncoder().encode("hi"),
+        name: "notes.txt",
+      },
+    ]);
+    expect(result).toEqual({
+      ok: true,
+      attachments: [
+        {
+          name: "notes.txt",
+          contentType: "text/plain",
+          data: new TextEncoder().encode("hi"),
+        },
+      ],
+    });
+  });
+
   test("rejects a disallowed mimeType with the offending index", () => {
     const result = validateAttachments(
       [

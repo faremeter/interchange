@@ -248,6 +248,33 @@ describe("async fetch projections route through readRaw", () => {
     expect(new TextDecoder().decode(part.content)).toContain("part body");
   });
 
+  test("fetchPart contentType is type/subtype without parameters", async () => {
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      encoder.encode(
+        [
+          "From: alice@x",
+          "To: bob@y",
+          "Subject: charset",
+          "Message-ID: <1@x>",
+          "Date: Thu, 01 Jan 2026 00:00:00 +0000",
+          `Content-Type: multipart/mixed; boundary="b"`,
+          "",
+          "--b",
+          "Content-Type: text/plain; charset=utf-8",
+          "",
+          "hello",
+          "--b--",
+          "",
+        ].join("\r\n"),
+      ),
+      envelopeFor({ subject: "charset" }),
+      [],
+    );
+    const part = await fetchPart({ uid, mailbox: "INBOX" }, "1", store);
+    expect(part.contentType).toBe("text/plain");
+  });
+
   test("fetchPart undoes quoted-printable the same way listing does", async () => {
     const store = createInMemoryMailboxStore();
     const uid = store.append(
