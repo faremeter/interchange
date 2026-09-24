@@ -41,6 +41,29 @@ describe("enrichProbeError", () => {
     const enriched = enrichProbeError(new Error("boom, author code threw"));
     expect(enriched).toBe("boom, author code threw");
   });
+
+  test("finds a module-not-found reason buried in a wrapper's cause chain", () => {
+    const wrapper = new Error(
+      'failed to import interchange.workflow entry "./workflow.js" for workflow package at /x',
+      {
+        cause: new Error(
+          "Cannot find package '@missing/helper' imported from /x/workflow.js",
+        ),
+      },
+    );
+    const enriched = enrichProbeError(wrapper);
+    expect(enriched).toMatch(/could not resolve "@missing\/helper"/);
+    expect(enriched).toMatch(/"dependencies" rather than "devDependencies"/);
+  });
+
+  test("reports a non-Error cause and stops on a self-referential one", () => {
+    const cyclic = new Error("outer");
+    cyclic.cause = cyclic;
+    expect(enrichProbeError(cyclic)).toBe("outer");
+
+    const plain = new Error("outer", { cause: "inner detail" });
+    expect(enrichProbeError(plain)).toBe("outer: inner detail");
+  });
 });
 
 // The workflow package the fixture entry modules import
@@ -82,6 +105,10 @@ export default defineWorkflow({
 `;
 
 const THROWING_ENTRY = `throw new Error("probe fixture boom");`;
+
+// An entry that fails to import because it references a package the
+// closure never materialized (declared only under devDependencies, say).
+const MISSING_DEPENDENCY_ENTRY = `import "@missing/helper";`;
 
 // A workflow whose agent references a director id the closure does not ship
 // (no interchange.directors). The capability walk resolves it against the
@@ -327,6 +354,32 @@ describe("createWorkflowProbeExecutor", () => {
       for (const pid of pids) {
         expect(isProcessAlive(pid)).toBe(false);
       }
+    },
+    SPAWN_TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "reports the missing specifier and dependencies hint when the entry fails to import",
+    async () => {
+      const executor = createWorkflowProbeExecutor({
+        materialize: fixtureMaterializer(MISSING_DEPENDENCY_ENTRY),
+        spawnProbeChild: recordingSpawner([]),
+      });
+
+      // The real child spawns, imports the entry, and its import() rejection
+      // is caught by the loader's `{ cause }` wrapper. That wrapper's own
+      // message never contains the reason, so this only passes once
+      // enrichProbeError walks the cause chain the child reports.
+      let rejection: unknown;
+      try {
+        await executor.probe(probeFrame());
+      } catch (err) {
+        rejection = err;
+      }
+      expect(rejection).toBeInstanceOf(Error);
+      const message = rejection instanceof Error ? rejection.message : "";
+      expect(message).toMatch(/could not resolve "@missing\/helper"/);
+      expect(message).toMatch(/"dependencies" rather than "devDependencies"/);
     },
     SPAWN_TEST_TIMEOUT_MS,
   );
