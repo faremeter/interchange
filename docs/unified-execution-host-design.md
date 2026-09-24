@@ -1065,15 +1065,17 @@ match).
 hook (§3c) fires after each `agent.send`, so a long-lived run's conversation is
 mirrored to the substrate per turn, however many turns the run spans.
 
-**Bounds and failure shape.** `step.timeout` spans the whole multi-turn
-attempt, including time parked awaiting the next trigger, so on a long-lived
-step it bounds the attempt's wall-clock life rather than any single turn. The
-timer is armed per `runStep` entry, so a crash-resume re-entry arms a fresh
-one: the bound is per process incarnation, not cumulative across respawns. A
-crash mid-turn is run-fatal under the at-most-once settle: the durable
-`StepStarted` without a `StepCompleted` settles the run as terminal
-`StepFailed`, and a trigger whose `SignalReceived` is already durable is not
-re-serviced.
+**Bounds and failure shape.** `step.timeout` bounds a single turn's work: the
+invocation plus any in-turn approval park. It is disarmed while the step is
+parked awaiting its next trigger and armed fresh when that trigger's turn
+begins, so a long-lived step's idle time never counts against it. The bound is
+per process incarnation, not cumulative across respawns: a crash-resume into
+an `"approval"` park arms the timer on entry, and a crash-resume into an
+`"input"` park re-establishes the untimed wait and arms it only when the next
+trigger arrives. A crash mid-turn is run-fatal under the at-most-once settle:
+the durable `StepStarted` without a `StepCompleted` settles the run as
+terminal `StepFailed`, and a trigger whose `SignalReceived` is already durable
+is not re-serviced.
 
 ## 4. What gets retired vs reused
 

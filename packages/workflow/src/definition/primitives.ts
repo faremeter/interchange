@@ -80,7 +80,14 @@ export interface StepPrimitive extends PrimitiveBase {
   reads?: readonly Selector[];
   writes?: readonly Selector[];
   retry?: RetryPolicy;
-  /** Per-step timeout in milliseconds; enforced via an `AbortSignal`. */
+  /**
+   * Per-turn timeout in milliseconds; enforced via an `AbortSignal`. Bounds
+   * a single turn's work -- the invocation and any in-turn suspend/approval
+   * park -- and is re-armed fresh for each turn a multi-trigger step
+   * services. It does not count idle time the step spends parked on the
+   * input control-plane channel between triggers (see `triggers` below);
+   * that wait can legitimately outlast `timeout` many times over.
+   */
   timeout?: number;
   drainBehavior?: DrainBehavior;
   /**
