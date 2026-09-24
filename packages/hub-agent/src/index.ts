@@ -45,6 +45,7 @@ export {
   type GrantsInboundRouter,
   type WorkflowRunPackApplier,
   type ReconnectScheduler,
+  type WorkflowControlOutcome,
 } from "./ws/hub-link";
 export {
   createSidecarOrchestrator,

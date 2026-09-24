@@ -591,6 +591,8 @@ const orchestrator = createSidecarOrchestrator({
       unregisterDeployment: ({ runId }) => {
         deploymentAddressRegistry.unregister(runId);
       },
+      reportDeploymentRefTips: (agentAddress) =>
+        wrappedRepoStore.reportWorkflowRunRefTips(agentAddress),
       multistepMailRouter,
       inboundMailPolicyRegistry,
       multistepSignalRouter,

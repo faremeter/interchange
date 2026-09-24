@@ -30,6 +30,7 @@ import { generateId } from "@intx/hub-common";
 import type { SidecarLookups } from "./ws/sidecar-events";
 import { createWorkflowDispatchProjection } from "./workflow-dispatch-projection";
 import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
+import { readWorkflowRunRefTips } from "./workflow-run-restore";
 import { projectTerminalRun } from "./workflow-run-terminal-projection";
 
 const logger = getLogger(["hub", "lookups"]);
@@ -68,6 +69,10 @@ export function createHubSessionLookups(
       // native deployment: it keeps its deploy-time definition and never
       // reconciles, so no address enrolls in the reconnect deploy-ref catch-up.
       return null;
+    },
+
+    readWorkflowRunRefTips(agentAddress) {
+      return readWorkflowRunRefTips(agentRepoStore.repoStore, agentAddress);
     },
 
     async persistMail({ senderAddress, recipients, raw }) {

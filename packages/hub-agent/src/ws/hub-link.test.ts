@@ -311,6 +311,7 @@ function startTestServer(): TestEnv {
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
+    lookups: { readWorkflowRunRefTips: async () => STOPPED_REF_TIPS },
   });
   router.events.on("agent.event", ({ agentAddress, sessionId, event }) => {
     agentEvents.push({ addr: agentAddress, sid: sessionId, event });
@@ -369,6 +370,12 @@ function startTestServer(): TestEnv {
 // Longer than the runner's budget, so an acknowledgement, not the clock,
 // settles each workflow control request.
 const CONTROL_TIMEOUT_MS = 60_000;
+
+// The ref tips a stopped test worker reports, which the test Hub holds.
+const STOPPED_REF_TIPS = {
+  "refs/heads/main": "c".repeat(40),
+  "refs/heads/events": null,
+};
 
 const env = startTestServer();
 
@@ -449,11 +456,11 @@ describe("sidecar↔hub integration", () => {
       deployRouter: {
         ...bindings.deployRouter,
         async control(frame) {
-          if (frame.action === "cancel") {
-            started.resolve(undefined);
-            await release.promise;
-            finished.resolve(undefined);
-          }
+          if (frame.action === "stop") return { refTips: STOPPED_REF_TIPS };
+          started.resolve(undefined);
+          await release.promise;
+          finished.resolve(undefined);
+          return {};
         },
       },
     });
@@ -486,7 +493,11 @@ describe("sidecar↔hub integration", () => {
           token: "test-token",
           agentAddresses: [],
         },
-        { type: "workflow.control.ack", requestId: "stop" },
+        {
+          type: "workflow.control.ack",
+          requestId: "stop",
+          refTips: STOPPED_REF_TIPS,
+        },
       ]);
       expect(first.sent).toHaveLength(1);
     } finally {
@@ -518,10 +529,10 @@ describe("sidecar↔hub integration", () => {
       deployRouter: {
         ...bindings.deployRouter,
         async control(frame) {
-          if (frame.action === "cancel") {
-            started.resolve(undefined);
-            await release.promise;
-          }
+          if (frame.action === "stop") return { refTips: STOPPED_REF_TIPS };
+          started.resolve(undefined);
+          await release.promise;
+          return {};
         },
       },
     });

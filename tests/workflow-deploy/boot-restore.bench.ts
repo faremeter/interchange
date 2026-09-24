@@ -311,6 +311,7 @@ async function buildRouter(args: {
     assertSourceBuildable: () => undefined,
     registerDeployment: () => undefined,
     unregisterDeployment: () => undefined,
+    reportDeploymentRefTips: async () => ({}),
     multistepSubprocessSpawner: args.spawner,
     multistepSubstrateEnv: {
       SIDECAR_DATA_DIR: args.dataDir,

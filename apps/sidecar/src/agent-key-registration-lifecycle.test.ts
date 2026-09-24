@@ -187,6 +187,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       assertSourceBuildable: () => undefined,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
+      reportDeploymentRefTips: async () => ({}),
       multistepSubprocessSpawner: spawner,
       multistepSubstrateEnv: {
         SIDECAR_DATA_DIR: dataDir,

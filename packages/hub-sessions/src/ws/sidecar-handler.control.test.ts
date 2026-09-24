@@ -5,11 +5,13 @@ import {
   type RepoId,
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
   WorkflowControlFrame,
+  type WorkflowRunRefTips,
 } from "@intx/types/sidecar";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import {
   SidecarIdentityValidationError,
+  WorkflowControlHistoryPendingError,
   WorkflowControlInitializingError,
   WorkflowControlRejectedError,
   WorkflowControlTimeoutError,
@@ -22,6 +24,7 @@ import {
   parsedFrames,
   TEST_CONFIG,
   TEST_IDENTITY,
+  TEST_REF_TIPS,
   TEST_TARGET,
   tick,
 } from "./sidecar-handler.test-helpers";
@@ -85,6 +88,31 @@ function stopCommand() {
   } as const;
 }
 
+async function acknowledgeStop(
+  router: ReturnType<typeof createAllocatedRouter>,
+  ws: Awaited<ReturnType<typeof connectAllocated>>,
+  refTips: WorkflowRunRefTips | undefined,
+) {
+  const pending = router.sendWorkflowControl(
+    TEST_IDENTITY,
+    stopCommand(),
+    CONTROL_TIMEOUT_MS,
+  );
+  await tick();
+  const frame = WorkflowControlFrame.assert(
+    framesOfType(ws, "workflow.control").at(-1),
+  );
+  router.handleMessage(
+    ws,
+    JSON.stringify({
+      type: "workflow.control.ack",
+      requestId: frame.requestId,
+      ...(refTips !== undefined ? { refTips } : {}),
+    }),
+  );
+  return pending;
+}
+
 const approvalSnapshot = {
   name: "charge_card",
   description: "Charge the customer",
@@ -123,6 +151,7 @@ describe("SidecarRouter allocation control protocols", () => {
     const acknowledgement = JSON.stringify({
       type: "workflow.control.ack",
       requestId: command.requestId,
+      refTips: TEST_REF_TIPS,
     });
     router.handleMessage(
       { send: () => undefined, close: () => undefined },
@@ -337,6 +366,7 @@ describe("SidecarRouter allocation control protocols", () => {
       JSON.stringify({
         type: "workflow.control.ack",
         requestId: frame.requestId,
+        refTips: TEST_REF_TIPS,
       }),
     );
     await packEntered.promise;
@@ -390,6 +420,7 @@ describe("SidecarRouter allocation control protocols", () => {
         JSON.stringify({
           type: "workflow.control.ack",
           requestId: frame.requestId,
+          refTips: TEST_REF_TIPS,
         }),
       );
       await packEntered.promise;
@@ -443,6 +474,7 @@ describe("SidecarRouter allocation control protocols", () => {
       JSON.stringify({
         type: "workflow.control.ack",
         requestId: frame.requestId,
+        refTips: TEST_REF_TIPS,
       }),
     );
     await pending;
@@ -470,6 +502,163 @@ describe("SidecarRouter allocation control protocols", () => {
     await tick();
     expect(framesOfType(reconnected, "repo.pack.reject")).not.toHaveLength(0);
     expect(received).toBe(0);
+  });
+
+  test("confirms a stop only once the Hub holds the history the worker reported", async () => {
+    let hubRefTips: WorkflowRunRefTips = {
+      ...TEST_REF_TIPS,
+      "refs/heads/main": "b".repeat(40),
+    };
+    let received = 0;
+    const router = createAllocatedRouter({
+      lookups: {
+        readWorkflowRunRefTips: async () => hubRefTips,
+        async receiveWorkflowRunPack() {
+          received += 1;
+          return { accepted: true };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    await expect(acknowledgeStop(router, ws, TEST_REF_TIPS)).rejects.toThrow(
+      WorkflowControlHistoryPendingError,
+    );
+    // Unconfirmed, the stop fences nothing, so the rest of the history lands.
+    pushPack(router, ws, "transfer-after-unconfirmed-stop");
+    await tick();
+    expect(received).toBe(1);
+    expect(framesOfType(ws, "repo.pack.reject")).toHaveLength(0);
+    expect(router.getRoutableAddresses()).toContain(
+      TEST_IDENTITY.workflowRunAddress,
+    );
+
+    hubRefTips = TEST_REF_TIPS;
+    await acknowledgeStop(router, ws, TEST_REF_TIPS);
+    expect(router.getRoutableAddresses()).not.toContain(
+      TEST_IDENTITY.workflowRunAddress,
+    );
+    pushPack(router, ws, "transfer-after-confirmed-stop");
+    await tick();
+    expect(received).toBe(1);
+  });
+
+  test("a stopped worker that reconnects without its address still delivers its history", async () => {
+    let hubRefTips: WorkflowRunRefTips = {
+      ...TEST_REF_TIPS,
+      "refs/heads/main": "b".repeat(40),
+    };
+    let received = 0;
+    const router = createAllocatedRouter({
+      lookups: {
+        readWorkflowRunRefTips: async () => hubRefTips,
+        async receiveWorkflowRunPack() {
+          received += 1;
+          hubRefTips = TEST_REF_TIPS;
+          return { accepted: true };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    await expect(acknowledgeStop(router, ws, TEST_REF_TIPS)).rejects.toThrow(
+      WorkflowControlHistoryPendingError,
+    );
+
+    // A stopped worker no longer hosts the deployment, so its reconnect
+    // announces no address.
+    router.handleClose(ws);
+    const reconnected = await connectAllocated(router, []);
+    pushPack(router, reconnected, "transfer-after-reconnect");
+    await tick();
+    expect(received).toBe(1);
+    expect(framesOfType(reconnected, "repo.pack.ack")).toEqual([
+      expect.objectContaining({ transferId: "transfer-after-reconnect" }),
+    ]);
+
+    await acknowledgeStop(router, reconnected, TEST_REF_TIPS);
+    pushPack(router, reconnected, "transfer-after-confirmed-stop");
+    await tick();
+    expect(received).toBe(1);
+    expect(framesOfType(reconnected, "repo.pack.reject")).not.toHaveLength(0);
+  });
+
+  test("a disconnect cancels a transfer its worker began without a route", async () => {
+    let received = 0;
+    const router = createAllocatedRouter({
+      lookups: {
+        async receiveWorkflowRunPack() {
+          received += 1;
+          return { accepted: true };
+        },
+      },
+    });
+    const interrupted = await connectAllocated(router, []);
+    const [chunk] = chunkPack(new Uint8Array([1]));
+    if (chunk === undefined) throw new Error("Expected one pack chunk");
+    router.handleMessage(
+      interrupted,
+      JSON.stringify({
+        type: "repo.pack.push",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        repoId: workflowRunRepoId,
+        transferId: "transfer-interrupted",
+        seq: chunk.seq,
+        data: chunk.data,
+      }),
+    );
+    await tick();
+    router.handleClose(interrupted);
+
+    const reconnected = await connectAllocated(router, []);
+    pushPack(router, reconnected, "transfer-after-reconnect");
+    await tick();
+    expect(framesOfType(reconnected, "repo.pack.reject")).toHaveLength(0);
+    expect(received).toBe(1);
+  });
+
+  test("does not confirm a stop whose acknowledgement reports no ref tips", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    await expect(acknowledgeStop(router, ws, undefined)).rejects.toThrow(
+      WorkflowControlHistoryPendingError,
+    );
+    expect(router.getRoutableAddresses()).toContain(
+      TEST_IDENTITY.workflowRunAddress,
+    );
+  });
+
+  test("does not confirm a stop while the Hub cannot read its history", async () => {
+    const router = createAllocatedRouter({
+      lookups: {
+        readWorkflowRunRefTips: async () => {
+          throw new Error("repository unavailable");
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const stop = acknowledgeStop(router, ws, TEST_REF_TIPS);
+    await expect(stop).rejects.toThrow(WorkflowControlHistoryPendingError);
+    await expect(stop).rejects.toThrow("repository unavailable");
+  });
+
+  test("a repeated stop stays confirmed after the Hub fenced the worker's later history", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    await acknowledgeStop(router, ws, TEST_REF_TIPS);
+    await acknowledgeStop(router, ws, {
+      ...TEST_REF_TIPS,
+      "refs/heads/main": "d".repeat(40),
+    });
   });
 
   test("an acknowledgement that cannot be validated leaves the stop unknown", async () => {

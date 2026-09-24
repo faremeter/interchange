@@ -55,7 +55,10 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
-import type { RepoId } from "@intx/hub-sessions";
+import {
+  WorkflowControlHistoryPendingError,
+  type RepoId,
+} from "@intx/hub-sessions";
 
 import {
   SESSION_ID,
@@ -76,6 +79,7 @@ const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = "run_drain-roundtrip-1";
 const WAIT_DEPLOYMENT_ID = "run_drain-roundtrip-wait-1";
 const CONTROL_DEPLOYMENT_ID = "run_control-roundtrip";
+const STOP_DEPLOYMENT_ID = "run_stop-roundtrip";
 // Longer than the test's budget, so the worker's acknowledgement, not the
 // clock, settles the control request.
 const CONTROL_TIMEOUT_MS = 120_000;
@@ -97,6 +101,7 @@ const TENANT_ID = "tnt_drain_roundtrip";
 const CALLER_PRINCIPAL_ID = "prn_drain_roundtrip";
 const DEFINITION_ASSET_IDS: Record<string, string> = {
   [CONTROL_DEPLOYMENT_ID]: "ast_control_roundtrip",
+  [STOP_DEPLOYMENT_ID]: "ast_stop_roundtrip",
   [DEPLOYMENT_ID]: "ast_drain_roundtrip_cancel_wf",
   [WAIT_DEPLOYMENT_ID]: "ast_drain_roundtrip_wait_wf",
 };
@@ -465,53 +470,87 @@ describe.skipIf(!harnessDbEnvAvailable())("drain round-trip", () => {
   }, 30_000);
 });
 
+/**
+ * Deploy a workflow whose run parks on a signal that never arrives, trigger
+ * it, and wait until the Hub holds the park.
+ */
+async function deployParkedOnSignal(args: {
+  anchorRunId: string;
+  definitionAssetId: string;
+  workflowId: string;
+}) {
+  const address = deriveRunAddress({
+    runId: args.anchorRunId,
+    domain: DEPLOYMENT_DOMAIN,
+  });
+  const source: InferenceSource = {
+    id: "anthropic:mock-model",
+    provider: "anthropic",
+    model: "mock-model",
+    baseURL: `http://localhost:${env.inference.server.port}`,
+    credentialId: "sk-mock",
+  };
+  const handle = await deployWorkflowSourceForTest(env, {
+    entryModule: signalGateEntry({
+      address,
+      signalName: "never-arrives",
+      drainBehavior: "wait",
+      systemPrompt1: "Wait for the signal.",
+      workflowId: args.workflowId,
+    }),
+    db: h.db,
+    tenantId: TENANT_ID,
+    definitionAssetId: args.definitionAssetId,
+    anchorRunId: args.anchorRunId,
+    deploymentDomain: DEPLOYMENT_DOMAIN,
+    agentAddress: address,
+    approvals: createApprovalSet([
+      "inference.source:anthropic:mock-model",
+      "director:@intx/agent/default",
+      `mail.address:${address}`,
+      `mail.send:${DEPLOYMENT_DOMAIN}`,
+    ]),
+    config: {
+      sessionId: SESSION_ID,
+      agentId: args.anchorRunId,
+      tenantId: "tenant-1",
+      principalId: "prin_integration-1",
+      agentAddress: address,
+      systemPrompt: "Wait for the signal.",
+      tools: [],
+      grants: [],
+      sources: [source],
+      defaultSource: source.id,
+    },
+    sources: { step1: [source], gate: [source] },
+  });
+  await waitFor(() => env.hub.router.getRoutableAddresses().includes(address), {
+    diagnostics: env.sidecarDiagnostics,
+  });
+  await fireMailTrigger(env, address, {
+    messageId: `<${args.anchorRunId}@integration.interchange>`,
+  });
+  await waitFor(
+    async () =>
+      (
+        await readWorkflowRunEventsForAnyRun(
+          env,
+          args.anchorRunId,
+          handle.workflowRunRepoId,
+        )
+      ).some((event) => event.type === "SignalAwaited"),
+    { diagnostics: env.sidecarDiagnostics },
+  );
+  return { address, handle };
+}
+
 test.skipIf(!harnessDbEnvAvailable())(
   "Hub workflow control cancels a real child parked on a signal",
   async () => {
-    const address = deriveRunAddress({
-      runId: CONTROL_DEPLOYMENT_ID,
-      domain: DEPLOYMENT_DOMAIN,
-    });
-    const source: InferenceSource = {
-      id: "anthropic:mock-model",
-      provider: "anthropic",
-      model: "mock-model",
-      baseURL: `http://localhost:${env.inference.server.port}`,
-      credentialId: "sk-mock",
-    };
-    const handle = await deployWorkflowSourceForTest(env, {
-      entryModule: signalGateEntry({
-        address,
-        signalName: "never-arrives",
-        drainBehavior: "wait",
-        systemPrompt1: "Wait for the signal.",
-        workflowId: "control-workflow",
-      }),
-      db: h.db,
-      tenantId: TENANT_ID,
-      definitionAssetId: "ast_control_roundtrip",
+    const { address, handle } = await deployParkedOnSignal({
       anchorRunId: CONTROL_DEPLOYMENT_ID,
-      deploymentDomain: DEPLOYMENT_DOMAIN,
-      agentAddress: address,
-      approvals: createApprovalSet([
-        "inference.source:anthropic:mock-model",
-        "director:@intx/agent/default",
-        `mail.address:${address}`,
-        `mail.send:${DEPLOYMENT_DOMAIN}`,
-      ]),
-      config: {
-        sessionId: SESSION_ID,
-        agentId: CONTROL_DEPLOYMENT_ID,
-        tenantId: "tenant-1",
-        principalId: "prin_integration-1",
-        agentAddress: address,
-        systemPrompt: "Wait for the signal.",
-        tools: [],
-        grants: [],
-        sources: [source],
-        defaultSource: source.id,
-      },
-      sources: { step1: [source], gate: [source] },
+      definitionAssetId: "ast_control_roundtrip",
+      workflowId: "control-workflow",
     });
     const inspectionFile = path.join(
       env.sidecar.dataDir,
@@ -523,24 +562,6 @@ test.skipIf(!harnessDbEnvAvailable())(
     );
     await mkdir(path.dirname(inspectionFile), { recursive: true });
     await writeFile(inspectionFile, "retain for inspection");
-    await waitFor(
-      () => env.hub.router.getRoutableAddresses().includes(address),
-      { diagnostics: env.sidecarDiagnostics },
-    );
-    await fireMailTrigger(env, address, {
-      messageId: "<control-roundtrip@integration.interchange>",
-    });
-    await waitFor(
-      async () =>
-        (
-          await readWorkflowRunEventsForAnyRun(
-            env,
-            CONTROL_DEPLOYMENT_ID,
-            handle.workflowRunRepoId,
-          )
-        ).some((event) => event.type === "SignalAwaited"),
-      { diagnostics: env.sidecarDiagnostics },
-    );
     await env.hub.router.sendWorkflowControl(
       env.hub.prepareAllocationIdentity(CONTROL_DEPLOYMENT_ID, address),
       {
@@ -579,6 +600,46 @@ test.skipIf(!harnessDbEnvAvailable())(
     expect(
       events.find((event) => event.type === "CancelRequested")?.body["origin"],
     ).toBe("supervisor-operator");
+  },
+  30_000,
+);
+
+test.skipIf(!harnessDbEnvAvailable())(
+  "Hub confirms a workflow stop once it holds the stopped worker's history",
+  async () => {
+    const { address } = await deployParkedOnSignal({
+      anchorRunId: STOP_DEPLOYMENT_ID,
+      definitionAssetId: "ast_stop_roundtrip",
+      workflowId: "stop-workflow",
+    });
+    const target = env.hub.prepareAllocationIdentity(
+      STOP_DEPLOYMENT_ID,
+      address,
+    );
+    // A stop can overtake the worker's last pushes. The lifecycle service
+    // retries such a stop, and a retry confirms once the history has landed.
+    await waitFor(
+      async () => {
+        try {
+          await env.hub.router.sendWorkflowControl(
+            target,
+            {
+              action: "stop",
+              agentAddress: address,
+              runId: STOP_DEPLOYMENT_ID,
+              reason: "Cancellation grace expired",
+            },
+            CONTROL_TIMEOUT_MS,
+          );
+          return true;
+        } catch (error) {
+          if (error instanceof WorkflowControlHistoryPendingError) return false;
+          throw error;
+        }
+      },
+      { diagnostics: env.sidecarDiagnostics },
+    );
+    expect(env.hub.router.getRoutableAddresses()).not.toContain(address);
   },
   30_000,
 );

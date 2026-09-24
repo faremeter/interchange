@@ -30,6 +30,7 @@ import {
   type InboundMailPolicyRegistry,
   type SenderKeyCache,
   type SessionManager,
+  type WorkflowControlOutcome,
 } from "@intx/hub-agent";
 import {
   createWorkflowSupervisor,
@@ -72,6 +73,8 @@ import {
   type AgentDeployFrame,
   type CredentialDelivery,
   type SourceRefPin,
+  type WorkflowControlFrame,
+  type WorkflowRunRefTips,
 } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN, projectLiveToInert } from "@intx/workflow";
 import {
@@ -1104,6 +1107,15 @@ export function createSidecarDeployRouter(deps: {
     agentAddress: string;
   }) => void;
   /**
+   * Read the tips of a stopped deployment's workflow-run refs and schedule a
+   * push of any commit the hub has not acknowledged. The hub confirms the stop
+   * only once it holds these tips. Tests that do not exercise the pack push
+   * path may report no refs.
+   */
+  reportDeploymentRefTips: (
+    agentAddress: string,
+  ) => Promise<WorkflowRunRefTips>;
+  /**
    * Substrate-config env keys the multi-step branch propagates into
    * the workflow-process child's spawn-time env (see
    * `SIDECAR_SUBSTRATE_CONFIG_KEYS` in `workflow-substrate-factory.ts`).
@@ -1383,6 +1395,18 @@ export function createSidecarDeployRouter(deps: {
     Promise<void>
   >();
   const workflowStopTasks = new Map<string, Promise<void>>();
+
+  // Read after the supervisor has shut down, so the tips cover every run
+  // event and consumption record the stopped worker committed. Inbox
+  // enqueues, grants writes, and mailbox replays can still land later; none
+  // of them records an outcome or settles a delivery.
+  async function reportControlOutcome(
+    frame: WorkflowControlFrame,
+  ): Promise<WorkflowControlOutcome> {
+    return frame.action === "stop"
+      ? { refTips: await deps.reportDeploymentRefTips(frame.agentAddress) }
+      : {};
+  }
 
   // Synchronous single-flight guard for the deploy path. The real supervisor
   // does not exist until inside `spawnWorkflowRun`, so `deployMultiStep`
@@ -2506,21 +2530,27 @@ export function createSidecarDeployRouter(deps: {
         `sidecar deploy router: unsupported deploy frame for ${frame.agentAddress}; a deploy must carry provisionStep or a workflow definition`,
       );
     },
-    async control(frame): Promise<void> {
+    async control(frame): Promise<WorkflowControlOutcome> {
       if (parseAgentId(frame.agentAddress) !== frame.runId) {
         throw new Error(
           "Workflow control run does not match the deployment address",
         );
       }
       const stopping = workflowStopTasks.get(frame.agentAddress);
-      if (stopping !== undefined) return stopping;
+      if (stopping !== undefined) {
+        await stopping;
+        return reportControlOutcome(frame);
+      }
       if (reservingDeployAddresses.has(frame.agentAddress)) {
         throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR);
       }
       const wired = activeSupervisors.get(frame.agentAddress);
       if (frame.action === "cancel" && wired !== undefined) {
         const cancelling = workflowCancellationTasks.get(wired);
-        if (cancelling !== undefined) return cancelling;
+        if (cancelling !== undefined) {
+          await cancelling;
+          return {};
+        }
         const pending = wired.supervisor
           .requestCancel({
             runId: frame.runId,
@@ -2539,7 +2569,7 @@ export function createSidecarDeployRouter(deps: {
           workflowCancellationTasks.delete(wired);
           throw error;
         }
-        return;
+        return {};
       }
       // Cancellation without a supervisor must still retire its restart record.
       // Publish stop before its first await. It fences new commands and deploys
@@ -2569,6 +2599,7 @@ export function createSidecarDeployRouter(deps: {
         if (workflowStopTasks.get(frame.agentAddress) === pending)
           workflowStopTasks.delete(frame.agentAddress);
       }
+      return reportControlOutcome(frame);
     },
     async undeploy(frame): Promise<void> {
       const stopping = workflowStopTasks.get(frame.agentAddress);

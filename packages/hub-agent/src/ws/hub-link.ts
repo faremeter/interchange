@@ -20,6 +20,7 @@ import {
   type SessionErrorFrame,
   type AgentUndeployFrame,
   type WorkflowControlFrame,
+  type WorkflowRunRefTips,
   type PackPushFrame,
   type PackDoneFrame,
   type PackAckFrame,
@@ -298,8 +299,14 @@ export interface DeployRouter {
    */
   undeploy?: (frame: AgentUndeployFrame) => Promise<void>;
   /** Cancel a workflow or stop its process while retaining local inspection state. */
-  control?: (frame: WorkflowControlFrame) => Promise<void>;
+  control?: (frame: WorkflowControlFrame) => Promise<WorkflowControlOutcome>;
 }
+
+/** What a handled workflow control reports back to the Hub. */
+export type WorkflowControlOutcome = {
+  /** A stopped worker's ref tips, which the Hub must hold to confirm the stop. */
+  refTips?: WorkflowRunRefTips;
+};
 
 /**
  * Per-address mail handler registry the link consults on every
@@ -1552,10 +1559,11 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   ): Promise<void> {
     if (ws !== connection) return;
     let error: string | undefined;
+    let refTips: WorkflowRunRefTips | undefined;
     try {
       if (deployRouter.control === undefined)
         throw new Error("Workflow control is not supported by this sidecar");
-      await deployRouter.control(frame);
+      ({ refTips } = await deployRouter.control(frame));
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     }
@@ -1565,6 +1573,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       type: "workflow.control.ack",
       requestId: frame.requestId,
       ...(error !== undefined ? { error } : {}),
+      ...(refTips !== undefined ? { refTips } : {}),
     });
   }
 
