@@ -1041,43 +1041,41 @@ export function createWorkflowSupervisor(
       // cannot saturate the host.
       const crashCount = crashTimestamps.length;
       logger.error`workflow-process crash-looped: ${String(crashCount)} unexpected exits within ${String(crashLoopWindowMs)}ms; stopping the deployment (${reason})`;
+      // The RunFailed tombstone is the SOLE durable, externally-queryable
+      // signal of the crash-loop (the `crash-looping` phase is in-memory
+      // only). Shutdown commits it once teardown has quiesced the drain
+      // accumulators, so no escalation commit races this write, and before
+      // it resolves or reports the self-termination, so a host that then
+      // reads the deployment's history finds it. Best-effort: the deployment
+      // is already terminal, so the write not landing costs observability,
+      // not correctness.
       await shutdownInternal({
         reason: `crash-loop: ${reason}`,
         terminalPhase: "crash-looping",
         selfTerminated: true,
+        terminalCommit: async () => {
+          // `anchorRunId` and the tombstone's `runId` are DISTINCT ids and
+          // must not be conflated. `bindings.anchorRunId` is the workflow-run
+          // repo slug (`deriveWorkflowRunRepoId`), which the supervisor
+          // principal's authz check keys on (`repoId.id === anchorRunId`).
+          // The RunFailed must land on the deployment's ONE top-level run,
+          // whose id is the local part of the deployment's mail address
+          // (`deriveWorkflowRunId`) -- the same id the dispatch loop writes
+          // every run event under. For a domain like `integration.interchange`
+          // the two ids differ (the repo slug carries a domain suffix), so
+          // writing the tombstone under the repo slug would strand it in a run
+          // subtree no reader consults.
+          await commitRunFailed({
+            substrate: bindings.repoStore,
+            repoId: bindings.workflowRunRepoId,
+            ref: bindings.workflowRunRef,
+            anchorRunId: bindings.anchorRunId,
+            runId: deriveWorkflowRunId(bindings.deploymentMailAddress),
+            at: new Date(nowMs).toISOString(),
+            message: `workflow-process crash-looped: ${String(crashCount)} unexpected exits within ${String(crashLoopWindowMs)}ms`,
+          });
+        },
       });
-      // Commit the RunFailed tombstone AFTER teardown: shutdownInternal has
-      // quiesced the drain accumulators (stop + await disposed), so the
-      // run-event tree is settled and no escalation commit races this write.
-      // This RunFailed is the SOLE durable, externally-queryable signal of
-      // the crash-loop (the `crash-looping` phase is in-memory only), so a
-      // failure to write it is logged loudly rather than swallowed. Best-
-      // effort: the deployment is already terminal, so the write not landing
-      // costs observability, not correctness.
-      try {
-        // `anchorRunId` and the tombstone's `runId` are DISTINCT ids and must
-        // not be conflated. `bindings.anchorRunId` is the workflow-run repo
-        // slug (`deriveWorkflowRunRepoId`), which the supervisor principal's
-        // authz check keys on (`repoId.id === anchorRunId`). The RunFailed must
-        // land on the deployment's ONE top-level run, whose id is the local
-        // part of the deployment's mail address (`deriveWorkflowRunId`) -- the
-        // same id the dispatch loop writes every run event under. For a domain
-        // like `integration.interchange` the two ids differ (the repo slug
-        // carries a domain suffix), so writing the tombstone under the repo
-        // slug would strand it in a run subtree no reader consults.
-        await commitRunFailed({
-          substrate: bindings.repoStore,
-          repoId: bindings.workflowRunRepoId,
-          ref: bindings.workflowRunRef,
-          anchorRunId: bindings.anchorRunId,
-          runId: deriveWorkflowRunId(bindings.deploymentMailAddress),
-          at: new Date(nowMs).toISOString(),
-          message: `workflow-process crash-looped: ${String(crashCount)} unexpected exits within ${String(crashLoopWindowMs)}ms`,
-        });
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        logger.error`crash-loop RunFailed commit failed; deployment has no durable failure tombstone: ${message}`;
-      }
       return;
     }
     const thisBackoffMs = respawnBackoffMs;
@@ -1433,11 +1431,13 @@ export function createWorkflowSupervisor(
         // for this very write -- if the loop were blocked here, the
         // merge response could not be consumed and the write would
         // deadlock).
-        void handleSubstrateWriteRequest(payload.data).catch((cause) => {
-          const message =
-            cause instanceof Error ? cause.message : String(cause);
-          logger.error`substrate.write.request handler crashed: ${message}`;
-        });
+        ownDetachedWrite(
+          handleSubstrateWriteRequest(payload.data).catch((cause) => {
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.error`substrate.write.request handler crashed: ${message}`;
+          }),
+        );
         continue;
       }
       if (payload.type === "substrate.merge.response") {
@@ -1468,11 +1468,13 @@ export function createWorkflowSupervisor(
         // expunge. Run it off the iterator's loop so the iterator keeps
         // draining while the store flushes; the handler owns the
         // `mailbox.mutate.response` reply that resolves the child's awaiter.
-        void handleMailboxMutation(payload.data).catch((cause) => {
-          const message =
-            cause instanceof Error ? cause.message : String(cause);
-          logger.error`mailbox.mutate.request handler crashed: ${message}`;
-        });
+        ownDetachedWrite(
+          handleMailboxMutation(payload.data).catch((cause) => {
+            const message =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.error`mailbox.mutate.request handler crashed: ${message}`;
+          }),
+        );
         continue;
       }
       if (payload.type === "terminal.event") {
@@ -1607,6 +1609,28 @@ export function createWorkflowSupervisor(
   >();
   let cancellationSeq = 0;
   const cancellationCommits = new Set<Promise<CancelCommitInfo>>();
+  // Repository writes started off the control pump. Each promise settles
+  // without rejecting; its handler logs any failure.
+  const detachedWrites = new Set<Promise<unknown>>();
+
+  function ownDetachedWrite(write: Promise<unknown>): void {
+    detachedWrites.add(write);
+    void write.then(() => {
+      detachedWrites.delete(write);
+    });
+  }
+
+  // Every dispatch loop still running. A recycle moves `state` to the
+  // replacement cohort while the retired loop finishes its last message.
+  const dispatchLoops = new Set<Promise<void>>();
+
+  function ownDispatchLoop(loop: Promise<void>): void {
+    dispatchLoops.add(loop);
+    const release = () => {
+      dispatchLoops.delete(loop);
+    };
+    void loop.then(release, release);
+  }
 
   /**
    * Reject every pending merge round-trip and every park-notify
@@ -2150,15 +2174,17 @@ export function createWorkflowSupervisor(
       // per-event. The fold commit carries no newly-added terminal event,
       // so it does not re-fire this terminal-write coupling.
       for (const { runId } of newlyTerminalRuns) {
-        void compactRunEvents({
-          substrate: bindings.repoStore,
-          repoId: validatedRepoId,
-          ref: data.ref,
-          anchorRunId: bindings.anchorRunId,
-          runId,
-        }).catch((cause) => {
-          logger.warn`compaction of run ${runId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
-        });
+        ownDetachedWrite(
+          compactRunEvents({
+            substrate: bindings.repoStore,
+            repoId: validatedRepoId,
+            ref: data.ref,
+            anchorRunId: bindings.anchorRunId,
+            runId,
+          }).catch((cause) => {
+            logger.warn`compaction of run ${runId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+          }),
+        );
       }
     } catch (cause) {
       // Clean up any merge awaiter that the substrate may not have
@@ -2557,6 +2583,7 @@ export function createWorkflowSupervisor(
         startingPhaseBroadcaster,
         replayDone,
       );
+      ownDispatchLoop(dispatchLoop);
       // Surface dispatch-loop failures via the logger; the loop's own
       // catch already swallows per-iteration faults, but a structural
       // failure (e.g. the cohort abort handler itself throws) lands
@@ -3557,6 +3584,11 @@ export function createWorkflowSupervisor(
     // fire below. The terminal phase alone cannot carry this: a self-terminated
     // and a host-requested teardown both land in `stopped`.
     selfTerminated?: boolean;
+    // A durable record of the teardown, written once the child has exited and
+    // the writers shutdown owns have settled, and before shutdown resolves or
+    // reports a self-termination. A host that finds the supervisor gone reads
+    // history that already holds it.
+    terminalCommit?: () => Promise<void>;
   };
 
   function shutdownInternal(opts: ShutdownOptions): Promise<void> {
@@ -3674,6 +3706,11 @@ export function createWorkflowSupervisor(
       // An already-started signed append may finish after the child exits.
       // Own that write through teardown before the host releases its bindings.
       await Promise.allSettled([...cancellationCommits]);
+      // Own the pump's detached writes the same way, so every write the child
+      // requested lands before shutdown resolves. New merges fail once
+      // stopping, so what remains is local I/O. A finishing write can start a
+      // fold.
+      while (detachedWrites.size > 0) await Promise.all([...detachedWrites]);
       // Await every accumulator's `disposed()` so a pending escalation
       // commit or terminal-event watcher coroutine cannot outlive the
       // supervisor and fire against torn-down bindings.
@@ -3684,16 +3721,10 @@ export function createWorkflowSupervisor(
           }),
         ),
       );
-      if (
-        (prior.phase === "running" || prior.phase === "recycling") &&
-        prior.dispatchLoop !== null
-      ) {
-        await prior.dispatchLoop.catch(() => {
-          /* swallowed: dispatch-loop failures are surfaced by the
-             loop's own logger; the shutdown path only waits for the
-             loop's last iteration to settle. */
-        });
-      }
+      // Includes a loop a recycle has retired from `state`, so its last
+      // consumption write lands before shutdown resolves. Each loop's own
+      // logger surfaces its failure.
+      await Promise.allSettled([...dispatchLoops]);
       if (
         (prior.phase === "starting" ||
           prior.phase === "running" ||
@@ -3804,6 +3835,14 @@ export function createWorkflowSupervisor(
         });
       }
       state = { phase: opts.terminalPhase ?? "stopped" };
+    }
+    if (opts.terminalCommit !== undefined) {
+      try {
+        await opts.terminalCommit();
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`terminal commit failed; the deployment has no durable record of why it stopped (${opts.reason}): ${message}`;
+      }
     }
     // Surface a self-termination to the host after the terminal transition is
     // committed. Concurrent shutdown callers share this teardown. Catch sink
@@ -4108,6 +4147,7 @@ export function createWorkflowSupervisor(
               newBroadcaster,
               null,
             );
+            ownDispatchLoop(newDispatchLoop);
             void newDispatchLoop.catch((cause) => {
               const message =
                 cause instanceof Error ? cause.message : String(cause);
@@ -4474,9 +4514,11 @@ type ActiveState = {
    * `starting`-phase ActiveState carries `null` because the loop is
    * not started until the child emits `ready`; once `spawn()`
    * transitions to `running` the field carries the live loop
-   * promise. `shutdownInternal` awaits this promise after aborting
-   * the cohort so a dispatch-loop iteration that is mid-await
-   * settles before the supervisor tears the bindings down.
+   * promise. The recycle that replaces this cohort awaits it.
+   * `shutdownInternal` waits on every running loop through the
+   * supervisor's `dispatchLoops`, including one a recycle has already
+   * cleared from this field, so an iteration that is mid-await settles
+   * before the supervisor tears the bindings down.
    */
   dispatchLoop: Promise<void> | null;
   /**
