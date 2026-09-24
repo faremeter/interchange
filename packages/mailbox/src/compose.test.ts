@@ -31,7 +31,7 @@ describe("composeOutbound", () => {
     expect(wire).toContain("Content-Transfer-Encoding: base64");
 
     expect(extractAttachments(composed.rawBytes)).toEqual([
-      { name: "shot.png", contentType: "image/png", data },
+      { name: "shot.png", contentType: "image/png", data, part: "1.2" },
     ]);
     expect(
       await verifyMimeSignature(composed.rawBytes, crypto.getPublicKey()),

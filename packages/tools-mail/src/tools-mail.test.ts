@@ -2583,11 +2583,13 @@ describe("mail_read handler", () => {
           name: "notes.txt",
           contentType: "text/plain",
           data: new TextEncoder().encode("hello"),
+          part: "1.2",
         },
         {
           name: "shot.png",
           contentType: "image/png",
           data: new Uint8Array([1, 2, 3, 4]),
+          part: "1.3",
         },
       ],
     });
@@ -2607,6 +2609,41 @@ describe("mail_read handler", () => {
     ]);
   });
 
+  test("lists the stamped IMAP path, not an attachment-array index", async () => {
+    const transport = makeMockTransport();
+    const ref: MessageRef = { uid: 10, mailbox: "INBOX" };
+    transport.enqueueMessage(ref, {
+      ...makeInboundMessage(),
+      ref,
+      attachments: [
+        {
+          name: "report.pdf",
+          contentType: "application/pdf",
+          data: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
+          part: "1.3",
+        },
+      ],
+    });
+
+    const handler = makeMailReadHandler(transport);
+    const result = await handler(
+      { id: "rd4b", name: "mail_read", arguments: { ref, parts: "full" } },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["attachments"]).toEqual([
+      {
+        name: "report.pdf",
+        contentType: "application/pdf",
+        size: 5,
+        part: "1.3",
+      },
+    ]);
+  });
+
   test("parts='payload' surfaces attachment metadata for a conversation message", async () => {
     const transport = makeMockTransport();
     const ref: MessageRef = { uid: 8, mailbox: "INBOX" };
@@ -2618,6 +2655,7 @@ describe("mail_read handler", () => {
           name: "notes.txt",
           contentType: "text/plain",
           data: new TextEncoder().encode("hello"),
+          part: "1.2",
         },
       ],
     });
