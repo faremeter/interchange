@@ -1466,13 +1466,11 @@ export function createSidecarDeployRouter(deps: {
   //     consulted only by the OUTBOUND workflow-run pack push
   //     (`registry.resolve`), which the supervisor itself drives; no inbound
   //     frame consults it (a frame racing the reclaim is rejected by the
-  //     routers above, not routed through this mapping). The supervisor's own
-  //     terminal `RunFailed` commit -- the crash-loop latch writes it AFTER its
-  //     teardown fires this sink -- resolves this mapping, so dropping it here
-  //     would strand that commit ("no run address registered for deployment")
-  //     and leave the crash-loop with no durable failure tombstone. Retaining a
-  //     stale entry never blocks a redeploy: `record` overwrites idempotently,
-  //     and an operator `undeploy` or a process restart clears it.
+  //     routers above, not routed through this mapping). The crash-loop latch
+  //     commits its `RunFailed` tombstone, resolving this mapping, before this
+  //     sink fires. Retaining a stale entry never blocks a redeploy: `record`
+  //     overwrites idempotently, and an operator `undeploy` or a process
+  //     restart clears it.
   //
   // Fully synchronous with no `await` between the guard and the mutations, so it
   // is idempotent and cannot interleave with a concurrent operator `undeploy` of

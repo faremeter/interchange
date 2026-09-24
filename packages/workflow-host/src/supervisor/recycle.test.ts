@@ -1469,6 +1469,92 @@ describe("supervisor recycle: shutdown during the kill/respawn gap", () => {
   });
 });
 
+describe("supervisor recycle: shutdown owns the retiring dispatch loop", () => {
+  test("shutdown during a recycle waits for the retired cohort's consumption write", async () => {
+    const baseDir = await makeTempDir("recycle-retiring-loop-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker({});
+    const inbox = createMemoryInboxPrimitives();
+    const consuming = Promise.withResolvers<undefined>();
+    const releaseConsumption = Promise.withResolvers<undefined>();
+    let consumed = false;
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const bindings = await buildBindings({
+      baseDir,
+      spawner: tracker.spawner,
+      mailBus,
+      ipcKeypair,
+      inboxPrimitives: {
+        ...inbox,
+        async markConsumed(store, principal, repoId, args) {
+          const result = await inbox.markConsumed(
+            store,
+            principal,
+            repoId,
+            args,
+          );
+          consuming.resolve(undefined);
+          await releaseConsumption.promise;
+          consumed = true;
+          return result;
+        },
+      },
+    });
+    const supervisor = createWorkflowSupervisor(bindings);
+    const spawning = supervisor.spawn({
+      stepOrder: ["step-1"],
+      definitionHash: "def-hash-retiring-loop",
+      warmKeep: false,
+      onInferenceEvent: () => undefined,
+    });
+    await tracker.awaitChildren(1);
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    const firstSender = await driveReady(first, ipcKeypair);
+    await spawning;
+
+    mailBus.deliver(
+      "run_deployment-x@example.com",
+      new TextEncoder().encode("consumed-during-recycle"),
+    );
+    await waitForTriggerFireRunIds(first.supervisorToChild, 1);
+    const [runId] = parseTriggerFireRunIds(first.supervisorToChild.flushed());
+    if (runId === undefined) throw new Error("trigger.fire runId missing");
+    await firstSender.send({
+      type: "terminal.event",
+      data: { runId, seq: 0, kind: "RunCompleted", at: "test" },
+    });
+    await consuming.promise;
+
+    const recycled = supervisor.recycle({ reason: "retiring-loop" }).then(
+      () => null,
+      (cause: unknown) => cause,
+    );
+    await tracker.awaitChildren(2);
+    let shutDown = false;
+    const shutdown = supervisor.shutdown().then(() => {
+      shutDown = true;
+    });
+    try {
+      // The consumption write is held, so a shutdown that owns the retired
+      // loop cannot finish, whatever this turn runs.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(shutDown).toBe(false);
+    } finally {
+      releaseConsumption.resolve(undefined);
+      await shutdown;
+      await recycled;
+      await fs.rm(baseDir, { recursive: true, force: true });
+    }
+    expect(consumed).toBe(true);
+  });
+});
+
 describe("supervisor recycle: external drain phase guard", () => {
   test("external drain() during the recycling window is a silent no-op and does not write to the dying controlSender", async () => {
     // The window: between `triggerRecycle`'s kill step and
