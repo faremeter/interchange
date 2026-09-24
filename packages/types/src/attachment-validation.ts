@@ -108,10 +108,16 @@ export function validateAttachments(
     // A user-supplied name becomes the MIME part's quoted filename, so it
     // must not contain characters that would break out of the header
     // (line breaks or a double quote). The default name is always safe.
-    if (input.name !== undefined && /[\r\n"]/.test(input.name)) {
+    if (
+      input.name !== undefined &&
+      (input.name.trim() === "" || /[\r\n"]/.test(input.name))
+    ) {
+      const empty = input.name.trim() === "";
       invalidName ??= {
         code: "invalid_attachment_name",
-        message: `attachment ${index} has a name with invalid characters (no quotes or line breaks)`,
+        message: empty
+          ? `attachment ${index} has an empty name`
+          : `attachment ${index} has a name with invalid characters (no quotes or line breaks)`,
         attachmentIndex: index,
       };
       continue;
