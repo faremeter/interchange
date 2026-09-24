@@ -434,6 +434,44 @@ describe("mail_send handler", () => {
 
     expect(result.isError).toBe(true);
   });
+
+  test("omits the Subject header when the argument is empty or whitespace", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailSendHandler(transport);
+
+    // A `subject: ""` (or whitespace) would serialize as a `Subject:` header
+    // with no text; the receiving side treats that as absent, so the tool omits
+    // it rather than emitting a header an inbound projection rejects.
+    for (const [i, subject] of ["", "   ", "\t"].entries()) {
+      const result = await handler(
+        {
+          id: `s-blank-${String(i)}`,
+          name: "mail_send",
+          arguments: { to: "user@test", content: "text", subject },
+        },
+        signal,
+      );
+      expect(result.isError).toBeUndefined();
+    }
+
+    const sent = transport.getSentMessages();
+    expect(sent).toHaveLength(3);
+    for (const message of sent) {
+      expect(message.subject).toBeUndefined();
+    }
+
+    // A real subject still rides through verbatim.
+    const withSubject = await handler(
+      {
+        id: "s-real",
+        name: "mail_send",
+        arguments: { to: "user@test", content: "text", subject: "hello" },
+      },
+      signal,
+    );
+    expect(withSubject.isError).toBeUndefined();
+    expect(transport.getSentMessages()[3]?.subject).toBe("hello");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -563,6 +601,47 @@ describe("mail_reply handler", () => {
     );
 
     expect(result.isError).toBe(true);
+  });
+
+  test("omits the Subject header when the parent's subject is empty or whitespace", async () => {
+    const transport = makeMockTransport();
+    const handler = makeMailReplyHandler(transport);
+
+    // A parent whose `Subject:` header carried no text decodes to `""` --
+    // carrying it forward verbatim would emit the same empty header on the
+    // reply, which the receiving projection treats as absent anyway.
+    for (const [i, subject] of ["", "   "].entries()) {
+      const parentRef: MessageRef = { uid: 20 + i, mailbox: "INBOX" };
+      transport.enqueueMessage(parentRef, {
+        ref: parentRef,
+        headers: {
+          from: "user@test",
+          to: ["agent@local"],
+          date: new Date().toISOString(),
+          messageId: `<parent-${String(i)}@test>`,
+          subject,
+        },
+        flags: [],
+        content: "original message",
+        signatureStatus: "missing",
+      });
+      const result = await handler(
+        {
+          id: `r-blank-${String(i)}`,
+          name: "mail_reply",
+          arguments: { ref: parentRef, content: "reply" },
+        },
+        signal,
+      );
+      expect(result.isError).toBeUndefined();
+    }
+
+    const sent = transport.getSentMessages();
+    expect(sent).toHaveLength(2);
+    for (const message of sent) {
+      expect(message.subject).toBeUndefined();
+      expect(message.inReplyTo).toMatch(/^<parent-\d@test>$/);
+    }
   });
 });
 
