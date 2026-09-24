@@ -1081,7 +1081,7 @@ export function parseMailToEmail(raw: Uint8Array, mailId: string): JMAPEmail {
  * base64 body surfaces as a thrown error rather than a silent best-effort
  * decode — attachment integrity is load-bearing.
  */
-function decodeAttachmentBytes(
+export function decodeAttachmentBytes(
   body: Uint8Array,
   headers: Map<string, string>,
 ): Uint8Array {

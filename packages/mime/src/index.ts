@@ -11,6 +11,7 @@ export {
   extractPartByPath,
   parseMailToEmail,
   extractAttachments,
+  decodeAttachmentBytes,
   buildMessageHeaders,
   decodeMail,
 } from "./mime";

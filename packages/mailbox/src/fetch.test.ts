@@ -66,6 +66,43 @@ function rawMultipart(body: string): Uint8Array {
   );
 }
 
+/** Conversation mail whose text/plain attachment is quoted-printable `caf=E9`. */
+function rawQuotedPrintableAttachment(): Uint8Array {
+  return encoder.encode(
+    [
+      "From: alice@x",
+      "To: bob@y",
+      "Subject: QP",
+      "Message-ID: <qp@x>",
+      "Date: Thu, 01 Jan 2026 00:00:00 +0000",
+      "Interchange-Type: conversation.message",
+      `Content-Type: multipart/signed; protocol="application/pgp-signature"; micalg=pgp-sha512; boundary="outer"`,
+      "",
+      "--outer",
+      `Content-Type: multipart/mixed; boundary="inner"`,
+      "",
+      "--inner",
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: 7bit",
+      "",
+      "see attached",
+      "--inner",
+      "Content-Type: text/plain",
+      "Content-Transfer-Encoding: quoted-printable",
+      `Content-Disposition: attachment; filename="cafe.txt"`,
+      "",
+      "caf=E9",
+      "--inner--",
+      "--outer",
+      "Content-Type: application/pgp-signature",
+      "",
+      "FAKE",
+      "--outer--",
+      "",
+    ].join("\r\n"),
+  );
+}
+
 /**
  * Wrap a store so every `readRaw` is counted. Proves the pure functions read
  * raw only when a projection or predicate needs the bytes.
@@ -209,6 +246,57 @@ describe("async fetch projections route through readRaw", () => {
 
     const part = await fetchPart({ uid, mailbox: "INBOX" }, "1", store);
     expect(new TextDecoder().decode(part.content)).toContain("part body");
+  });
+
+  test("fetchPart undoes quoted-printable the same way listing does", async () => {
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      rawQuotedPrintableAttachment(),
+      envelopeFor({
+        messageId: "<qp@x>",
+        subject: "QP",
+        interchangeType: "conversation.message",
+      }),
+      [],
+    );
+    const ref = { uid, mailbox: "INBOX" };
+    const listed = await fetchFull(ref, store, () => undefined);
+    const attachment = listed.attachments?.[0];
+    if (attachment === undefined)
+      throw new Error("expected a listed attachment");
+    expect(Array.from(attachment.data)).toEqual([0x63, 0x61, 0x66, 0xe9]);
+
+    const fetched = await fetchPart(ref, attachment.part ?? "1.2", store);
+    expect(Array.from(fetched.content)).toEqual(Array.from(attachment.data));
+  });
+
+  test("fetchPart rejects an unknown transfer encoding", async () => {
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      encoder.encode(
+        [
+          "From: alice@x",
+          "To: bob@y",
+          "Subject: x",
+          "Message-ID: <1@x>",
+          "Date: Thu, 01 Jan 2026 00:00:00 +0000",
+          `Content-Type: multipart/mixed; boundary="b"`,
+          "",
+          "--b",
+          "Content-Type: text/plain",
+          "Content-Transfer-Encoding: x-unknown",
+          "",
+          "nope",
+          "--b--",
+          "",
+        ].join("\r\n"),
+      ),
+      envelopeFor(),
+      [],
+    );
+    await expect(
+      fetchPart({ uid, mailbox: "INBOX" }, "1", store),
+    ).rejects.toThrow(/unsupported content-transfer-encoding/);
   });
 
   test("fetch projections reject an absent uid", async () => {
