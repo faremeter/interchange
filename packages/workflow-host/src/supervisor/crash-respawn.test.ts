@@ -710,6 +710,7 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
       phase: "stopped" | "crash-looping";
       reason: string;
     }[] = [];
+    const latched = Promise.withResolvers<undefined>();
     // Latch on the 2nd unexpected exit. The default stable-reset window
     // (60s) never fires within this test, so the counter does not reset.
     const { supervisor } = await spawnSupervisor({
@@ -722,7 +723,10 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
       // Near-zero backoff: real timers, asserting the latch not its timing.
       respawnBackoffInitialMs: 1,
       writeRecorder,
-      onSelfTerminate: (info) => selfTerminations.push(info),
+      onSelfTerminate: (info) => {
+        selfTerminations.push(info);
+        latched.resolve(undefined);
+      },
     });
 
     // Crash 1: under the threshold -> respawn (child 2).
@@ -734,12 +738,10 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     if (second === undefined) throw new Error("second child missing");
     await driveReady(second, ipcKeypair);
 
-    // Crash 2: reaches the threshold -> latch, no further respawn. Wait for
-    // the latch's post-teardown RunFailed commit to land.
+    // Crash 2: reaches the threshold -> latch, no further respawn. The latch
+    // reports its self-termination last, after its RunFailed commit landed.
     second.crash();
-    await writeRecorder.until(() =>
-      writeRecorder.prefixes().includes("runs/run_deployment-x/events/"),
-    );
+    await latched.promise;
     expect(tracker.totalSpawns).toBe(2);
 
     // The latch committed a RunFailed tombstone to the deployment's stable
@@ -765,6 +767,38 @@ describe("supervisor crash-respawn: crash-loop guard", () => {
     expect(selfTerminations).toHaveLength(1);
     expect(selfTerminations[0]?.phase).toBe("crash-looping");
     expect(selfTerminations[0]?.reason).toMatch(/crash-loop/);
+  });
+
+  test("the latch commits its RunFailed tombstone before it reports the self-termination", async () => {
+    const baseDir = await makeTempDir("crash-loop-tombstone-order-");
+    const ipcKeypair = await generateKeyPair();
+    const mailBus = createMockMailBus();
+    const tracker = createSpawnTracker();
+    const inbox = createMemoryInboxPrimitives();
+    const writeRecorder = createWriteRecorder();
+    // The sidecar drops the deployment from its registry in this sink, and a
+    // forced stop that then finds no supervisor reports the refs as final.
+    const tombstoneAtSelfTermination = Promise.withResolvers<boolean>();
+    await spawnSupervisor({
+      baseDir,
+      tracker,
+      mailBus,
+      ipcKeypair,
+      inboxPrimitives: inbox,
+      crashLoopMaxCount: 1,
+      writeRecorder,
+      onSelfTerminate: () => {
+        tombstoneAtSelfTermination.resolve(
+          writeRecorder.prefixes().includes("runs/run_deployment-x/events/"),
+        );
+      },
+    });
+
+    const first = tracker.children[0];
+    if (first === undefined) throw new Error("first child missing");
+    first.crash();
+
+    expect(await tombstoneAtSelfTermination.promise).toBe(true);
   });
 
   test("a stable run resets the crash counter so a later crash does not latch", async () => {

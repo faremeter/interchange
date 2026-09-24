@@ -155,11 +155,12 @@ disposes subscriptions. Concurrent callers await the same teardown through
 confirmed child exit, including a replacement still awaiting readiness.
 A replacement cannot spawn once shutdown begins.
 It releases pending cancellation waits and requests the kill before waiting for
-the dispatch loop, so a child that stops reading its control pipe cannot block
+the dispatch loops, so a child that stops reading its control pipe cannot block
 its own forced termination. The kill escalates from SIGTERM to SIGKILL after
 the kill timeout, so a child that traps SIGTERM cannot block it either.
 Already-started cancellation commits finish before the supervisor releases its
-bindings.
+bindings, and so does every dispatch loop still running, including the loop of
+a cohort a recycle has just replaced.
 
 `drain(opts)` sends the drain control mail and waits for in-flight
 runs to drain per each step's `drainBehavior`; on the drain-timeout it
@@ -215,7 +216,9 @@ status: on latch the supervisor (the sole writer of the workflow-run
 repo) commits a `RunFailed` for the deployment's stable run, flipping
 its `workflow_run.status` to `failed` through the same pack path every
 other terminal run uses. External automation that watches run status
-sees the crash-loop as a failed run.
+sees the crash-loop as a failed run. The commit lands before the latch's
+teardown resolves and before the host hears of the self-termination, so a
+host that reads the stopped deployment's history finds it.
 
 ### Host wiring
 
