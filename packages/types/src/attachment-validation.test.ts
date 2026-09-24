@@ -125,6 +125,19 @@ describe("validateAttachments", () => {
     });
   });
 
+  test("rejects an empty or whitespace-only name", () => {
+    for (const name of ["", "   "]) {
+      const result = validateAttachments(
+        [{ mimeType: "image/png", data: b64([1]), name }],
+        policy,
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "invalid_attachment_name", attachmentIndex: 0 },
+      });
+    }
+  });
+
   test("rejects malformed base64 with the offending index", () => {
     const result = validateAttachments(
       [{ mimeType: "image/png", data: "@@not-base64@@" }],
