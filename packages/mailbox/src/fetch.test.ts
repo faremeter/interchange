@@ -170,9 +170,9 @@ function rawQuotedPrintableAttachment(): Uint8Array {
 
 /**
  * A multipart/mixed message whose single part declares `encoding`. The part
- * declares a bare `text/plain` with no parameters, so the type `fetchPart`
- * reports (which keeps any parameters) and the type `decodeMail` reports
- * (which drops them) are directly comparable.
+ * declares a bare `text/plain` with no parameters, so the comparison is the
+ * transfer-encoding relabel and not parameter stripping. Both readers report
+ * type/subtype.
  */
 function rawMultipartWithEncoding(encoding: string, body: string): Uint8Array {
   const boundary = "b0undary";
@@ -525,6 +525,33 @@ describe("async fetch projections route through readRaw", () => {
       expect(new TextDecoder().decode(whole?.content)).toBe(c.content);
       expect(whole?.contentType).toBe(c.contentType);
     }
+  });
+
+  test("fetchPart contentType is type/subtype without parameters", async () => {
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      encoder.encode(
+        [
+          "From: alice@x",
+          "To: bob@y",
+          "Subject: charset",
+          "Message-ID: <1@x>",
+          "Date: Thu, 01 Jan 2026 00:00:00 +0000",
+          `Content-Type: multipart/mixed; boundary="b"`,
+          "",
+          "--b",
+          "Content-Type: text/plain; charset=utf-8",
+          "",
+          "hello",
+          "--b--",
+          "",
+        ].join("\r\n"),
+      ),
+      envelopeFor({ subject: "charset" }),
+      [],
+    );
+    const part = await fetchPart({ uid, mailbox: "INBOX" }, "1", store);
+    expect(part.contentType).toBe("text/plain");
   });
 
   test("fetchPart undoes quoted-printable the same way listing does", async () => {
