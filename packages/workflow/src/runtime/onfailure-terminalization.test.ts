@@ -19,6 +19,7 @@ import {
   defineWorkflow,
   runtimeRun,
   step,
+  StepOutcomeCommitError,
   type Primitive,
   type WorkflowDefinition,
   type WorkflowEvent,
@@ -111,13 +112,32 @@ function unitRoutedTo(log: readonly WorkflowEvent[]): unknown {
   return failed?.routedTo;
 }
 
+// The handler reads the trigger rather than the unit's output, so it is
+// invoked whenever the scheduler offers it, not only when the unit completed.
+function rescueStep(): Primitive {
+  return step({
+    agent: agent("rescue"),
+    after: ["unit"],
+    input: { from: "trigger.payload" },
+  });
+}
+
+function recordInvocations(env: WorkflowRuntimeEnv): (string | undefined)[] {
+  const invoked: (string | undefined)[] = [];
+  env.invokeStep = async (req) => {
+    invoked.push(req.authzContext.stepId);
+    return { output: null };
+  };
+  return invoked;
+}
+
 function stepDef(id: string): WorkflowDefinition {
   return defineWorkflow({
     id,
     trigger: { type: "manual" },
     steps: {
       unit: step({ agent: agent("unit"), onFailure: "rescue" }),
-      rescue: step({ agent: agent("rescue"), after: ["unit"] }),
+      rescue: rescueStep(),
       normal: step({ agent: agent("normal"), after: ["unit"] }),
     },
   });
@@ -131,11 +151,13 @@ describe("onFailure success-terminalization failures do not route", () => {
     const { env, repoStore } = buildEnv(def, {
       blobs: faultingBlobs(createInMemoryBlobSubstrate(), "unit"),
     });
+    const invoked = recordInvocations(env);
     const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
       .complete;
 
     expect(res.terminalStatus).toBe("failed");
     expect(unitRoutedTo(await repoStore.read("r"))).toBeUndefined();
+    expect(invoked).not.toContain("rescue");
   });
 
   test("a step whose success prune fails lands a bare failure, not routed", async () => {
@@ -145,11 +167,13 @@ describe("onFailure success-terminalization failures do not route", () => {
     const { env, repoStore } = buildEnv(def, {
       blobs: faultingBlobs(createInMemoryBlobSubstrate(), "rescue.input"),
     });
+    const invoked = recordInvocations(env);
     const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
       .complete;
 
     expect(res.terminalStatus).toBe("failed");
     expect(unitRoutedTo(await repoStore.read("r"))).toBeUndefined();
+    expect(invoked).not.toContain("rescue");
   });
 
   test("an action whose StepCompleted commit fails lands a bare failure, not routed", async () => {
@@ -158,7 +182,7 @@ describe("onFailure success-terminalization failures do not route", () => {
       trigger: { type: "manual" },
       steps: {
         unit: action({ handler: "do", onFailure: "rescue" }),
-        rescue: step({ agent: agent("rescue"), after: ["unit"] }),
+        rescue: rescueStep(),
         normal: step({ agent: agent("normal"), after: ["unit"] }),
       },
     });
@@ -166,11 +190,13 @@ describe("onFailure success-terminalization failures do not route", () => {
       invokeAction: async () => ({ output: null }),
       blobs: faultingBlobs(createInMemoryBlobSubstrate(), "unit"),
     });
+    const invoked = recordInvocations(env);
     const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
       .complete;
 
     expect(res.terminalStatus).toBe("failed");
     expect(unitRoutedTo(await repoStore.read("r"))).toBeUndefined();
+    expect(invoked).not.toContain("rescue");
   });
 
   test("a childWorkflow whose StepCompleted commit fails lands a bare failure, not routed", async () => {
@@ -179,7 +205,7 @@ describe("onFailure success-terminalization failures do not route", () => {
       trigger: { type: "manual" },
       steps: {
         unit: cwUnit(),
-        rescue: step({ agent: agent("rescue"), after: ["unit"] }),
+        rescue: rescueStep(),
         normal: step({ agent: agent("normal"), after: ["unit"] }),
       },
     });
@@ -187,11 +213,13 @@ describe("onFailure success-terminalization failures do not route", () => {
     const { env, repoStore } = buildEnv(def, {
       blobs: faultingBlobs(createInMemoryBlobSubstrate(), "unit"),
     });
+    const invoked = recordInvocations(env);
     const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
       .complete;
 
     expect(res.terminalStatus).toBe("failed");
     expect(unitRoutedTo(await repoStore.read("r"))).toBeUndefined();
+    expect(invoked).not.toContain("rescue");
   });
 
   test("a multi-attempt step whose terminalization fails is not re-invoked", async () => {
@@ -206,24 +234,61 @@ describe("onFailure success-terminalization failures do not route", () => {
           onFailure: "rescue",
           retry: { maxAttempts: 2, initialBackoffMs: 1 },
         }),
-        rescue: step({ agent: agent("rescue"), after: ["unit"] }),
+        rescue: rescueStep(),
         normal: step({ agent: agent("normal"), after: ["unit"] }),
       },
     });
-    let unitInvocations = 0;
     const { env, repoStore } = buildEnv(def, {
       blobs: faultingBlobs(createInMemoryBlobSubstrate(), "unit"),
     });
+    const invoked = recordInvocations(env);
+    const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
+      .complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked.filter((id) => id === "unit")).toHaveLength(1);
+    expect(invoked).not.toContain("rescue");
+    expect(unitRoutedTo(await repoStore.read("r"))).toBeUndefined();
+  });
+
+  test("a multi-attempt step whose invoker could not commit its outcome is neither retried nor routed", async () => {
+    // The host commits a cold step's turn inside the invocation, after the
+    // agent ran; losing that commit must not re-run the agent's work.
+    const def = defineWorkflow({
+      id: "term-uncommitted-outcome",
+      trigger: { type: "manual" },
+      steps: {
+        unit: step({
+          agent: agent("unit"),
+          onFailure: "rescue",
+          retry: { maxAttempts: 2, initialBackoffMs: 1 },
+        }),
+        rescue: rescueStep(),
+        normal: step({ agent: agent("normal"), after: ["unit"] }),
+      },
+    });
+    const invoked: (string | undefined)[] = [];
+    const { env, repoStore } = buildEnv(def);
     env.invokeStep = async (req) => {
-      if (req.authzContext.stepId === "unit") unitInvocations += 1;
+      invoked.push(req.authzContext.stepId);
+      if (req.authzContext.stepId === "unit") {
+        throw new StepOutcomeCommitError(new Error("push blip"));
+      }
       return { output: null };
     };
     const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
       .complete;
 
     expect(res.terminalStatus).toBe("failed");
-    expect(unitInvocations).toBe(1);
-    expect(unitRoutedTo(await repoStore.read("r"))).toBeUndefined();
+    expect(invoked.filter((id) => id === "unit")).toHaveLength(1);
+    expect(invoked).not.toContain("rescue");
+    const log = await repoStore.read("r");
+    expect(unitRoutedTo(log)).toBeUndefined();
+    const failed = log.find(
+      (e): e is Extract<WorkflowEvent, { kind: "StepFailed" }> =>
+        e.kind === "StepFailed" && e.stepId === "unit",
+    );
+    expect(failed?.retriesExhausted).toBe(true);
   });
 
   test("a multi-attempt step whose invocation fails once still retries and completes", async () => {

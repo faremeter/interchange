@@ -26,7 +26,9 @@
 //      structure.
 //   5. Tear down the agent (close + lock release) on every exit path,
 //      whether the step completed cleanly, the abort signal fired, or
-//      the underlying `agent.send` rejected.
+//      the underlying `agent.send` rejected, then hand the step's env to
+//      the caller's settle hook so the host can commit the step's durable
+//      state before the result is returned.
 //
 // Abort handling: when `signal.aborted` fires mid-step, the adapter
 // closes the agent (which drains the send queue with
@@ -71,12 +73,13 @@ import type {
   MessageAttachment,
 } from "@intx/types/runtime";
 import { isMail } from "@intx/types/runtime";
-import type {
-  AuthorizeContext,
-  StepInvokeRequest,
-  StepInvokeResult,
-  StepInvoker,
-  WorkflowAuthorizeFn,
+import {
+  StepOutcomeCommitError,
+  type AuthorizeContext,
+  type StepInvokeRequest,
+  type StepInvokeResult,
+  type StepInvoker,
+  type WorkflowAuthorizeFn,
 } from "@intx/workflow";
 
 import type {
@@ -193,6 +196,21 @@ export interface WorkflowStepInvokerOpts {
    */
   onRunBoundary?: (key: string) => Promise<void>;
   /**
+   * Settle hook for the cold path. When supplied, the adapter awaits it after
+   * each cold invocation's agent has closed, handing it the env `buildEnv`
+   * returned for that invocation, and returns the step's result only once it
+   * resolves. The sidecar wires this to commit the step's durable state, so
+   * every turn is durable before the run records it and a replacement host
+   * resumes the step where that turn left it. It runs whether the send
+   * completed, suspended, aborted, or rejected, but not when closing the
+   * agent failed. A failure rejects the step with a `StepOutcomeCommitError`,
+   * which the runtime neither retries nor routes because the turn's work
+   * already happened, unless the step already failed, in which case it is
+   * logged. The warm path does not call it; its run-boundary hook commits the
+   * warm agent's state instead.
+   */
+  onColdStepSettled?: (env: StepEnvBase) => Promise<void>;
+  /**
    * Seed hook for the warm path (design §3c threading). When supplied, the
    * adapter calls it before `agent.send` on every message whose delivered
    * input is a mail-derived `InboundMessage`, passing the step identity
@@ -290,7 +308,7 @@ async function invokeColdStep(
   agentFactory: NonNullable<WorkflowStepInvokerOpts["agentFactory"]>,
   req: StepInvokeRequest,
 ): Promise<StepInvokeResult> {
-  const agent = await buildStepAgent(opts, agentFactory, req);
+  const { agent, env } = await buildStepAgent(opts, agentFactory, req);
 
   // Subscribe the agent's event stream BEFORE `agent.send` so the
   // inbound `inference.start` and the per-turn / tool-call events are
@@ -335,9 +353,16 @@ async function invokeColdStep(
       } finally {
         await eventForward;
       }
+      if (opts.onColdStepSettled !== undefined) {
+        try {
+          await opts.onColdStepSettled(env);
+        } catch (cause) {
+          throw new StepOutcomeCommitError(cause);
+        }
+      }
     },
     (cause) =>
-      logger.error`step invoker: agent.close failed while unwinding a step error; surfacing the step error, close failure: ${cause instanceof Error ? cause.message : String(cause)}`,
+      logger.error`step invoker: closing or settling the step failed while unwinding a step error; surfacing the step error, cleanup failure: ${cause instanceof Error ? cause.message : String(cause)}`,
   );
 }
 
@@ -382,7 +407,7 @@ async function invokeWarmStep(
     // Lazy first-message build. The agent's stream is consumed once,
     // for its whole life, through the entry's mutable sink ref; the
     // forwarder loop ends only when the agent closes at eviction.
-    agent = await buildStepAgent(opts, agentFactory, req);
+    agent = (await buildStepAgent(opts, agentFactory, req)).agent;
     const eventSinkRef: WarmEventSinkRef = { current: null };
     const eventForward = subscribeAgentEvents(agent, (event) => {
       const sink = eventSinkRef.current;
@@ -488,17 +513,18 @@ async function invokeWarmStep(
  * Build the per-step agent: assemble the `BaseEnv`, wrap the
  * workflow-typed authorize into the agent harness's `AuthorizeFn`, and
  * instantiate the agent through the factory. Shared by the cold path and
- * the warm path's first-message build.
+ * the warm path's first-message build. Returns the agent with the env
+ * `buildEnv` produced, which the cold path hands to its settle hook.
  */
 async function buildStepAgent(
   opts: WorkflowStepInvokerOpts,
   agentFactory: NonNullable<WorkflowStepInvokerOpts["agentFactory"]>,
   req: StepInvokeRequest,
-): Promise<Agent> {
+): Promise<{ agent: Agent; env: StepEnvBase }> {
   const envBase = await opts.buildEnv(req);
   const authorize = wrapAuthorize(opts.workflowAuthorize, req.authzContext);
   const env: BaseEnv = { ...envBase, authorize };
-  return agentFactory(req.agent, env);
+  return { agent: await agentFactory(req.agent, env), env: envBase };
 }
 
 /**

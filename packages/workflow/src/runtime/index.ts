@@ -44,7 +44,10 @@ export {
   assertSpawnDepthWithinLimit,
 } from "./child-depth";
 
-export { RuntimeResumeUnsupportedError } from "./errors";
+export {
+  RuntimeResumeUnsupportedError,
+  StepOutcomeCommitError,
+} from "./errors";
 
 export {
   createNoopDrainController,

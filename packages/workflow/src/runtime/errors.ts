@@ -1,4 +1,4 @@
-// Errors the runtime body surfaces to its host.
+// Errors the runtime body and its host raise to each other.
 
 /**
  * Thrown when `runtimeRun` is asked to resume from a durable log it
@@ -40,5 +40,23 @@ export class RuntimeResumeUnsupportedError extends Error {
     this.name = "RuntimeResumeUnsupportedError";
     this.stepId = stepId;
     this.awaitedPrimitive = awaitedPrimitive;
+  }
+}
+
+/**
+ * Thrown by a step invoker whose step did its work but whose outcome the host
+ * could not make durable: committing the turn failed after the agent's send
+ * settled, so neither its output nor its park is recorded. The work already
+ * happened, so the runtime lands the step as a failure with its retries
+ * exhausted and neither retries nor routes it, the same as when recording a
+ * completed step's output fails.
+ */
+export class StepOutcomeCommitError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `the step's outcome could not be committed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = "StepOutcomeCommitError";
   }
 }
