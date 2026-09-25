@@ -47,6 +47,11 @@ export type AttachmentValidationResult =
   | { ok: true; attachments: MessageAttachment[] }
   | { ok: false; error: AttachmentError };
 
+function compactDecodedSize(compact: string): number {
+  const pad = compact.endsWith("==") ? 2 : compact.endsWith("=") ? 1 : 0;
+  return Math.floor(compact.length / 4) * 3 - pad;
+}
+
 function decode(data: string | Uint8Array): Uint8Array | null {
   if (typeof data !== "string") return data;
   try {
@@ -60,13 +65,14 @@ function decode(data: string | Uint8Array): Uint8Array | null {
  * Validate and decode attachments against a policy at either boundary
  * (mail tools or the request body).
  *
- * Encoded base64 is size-checked from its string length before decode —
- * decoded bytes never exceed 3/4 of the encoded length — and the first
- * error returns without decoding later entries. Remaining checks, in
- * encounter order: per-attachment oversize, disallowed MIME type, invalid
- * name, malformed base64. After every attachment passes, the per-message
- * total is checked. On success the decoded `MessageAttachment[]` is
- * returned with names defaulted to `attachment-{index}` by input position.
+ * Encoded base64 is size-checked from its compact length (whitespace
+ * stripped, padding counted) before decode, and the first error returns
+ * without decoding later entries. Remaining checks, in encounter order:
+ * encoded oversize, malformed base64, decoded per-attachment oversize,
+ * disallowed MIME type, invalid name. After every attachment passes, the
+ * per-message total is checked. On success the decoded
+ * `MessageAttachment[]` is returned with names defaulted to
+ * `attachment-{index}` by input position.
  */
 export function validateAttachments(
   inputs: readonly AttachmentInput[],
@@ -76,15 +82,16 @@ export function validateAttachments(
 
   for (const [index, input] of inputs.entries()) {
     if (typeof input.data === "string") {
-      const encodedUpperBound = Math.floor((input.data.length * 3) / 4);
-      if (encodedUpperBound > policy.perAttachmentLimitBytes) {
+      const compact = input.data.replace(/\s+/g, "");
+      const encodedSize = compactDecodedSize(compact);
+      if (encodedSize > policy.perAttachmentLimitBytes) {
         return {
           ok: false,
           error: {
             code: "oversize_attachment",
-            message: `attachment ${index} is ${encodedUpperBound} bytes, over the ${policy.perAttachmentLimitBytes}-byte limit`,
+            message: `attachment ${index} is ${encodedSize} bytes, over the ${policy.perAttachmentLimitBytes}-byte limit`,
             attachmentIndex: index,
-            byteLength: encodedUpperBound,
+            byteLength: encodedSize,
             limitBytes: policy.perAttachmentLimitBytes,
           },
         };
@@ -135,11 +142,14 @@ export function validateAttachments(
       input.name !== undefined &&
       (input.name.trim() === "" || /[\r\n"]/.test(input.name))
     ) {
+      const empty = input.name.trim() === "";
       return {
         ok: false,
         error: {
           code: "invalid_attachment_name",
-          message: `attachment ${index} has a name with invalid characters (no quotes or line breaks)`,
+          message: empty
+            ? `attachment ${index} has an empty name`
+            : `attachment ${index} has a name with invalid characters (no quotes or line breaks)`,
           attachmentIndex: index,
         },
       };

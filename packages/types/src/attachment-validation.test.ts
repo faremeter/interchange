@@ -1,10 +1,12 @@
 import { describe, test, expect } from "bun:test";
 
 import {
+  DEFAULT_ATTACHMENT_POLICY,
   validateAttachments,
   type AttachmentInput,
   type AttachmentPolicy,
 } from "./attachment-validation";
+import { PER_ATTACHMENT_LIMIT_BYTES } from "./attachments";
 import { base64Encode } from "./base64";
 
 function b64(bytes: number[]): string {
@@ -13,6 +15,11 @@ function b64(bytes: number[]): string {
 
 function bytesOfLength(n: number): string {
   return base64Encode(new Uint8Array(n).fill(0x61));
+}
+
+function compactDecodedSize(compact: string): number {
+  const pad = compact.endsWith("==") ? 2 : compact.endsWith("=") ? 1 : 0;
+  return Math.floor(compact.length / 4) * 3 - pad;
 }
 
 // Small limits so oversize cases need only tiny buffers.
@@ -123,6 +130,8 @@ describe("validateAttachments", () => {
       ok: false,
       error: { code: "invalid_attachment_name", attachmentIndex: 1 },
     });
+    if (result.ok) return;
+    expect(result.error.message).toContain("invalid characters");
   });
 
   test("rejects an empty or whitespace-only name", () => {
@@ -135,6 +144,8 @@ describe("validateAttachments", () => {
         ok: false,
         error: { code: "invalid_attachment_name", attachmentIndex: 0 },
       });
+      if (result.ok) return;
+      expect(result.error.message).toContain("empty name");
     }
   });
 
@@ -165,9 +176,72 @@ describe("validateAttachments", () => {
     });
   });
 
+  test("accepts compact base64 of exactly the per-attachment limit", () => {
+    const bytes = new Uint8Array(policy.perAttachmentLimitBytes);
+    expect(
+      validateAttachments([{ mimeType: "image/png", data: bytes }], policy).ok,
+    ).toBe(true);
+
+    const encoded = base64Encode(bytes);
+    const result = validateAttachments(
+      [{ mimeType: "image/png", data: encoded }],
+      policy,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.attachments[0]?.data.length).toBe(
+      policy.perAttachmentLimitBytes,
+    );
+  });
+
+  test("rejects compact base64 one byte over the per-attachment limit", () => {
+    const encoded = base64Encode(
+      new Uint8Array(policy.perAttachmentLimitBytes + 1),
+    );
+    const result = validateAttachments(
+      [{ mimeType: "image/png", data: encoded }],
+      policy,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "oversize_attachment",
+        attachmentIndex: 0,
+        byteLength: policy.perAttachmentLimitBytes + 1,
+        limitBytes: policy.perAttachmentLimitBytes,
+      },
+    });
+  });
+
+  test("accepts compact base64 of exactly 10MiB under the default policy", () => {
+    const bytes = new Uint8Array(PER_ATTACHMENT_LIMIT_BYTES);
+    const encoded = base64Encode(bytes);
+    const result = validateAttachments([
+      { mimeType: "image/png", data: encoded },
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.attachments[0]?.data.length).toBe(
+      DEFAULT_ATTACHMENT_POLICY.perAttachmentLimitBytes,
+    );
+  });
+
+  test("accepts whitespace-padded compact base64 of an in-policy payload", () => {
+    const encoded = ` ${base64Encode(new Uint8Array(policy.perAttachmentLimitBytes))} \n`;
+    const result = validateAttachments(
+      [{ mimeType: "image/png", data: encoded }],
+      policy,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.attachments[0]?.data.length).toBe(
+      policy.perAttachmentLimitBytes,
+    );
+  });
+
   test("rejects encoded base64 whose length already exceeds the decoded limit", () => {
-    // floor(len * 3 / 4) is an upper bound on decoded size; 200 chars of
-    // junk cannot decode to ≤100 bytes, so this fails before base64Decode.
+    // Compact length minus padding is the decoded size; 200 chars of junk
+    // cannot decode to ≤100 bytes, so this fails before base64Decode.
     const encoded = "x".repeat(200);
     const result = validateAttachments(
       [{ mimeType: "image/png", data: encoded }],
@@ -178,7 +252,7 @@ describe("validateAttachments", () => {
       error: {
         code: "oversize_attachment",
         attachmentIndex: 0,
-        byteLength: Math.floor((encoded.length * 3) / 4),
+        byteLength: compactDecodedSize(encoded),
         limitBytes: 100,
       },
     });
