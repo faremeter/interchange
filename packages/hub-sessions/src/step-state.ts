@@ -48,14 +48,14 @@ const StepStateMetadata = type({
 /** The non-turn state stamped on every WAL entry and on the checkpoint. */
 export type StepStateMetadata = typeof StepStateMetadata.infer;
 
-const CheckpointSnapshot = type({
+export const StepStateCheckpoint = type({
   turns: ConversationTurn.array(),
   pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
 });
 
-const CheckpointMeta = type({
+export const StepStateCheckpointMeta = type({
   checkpointSeq: "number.integer >= 0",
   turnCount: "number.integer >= 0",
   pendingOperations: PersistedPendingOperation.array(),
@@ -63,7 +63,7 @@ const CheckpointMeta = type({
   connectorState: ConnectorThreadState.or("null"),
 });
 
-const WalEntry = type({
+export const StepStateWalEntry = type({
   seq: "number.integer >= 0",
   turns: ConversationTurn.array(),
   metadata: StepStateMetadata,
@@ -217,7 +217,7 @@ async function readCheckpoint(
 } | null> {
   const metaRaw = await reader.readFile(STEP_STATE_CHECKPOINT_META_FILE);
   if (metaRaw === null) return null;
-  const validatedMeta = CheckpointMeta(
+  const validatedMeta = StepStateCheckpointMeta(
     parseJSONOrThrow(metaRaw, label, STEP_STATE_CHECKPOINT_META_FILE),
   );
   if (validatedMeta instanceof type.errors) {
@@ -231,7 +231,7 @@ async function readCheckpoint(
       `step state ${label}: ${STEP_STATE_CHECKPOINT_META_FILE} exists without ${STEP_STATE_CHECKPOINT_FILE}; the checkpoint pair is inconsistent`,
     );
   }
-  const validatedSnapshot = CheckpointSnapshot(
+  const validatedSnapshot = StepStateCheckpoint(
     parseJSONOrThrow(snapshotRaw, label, STEP_STATE_CHECKPOINT_FILE),
   );
   if (validatedSnapshot instanceof type.errors) {
@@ -290,7 +290,9 @@ async function readWalTail(
           `step state ${label}: WAL entry ${entryPath} vanished while reading`,
         );
       }
-      const validated = WalEntry(parseJSONOrThrow(raw, label, entryPath));
+      const validated = StepStateWalEntry(
+        parseJSONOrThrow(raw, label, entryPath),
+      );
       if (validated instanceof type.errors) {
         throw new Error(
           `step state ${label}: WAL entry ${entryPath} failed validation: ${validated.summary}; refusing to start the agent fresh on a corrupt WAL`,
