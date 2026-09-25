@@ -1390,6 +1390,87 @@ describe("RepoStore", () => {
     expect(await rejectStore.resolveRef(principal, repoId, REF)).toBeNull();
   });
 
+  test("receivePack scopes a commit that changes only a run's step state to those step directories", async () => {
+    const sourceStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-steps-source-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const seen: {
+      prefixes: string[] | undefined;
+      hasListDirOids: boolean;
+    }[] = [];
+    const recordingHandler: KindHandler = {
+      ...createTestHandler(),
+      validatePush({ changedPathPrefixes, listDirOids }) {
+        seen.push({
+          prefixes:
+            changedPathPrefixes === undefined
+              ? undefined
+              : [...changedPathPrefixes].sort(),
+          hasListDirOids: listDirOids !== undefined,
+        });
+        return { ok: true };
+      },
+    };
+    const targetStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-steps-target-"),
+      signingKey,
+      handlers: { "agent-state": recordingHandler },
+      authorize: allowAll,
+    });
+    const push = async (
+      files: Record<string, string>,
+      expectedOldSha: string | null,
+    ): Promise<string> => {
+      await sourceStore.writeTree(principal, repoId, REF, {
+        files,
+        message: "write",
+      });
+      const { pack, commitSha } = await sourceStore.createPack(
+        principal,
+        repoId,
+        REF,
+      );
+      await targetStore.receivePack(
+        principal,
+        repoId,
+        REF,
+        pack,
+        commitSha,
+        expectedOldSha,
+      );
+      return commitSha;
+    };
+
+    const base = await push(
+      {
+        "runs/r1/events/1.json": "{}",
+        "runs/r1/steps/s1/state/checkpoint.json": "{}",
+        "runs/r1/steps/s2/state/checkpoint.json": "{}",
+      },
+      null,
+    );
+    seen.length = 0;
+    const stepsOnly = await push(
+      { "runs/r1/steps/s1/state/wal/0/0.json": "{}" },
+      base,
+    );
+    await push(
+      {
+        "runs/r1/events/2.json": "{}",
+        "runs/r1/steps/s2/state/wal/0/0.json": "{}",
+      },
+      stepsOnly,
+    );
+
+    expect(seen).toEqual([
+      { prefixes: ["runs/r1/steps/s1/"], hasListDirOids: true },
+      { prefixes: ["runs/r1/"], hasListDirOids: true },
+    ]);
+  });
+
   test("receivePack scopes a commit that changes only an entry's mode to that entry", async () => {
     const sourceDir = await makeTempDir("repo-store-mode-source-");
     const sourceHandler = createTestHandler();
@@ -1474,14 +1555,36 @@ describe("RepoStore", () => {
     };
 
     await sourceStore.writeTree(principal, repoId, REF, {
-      files: { "top.txt": "top" },
+      files: {
+        "top.txt": "top",
+        "runs/r1/meta.json": "{}",
+        "runs/r1/steps/s1/state/checkpoint.json": "{}",
+        "runs/r1/steps/s2/seed.json": "{}",
+      },
       message: "write",
     });
     const base = await push(null);
     await commitWithMode("top.txt", "100755", base);
-    await push(base);
+    const topModeOnly = await push(base);
+    await sourceStore.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/steps/s1/state/wal/0/0.json": "{}" },
+      message: "write",
+    });
+    await commitWithMode("runs/r1/meta.json", "100755", topModeOnly);
+    const runModeOnly = await push(topModeOnly);
+    // Read as a file, s2's directory no longer holds its seed.
+    await sourceStore.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/steps/s1/state/wal/0/1.json": "{}" },
+      message: "write",
+    });
+    await commitWithMode("runs/r1/steps/s2", "100644", runModeOnly);
+    await push(runModeOnly);
 
-    expect(seen.slice(1)).toEqual([["top.txt/"]]);
+    expect(seen.slice(1)).toEqual([
+      ["top.txt/"],
+      ["runs/r1/"],
+      ["runs/r1/steps/s1/", "runs/r1/steps/s2/"],
+    ]);
   });
 
   // Build a pack carrying one commit whose root tree holds a single symlink or
