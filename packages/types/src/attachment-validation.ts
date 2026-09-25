@@ -52,10 +52,14 @@ function compactDecodedSize(compact: string): number {
   return Math.floor(compact.length / 4) * 3 - pad;
 }
 
+function compactBase64(data: string): string {
+  return data.replace(/\s+/g, "");
+}
+
 function decode(data: string | Uint8Array): Uint8Array | null {
   if (typeof data !== "string") return data;
   try {
-    return base64Decode(data.replace(/\s+/g, ""));
+    return base64Decode(data);
   } catch {
     return null;
   }
@@ -81,9 +85,10 @@ export function validateAttachments(
   const decoded: MessageAttachment[] = [];
 
   for (const [index, input] of inputs.entries()) {
+    let payload: string | Uint8Array;
     if (typeof input.data === "string") {
-      const compact = input.data.replace(/\s+/g, "");
-      const encodedSize = compactDecodedSize(compact);
+      payload = compactBase64(input.data);
+      const encodedSize = compactDecodedSize(payload);
       if (encodedSize > policy.perAttachmentLimitBytes) {
         return {
           ok: false,
@@ -96,9 +101,11 @@ export function validateAttachments(
           },
         };
       }
+    } else {
+      payload = input.data;
     }
 
-    const bytes = decode(input.data);
+    const bytes = decode(payload);
     if (bytes === null) {
       return {
         ok: false,

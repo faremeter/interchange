@@ -17,11 +17,6 @@ function bytesOfLength(n: number): string {
   return base64Encode(new Uint8Array(n).fill(0x61));
 }
 
-function compactDecodedSize(compact: string): number {
-  const pad = compact.endsWith("==") ? 2 : compact.endsWith("=") ? 1 : 0;
-  return Math.floor(compact.length / 4) * 3 - pad;
-}
-
 // Small limits so oversize cases need only tiny buffers.
 const policy: AttachmentPolicy = {
   isAllowed: (m) => m === "image/png" || m === "application/pdf",
@@ -240,8 +235,7 @@ describe("validateAttachments", () => {
   });
 
   test("rejects encoded base64 whose length already exceeds the decoded limit", () => {
-    // Compact length minus padding is the decoded size; 200 chars of junk
-    // cannot decode to ≤100 bytes, so this fails before base64Decode.
+    // 200 alphabet chars → 150 decoded bytes before atob (floor(200/4)*3).
     const encoded = "x".repeat(200);
     const result = validateAttachments(
       [{ mimeType: "image/png", data: encoded }],
@@ -252,7 +246,7 @@ describe("validateAttachments", () => {
       error: {
         code: "oversize_attachment",
         attachmentIndex: 0,
-        byteLength: compactDecodedSize(encoded),
+        byteLength: 150,
         limitBytes: 100,
       },
     });
