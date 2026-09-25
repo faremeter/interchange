@@ -114,6 +114,7 @@ function decodeAttachments(inputs: readonly AttachmentInput[]) {
       error: {
         code: "invalid_encoding",
         message: `attachment ${String(mislabelled)} is not a text type, so its content must be base64`,
+        attachmentIndex: mislabelled,
       },
     };
   }
