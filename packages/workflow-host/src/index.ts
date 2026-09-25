@@ -213,6 +213,5 @@ export {
   type DurableConversationRegistryOpts,
   type DurableConversationStore,
   type DurableConversationStoreOpts,
-  type ReconstructedConversation,
 } from "./conversation-state";
 export { readRunGrants, runGrantsPath } from "./run-grants";

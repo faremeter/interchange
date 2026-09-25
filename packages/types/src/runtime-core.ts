@@ -873,6 +873,11 @@ export const TokenUsage = type({
 });
 export type TokenUsage = typeof TokenUsage.infer;
 
+/** Zero usage, as a new object per call so no two holders share one. */
+export function emptyTokenUsage(): TokenUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, thinking: 0 };
+}
+
 /**
  * Slim source descriptor stamped onto `inference.usage` / `inference.done`
  * events and onto `ReactorState.lastCycleSource`.
