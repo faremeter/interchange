@@ -973,7 +973,7 @@ Extended thinking (Anthropic) and reasoning tokens (OpenAI) are supported from d
 
 ### Configuration
 
-Reasoning is configured per-agent as part of the agent definition, not per-request. The agent's creator decides the reasoning posture:
+Reasoning is configured per-agent as part of the agent definition. The agent's creator decides the default reasoning posture:
 
 - **Off** — No reasoning tokens. Cheapest, fastest.
 - **On** — Reasoning enabled with a token budget.
