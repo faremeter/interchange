@@ -379,12 +379,22 @@ describe.skipIf(!harnessDbEnvAvailable())(
         refId: CALLER_USER_ID,
         status: "active",
       });
-      // The deploy route gates on `workflow:*` / `create` for the caller.
+      // The deploy route gates on `workflow:*` / `create` for the caller
+      // and `asset:<id>` / `read` for the named source.
       await seedGrant(h.db, {
         id: "grant-credential-route-create",
         tenantId: TENANT_ID,
         resource: "workflow:*",
         action: "create",
+        effect: "allow",
+        origin: "system",
+        principalId: CALLER_PRINCIPAL_ID,
+      });
+      await seedGrant(h.db, {
+        id: "grant-credential-route-asset-read",
+        tenantId: TENANT_ID,
+        resource: "asset:*",
+        action: "read",
         effect: "allow",
         origin: "system",
         principalId: CALLER_PRINCIPAL_ID,

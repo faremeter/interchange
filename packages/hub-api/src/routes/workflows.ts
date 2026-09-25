@@ -17,7 +17,7 @@ import {
   type DB,
   type PrincipalKeyStore,
 } from "@intx/db";
-import type { GrantStore } from "@intx/types/authz";
+import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import {
   correlationIdFromSignalName,
   ErrorResponse,
@@ -46,7 +46,11 @@ import {
 
 import type { TenantEnv } from "../context";
 import { errorResponse } from "../error-response";
-import { idResource, type RequireGrant } from "../middleware/grant";
+import {
+  idResource,
+  requireAssetGrant,
+  type RequireGrant,
+} from "../middleware/grant";
 import {
   lockDispatchableAllocation,
   lockWorkflowRunState,
@@ -196,6 +200,7 @@ export type CreateWorkflowRoutesDeps = {
   sidecarRouter: SidecarRouter;
   repoStore: RepoStore;
   grantStore: GrantStore;
+  conditionRegistry: ConditionRegistry;
   requireGrant: RequireGrant;
 };
 
@@ -207,6 +212,7 @@ export function createWorkflowRoutes({
   sidecarRouter,
   repoStore,
   grantStore,
+  conditionRegistry,
   requireGrant,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
@@ -285,6 +291,15 @@ export function createWorkflowRoutes({
       });
       if (!assetRow) {
         return errorResponse(c, "not_found", "Workflow asset not found");
+      }
+      const denied = await requireAssetGrant({
+        c,
+        grantStore,
+        conditionRegistry,
+        assetId: assetRow.id,
+      });
+      if (denied !== null) {
+        return denied;
       }
       const expectedKind = workflowSourceRepoKind(body.source);
       if (assetRow.kind !== expectedKind) {

@@ -11,6 +11,7 @@ export {
 export {
   createRequireGrant,
   idResource,
+  requireAssetGrant,
   type CreateRequireGrantDeps,
   type RequireGrant,
 } from "./middleware/grant";

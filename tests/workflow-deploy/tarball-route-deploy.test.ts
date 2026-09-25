@@ -196,6 +196,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
         origin: "system",
         principalId: CALLER_PRINCIPAL_ID,
       });
+      await seedGrant(h.db, {
+        id: "grant-tarball-route-asset-read",
+        tenantId: TENANT_ID,
+        resource: `asset:${SOURCE_ASSET_ID}`,
+        action: "read",
+        effect: "allow",
+        origin: "system",
+        principalId: CALLER_PRINCIPAL_ID,
+      });
 
       env = await startDeployFlowEnv({});
 
