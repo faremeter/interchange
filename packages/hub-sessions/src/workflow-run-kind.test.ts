@@ -32,10 +32,20 @@ import {
   WORKFLOW_RUN_MAILBOX_PREFIX,
   WORKFLOW_RUN_MAILBOX_INBOX_DIR,
   WORKFLOW_RUN_MAILBOX_INDEX_FILE,
+  WORKFLOW_RUN_STEPS_DIR,
+  workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
+import {
+  buildStepStateCheckpoint,
+  serializeStepStateWalEntry,
+  stepStateWalEntryPath,
+} from "./step-state";
 import { createRepoStore } from "./repo-store";
 import type { KindHandler, Principal, RepoId } from "./repo-store";
-import { validatePushArgs } from "./repo-store/validate-push.test-helpers";
+import {
+  type ValidatePushArgs,
+  validatePushArgs,
+} from "./repo-store/validate-push.test-helpers";
 import {
   authorCommit,
   authorExactTree,
@@ -70,22 +80,51 @@ type ValidateOpts = {
   principal?: Principal;
   priorFiles?: Record<string, string>;
   changedPathPrefixes?: ReadonlySet<string>;
+  /** Replaces the prospective listing, e.g. to forge an entry's object id. */
+  listDirOids?: ValidatePushArgs["listDirOids"];
+  /** Collects every path either side lists. */
+  listed?: string[];
 };
 
 async function validate(
   files: Record<string, string>,
   opts: ValidateOpts = {},
 ) {
-  return workflowRunKindHandler.validatePush(
-    validatePushArgs({
-      repoId: uniqueRepoId("wfr"),
-      ref: opts.ref ?? REF,
-      principal: opts.principal ?? HUB_PRINCIPAL,
-      files,
-      priorFiles: opts.priorFiles,
-      changedPathPrefixes: opts.changedPathPrefixes,
-    }),
-  );
+  const args = validatePushArgs({
+    repoId: uniqueRepoId("wfr"),
+    ref: opts.ref ?? REF,
+    principal: opts.principal ?? HUB_PRINCIPAL,
+    files,
+    priorFiles: opts.priorFiles,
+    changedPathPrefixes: opts.changedPathPrefixes,
+  });
+  const listed = opts.listed;
+  const recorded = (
+    list: (path: string) => Promise<string[]>,
+  ): ((path: string) => Promise<string[]>) =>
+    listed === undefined
+      ? list
+      : async (path) => {
+          listed.push(path);
+          return list(path);
+        };
+  return workflowRunKindHandler.validatePush({
+    ...args,
+    listDir: recorded(args.listDir),
+    priorListDir: recorded(args.priorListDir),
+    listDirOids: opts.listDirOids ?? args.listDirOids,
+  });
+}
+
+function listDirOidsOf(
+  files: Record<string, string>,
+): ValidatePushArgs["listDirOids"] {
+  return validatePushArgs({
+    repoId: uniqueRepoId("wfr"),
+    ref: REF,
+    principal: HUB_PRINCIPAL,
+    files,
+  }).listDirOids;
 }
 
 describe("workflowRunKindHandler metadata", () => {
@@ -347,6 +386,350 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(/blob directly under/);
+  });
+});
+
+describe("workflowRunKindHandler.validatePush — step state", () => {
+  const RUN = "run-a";
+  const STEP = "specialist";
+  const ZERO_USAGE = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    thinking: 0,
+  };
+  const METADATA = {
+    pendingOperations: [],
+    tokenUsage: ZERO_USAGE,
+    connectorState: null,
+  };
+  const turn = (text: string) => ({
+    role: "user",
+    content: [{ type: "text", text }],
+    timestamp: 0,
+  });
+  const stateDir = (stepId = STEP) => workflowRunStepStatePrefix(RUN, stepId);
+  const walEntry = (seq: number, stepId = STEP) => ({
+    [stepStateWalEntryPath(stateDir(stepId), seq)]: serializeStepStateWalEntry(
+      seq,
+      [turn(`turn ${String(seq)}`)],
+      METADATA,
+    ),
+  });
+  const checkpoint = (seq: number, turnCount: number) =>
+    buildStepStateCheckpoint(stateDir(), seq, {
+      turns: Array.from({ length: turnCount }, (_, i) => turn(String(i))),
+      ...METADATA,
+    });
+  const runEvents = {
+    [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+    [`${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events/0.json`]: eventBody(
+      0,
+      "RunStarted",
+    ),
+  };
+  const stepsPrefix = `${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/${WORKFLOW_RUN_STEPS_DIR}`;
+
+  async function expectRejected(
+    files: Record<string, string>,
+    reason: RegExp,
+    opts: ValidateOpts = {},
+  ): Promise<void> {
+    const r = await validate(files, {
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      ...opts,
+    });
+    if (r.ok) throw new Error("expected the push to be rejected");
+    expect(r.reason).toMatch(reason);
+  }
+
+  test("accepts a checkpoint pair with the WAL continuing from its seq", async () => {
+    const r = await validate(
+      { ...runEvents, ...checkpoint(64, 3), ...walEntry(64), ...walEntry(65) },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+    );
+    if (!r.ok) throw new Error(r.reason);
+  });
+
+  test("accepts WAL-only state, a map iteration's encoded step id, and a run with no events yet", async () => {
+    const r = await validate(
+      {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        ...walEntry(0),
+        ...walEntry(1),
+        ...walEntry(0, "review[0]"),
+      },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL },
+    );
+    if (!r.ok) throw new Error(r.reason);
+  });
+
+  test("accepts a compaction that rewrites the checkpoint and truncates the WAL", async () => {
+    const r = await validate(
+      { ...runEvents, ...checkpoint(2, 2) },
+      {
+        principal: WORKFLOW_PROCESS_PRINCIPAL,
+        priorFiles: { ...runEvents, ...walEntry(0), ...walEntry(1) },
+      },
+    );
+    if (!r.ok) throw new Error(r.reason);
+  });
+
+  test("rejects a step segment that does not round-trip URL-encoding", async () => {
+    await expectRejected(
+      {
+        ...runEvents,
+        [`${stepsPrefix}/bad%2segment/state/wal/0/0.json`]: "{}",
+      },
+      /step segment "bad%2segment"/,
+    );
+  });
+
+  test("rejects entries outside the state layout", async () => {
+    await expectRejected(
+      {
+        ...runEvents,
+        ...walEntry(0),
+        [`${stepsPrefix}/${STEP}/notes.json`]: "{}",
+      },
+      /unexpected entry "notes.json"/,
+    );
+    await expectRejected(
+      { ...runEvents, ...walEntry(0), [`${stateDir()}extra.json`]: "{}" },
+      /unexpected entry "extra.json"/,
+    );
+    await expectRejected(
+      { ...runEvents, [`${stepsPrefix}/${STEP}`]: "{}" },
+      /steps\/specialist is not a directory of step state/,
+    );
+    await expectRejected(
+      { ...runEvents, [stepsPrefix]: "{}" },
+      /not a directory of step state/,
+    );
+  });
+
+  test("rejects half a checkpoint pair", async () => {
+    const pair = checkpoint(0, 0);
+    await expectRejected(
+      {
+        ...runEvents,
+        [`${stateDir()}checkpoint.json`]:
+          pair[`${stateDir()}checkpoint.json`] ?? "",
+      },
+      /only one of "checkpoint.json" and "checkpoint.meta.json"/,
+    );
+  });
+
+  test("rejects a WAL entry filed in the wrong bucket", async () => {
+    await expectRejected(
+      {
+        ...runEvents,
+        [`${stateDir()}wal/1/0.json`]: serializeStepStateWalEntry(
+          0,
+          [],
+          METADATA,
+        ),
+      },
+      /belongs in bucket 0/,
+    );
+  });
+
+  test("rejects a WAL that is not buckets of numbered entries", async () => {
+    const entry = serializeStepStateWalEntry(0, [], METADATA);
+    await expectRejected(
+      { ...runEvents, [`${stateDir()}wal`]: entry },
+      /state\/wal is not a directory/,
+    );
+    await expectRejected(
+      { ...runEvents, [`${stateDir()}wal/first/0.json`]: entry },
+      /WAL bucket .*state\/wal\/first is not a decimal bucket number/,
+    );
+    await expectRejected(
+      { ...runEvents, [`${stateDir()}wal/0`]: entry },
+      /state\/wal\/0 is not a directory/,
+    );
+    await expectRejected(
+      { ...runEvents, [`${stateDir()}wal/0/first.json`]: entry },
+      /WAL entry .*state\/wal\/0\/first\.json does not match <seq>\.json/,
+    );
+  });
+
+  test("rejects a WAL that is not contiguous from the checkpoint", async () => {
+    await expectRejected(
+      { ...runEvents, ...walEntry(0), ...walEntry(2) },
+      /expected seq 1, found 2/,
+    );
+    await expectRejected(
+      { ...runEvents, ...checkpoint(64, 1), ...walEntry(3), ...walEntry(64) },
+      /expected seq 64, found 3/,
+    );
+  });
+
+  test("rejects a changed WAL entry whose body fails the step-state envelope", async () => {
+    const path = stepStateWalEntryPath(stateDir(), 0);
+    await expectRejected(
+      { ...runEvents, [path]: "not json" },
+      /is not valid JSON/,
+    );
+    await expectRejected(
+      { ...runEvents, [path]: JSON.stringify({ seq: 0, turns: [] }) },
+      /failed validation/,
+    );
+    await expectRejected(
+      { ...runEvents, [path]: serializeStepStateWalEntry(7, [], METADATA) },
+      /carries seq 7/,
+    );
+  });
+
+  // A failover host reads the Hub's copy, so a malformed turn or pending
+  // operation is refused when it is pushed, not when it is read.
+  test("rejects changed step state whose turns or pending operations are malformed", async () => {
+    const path = stepStateWalEntryPath(stateDir(), 0);
+    await expectRejected(
+      { ...runEvents, [path]: serializeStepStateWalEntry(0, [42], METADATA) },
+      /failed validation: turns\[0\] must be an object/,
+    );
+    await expectRejected(
+      {
+        ...runEvents,
+        [path]: JSON.stringify({
+          seq: 0,
+          turns: [],
+          metadata: {
+            ...METADATA,
+            pendingOperations: [{ correlationId: "c-1" }],
+          },
+        }),
+      },
+      /failed validation: metadata\.pendingOperations\[0\]/,
+    );
+    await expectRejected(
+      {
+        ...runEvents,
+        ...buildStepStateCheckpoint(stateDir(), 0, {
+          ...METADATA,
+          turns: [{ role: "narrator", content: [], timestamp: 0 }],
+        }),
+      },
+      /checkpoint\.json failed validation: turns\[0\]\.role/,
+    );
+  });
+
+  test("rejects a checkpoint pair that disagrees on its turn count", async () => {
+    const pair = checkpoint(0, 2);
+    const metaPath = `${stateDir()}checkpoint.meta.json`;
+    await expectRejected(
+      {
+        ...runEvents,
+        ...pair,
+        [metaPath]: JSON.stringify({
+          checkpointSeq: 0,
+          turnCount: 5,
+          ...METADATA,
+        }),
+      },
+      /carries 2 turns but .* reports turnCount 5/,
+    );
+  });
+
+  test("rejects a checkpoint pointer whose seq is not a non-negative integer", async () => {
+    const metaPath = `${stateDir()}checkpoint.meta.json`;
+    for (const checkpointSeq of [1.5, -1]) {
+      await expectRejected(
+        {
+          ...runEvents,
+          ...checkpoint(0, 0),
+          [metaPath]: JSON.stringify({
+            checkpointSeq,
+            turnCount: 0,
+            ...METADATA,
+          }),
+        },
+        /failed validation/,
+      );
+    }
+  });
+
+  test("a steps-scoped change validates the named step and not the run's event log", async () => {
+    const eventGap = {
+      ...runEvents,
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events/2.json`]: eventBody(
+        2,
+        "StepStarted",
+      ),
+    };
+    const scope = new Set([`${stateDir()}wal/0/`]);
+    const accepted = await validate(
+      { ...eventGap, ...walEntry(0), ...walEntry(1) },
+      {
+        principal: WORKFLOW_PROCESS_PRINCIPAL,
+        priorFiles: { ...eventGap, ...walEntry(0) },
+        changedPathPrefixes: scope,
+      },
+    );
+    if (!accepted.ok) throw new Error(accepted.reason);
+
+    await expectRejected(
+      { ...runEvents, ...walEntry(0), ...walEntry(2) },
+      /expected seq 1, found 2/,
+      {
+        priorFiles: { ...runEvents, ...walEntry(0) },
+        changedPathPrefixes: scope,
+      },
+    );
+  });
+
+  test("an event append does not walk a run's unchanged step state", async () => {
+    const prior = {
+      ...runEvents,
+      ...walEntry(0),
+      ...walEntry(1),
+      ...walEntry(0, "reviewer"),
+    };
+    const next = {
+      ...prior,
+      [`${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events/1.json`]: eventBody(
+        1,
+        "StepStarted",
+      ),
+    };
+    const eventsOnly = new Set([`${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events/`]);
+    const underSteps = (paths: string[]) =>
+      paths.filter((p) => p.startsWith(`${stepsPrefix}/`));
+
+    const listed: string[] = [];
+    const skipped = await validate(next, {
+      principal: WORKFLOW_PROCESS_PRINCIPAL,
+      priorFiles: prior,
+      changedPathPrefixes: eventsOnly,
+      listed,
+    });
+    if (!skipped.ok) throw new Error(skipped.reason);
+    expect(underSteps(listed)).toEqual([]);
+  });
+
+  test("a steps entry that keeps its object id but is no longer a directory is rejected", async () => {
+    const runDir = `${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}`;
+    const prior = { ...runEvents, ...walEntry(0) };
+    const stepsOid = (await listDirOidsOf(prior)(runDir)).find(
+      (entry) => entry.name === WORKFLOW_RUN_STEPS_DIR,
+    )?.oid;
+    if (stepsOid === undefined) throw new Error("prior has no steps entry");
+    // A mode change turns the directory entry into a file entry that keeps
+    // the directory's object id.
+    const next = { ...runEvents, [stepsPrefix]: "" };
+    const nextOids = listDirOidsOf(next);
+    await expectRejected(next, /is not a directory of step state/, {
+      priorFiles: prior,
+      changedPathPrefixes: new Set([`${runDir}/`]),
+      listDirOids: async (dir) =>
+        (await nextOids(dir)).map((entry) =>
+          dir === runDir && entry.name === WORKFLOW_RUN_STEPS_DIR
+            ? { ...entry, oid: stepsOid }
+            : entry,
+        ),
+    });
   });
 });
 
