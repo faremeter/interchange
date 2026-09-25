@@ -168,11 +168,10 @@ export class WorkflowControlHistoryPendingError extends Error {
 export type SidecarConnection = {
   sidecarId: string;
   identity: SidecarAuthIdentity;
+  // Allocated workflows do not populate this legacy set.
   agentAddresses: Set<string>;
-  // Workflow-substrate deployment run addresses (`run_<hex>@domain`) this
-  // connection hosts. Kept separate from the legacy `agentAddresses` set so
-  // workflow route teardown and recovery remain explicit. `handleClose` cleans
-  // both sets out of `addressIndex`.
+  // Allocated deployment routes (including first deploy and reconnect) and
+  // transient step routes.
   workflowAddresses: Set<string>;
   // Deploy frames the worker has not answered, kept past the Hub's own deploy
   // timeout. The worker handles frames in order, so a control frame sent
@@ -183,11 +182,8 @@ export type SidecarConnection = {
 
 /**
  * Whether this connection owns `address` for routing/lifecycle purposes.
- * The legacy and workflow sets remain physically distinct, but ownership
- * readers -- pack-transfer authorization,
- * in-flight cancellation, disconnect teardown -- must see the union, or a
- * reconnected workflow deployment (which lives only in `workflowAddresses`)
- * is silently treated as unowned even though its mail routes.
+ * Ownership readers cover both address sets. Allocated workflow deployments
+ * use `workflowAddresses` from their initial deploy.
  */
 function connOwnsAddress(conn: SidecarConnection, address: string): boolean {
   return (
@@ -306,17 +302,9 @@ export type SidecarRouter = {
   /**
    * Update a run's authorization grants independently of mail. For a trigger,
    * pass `runGrants` to `routeMail` so both frames share one admission decision.
-   * Routes through the same per-address channel as `routeMail`: over the
-   * live connection when the deployment is connected, and into the disconnect
-   * queue when the deployment dropped in the window before its first
-   * reconnect (while its address is still on `agentAddresses`) -- so grants
-   * are queued for a disconnected deployment exactly when the trigger mail is,
-   * and ride the same reconnect flush. After an authenticated reconnect the
-   * address moves to `workflowAddresses`, which carries no queue (that
-   * generation's in-flight state is reconstructed sidecar-locally); a
-   * `run.grants` then has no queue to ride and this returns `false`. Returns
-   * `false` whenever the address is unroutable; the caller keeps any stable-run
-   * grant reservation so a later first-delivery attempt reuses it.
+   * Sends on the live connection. Allocated workflows do not create disconnect
+   * queues, so an unroutable workflow returns `false`. The caller keeps any
+   * stable-run grant reservation so a later first-delivery attempt reuses it.
    *
    * `senderIdentities` co-delivers the run's authorized senders' resolved keys
    * on the same barrier as the grant, so a recipient that caches from this
@@ -2397,6 +2385,8 @@ export function createSidecarRouter(
     if (conn === undefined) return;
     let allocated: { allocationId: string; generation: number } | undefined;
 
+    // Only legacy agent addresses enter this queueing path. Allocated workflow
+    // routes use workflowAddresses from their first deploy.
     for (const addr of conn.agentAddresses) {
       // Only remove routing and pending state if this connection still
       // owns the address. A reconnected sidecar may have already claimed it.
@@ -2437,17 +2427,15 @@ export function createSidecarRouter(
     // is created: these addresses re-register (with the complete live set)
     // when the sidecar reconnects, and their in-flight run state is
     // reconstructed sidecar-locally, not from a hub-side queue. The ownership
-    // guard mirrors the session loop above so a takeover by a newer ws is not
-    // clobbered by the prior owner's close.
+    // guard mirrors the legacy address loop above so a takeover by a newer ws
+    // is not clobbered by the prior owner's close.
     for (const addr of conn.workflowAddresses) {
       if (addressIndex.get(addr) === ws) {
         addressIndex.delete(addr);
         connectorStates.delete(addr);
-        // Retain un-acked workflow trigger mail across the disconnect for the
-        // same reason as the session loop above -- an authenticated reconnect
-        // redelivers it. This is un-acked TRIGGER mail, distinct from the
-        // deployment's in-flight run state (reconstructed sidecar-locally); the
-        // "no disconnect queue" note above is about that run state, not this.
+        // Retain already-sent trigger mail until an authenticated reconnect
+        // can redeliver it. This retries unacknowledged deliveries; it does
+        // not create a disconnect queue for new frames.
         retainPendingMailForAddress(addr);
       }
     }
@@ -3393,7 +3381,7 @@ export function createSidecarRouter(
       }
     }
 
-    // If the agent recently disconnected, queue for delivery on reconnect.
+    // This fallback only has a queue for legacy agent addresses.
     return enqueueDisconnected();
   }
 
@@ -3420,15 +3408,8 @@ export function createSidecarRouter(
       }
     }
 
-    // Mirror routeMail: if the address has a live disconnect queue, ride it
-    // so a run.grants issued in the window between deploy and the first
-    // reconnect survives the same way the dispatching trigger mail does.
-    // A queue exists only while the deployment address is still on
-    // agentAddresses (pre-first-reconnect); after an authenticated reconnect it
-    // moves to workflowAddresses, which handleClose leaves unqueued because
-    // that generation's in-flight run state is reconstructed sidecar-locally.
-    // Returning without enqueueing there is correct; enqueueing is what keeps
-    // grants and mail from diverging in the pre-reconnect window.
+    // Legacy fallback: handleClose creates no queue for allocated workflow
+    // addresses.
     return enqueueForDisconnected(agentAddress, frame);
   }
 
