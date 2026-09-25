@@ -46,8 +46,6 @@ import {
 } from "@intx/workflow/definition";
 import type { ActionHandler, LoopFn, LoopFnRegistry } from "@intx/workflow";
 
-import { isErrnoNotFound } from "./supervisor/credentials";
-
 const logger = getLogger(["workflow-host", "definition-loader"]);
 
 export interface LoadWorkflowDefinitionFromClosureArgs {
@@ -258,8 +256,9 @@ function collectDirectorIds(definition: WorkflowDefinition): string[] {
  * prefix so a directory whose layout name and manifest name disagree cannot
  * register. `undefined` when the id fails `validateNamespacedId`, carries
  * no package prefix, fails the package-name grammar, is not a direct
- * `node_modules` child, or no such dependency is laid out -- either way
- * the id stays unregistered.
+ * `node_modules` child, no such dependency is laid out, or the slot is
+ * a file rather than a package directory (ENOTDIR) -- either way the
+ * id stays unregistered.
  *
  * The realpath targets `package.json`, not the directory: a bare scope dir
  * (`node_modules/@scope`) exists whenever any scoped dep does but is not a
@@ -353,6 +352,12 @@ function isDirectNodeModulesPackage(
   const segments = rel.split(path.sep);
   if (segments.includes("..") || segments.includes(".")) return false;
   return segments.join("/") === packageName;
+}
+
+function isErrnoNotFound(cause: unknown): boolean {
+  if (cause === null || typeof cause !== "object") return false;
+  const code = (cause as { code?: unknown }).code;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 /**
