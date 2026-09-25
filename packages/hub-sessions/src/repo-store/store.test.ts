@@ -7,7 +7,7 @@ import { generateKeyPair } from "@intx/crypto";
 import { collectReachableObjects, runGC } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
 import { waitUntil } from "@intx/types/testing";
-import { createRepoStore } from "./store";
+import { createRepoStore, type LocalRepoStore } from "./store";
 import { workflowAuthorize, workflowKindHandler } from "../workflow-kind";
 import type {
   AuthorizeFn,
@@ -3358,6 +3358,108 @@ describe("RepoStore", () => {
     expect(await rebuildTargetStore.resolveRef(principal, wfRepoId, REF)).toBe(
       thirdSha,
     );
+  });
+
+  describe("a workflow-run pack must build on the ref's tip", () => {
+    const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
+
+    async function workflowRunStore(prefix: string): Promise<LocalRepoStore> {
+      return createRepoStore({
+        dataDir: await makeTempDir(prefix),
+        signingKey,
+        handlers: {
+          "workflow-run": {
+            kind: "workflow-run",
+            directoryPrefix: "workflow-runs-under-test",
+            validatePush: () => ({ ok: true }),
+            onRefUpdated: () => undefined,
+          },
+        },
+        authorize: allowAll,
+      });
+    }
+
+    async function push(
+      from: LocalRepoStore,
+      to: LocalRepoStore,
+      ref: string,
+    ): Promise<void> {
+      const { pack, commitSha } = await from.createPack(
+        principal,
+        wfRepoId,
+        ref,
+      );
+      await to.receivePack(
+        principal,
+        wfRepoId,
+        ref,
+        pack,
+        commitSha,
+        await to.resolveRef(principal, wfRepoId, ref),
+      );
+    }
+
+    test("refuses a pack that rewinds, forks or replaces the history", async () => {
+      const source = await workflowRunStore("repo-store-ff-source-");
+      const hub = await workflowRunStore("repo-store-ff-hub-");
+      await hub.initRepo(wfRepoId);
+      const { commitSha: first } = await source.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/0.json": "v1" }, message: "v1" },
+      );
+      await push(source, hub, REF);
+      // A worker holding only the first commit forks off it.
+      const fork = await workflowRunStore("repo-store-ff-fork-");
+      await push(source, fork, REF);
+      const { commitSha: second } = await source.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/1.json": "v2" }, message: "v2" },
+      );
+      await push(source, hub, REF);
+      await fork.writeTree(principal, wfRepoId, REF, {
+        files: { "runs/r1/events/1.json": "other" },
+        message: "fork",
+      });
+      const unrelated = await workflowRunStore("repo-store-ff-unrelated-");
+      await unrelated.writeTree(principal, wfRepoId, REF, {
+        files: { "runs/r1/events/0.json": "other" },
+        message: "unrelated",
+      });
+
+      const rewind = await source.createPack(principal, wfRepoId, REF);
+      await expect(
+        hub.receivePack(principal, wfRepoId, REF, rewind.pack, first, second),
+      ).rejects.toThrow(/does not build on the tip/);
+      await expect(push(fork, hub, REF)).rejects.toThrow(
+        /does not build on the tip/,
+      );
+      await expect(push(unrelated, hub, REF)).rejects.toThrow(
+        /does not build on the tip/,
+      );
+      expect(await hub.resolveRef(principal, wfRepoId, REF)).toBe(second);
+    });
+
+    test("lets a pack replace a tip that holds only the initial .gitignore", async () => {
+      const source = await workflowRunStore("repo-store-ff-genesis-source-");
+      const hub = await workflowRunStore("repo-store-ff-genesis-hub-");
+      await hub.initRepo(wfRepoId);
+      const { commitSha } = await source.writeTree(
+        principal,
+        wfRepoId,
+        "refs/heads/main",
+        { files: { "runs/r1/events/0.json": "v1" }, message: "v1" },
+      );
+
+      await push(source, hub, "refs/heads/main");
+
+      expect(await hub.resolveRef(principal, wfRepoId, "refs/heads/main")).toBe(
+        commitSha,
+      );
+    });
   });
 
   test("openCommittedReads lists committed entries and reads blobs by oid", async () => {

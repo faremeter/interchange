@@ -1121,6 +1121,45 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return chain.reverse();
   }
 
+  // A push that does not build on the ref's tip would drop whatever the tip
+  // holds past the point the push branched from. A tip holding only the
+  // `.gitignore` every repository starts with has nothing to drop: a
+  // deployment's first push replaces the Hub's empty start, and restoring its
+  // history replaces a fresh worker's.
+  async function buildsOnTip(
+    dir: string,
+    commitSha: string,
+    expectedOldSha: string | null,
+    newCommits: readonly string[],
+  ): Promise<boolean> {
+    if (expectedOldSha === null || commitSha === expectedOldSha) return true;
+    const oldest = newCommits[0];
+    if (oldest !== undefined) {
+      const { commit } = await git.readCommit({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid: oldest,
+      });
+      if (commit.parent[0] === expectedOldSha) return true;
+    }
+    const { commit: tip } = await git.readCommit({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: expectedOldSha,
+    });
+    const { tree } = await git.readTree({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      oid: tip.tree,
+    });
+    return tree.every(
+      (entry) => entry.type === "blob" && entry.path === ".gitignore",
+    );
+  }
+
   // Assemble a new root tree by splicing `puts` (repo-root-relative path
   // -> blob oid) and `deletes` onto the parent's root tree, reusing every
   // unchanged entry by oid. The result is committed directly via
@@ -1850,6 +1889,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
             existingCommits,
           );
           newCommitsFromPack.push(...newCommits);
+          if (
+            repoId.kind === "workflow-run" &&
+            !(await buildsOnTip(dir, commitSha, expectedOldSha, newCommits))
+          ) {
+            const reason = `commit ${commitSha} does not build on the tip ${String(expectedOldSha)} of ${ref}; a workflow-run history only grows`;
+            logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${reason}`;
+            return { ok: false, reason };
+          }
           // Shared across the pack's commits so a subtree common to several is
           // walked once by the disallowed-mode gate below.
           const seenTreeOids = new Set<string>();
