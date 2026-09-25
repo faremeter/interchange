@@ -27,6 +27,13 @@ export type TwoStepFixtureParams = {
   agentId2?: string;
   /** The `defineWorkflow` id. Defaults to a stable fixture-local id. */
   workflowId?: string;
+  /**
+   * The first step's trigger budget (see `StepPrimitive.triggers`). Omitted
+   * leaves it a batch step. A budget above 1 makes the first step a
+   * conversation: it re-arms after each turn, so each later mail to the
+   * deployment is its next turn, and `step2` runs once the budget is spent.
+   */
+  step1Triggers?: number | "unbounded";
 };
 
 export function twoStepEntry(params: TwoStepFixtureParams): string {
@@ -35,6 +42,10 @@ export function twoStepEntry(params: TwoStepFixtureParams): string {
   const agentId1 = params.agentId1 ?? "two-step-agent1";
   const agentId2 = params.agentId2 ?? "two-step-agent2";
   const workflowId = params.workflowId ?? "wf_two_step";
+  const step1TriggersClause =
+    params.step1Triggers !== undefined
+      ? `, triggers: ${JSON.stringify(params.step1Triggers)}`
+      : "";
 
   return `
 import { defineWorkflow, step } from "@intx/workflow/definition";
@@ -64,7 +75,7 @@ export const workflow = defineWorkflow({
   id: ${JSON.stringify(workflowId)},
   trigger: { type: "mail", to: ${JSON.stringify(params.address)} },
   steps: {
-    [${JSON.stringify(step1Id)}]: step({ agent: agent1 }),
+    [${JSON.stringify(step1Id)}]: step({ agent: agent1${step1TriggersClause} }),
     [${JSON.stringify(step2Id)}]: step({ agent: agent2, after: [${JSON.stringify(step1Id)}] }),
   },
 });
