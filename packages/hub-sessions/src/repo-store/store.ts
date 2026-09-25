@@ -1143,9 +1143,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   // entries that differ are emitted as `<name>/`; the `runs/` subtree is
   // descended one level further so a per-run handler can scope to the
   // exact `runs/<runId>/` directories that changed rather than
-  // re-validating every run. `parentTreeOid === null` (no readable
-  // parent) means the substrate cannot bound the change set, so it
-  // returns `undefined` and the handler validates the whole tree.
+  // re-validating every run, and further still for a run whose only
+  // changed child is its `steps/` subtree (see `changedRunPrefixes`).
+  // `parentTreeOid === null` (no readable parent) means the substrate
+  // cannot bound the change set, so it returns `undefined` and the
+  // handler validates the whole tree.
   async function computeChangedPathPrefixes(
     reads: ObjectReads,
     treeOid: string,
@@ -1170,13 +1172,58 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
         ]);
         for (const runId of runNames) {
           if (newRuns.get(runId) === oldRuns.get(runId)) continue;
-          prefixes.add(`runs/${runId}/`);
+          for (const prefix of await changedRunPrefixes(
+            reads,
+            treeOid,
+            parentTreeOid,
+            runId,
+          )) {
+            prefixes.add(prefix);
+          }
         }
         continue;
       }
       prefixes.add(`${name}/`);
     }
     return prefixes;
+  }
+
+  // The prefixes a commit changed inside one run directory that differs
+  // from its parent's. The whole run (`runs/<runId>/`) unless `steps/` is
+  // its only changed child: a workflow-run's per-step state is validated
+  // apart from the run's event log, so each step directory that changed
+  // (`runs/<runId>/steps/<segment>/`) is emitted instead, or
+  // `runs/<runId>/steps/` when that subtree was added, removed, or is not
+  // a directory on one side. A directory whose object differs while its
+  // listing does not is emitted whole rather than dropped.
+  async function changedRunPrefixes(
+    reads: ObjectReads,
+    treeOid: string,
+    parentTreeOid: string,
+    runId: string,
+  ): Promise<string[]> {
+    const runPath = `runs/${runId}`;
+    const newRun = await readTreeEntryMap(reads, treeOid, runPath);
+    const oldRun = await readTreeEntryMap(reads, parentTreeOid, runPath);
+    if (newRun === null || oldRun === null) return [`${runPath}/`];
+    let stepsChanged = false;
+    for (const child of new Set([...newRun.keys(), ...oldRun.keys()])) {
+      if (newRun.get(child) === oldRun.get(child)) continue;
+      if (child !== "steps") return [`${runPath}/`];
+      stepsChanged = true;
+    }
+    if (!stepsChanged) return [`${runPath}/`];
+    const stepsPath = `${runPath}/steps`;
+    const newSteps = await readTreeEntryMap(reads, treeOid, stepsPath);
+    const oldSteps = await readTreeEntryMap(reads, parentTreeOid, stepsPath);
+    if (newSteps === null || oldSteps === null) return [`${stepsPath}/`];
+    const prefixes: string[] = [];
+    for (const segment of new Set([...newSteps.keys(), ...oldSteps.keys()])) {
+      if (newSteps.get(segment) !== oldSteps.get(segment)) {
+        prefixes.push(`${stepsPath}/${segment}/`);
+      }
+    }
+    return prefixes.length > 0 ? prefixes : [`${stepsPath}/`];
   }
 
   // Enumerate every commit OID reachable from any branch or tag in
