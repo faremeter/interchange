@@ -34,6 +34,7 @@ export {
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
   MAX_MAIL_PART_PATH_COMPONENT_BYTES,
+  workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
 export type {
@@ -71,6 +72,7 @@ export type {
   StepStateMetadata,
   StepStateReader,
 } from "./step-state";
+export { parseStepStateSeed } from "./step-state-snapshot";
 
 export { subscribeKind } from "./repo-store/subscribe-kind";
 export type { SubscribeKindEntry } from "./repo-store/subscribe-kind";
