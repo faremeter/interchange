@@ -5,7 +5,7 @@
 // Used by the step executor to materialize a step's `input` and to
 // resolve declared `reads` against the run-state subtree.
 
-import type { PerCallInferenceOptions } from "@intx/types/runtime";
+import { PerCallInferenceOptions } from "@intx/types/runtime";
 import { type } from "arktype";
 
 import {
@@ -69,18 +69,6 @@ export function evaluate(selector: Selector, ctx: SelectorContext): unknown {
   throw new SelectorError("unknown selector shape", selector);
 }
 
-const PerCallInferenceOptionsSchema = type({
-  "+": "reject",
-  "maxTokens?": "number.integer > 0",
-  "temperature?": "number >= 0",
-  "thinking?": {
-    "+": "reject",
-    enabled: "boolean",
-    "budgetTokens?": "number.integer > 0",
-  },
-  "effort?": "'off' | 'low' | 'medium' | 'high' | 'max'",
-});
-
 /**
  * Resolve a step's `inference` selector into per-call options. `null` and
  * `undefined` mean the agent's defaults; any other non-object, or an object
@@ -98,7 +86,7 @@ export function resolveStepInference(
       selector,
     );
   }
-  const options = PerCallInferenceOptionsSchema(value);
+  const options = PerCallInferenceOptions(value);
   if (options instanceof type.errors) {
     throw new SelectorError(
       `inference selector resolved to invalid options: ${options.summary}`,

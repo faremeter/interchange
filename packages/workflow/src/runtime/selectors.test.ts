@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
 
+import type { InferenceEffort } from "@intx/types/runtime";
+
 import {
   evaluate,
   resolveStepInference,
@@ -137,6 +139,21 @@ describe("resolveStepInference", () => {
         inferenceCtx,
       ),
     ).toThrow(SelectorError);
+  });
+
+  test("accepts every enumerated effort", () => {
+    const efforts: Record<InferenceEffort, InferenceEffort> = {
+      off: "off",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      max: "max",
+    };
+    for (const effort of Object.values(efforts)) {
+      expect(
+        resolveStepInference({ literal: { effort } }, inferenceCtx),
+      ).toEqual({ effort });
+    }
   });
 
   test("an unknown effort is a selector error", () => {
