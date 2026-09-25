@@ -523,8 +523,8 @@ describe("workflowRunKindHandler.validatePush — step state", () => {
     );
   });
 
-  // A failover host reads the Hub's copy, so a malformed turn or pending
-  // operation is refused when it is pushed, not when it is read.
+  // Export and a failover host both read the Hub's copy, so a malformed turn
+  // or pending operation is refused when it is pushed, not when it is read.
   test("rejects changed step state whose turns or pending operations are malformed", async () => {
     const path = stepStateWalEntryPath(stateDir(), 0);
     await expectRejected(

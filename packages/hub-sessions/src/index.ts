@@ -237,6 +237,7 @@ export {
   type WorkflowRunWorkflowProcessPrincipal,
   type WorkflowRunSupervisorPrincipal,
 } from "./workflow-run-kind";
+export { readStepStateSnapshot } from "./step-state-snapshot";
 export {
   buildStepStateCheckpoint,
   reconstructStepState,
