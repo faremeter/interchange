@@ -18,6 +18,7 @@ import type {
   InferenceEvent,
   InferenceOptions,
   InferenceSource,
+  PerCallInferenceOptions,
   ReactorDirector,
   ReactorInboundEvent,
   ContextStore,
@@ -83,6 +84,27 @@ export function mergeInferenceOptions(
 ): InferenceOptions | undefined {
   if (perSend === undefined) return director;
   return { ...perSend, ...director };
+}
+
+/**
+ * Copy only the keys a send may set. A structurally wider bag still
+ * type-checks as `PerCallInferenceOptions`; without this copy,
+ * `systemPrompt`, `tools`, and `providerOptions` would enter the
+ * message-run slot and displace the deployed agent definition.
+ */
+function perCallInference(
+  options: PerCallInferenceOptions,
+): PerCallInferenceOptions {
+  return {
+    ...(options.maxTokens !== undefined
+      ? { maxTokens: options.maxTokens }
+      : {}),
+    ...(options.temperature !== undefined
+      ? { temperature: options.temperature }
+      : {}),
+    ...(options.thinking !== undefined ? { thinking: options.thinking } : {}),
+    ...(options.effort !== undefined ? { effort: options.effort } : {}),
+  };
 }
 
 function buildHarnessOpts(
@@ -162,7 +184,7 @@ export type ReactorConfig = {
 };
 
 export type DeliverOptions = {
-  inference?: InferenceOptions;
+  inference?: PerCallInferenceOptions;
 };
 
 export type Reactor = {
@@ -367,8 +389,11 @@ export function createReactor(config: ReactorConfig): Reactor {
   let currentMessageId: string | null = null;
   // Per-send inference options, keyed by the delivered message until it is
   // dequeued (or correlated), then held for the message run it drives.
-  const deliveredInference = new WeakMap<InboundMessage, InferenceOptions>();
-  let messageRunInference: InferenceOptions | undefined;
+  const deliveredInference = new WeakMap<
+    InboundMessage,
+    PerCallInferenceOptions
+  >();
+  let messageRunInference: PerCallInferenceOptions | undefined;
 
   // Doom-loop detection state, scoped to the current message run. Each executed
   // tool-call turn is reduced to a batch signature; consecutive identical
@@ -1748,7 +1773,7 @@ export function createReactor(config: ReactorConfig): Reactor {
   function deliver(message: InboundMessage, opts?: DeliverOptions): void {
     if (done) return;
     if (opts?.inference !== undefined) {
-      deliveredInference.set(message, opts.inference);
+      deliveredInference.set(message, perCallInference(opts.inference));
     }
     if (startupDeliveries !== null) {
       startupDeliveries.push(message);

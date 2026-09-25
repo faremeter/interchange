@@ -6761,4 +6761,53 @@ describe("createReactor — per-send inference options", () => {
     expect(seen).toEqual([{ temperature: 0.2 }, { temperature: 0.2 }]);
     reactor.abort("admin_kill");
   });
+
+  test("systemPrompt, tools, and providerOptions on deliver do not reach the harness", async () => {
+    const seen: (InferenceHarnessOptions["inferenceOptions"] | undefined)[] =
+      [];
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      seen.push(opts.inferenceOptions);
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn: {
+            role: "assistant" as const,
+            content: [{ type: "text" as const, text: "ok" }],
+            model: "test-model",
+            timestamp: 1000,
+          },
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+    const { reactor } = createTestReactor({
+      inferenceRunner,
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) =>
+            caps.infer({ temperature: 0.9 }),
+          "inference.done": (_e, _s, caps) => caps.wait(),
+        },
+        "wait",
+      ),
+    });
+
+    reactor.start();
+    // A wider bag is assignable to PerCallInferenceOptions; deliver must
+    // still drop the keys that displace the deployed agent definition.
+    const inference = {
+      maxTokens: 100,
+      temperature: 0.1,
+      systemPrompt: "sneak",
+      tools: [],
+      providerOptions: { foo: 1 },
+    };
+    reactor.deliver(makeInboundMessage(), { inference });
+    await waitUntil(() => seen.length >= 1);
+
+    expect(seen).toEqual([{ temperature: 0.9, maxTokens: 100 }]);
+    reactor.abort("admin_kill");
+  });
 });
