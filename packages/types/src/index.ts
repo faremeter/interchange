@@ -8,6 +8,7 @@ export * from "./grant-snapshot";
 export * from "./signals";
 export * from "./instances";
 export * from "./workflows";
+export * from "./step-state-snapshot";
 export * from "./attachments";
 export * from "./attachment-validation";
 export * from "./sessions";

@@ -163,6 +163,7 @@ The workflow-process model (see LAYOUT.md and ARCHITECTURE.md) is driven through
 - Deploy a workflow and list a tenant's workflow deployments (`POST` and `GET .../workflows/deployments`).
 - Drive a running deployment by delivering a signal or inbound mail (`POST .../workflows/:runId/signals`, `POST .../workflows/:runId/mail`).
 - Observe a deployment's runs and per-run events (`GET .../workflows/:runId/runs`, `GET .../workflows/:runId/runs/:eventRunId/events`).
+- Export an agent step's durable state as a snapshot (`GET .../workflows/runs/:runId/steps/:stepId/state`).
 
 As with the other groups, the exhaustive per-endpoint request and response shapes live in the generated route reference (`docs/API.md`); this section describes the group's shape and role, not each endpoint.
 
