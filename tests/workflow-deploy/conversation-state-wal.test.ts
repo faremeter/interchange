@@ -40,8 +40,8 @@ import type {
 import {
   createRepoStore,
   workflowRunKindHandler,
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_GITIGNORE_PATH,
+  workflowRunStepStatePrefix,
 } from "@intx/hub-sessions";
 import { userTurn } from "@intx/inference-testing";
 import {
@@ -51,7 +51,8 @@ import {
 } from "@intx/workflow-host";
 
 const WORKFLOW_RUN_REF = "refs/heads/main";
-const AGENT_KEY = "step-1";
+const RUN_ID = "run_durability";
+const STEP_ID = "step-1";
 // Must mirror the production constant in conversation-state.ts. Asserted
 // indirectly by the bounded-WAL test below: a drift here would surface as
 // a checkpoint that folds at the wrong boundary.
@@ -80,12 +81,12 @@ const WalEntryShape = type({
 });
 
 /** Read and validate the checkpoint pointer's seq/count fields. */
-function readCheckpointMeta(agentStateDir: string): {
+function readCheckpointMeta(stateDir: string): {
   checkpointSeq: number;
   turnCount: number;
 } {
   const raw: unknown = JSON.parse(
-    fs.readFileSync(path.join(agentStateDir, "checkpoint.meta.json"), "utf8"),
+    fs.readFileSync(path.join(stateDir, "checkpoint.meta.json"), "utf8"),
   );
   const meta = CheckpointMetaShape(raw);
   if (meta instanceof type.errors) {
@@ -99,7 +100,7 @@ interface Harness {
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
   signer: (payload: string) => Promise<string>;
-  agentStateDir: string;
+  stateDir: string;
 }
 
 async function makeHarness(): Promise<Harness> {
@@ -130,12 +131,11 @@ async function makeHarness(): Promise<Harness> {
     Promise.resolve(
       createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey),
     );
-  const agentStateDir = path.join(
+  const stateDir = path.join(
     substrate.getRepoDir(workflowRunRepoId),
-    WORKFLOW_RUN_AGENT_STATE_PREFIX,
-    encodeURIComponent(AGENT_KEY),
+    workflowRunStepStatePrefix(RUN_ID, STEP_ID),
   );
-  return { baseDir, substrate, workflowRunRepoId, signer, agentStateDir };
+  return { baseDir, substrate, workflowRunRepoId, signer, stateDir };
 }
 
 async function makeStore(
@@ -149,7 +149,8 @@ async function makeStore(
     workflowRunRepoId: h.workflowRunRepoId,
     workflowRunRef: WORKFLOW_RUN_REF,
     principal: PRINCIPAL,
-    agentKey: AGENT_KEY,
+    runId: RUN_ID,
+    stepId: STEP_ID,
   });
 }
 
@@ -176,13 +177,13 @@ async function pushAndMirror(
   return all;
 }
 
-function walBucketDir(agentStateDir: string, bucket: number): string {
-  return path.join(agentStateDir, "wal", String(bucket));
+function walBucketDir(stateDir: string, bucket: number): string {
+  return path.join(stateDir, "wal", String(bucket));
 }
 
 /** Count every WAL entry blob across every bucket. */
-function countWalEntries(agentStateDir: string): number {
-  const walRoot = path.join(agentStateDir, "wal");
+function countWalEntries(stateDir: string): number {
+  const walRoot = path.join(stateDir, "wal");
   if (!fs.existsSync(walRoot)) return 0;
   let count = 0;
   for (const bucket of fs.readdirSync(walRoot)) {
@@ -193,10 +194,10 @@ function countWalEntries(agentStateDir: string): number {
   return count;
 }
 
-function readWalEntry(agentStateDir: string, seq: number): unknown {
+function readWalEntry(stateDir: string, seq: number): unknown {
   const bucket = Math.floor(seq / 128);
   const raw = fs.readFileSync(
-    path.join(walBucketDir(agentStateDir, bucket), `${String(seq)}.json`),
+    path.join(walBucketDir(stateDir, bucket), `${String(seq)}.json`),
     "utf8",
   );
   return JSON.parse(raw);
@@ -237,7 +238,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
 
       // The WAL entry just written for boundary i carries exactly that
       // boundary's one new turn and not any prior turn.
-      const entry = readWalEntry(h.agentStateDir, i);
+      const entry = readWalEntry(h.stateDir, i);
       const validated = WalEntryShape(entry);
       if (validated instanceof type.errors) {
         throw new Error(
@@ -255,10 +256,10 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     // The serialized size of the latest entry is within a small constant of
     // the first entry's size: it does not grow with the turn count.
     const first = fs.statSync(
-      path.join(walBucketDir(h.agentStateDir, 0), "0.json"),
+      path.join(walBucketDir(h.stateDir, 0), "0.json"),
     ).size;
     const last = fs.statSync(
-      path.join(walBucketDir(h.agentStateDir, 0), "7.json"),
+      path.join(walBucketDir(h.stateDir, 0), "7.json"),
     ).size;
     expect(Math.abs(last - first)).toBeLessThan(64);
   });
@@ -299,8 +300,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
 
     // Two WAL entries exist: boundary 0 (one turn) and boundary 1 (zero
     // turns, advanced metadata).
-    expect(countWalEntries(h.agentStateDir)).toBe(2);
-    const turnlessEntry = WalEntryShape(readWalEntry(h.agentStateDir, 1));
+    expect(countWalEntries(h.stateDir)).toBe(2);
+    const turnlessEntry = WalEntryShape(readWalEntry(h.stateDir, 1));
     if (turnlessEntry instanceof type.errors) {
       throw new Error(`turnless entry invalid: ${turnlessEntry.summary}`);
     }
@@ -310,8 +311,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     // stale boundary-1 values. This is the assertion that would have caught
     // the dropped-metadata defect.
     const reconstructed = await reconstructDurableConversation(
-      h.agentStateDir,
-      AGENT_KEY,
+      h.stateDir,
+      STEP_ID,
     );
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual(turns);
@@ -335,15 +336,12 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       await store.mirrorToSubstrate();
 
       const totalCommitted = i + 1;
-      const liveWal = countWalEntries(h.agentStateDir);
+      const liveWal = countWalEntries(h.stateDir);
       // The live WAL never exceeds K: it grows turn by turn until it hits
       // K, then compaction folds it to empty.
       expect(liveWal).toBeLessThanOrEqual(CHECKPOINT_INTERVAL);
 
-      const checkpointMetaPath = path.join(
-        h.agentStateDir,
-        "checkpoint.meta.json",
-      );
+      const checkpointMetaPath = path.join(h.stateDir, "checkpoint.meta.json");
       if (totalCommitted < CHECKPOINT_INTERVAL) {
         // No checkpoint has folded yet; everything is in the WAL.
         expect(fs.existsSync(checkpointMetaPath)).toBe(false);
@@ -352,7 +350,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
         // The K-th turn triggers compaction: the WAL truncates to empty and
         // the checkpoint folds exactly K turns.
         expect(liveWal).toBe(0);
-        const meta = readCheckpointMeta(h.agentStateDir);
+        const meta = readCheckpointMeta(h.stateDir);
         expect(meta.checkpointSeq).toBe(CHECKPOINT_INTERVAL);
         expect(meta.turnCount).toBe(CHECKPOINT_INTERVAL);
       } else {
@@ -397,16 +395,14 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
 
     // Sanity: the conversation now spans a folded checkpoint plus a WAL
     // tail, the exact mix the restore must stitch.
-    expect(fs.existsSync(path.join(h.agentStateDir, "checkpoint.json"))).toBe(
-      true,
-    );
-    expect(countWalEntries(h.agentStateDir)).toBe(n - CHECKPOINT_INTERVAL);
+    expect(fs.existsSync(path.join(h.stateDir, "checkpoint.json"))).toBe(true);
+    expect(countWalEntries(h.stateDir)).toBe(n - CHECKPOINT_INTERVAL);
 
     // Reconstruct via the production read path and assert byte-equivalent
     // turns + the latest metadata.
     const reconstructed = await reconstructDurableConversation(
-      h.agentStateDir,
-      AGENT_KEY,
+      h.stateDir,
+      STEP_ID,
     );
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual(built);
@@ -439,11 +435,11 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
 
     // Corrupt the single WAL blob in place.
     fs.writeFileSync(
-      path.join(walBucketDir(h.agentStateDir, 0), "0.json"),
+      path.join(walBucketDir(h.stateDir, 0), "0.json"),
       "{ not json",
     );
     await expect(
-      reconstructDurableConversation(h.agentStateDir, AGENT_KEY),
+      reconstructDurableConversation(h.stateDir, STEP_ID),
     ).rejects.toThrow(/not valid JSON/);
   });
 
@@ -461,9 +457,9 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       await store.mirrorToSubstrate();
     }
     // Remove the middle WAL entry to simulate a lost append.
-    fs.rmSync(path.join(walBucketDir(h.agentStateDir, 0), "1.json"));
+    fs.rmSync(path.join(walBucketDir(h.stateDir, 0), "1.json"));
     await expect(
-      reconstructDurableConversation(h.agentStateDir, AGENT_KEY),
+      reconstructDurableConversation(h.stateDir, STEP_ID),
     ).rejects.toThrow(/seq gap/);
   });
 
@@ -513,7 +509,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       workflowRunRepoId: h.workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
-      agentKey: AGENT_KEY,
+      runId: RUN_ID,
+      stepId: STEP_ID,
     });
 
     // Boundary 0: the local store holds [a]; during its WAL append the
@@ -540,7 +537,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     await store.storage.commit({ message: "turn-b" });
     await store.mirrorToSubstrate();
 
-    const entry = WalEntryShape(readWalEntry(h.agentStateDir, 1));
+    const entry = WalEntryShape(readWalEntry(h.stateDir, 1));
     if (entry instanceof type.errors) {
       throw new Error(`WAL entry 1 failed validation: ${entry.summary}`);
     }
@@ -548,8 +545,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
 
     // Reconstruction yields both turns; under the bug it would yield only [a].
     const reconstructed = await reconstructDurableConversation(
-      h.agentStateDir,
-      AGENT_KEY,
+      h.stateDir,
+      STEP_ID,
     );
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual([userTurn("a"), userTurn("b")]);
@@ -602,7 +599,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       workflowRunRepoId: h.workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
-      agentKey: AGENT_KEY,
+      runId: RUN_ID,
+      stepId: STEP_ID,
     });
 
     // The local store holds [a, b]; fire two overlapping mirrors of it.
@@ -644,8 +642,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     await store.mirrorToSubstrate();
 
     const reconstructed = await reconstructDurableConversation(
-      h.agentStateDir,
-      AGENT_KEY,
+      h.stateDir,
+      STEP_ID,
     );
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual(abc);
@@ -738,7 +736,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       workflowRunRepoId: h.workflowRunRepoId,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
-      agentKey: AGENT_KEY,
+      runId: RUN_ID,
+      stepId: STEP_ID,
     });
 
     const restored = await store.restoreFromSubstrate();
@@ -783,8 +782,8 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     await waitUntil(() => writesCompleted >= 2);
 
     const reconstructed = await reconstructDurableConversation(
-      h.agentStateDir,
-      AGENT_KEY,
+      h.stateDir,
+      STEP_ID,
     );
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual([
