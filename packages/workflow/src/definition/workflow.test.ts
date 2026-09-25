@@ -1970,6 +1970,19 @@ describe("onFailure straddler validation", () => {
     ).toThrow(/narrowed steps.unit.output/);
   });
 
+  test("rejects a straddler whose inference selector reads the unit output", () => {
+    expect(
+      wf(
+        step({
+          agent: makeAgent("j"),
+          after: ["unit", "handler"],
+          input: { from: "steps.unit.output" },
+          inference: { from: "steps.unit.output" },
+        }),
+      ),
+    ).toThrow(/inference selector reads steps.unit.output/);
+  });
+
   test("rejects a diamond straddler with an indexed read", () => {
     expect(
       wf(

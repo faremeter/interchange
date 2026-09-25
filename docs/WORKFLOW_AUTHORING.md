@@ -211,18 +211,35 @@ park is minted exclusively by the runtime's trigger-budget re-arm.
 Where it lives today: `StepInvokeResult`,
 `packages/workflow/src/runtime/env.ts`
 
+**17.** A step's `inference` selector resolves beside `input` into per-call
+options for that step's model call: `maxTokens`, `temperature`,
+`thinking: { enabled, budgetTokens }`, and `effort`
+(`off | low | medium | high | max`). The selector accepts `effort` with no
+model awareness: classic Anthropic, adaptive Anthropic with thinking off,
+Gemini, and gpt-5.6 Chat Completions with tools drop a named effort at the
+adapter (warn-logged) rather than failing the step. `null` or `undefined`
+means the agent's defaults. A non-object, or any other key (`systemPrompt`, `tools`,
+`providerOptions`, ...), fails the step as a selector error: a run may not
+displace the definition approved at deploy time. The options ride that send
+alone, are not recorded on `StepStarted`, and sit beneath any option the
+director names outright.
+
+Where it lives today: `resolveStepInference`,
+`packages/workflow/src/runtime/selectors.ts`; `mergeInferenceOptions`,
+`packages/inference/src/reactor.ts`
+
 ---
 
 ## Actions and effects
 
-**17.** Actions get NO default-input convention. `applyDefaultInput` covers
+**18.** Actions get NO default-input convention. `applyDefaultInput` covers
 only `step` and a `map`'s inner step, so an action with no `input` selector
 receives nothing. Every action's input selector must be written out.
 
 Where it lives today: `applyDefaultInput`,
 `packages/workflow/src/definition/workflow.ts`
 
-**18.** `ctx.perform` refuses any `capability` not listed in the action's
+**19.** `ctx.perform` refuses any `capability` not listed in the action's
 `effect.requires`, calls `env.authorize` before the effect, and on a ledger
 hit returns the recorded result WITHOUT a run of the effect. The capability
 string is the author's own vocabulary. The deploy-time walk turns each one
@@ -231,7 +248,7 @@ into an `effect:<cap>` grant.
 Where it lives today: `EffectContext`,
 `packages/workflow/src/runtime/env.ts`
 
-**19.** Three handler-author obligations the runtime cannot enforce: every
+**20.** Three handler-author obligations the runtime cannot enforce: every
 external effect goes through `ctx.perform`; each effect is idempotent under
 its `effectId`, or atomic with its ledger record; and a returned output is
 deterministic given its effects' results, because a crash resume replays the
@@ -244,7 +261,7 @@ Where it lives today: the `ActionPrimitive` doc comment,
 
 ## Testing
 
-**20.** A tool call the authorize seam REFUSES still comes back to the model
+**21.** A tool call the authorize seam REFUSES still comes back to the model
 as a well-formed `tool_result` that carries the refusal text. The model
 answers it, the step completes, the loop converges, and the run reaches a
 clean terminal status. Run status, step outputs, iteration count and even the
@@ -258,7 +275,7 @@ the rule and whose callers are the deployed tool-invoke round-trips. The
 `examples/workflow-quickstart` README records it too, and the assertion in
 `tests/workflow-quickstart/cli.test.ts` depends on it.
 
-**21.** bun 1.4.2's console reporter never prints passing test NAMES. It
+**22.** bun 1.4.2's console reporter never prints passing test NAMES. It
 prints the file header (and only when the file writes output) plus aggregate
 counts. Neither a pty nor the dots reporter changes that. The junit reporter
 (`--reporter=junit --reporter-outfile`) is the only way to get a per-test name
@@ -270,31 +287,31 @@ Where it lives today: nowhere in the repository.
 
 ## Definition-time rules
 
-**22.** `defineWorkflow` REJECTS a `schedule` trigger outright (it is
+**23.** `defineWorkflow` REJECTS a `schedule` trigger outright (it is
 reserved, not implemented), and rejects an `inboundMailPolicy` on a workflow
 with no mail trigger.
 
 Where it lives today: `normalize`,
 `packages/workflow/src/definition/workflow.ts`
 
-**23.** A loop body may contain `awaitSignal`, `childWorkflow` and a nested
+**24.** A loop body may contain `awaitSignal`, `childWorkflow` and a nested
 loop, but may NOT contain `sleep` or `onTrigger`. The `awaitSignal` permission
 is a definition-time one only: an untimed gate inside a `childWorkflow` the
-body spawns passes this check and is refused at runtime instead (entry 26).
+body spawns passes this check and is refused at runtime instead (entry 27).
 
 Where it lives today: the `LoopPrimitive` doc comment,
 `packages/workflow/src/definition/primitives.ts` (enforced by
 `validateLoopBody`, `packages/workflow/src/definition/workflow.ts`, which
 also imposes the nesting-depth bound the doc comment does not state)
 
-**24.** `defineTool` requires a package-namespaced bundle id
+**25.** `defineTool` requires a package-namespaced bundle id
 (`"@vendor/pkg/name"` or `"pkg/name"`). The model-facing tool NAME is a
 separate, unconstrained string.
 
 Where it lives today: `validateNamespacedId`,
 `packages/agent/src/namespace.ts`
 
-**25.** KNOWN LIMITATION. An `onTrigger` section body can silently NOT RUN
+**26.** KNOWN LIMITATION. An `onTrigger` section body can silently NOT RUN
 when a second top-level run of the same deployment reaches it. The body's run
 id is derived as `<sectionStepId>__<eventIndex>`, with no parent-run prefix, so
 it is the same string for every run of that deployment. A run whose body log is
@@ -313,7 +330,7 @@ Where it lives today: the `onTrigger` section path in `runOnTrigger`,
 `packages/workflow/src/runtime/run.ts`, against `loopBodyRunId`,
 `packages/workflow/src/runtime/step-scope.ts`
 
-**26.** An untimed park is REFUSED wherever nothing upstream could answer it:
+**27.** An untimed park is REFUSED wherever nothing upstream could answer it:
 beneath a `childWorkflow` child, at any depth. A park is not only an
 `awaitSignal` an author writes: an agent step that suspends on a tool declared
 `approval: "ask"` is refused the same way, as is the input park of a step with

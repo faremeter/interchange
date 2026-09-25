@@ -548,6 +548,18 @@ function validateOnFailureStraddlers(steps: Record<string, Primitive>): void {
       if (!normalLive.has(straddlerId)) continue;
       const straddler = steps[straddlerId];
       if (straddler === undefined) continue;
+      if (
+        straddler.kind === "step" &&
+        straddler.inference !== undefined &&
+        unitOutputRefs(straddler.inference, unitId).length > 0
+      ) {
+        throw new Error(
+          `step ${straddlerId} straddles onFailure unit ${unitId} and its ` +
+            `handler ${handlerId} but its inference selector reads ` +
+            `steps.${unitId}.output; the failure sentinel is not valid ` +
+            `inference options`,
+        );
+      }
       const selector = straddlerOutputSelector(straddler);
       if (selector === undefined) continue;
       const refs = unitOutputRefs(selector, unitId);

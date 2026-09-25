@@ -2607,15 +2607,53 @@ export type RetryPolicy = (
 ) => RetryDecision | Promise<RetryDecision>;
 
 /**
+ * Reasoning-effort name sent as given. Each adapter maps the name onto
+ * its own wire field.
+ */
+export const InferenceEffort = type.enumerated(
+  "off",
+  "low",
+  "medium",
+  "high",
+  "max",
+);
+export type InferenceEffort = typeof InferenceEffort.infer;
+
+/**
+ * The subset of `InferenceOptions` a caller may set for a single send (a
+ * workflow step's resolved `inference` selector). Excludes anything that
+ * displaces the deployed agent definition (`systemPrompt`, `tools`,
+ * `providerOptions`).
+ */
+export const PerCallInferenceOptions = type({
+  "+": "reject",
+  "maxTokens?": "number.integer > 0",
+  "temperature?": "number >= 0",
+  "thinking?": {
+    "+": "reject",
+    enabled: "boolean",
+    "budgetTokens?": "number.integer > 0",
+  },
+  // Reasoning intent, sent as given: each adapter maps the name onto its
+  // own wire field and sends only the value the caller set, with no
+  // translation or table lookup. Adaptive Anthropic models emit
+  // `output_config.effort`; the OpenAI-compatible family emits
+  // `reasoning_effort`. Classic Anthropic and Gemini have no effort field
+  // on the wire, so an `effort` value is never sent for them -- use
+  // `thinking.budgetTokens` instead. A value the provider does not accept
+  // is the provider's rejection to make, not this type's. When omitted
+  // the provider default applies.
+  "effort?": InferenceEffort,
+});
+export type PerCallInferenceOptions = typeof PerCallInferenceOptions.infer;
+
+/**
  * Options for a single inference call. Override the defaults from the agent
  * configuration on a per-call basis.
  *
  * (INFERENCE.md § Providers › Streaming Harness)
  */
-export type InferenceOptions = {
-  maxTokens?: number;
-  temperature?: number;
-  thinking?: { enabled: boolean; budgetTokens?: number };
+export type InferenceOptions = PerCallInferenceOptions & {
   systemPrompt?: string;
   tools?: ToolDefinition[];
   /**

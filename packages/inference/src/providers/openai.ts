@@ -12,6 +12,7 @@ import type {
 import { formatSafetyRatingText } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { BEARER_CREDENTIAL_SENTINEL } from "../auth";
+import { warnDroppedEffort } from "../dropped-effort";
 import { ProtocolMismatchError } from "../errors";
 import {
   decodeToolName,
@@ -92,6 +93,10 @@ function buildRequest(
     body["temperature"] = options.temperature;
   }
 
+  if (options.effort !== undefined) {
+    body["reasoning_effort"] = options.effort;
+  }
+
   if (options.tools !== undefined && options.tools.length > 0) {
     body["tools"] = options.tools.map((t) => ({
       type: "function",
@@ -110,6 +115,13 @@ function buildRequest(
       model === "gpt-5.6-terra" ||
       model === "gpt-5.6-luna"
     ) {
+      if (options.effort !== undefined) {
+        warnDroppedEffort(
+          model,
+          options.effort,
+          "gpt-5.6 Chat Completions tool calls require reasoning_effort none",
+        );
+      }
       body["reasoning_effort"] = "none";
     }
   }

@@ -10,6 +10,7 @@ import { createAnthropicAdapter } from "@intx/inference/providers";
 import type {
   ConversationTurn,
   InferenceEvent,
+  InferenceOptions,
   LastCycleSource,
 } from "@intx/types/runtime";
 
@@ -240,6 +241,44 @@ describe("Anthropic adapter: buildRequest", () => {
       expect(body.thinking).not.toHaveProperty("budget_tokens");
       expect(body.output_config).toEqual({ effort: "high" });
     }
+  });
+
+  describe("per-call effort", () => {
+    const messages: ConversationTurn[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Think deeply." }],
+        timestamp: 1000,
+      },
+    ];
+    const build = (model: string, options: InferenceOptions) =>
+      AnthropicRequestBody.assert(
+        JSON.parse(adapter.buildRequest(messages, model, options).body),
+      );
+
+    test("a named effort replaces the adaptive default", () => {
+      const body = build("claude-opus-5", {
+        thinking: { enabled: true },
+        effort: "low",
+      });
+      expect(body.thinking).toEqual({ type: "adaptive" });
+      expect(body.output_config).toEqual({ effort: "low" });
+    });
+
+    test("classic models never receive an effort field", () => {
+      const body = build("claude-3-7-sonnet-20250219", {
+        thinking: { enabled: true, budgetTokens: 2048 },
+        effort: "high",
+      });
+      expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 2048 });
+      expect(body.output_config).toBeUndefined();
+    });
+
+    test("unset effort leaves the request unchanged", () => {
+      expect(build("claude-opus-5", {})).not.toHaveProperty("thinking");
+      expect(build("claude-opus-5", {})).not.toHaveProperty("output_config");
+      expect(build("claude-3-7-sonnet-20250219", {}).max_tokens).toBe(4096);
+    });
   });
 
   test("echoes thinking block signature back in the request body", () => {

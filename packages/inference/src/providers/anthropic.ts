@@ -16,6 +16,7 @@ import {
 } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
+import { warnDroppedEffort } from "../dropped-effort";
 import { ProtocolMismatchError } from "../errors";
 import {
   decodeToolName,
@@ -45,9 +46,10 @@ export const ADAPTIVE_THINKING_MODELS: ReadonlySet<string> = new Set([
   "claude-sonnet-4-6",
 ]);
 
-// The effort this adapter sends on the adaptive-thinking wire in production.
-// "high" is the Anthropic API default. The discovery capture rig deliberately
-// sends "max" instead: only "max" reliably elicits a thinking block to capture,
+// The effort this adapter sends on the adaptive-thinking wire when the call
+// names none. "high" is the Anthropic API default. The discovery capture rig
+// deliberately sends "max" instead: only "max" reliably elicits a thinking
+// block to capture,
 // so the production default and the capture value are an intentional pair, not
 // drift. ADAPTIVE_THINKING_MODELS above must match across the two layers; the
 // effort values, by contrast, are meant to differ. A guard test in the
@@ -109,13 +111,31 @@ function buildRequest(
     // plus output_config.effort.
     if (ADAPTIVE_THINKING_MODELS.has(model)) {
       body["thinking"] = { type: "adaptive" };
-      body["output_config"] = { effort: ADAPTIVE_THINKING_EFFORT };
+      body["output_config"] = {
+        effort: options.effort ?? ADAPTIVE_THINKING_EFFORT,
+      };
     } else {
       body["thinking"] = {
         type: "enabled",
         budget_tokens: options.thinking.budgetTokens ?? 1024,
       };
     }
+  }
+
+  // Effort only rides with adaptive thinking. Classic models have no
+  // effort field; adaptive models with thinking off never enter the
+  // block above, so a named effort would otherwise vanish.
+  if (
+    options.effort !== undefined &&
+    !(options.thinking?.enabled && ADAPTIVE_THINKING_MODELS.has(model))
+  ) {
+    warnDroppedEffort(
+      model,
+      options.effort,
+      ADAPTIVE_THINKING_MODELS.has(model)
+        ? "adaptive Anthropic emits effort only when thinking is enabled"
+        : "classic Anthropic has no effort field on the wire",
+    );
   }
 
   if (options.tools !== undefined && options.tools.length > 0) {
