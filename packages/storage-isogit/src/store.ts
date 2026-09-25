@@ -1,7 +1,7 @@
 import git from "isomorphic-git";
 import {
   ApprovalSnapshot,
-  ContentBlock,
+  ConversationTurn,
   TokenUsage,
   ToolCall,
   TransformRecord,
@@ -11,7 +11,6 @@ import {
   type ContextStore,
   type AuditStore,
   type ContextCommit,
-  type ConversationTurn,
   type ConnectorThreadState,
   type PendingOperation,
 } from "@intx/types/runtime-core";
@@ -64,13 +63,6 @@ const ConnectorThreadStateSchema = type({
   replyTo: "string",
   cc: "string[]",
   "subject?": "string",
-});
-
-const ConversationTurnSchema = type({
-  role: "'user' | 'assistant' | 'system'",
-  content: ContentBlock.array(),
-  "model?": "string",
-  timestamp: "number",
 });
 
 const PendingOperationSchema = type({
@@ -298,7 +290,7 @@ function parseTurns(text: string): ConversationTurn[] {
   const lines = decodeJsonlLines(text);
   const turns: ConversationTurn[] = [];
   for (const raw of lines) {
-    const result = ConversationTurnSchema(raw);
+    const result = ConversationTurn(raw);
     if (result instanceof type.errors) {
       throw new Error(
         `turns.jsonl has unexpected structure: ${result.summary}`,
