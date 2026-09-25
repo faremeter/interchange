@@ -5,6 +5,7 @@ import {
   TokenUsage,
   ToolCall,
   TransformRecord,
+  emptyTokenUsage,
   type AssistantTurn,
   type TransformRecord as TransformRecordType,
   type ContextStore,
@@ -112,14 +113,6 @@ type MetadataData = {
   pendingOperations: PendingOperation[];
   tokenUsage: TokenUsage;
   connectorState: ConnectorThreadState | null;
-};
-
-const EMPTY_USAGE: TokenUsage = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  thinking: 0,
 };
 
 function parseMetadata(raw: unknown): MetadataData {
@@ -510,7 +503,7 @@ export class IsogitStore
     if (!(await pathExists(this.runtime, metadataPath))) {
       return {
         pendingOperations: [],
-        tokenUsage: { ...EMPTY_USAGE },
+        tokenUsage: emptyTokenUsage(),
         connectorState: null,
       };
     }
