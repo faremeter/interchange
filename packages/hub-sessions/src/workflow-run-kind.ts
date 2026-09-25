@@ -23,6 +23,10 @@
 //     state) as a checkpoint plus write-ahead log in the step-state format.
 //     Mutable, unlike the rest of the run directory; validated for shape
 //     and envelope only (see `WORKFLOW_RUN_STEPS_DIR`).
+//   - `runs/<runId>/steps/<urlEncoded(stepId)>/seed.json` — the state a
+//     deployment imported for the step, which the step starts from until
+//     it has state of its own. Immutable once written (see
+//     `WORKFLOW_RUN_STEP_SEED_FILE`).
 //   - `addresses/<urlEncoded(address)>/inbox/<receivedAt>-<messageId>.json`
 //     — pending inbound mail for the address, FIFO-ordered by the
 //     filename's parsed numeric `receivedAt` prefix (with a
@@ -171,6 +175,7 @@ import fs from "node:fs";
 import git from "isomorphic-git";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
+import { StepStateSnapshot } from "@intx/types";
 import {
   authorizeUserPrincipal,
   type AuthorizeFn,
@@ -265,6 +270,17 @@ export const WORKFLOW_RUN_STEPS_DIR = "steps";
 export const WORKFLOW_RUN_STEP_STATE_DIR = "state";
 
 /**
+ * A step's seed: a `StepStateSnapshot` the Hub commits beside the step's
+ * `state/` when a deployment imports state for the step, before the
+ * deployment first starts. The step starts from it whenever it has no state
+ * of its own, which covers its first turn and a retried attempt that starts
+ * over. It sits outside `state/` so a checkpoint rewrite never clears it.
+ * Only a `hub` principal adds one, and it is immutable once written: a push
+ * may neither change nor remove it.
+ */
+export const WORKFLOW_RUN_STEP_SEED_FILE = "seed.json";
+
+/**
  * The repo-relative state directory of one step of one run, with a trailing
  * slash. The step id is URL-encoded so a scoped `map` iteration id
  * (`<base>[<index>]`) stays a single path segment.
@@ -274,6 +290,11 @@ export function workflowRunStepStatePrefix(
   stepId: string,
 ): string {
   return `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_STEPS_DIR}/${encodeURIComponent(stepId)}/${WORKFLOW_RUN_STEP_STATE_DIR}/`;
+}
+
+/** The repo-relative path of one step's seed (`WORKFLOW_RUN_STEP_SEED_FILE`). */
+export function workflowRunStepSeedPath(runId: string, stepId: string): string {
+  return `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/${WORKFLOW_RUN_STEPS_DIR}/${encodeURIComponent(stepId)}/${WORKFLOW_RUN_STEP_SEED_FILE}`;
 }
 
 /**
@@ -1388,31 +1409,47 @@ type StepsWalkArgs = {
 /**
  * Validate the per-run `steps/` subtree (see `WORKFLOW_RUN_STEPS_DIR`) for
  * the steps `scope` names, or every run's steps when it is `undefined`.
- * Each `steps/<segment>` must round-trip URL-encoding and hold only a
- * `state/` directory in the step-state layout: the checkpoint pair, present
+ * Each `steps/<segment>` must round-trip URL-encoding and hold a `state/`
+ * directory, a seed (`WORKFLOW_RUN_STEP_SEED_FILE`), or both. The state
+ * directory follows the step-state layout: the checkpoint pair, present
  * together or not at all, and `wal/<bucket>/<seq>.json` entries whose
  * bucket matches their seq and whose seqs run contiguously from the
- * checkpoint's. Blobs this commit added or changed must carry the
+ * checkpoint's. State blobs this commit added or changed must carry the
  * step-state JSON envelope, a WAL entry's `seq` must match its filename,
  * and a changed checkpoint pair must agree on its turn count. The state is
- * mutable, so the prior tree only decides which blobs changed.
+ * mutable, so for it the prior tree only decides which blobs changed. A
+ * seed is not: only the Hub's own import adds one (`principal` of kind
+ * `hub`, which also carries a replayed history onto a sidecar), it must be
+ * a valid `StepStateSnapshot`, and one in the prior tree must survive byte
+ * for byte.
  */
 async function validateRunStepsSubtree(
   args: StepsWalkArgs & {
     scope: ReadonlyMap<string, ReadonlySet<string> | "all"> | undefined;
+    principal: Principal;
   },
 ): Promise<ValidatePushResult> {
   const changed = createStepStateChangeCheck(args);
+  // Unscoped, the prior tree's runs are walked too, so that dropping a whole
+  // run directory cannot take a seed with it unchecked.
   const runIds =
     args.scope === undefined
-      ? await args.listDir(WORKFLOW_RUN_RUNS_PREFIX)
-      : Array.from(args.scope.keys());
+      ? new Set([
+          ...(await args.listDir(WORKFLOW_RUN_RUNS_PREFIX)),
+          ...(await args.priorListDir(WORKFLOW_RUN_RUNS_PREFIX)),
+        ])
+      : args.scope.keys();
   for (const runId of runIds) {
     const runDirPath = `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}`;
     const stepsDirPath = `${runDirPath}/${WORKFLOW_RUN_STEPS_DIR}`;
     if (await isStepsSubtreeUnchanged(args, runDirPath, stepsDirPath)) {
       continue;
     }
+    const scoped = args.scope?.get(runId);
+    const inScope = (segment: string) =>
+      scoped === undefined || scoped === "all" || scoped.has(segment);
+    const retained = await checkStepSeedsRetained(args, stepsDirPath, inScope);
+    if (!retained.ok) return retained;
     if (!(await args.listDir(runDirPath)).includes(WORKFLOW_RUN_STEPS_DIR)) {
       continue;
     }
@@ -1423,17 +1460,13 @@ async function validateRunStepsSubtree(
         reason: `${stepsDirPath} is not a directory of step state`,
       };
     }
-    const scoped = args.scope?.get(runId);
-    const segments =
-      scoped === undefined || scoped === "all"
-        ? present
-        : present.filter((segment) => scoped.has(segment));
-    for (const segment of segments) {
+    for (const segment of present.filter(inScope)) {
       const result = await validateStepStateDir(
         args,
         changed,
         stepsDirPath,
         segment,
+        args.principal,
       );
       if (!result.ok) return result;
     }
@@ -1443,11 +1476,11 @@ async function validateRunStepsSubtree(
 
 /**
  * Whether a run's `steps/` subtree is the same tree object as in the prior
- * tree. Git is content-addressed, so every step directory under it is then
- * exactly what the prior tree held, validated when it was written, and a
- * commit that only appends events need not walk it again. Both sides must
- * also list it as a directory, since an entry whose mode changed keeps its
- * object id.
+ * tree. Git is content-addressed, so every step directory and seed under it
+ * is then exactly what the prior tree held, validated when it was written,
+ * and a commit that only appends events need not walk it again. Both sides
+ * must also list it as a directory, since an entry whose mode changed keeps
+ * its object id.
  */
 async function isStepsSubtreeUnchanged(
   args: StepsWalkArgs,
@@ -1471,11 +1504,40 @@ async function isStepsSubtreeUnchanged(
   return nextSteps.length > 0 && priorSteps.length > 0;
 }
 
+/**
+ * Reject a push that drops a seed the prior tree carries, whether it removes
+ * the seed alone or the step or run directory holding it. That a surviving
+ * seed kept its bytes is checked where the step directory is validated.
+ */
+async function checkStepSeedsRetained(
+  args: StepsWalkArgs,
+  stepsDirPath: string,
+  inScope: (segment: string) => boolean,
+): Promise<ValidatePushResult> {
+  for (const segment of await args.priorListDir(stepsDirPath)) {
+    if (!inScope(segment)) continue;
+    const stepPath = `${stepsDirPath}/${segment}`;
+    if (
+      !(await args.priorListDir(stepPath)).includes(WORKFLOW_RUN_STEP_SEED_FILE)
+    ) {
+      continue;
+    }
+    if (!(await args.listDir(stepPath)).includes(WORKFLOW_RUN_STEP_SEED_FILE)) {
+      return {
+        ok: false,
+        reason: `step seed ${stepPath}/${WORKFLOW_RUN_STEP_SEED_FILE} present in the prior tree is missing from the prospective tree; a step's seed is immutable once written`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 async function validateStepStateDir(
   args: StepsWalkArgs,
   changed: (blobPath: string) => Promise<boolean>,
   stepsDirPath: string,
   segment: string,
+  principal: Principal,
 ): Promise<ValidatePushResult> {
   const roundTrip = checkUrlSegmentRoundTrip(segment);
   if (!roundTrip.ok) {
@@ -1493,13 +1555,41 @@ async function validateStepStateDir(
     };
   }
   const unexpected = stepChildren.find(
-    (child) => child !== WORKFLOW_RUN_STEP_STATE_DIR,
+    (child) =>
+      child !== WORKFLOW_RUN_STEP_STATE_DIR &&
+      child !== WORKFLOW_RUN_STEP_SEED_FILE,
   );
   if (unexpected !== undefined) {
     return {
       ok: false,
-      reason: `step directory ${stepPath} contains unexpected entry ${JSON.stringify(unexpected)}; only "${WORKFLOW_RUN_STEP_STATE_DIR}" is allowed`,
+      reason: `step directory ${stepPath} contains unexpected entry ${JSON.stringify(unexpected)}; only "${WORKFLOW_RUN_STEP_STATE_DIR}" and "${WORKFLOW_RUN_STEP_SEED_FILE}" are allowed`,
     };
+  }
+  if (stepChildren.includes(WORKFLOW_RUN_STEP_SEED_FILE)) {
+    const seedPath = `${stepPath}/${WORKFLOW_RUN_STEP_SEED_FILE}`;
+    if (await changed(seedPath)) {
+      if (
+        (await args.priorListDir(stepPath)).includes(
+          WORKFLOW_RUN_STEP_SEED_FILE,
+        )
+      ) {
+        return {
+          ok: false,
+          reason: `step seed ${seedPath} diverges from the prior tree; a step's seed is immutable once written`,
+        };
+      }
+      if (principal.kind !== "hub") {
+        return {
+          ok: false,
+          reason: `step seed ${seedPath} was added by a ${JSON.stringify(principal.kind)} principal; only the Hub's import writes a step's seed`,
+        };
+      }
+      const seed = await parseStepStateBlob(args, seedPath, StepStateSnapshot);
+      if (!seed.ok) return seed;
+    }
+  }
+  if (!stepChildren.includes(WORKFLOW_RUN_STEP_STATE_DIR)) {
+    return { ok: true };
   }
   const statePath = `${stepPath}/${WORKFLOW_RUN_STEP_STATE_DIR}`;
   const stateChildren = await args.listDir(statePath);
@@ -3286,6 +3376,7 @@ export const workflowRunKindHandler: KindHandler = {
       listDirOids,
       priorListDirOids,
       scope: stepScopeFromChangedPrefixes(changedPathPrefixes),
+      principal,
     });
     if (!stepsCheck.ok) {
       logger.debug`workflow-run validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${stepsCheck.reason}`;

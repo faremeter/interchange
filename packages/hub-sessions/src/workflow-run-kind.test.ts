@@ -34,6 +34,7 @@ import {
   WORKFLOW_RUN_MAILBOX_INBOX_DIR,
   WORKFLOW_RUN_MAILBOX_INDEX_FILE,
   WORKFLOW_RUN_STEPS_DIR,
+  workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
 import {
@@ -492,6 +493,15 @@ describe("workflowRunKindHandler.validatePush — step state", () => {
       turns: Array.from({ length: turnCount }, (_, i) => turn(String(i))),
       ...METADATA,
     });
+  const seed = (snapshot: unknown, stepId = STEP) => ({
+    [workflowRunStepSeedPath(RUN, stepId)]: JSON.stringify(snapshot),
+  });
+  const snapshot = (text: string) => ({
+    version: 1,
+    turns: [turn(text)],
+    tokenUsage: ZERO_USAGE,
+    connectorState: null,
+  });
   const runEvents = {
     [WORKFLOW_RUN_GITIGNORE_PATH]: "",
     [`${WORKFLOW_RUN_RUNS_PREFIX}/${RUN}/events/0.json`]: eventBody(
@@ -756,6 +766,87 @@ describe("workflowRunKindHandler.validatePush — step state", () => {
             : entry,
         ),
       priorListDirOids: makeListDirOids(prior),
+    });
+  });
+
+  test("accepts a seed written before the run starts and carried beside the step's state", async () => {
+    const seeded = {
+      [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+      ...seed(snapshot("imported")),
+    };
+    const written = await validate(seeded);
+    if (!written.ok) throw new Error(written.reason);
+
+    const carried = await validate(
+      { ...seeded, ...runEvents, ...walEntry(0) },
+      { principal: WORKFLOW_PROCESS_PRINCIPAL, priorFiles: seeded },
+    );
+    if (!carried.ok) throw new Error(carried.reason);
+  });
+
+  test("rejects a seed added by anyone but the Hub", async () => {
+    for (const principal of [
+      WORKFLOW_PROCESS_PRINCIPAL,
+      SUPERVISOR_PRINCIPAL,
+    ]) {
+      await expectRejected(
+        { ...runEvents, ...seed(snapshot("planted")) },
+        /seed\.json was added by a ".+" principal; only the Hub's import writes a step's seed/,
+        { principal },
+      );
+    }
+  });
+
+  test("rejects a new seed that is not a valid snapshot", async () => {
+    const byHub = { principal: HUB_PRINCIPAL };
+    await expectRejected(
+      { ...runEvents, [workflowRunStepSeedPath(RUN, STEP)]: "not json" },
+      /is not valid JSON/,
+      byHub,
+    );
+    await expectRejected(
+      { ...runEvents, ...seed({ ...snapshot("imported"), version: 2 }) },
+      /seed\.json failed validation/,
+      byHub,
+    );
+    await expectRejected(
+      {
+        ...runEvents,
+        ...seed({ ...snapshot("imported"), turns: [{ role: "narrator" }] }),
+      },
+      /seed\.json failed validation/,
+      byHub,
+    );
+  });
+
+  test("rejects a push that rewrites a seed", async () => {
+    await expectRejected(
+      { ...runEvents, ...seed(snapshot("rewritten")) },
+      /seed\.json diverges from the prior tree/,
+      { priorFiles: { ...runEvents, ...seed(snapshot("imported")) } },
+    );
+  });
+
+  test("rejects a push that drops a seed with or without its directory", async () => {
+    const prior = {
+      ...runEvents,
+      ...seed(snapshot("imported")),
+      ...walEntry(0),
+    };
+    const missing = /seed\.json present in the prior tree is missing/;
+    await expectRejected({ ...runEvents, ...walEntry(0) }, missing, {
+      priorFiles: prior,
+    });
+    await expectRejected(runEvents, missing, { priorFiles: prior });
+    await expectRejected({ ...runEvents, ...walEntry(0) }, missing, {
+      priorFiles: prior,
+      changedPathPrefixes: new Set([`${stepsPrefix}/${STEP}/`]),
+    });
+    await expectRejected({ [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, missing, {
+      priorFiles: {
+        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
+        ...seed(snapshot("imported")),
+      },
     });
   });
 });
