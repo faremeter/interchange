@@ -986,7 +986,7 @@ A caller can also pass per-send options (`agent.send(content, { inference })`, w
 
 **Effort.** `InferenceOptions.effort` (`off | low | medium | high | max`) is a plain value; the platform does not translate or validate it against a table. Each adapter maps the field name onto its own wire and sends only the value a caller set, as given:
 
-- Adaptive Anthropic models emit `output_config.effort`, replacing the fixed default (`high`) only when a caller names one; `thinking.enabled` is still what turns reasoning on.
+- Adaptive Anthropic models emit `output_config.effort` only when `thinking.enabled` is true, replacing the fixed default (`high`) only when a caller names one; `thinking.enabled` is still what turns reasoning on. With thinking off, a named effort is dropped (warn-logged at the adapter) because `output_config.effort` only rides with `thinking:{type:"adaptive"}`.
 - Classic Anthropic and Gemini have no effort field on the wire, so `effort` is never sent for them; `thinking.budgetTokens` goes onto their thinking budget field as given.
 - The OpenAI-compatible family emits `reasoning_effort` as given. gpt-5.6 models with tools always send `none`, which their Chat Completions tool calls require, overriding a named effort.
 

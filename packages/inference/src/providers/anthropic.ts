@@ -16,6 +16,7 @@ import {
 } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
+import { warnDroppedEffort } from "../dropped-effort";
 import { ProtocolMismatchError } from "../errors";
 import {
   decodeToolName,
@@ -119,6 +120,22 @@ function buildRequest(
         budget_tokens: options.thinking.budgetTokens ?? 1024,
       };
     }
+  }
+
+  // Effort only rides with adaptive thinking. Classic models have no
+  // effort field; adaptive models with thinking off never enter the
+  // block above, so a named effort would otherwise vanish.
+  if (
+    options.effort !== undefined &&
+    !(options.thinking?.enabled && ADAPTIVE_THINKING_MODELS.has(model))
+  ) {
+    warnDroppedEffort(
+      model,
+      options.effort,
+      ADAPTIVE_THINKING_MODELS.has(model)
+        ? "adaptive Anthropic emits effort only when thinking is enabled"
+        : "classic Anthropic has no effort field on the wire",
+    );
   }
 
   if (options.tools !== undefined && options.tools.length > 0) {

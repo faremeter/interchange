@@ -214,8 +214,11 @@ Where it lives today: `StepInvokeResult`,
 **17.** A step's `inference` selector resolves beside `input` into per-call
 options for that step's model call: `maxTokens`, `temperature`,
 `thinking: { enabled, budgetTokens }`, and `effort`
-(`off | low | medium | high | max`). `null` or `undefined` means the agent's
-defaults. A non-object, or any other key (`systemPrompt`, `tools`,
+(`off | low | medium | high | max`). The selector accepts `effort` with no
+model awareness: classic Anthropic, adaptive Anthropic with thinking off,
+Gemini, and gpt-5.6 Chat Completions with tools drop a named effort at the
+adapter (warn-logged) rather than failing the step. `null` or `undefined`
+means the agent's defaults. A non-object, or any other key (`systemPrompt`, `tools`,
 `providerOptions`, ...), fails the step as a selector error: a run may not
 displace the definition approved at deploy time. The options ride that send
 alone, are not recorded on `StepStarted`, and sit beneath any option the
