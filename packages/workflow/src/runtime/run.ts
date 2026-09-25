@@ -77,6 +77,7 @@ import {
 import {
   EphemeralResumeSeedError,
   RuntimeResumeUnsupportedError,
+  StepOutcomeCommitError,
 } from "./errors";
 import { loopBodyRunId, scopedStepId, sectionBodyRunId } from "./step-scope";
 import { inlineBodyRef } from "../inline-body-ref";
@@ -2037,12 +2038,18 @@ async function runStep(
         void after;
         throw cause;
       }
-      if (cause instanceof SuccessTerminalizationError) {
-        // The step's work succeeded but landing its terminal failed. Do not
+      if (
+        cause instanceof SuccessTerminalizationError ||
+        cause instanceof StepOutcomeCommitError
+      ) {
+        // The step's work succeeded but landing its terminal failed, or the
+        // invoker could not commit the outcome of a turn that ran. Do not
         // route and do not retry -- both would act on a step that already did
         // its work (a retry would re-invoke the agent, an at-most-once
         // violation). Land a bare failure so the run fails loudly via the
-        // verdict; a resume re-drives under the at-most-once contract.
+        // verdict; a resume re-drives under the at-most-once contract. The
+        // handler branch is skipped by `skipUnroutedHandlerBranches` once this
+        // failure lands, as for every failure that does not route.
         const failed: WorkflowEvent = {
           kind: "StepFailed",
           seq: after.lastSeq + 1,
