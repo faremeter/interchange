@@ -18,48 +18,20 @@
 // the agent's local store BEFORE the agent's reactor loads, so multi-turn
 // continuity holds across runs and across respawn.
 //
-// Two-tier on-disk layout (design §4, Phase D1). The prior design wrote
-// the WHOLE conversation as a single `conversation.json` blob on every
-// message. That re-serialized and re-hashed every prior turn per message,
-// so the per-message durable cost grew O(N) in the turn count -- O(N^2)
-// over a conversation. D1 replaces it with an append-only, bucket-sharded
-// write-ahead log plus a periodic compacted checkpoint:
-//
-//   agent-state/<agentKey>/
-//     checkpoint.json        compacted full snapshot (turns + metadata)
-//     checkpoint.meta.json   { checkpointSeq: <boundary>, turnCount,
-//                              tokenUsage, pendingOperations,
-//                              connectorState }
-//     wal/<bucket>/<seq>.json  one per-boundary delta blob keyed by mirror
-//                              BOUNDARY seq, carrying that boundary's
-//                              0-or-more new turns plus the freshest metadata
-//
-// The WAL is keyed by mirror BOUNDARY, not by turn: each `mirrorToSubstrate`
-// writes exactly one entry, even when the boundary added no new turns. That
-// makes metadata (pendingOperations, tokenUsage, connectorState) persist on
-// EVERY boundary -- a turnless-but-metadata-mutating boundary still commits
-// a zero-turn entry, so restore never reconstructs stale metadata. (Keying
-// the entry by turn dropped metadata on turnless boundaries, which regressed
-// the byte-for-byte metadata-equivalence invariant; per-boundary keying is
-// the fix.)
-//
-// `bucket = floor(boundarySeq / WAL_BUCKET_SIZE)` (B = 128) bounds any
-// single directory's tree-object size so no commit re-hashes a tree that
-// grows with N (a flat `wal/<seq>.json` directory would itself be O(N) per
-// commit). Compaction every CHECKPOINT_INTERVAL boundaries (K = 64, i.e.
-// once the live WAL reaches K entries) folds the WAL into a fresh
-// `checkpoint.json` (capturing the freshest metadata in checkpoint.meta) and
-// truncates the WAL, so between checkpoints the WAL holds at most K entries
-// and per-boundary durable cost is ~O(1) amortized. K and B are constants
-// here; the design flags them as measurement-tunable.
-//
-// Restore = load `checkpoint.json` (folded turns + its metadata) then replay
-// the WAL tail in boundary-seq order, concatenating each boundary's turns
-// and taking the LATEST entry's metadata (the last WAL entry wins; the
-// checkpoint's metadata is the base when the WAL is empty). This is pure
-// state reconstruction from recorded outputs -- never re-inference. It
-// rebuilds the EXACT turn list + metadata the old whole-blob mirror would
-// have restored.
+// The conversation is committed in the step-state format that
+// `@intx/hub-sessions/substrate` defines: a compacted checkpoint plus an
+// append-only, bucket-sharded WAL keyed by mirror boundary, so each
+// boundary's durable write carries only its new turns instead of
+// re-serializing the whole conversation. `mirrorToSubstrate` writes exactly
+// one WAL entry per boundary, even a turnless one, so metadata advanced
+// without a new turn is still durable. Compaction every CHECKPOINT_INTERVAL
+// boundaries (K = 64, i.e. once the live WAL reaches K entries) folds the
+// WAL into a fresh checkpoint carrying the freshest metadata and truncates
+// the WAL, so between checkpoints the WAL holds at most K entries and
+// per-boundary durable cost is ~O(1) amortized. K is a constant here; the
+// design flags it as measurement-tunable. Restore reconstructs through the
+// same format module, so it rebuilds the exact turn list and metadata the
+// mirror committed.
 //
 // Substrate-merge constraint (load-bearing, design §4 "Substrate-merge
 // note"). `writeTreePreservingPrefix`'s `merge` callback receives only
@@ -126,34 +98,35 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { type } from "arktype";
-
 import { getLogger } from "@intx/log";
 import { createConnectorRouter } from "@intx/harness";
 import type { ConnectorReplyParts, RouteDecision } from "@intx/harness";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
   Principal,
+  ReconstructedStepState,
   RepoId,
   RepoStore,
+  StepStateMetadata,
+  StepStateReader,
 } from "@intx/hub-sessions/substrate";
-import { WORKFLOW_RUN_AGENT_STATE_PREFIX } from "@intx/hub-sessions/substrate";
 import {
-  ConnectorThreadState,
-  TokenUsage,
-  type AuditStore,
-  type ContextStore,
-  type ConversationTurn,
-  type InboundMessage,
-  type PendingOperation,
-  type SendReceipt,
+  buildStepStateCheckpoint,
+  reconstructStepState,
+  serializeStepStateWalEntry,
+  stepStateWalBucket,
+  stepStateWalBucketPrefix,
+  stepStateWalEntryPath,
+  WORKFLOW_RUN_AGENT_STATE_PREFIX,
+} from "@intx/hub-sessions/substrate";
+import type {
+  AuditStore,
+  ContextStore,
+  InboundMessage,
+  SendReceipt,
 } from "@intx/types/runtime";
 
 const logger = getLogger(["sidecar", "workflow-child", "conversation-state"]);
-
-const CHECKPOINT_FILE = "checkpoint.json";
-const CHECKPOINT_META_FILE = "checkpoint.meta.json";
-const WAL_DIR = "wal";
 
 /**
  * Compaction interval: fold the WAL into a fresh checkpoint once it holds
@@ -162,92 +135,6 @@ const WAL_DIR = "wal";
  * (design §6, open question 4); D1 fixes it at 64.
  */
 const CHECKPOINT_INTERVAL = 64;
-
-/**
- * WAL directory fan-out bound: turn `seq` lives in bucket
- * `floor(seq / WAL_BUCKET_SIZE)`. Caps any single `wal/<bucket>/` tree at
- * this many entries so no commit re-hashes a tree that grows with the
- * conversation length. Measurement-tunable (design §6, open question 4);
- * D1 fixes it at 128.
- */
-const WAL_BUCKET_SIZE = 128;
-
-/**
- * Metadata carried alongside the checkpoint and stamped onto every WAL
- * entry. Small and bounded -- it is NOT the O(N) cost; the turn array is.
- * Stamping the latest metadata on each WAL entry lets the restore replay
- * recover the exact non-turn reactor state without a separate metadata
- * log: the last replayed entry's metadata wins. Because every mirror
- * boundary writes exactly one WAL entry (even a turnless one), the latest
- * metadata is ALWAYS captured durably -- a turnless boundary still commits
- * its advanced metadata as a zero-turn entry.
- */
-const SnapshotMetadata = type({
-  pendingOperations: "unknown[]",
-  tokenUsage: TokenUsage,
-  connectorState: ConnectorThreadState.or("null"),
-});
-
-/**
- * On-disk shape of the compacted checkpoint blob committed at
- * `agent-state/<agentKey>/checkpoint.json`. Carries the folded turn
- * history (turns 0..checkpointSeq-1) plus the non-turn reactor metadata.
- * Validated on read because it crosses back into the program from the
- * substrate working tree -- a corrupt or partially-written checkpoint must
- * surface at the boundary, never be half-applied into the agent.
- */
-const CheckpointSnapshot = type({
-  turns: "unknown[]",
-  pendingOperations: "unknown[]",
-  tokenUsage: TokenUsage,
-  connectorState: ConnectorThreadState.or("null"),
-});
-
-/**
- * On-disk shape of `agent-state/<agentKey>/checkpoint.meta.json`. The
- * checkpoint pointer the restore path reads first to learn the boundary seq
- * the checkpoint folded to (`checkpointSeq`) -- and therefore which WAL
- * boundary seqs remain to replay -- plus the folded turn count
- * (`turnCount`, = `checkpoint.json`'s turn array length) and the freshest
- * metadata at fold time. `checkpointSeq` counts MIRROR BOUNDARIES, not
- * turns: a boundary may carry zero or many turns, so the boundary count and
- * the turn count diverge in general (they coincide only when every boundary
- * adds exactly one turn).
- */
-const CheckpointMeta = type({
-  checkpointSeq: "number",
-  turnCount: "number",
-  pendingOperations: "unknown[]",
-  tokenUsage: TokenUsage,
-  connectorState: ConnectorThreadState.or("null"),
-});
-
-/**
- * On-disk shape of one WAL entry blob at
- * `agent-state/<agentKey>/wal/<bucket>/<seq>.json`. One entry per MIRROR
- * BOUNDARY (keyed by boundary `seq`, not turn index). Records the 0-or-more
- * new turns that boundary added (the O(1) append payload -- it never
- * carries prior turns) plus the latest non-turn metadata snapshot. The
- * append is UNCONDITIONAL: a turnless boundary still writes one entry with
- * `turns: []` so its advanced metadata is durably committed (the invariant
- * the per-turn keying broke -- metadata must persist on EVERY boundary).
- */
-const WalEntry = type({
-  seq: "number",
-  turns: "unknown[]",
-  metadata: SnapshotMetadata,
-});
-
-/**
- * Loaded conversation snapshot the restore path applies into the warm
- * agent's local store before its reactor loads.
- */
-interface LoadedSnapshot {
-  turns: ConversationTurn[];
-  pendingOperations: PendingOperation[];
-  tokenUsage: TokenUsage;
-  connectorState: ConnectorThreadState | null;
-}
 
 export interface DurableConversationStoreOpts {
   /**
@@ -438,26 +325,6 @@ export async function createDurableConversationStore(
     );
   }
 
-  function bucketOf(seq: number): number {
-    return Math.floor(seq / WAL_BUCKET_SIZE);
-  }
-
-  function walBucketPrefix(bucket: number): string {
-    return `${agentStatePrefix}${WAL_DIR}/${String(bucket)}/`;
-  }
-
-  function walEntryPath(seq: number): string {
-    return `${walBucketPrefix(bucketOf(seq))}${String(seq)}.json`;
-  }
-
-  function checkpointPath(): string {
-    return `${agentStatePrefix}${CHECKPOINT_FILE}`;
-  }
-
-  function checkpointMetaPath(): string {
-    return `${agentStatePrefix}${CHECKPOINT_META_FILE}`;
-  }
-
   async function runRestore(): Promise<boolean> {
     const reconstructed = await reconstructDurableConversation(
       substrateAgentStateFsDir(),
@@ -513,21 +380,19 @@ export async function createDurableConversationStore(
   async function appendWalEntry(
     boundarySeq: number,
     turns: unknown[],
-    metadata: {
-      pendingOperations: unknown[];
-      tokenUsage: TokenUsage;
-      connectorState: ConnectorThreadState | null;
-    },
+    metadata: StepStateMetadata,
   ): Promise<void> {
-    const entry = { seq: boundarySeq, turns, metadata };
-    const serialized = JSON.stringify(entry);
-    const newPath = walEntryPath(boundarySeq);
+    const serialized = serializeStepStateWalEntry(boundarySeq, turns, metadata);
+    const newPath = stepStateWalEntryPath(agentStatePrefix, boundarySeq);
     await opts.substrate.writeTreePreservingPrefix(
       opts.principal,
       opts.workflowRunRepoId,
       opts.workflowRunRef,
       {
-        preservePrefix: walBucketPrefix(bucketOf(boundarySeq)),
+        preservePrefix: stepStateWalBucketPrefix(
+          agentStatePrefix,
+          stepStateWalBucket(boundarySeq),
+        ),
         merge: async (existing) => {
           const files: Record<string, string | Uint8Array> = {};
           for (const [blobPath, bytes] of existing) {
@@ -552,40 +417,24 @@ export async function createDurableConversationStore(
   async function writeCheckpoint(
     boundarySeq: number,
     turns: unknown[],
-    metadata: {
-      pendingOperations: unknown[];
-      tokenUsage: TokenUsage;
-      connectorState: ConnectorThreadState | null;
-    },
+    metadata: StepStateMetadata,
   ): Promise<void> {
-    const snapshot = {
-      turns,
-      pendingOperations: metadata.pendingOperations,
-      tokenUsage: metadata.tokenUsage,
-      connectorState: metadata.connectorState,
-    };
     // `metadata` is the freshest snapshot (the current local-store
     // metadata, identical to the last appended WAL entry's metadata), so
     // the fold captures the latest metadata into checkpoint.meta -- a
     // restore from the post-fold checkpoint sees the same metadata the
     // pre-fold WAL tail would have yielded.
-    const meta = {
-      checkpointSeq: boundarySeq,
-      turnCount: turns.length,
-      pendingOperations: metadata.pendingOperations,
-      tokenUsage: metadata.tokenUsage,
-      connectorState: metadata.connectorState,
-    };
+    const checkpoint = buildStepStateCheckpoint(agentStatePrefix, boundarySeq, {
+      turns,
+      ...metadata,
+    });
     await opts.substrate.writeTreePreservingPrefix(
       opts.principal,
       opts.workflowRunRepoId,
       opts.workflowRunRef,
       {
         preservePrefix: agentStatePrefix,
-        merge: async () => ({
-          [checkpointPath()]: JSON.stringify(snapshot),
-          [checkpointMetaPath()]: JSON.stringify(meta),
-        }),
+        merge: async () => checkpoint,
         message: `compact conversation checkpoint at boundary ${String(boundarySeq)} (${String(turns.length)} turns) for ${opts.agentKey}`,
       },
     );
@@ -826,240 +675,46 @@ export function createDurableConversationRegistry(
   return { acquire, get };
 }
 
-interface SnapshotMetadataValue {
-  pendingOperations: unknown[];
-  tokenUsage: TokenUsage;
-  connectorState: ConnectorThreadState | null;
-}
-
 /**
- * The reconstructed conversation plus the bookkeeping the mirror path needs
- * to resume appending. `totalTurns` is the full turn count (checkpoint +
- * WAL). `boundaryCount` is the number of mirror boundaries durably
- * committed (checkpoint's folded boundaries + replayed WAL entries) -- the
- * next WAL entry uses this as its boundary seq. `checkpointBoundarySeq` is
- * the boundary seq the checkpoint folded to (the first WAL boundary seq to
- * expect), so the mirror knows the live WAL length and when to compact.
- */
-export interface ReconstructedConversation extends LoadedSnapshot {
-  totalTurns: number;
-  boundaryCount: number;
-  checkpointBoundarySeq: number;
-}
-
-/**
- * Reconstruct the warm agent's conversation from the two-tier on-disk
- * layout under `agentStateDir` (`<repoDir>/agent-state/<agentKey>/`): the
- * compacted `checkpoint.json` turns followed by the replayed WAL tail.
- * Pure read against the substrate working tree -- no inference, no commit.
- * Returns `null` when neither a checkpoint nor any WAL exists (the genuine
- * first-ever run). The latest metadata source wins (the last replayed WAL
- * entry, or the checkpoint when the WAL is empty), mirroring how each
- * mirror stamps the current metadata. Throws on any corrupt/unparseable
- * blob or a WAL seq gap -- a damaged durable copy must surface, never
- * silently start the agent fresh or drop a turn.
+ * Reconstruct the warm agent's conversation from its state directory in the
+ * substrate working tree (`<repoDir>/agent-state/<agentKey>/`). Pure read --
+ * no inference, no commit. Returns `null` when neither a checkpoint nor any
+ * WAL exists (the genuine first-ever run) and throws on a damaged durable
+ * copy; see `reconstructStepState`.
  *
  * Exported so a reader (durability test, recovery audit) reconstructs the
  * conversation through the SAME code path the warm agent's restore uses,
  * rather than re-deriving the WAL/checkpoint fold independently.
  */
-export async function reconstructDurableConversation(
+export function reconstructDurableConversation(
   agentStateDir: string,
   agentKey: string,
-): Promise<ReconstructedConversation | null> {
-  const checkpoint = await readCheckpointFromDir(agentStateDir, agentKey);
-  const baseBoundarySeq = checkpoint?.checkpointSeq ?? 0;
-  const wal = await readWalTailFromDir(
-    agentStateDir,
+): Promise<ReconstructedStepState | null> {
+  return reconstructStepState(
+    createDirStepStateReader(agentStateDir),
     agentKey,
-    baseBoundarySeq,
   );
-  if (checkpoint === null && wal.length === 0) return null;
-
-  const turns: unknown[] = [...(checkpoint?.turns ?? [])];
-  // The freshest metadata wins: the last WAL entry, or the checkpoint when
-  // the WAL is empty. Because every boundary writes a WAL entry, the last
-  // entry always carries the latest metadata -- including a turnless
-  // boundary that advanced only metadata.
-  let metadata: SnapshotMetadataValue = checkpoint?.metadata ?? {
-    pendingOperations: [],
-    tokenUsage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      thinking: 0,
-    },
-    connectorState: null,
-  };
-  for (const entry of wal) {
-    for (const turn of entry.turns) {
-      turns.push(turn);
-    }
-    metadata = entry.metadata;
-  }
-  return {
-    // The reactor re-narrows turn/operation elements on load; the
-    // validators below enforce only the structural envelope, matching the
-    // boundary the whole-blob mirror used.
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- envelope validated in the read helpers; turn element narrows live in the reactor on load
-    turns: turns as ConversationTurn[],
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- envelope validated in the read helpers; pending-operation element narrows live in the reactor on load
-    pendingOperations: metadata.pendingOperations as PendingOperation[],
-    tokenUsage: metadata.tokenUsage,
-    connectorState: metadata.connectorState,
-    totalTurns: turns.length,
-    boundaryCount: baseBoundarySeq + wal.length,
-    checkpointBoundarySeq: baseBoundarySeq,
-  };
 }
 
-/**
- * Read the checkpoint pair from `agentStateDir`. Returns `null` only when
- * no checkpoint exists yet -- which the reconstruction treats as "no
- * folded turns" (any conversation lives entirely in the WAL). A
- * present-but-corrupt or inconsistent checkpoint throws.
- */
-async function readCheckpointFromDir(
-  agentStateDir: string,
-  agentKey: string,
-): Promise<{
-  turns: unknown[];
-  checkpointSeq: number;
-  metadata: SnapshotMetadataValue;
-} | null> {
-  let metaRaw: string;
-  try {
-    metaRaw = await fs.promises.readFile(
-      path.join(agentStateDir, CHECKPOINT_META_FILE),
-      "utf8",
-    );
-  } catch (cause) {
-    if (isErrnoNotFound(cause)) return null;
-    throw cause;
-  }
-  const meta = parseJsonOrThrow(metaRaw, `${agentKey} ${CHECKPOINT_META_FILE}`);
-  const validatedMeta = CheckpointMeta(meta);
-  if (validatedMeta instanceof type.errors) {
-    throw new Error(
-      `sidecar conversation-state: ${CHECKPOINT_META_FILE} for ${agentKey} failed validation: ${validatedMeta.summary}; refusing to start the warm agent fresh on a corrupt checkpoint`,
-    );
-  }
-  const snapshotRaw = await fs.promises.readFile(
-    path.join(agentStateDir, CHECKPOINT_FILE),
-    "utf8",
-  );
-  const snapshot = parseJsonOrThrow(
-    snapshotRaw,
-    `${agentKey} ${CHECKPOINT_FILE}`,
-  );
-  const validatedSnapshot = CheckpointSnapshot(snapshot);
-  if (validatedSnapshot instanceof type.errors) {
-    throw new Error(
-      `sidecar conversation-state: ${CHECKPOINT_FILE} for ${agentKey} failed validation: ${validatedSnapshot.summary}; refusing to start the warm agent fresh on a corrupt checkpoint`,
-    );
-  }
-  if (validatedSnapshot.turns.length !== validatedMeta.turnCount) {
-    throw new Error(
-      `sidecar conversation-state: ${CHECKPOINT_FILE} for ${agentKey} carries ${String(validatedSnapshot.turns.length)} turns but ${CHECKPOINT_META_FILE} reports turnCount ${String(validatedMeta.turnCount)}; the checkpoint pair is inconsistent`,
-    );
-  }
+function createDirStepStateReader(stateDir: string): StepStateReader {
   return {
-    turns: validatedSnapshot.turns,
-    checkpointSeq: validatedMeta.checkpointSeq,
-    metadata: {
-      pendingOperations: validatedSnapshot.pendingOperations,
-      tokenUsage: validatedSnapshot.tokenUsage,
-      connectorState: validatedSnapshot.connectorState,
+    async readFile(relPath) {
+      try {
+        return await fs.promises.readFile(path.join(stateDir, relPath), "utf8");
+      } catch (cause) {
+        if (isErrnoNotFound(cause)) return null;
+        throw cause;
+      }
+    },
+    async listDir(relPath) {
+      try {
+        return await fs.promises.readdir(path.join(stateDir, relPath));
+      } catch (cause) {
+        if (isErrnoNotFound(cause)) return null;
+        throw cause;
+      }
     },
   };
-}
-
-/**
- * Read and seq-order the per-boundary WAL entries for boundary seqs >=
- * `fromSeq` from `<agentStateDir>/wal/<bucket>/`. Throws on any unparseable
- * or out-of-shape WAL blob -- a corrupt WAL must surface, never be skipped.
- * Throws on a gap in the boundary seq sequence: a missing seq means a lost
- * append, which would silently drop a boundary's turns + metadata from the
- * reconstruction.
- */
-async function readWalTailFromDir(
-  agentStateDir: string,
-  agentKey: string,
-  fromSeq: number,
-): Promise<
-  { seq: number; turns: unknown[]; metadata: SnapshotMetadataValue }[]
-> {
-  const walDir = path.join(agentStateDir, WAL_DIR);
-  let buckets: string[];
-  try {
-    buckets = await fs.promises.readdir(walDir);
-  } catch (cause) {
-    if (isErrnoNotFound(cause)) return [];
-    throw cause;
-  }
-  const entries: {
-    seq: number;
-    turns: unknown[];
-    metadata: SnapshotMetadataValue;
-  }[] = [];
-  for (const bucket of buckets) {
-    const bucketDir = path.join(walDir, bucket);
-    const files = await fs.promises.readdir(bucketDir);
-    for (const file of files) {
-      if (!file.endsWith(".json")) {
-        throw new Error(
-          `sidecar conversation-state: unexpected non-JSON WAL entry ${WAL_DIR}/${bucket}/${file} for ${agentKey}`,
-        );
-      }
-      const raw = await fs.promises.readFile(
-        path.join(bucketDir, file),
-        "utf8",
-      );
-      const parsed = parseJsonOrThrow(
-        raw,
-        `${agentKey} ${WAL_DIR}/${bucket}/${file}`,
-      );
-      const validated = WalEntry(parsed);
-      if (validated instanceof type.errors) {
-        throw new Error(
-          `sidecar conversation-state: WAL entry ${WAL_DIR}/${bucket}/${file} for ${agentKey} failed validation: ${validated.summary}; refusing to start the warm agent fresh on a corrupt WAL`,
-        );
-      }
-      if (validated.seq < fromSeq) continue;
-      entries.push({
-        seq: validated.seq,
-        turns: validated.turns,
-        metadata: {
-          pendingOperations: validated.metadata.pendingOperations,
-          tokenUsage: validated.metadata.tokenUsage,
-          connectorState: validated.metadata.connectorState,
-        },
-      });
-    }
-  }
-  entries.sort((a, b) => a.seq - b.seq);
-  for (let i = 0; i < entries.length; i += 1) {
-    const expected = fromSeq + i;
-    const entry = entries[i];
-    if (entry === undefined || entry.seq !== expected) {
-      throw new Error(
-        `sidecar conversation-state: WAL for ${agentKey} has a seq gap (expected ${String(expected)}, found ${String(entry?.seq)}); a lost append would silently drop a boundary's turns and metadata`,
-      );
-    }
-  }
-  return entries;
-}
-
-function parseJsonOrThrow(raw: string, label: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch (cause) {
-    throw new Error(
-      `sidecar conversation-state: ${label} is not valid JSON; refusing to start the warm agent fresh on a corrupt durable copy`,
-      { cause },
-    );
-  }
 }
 
 export function isErrnoNotFound(cause: unknown): boolean {

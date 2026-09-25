@@ -56,6 +56,21 @@ export {
   WORKFLOW_RUN_EVENTS_FILE,
 } from "./workflow-run-event-log";
 
+export {
+  buildStepStateCheckpoint,
+  reconstructStepState,
+  serializeStepStateWalEntry,
+  stepStateWalBucket,
+  stepStateWalBucketPrefix,
+  stepStateWalEntryPath,
+} from "./step-state";
+export type {
+  ReconstructedStepState,
+  StepStateContent,
+  StepStateMetadata,
+  StepStateReader,
+} from "./step-state";
+
 export { workflowDefinitionEnvelopeSchema } from "./workflow-kind";
 
 export { subscribeKind } from "./repo-store/subscribe-kind";
