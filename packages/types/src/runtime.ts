@@ -1263,12 +1263,13 @@ export type ContentBlock = typeof ContentBlock.infer;
  *
  * (INFERENCE.md § Message Format)
  */
-export type ConversationTurn = {
-  role: "user" | "assistant" | "system";
-  content: ContentBlock[];
-  model?: string;
-  timestamp: number;
-};
+export const ConversationTurn = type({
+  role: "'user' | 'assistant' | 'system'",
+  content: ContentBlock.array(),
+  "model?": "string",
+  timestamp: "number",
+});
+export type ConversationTurn = typeof ConversationTurn.infer;
 
 /**
  * A completed assistant turn returned in `inference.done`. Narrower type
