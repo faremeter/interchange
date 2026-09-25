@@ -1344,6 +1344,31 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     return chain.reverse();
   }
 
+  // A push that does not build on the ref's tip would drop whatever the tip
+  // holds past the point the push branched from. A tip holding only the
+  // `.gitignore` every repository starts with has nothing to drop: a
+  // deployment's first push replaces the Hub's empty start, and restoring its
+  // history replaces a fresh worker's.
+  async function buildsOnTip(
+    reads: ObjectReads,
+    commitSha: string,
+    tipSha: string | null,
+    chain: readonly string[],
+  ): Promise<boolean> {
+    if (tipSha === null || commitSha === tipSha) return true;
+    const oldest = chain[0];
+    if (
+      oldest !== undefined &&
+      (await reads.readCommit(oldest)).parent[0] === tipSha
+    ) {
+      return true;
+    }
+    const tip = await reads.readCommit(tipSha);
+    return (await reads.readTree(tip.tree)).entries.every(
+      (entry) => entry.type === "blob" && entry.path === ".gitignore",
+    );
+  }
+
   // Assemble a new root tree by splicing `puts` (repo-root-relative path
   // -> blob oid) and `deletes` onto the parent's root tree, reusing every
   // unchanged entry by oid. The result is committed directly via
@@ -2182,6 +2207,19 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
           priorTip,
           existingCommits,
         );
+        if (
+          repoId.kind === "workflow-run" &&
+          !(await buildsOnTip(
+            readsWith(dir, staged.fs, cache),
+            commitSha,
+            priorTip,
+            chain,
+          ))
+        ) {
+          const reason = `commit ${commitSha} does not build on the tip ${String(priorTip)} of ${ref}; a workflow-run history only grows`;
+          logger.debug`validatePush rejected ${repoId.kind}/${repoId.id} on ${ref}: ${reason}`;
+          throw new Error(`path_violation: ${reason}`);
+        }
         return {
           principal,
           repoId,
