@@ -62,9 +62,9 @@ import {
 } from "../hub-agent/lib/deploy-flow-env";
 import { bundleWorkflowEntry } from "../hub-agent/lib/bundle-workflow-entry";
 import {
-  packWorkflowTarball,
-  type WorkflowTarball,
-} from "../hub-agent/lib/pack-workflow-tarball";
+  buildSyntheticNpmPackageTarball,
+  type SyntheticNpmPackageTarball,
+} from "../hub-agent/lib/synthetic-npm-package-tarball";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const TENANT_ID = "tnt_tarball_route";
@@ -111,13 +111,13 @@ export const workflow = defineWorkflow({
 
 async function buildWorkflowTarball(
   scratchDir: string,
-): Promise<WorkflowTarball> {
-  return packWorkflowTarball({
-    scratchDir,
-    name: PACKAGE_NAME,
+): Promise<SyntheticNpmPackageTarball> {
+  return buildSyntheticNpmPackageTarball({
+    packageName: PACKAGE_NAME,
     version: PACKAGE_VERSION,
-    entry: WORKFLOW_ENTRY,
-    workflowJs: await bundleWorkflowEntry(scratchDir, workflowEntrySource),
+    moduleFilename: path.basename(WORKFLOW_ENTRY),
+    moduleSource: await bundleWorkflowEntry(scratchDir, workflowEntrySource),
+    manifest: { interchange: { workflow: WORKFLOW_ENTRY } },
   });
 }
 

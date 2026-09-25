@@ -60,9 +60,9 @@ import {
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 import {
-  packWorkflowTarball,
-  type WorkflowTarball,
-} from "../hub-agent/lib/pack-workflow-tarball";
+  buildSyntheticNpmPackageTarball,
+  type SyntheticNpmPackageTarball,
+} from "../hub-agent/lib/synthetic-npm-package-tarball";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const DEPLOYMENT_ID = generateId("workflowRun");
@@ -160,20 +160,20 @@ async function bundleWorkflowEntry(
 
 async function buildWorkflowPackageFixture(
   scratchDir: string,
-): Promise<WorkflowTarball> {
-  return packWorkflowTarball({
-    scratchDir,
-    name: PACKAGE_NAME,
+): Promise<SyntheticNpmPackageTarball> {
+  return buildSyntheticNpmPackageTarball({
+    packageName: PACKAGE_NAME,
     version: PACKAGE_VERSION,
-    entry: WORKFLOW_ENTRY,
-    workflowJs: await bundleWorkflowEntry(scratchDir, workflowEntrySource),
+    moduleFilename: path.basename(WORKFLOW_ENTRY),
+    moduleSource: await bundleWorkflowEntry(scratchDir, workflowEntrySource),
+    manifest: { interchange: { workflow: WORKFLOW_ENTRY } },
   });
 }
 
 let env: DeployFlowEnv;
 let h: TestDb;
 let scratchDir: string;
-let fixture: WorkflowTarball;
+let fixture: SyntheticNpmPackageTarball;
 // The seeded blob bytes, keyed by asset-root-relative path, backing the install
 // call's `readBlob`/`listBlobs` closures (the hub reads the packument by
 // synthesizing it from the asset's tarballs; no HTTP).
