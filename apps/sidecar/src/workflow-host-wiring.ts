@@ -643,10 +643,25 @@ export const defaultSubprocessSpawner: SubprocessSpawner = ({
   binaryPath,
   env,
 }): SubprocessHandle => {
+  // The child leads its own process group so a stop reaches the tool
+  // subprocesses it started, not just the child's own pid.
   const proc = Bun.spawn([binaryPath], {
     stdio: ["pipe", "pipe", "inherit", "pipe"],
     env,
+    detached: true,
   });
+  // Once the final group kill has run, the group id may be reused by an
+  // unrelated process group, so later signals must not reach it.
+  let groupReleased = false;
+  function signalGroup(signal: number | NodeJS.Signals): void {
+    if (groupReleased) return;
+    try {
+      process.kill(-proc.pid, signal);
+    } catch (err) {
+      if (!(err instanceof Error && "code" in err && err.code === "ESRCH"))
+        throw err;
+    }
+  }
   const eventFd = proc.stdio[CHILD_EVENT_CHANNEL_FD];
   if (typeof eventFd !== "number") {
     throw new Error(
@@ -660,24 +675,36 @@ export const defaultSubprocessSpawner: SubprocessSpawner = ({
     eventReader: frameReaderFromFd(eventFd),
     kill(signal?: number | string): void {
       // The supervisor's `SubprocessHandle.kill` widens the signal
-      // to `number | string`; Bun's `Subprocess.kill` accepts
+      // to `number | string`; `process.kill` accepts
       // `number | NodeJS.Signals`. The supervisor's call sites pass
       // `"SIGTERM"` / `"SIGKILL"` (recycle path) or no argument
-      // (shutdown path), which Bun handles directly. Cast at the
-      // boundary so the inner call matches Bun's narrower type
-      // without coercing valid input.
+      // (shutdown path). Cast at the boundary so the inner call
+      // matches the narrower type without coercing valid input.
       if (signal === undefined) {
-        proc.kill();
+        signalGroup("SIGTERM");
         return;
       }
       if (typeof signal === "number") {
-        proc.kill(signal);
+        signalGroup(signal);
         return;
       }
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- supervisor's kill widens to `string`; Bun's runtime accepts the same `"SIG*"` strings, narrowed back at the boundary.
-      proc.kill(signal as NodeJS.Signals);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- supervisor's kill widens to `string`; the runtime accepts the same `"SIG*"` strings, narrowed back at the boundary.
+      signalGroup(signal as NodeJS.Signals);
     },
-    exited: proc.exited,
+    // Tool subprocesses outlive a child that exits or is killed, so the
+    // group is killed before `exited` settles. If the group was already
+    // empty when Bun reaped the child, its id could be reused before this
+    // kill lands; the window is brief, and closing it needs a process
+    // handle such as a pidfd, which Bun does not expose.
+    exited: proc.exited.then((code) => {
+      try {
+        signalGroup("SIGKILL");
+        groupReleased = true;
+      } catch (err) {
+        logger.error`Cannot stop processes left by workflow child ${String(proc.pid)}: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      return code;
+    }),
   };
 };
 
