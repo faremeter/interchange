@@ -28,7 +28,6 @@ import {
   WORKFLOW_RUN_BLOBS_DIR,
   WORKFLOW_RUN_PARTS_DIR,
   WORKFLOW_RUN_GRANTS_FILE,
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_WATERMARK_FILE,
   WORKFLOW_RUN_MAILBOX_PREFIX,
   WORKFLOW_RUN_MAILBOX_INBOX_DIR,
@@ -328,134 +327,6 @@ describe("workflowRunKindHandler.validatePush — accepts", () => {
       );
       expect(r.ok).toBe(true);
     }
-  });
-
-  test("accepts a per-agent conversation snapshot under agent-state/", async () => {
-    const r = await validate(
-      {
-        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
-          0,
-          "RunStarted",
-        ),
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]:
-          JSON.stringify({ turns: [], connectorState: null }),
-      },
-      { principal: WORKFLOW_PROCESS_PRINCIPAL },
-    );
-    expect(r.ok).toBe(true);
-  });
-
-  test("accepts the two-tier WAL + checkpoint agent-state layout (Phase D1)", async () => {
-    // The durable conversation store no longer writes a single
-    // `conversation.json`; it writes a compacted `checkpoint.json` plus
-    // bucket-sharded `wal/<bucket>/<seq>.json` delta blobs. The validator
-    // enforces only that every `agent-state/<segment>` is a non-empty
-    // directory (not a dangling blob) and round-trips URL-encoding -- it
-    // says nothing about the files INSIDE, so the nested WAL layout must
-    // pass unchanged with no validator loosening.
-    const r = await validate(
-      {
-        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-        [`${WORKFLOW_RUN_RUNS_PREFIX}/run-a/events/0.json`]: eventBody(
-          0,
-          "RunStarted",
-        ),
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/checkpoint.json`]:
-          JSON.stringify({
-            turns: [],
-            pendingOperations: [],
-            tokenUsage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              thinking: 0,
-            },
-            connectorState: null,
-          }),
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/checkpoint.meta.json`]:
-          JSON.stringify({
-            checkpointSeq: 0,
-            turnCount: 0,
-            pendingOperations: [],
-            tokenUsage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              thinking: 0,
-            },
-            connectorState: null,
-          }),
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/wal/0/0.json`]:
-          JSON.stringify({
-            seq: 0,
-            turns: [{ role: "user", content: [], timestamp: 0 }],
-            metadata: {
-              pendingOperations: [],
-              tokenUsage: {
-                input: 0,
-                output: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                thinking: 0,
-              },
-              connectorState: null,
-            },
-          }),
-      },
-      { principal: WORKFLOW_PROCESS_PRINCIPAL },
-    );
-    expect(r.ok).toBe(true);
-  });
-
-  test("accepts a mutated agent-state snapshot (subtree is mutable, not append-only)", async () => {
-    const r = await validate(
-      {
-        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]:
-          JSON.stringify({ turns: ["second"], connectorState: null }),
-      },
-      {
-        principal: WORKFLOW_PROCESS_PRINCIPAL,
-        priorFiles: {
-          [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-          [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]:
-            JSON.stringify({ turns: ["first"], connectorState: null }),
-        },
-      },
-    );
-    expect(r.ok).toBe(true);
-  });
-
-  test("rejects an agent-state segment that does not round-trip URL-encoding", async () => {
-    const r = await validate(
-      {
-        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/bad%2segment/conversation.json`]:
-          "{}",
-      },
-      { principal: WORKFLOW_PROCESS_PRINCIPAL },
-    );
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error("unreachable");
-    expect(r.reason).toMatch(/agent-state segment/);
-  });
-
-  test("rejects a blob dangling directly under agent-state/", async () => {
-    const r = await validate(
-      {
-        [WORKFLOW_RUN_GITIGNORE_PATH]: "",
-        // No `<agentKey>/` directory layer: the blob sits directly under
-        // the prefix, so it is not keyed by any agent.
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/conversation.json`]: "{}",
-      },
-      { principal: WORKFLOW_PROCESS_PRINCIPAL },
-    );
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error("unreachable");
-    expect(r.reason).toMatch(/blob directly under/);
   });
 });
 
@@ -1144,7 +1015,7 @@ describe("workflowRunKindHandler.validatePush — rejects top-level shape", () =
     expect(r.reason).toMatch(/unsupported .*control\//);
   });
 
-  test("rejects an arbitrary disallowed top-level entry and names agent-state in the allowed list", async () => {
+  test("rejects an arbitrary disallowed top-level entry and names the mailbox in the allowed list", async () => {
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       "stray.txt": "nope",
@@ -1153,8 +1024,8 @@ describe("workflowRunKindHandler.validatePush — rejects top-level shape", () =
     if (r.ok) throw new Error("unreachable");
     expect(r.reason).toMatch(/unexpected top-level entry/);
     // The allowed-list in the rejection message must enumerate every
-    // accepted top-level, including agent-state/ (Phase 4.5).
-    expect(r.reason).toContain(WORKFLOW_RUN_AGENT_STATE_PREFIX);
+    // accepted top-level, including mailbox/.
+    expect(r.reason).toContain(WORKFLOW_RUN_MAILBOX_PREFIX);
   });
 });
 
@@ -1806,8 +1677,7 @@ describe("workflowRunKindHandler.validatePush — mail parts subtree", () => {
 
   test("rejects a blob dangling directly at parts/<segment>", async () => {
     // A blob committed at the message-segment path (no <index>-<name> file
-    // beneath it) lists as an empty directory and must be rejected, matching
-    // the agent-state dangling-blob guard.
+    // beneath it) lists as an empty directory and must be rejected.
     const r = await validate(
       partsTree("run-a", { [SEGMENT]: "not-a-directory" }),
     );
@@ -1965,7 +1835,7 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     expect(r.ok).toBe(true);
   });
 
-  test("accepts a mailbox alongside runs and agent-state siblings", async () => {
+  test("accepts a mailbox alongside a runs sibling", async () => {
     const r = await validate(
       {
         [WORKFLOW_RUN_GITIGNORE_PATH]: "",
@@ -1973,7 +1843,6 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
           0,
           "RunStarted",
         ),
-        [`${WORKFLOW_RUN_AGENT_STATE_PREFIX}/step-1/conversation.json`]: "{}",
         [`${INBOX}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]: JSON.stringify({
           messages: [1, 2],
         }),
@@ -2055,8 +1924,8 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
 
   test("rejects a blob dangling directly at mailbox/INBOX", async () => {
     // A blob committed at `mailbox/INBOX` (no entries beneath it) lists as
-    // an empty directory and must be rejected, mirroring the agent-state
-    // and mail-parts dangling-blob guards.
+    // an empty directory and must be rejected, mirroring the mail-parts
+    // dangling-blob guard.
     const r = await validate({
       [WORKFLOW_RUN_GITIGNORE_PATH]: "",
       [INBOX]: "not-a-directory",

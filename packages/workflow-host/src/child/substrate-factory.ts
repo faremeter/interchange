@@ -29,6 +29,7 @@ import { type } from "arktype";
 
 import { InferenceSource } from "@intx/types/runtime-core";
 import type { InferenceEvent } from "@intx/types/inference-events";
+import { deriveWorkflowRunId } from "@intx/types/workflow-run-id";
 import type {
   ApprovalSnapshot,
   AuditStore,
@@ -66,7 +67,6 @@ import { createSSHSignature } from "@intx/crypto";
 import { parseRunAddress } from "@intx/types/agent-address";
 import {
   createAgentRepoStore,
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   type Principal,
   type RepoId,
   type RepoStore,
@@ -113,7 +113,7 @@ import {
 } from "../adapters/step-invoker";
 import {
   createDurableConversationRegistry,
-  reconstructDurableConversation,
+  readStepState,
   type DurableConversationRegistry,
 } from "../conversation-state";
 import { readRunGrants, runGrantsPath } from "../run-grants";
@@ -656,8 +656,8 @@ export async function readColdParkedApprovalSnapshot(args: {
 /**
  * Read a warm (single-step) parked agent's durable pending operations from
  * substrate state. A warm agent's pending operations live in its durable
- * conversation store, mirrored to the workflow-run substrate under
- * `agent-state/<stepId>/`.
+ * conversation store, mirrored to the step's state directory in the
+ * workflow-run substrate.
  *
  * Reconstructs that state read-only -- deliberately NOT through
  * `DurableConversationRegistry.acquire`, whose first acquire writes and
@@ -670,17 +670,10 @@ export async function readColdParkedApprovalSnapshot(args: {
 export async function readWarmParkedPendingOperations(args: {
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
+  runId: string;
   stepId: string;
 }): Promise<PendingOperation[]> {
-  const agentStateDir = path.join(
-    args.substrate.getRepoDir(args.workflowRunRepoId),
-    WORKFLOW_RUN_AGENT_STATE_PREFIX,
-    encodeURIComponent(args.stepId),
-  );
-  const reconstructed = await reconstructDurableConversation(
-    agentStateDir,
-    args.stepId,
-  );
+  const reconstructed = await readStepState(args);
   if (reconstructed === null) return [];
   return reconstructed.pendingOperations;
 }
@@ -688,6 +681,7 @@ export async function readWarmParkedPendingOperations(args: {
 export async function readWarmParkedApprovalSnapshot(args: {
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
+  runId: string;
   stepId: string;
   correlationId: string;
 }): Promise<ApprovalSnapshot | undefined> {
@@ -2323,25 +2317,32 @@ export function createSidecarSubstrateFactory(
     // Durable-conversation registry for the warm single-step agent
     // (design §3c). Built only when the deployment is warm-kept: the
     // sole long-lived agent's conversation must survive child respawn,
-    // so it is mirrored to the workflow-run substrate at a per-agent
-    // path. A multi-step deploy leaves this `undefined` -- its per-step
+    // so it is mirrored to the workflow-run substrate under its run's
+    // steps. A multi-step deploy leaves this `undefined` -- its per-step
     // agents are not warm/long-lived (§3b), so they carry no cross-run
     // conversation and keep the per-run isogit store. The registry lives
     // for the child's lifetime; on respawn the child rebuilds it empty
     // and each store restores its prior snapshot from the substrate on
     // first acquire.
     const conversationSigner = createStepStorageSigner(signingKey);
-    const durableConversation: DurableConversationRegistry | undefined = env
-      .spawn.warmKeep
-      ? createDurableConversationRegistry({
-          dataDir: validated.SIDECAR_DATA_DIR,
-          workflowRunRepoId,
-          workflowRunRef: validated.WORKFLOW_RUN_REF,
-          substrate,
-          principal,
-          signer: conversationSigner,
-        })
+    // A warm agent serves its deployment's one addressable top-level run,
+    // whose id is the local part of the deployment mailbox address; its
+    // durable conversation is filed under that run's steps.
+    const warmRunId = env.spawn.warmKeep
+      ? deriveWorkflowRunId(env.spawn.mailboxAddress)
       : undefined;
+    const durableConversation: DurableConversationRegistry | undefined =
+      warmRunId !== undefined
+        ? createDurableConversationRegistry({
+            dataDir: validated.SIDECAR_DATA_DIR,
+            workflowRunRepoId,
+            workflowRunRef: validated.WORKFLOW_RUN_REF,
+            runId: warmRunId,
+            substrate,
+            principal,
+            signer: conversationSigner,
+          })
+        : undefined;
 
     // Per-step tool-mark floor grants, keyed by base step id. The step
     // env builder derives and records each step's floor from its
@@ -2688,10 +2689,11 @@ export function createSidecarSubstrateFactory(
       attempt,
       correlationId,
     }) =>
-      env.spawn.warmKeep
+      warmRunId !== undefined
         ? readWarmParkedApprovalSnapshot({
             substrate,
             workflowRunRepoId,
+            runId: warmRunId,
             stepId,
             correlationId,
           })
@@ -2718,10 +2720,11 @@ export function createSidecarSubstrateFactory(
       attempt,
     }) =>
       toParkedApprovalOps(
-        env.spawn.warmKeep
+        warmRunId !== undefined
           ? await readWarmParkedPendingOperations({
               substrate,
               workflowRunRepoId,
+              runId: warmRunId,
               stepId,
             })
           : await readColdParkedPendingOperations({
