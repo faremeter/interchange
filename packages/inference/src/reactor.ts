@@ -76,7 +76,9 @@ function assertNever(x: never): never {
 
 /**
  * Layer director-named options over per-send ones; a director key wins over
- * the per-send value for that same key.
+ * the per-send value for that same key. The merge is shallow: a director that
+ * names `thinking` replaces the whole object, so nested per-send fields such
+ * as `budgetTokens` are dropped rather than merged in.
  */
 export function mergeInferenceOptions(
   perSend: InferenceOptions | undefined,

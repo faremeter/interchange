@@ -6487,6 +6487,17 @@ describe("mergeInferenceOptions", () => {
     });
   });
 
+  test("a director thinking object replaces the per-send thinking object", () => {
+    expect(
+      mergeInferenceOptions(
+        { thinking: { enabled: true, budgetTokens: 2048 } },
+        { thinking: { enabled: true } },
+      ),
+    ).toEqual({
+      thinking: { enabled: true },
+    });
+  });
+
   test("absent per-send options pass the director options through", () => {
     const director = { systemPrompt: "s" };
     expect(mergeInferenceOptions(undefined, director)).toBe(director);
