@@ -51,7 +51,6 @@ import type {
   DirectorRegistry,
   ToolDeclaration,
 } from "@intx/agent";
-import { createDefaultDirectorRegistry } from "@intx/agent";
 import {
   builtinCredentialProviders,
   createCredentialProviderRegistry,
@@ -839,12 +838,14 @@ export interface SidecarStepBuildEnvDeps {
   /** Pinned tool-package materialization. Unused when `sourceTools` is set. */
   materializeStepTools: MaterializeStepTools;
   /**
-   * Director registry each step env carries; defaults to the canonical
-   * built-ins. The source-ref lineage supplies the closure-composed
-   * registry so a step agent's `director` ref resolves against a custom
-   * director shipped by any package in the frozen closure.
+   * Director registry each step env carries. Required: the source-ref lineage
+   * supplies the closure-composed registry so a step agent's `director` ref
+   * resolves against a custom director shipped by a declared direct
+   * dependency of the workflow package. Tests pass
+   * `createDefaultDirectorRegistry()` explicitly rather than inheriting a
+   * silent built-ins fallback.
    */
-  directors?: DirectorRegistry;
+  directors: DirectorRegistry;
 }
 
 /**
@@ -1175,7 +1176,7 @@ export function createSidecarStepBuildEnv(
       // scratch dir, so the two coincide.
       toolCwd: workdir,
       audit: storage,
-      directors: deps.directors ?? createDefaultDirectorRegistry(),
+      directors: deps.directors,
       // Resolve inference adapters through the child's boot-built
       // registry (built-ins + operator custom adapters), so a
       // custom-provider step source resolves in the child the same way
@@ -1330,8 +1331,8 @@ interface SidecarRunChildDeps {
    * material.
    */
   credentialProviders: CredentialProviderRegistry;
-  /** Director registry the child runtime uses; defaults to the canonical built-ins. */
-  directors?: DirectorRegistry;
+  /** Director registry the child runtime uses. Required; tests pass `createDefaultDirectorRegistry()` explicitly. */
+  directors: DirectorRegistry;
   /**
    * Sidecar-local directory of the materialized workflow-definition closure
    * (`env.spawn.closurePackageDir`), the source-ref lineage's only closure.
@@ -1443,7 +1444,7 @@ async function writeChildRunGrants(args: {
 export function createSidecarRunChild(
   deps: SidecarRunChildDeps,
 ): RunChildWorkflow {
-  const directors = deps.directors ?? createDefaultDirectorRegistry();
+  const directors = deps.directors;
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
   // No `controlPlanePrincipal`: an in-process child tears down through the
@@ -1572,7 +1573,7 @@ export function createSidecarRunChild(
 export function createSidecarSpawnSuspendableChild(
   deps: SidecarRunChildDeps,
 ): RunSuspendableChild {
-  const directors = deps.directors ?? createDefaultDirectorRegistry();
+  const directors = deps.directors;
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
   // No `controlPlanePrincipal`: an in-process body tears down through the shared
@@ -1683,7 +1684,7 @@ export function createSidecarSpawnSuspendableChild(
  */
 async function capAndPersistChildGrants(args: {
   deps: SidecarRunChildDeps;
-  directors: ReturnType<typeof createDefaultDirectorRegistry>;
+  directors: DirectorRegistry;
   definition: WorkflowDefinition;
   childRunId: string;
   parentRunId: string;
@@ -1749,7 +1750,7 @@ async function capAndPersistChildGrants(args: {
  */
 async function buildChildRunEnv(args: {
   deps: SidecarRunChildDeps;
-  directors: ReturnType<typeof createDefaultDirectorRegistry>;
+  directors: DirectorRegistry;
   clock: () => Date;
   newId: (prefix: string) => string;
   repoStore: ReturnType<typeof createWorkflowRunRepoStore>;
@@ -2781,7 +2782,7 @@ export function createSidecarSubstrateFactory(
       }) => {
         await capAndPersistChildGrants({
           deps: childRunDeps,
-          directors: childRunDeps.directors ?? createDefaultDirectorRegistry(),
+          directors: childRunDeps.directors,
           definition,
           childRunId,
           parentRunId,
