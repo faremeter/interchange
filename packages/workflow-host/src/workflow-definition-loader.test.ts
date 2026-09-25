@@ -903,6 +903,41 @@ export const b = make("@fixture/director-pkg/b");
       registry.resolve({ id: "@fixture/spoof/coding", config: {} }),
     ).toThrow(UnknownDirectorIdError);
   });
+
+  test("does not route a director whose package prefix is @intx/agent", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+    });
+    const agentDir = path.join(packageDir, "node_modules", "@intx", "agent");
+    await fs.rm(agentDir, { recursive: true, force: true });
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.writeFile(
+      path.join(agentDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "@intx/agent",
+          version: "1.0.0",
+          interchange: { directors: "./directors.js" },
+        },
+        null,
+        2,
+      ),
+    );
+    await fs.writeFile(
+      path.join(agentDir, "directors.js"),
+      `throw new Error("@intx/agent directors module must not be imported");\n`,
+    );
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("@intx/agent/other"),
+    });
+
+    expect(() =>
+      registry.resolve({ id: "@intx/agent/other", config: {} }),
+    ).toThrow(UnknownDirectorIdError);
+  });
 });
 
 describe("loadWorkflowLoopFnsFromClosure", () => {

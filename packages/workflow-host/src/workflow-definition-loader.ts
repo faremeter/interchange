@@ -26,7 +26,6 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import {
   createWorkflowDirectorRegistry,
-  defaultDirectorFactory,
   isAnnotatedDirectorFactory,
   isAnnotatedPluginFactory,
   validateNamespacedId,
@@ -194,8 +193,11 @@ export async function loadWorkflowDirectorRegistryFromClosure(
   const loaded: AnnotatedDirectorFactory<unknown, BaseEnv>[] = [];
   for (const id of collectDirectorIds(args.definition)) {
     // The built-in default is always registered and `@intx/agent` is
-    // platform code, not a closure package -- its prefix must not route.
-    if (id === defaultDirectorFactory.id) continue;
+    // platform code, not a closure package -- no prefix under that name
+    // may route into `node_modules/@intx/agent`. The package ships no
+    // `interchange.directors`.
+    const slash = id.lastIndexOf("/");
+    if (slash > 0 && id.slice(0, slash) === "@intx/agent") continue;
     const packageDir = await resolveDirectorPackageDir(
       args.packageDir,
       pkgJson.name,
