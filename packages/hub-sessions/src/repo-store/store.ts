@@ -727,6 +727,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     topLevelTreePaths: string[];
     readBlob: (path: string) => Promise<Uint8Array>;
     listDir: (path: string) => Promise<string[]>;
+    listDirOids: (path: string) => Promise<{ name: string; oid: string }[]>;
   }> {
     const { commit } = await git.readCommit({
       fs,
@@ -776,7 +777,23 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       });
       return tree.map((e) => e.path);
     };
-    return { topLevelTreePaths, readBlob, listDir };
+    // The prospective mirror of `priorListDirOids`, so a handler proving a
+    // retained entry unchanged compares object ids instead of re-reading
+    // and hashing the entry's bytes.
+    const listDirOids = async (
+      relPath: string,
+    ): Promise<{ name: string; oid: string }[]> => {
+      const oid = await resolveTreeEntry(dir, commitSha, relPath, "tree");
+      if (oid === null) return [];
+      const { tree } = await git.readTree({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        oid,
+      });
+      return tree.map((e) => ({ name: e.path, oid: e.oid }));
+    };
+    return { topLevelTreePaths, readBlob, listDir, listDirOids };
   }
 
   // Read a tree's child entries as a name->oid map. Returns null when
@@ -862,9 +879,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   // differ are emitted as `<name>/`; the `runs/` subtree is descended
   // one level further so a per-run handler can scope to the exact
   // `runs/<runId>/` directories that changed rather than re-validating
-  // every run. `parentSha === null` (no readable parent) means the
-  // substrate cannot bound the change set, so it returns `undefined`
-  // and the handler validates the whole tree.
+  // every run, and further still for a run whose only changed child is
+  // its `steps/` subtree (see `changedRunPrefixes`). `parentSha === null`
+  // (no readable parent) means the substrate cannot bound the change set,
+  // so it returns `undefined` and the handler validates the whole tree.
   async function computeChangedPathPrefixes(
     dir: string,
     commitSha: string,
@@ -888,13 +906,59 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
         ]);
         for (const runId of runNames) {
           if (newRuns.get(runId) === oldRuns.get(runId)) continue;
-          prefixes.add(`runs/${runId}/`);
+          for (const prefix of await changedRunPrefixes(
+            dir,
+            commitSha,
+            parentSha,
+            runId,
+          )) {
+            prefixes.add(prefix);
+          }
         }
         continue;
       }
       prefixes.add(`${name}/`);
     }
     return prefixes;
+  }
+
+  // The prefixes a commit changed inside one run directory that differs
+  // from its parent's. The whole run (`runs/<runId>/`) unless `steps/` is
+  // its only changed child: a workflow-run's per-step state is validated
+  // apart from the run's event log, so each step directory that changed
+  // (`runs/<runId>/steps/<segment>/`) is emitted instead, or
+  // `runs/<runId>/steps/` when that subtree was added, removed, or is not
+  // a directory on one side. The listings compare object ids only, so a
+  // directory that differs while no child's object does changed an
+  // entry's mode, and it is emitted whole rather than dropped.
+  async function changedRunPrefixes(
+    dir: string,
+    commitSha: string,
+    parentSha: string,
+    runId: string,
+  ): Promise<string[]> {
+    const runPath = `runs/${runId}`;
+    const newRun = await readTreeEntryMap(dir, commitSha, runPath);
+    const oldRun = await readTreeEntryMap(dir, parentSha, runPath);
+    if (newRun === null || oldRun === null) return [`${runPath}/`];
+    let stepsChanged = false;
+    for (const child of new Set([...newRun.keys(), ...oldRun.keys()])) {
+      if (newRun.get(child) === oldRun.get(child)) continue;
+      if (child !== "steps") return [`${runPath}/`];
+      stepsChanged = true;
+    }
+    if (!stepsChanged) return [`${runPath}/`];
+    const stepsPath = `${runPath}/steps`;
+    const newSteps = await readTreeEntryMap(dir, commitSha, stepsPath);
+    const oldSteps = await readTreeEntryMap(dir, parentSha, stepsPath);
+    if (newSteps === null || oldSteps === null) return [`${stepsPath}/`];
+    const prefixes: string[] = [];
+    for (const segment of new Set([...newSteps.keys(), ...oldSteps.keys()])) {
+      if (newSteps.get(segment) !== oldSteps.get(segment)) {
+        prefixes.push(`${stepsPath}/${segment}/`);
+      }
+    }
+    return prefixes.length > 0 ? prefixes : [`${stepsPath}/`];
   }
 
   // Enumerate every commit OID reachable from any branch or tag in
@@ -1785,7 +1849,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
             }
             const { priorReadBlob, priorListDir, priorListDirOids } =
               buildPriorTreeClosures(dir, parentSha);
-            const { topLevelTreePaths, readBlob, listDir } =
+            const { topLevelTreePaths, readBlob, listDir, listDirOids } =
               await buildCommitTreeClosures(dir, newCommit);
             const changedPathPrefixes = await computeChangedPathPrefixes(
               dir,
@@ -1819,6 +1883,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
               topLevelTreePaths,
               readBlob,
               listDir,
+              listDirOids,
               priorReadBlob,
               priorListDir,
               priorListDirOids,

@@ -607,6 +607,87 @@ describe("RepoStore", () => {
     expect(await rejectStore.resolveRef(principal, repoId, REF)).toBeNull();
   });
 
+  test("receivePack scopes a commit that changes only a run's step state to those step directories", async () => {
+    const sourceStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-steps-source-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const seen: {
+      prefixes: string[] | undefined;
+      hasListDirOids: boolean;
+    }[] = [];
+    const recordingHandler: KindHandler = {
+      ...createTestHandler(),
+      validatePush({ changedPathPrefixes, listDirOids }) {
+        seen.push({
+          prefixes:
+            changedPathPrefixes === undefined
+              ? undefined
+              : [...changedPathPrefixes].sort(),
+          hasListDirOids: listDirOids !== undefined,
+        });
+        return { ok: true };
+      },
+    };
+    const targetStore = createRepoStore({
+      dataDir: await makeTempDir("repo-store-steps-target-"),
+      signingKey,
+      handlers: { "agent-state": recordingHandler },
+      authorize: allowAll,
+    });
+    const push = async (
+      files: Record<string, string>,
+      expectedOldSha: string | null,
+    ): Promise<string> => {
+      await sourceStore.writeTree(principal, repoId, REF, {
+        files,
+        message: "write",
+      });
+      const { pack, commitSha } = await sourceStore.createPack(
+        principal,
+        repoId,
+        REF,
+      );
+      await targetStore.receivePack(
+        principal,
+        repoId,
+        REF,
+        pack,
+        commitSha,
+        expectedOldSha,
+      );
+      return commitSha;
+    };
+
+    const base = await push(
+      {
+        "runs/r1/events/1.json": "{}",
+        "runs/r1/steps/s1/state/checkpoint.json": "{}",
+        "runs/r1/steps/s2/state/checkpoint.json": "{}",
+      },
+      null,
+    );
+    seen.length = 0;
+    const stepsOnly = await push(
+      { "runs/r1/steps/s1/state/wal/0/0.json": "{}" },
+      base,
+    );
+    await push(
+      {
+        "runs/r1/events/2.json": "{}",
+        "runs/r1/steps/s2/state/wal/0/0.json": "{}",
+      },
+      stepsOnly,
+    );
+
+    expect(seen).toEqual([
+      { prefixes: ["runs/r1/steps/s1/"], hasListDirOids: true },
+      { prefixes: ["runs/r1/"], hasListDirOids: true },
+    ]);
+  });
+
   // Build a pack carrying one commit whose root tree holds a single symlink or
   // submodule entry, and receivePack it into a fresh store. Returns the store
   // and the receivePack promise so the caller can assert rejection + a
