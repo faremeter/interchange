@@ -388,6 +388,56 @@ describe("fetchFull", () => {
     expect(Array.from(got.data)).toEqual(Array.from(orig.data));
   });
 
+  test("send carries attachments through to the recipient", async () => {
+    const { alphaTransport, betaTransport } = await createTestTransport();
+
+    const attachments: MessageAttachment[] = [
+      {
+        name: "notes.txt",
+        contentType: "text/plain",
+        data: new TextEncoder().encode("café\nnotes\n"),
+      },
+      {
+        name: "shot.png",
+        contentType: "image/png",
+        data: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      },
+    ];
+    await alphaTransport.send({
+      to: "beta@test.interchange",
+      type: "conversation.message",
+      content: "see attached",
+      attachments,
+    });
+
+    const [ref] = await betaTransport.search("INBOX", {});
+    if (ref === undefined) throw new Error("expected a delivered message");
+    const msg = await betaTransport.fetchFull(ref);
+    expect(msg.signatureStatus).toBe("valid");
+    expect(msg.attachments).toEqual(
+      attachments.map((att, i) => ({ ...att, part: `1.${String(i + 2)}` })),
+    );
+  });
+
+  test("send rejects attachments on a structured message", async () => {
+    const { alphaTransport } = await createTestTransport();
+
+    await expect(
+      alphaTransport.send({
+        to: "beta@test.interchange",
+        type: "offering.request",
+        payload: { offeringId: "code-review" },
+        attachments: [
+          {
+            name: "notes.txt",
+            contentType: "text/plain",
+            data: new TextEncoder().encode("notes"),
+          },
+        ],
+      }),
+    ).rejects.toThrow("Structured messages must not carry attachments");
+  });
+
   test("fetchFull surfaces a malformed attachment instead of dropping it", async () => {
     const { transport, betaTransport, cryptoA } = await createTestTransport();
 

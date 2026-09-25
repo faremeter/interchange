@@ -1081,7 +1081,7 @@ export function parseMailToEmail(raw: Uint8Array, mailId: string): JMAPEmail {
  * base64 body surfaces as a thrown error rather than a silent best-effort
  * decode — attachment integrity is load-bearing.
  */
-function decodeAttachmentBytes(
+export function decodeAttachmentBytes(
   body: Uint8Array,
   headers: Map<string, string>,
 ): Uint8Array {
@@ -1115,7 +1115,8 @@ function decodeAttachmentBytes(
 
 /**
  * Extract conversation attachments from raw message bytes as
- * `MessageAttachment[]` with decoded payloads.
+ * `MessageAttachment[]` with decoded payloads and the IMAP part path
+ * of each sibling (`part`), matching `extractPartByPath` numbering.
  *
  * The conversation signed content is a multipart/mixed whose first part is
  * the text body and whose remaining attachment parts (Content-Disposition:
@@ -1147,13 +1148,17 @@ export function extractAttachments(raw: Uint8Array): MessageAttachment[] {
   if (innerBoundary === undefined) return [];
 
   const attachments: MessageAttachment[] = [];
-  for (const subPartBytes of parseMultipart(signed.body, innerBoundary)) {
+  for (const [index, subPartBytes] of parseMultipart(
+    signed.body,
+    innerBoundary,
+  ).entries()) {
     const subPart = parseMimePart(subPartBytes);
     if (!isAttachmentPart(subPart.contentType, subPart.headers)) continue;
     attachments.push({
       name: extractFilename(subPart.headers) ?? "attachment",
       contentType: extractContentTypeMime(subPart.contentType),
       data: decodeAttachmentBytes(subPart.body, subPart.headers),
+      part: `1.${String(index + 1)}`,
     });
   }
   return attachments;

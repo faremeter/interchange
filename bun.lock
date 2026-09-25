@@ -597,6 +597,8 @@
         "arktype": "catalog:",
       },
       "devDependencies": {
+        "@intx/crypto": "workspace:*",
+        "@intx/mail-memory": "workspace:*",
         "@intx/storage-isogit": "workspace:*",
       },
     },

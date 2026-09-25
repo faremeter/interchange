@@ -38,10 +38,20 @@ export const ATTACHMENT_ALLOWLIST = {
 
 export type AllowedMimeType = keyof typeof ATTACHMENT_ALLOWLIST;
 
-export function isAllowedMimeType(
-  mimeType: string,
-): mimeType is AllowedMimeType {
-  return mimeType in ATTACHMENT_ALLOWLIST;
+const ALLOWLIST_BY_TYPE: Record<string, AttachmentCategory> =
+  ATTACHMENT_ALLOWLIST;
+
+/**
+ * The type/subtype of a Content-Type, ignoring parameters and case.
+ * Allowlist identity is this token, not the raw header value.
+ */
+export function mimeTypeAndSubtype(contentType: string): string {
+  const [mimeType = ""] = contentType.split(";");
+  return mimeType.trim().toLowerCase();
+}
+
+export function isAllowedMimeType(mimeType: string): boolean {
+  return Object.hasOwn(ALLOWLIST_BY_TYPE, mimeTypeAndSubtype(mimeType));
 }
 
 /**
@@ -53,10 +63,22 @@ export function isAllowedMimeType(
 export function attachmentCategory(
   mimeType: string,
 ): AttachmentCategory | undefined {
-  if (isAllowedMimeType(mimeType)) {
-    return ATTACHMENT_ALLOWLIST[mimeType];
-  }
-  return undefined;
+  return ALLOWLIST_BY_TYPE[mimeTypeAndSubtype(mimeType)];
+}
+
+/**
+ * True when a Content-Type names readable text: `text/*`, JSON, and the
+ * `+json` structured suffix. Callers use this to decide whether an
+ * attachment's content is carried as text or as opaque bytes. Any
+ * Content-Type parameters (e.g. `; charset=utf-8`) are ignored.
+ */
+export function isTextLikeMimeType(contentType: string): boolean {
+  const mime = mimeTypeAndSubtype(contentType);
+  return (
+    mime.startsWith("text/") ||
+    mime === "application/json" ||
+    mime.endsWith("+json")
+  );
 }
 
 // Default size limits, on decoded bytes. These are the system-level

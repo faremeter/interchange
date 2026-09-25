@@ -10,7 +10,6 @@ import type {
   MessageRef,
 } from "@intx/types/runtime";
 import { InterchangeType } from "@intx/types/runtime";
-import { base64Decode } from "@intx/types";
 import type { MailboxStore } from "./mailbox";
 import { requireMessage } from "./mailbox";
 import {
@@ -20,6 +19,7 @@ import {
   parseMultipart,
   extractPartByPath,
   extractAttachments,
+  decodeAttachmentBytes,
 } from "@intx/mime";
 import { buildMessageHeaders } from "./headers";
 import { verifyMimeSignature } from "./verify-signature";
@@ -62,7 +62,8 @@ export async function fetchStructure(
 }
 
 /**
- * Fetch a single MIME part by dot-separated path.
+ * Fetch a single MIME part by dot-separated path. `content` is the
+ * CTE-decoded bytes, matching `extractAttachments` / `decodeMail`.
  */
 export async function fetchPart(
   ref: MessageRef,
@@ -73,23 +74,11 @@ export async function fetchPart(
   const raw = await store.readRaw(ref.uid);
   const partBytes = extractPartByPath(raw, partPath);
   const part = parseMimePart(partBytes);
-
-  const enc = part.headers.get("content-transfer-encoding") ?? "7bit";
-  let content: Uint8Array;
-
-  if (enc.toLowerCase() === "base64") {
-    const b64 = new TextDecoder().decode(part.body).replace(/\s/g, "");
-    content = base64Decode(b64);
-  } else {
-    content = part.body;
-  }
-
-  const result: MessagePart = {
-    contentType: part.contentType,
-    content,
+  const [rawType] = part.contentType.split(";");
+  return {
+    contentType: (rawType ?? part.contentType).trim().toLowerCase(),
+    content: decodeAttachmentBytes(part.body, part.headers),
   };
-  if (enc !== "7bit") result.encoding = enc;
-  return result;
 }
 
 /**

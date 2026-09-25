@@ -65,8 +65,10 @@ IMAP FETCH addresses MIME parts by position using dot-separated numeric paths (R
 | --------- | --------------------------------------------- |
 | `1`       | The `multipart/mixed` payload (all sub-parts) |
 | `1.1`     | The `text/plain` message body                 |
-| `1.2+`    | Attachments (if present)                      |
+| `1.2+`    | Further siblings of the mixed part            |
 | `2`       | The `application/pgp-signature`               |
+
+Writer-emitted conversation attachments start at `1.2`. Inbound mail may insert extra inline parts (for example `text/html`); the path advertised on each attachment is the parsed sibling number, not an index into the attachments array.
 
 **Structured messages:**
 
@@ -569,7 +571,7 @@ fetchFull(ref: MessageRef): Promise<InboundMessage>
 
 `fetchStructure` retrieves the MIME tree metadata (IMAP `BODYSTRUCTURE`): content types, sizes, dispositions, parameters for every part. No content transferred.
 
-`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or just an attachment (`1.2+`) without downloading the entire message.
+`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or a listed attachment by the path stamped on it, without downloading the entire message. Writer-shaped conversation attachments start at `1.2`; that is a consequence of the writer's sibling layout, not a formula for every inbound message.
 
 `fetchFull` retrieves the complete message, parses the MIME structure, verifies the PGP signature, and returns a fully parsed `InboundMessage` with structured payload, headers, and attachments. The returned `InboundMessage` includes a `signatureStatus` field: `"valid"` (signature verified against sender's public key), `"invalid"` (signature check failed — tampering or wrong key), `"unknown"` (public key not available for verification), or `"missing"` (message was not signed). The harness decides policy based on this field — cross-tenant messages with `"invalid"` or `"missing"` status should be rejected; intra-tenant messages may be accepted with reduced trust depending on tenant policy.
 
@@ -643,7 +645,7 @@ Parameters:
 - `inReplyTo`: Message-ID being replied to (optional — sets In-Reply-To and extends References chain by fetching the parent's References header)
 - `correlationId`: links this message to a pending request (optional)
 - `type`: Interchange payload type (default: `conversation.message`)
-- `attachments`: array of `{ name, contentType, data }` (optional)
+- `attachments`: array of `{ name, contentType, content, encoding? }` (optional, conversation types only). `content` is plain text unless `encoding` is `"base64"`; when `encoding` is omitted it defaults to `"utf-8"` for text-like content types and `"base64"` for everything else. A text file never has to be base64-encoded by the caller. Attachments are checked against the system attachment allowlist and size limits before sending; allowlist identity is type/subtype, so `text/plain; charset=utf-8` is the same as `text/plain`. A rejection returns the matching attachment error code (`disallowed_mime_type`, `invalid_attachment_name`, `malformed_base64`, `invalid_encoding`, `oversize_attachment`, `oversize_total`). An explicit `"utf-8"` on a content type that is not text-like is refused with `invalid_encoding`, since it would deliver a corrupt file.
 
 When `type` is a conversation type, the `content` string becomes the `text/plain` message body. For structured types, the `payload` object becomes the `body` field of the `application/vnd.interchange+json` part. Providing both `content` and `payload` is an error.
 
@@ -659,7 +661,7 @@ Parameters:
 - `content`: text content (for conversation replies)
 - `payload`: structured payload object (optional, for non-conversation reply types)
 - `type`: Interchange payload type (default: `conversation.message` — use `offering.response` when replying to an offering request)
-- `attachments`: optional
+- `attachments`: same shape as `mail.send` (optional)
 
 Returns: same as `mail.send`
 
@@ -682,9 +684,9 @@ Parameters:
 - `ref`: message reference (from search results)
 - `parts`: which parts to fetch — `"headers"`, `"payload"`, `"full"`, or a specific MIME part path like `"1.3"` (default: `"payload"`)
 
-Returns: the requested content. For `"payload"`, returns the parsed `application/vnd.interchange+json` object. For `"full"`, returns the complete parsed message including signature status.
+Returns: the requested content. For `"payload"`, returns the parsed `application/vnd.interchange+json` object. For `"full"`, returns the complete parsed message including signature status. Both `"payload"` and `"full"` include an `attachments` array of `{ name, contentType, size, part }` when the message carries any — `part` is the parsed IMAP path of that MIME sibling (the same numbering `fetchPart` uses), which may be later than `"1.2"` when extra inline parts sit between the body and the file. A part path returns `{ contentType, encoding, content }` with the transfer encoding already undone: `contentType` is type/subtype (parameters such as charset are spent once the bytes are decoded), `content` is text and `encoding` is `"utf-8"` for text-like parts whose bytes are valid UTF-8, otherwise `content` is base64 and `encoding` is `"base64"`, so the bytes are never altered.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `not_found` (message no longer exists), `invalid_part` (requested MIME part does not exist).
+Returns on error: `{ error: string, code: string }`. Error codes: `not_found` (message no longer exists), `invalid_part` (requested MIME part does not exist, or is a composite `multipart/*` part). `1.1` remains a documented leaf. The tool does not refuse the path string `"1"` as a heuristic; `mailbox.fetchPart("1")` stays valid IMAP (`fetchFull` uses it).
 
 **mail.threads** — Get conversation threads.
 

@@ -125,16 +125,23 @@ export async function executeSend(
   if (!isConversation && message.content !== undefined) {
     throw new Error("Structured messages must not carry a text content field");
   }
+  if (!isConversation && message.attachments !== undefined) {
+    throw new Error("Structured messages must not carry attachments");
+  }
 
   const messageId = generateMessageId(senderAddress);
   const now = new Date();
 
   let content: ConversationContent | StructuredContent;
   if (isConversation) {
-    content = {
+    const conversation: ConversationContent = {
       kind: "conversation",
       text: message.content ?? "",
     };
+    if (message.attachments !== undefined) {
+      conversation.attachments = message.attachments;
+    }
+    content = conversation;
   } else {
     const payload = message.payload ?? {};
     const envelope = {

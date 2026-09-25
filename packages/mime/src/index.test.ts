@@ -1052,6 +1052,7 @@ describe("conversation attachments round-trip", () => {
       const got = defined(extracted[i]);
       expect(got.name).toBe(orig.name);
       expect(got.contentType).toBe(orig.contentType);
+      expect(got.part).toBe(`1.${i + 2}`);
       expect(Array.from(got.data)).toEqual(Array.from(orig.data));
     }
   });
@@ -1135,6 +1136,56 @@ describe("conversation attachments round-trip", () => {
       provider.getPublicKey(),
     );
     expect(valid).toBe(true);
+  });
+
+  test("an inline html sibling does not steal the PDF's IMAP path", () => {
+    // A mail client that also sends text/html leaves an extra sibling
+    // between BODY[1.1] and the attachment. extractAttachments skips that
+    // inline part; the PDF's path must still be the sibling number
+    // extractPartByPath uses (1.3), not the attachment-array index (1.2).
+    const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
+    const signed = [
+      `Content-Type: multipart/mixed; boundary="inner"`,
+      "",
+      `--inner`,
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: 7bit",
+      "",
+      "hello",
+      `--inner`,
+      "Content-Type: text/html; charset=utf-8",
+      "Content-Disposition: inline",
+      "",
+      "<p>hello</p>",
+      `--inner`,
+      "Content-Type: application/pdf",
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="report.pdf"`,
+      "",
+      "JVBERi0=",
+      `--inner--`,
+      "",
+    ].join("\r\n");
+    const msg = assembleMessage(
+      makeHeaders({ interchangeType: "conversation.message" }),
+      enc.encode(signed),
+      enc.encode("FAKE-SIGNATURE"),
+    );
+
+    const htmlPart = parseMimePart(extractPartByPath(msg, "1.2"));
+    expect(
+      defined(htmlPart.contentType.split(";")[0]).trim().toLowerCase(),
+    ).toBe("text/html");
+    const pdfPart = parseMimePart(extractPartByPath(msg, "1.3"));
+    expect(
+      defined(pdfPart.contentType.split(";")[0]).trim().toLowerCase(),
+    ).toBe("application/pdf");
+
+    const extracted = extractAttachments(msg);
+    expect(extracted).toHaveLength(1);
+    expect(defined(extracted[0]).name).toBe("report.pdf");
+    expect(defined(extracted[0]).part).toBe("1.3");
+    expect(Array.from(defined(extracted[0]).data)).toEqual(Array.from(pdf));
   });
 
   test("rejects an attachment name containing CRLF (header injection)", () => {
