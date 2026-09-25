@@ -234,6 +234,18 @@ export {
   type WorkflowRunSupervisorPrincipal,
 } from "./workflow-run-kind";
 export {
+  buildStepStateCheckpoint,
+  reconstructStepState,
+  serializeStepStateWalEntry,
+  stepStateWalBucket,
+  stepStateWalBucketPrefix,
+  stepStateWalEntryPath,
+  type ReconstructedStepState,
+  type StepStateContent,
+  type StepStateMetadata,
+  type StepStateReader,
+} from "./step-state";
+export {
   readWorkflowRunRefTips,
   restoreWorkflowRunToAllocation,
   WORKFLOW_RUN_RESTORE_REFS,
