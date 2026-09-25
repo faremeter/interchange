@@ -870,3 +870,146 @@ describe("runInference — non-streaming JSON responses", () => {
     expect(errorEvent.data.error.message).toContain("text/plain");
   });
 });
+
+describe("runInference — adapter-classified response kind", () => {
+  const CLASSIFY_SOURCE: InferenceSource = {
+    id: "test-classify:model-x",
+    provider: "test-classify",
+    baseURL: "https://example.test",
+    credentialId: "test",
+    model: "model-x",
+  };
+
+  // Answers every request with a 2xx carrying the given body and headers,
+  // so a test can hand the harness a response with no Content-Type at all.
+  function depsWith(
+    body: string,
+    headers: Record<string, string>,
+    factory: AdapterFactory,
+  ): Dependencies {
+    return {
+      fetch: () =>
+        Promise.resolve(new Response(body, { status: 200, headers })),
+      scheduler: createDefaultScheduler(),
+      adapters: createAdapterRegistry({ "test-classify": factory }),
+    };
+  }
+
+  const textDelta = (token: string): InferenceEvent => ({
+    type: "inference.text.delta",
+    seq: 0,
+    data: { token, partial: { text: "" }, index: 0 },
+  });
+
+  // An adapter that speaks both protocols and records whether the harness
+  // asked it to classify. `kind` is what it answers with; undefined declines.
+  function classifyingFactory(kind: "sse" | "json" | undefined): {
+    factory: AdapterFactory;
+    classifyCalls: number[];
+  } {
+    const classifyCalls: number[] = [];
+    const factory: AdapterFactory = () => ({
+      buildRequest: (_messages, model) => ({
+        url: "https://example.test/v1/responses",
+        headers: {},
+        body: JSON.stringify({ model }),
+      }),
+      parseResponse: (sseData) => [textDelta(sseData)],
+      parseJSONResponse: (raw) => [textDelta(raw)],
+      classifyResponse: () => {
+        classifyCalls.push(1);
+        return kind;
+      },
+    });
+    return { factory, classifyCalls };
+  }
+
+  function textOf(events: InferenceEvent[]): string {
+    return events
+      .filter(
+        (e): e is Extract<InferenceEvent, { type: "inference.text.delta" }> =>
+          e.type === "inference.text.delta",
+      )
+      .map((e) => e.data.token)
+      .join("");
+  }
+
+  function errorOf(events: InferenceEvent[]) {
+    const errorEvent = events.find(
+      (e): e is Extract<InferenceEvent, { type: "inference.error" }> =>
+        e.type === "inference.error",
+    );
+    if (errorEvent === undefined) throw new Error("missing inference.error");
+    return errorEvent.data.error;
+  }
+
+  async function run(deps: Dependencies): Promise<InferenceEvent[]> {
+    let seq = 0;
+    return collect(
+      runInference({
+        turns: [userTurn("hi")],
+        source: CLASSIFY_SOURCE,
+        nextSeq: () => ++seq,
+        deps,
+      }),
+    );
+  }
+
+  test("parses a header-less 2xx as SSE when the adapter says so", async () => {
+    const { factory, classifyCalls } = classifyingFactory("sse");
+    const events = await run(
+      depsWith("data: hello\n\ndata: [DONE]\n\n", {}, factory),
+    );
+    expect(classifyCalls).toHaveLength(1);
+    expect(textOf(events)).toBe("hello");
+    expect(events.some((e) => e.type === "inference.done")).toBe(true);
+  });
+
+  test("parses a header-less 2xx as JSON when the adapter says so", async () => {
+    const { factory, classifyCalls } = classifyingFactory("json");
+    const events = await run(depsWith("hello", {}, factory));
+    expect(classifyCalls).toHaveLength(1);
+    expect(textOf(events)).toBe("hello");
+    expect(events.some((e) => e.type === "inference.done")).toBe(true);
+  });
+
+  test("honours the adapter for a Content-Type it does not recognise", async () => {
+    const { factory, classifyCalls } = classifyingFactory("sse");
+    const events = await run(
+      depsWith(
+        "data: hello\n\ndata: [DONE]\n\n",
+        { "content-type": "text/plain" },
+        factory,
+      ),
+    );
+    expect(classifyCalls).toHaveLength(1);
+    expect(textOf(events)).toBe("hello");
+  });
+
+  test("surfaces a protocol mismatch when the adapter declines", async () => {
+    const { factory, classifyCalls } = classifyingFactory(undefined);
+    const events = await run(depsWith("data: hello\n\n", {}, factory));
+    expect(classifyCalls).toHaveLength(1);
+    expect(errorOf(events).category).toBe("protocol_mismatch");
+    expect(errorOf(events).message).toContain("no Content-Type header");
+  });
+
+  test("surfaces a protocol mismatch when the adapter has no classifier", async () => {
+    const { factory } = classifyingFactory("sse");
+    const bare: AdapterFactory = (source, quirks) => {
+      const { classifyResponse: _ignored, ...rest } = factory(source, quirks);
+      return rest;
+    };
+    const events = await run(depsWith("data: hello\n\n", {}, bare));
+    expect(errorOf(events).category).toBe("protocol_mismatch");
+  });
+
+  test("never consults the adapter when the Content-Type is recognised", async () => {
+    const { factory, classifyCalls } = classifyingFactory("sse");
+    const events = await run(
+      depsWith("hello", { "content-type": "application/json" }, factory),
+    );
+    expect(classifyCalls).toHaveLength(0);
+    expect(textOf(events)).toBe("hello");
+  });
+});

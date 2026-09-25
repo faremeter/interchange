@@ -164,23 +164,45 @@ describe("runCapture", () => {
     expect(written).toBe(sseBody);
   });
 
-  test("throws on unsupported response content-type", async () => {
+  test("captures a stream that arrives with no content-type header", async () => {
+    const sseBody = 'data: {"chunk":1}\n\n';
     const stubFetch: FetchLike = async () =>
-      new Response("oops", {
+      new Response(sseBody, { status: 200 });
+
+    await runCapture({
+      plugin: makePlugin(),
+      model: "test-model",
+      capability: "plain-text-streaming",
+      intent: INTENT,
+      outDir: dir,
+      fetch: stubFetch,
+    });
+
+    const written = await fs.readFile(
+      path.join(dir, "exchanges", "0", "response.sse"),
+      "utf8",
+    );
+    expect(written).toBe(sseBody);
+  });
+
+  test("captures a JSON body under an unrecognised content-type", async () => {
+    const stubFetch: FetchLike = async () =>
+      new Response('{"ok":true}', {
         status: 200,
         headers: { "Content-Type": "text/plain" },
       });
 
-    await expect(
-      runCapture({
-        plugin: makePlugin(),
-        model: "test-model",
-        capability: "plain-text",
-        intent: INTENT,
-        outDir: dir,
-        fetch: stubFetch,
-      }),
-    ).rejects.toThrow(/text\/plain/);
+    await runCapture({
+      plugin: makePlugin(),
+      model: "test-model",
+      capability: "plain-text",
+      intent: INTENT,
+      outDir: dir,
+      fetch: stubFetch,
+    });
+
+    const exchangeEntries = await fs.readdir(path.join(dir, "exchanges", "0"));
+    expect(exchangeEntries).toContain("response.json");
   });
 
   test("walks all steps of a multi-step generator into numbered exchanges", async () => {
