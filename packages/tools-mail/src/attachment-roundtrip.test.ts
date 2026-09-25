@@ -333,6 +333,45 @@ describe("attachments through a real transport", () => {
   });
 });
 
+function quotedPrintableCafeMessage(): Uint8Array {
+  // Latin-1 café as quoted-printable `caf=E9`. Decoded bytes are not valid
+  // UTF-8, so mail_read must return them as base64, never the QP source.
+  return new TextEncoder().encode(
+    [
+      "From: alice@x",
+      "To: beta@test.interchange",
+      "Subject: QP",
+      "Message-ID: <qp@test.interchange>",
+      "Date: Thu, 01 Jan 2026 00:00:00 +0000",
+      "MIME-Version: 1.0",
+      "Interchange-Type: conversation.message",
+      `Content-Type: multipart/signed; protocol="application/pgp-signature"; micalg=pgp-sha512; boundary="outer"`,
+      "",
+      "--outer",
+      `Content-Type: multipart/mixed; boundary="inner"`,
+      "",
+      "--inner",
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: 7bit",
+      "",
+      "see attached",
+      "--inner",
+      "Content-Type: text/plain",
+      "Content-Transfer-Encoding: quoted-printable",
+      `Content-Disposition: attachment; filename="cafe.txt"`,
+      "",
+      "caf=E9",
+      "--inner--",
+      "--outer",
+      "Content-Type: application/pgp-signature",
+      "",
+      "FAKE-SIGNATURE",
+      "--outer--",
+      "",
+    ].join("\r\n"),
+  );
+}
+
 function htmlSiblingPdfMessage(): Uint8Array {
   // Conversation shape plus an extra inline text/html sibling. The PDF is
   // IMAP part 1.3; advertising it as 1.2 (attachment index + 2) fetches HTML.
@@ -377,6 +416,61 @@ function htmlSiblingPdfMessage(): Uint8Array {
 }
 
 describe("mail_read attachment paths on inbound MIME", () => {
+  test("a listed quoted-printable attachment returns decoded bytes, not the QP source", async () => {
+    const hub = createInMemoryTransport();
+    hub.register(
+      "beta@test.interchange",
+      createEd25519Crypto(await generateKeyPair()),
+    );
+    hub.deliver("beta@test.interchange", quotedPrintableCafeMessage());
+    const beta = hub.getTransportFor("beta@test.interchange");
+    const read = makeMailReadHandler(beta);
+    const [ref] = await beta.search("INBOX", {});
+    if (ref === undefined) throw new Error("expected a delivered message");
+
+    const listed = await read(
+      { id: "full", name: "mail_read", arguments: { ref, parts: "full" } },
+      signal,
+    );
+    expect(listed.isError).toBeUndefined();
+    if (typeof listed.content === "string") {
+      throw new Error("expected object content");
+    }
+    const attachments = listed.content["attachments"];
+    if (!Array.isArray(attachments) || attachments[0] === undefined) {
+      throw new Error("expected one listed attachment");
+    }
+    const advertised = attachments[0];
+    if (
+      typeof advertised !== "object" ||
+      advertised === null ||
+      !("part" in advertised) ||
+      typeof advertised.part !== "string"
+    ) {
+      throw new Error("expected listed attachment with a part path");
+    }
+
+    const fetched = await read(
+      {
+        id: "qp",
+        name: "mail_read",
+        arguments: { ref, parts: advertised.part },
+      },
+      signal,
+    );
+    expect(fetched.isError).toBeUndefined();
+    const decoded = new Uint8Array([0x63, 0x61, 0x66, 0xe9]);
+    expect(fetched.content).toEqual({
+      contentType: "text/plain",
+      encoding: "base64",
+      content: base64Encode(decoded),
+    });
+    if (typeof fetched.content === "string") {
+      throw new Error("expected object content");
+    }
+    expect(fetched.content["content"]).not.toBe("caf=E9");
+  });
+
   test("an extra html sibling does not advertise the PDF as 1.2", async () => {
     const hub = createInMemoryTransport();
     hub.register(
