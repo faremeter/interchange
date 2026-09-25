@@ -52,6 +52,7 @@ import type {
 import {
   isAnnotatedDirectorFactory,
   isAnnotatedPluginFactory,
+  isOwnedDirectorId,
 } from "@intx/agent";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import { ToolCredentialDeclarationArray } from "@intx/types/package-json";
@@ -412,7 +413,7 @@ export function createToolLoader(config: LoaderConfig): ToolLoader {
       // the only thing that ties the approved grant to the package whose code
       // runs. Same rule as the workflow-host closure loader.
       for (const director of directors) {
-        if (!director.id.startsWith(`${entry.name}/`)) {
+        if (!isOwnedDirectorId(director.id, entry.name)) {
           throw new ToolLoaderError({
             category: "package.entry.invalid",
             message: `${entry.name}@${entry.version} interchange.directors entry exports director ${JSON.stringify(director.id)} outside the package's own namespace ${JSON.stringify(entry.name)}`,
