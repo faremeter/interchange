@@ -64,6 +64,7 @@ import {
 import type { GrantEffect } from "@intx/types";
 import {
   EXECUTABLE_STEP_DESCENT,
+  extractAgent,
   walkNestedWorkflowSteps,
 } from "@intx/workflow/definition";
 import type { WorkflowDefinition } from "@intx/workflow/definition";
@@ -194,24 +195,6 @@ export function walkCapabilities(
     perStep,
     unresolvedDirectors: Object.freeze([...unresolved]),
   });
-}
-
-/**
- * Project a primitive to its agent definition when it carries one.
- * `step` and `map` are the agent-carrying shapes today; other
- * primitives have no agent, so they receive only the trigger-derived
- * grant set.
- */
-function extractAgent(
-  primitive: WorkflowDefinition["steps"][string],
-): AgentDefinition<BaseEnv> | null {
-  if (primitive.kind === "step") {
-    return primitive.agent;
-  }
-  if (primitive.kind === "map") {
-    return primitive.step.agent;
-  }
-  return null;
 }
 
 /**

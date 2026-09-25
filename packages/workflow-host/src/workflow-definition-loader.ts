@@ -40,6 +40,7 @@ import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
 import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
 import {
   EXECUTABLE_STEP_DESCENT,
+  extractAgent,
   walkWorkflowSteps,
   type WorkflowDefinition,
 } from "@intx/workflow/definition";
@@ -235,12 +236,7 @@ function collectDirectorIds(definition: WorkflowDefinition): string[] {
     descent: EXECUTABLE_STEP_DESCENT,
     context: "director id collection: ",
     visit: ({ step }) => {
-      const agent =
-        step.kind === "step"
-          ? step.agent
-          : step.kind === "map"
-            ? step.step.agent
-            : null;
+      const agent = extractAgent(step);
       if (agent?.director !== undefined) {
         ids.add(agent.director.id);
       }
