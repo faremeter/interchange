@@ -19,6 +19,7 @@ import {
   defineWorkflow,
   runtimeRun,
   step,
+  StepOutcomeCommitError,
   type Primitive,
   type WorkflowDefinition,
   type WorkflowEvent,
@@ -282,6 +283,71 @@ describe("onFailure success-terminalization failures do not route", () => {
     expect(invoked.filter((id) => id === "unit")).toHaveLength(1);
     expect(invoked).not.toContain("rescue");
     expect(unitRoutedTo(await repoStore.read("r"))).toBeUndefined();
+  });
+
+  test("a multi-attempt step whose invoker could not commit its outcome is neither retried nor routed", async () => {
+    // The host commits a cold step's turn inside the invocation, after the
+    // agent ran; losing that commit must not re-run the agent's work.
+    const def = defineWorkflow({
+      id: "term-uncommitted-outcome",
+      trigger: { type: "manual" },
+      steps: {
+        unit: step({
+          agent: agent("unit"),
+          onFailure: "rescue",
+          retry: { maxAttempts: 2, initialBackoffMs: 1 },
+        }),
+        rescue: rescueStep(),
+        normal: step({ agent: agent("normal"), after: ["unit"] }),
+      },
+    });
+    const invoked: (string | undefined)[] = [];
+    const { env, repoStore } = buildEnv(def);
+    env.invokeStep = async (req) => {
+      invoked.push(req.authzContext.stepId);
+      if (req.authzContext.stepId === "unit") {
+        throw new StepOutcomeCommitError(new Error("push blip"));
+      }
+      return { output: null };
+    };
+    const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
+      .complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked.filter((id) => id === "unit")).toHaveLength(1);
+    expect(invoked).not.toContain("rescue");
+    const log = await repoStore.read("r");
+    expect(unitRoutedTo(log)).toBeUndefined();
+    const failed = log.find(
+      (e): e is Extract<WorkflowEvent, { kind: "StepFailed" }> =>
+        e.kind === "StepFailed" && e.stepId === "unit",
+    );
+    expect(failed?.retriesExhausted).toBe(true);
+  });
+
+  test("a resume does not route a step whose invoker could not commit its outcome", async () => {
+    const def = stepDef("term-uncommitted-outcome-resume");
+    const live = buildEnv(def);
+    live.env.invokeStep = async (req) => {
+      if (req.authzContext.stepId === "unit") {
+        throw new StepOutcomeCommitError(new Error("push blip"), "commit");
+      }
+      return { output: null };
+    };
+    const durable = durableAfterUnitFailed(live.env);
+    await runtimeRun(def, live.env, { runId: "r", triggerPayload: null })
+      .complete;
+
+    const resume = buildEnv(def);
+    const invoked = recordInvocations(resume.env);
+    const res = await runtimeRun(def, resume.env, {
+      runId: "r",
+      triggerPayload: null,
+      resumeFromEvents: durable(),
+    }).complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).toEqual([]);
   });
 
   test("a resume does not route an action whose StepCompleted commit failed", async () => {

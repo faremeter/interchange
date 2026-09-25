@@ -57,6 +57,7 @@ export {
   resolveMaxChildSpawnDepth,
   assertSpawnDepthWithinLimit,
   RuntimeResumeUnsupportedError,
+  StepOutcomeCommitError,
   createNoopDrainController,
   createEffectContext,
   resolveDrainBehavior,
