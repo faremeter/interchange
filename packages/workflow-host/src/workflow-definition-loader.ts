@@ -29,6 +29,7 @@ import {
   defaultDirectorFactory,
   isAnnotatedDirectorFactory,
   isAnnotatedPluginFactory,
+  validateNamespacedId,
   type AnnotatedDirectorFactory,
   type AnnotatedPluginFactory,
   type BaseEnv,
@@ -160,18 +161,23 @@ export interface LoadWorkflowDirectorRegistryFromClosureArgs {
  * Compose the `DirectorRegistry` for a workflow closure: the built-in
  * default plus the `defineDirector` factories the definition's referenced
  * director ids resolve to. Resolution is by id prefix -- a director id is
- * `<package-name>/<local-name>`, so the prefix names the shipping package.
- * An id prefixed by the workflow package's own name resolves to its own
- * `interchange.directors` module; any other prefix resolves to
- * `node_modules/<package-name>` under the materialized workflow package,
- * i.e. the workflow must declare the director's package as a direct
- * dependency (workspace member or pinned registry dep -- the closure
- * materializer lays both out identically). A prefix that names no laid-out
- * dependency contributes nothing: the id stays unregistered and
- * `registry.resolve` reports it unknown, which the probe surfaces as the
- * "unresolvable director" deploy failure. Every loaded package's exported
- * ids must sit under its own name, so the approved `director:<id>` grant
- * names the package whose code runs.
+ * `<package-name>/<local-name>`, so the prefix names the shipping package
+ * and is sanitized as an npm package name (not a filesystem path): `.` /
+ * `..` segments and extra slashes beyond a scope (`@scope/name`) are
+ * rejected. An id prefixed by the workflow package's own name resolves to
+ * its own `interchange.directors` module; any other legal prefix resolves
+ * to `node_modules/<package-name>` under the materialized workflow
+ * package, i.e. the workflow must declare the director's package as a
+ * direct dependency (workspace member or pinned registry dep -- the
+ * closure materializer lays both out identically). After resolve, the
+ * package's `package.json` `name` must equal that prefix. A prefix that
+ * names no laid-out dependency, fails the package-name grammar, or
+ * resolves to a directory whose manifest name does not match, contributes
+ * nothing: the id stays unregistered and `registry.resolve` reports it
+ * unknown, which the probe surfaces as the "unresolvable director" deploy
+ * failure. Every loaded package's exported ids must sit under its own
+ * name, so the approved `director:<id>` grant names the package whose
+ * code runs.
  *
  * @throws if a directors entry path escapes its package, a module cannot
  *   be imported, it exports no `AnnotatedDirectorFactory` value, or an
@@ -242,42 +248,112 @@ function collectDirectorIds(definition: WorkflowDefinition): string[] {
 
 /**
  * The package directory a director id routes to: the id's prefix (everything
- * before the last `/`) is the shipping package's name. A prefix equal to the
- * workflow package's own name resolves to the workflow package itself; any
- * other prefix must be a direct dependency laid out under
- * `node_modules/<prefix>`. `undefined` when the id carries no package prefix
- * or no such dependency is laid out -- either way the id stays unregistered.
+ * before the last `/`) is the shipping package's name, gated as an npm
+ * package name rather than joined as a path. `.` / `..` segments and extra
+ * slashes beyond a scope (`@scope/name` is the only multi-segment form) are
+ * not a package prefix -- `path.join` would otherwise treat them as
+ * traversal. A prefix equal to the workflow package's own name resolves to
+ * the workflow package itself; any other legal prefix must be a direct
+ * dependency laid out under `node_modules/<prefix>` (scoped: one extra
+ * scope directory). After realpath, `package.json` `name` must equal the
+ * prefix so a directory whose layout name and manifest name disagree cannot
+ * register. `undefined` when the id fails `validateNamespacedId`, carries
+ * no package prefix, fails the package-name grammar, is not a direct
+ * `node_modules` child, or no such dependency is laid out -- either way
+ * the id stays unregistered.
  *
  * The realpath targets `package.json`, not the directory: a bare scope dir
  * (`node_modules/@scope`) exists whenever any scoped dep does but is not a
  * package, and routing to it would fail on the missing manifest rather than
- * reading as "not a dependency".
+ * reading as "not a dependency". Containment is checked on the lookup path
+ * under the workflow's `node_modules` (the symlink slot the materializer
+ * lays out); the store copy the symlink points at lives outside that tree.
  */
 async function resolveDirectorPackageDir(
   workflowPackageDir: string,
   workflowPackageName: string,
   directorId: string,
 ): Promise<string | undefined> {
+  try {
+    validateNamespacedId(directorId);
+  } catch {
+    return undefined;
+  }
   const slash = directorId.lastIndexOf("/");
   if (slash <= 0) return undefined;
   const packageName = directorId.slice(0, slash);
+  if (!isLegalDirectorPackageName(packageName)) return undefined;
+
+  const workflowReal = await fs.realpath(workflowPackageDir);
   if (packageName === workflowPackageName) {
-    return fs.realpath(workflowPackageDir);
+    const pkgJson = await readPackageJSON(workflowReal);
+    if (pkgJson.name !== packageName) return undefined;
+    return workflowReal;
+  }
+
+  const lookupDir = path.join(workflowReal, "node_modules", packageName);
+  if (!isDirectNodeModulesPackage(workflowReal, lookupDir, packageName)) {
+    return undefined;
   }
   try {
-    const manifest = await fs.realpath(
-      path.join(
-        workflowPackageDir,
-        "node_modules",
-        packageName,
-        "package.json",
-      ),
-    );
-    return path.dirname(manifest);
+    const manifest = await fs.realpath(path.join(lookupDir, "package.json"));
+    const pkgDir = path.dirname(manifest);
+    const pkgJson = await readPackageJSON(pkgDir);
+    if (pkgJson.name !== packageName) return undefined;
+    return pkgDir;
   } catch (cause) {
     if (isErrnoNotFound(cause)) return undefined;
     throw cause;
   }
+}
+
+// A director-id prefix is an npm package name, not a path. Unscoped names
+// are a single segment; scoped names are exactly `@scope/name`. `.` and
+// `..` are not segments -- `packageName.includes("..")` would also reject
+// a legal name like `foo..bar`, so each slash-separated piece is checked
+// on its own.
+const PACKAGE_NAME_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+function isLegalDirectorPackageName(name: string): boolean {
+  if (name.startsWith("@")) {
+    const parts = name.split("/");
+    if (parts.length !== 2) return false;
+    const scope = parts[0];
+    const pkg = parts[1];
+    if (scope === undefined || pkg === undefined) return false;
+    return isPackageNameSegment(scope.slice(1)) && isPackageNameSegment(pkg);
+  }
+  if (name.includes("/")) return false;
+  return isPackageNameSegment(name);
+}
+
+function isPackageNameSegment(segment: string): boolean {
+  return (
+    segment !== "." && segment !== ".." && PACKAGE_NAME_SEGMENT.test(segment)
+  );
+}
+
+// The lookup path -- not the store realpath the materializer's symlink
+// resolves to -- must be the workflow package's `node_modules/<name>` slot
+// (scoped: `node_modules/@scope/name`). `path.relative` catching `..` or
+// an absolute remainder is belt-and-braces on top of the package-name
+// grammar: a legal name cannot traverse, but a join bug still must not
+// import an escaped directory.
+function isDirectNodeModulesPackage(
+  workflowReal: string,
+  lookupDir: string,
+  packageName: string,
+): boolean {
+  const nodeModules = path.join(workflowReal, "node_modules");
+  const expected = path.join(nodeModules, packageName);
+  if (path.normalize(lookupDir) !== path.normalize(expected)) {
+    return false;
+  }
+  const rel = path.relative(nodeModules, lookupDir);
+  if (rel === "" || path.isAbsolute(rel)) return false;
+  const segments = rel.split(path.sep);
+  if (segments.includes("..") || segments.includes(".")) return false;
+  return segments.join("/") === packageName;
 }
 
 /**
