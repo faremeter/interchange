@@ -390,6 +390,7 @@ export function mountHubRoutes(
         sidecarRouter,
         repoStore,
         grantStore,
+        authorizeGrant,
         requireGrant,
       }),
     );
