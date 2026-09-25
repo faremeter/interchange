@@ -640,6 +640,23 @@ export const b = make("@fixture/director-pkg/b");
     ).toThrow(UnknownDirectorIdError);
   });
 
+  test("a file at node_modules/<name> stays unresolved instead of throwing ENOTDIR", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+    });
+    await fs.writeFile(path.join(packageDir, "node_modules", "ghost-pkg"), "");
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("ghost-pkg/coding"),
+    });
+
+    expect(() =>
+      registry.resolve({ id: "ghost-pkg/coding", config: {} }),
+    ).toThrow(UnknownDirectorIdError);
+  });
+
   test("a director reachable only transitively stays unresolved", async () => {
     const packageDir = await createClosureFixture({
       workflowEntry: "./workflow.js",
