@@ -522,11 +522,11 @@ async function executeRunBody(
       // recoverable: the suspension decision is durable in the reactor's
       // pending-operation store even though the workflow log lost it, so the
       // reconstruction loop below re-commits the missing `SignalAwaited` rather
-      // than failing the run. Otherwise (no binding, or no pending approval op)
-      // it is a genuine crash mid-agent-turn and settles terminal, the
-      // pre-recovery behavior. Both settlings happen AFTER this loop --
-      // committing inline would leave `state` stale and merely relocate the
-      // stall to the main loop.
+      // than failing the run. Otherwise (no binding, no pending approval op, or
+      // a stale one) it is a genuine crash mid-agent-turn and settles
+      // terminal, the pre-recovery behavior. Both settlings happen AFTER this
+      // loop -- committing inline would leave `state` stale and merely
+      // relocate the stall to the main loop.
       if (isCrashedInvocationStep(definition, stepId, stepState.phase)) {
         const parkedOps =
           env.readParkedApprovalOps !== undefined
@@ -545,7 +545,21 @@ async function executeRunBody(
           );
         }
         const parked = parkedOps[0];
-        if (parked !== undefined) {
+        // A durable op whose channel this step already awaited in the log is
+        // stale, not a lost park: that park flushed and a delivery resumed the
+        // step, whose reactor consumed the op before the store holding it
+        // caught up (the committed copy of a step that crashed mid-turn trails
+        // its local store). Re-parking would wait on a decision already spent,
+        // so the step is a genuine crash mid-turn.
+        if (
+          parked !== undefined &&
+          !(await stepAwaitedSignal(
+            env,
+            runId,
+            stepId,
+            signalName(parked.correlationId),
+          ))
+        ) {
           recoverableParks.push({
             stepId,
             attempt: stepState.currentAttempt,
@@ -5118,6 +5132,22 @@ class ChildWorkflowFailedError extends Error {
     this.name = "ChildWorkflowFailedError";
     this.childTerminalStatus = childTerminalStatus;
   }
+}
+
+/** Whether `stepId` has committed a `SignalAwaited` on `name` to the run's log. */
+async function stepAwaitedSignal(
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  stepId: string,
+  name: string,
+): Promise<boolean> {
+  const events = await env.repoStore.read(runId);
+  return events.some(
+    (e) =>
+      e.kind === "SignalAwaited" &&
+      e.stepId === stepId &&
+      e.signalName === name,
+  );
 }
 
 // A unit's work succeeded but landing its terminal -- pruning the handler

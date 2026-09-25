@@ -239,6 +239,62 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
     }
   });
 
+  test("a pending approval op whose channel the step already awaited settles the crashed step terminal", async () => {
+    // The park flushed and its decision resumed the step, which crashed
+    // mid-turn before the store holding the op caught up with its reactor.
+    // The op is spent; re-parking on it would wait forever.
+    const runId = "run-crashed-park-spent";
+    const corr = "corr-crashed-park-spent";
+    const channel = createInMemorySignalChannel();
+    const repoStore = createInMemoryRepoStore();
+    let invoked = 0;
+    const invokeStep: StepInvoker = async () => {
+      invoked += 1;
+      return { output: { reply: "done", turn: replyTurn } };
+    };
+    const env = buildEnv(oneStep, {
+      repoStore,
+      invokeStep,
+      signalChannel: channel,
+      readParkedApprovalOps: async () => [{ correlationId: corr }],
+      persistRecoveredPark: async () => {
+        throw new Error("a spent approval op has no park to persist");
+      },
+    });
+
+    await seedCrashedPark(repoStore, runId);
+    await repoStore.append(runId, {
+      kind: "SignalAwaited",
+      seq: 3,
+      at,
+      stepId: "s",
+      signalName: signalName(corr),
+      parkKind: "approval",
+    });
+    await repoStore.append(runId, {
+      kind: "SignalReceived",
+      seq: 4,
+      at,
+      signalName: signalName(corr),
+      signalId: "sig-spent",
+      payload: { outcome: "approved" },
+    });
+
+    const result = await runtimeRun(oneStep, env, { runId }).complete;
+
+    expect(invoked).toBe(0);
+    expect(result.terminalStatus).toBe("failed");
+    const failed = result.events.find((e) => e.kind === "StepFailed");
+    if (failed?.kind !== "StepFailed") throw new Error("no StepFailed");
+    expect(failed.error.code).toBe("crash-mid-invocation");
+    const awaited = result.events.filter(
+      (e) =>
+        e.kind === "SignalAwaited" &&
+        correlationIdFromSignalName(e.signalName) === corr,
+    );
+    expect(awaited).toHaveLength(1);
+  });
+
   test("a park whose state cannot be made durable is not recorded", async () => {
     const runId = "run-crashed-park-unpersisted";
     const corr = "corr-crashed-park-unpersisted";
