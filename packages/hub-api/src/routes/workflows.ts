@@ -48,7 +48,12 @@ import {
 
 import type { TenantEnv } from "../context";
 import { errorResponse, tenantConfigErrorResponse } from "../error-response";
-import { idResource, type RequireGrant } from "../middleware/grant";
+import {
+  denyUnlessAssetGrant,
+  idResource,
+  type AuthorizeGrant,
+  type RequireGrant,
+} from "../middleware/grant";
 import {
   lockDispatchableAllocation,
   lockWorkflowRunState,
@@ -200,6 +205,7 @@ export type CreateWorkflowRoutesDeps = {
   sidecarRouter: SidecarRouter;
   repoStore: RepoStore;
   grantStore: GrantStore;
+  authorizeGrant: AuthorizeGrant;
   requireGrant: RequireGrant;
 };
 
@@ -211,6 +217,7 @@ export function createWorkflowRoutes({
   sidecarRouter,
   repoStore,
   grantStore,
+  authorizeGrant,
   requireGrant,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
@@ -251,6 +258,10 @@ export function createWorkflowRoutes({
           "Workflow deployment accepted for provisioning",
           WorkflowDeploymentResponse,
         ),
+        403: jsonResponse(
+          "Caller lacks the read grant on the definition asset",
+          ErrorResponse,
+        ),
         404: jsonResponse("Definition asset not found", ErrorResponse),
         409: jsonResponse(
           "Asset kind does not match the source's package format, workflow definition, source offering chain, or stored tenant config invalid, workflow provisioning unavailable, or provisioner selection failed",
@@ -280,6 +291,15 @@ export function createWorkflowRoutes({
         );
       }
       const definitionAssetId = body.source.assetId;
+
+      const denied = await denyUnlessAssetGrant({
+        c,
+        authorizeGrant,
+        assetId: definitionAssetId,
+      });
+      if (denied !== null) {
+        return denied;
+      }
 
       const assetRow = await db.query.asset.findFirst({
         where: and(
