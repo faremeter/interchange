@@ -9,6 +9,7 @@ export {
   SessionLaunchError,
   bridgeOrchestratorDeployContent,
   deployCodeSourcedWorkflow,
+  redeployCodeSourcedWorkflow,
   type SessionService,
   type DeployWorkflowDefinitionResult,
   type DeployPreparedCodeSourcedWorkflowParams,

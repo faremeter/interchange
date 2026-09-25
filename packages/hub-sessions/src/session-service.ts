@@ -1008,6 +1008,47 @@ export async function deployCodeSourcedWorkflow(
   return { publicKey };
 }
 
+/**
+ * The test and low-level counterpart of `deployCodeSourcedWorkflow` for an
+ * anchor whose `workflow_run` row already exists, such as a deployment moved
+ * onto a replacement allocation after `restoreWorkflowRunToAllocation`
+ * replayed its history there: prepare and emit the source-ref frame, then
+ * stamp the key the new worker acked. The prepared provisioned path performs
+ * the same move under the allocation-ownership lock instead.
+ */
+export async function redeployCodeSourcedWorkflow(
+  args: DeployCodeSourcedWorkflowArgs,
+): Promise<{ publicKey: string }> {
+  const { sendArgs } = await prepareSourceRefDeploy(args);
+  let publicKey: string;
+  try {
+    publicKey = (await sendMultiStepDeployFrame(sendArgs)).publicKey;
+  } catch (cause) {
+    throw new SessionLaunchError(
+      "start",
+      cause,
+      !(isDeployFrameFailure(cause) && cause.frameSent === false),
+    );
+  }
+  const stamped = await args.db
+    .update(workflowRunTable)
+    .set({ publicKey })
+    .where(
+      and(
+        eq(workflowRunTable.id, args.anchorRunId),
+        eq(workflowRunTable.anchorRunId, args.anchorRunId),
+        eq(workflowRunTable.tenantId, args.tenantId),
+      ),
+    )
+    .returning({ id: workflowRunTable.id });
+  if (stamped.length === 0) {
+    throw new Error(
+      `redeployCodeSourcedWorkflow: anchor ${args.anchorRunId} has no workflow_run row to stamp the redeployed worker's key on`,
+    );
+  }
+  return { publicKey };
+}
+
 /** Resolve deferred sender mail after claiming the previous initializer's lease. */
 export async function recoverSenderDeploy(args: {
   db: DB["db"];

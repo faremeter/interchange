@@ -59,6 +59,8 @@ import {
   installAndApproveWorkflowDefinition,
   DEFAULT_ASSET_REF,
   parseAgentId,
+  redeployCodeSourcedWorkflow,
+  restoreWorkflowRunToAllocation,
   type AgentRepoStore,
   type InstallAndApproveResult,
   type RepoId,
@@ -1917,6 +1919,15 @@ export type DeployWorkflowSourceForTestOpts = {
 export type DeployWorkflowSourceForTestHandle = DeployWorkflowHandle & {
   approved: InstallAndApproveResult;
   publicKey: string;
+  /**
+   * Move the deployment onto `sidecarId`, the way the Hub fails a workflow
+   * over to replacement capacity: bind that sidecar's allocation to the
+   * deployment, replay the Hub's copy of the workflow-run history onto it,
+   * and deploy the same frozen definition there. The anchor run, its address,
+   * and its workflow-run repo stay the same, so the new worker resumes the
+   * run from its committed history.
+   */
+  redeploy(sidecarId: string): Promise<{ publicKey: string }>;
 };
 
 /**
@@ -2145,12 +2156,11 @@ export async function deployWorkflowSourceForTest(
   // ignores the secret value). Idempotent across a test's repeated deploys.
   await seedInferenceCredentials(opts.db, opts.tenantId, sources, opts.config);
 
-  const deployResult = await deployCodeSourcedWorkflow({
+  const deployArgs = {
     approved,
     source,
     resolveAttachment,
     sidecarAllocationRouter: env.hub.router,
-    allocationTarget,
     agentAddress,
     config: opts.config,
     sources,
@@ -2162,7 +2172,30 @@ export async function deployWorkflowSourceForTest(
     // seeded secrets are plaintext, so default to the noop cipher unless a test
     // supplies its own.
     credentialCipher: opts.credentialCipher ?? createNoopCredentialCipher(),
+  };
+  const deployResult = await deployCodeSourcedWorkflow({
+    ...deployArgs,
+    allocationTarget,
   });
+  const redeploy = async (
+    sidecarId: string,
+  ): Promise<{ publicKey: string }> => {
+    const target = env.hub.prepareAllocationIdentity(
+      opts.anchorRunId,
+      agentAddress,
+      sidecarId,
+    );
+    await restoreWorkflowRunToAllocation({
+      agentRepoStore: env.hub.agentRepoStore,
+      allocationRouter: env.hub.router,
+      allocationTarget: target,
+      agentAddress,
+    });
+    return redeployCodeSourcedWorkflow({
+      ...deployArgs,
+      allocationTarget: target,
+    });
+  };
 
   const workflowRunRepoId: RepoId = {
     kind: "workflow-run",
@@ -2189,6 +2222,7 @@ export async function deployWorkflowSourceForTest(
     mailAddress: agentAddress,
     approved,
     publicKey: deployResult.publicKey,
+    redeploy,
   };
 }
 
