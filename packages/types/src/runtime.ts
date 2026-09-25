@@ -2607,10 +2607,8 @@ export type RetryPolicy = (
 ) => RetryDecision | Promise<RetryDecision>;
 
 /**
- * Options for a single inference call. Override the defaults from the agent
- * configuration on a per-call basis.
- *
- * (INFERENCE.md § Providers › Streaming Harness)
+ * Reasoning-effort name sent as given. Each adapter maps the name onto
+ * its own wire field.
  */
 export const InferenceEffort = type.enumerated(
   "off",
@@ -2649,6 +2647,12 @@ export const PerCallInferenceOptions = type({
 });
 export type PerCallInferenceOptions = typeof PerCallInferenceOptions.infer;
 
+/**
+ * Options for a single inference call. Override the defaults from the agent
+ * configuration on a per-call basis.
+ *
+ * (INFERENCE.md § Providers › Streaming Harness)
+ */
 export type InferenceOptions = PerCallInferenceOptions & {
   systemPrompt?: string;
   tools?: ToolDefinition[];
