@@ -5,11 +5,7 @@ import type {
   AllocatedSidecarTarget,
   SidecarAllocationRouter,
 } from "./ws/sidecar-handler";
-
-export const WORKFLOW_RUN_RESTORE_REFS = [
-  "refs/heads/main",
-  "refs/heads/events",
-] as const;
+import { WORKFLOW_RUN_RESTORE_REFS } from "./workflow-run-refs";
 
 /**
  * Replay every authoritative workflow-run ref the runtime understands onto an

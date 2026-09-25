@@ -52,6 +52,7 @@ import {
   createDurableConversationStore,
   readDurableConversation,
   reconstructDurableConversation,
+  type DurableConversationLifetime,
   type DurableConversationStore,
 } from "@intx/sidecar-app/src/conversation-state";
 
@@ -146,6 +147,7 @@ async function makeHarness(): Promise<Harness> {
 async function makeStore(
   h: Harness,
   localDir: string,
+  lifetime: DurableConversationLifetime = { kind: "deployment" },
 ): Promise<DurableConversationStore> {
   return createDurableConversationStore({
     localStoreDir: localDir,
@@ -156,6 +158,7 @@ async function makeStore(
     principal: PRINCIPAL,
     runId: RUN_ID,
     stepId: STEP_ID,
+    lifetime,
   });
 }
 
@@ -365,6 +368,94 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     }
   });
 
+  describe("a failing compaction", () => {
+    function storeFailingCheckpoints(
+      failures: number,
+    ): Promise<DurableConversationStore> {
+      let remaining = failures;
+      const writeTreePreservingPrefix: RepoStore["writeTreePreservingPrefix"] =
+        (principal, repoId, ref, args) => {
+          if (!args.preservePrefix.includes("/wal/") && remaining > 0) {
+            remaining -= 1;
+            return Promise.reject(new Error("checkpoint write refused"));
+          }
+          return h.substrate.writeTreePreservingPrefix(
+            principal,
+            repoId,
+            ref,
+            args,
+          );
+        };
+      const substrate = new Proxy(h.substrate, {
+        get(target, prop, receiver): unknown {
+          if (prop === "writeTreePreservingPrefix") {
+            return writeTreePreservingPrefix;
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return createDurableConversationStore({
+        localStoreDir: localDir,
+        signer: h.signer,
+        substrate,
+        workflowRunRepoId: h.workflowRunRepoId,
+        workflowRunRef: WORKFLOW_RUN_REF,
+        principal: PRINCIPAL,
+        runId: RUN_ID,
+        stepId: STEP_ID,
+        lifetime: { kind: "deployment" },
+      });
+    }
+
+    test("keeps the boundary and compacts at the next one", async () => {
+      const store = await storeFailingCheckpoints(1);
+      let turns: ConversationTurn[] = [];
+      for (let i = 0; i < CHECKPOINT_INTERVAL; i += 1) {
+        turns = await pushAndMirror(store, turns, [userTurn(`t${String(i)}`)], {
+          tokenUsageInput: i,
+        });
+      }
+      expect(countWalEntries(h.stateDir)).toBe(CHECKPOINT_INTERVAL);
+      expect(fs.existsSync(path.join(h.stateDir, "checkpoint.meta.json"))).toBe(
+        false,
+      );
+
+      turns = await pushAndMirror(store, turns, [userTurn("next")], {
+        tokenUsageInput: CHECKPOINT_INTERVAL,
+      });
+      expect(countWalEntries(h.stateDir)).toBe(0);
+      expect(readCheckpointMeta(h.stateDir)).toMatchObject({
+        checkpointSeq: CHECKPOINT_INTERVAL + 1,
+        turnCount: CHECKPOINT_INTERVAL + 1,
+      });
+      expect(
+        (await reconstructDurableConversation(h.stateDir, STEP_ID))?.turns,
+      ).toEqual(turns);
+    });
+
+    test("fails the mirror once the WAL reaches twice the interval, keeping every turn", async () => {
+      const store = await storeFailingCheckpoints(Number.POSITIVE_INFINITY);
+      const limit = 2 * CHECKPOINT_INTERVAL;
+      let turns: ConversationTurn[] = [];
+      for (let i = 0; i < limit - 1; i += 1) {
+        turns = await pushAndMirror(store, turns, [userTurn(`t${String(i)}`)], {
+          tokenUsageInput: i,
+        });
+      }
+
+      turns = [...turns, userTurn("last")];
+      await store.storage.writeTurns(turns);
+      await store.storage.commit({ message: "turn" });
+      await expect(store.mirrorToSubstrate()).rejects.toThrow(
+        `failed with ${String(limit)} WAL entries uncompacted`,
+      );
+      expect(countWalEntries(h.stateDir)).toBe(limit);
+      expect(
+        (await reconstructDurableConversation(h.stateDir, STEP_ID))?.turns,
+      ).toEqual(turns);
+    });
+  });
+
   test("restore reconstructs the EXACT turn list and metadata across checkpoint + WAL tail", async () => {
     const store = await makeStore(h, localDir);
 
@@ -516,6 +607,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
+      lifetime: { kind: "deployment" },
     });
 
     // Boundary 0: the local store holds [a]; during its WAL append the
@@ -606,6 +698,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
+      lifetime: { kind: "deployment" },
     });
 
     // The local store holds [a, b]; fire two overlapping mirrors of it.
@@ -743,6 +836,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
+      lifetime: { kind: "deployment" },
     });
 
     const restored = await store.restoreFromSubstrate();
@@ -798,6 +892,79 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     ]);
     // No two WAL appends targeted the same boundary seq.
     expect(new Set(seqsWritten).size).toBe(seqsWritten.length);
+  });
+});
+
+describe("durable conversation store attempt-scoped local store", () => {
+  let h: Harness;
+  let localDir: string;
+  const attemptOne: DurableConversationLifetime = {
+    kind: "attempt",
+    attempt: 1,
+  };
+
+  beforeEach(async () => {
+    h = await makeHarness();
+    localDir = path.join(h.baseDir, "attempt-1");
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(h.baseDir, { recursive: true, force: true });
+  });
+
+  test("an invocation after a crash that beat the mirror resumes from the local store", async () => {
+    const first = await makeStore(h, localDir, attemptOne);
+    await first.restoreFromSubstrate();
+    const committedTurns = await pushAndMirror(first, [], [userTurn("first")], {
+      tokenUsageInput: 1,
+    });
+
+    // The next invocation's reactor commits its turn locally, then the host
+    // dies before the settle mirror.
+    const crashed = await makeStore(h, localDir, attemptOne);
+    await crashed.restoreFromSubstrate();
+    const localTurns = [...committedTurns, userTurn("second")];
+    await crashed.storage.writeTurns(localTurns);
+    await crashed.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(2),
+    });
+    await crashed.storage.commit({ message: "turn" });
+
+    const resumed = await makeStore(h, localDir, attemptOne);
+    expect(await resumed.restoreFromSubstrate()).toBe(true);
+    const loaded = await resumed.storage.load();
+    expect(loaded.turns).toEqual(localTurns);
+    expect(loaded.tokenUsage).toEqual(tokenUsage(2));
+
+    await pushAndMirror(resumed, loaded.turns, [userTurn("third")], {
+      tokenUsageInput: 3,
+    });
+    const committed = await reconstructDurableConversation(h.stateDir, STEP_ID);
+    expect(committed?.turns).toEqual([...localTurns, userTurn("third")]);
+    expect(committed?.attempt).toBe(1);
+  });
+
+  test("a local store that no longer extends the committed turns is replaced by them", async () => {
+    const elsewhere = await makeStore(
+      h,
+      path.join(h.baseDir, "other-host"),
+      attemptOne,
+    );
+    await elsewhere.restoreFromSubstrate();
+    const committedTurns = await pushAndMirror(
+      elsewhere,
+      [],
+      [userTurn("committed")],
+      { tokenUsageInput: 1 },
+    );
+    const leftBehind = await makeStore(h, localDir, attemptOne);
+    await leftBehind.storage.writeTurns([userTurn("left behind")]);
+    await leftBehind.storage.commit({ message: "turn" });
+
+    const resumed = await makeStore(h, localDir, attemptOne);
+    await resumed.restoreFromSubstrate();
+    expect((await resumed.storage.load()).turns).toEqual(committedTurns);
   });
 });
 

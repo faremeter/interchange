@@ -71,6 +71,7 @@ import type {
   ActionHandler,
   RunResult,
   Scheduler,
+  PersistRecoveredPark,
   ReadParkedApprovalOps,
   StepInvokeRequest,
   StepInvokeResult,
@@ -440,6 +441,13 @@ export interface RunWorkflowChildBindings {
    * invocation step settles as a terminal failure, the pre-recovery behavior.
    */
   readParkedApprovalOps?: ReadParkedApprovalOps;
+  /**
+   * Make durable the step state behind a park the resume classifier
+   * recovered through `readParkedApprovalOps`, before the park is committed
+   * to the run log. Wired wherever `readParkedApprovalOps` is: the read can
+   * answer from a local store the crash left ahead of the durable copy.
+   */
+  persistRecoveredPark?: PersistRecoveredPark;
   /**
    * Mailbox watch registry backing the warm agent's `mail_wait` (INBOUND half
    * of mailbox ownership, §3b). The host's substrate factory builds ONE
@@ -1760,6 +1768,9 @@ function buildRuntimeEnv(args: {
     // crashed invocation a terminal failure.
     ...(args.bindings.readParkedApprovalOps !== undefined
       ? { readParkedApprovalOps: args.bindings.readParkedApprovalOps }
+      : {}),
+    ...(args.bindings.persistRecoveredPark !== undefined
+      ? { persistRecoveredPark: args.bindings.persistRecoveredPark }
       : {}),
   };
   // The suspendable-loop executor runs each iteration's body under THIS run's

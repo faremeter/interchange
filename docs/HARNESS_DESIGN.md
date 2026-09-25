@@ -55,7 +55,8 @@ apps/sidecar/
 │   ├── default-harness.ts                   # HarnessBuilder source-admission seam (canBuildSource) the deploy router consults before spawning
 │   ├── atomic-write.ts                      # Atomic, durable file replacement for non-rebuildable on-disk records
 │   ├── signing-keypair.ts                   # Loads or mints the sidecar's on-disk Ed25519 signing keypair
-│   ├── conversation-state.ts                # Durable conversation state for the warm single-step agent
+│   ├── conversation-state.ts                # Durable agent step state, committed to the workflow-run repo
+│   ├── step-storage-root.ts                 # Root of a deployment's multi-step step stores on this host
 │   ├── run-grants.ts                        # Shared read primitives for a run's on-disk grants
 │   ├── child-grant-filter.ts                # Caps a spawned child's inherited grants at the capabilities its body declares
 │   ├── step-agent-tools.ts                  # Per-step tool materialization and agent construction inside the child
@@ -123,8 +124,8 @@ SIDECAR_DATA_DIR/
     <runId>/                     # workflow-run substrate for one run
       deployment.json            # per-run restore record (mode 0600); see below
   workflow-step-state/
-    <runId>/                     # ephemeral per-step scratch, reclaimed on undeploy
-  agent-conversation-state/      # durable per-agent conversation, survives undeploy
+    <runId>/                     # per-step scratch and working stores, reclaimed on undeploy
+  agent-conversation-state/      # warm agent's working store; the durable copy is in the run repo
 ```
 
 The per-agent key directory is keyed by the sanitized run address; the workflow subtrees are keyed by the derived run id.

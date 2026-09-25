@@ -3,10 +3,13 @@ import path from "node:path";
 
 import {
   WORKFLOW_RUN_RESTORE_REFS,
+  WORKFLOW_RUN_STATE_REF,
   type RepoId,
   type RepoStore,
-} from "@intx/hub-sessions";
+} from "@intx/hub-sessions/substrate";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
+
+import { coldStepStorageRoot } from "./step-storage-root";
 
 const RESTORABLE_REFS: readonly string[] = WORKFLOW_RUN_RESTORE_REFS;
 
@@ -111,13 +114,16 @@ async function materializeRestoredRefs(
  * Build the sidecar boundary that installs Hub-authoritative workflow-run
  * history before a replacement supervisor starts. Packs land on the
  * unwrapped substrate so applying restored history cannot echo it back to the
- * Hub as a new sidecar-authored update.
+ * Hub as a new sidecar-authored update. Replacing the state ref's history
+ * also discards the deployment's multi-step step stores under `dataDir`,
+ * which were built on the history being replaced.
  */
 export function createWorkflowRunPackRestorer(args: {
   substrate: RepoStore;
+  dataDir: string;
   markRestored(repoId: RepoId, ref: string, commitSha: string): void;
 }): WorkflowRunPackRestorer {
-  const { substrate, markRestored } = args;
+  const { substrate, dataDir, markRestored } = args;
   const hubPrincipal = { kind: "hub" } as const;
 
   return async ({ agentAddress, repoId, pack, ref, commitSha }) => {
@@ -149,6 +155,19 @@ export function createWorkflowRunPackRestorer(args: {
       ref,
     );
     if (expectedOldSha !== commitSha) {
+      // A multi-step attempt's local store can lead this host's history by
+      // a turn a crash kept out of it, and restore prefers that lead. Over
+      // replaced history the lead would continue from turns and events the
+      // restored run never had. The stores go before the ref moves, so a
+      // crash in between leaves the ref where the retry discards them again.
+      // Only the state ref's history matters: a lead over matching state
+      // history is exactly what restore keeps.
+      if (ref === WORKFLOW_RUN_STATE_REF) {
+        await fs.rm(
+          coldStepStorageRoot({ dataDir, workflowRunRepoId: repoId }),
+          { recursive: true, force: true },
+        );
+      }
       await substrate.receivePack(
         hubPrincipal,
         repoId,

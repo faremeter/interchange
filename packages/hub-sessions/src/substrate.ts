@@ -73,6 +73,11 @@ export type {
   StepStateReader,
 } from "./step-state";
 
+export {
+  WORKFLOW_RUN_RESTORE_REFS,
+  WORKFLOW_RUN_STATE_REF,
+} from "./workflow-run-refs";
+
 export { workflowDefinitionEnvelopeSchema } from "./workflow-kind";
 
 export { subscribeKind } from "./repo-store/subscribe-kind";

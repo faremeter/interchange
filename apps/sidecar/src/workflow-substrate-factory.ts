@@ -33,6 +33,7 @@ import type {
   ApprovalSnapshot,
   AuditStore,
   ContextStore,
+  ConversationTurn,
   InboundMessage,
   InferenceEvent,
   MessageTransport,
@@ -115,6 +116,7 @@ import {
   LOOP_BODY_DESCENT,
   type LoopFnRegistry,
   type ParkedApprovalOp,
+  type PersistRecoveredPark,
   type ReadParkedApprovalOps,
   type Scheduler,
   type StepInvokeRequest,
@@ -145,10 +147,15 @@ import {
 } from "./child-grant-filter";
 import {
   createDurableConversationRegistry,
+  createDurableConversationStore,
   isErrnoNotFound,
+  isLocalStateCurrent,
   readDurableConversation,
+  readStepState,
   type DurableConversationRegistry,
+  type DurableConversationStore,
 } from "./conversation-state";
+import { coldStepStorageRoot } from "./step-storage-root";
 
 // The child does not construct a workflow-run pack-push pipeline of
 // its own. The supervisor owns the workflow-run repo's write
@@ -491,11 +498,7 @@ export function stepStorageRoot(args: {
   attempt: number;
 }): string {
   return path.join(
-    args.dataDir,
-    "workflow-step-state",
-    args.workflowRunRepoId.id,
-    "runs",
-    args.runId,
+    runStepStorageRoot(args),
     "steps",
     args.stepId,
     `attempt-${String(args.attempt)}`,
@@ -516,13 +519,7 @@ function runStepStorageRoot(args: {
   workflowRunRepoId: RepoId;
   runId: string;
 }): string {
-  return path.join(
-    args.dataDir,
-    "workflow-step-state",
-    args.workflowRunRepoId.id,
-    "runs",
-    args.runId,
-  );
+  return path.join(coldStepStorageRoot(args), args.runId);
 }
 
 /**
@@ -552,15 +549,6 @@ function warmStepStorageRoot(args: {
     "warm",
     encodeURIComponent(args.stepId),
   );
-}
-
-async function directoryExists(dir: string): Promise<boolean> {
-  try {
-    return (await fs.promises.stat(dir)).isDirectory();
-  } catch (cause) {
-    if (isErrnoNotFound(cause)) return false;
-    throw cause;
-  }
 }
 
 function findApprovalSnapshot(
@@ -595,41 +583,145 @@ async function resolveMailboxReferences(
 }
 
 /**
- * Read a cold (multi-step) parked step's durable pending operations from its
- * on-disk per-attempt isogit store. The store is written at suspend and
- * survives while the run is non-terminal -- a parked step keeps the run
- * in-flight, so the run-completion reclamation (`cleanupRunStorage`) never
- * fires against it.
- *
- * Returns an empty list when the store directory is absent rather than
- * manufacturing an empty repo on the read path: `createIsogitStore` calls
- * `initAgentRepo`, which would `mkdir` and init a fresh repo for a
- * non-existent dir. The `directoryExists` guard keeps the read a read -- on an
- * existing store `initAgentRepo` finds a repo and commits nothing, so no
- * signer is needed (`load()` never signs).
+ * Read a cold (multi-step) parked step's durable pending operations. Every
+ * cold invocation commits the step's state to the workflow-run substrate
+ * before it returns, including one that suspends on an approval, but the
+ * reactor records a suspension in the attempt's local store first. A crash
+ * between the two leaves the park only in the local store, so the attempt's
+ * local store answers while it is current (`isLocalStateCurrent`), which on
+ * the host that ran the attempt is whenever it holds anything. Otherwise --
+ * on a replacement host -- the attempt's committed state answers. Returns an
+ * empty list when neither holds state for that attempt.
  */
 export async function readColdParkedPendingOperations(args: {
   dataDir: string;
+  substrate: RepoStore;
   workflowRunRepoId: RepoId;
   runId: string;
   stepId: string;
   attempt: number;
 }): Promise<PendingOperation[]> {
-  const storeDir = stepStorageRoot({
-    dataDir: args.dataDir,
+  const committed = await readStepState(args);
+  const own =
+    committed !== null && committed.attempt === args.attempt ? committed : null;
+  const local = await readLocalColdState(args);
+  if (
+    local !== null &&
+    isLocalStateCurrent(local, own === null ? null : own.turns)
+  ) {
+    return local.pendingOperations;
+  }
+  return own === null ? [] : own.pendingOperations;
+}
+
+/**
+ * Commit the state behind a cold step's recovered park before the runtime
+ * records the park. `readColdParkedPendingOperations` answers from the
+ * attempt's local store when a crash beat the settle mirror, and a park
+ * recorded over state only this host holds names a pending operation a
+ * replacement host cannot find. When the committed state already holds the
+ * operation this writes nothing; otherwise it commits the local store the way
+ * the settle mirror would have.
+ */
+export async function persistColdRecoveredPark(args: {
+  dataDir: string;
+  substrate: RepoStore;
+  workflowRunRepoId: RepoId;
+  workflowRunRef: string;
+  principal: Principal;
+  signer: (payload: string) => Promise<string>;
+  runId: string;
+  stepId: string;
+  attempt: number;
+  correlationId: string;
+}): Promise<void> {
+  const label = `recovered park ${args.correlationId} of step ${args.stepId} (run ${args.runId}, attempt ${String(args.attempt)})`;
+  const committed = await readStepState(args);
+  const own =
+    committed !== null && committed.attempt === args.attempt ? committed : null;
+  if (holdsPendingOperation(own, args.correlationId)) return;
+  const local = await readLocalColdState(args);
+  // The park came from the local store only if it is current; persisting a
+  // store that is not would overwrite it with the committed copy instead.
+  if (
+    local === null ||
+    !isLocalStateCurrent(local, own === null ? null : own.turns)
+  ) {
+    throw new Error(
+      `${label}: neither the committed step state nor a current local store holds its pending operation`,
+    );
+  }
+  const store = await createDurableConversationStore({
+    localStoreDir: stepStorageRoot(args),
+    signer: args.signer,
+    substrate: args.substrate,
     workflowRunRepoId: args.workflowRunRepoId,
+    workflowRunRef: args.workflowRunRef,
+    principal: args.principal,
     runId: args.runId,
     stepId: args.stepId,
-    attempt: args.attempt,
+    lifetime: { kind: "attempt", attempt: args.attempt },
   });
-  if (!(await directoryExists(storeDir))) return [];
+  await store.restoreFromSubstrate();
+  await store.mirrorToSubstrate();
+  const persisted = await readStepState(args);
+  if (
+    persisted === null ||
+    persisted.attempt !== args.attempt ||
+    !holdsPendingOperation(persisted, args.correlationId)
+  ) {
+    throw new Error(
+      `${label}: committing the local store left the pending operation out of the committed step state`,
+    );
+  }
+}
+
+function holdsPendingOperation(
+  state: { pendingOperations: readonly PendingOperation[] } | null,
+  correlationId: string,
+): boolean {
+  return (
+    state !== null &&
+    state.pendingOperations.some((op) => op.correlationId === correlationId)
+  );
+}
+
+/**
+ * The conversation and pending operations in a cold step attempt's local
+ * store, or `null` when the store directory is absent. Checked first rather
+ * than manufacturing an empty repo on the read path: `createIsogitStore`
+ * calls `initAgentRepo`, which would `mkdir` and init a fresh repo for a
+ * non-existent dir. On an existing store `initAgentRepo` finds a repo and
+ * commits nothing, so no signer is needed (`load()` never signs).
+ */
+async function readLocalColdState(args: {
+  dataDir: string;
+  workflowRunRepoId: RepoId;
+  runId: string;
+  stepId: string;
+  attempt: number;
+}): Promise<{
+  turns: ConversationTurn[];
+  pendingOperations: PendingOperation[];
+} | null> {
+  const storeDir = stepStorageRoot(args);
+  if (!(await directoryExists(storeDir))) return null;
   const store = await createIsogitStore(storeDir);
-  const { pendingOperations } = await store.load();
-  return pendingOperations;
+  return store.load();
+}
+
+async function directoryExists(dir: string): Promise<boolean> {
+  try {
+    return (await fs.promises.stat(dir)).isDirectory();
+  } catch (cause) {
+    if (isErrnoNotFound(cause)) return false;
+    throw cause;
+  }
 }
 
 export async function readColdParkedApprovalSnapshot(args: {
   dataDir: string;
+  substrate: RepoStore;
   workflowRunRepoId: RepoId;
   runId: string;
   stepId: string;
@@ -701,6 +793,13 @@ export function toParkedApprovalOps(
 export interface SidecarStepBuildEnvDeps {
   dataDir: string;
   workflowRunRepoId: RepoId;
+  /**
+   * Proxy workflow-run substrate, ref, and principal a cold step's durable
+   * state is committed through.
+   */
+  substrate: RepoStore;
+  workflowRunRef: string;
+  principal: Principal;
   signer: (payload: string) => Promise<string>;
   /**
    * Deployment mailbox address the supervisor threaded into the child
@@ -766,8 +865,8 @@ export interface SidecarStepBuildEnvDeps {
    * conversation from the substrate before returning the env (so the
    * agent's reactor `load()` and the warm cache's lazy build see the
    * restored turns -- including the respawn-rebuild path). Absent for a
-   * multi-step deploy, whose per-step agents are not warm/long-lived and
-   * need no cross-run conversation durability.
+   * multi-step deploy, whose steps each open a durable store per invocation,
+   * scoped to the attempt (see `flushColdStepState`).
    */
   durableConversation?: DurableConversationRegistry;
   /**
@@ -964,19 +1063,34 @@ export function createSidecarStepBuildEnv(
             stepId,
             attempt,
           });
-    // Conversation storage. For the warm single-step agent the
-    // conversation must survive child respawn, so it is backed by a
-    // per-agent durable store whose content is mirrored to the
-    // workflow-run substrate (design §3c); building it here restores the
-    // prior conversation before the agent's reactor loads. A multi-step
-    // deploy (no durable registry) keeps the per-run isogit store: its
-    // per-step agents are not warm/long-lived and have no cross-run
-    // conversation to carry. The workdir + tools stay per-run in both
-    // cases -- only the conversation context is durable across runs.
-    const storage: ContextStore & AuditStore =
-      deps.durableConversation !== undefined
-        ? (await deps.durableConversation.acquire(stepId)).storage
-        : await createIsogitStore(storeDir, deps.signer);
+    // Conversation storage. Every agent step's conversation is committed to
+    // its state directory in the workflow-run substrate (design §3c) and
+    // restored from there before the agent's reactor loads, so it survives a
+    // child respawn and a move to a replacement host. The warm single-step
+    // agent keeps one store for its deployment's life. A cold step opens a
+    // store per invocation, scoped to the attempt, over the per-attempt local
+    // store; `flushColdStepState` commits it once the turn settles, so the
+    // next invocation restores the conversation that turn left. The workdir
+    // and tools stay local in both cases.
+    let storage: ContextStore & AuditStore;
+    let coldStore: DurableConversationStore | undefined;
+    if (deps.durableConversation !== undefined) {
+      storage = (await deps.durableConversation.acquire(stepId)).storage;
+    } else {
+      coldStore = await createDurableConversationStore({
+        localStoreDir: storeDir,
+        signer: deps.signer,
+        substrate: deps.substrate,
+        workflowRunRepoId: deps.workflowRunRepoId,
+        workflowRunRef: deps.workflowRunRef,
+        principal: deps.principal,
+        runId,
+        stepId,
+        lifetime: { kind: "attempt", attempt },
+      });
+      await coldStore.restoreFromSubstrate();
+      storage = coldStore.storage;
+    }
 
     // Cold-path resume keying assertion (correct-by-construction guard for
     // the resume-attempt invariant documented on `stepStorageRoot`). An
@@ -1189,8 +1303,32 @@ export function createSidecarStepBuildEnv(
         providers: credentialContext.providers,
       });
     }
+    if (coldStore !== undefined) coldStepStates.set(env, coldStore);
     return env;
   };
+}
+
+/**
+ * The durable store each cold step env was built over, keyed by the env
+ * object `createSidecarStepBuildEnv` returned for the invocation.
+ */
+const coldStepStates = new WeakMap<object, DurableConversationStore>();
+
+/**
+ * Commit a cold step's durable state once its turn has settled. The step
+ * invoker's `onColdStepSettled` hook, handed the env
+ * `createSidecarStepBuildEnv` returned for the invocation; the invoker
+ * returns the step's result only after this resolves, so the turn is durable
+ * before the run records it.
+ */
+export async function flushColdStepState(env: StepEnvBase): Promise<void> {
+  const store = coldStepStates.get(env);
+  if (store === undefined) {
+    throw new Error(
+      "sidecar workflow-child: this step env carries no cold step state; only an env the cold path of createSidecarStepBuildEnv built can be flushed",
+    );
+  }
+  await store.mirrorToSubstrate();
 }
 
 /**
@@ -2303,6 +2441,9 @@ export function createSidecarSubstrateFactory(
     const buildStepEnv = createSidecarStepBuildEnv({
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
+      substrate,
+      workflowRunRef: validated.WORKFLOW_RUN_REF,
+      principal,
       signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
       stepCount: env.spawn.stepCount,
@@ -2373,6 +2514,9 @@ export function createSidecarSubstrateFactory(
     const coldChildBuildStepEnv = createSidecarStepBuildEnv({
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
+      substrate,
+      workflowRunRef: validated.WORKFLOW_RUN_REF,
+      principal,
       signer: conversationSigner,
       mailboxAddress: env.spawn.mailboxAddress,
       stepCount: env.spawn.stepCount,
@@ -2414,6 +2558,7 @@ export function createSidecarSubstrateFactory(
         agentFactory: stepAgentFactory,
         sourcesRef,
         onEvent,
+        onColdStepSettled: flushColdStepState,
       })(req);
 
     // Adapt the workflow-runtime `StepInvoker` shape onto the host's
@@ -2549,6 +2694,9 @@ export function createSidecarSubstrateFactory(
         ...(onRunBoundary !== undefined ? { onRunBoundary } : {}),
         ...(seedInbound !== undefined ? { seedInbound } : {}),
         ...(driveReplies !== undefined ? { driveReplies } : {}),
+        ...(durableConversation === undefined
+          ? { onColdStepSettled: flushColdStepState }
+          : {}),
       })(req);
 
     const evaluateGrantsAdapter: GrantEvaluator = async ({
@@ -2668,8 +2816,9 @@ export function createSidecarSubstrateFactory(
     // re-registration enumeration. Wired unconditionally (unlike
     // `cleanupRunStorage`, which is cold-only): a warm agent parks on approval
     // just as a cold one does, and the branch on `warmKeep` selects the durable
-    // read -- cold reads the per-attempt isogit store, warm reconstructs the
-    // agent's durable conversation state from the substrate.
+    // read -- cold reads the attempt's local store while it is current and its
+    // committed step state otherwise, warm reconstructs the agent's durable
+    // conversation state from the substrate.
     const loadParkedApproval: LoadParkedApproval = ({
       runId,
       stepId,
@@ -2686,6 +2835,7 @@ export function createSidecarSubstrateFactory(
           })
         : readColdParkedApprovalSnapshot({
             dataDir: validated.SIDECAR_DATA_DIR,
+            substrate,
             workflowRunRepoId,
             runId,
             stepId,
@@ -2716,12 +2866,32 @@ export function createSidecarSubstrateFactory(
             })
           : await readColdParkedPendingOperations({
               dataDir: validated.SIDECAR_DATA_DIR,
+              substrate,
               workflowRunRepoId,
               runId,
               stepId,
               attempt,
             }),
       );
+
+    // A warm read answers only from committed state, so only a cold park can
+    // need committing before the runtime records it.
+    const persistRecoveredPark: PersistRecoveredPark | undefined =
+      warmRunId !== undefined
+        ? undefined
+        : ({ runId, stepId, attempt, correlationId }) =>
+            persistColdRecoveredPark({
+              dataDir: validated.SIDECAR_DATA_DIR,
+              substrate,
+              workflowRunRepoId,
+              workflowRunRef: validated.WORKFLOW_RUN_REF,
+              principal,
+              signer: conversationSigner,
+              runId,
+              stepId,
+              attempt,
+              correlationId,
+            });
 
     const bindings: RunWorkflowChildBindings = {
       substrate,
@@ -2754,6 +2924,7 @@ export function createSidecarSubstrateFactory(
       evaluateGrants: evaluateGrantsAdapter,
       loadParkedApproval,
       readParkedApprovalOps,
+      ...(persistRecoveredPark !== undefined ? { persistRecoveredPark } : {}),
       // The same registry the warm agent's transport registers `watch`
       // callbacks into; `runWorkflowChild` routes each `mailbox.notify` to it.
       mailboxWatchRegistry,

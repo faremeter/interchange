@@ -365,6 +365,7 @@ const restoreWorkflowRunPack = createWorkflowRunPackRestorer({
   // through the push facade would echo the same pack straight back to the
   // Hub and incorrectly present it as a new supervisor write.
   substrate: agentRepoStore.repoStore,
+  dataDir,
   markRestored: workflowRunPackClient.markRestored,
 });
 

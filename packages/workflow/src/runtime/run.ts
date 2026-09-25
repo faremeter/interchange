@@ -474,6 +474,7 @@ async function executeRunBody(
   const crashedInFlight: { stepId: string; attempt: number }[] = [];
   const recoverableParks: {
     stepId: string;
+    attempt: number;
     correlationId: string;
     timeoutAtMs?: number;
   }[] = [];
@@ -547,6 +548,7 @@ async function executeRunBody(
         if (parked !== undefined) {
           recoverableParks.push({
             stepId,
+            attempt: stepState.currentAttempt,
             correlationId: parked.correlationId,
             ...(parked.timeoutAtMs !== undefined
               ? { timeoutAtMs: parked.timeoutAtMs }
@@ -597,7 +599,13 @@ async function executeRunBody(
   // `crashedInFlight` and it settles as a terminal StepFailed below rather than
   // re-parking. The durable input substrate that closes this window is future
   // work; input-park crash-safety today holds only for the post-flush window.
-  for (const { stepId, correlationId, timeoutAtMs } of recoverableParks) {
+  for (const {
+    stepId,
+    attempt,
+    correlationId,
+    timeoutAtMs,
+  } of recoverableParks) {
+    await env.persistRecoveredPark?.({ runId, stepId, attempt, correlationId });
     const awaited: WorkflowEvent = {
       kind: "SignalAwaited",
       seq: state.lastSeq + 1,

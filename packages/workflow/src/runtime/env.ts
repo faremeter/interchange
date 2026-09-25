@@ -508,6 +508,20 @@ export type ReadParkedApprovalOps = (args: {
 }) => Promise<ParkedApprovalOp[]>;
 
 /**
+ * Recovery hook the resume classifier awaits before it commits the
+ * `SignalAwaited` of a park it recovered through `ReadParkedApprovalOps`: make
+ * the step state behind the park durable wherever the run log is, so a host
+ * that later resumes the run from the log finds the pending operation the
+ * park names. See `WorkflowRuntimeEnv.persistRecoveredPark`.
+ */
+export type PersistRecoveredPark = (args: {
+  runId: string;
+  stepId: string;
+  attempt: number;
+  correlationId: string;
+}) => Promise<void>;
+
+/**
  * The runtime body's full env surface. The two implementations
  * (`runLocal` and the production child-process entry point) construct
  * differently-flavoured concrete values for each field but the body
@@ -654,6 +668,15 @@ export interface WorkflowRuntimeEnv {
    * the pre-recovery behavior.
    */
   readParkedApprovalOps?: ReadParkedApprovalOps;
+  /**
+   * Optional companion to `readParkedApprovalOps`, awaited once per recovered
+   * park before its `SignalAwaited` is committed. The read can answer from
+   * state only this host holds (a store the crash left ahead of the durable
+   * copy); a park recorded over such state would name a pending operation no
+   * other host can find. A rejection leaves the `SignalAwaited` uncommitted.
+   * A host whose read answers only from durable state leaves it unset.
+   */
+  persistRecoveredPark?: PersistRecoveredPark;
 }
 
 /**

@@ -18,6 +18,11 @@
 //   - COLD (no `durableConversation`): two different runIds produce
 //     DIFFERENT `env.workdir`s, each under that run's subtree -- the
 //     per-run keying the run-completion cleanup reclaims.
+//
+// The cold path also backs each invocation's `ContextStore` with the step's
+// committed state in the workflow-run substrate: it restores that state on a
+// fresh host, `flushColdStepState` commits the turn, and a retried attempt
+// starts over rather than continuing an earlier attempt's conversation.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -31,9 +36,16 @@ import type {
   PendingOperation,
   ToolCall,
 } from "@intx/types/runtime";
-import type { RepoId } from "@intx/hub-sessions";
+import { generateKeyPair } from "@intx/crypto";
+import {
+  createRepoStore,
+  workflowRunKindHandler,
+  WORKFLOW_RUN_GITIGNORE_PATH,
+  type RepoId,
+  type RepoStore,
+  type WorkflowRunWorkflowProcessPrincipal,
+} from "@intx/hub-sessions";
 import { createBuiltinRegistry } from "@intx/inference/providers";
-import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
   ChildOutboundMailBridge,
   SourcesSnapshotRef,
@@ -43,16 +55,51 @@ import { scopedStepId, type StepInvokeRequest } from "@intx/workflow";
 
 import {
   createSidecarStepBuildEnv,
-  stepStorageRoot,
+  flushColdStepState,
   type SidecarStepBuildEnvDeps,
 } from "./workflow-substrate-factory";
-import type { DurableConversationRegistry } from "./conversation-state";
+import {
+  createDurableConversationStore,
+  readStepState,
+  type DurableConversationRegistry,
+} from "./conversation-state";
 
 const STEP_ID = "step-1";
 const WORKFLOW_RUN_REPO_ID: RepoId = {
   kind: "workflow-run",
   id: "deployment-keying",
 };
+const WORKFLOW_RUN_REF = "refs/heads/main";
+const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
+  kind: "workflow-process",
+  anchorRunId: WORKFLOW_RUN_REPO_ID.id,
+};
+const ZERO_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  thinking: 0,
+};
+const signer = (payload: string): Promise<string> =>
+  Promise.resolve(`sig:${String(payload.length)}`);
+
+/** A workflow-run substrate with the production kind handler validating every write. */
+async function createSubstrate(dataDir: string): Promise<RepoStore> {
+  const substrate = createRepoStore({
+    dataDir: path.join(dataDir, "substrate"),
+    signingKey: await generateKeyPair(),
+    handlers: { "workflow-run": workflowRunKindHandler },
+    authorize: () => ({ allowed: true }),
+  });
+  await substrate.writeTree(
+    { kind: "hub" },
+    WORKFLOW_RUN_REPO_ID,
+    WORKFLOW_RUN_REF,
+    { files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, message: "genesis" },
+  );
+  return substrate;
+}
 
 const SOURCE: InferenceSource = {
   id: STEP_ID,
@@ -93,12 +140,16 @@ function stubDurableConversationRegistry(): DurableConversationRegistry {
 
 function buildDeps(opts: {
   dataDir: string;
+  substrate: RepoStore;
   durableConversation?: DurableConversationRegistry;
 }): SidecarStepBuildEnvDeps {
   return {
     dataDir: opts.dataDir,
     workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-    signer: (payload: string) => Promise.resolve(`sig:${payload.length}`),
+    substrate: opts.substrate,
+    workflowRunRef: WORKFLOW_RUN_REF,
+    principal: PRINCIPAL,
+    signer,
     mailboxAddress: "run_deployment-keying@example.com",
     stepCount: 1,
     outboundMailBridge: stubOutboundMailBridge(),
@@ -118,12 +169,12 @@ function sourcesRefFor(
   return { current: { [STEP_ID]: chain } };
 }
 
-function requestForRun(runId: string): StepInvokeRequest {
+function requestForRun(runId: string, attempt = 1): StepInvokeRequest {
   return {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- buildEnv reads only authzContext; the agent definition is never consulted here
     agent: {} as StepInvokeRequest["agent"],
     input: null,
-    authzContext: { stepId: STEP_ID, runId, attempt: 1 },
+    authzContext: { stepId: STEP_ID, runId, attempt },
     signal: new AbortController().signal,
   };
 }
@@ -138,6 +189,7 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     const buildEnv = createSidecarStepBuildEnv(
       buildDeps({
         dataDir,
+        substrate: await createSubstrate(dataDir),
         durableConversation: stubDurableConversationRegistry(),
       }),
     );
@@ -174,7 +226,9 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
 
   test("cold path keys a distinct per-run workdir under that run's subtree", async () => {
     const dataDir = await makeTempDir();
-    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
+    );
     const sourcesRef = sourcesRefFor();
 
     const env1: StepEnvBase = await buildEnv(
@@ -216,7 +270,9 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     };
     const chain = [SOURCE, failoverSource];
     const dataDir = await makeTempDir();
-    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
+    );
 
     const env: StepEnvBase = await buildEnv(
       requestForRun("run-1"),
@@ -235,7 +291,9 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     // constructs (the cold-window path; a warm already-built agent swaps
     // sources through the warm cache, not here).
     const dataDir = await makeTempDir();
-    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
+    );
     const sourcesRef = sourcesRefFor();
 
     const before: StepEnvBase = await buildEnv(
@@ -268,7 +326,9 @@ describe("createSidecarStepBuildEnv per-step scratch keying", () => {
     // would throw "no InferenceSource pinned". The scratch, by contrast,
     // stays keyed by the scoped id so concurrent iterations never collide.
     const dataDir = await makeTempDir();
-    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate: await createSubstrate(dataDir) }),
+    );
     const scopedId = scopedStepId(STEP_ID, 0);
 
     const scopedRequest: StepInvokeRequest = {
@@ -315,31 +375,33 @@ function approvalOp(
   };
 }
 
+/**
+ * Commit a step's state for attempt 1 of `runId` through the production
+ * cold-path store, from a local store the env under test never sees, so the
+ * env can only find it by restoring from the substrate.
+ */
 async function seedColdStore(
-  dataDir: string,
+  substrate: RepoStore,
   runId: string,
   pendingOperations: PendingOperation[],
 ): Promise<void> {
-  const store = await createIsogitStore(
-    stepStorageRoot({
-      dataDir,
-      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-      runId,
-      stepId: STEP_ID,
-      attempt: 1,
-    }),
-    (payload: string) => Promise.resolve(`sig:${payload.length}`),
-  );
-  await store.writeMetadata({
-    pendingOperations,
-    tokenUsage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      thinking: 0,
-    },
+  const store = await createDurableConversationStore({
+    localStoreDir: await makeTempDir(),
+    signer,
+    substrate,
+    workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+    workflowRunRef: WORKFLOW_RUN_REF,
+    principal: PRINCIPAL,
+    runId,
+    stepId: STEP_ID,
+    lifetime: { kind: "attempt", attempt: 1 },
   });
+  await store.restoreFromSubstrate();
+  await store.storage.writeMetadata({
+    pendingOperations,
+    tokenUsage: ZERO_USAGE,
+  });
+  await store.mirrorToSubstrate();
 }
 
 function approvalResumeRequest(
@@ -363,11 +425,14 @@ function approvalResumeRequest(
 describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
   test("rejects a resume whose matching pending op carries no suspendedCall", async () => {
     const dataDir = await makeTempDir();
+    const substrate = await createSubstrate(dataDir);
     // A pending op that matches the correlationId but is not a
     // re-dispatchable gate (no suspendedCall) -- an async-tool marker, not
     // the ask-rail approval the resume must find.
-    await seedColdStore(dataDir, "run-1", [approvalOp("corr-1")]);
-    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+    await seedColdStore(substrate, "run-1", [approvalOp("corr-1")]);
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate }),
+    );
 
     await expect(
       buildEnv(approvalResumeRequest("run-1", "corr-1"), sourcesRefFor()),
@@ -376,10 +441,13 @@ describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
 
   test("accepts a resume that finds a suspendedCall-bearing approval gate", async () => {
     const dataDir = await makeTempDir();
-    await seedColdStore(dataDir, "run-1", [
+    const substrate = await createSubstrate(dataDir);
+    await seedColdStore(substrate, "run-1", [
       approvalOp("corr-1", { suspendedCall: SUSPENDED_CALL }),
     ]);
-    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate }),
+    );
 
     const env: StepEnvBase = await buildEnv(
       approvalResumeRequest("run-1", "corr-1"),
@@ -391,15 +459,100 @@ describe("createSidecarStepBuildEnv cold-path approval-resume keying", () => {
 
   test("rejects a resume whose correlationId has no pending op at all", async () => {
     const dataDir = await makeTempDir();
+    const substrate = await createSubstrate(dataDir);
     // A real gate exists, but for a different correlationId: the resumed
     // correlationId finds nothing -- the wrong-attempt forever-hang guard.
-    await seedColdStore(dataDir, "run-1", [
+    await seedColdStore(substrate, "run-1", [
       approvalOp("other", { suspendedCall: SUSPENDED_CALL }),
     ]);
-    const buildEnv = createSidecarStepBuildEnv(buildDeps({ dataDir }));
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({ dataDir, substrate }),
+    );
 
     await expect(
       buildEnv(approvalResumeRequest("run-1", "corr-1"), sourcesRefFor()),
     ).rejects.toThrow(/keying violation/);
+  });
+});
+
+describe("createSidecarStepBuildEnv cold-path step state", () => {
+  const turn = (text: string) => ({
+    role: "user" as const,
+    content: [{ type: "text" as const, text }],
+    timestamp: 1,
+  });
+
+  /** One host: its own local data dir over the shared workflow-run substrate. */
+  async function host(substrate: RepoStore) {
+    return createSidecarStepBuildEnv(
+      buildDeps({ dataDir: await makeTempDir(), substrate }),
+    );
+  }
+
+  async function takeTurn(env: StepEnvBase, turns: ReturnType<typeof turn>[]) {
+    await env.storage.writeTurns(turns);
+    await env.storage.commit({ message: "turn" });
+    await flushColdStepState(env);
+  }
+
+  test("a replacement host restores the conversation the last turn committed", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const first = await (
+      await host(substrate)
+    )(requestForRun("run-1"), sourcesRefFor());
+    await takeTurn(first, [turn("first")]);
+
+    const committed = await readStepState({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId: "run-1",
+      stepId: STEP_ID,
+    });
+    expect(committed?.turns).toEqual([turn("first")]);
+    expect(committed?.attempt).toBe(1);
+
+    const replacement = await (
+      await host(substrate)
+    )(requestForRun("run-1"), sourcesRefFor());
+    expect((await replacement.storage.load()).turns).toEqual([turn("first")]);
+  });
+
+  test("a retried attempt starts over and replaces the earlier attempt's state", async () => {
+    const substrate = await createSubstrate(await makeTempDir());
+    const buildEnv = await host(substrate);
+    await takeTurn(await buildEnv(requestForRun("run-1", 1), sourcesRefFor()), [
+      turn("attempt one"),
+    ]);
+
+    const retry = await buildEnv(requestForRun("run-1", 2), sourcesRefFor());
+    expect((await retry.storage.load()).turns).toEqual([]);
+    await takeTurn(retry, [turn("attempt two")]);
+
+    const committed = await readStepState({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId: "run-1",
+      stepId: STEP_ID,
+    });
+    expect(committed?.turns).toEqual([turn("attempt two")]);
+    expect(committed?.attempt).toBe(2);
+    await expect(
+      buildEnv(requestForRun("run-1", 1), sourcesRefFor()),
+    ).rejects.toThrow(/later than attempt 1/);
+  });
+
+  test("flushing an env the cold path did not build fails loudly", async () => {
+    const dataDir = await makeTempDir();
+    const buildEnv = createSidecarStepBuildEnv(
+      buildDeps({
+        dataDir,
+        substrate: await createSubstrate(dataDir),
+        durableConversation: stubDurableConversationRegistry(),
+      }),
+    );
+    const warmEnv = await buildEnv(requestForRun("run-1"), sourcesRefFor());
+    await expect(flushColdStepState(warmEnv)).rejects.toThrow(
+      /carries no cold step state/,
+    );
   });
 });

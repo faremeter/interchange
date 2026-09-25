@@ -57,6 +57,7 @@ function buildEnv(
     invokeStep: StepInvoker;
     signalChannel: SignalChannel;
     readParkedApprovalOps?: WorkflowRuntimeEnv["readParkedApprovalOps"];
+    persistRecoveredPark?: WorkflowRuntimeEnv["persistRecoveredPark"];
   },
 ): WorkflowRuntimeEnv {
   const clock = (): Date => new Date();
@@ -79,6 +80,9 @@ function buildEnv(
     hasUpstreamSignalResolver: true,
     ...(opts.readParkedApprovalOps !== undefined
       ? { readParkedApprovalOps: opts.readParkedApprovalOps }
+      : {}),
+    ...(opts.persistRecoveredPark !== undefined
+      ? { persistRecoveredPark: opts.persistRecoveredPark }
       : {}),
   };
 }
@@ -120,6 +124,13 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
     const channel = createInMemorySignalChannel();
     const repoStore = createInMemoryRepoStore();
     const readCalls: { runId: string; stepId: string; attempt: number }[] = [];
+    const persistCalls: {
+      runId: string;
+      stepId: string;
+      attempt: number;
+      correlationId: string;
+      awaitedBefore: number;
+    }[] = [];
     let invoked = 0;
     const invokeStep: StepInvoker = async (req) => {
       invoked += 1;
@@ -137,6 +148,14 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
       readParkedApprovalOps: async (args) => {
         readCalls.push(args);
         return [{ correlationId: corr }];
+      },
+      persistRecoveredPark: async (args) => {
+        const events = await repoStore.read(args.runId);
+        persistCalls.push({
+          ...args,
+          awaitedBefore: events.filter((e) => e.kind === "SignalAwaited")
+            .length,
+        });
       },
     });
 
@@ -157,6 +176,10 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
 
     // The classifier consulted the binding for exactly the crashed step-attempt.
     expect(readCalls).toEqual([{ runId, stepId: "s", attempt: 1 }]);
+    // The park's state was made durable once, before its SignalAwaited.
+    expect(persistCalls).toEqual([
+      { runId, stepId: "s", attempt: 1, correlationId: corr, awaitedBefore: 0 },
+    ]);
     // The agent was not re-invoked as a fresh park.
     expect(invoked).toBe(0);
 
@@ -197,6 +220,9 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
       // Binding wired but the store holds no pending approval op: the classifier
       // takes the terminal-failure fallback, unchanged from the no-binding path.
       readParkedApprovalOps: async () => [],
+      persistRecoveredPark: async () => {
+        throw new Error("a crash mid-turn has no park to persist");
+      },
     });
 
     await seedCrashedPark(repoStore, runId);
@@ -211,6 +237,36 @@ describe("resume classifier recovers a crash-mid-park approval step", () => {
       if (f.kind !== "StepFailed") throw new Error("unreachable");
       expect(f.error.code).toBe("crash-mid-invocation");
     }
+  });
+
+  test("a park whose state cannot be made durable is not recorded", async () => {
+    const runId = "run-crashed-park-unpersisted";
+    const corr = "corr-crashed-park-unpersisted";
+    const channel = createInMemorySignalChannel();
+    const repoStore = createInMemoryRepoStore();
+    const invokeStep: StepInvoker = async () => ({
+      output: { reply: "done", turn: replyTurn },
+    });
+    const env = buildEnv(oneStep, {
+      repoStore,
+      invokeStep,
+      signalChannel: channel,
+      readParkedApprovalOps: async () => [{ correlationId: corr }],
+      persistRecoveredPark: async () => {
+        throw new Error("substrate unavailable");
+      },
+    });
+
+    await seedCrashedPark(repoStore, runId);
+
+    await expect(runtimeRun(oneStep, env, { runId }).complete).rejects.toThrow(
+      /substrate unavailable/,
+    );
+    const events = await repoStore.read(runId);
+    expect(events.filter((e) => e.kind === "SignalAwaited")).toHaveLength(0);
+    expect(resumeFromLog(runId, events).steps.get("s")?.phase).toBe(
+      "in-flight",
+    );
   });
 
   test("more than one durable pending approval op for a step-attempt fails loud", async () => {

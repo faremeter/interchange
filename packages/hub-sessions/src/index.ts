@@ -219,10 +219,11 @@ export {
   type StepStateMetadata,
   type StepStateReader,
 } from "./step-state";
+export { restoreWorkflowRunToAllocation } from "./workflow-run-restore";
 export {
-  restoreWorkflowRunToAllocation,
   WORKFLOW_RUN_RESTORE_REFS,
-} from "./workflow-run-restore";
+  WORKFLOW_RUN_STATE_REF,
+} from "./workflow-run-refs";
 export {
   createAssetService,
   AssetServiceError,
