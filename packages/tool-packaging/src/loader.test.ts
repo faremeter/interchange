@@ -3256,7 +3256,7 @@ describe("interchange.directors walker", () => {
 
     const toolsModule = { main: makeFakeFactory("@vendor/main") };
     const directorsModule = {
-      planner: makeFakeDirectorFactory("@vendor/main/planner"),
+      planner: makeFakeDirectorFactory("tools-and-directors/planner"),
     };
     const loader = createToolLoader({
       cache,
@@ -3298,7 +3298,68 @@ describe("interchange.directors walker", () => {
     expect(loaded[0]?.factories).toHaveLength(1);
     expect(loaded[0]?.factories[0]?.id).toBe("@vendor/main");
     expect(loaded[0]?.directors).toHaveLength(1);
-    expect(loaded[0]?.directors[0]?.id).toBe("@vendor/main/planner");
+    expect(loaded[0]?.directors[0]?.id).toBe("tools-and-directors/planner");
+  });
+
+  test("rejects a director declared outside the shipping package's namespace", async () => {
+    const cache = createTarballCache({
+      rootDir: cacheDir,
+      maxBytes: 10_000_000,
+    });
+    const fixture = await packFixture({
+      name: "tools-and-directors",
+      version: "1.0.0",
+      entryModuleSource: "// stub; importer is faked",
+      interchangeDirectorsRelPath: "./directors.js",
+      directorsModuleSource: "// stub; importer is faked",
+    });
+
+    const toolsModule = {
+      main: makeFakeFactory("@vendor/main"),
+    };
+    const directorsModule = {
+      planner: makeFakeDirectorFactory("@vendor/other/planner"),
+    };
+    const loader = createToolLoader({
+      cache,
+      registries: new Map([["npmjs", { url: "https://r.test" }]]),
+      host: { os: "linux", cpu: "x64" },
+      fetchTarball: async () => fixture.bytes,
+      importModule: async (url) =>
+        url.includes("directors.js") ? directorsModule : toolsModule,
+    });
+
+    let caught: unknown;
+    try {
+      await loader.loadManifest({
+        manifest: {
+          schemaVersion: "1",
+          topLevel: [{ name: "tools-and-directors", version: "1.0.0" }],
+          entries: [
+            {
+              name: "tools-and-directors",
+              version: "1.0.0",
+              source: {
+                kind: "registry",
+                registry: "npmjs",
+                integrity: fixture.integrity,
+              },
+            },
+          ],
+        },
+        instanceScratchDir: instanceDir,
+        assetRoot,
+        assetMounts: new Map(),
+        gitDirs: new Map(),
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ToolLoaderError);
+    if (caught instanceof ToolLoaderError) {
+      expect(caught.category).toBe("package.entry.invalid");
+      expect(caught.message).toMatch(/outside the package's own namespace/);
+    }
   });
 
   test("ignores a director-shaped export in the interchange.tools entry", async () => {

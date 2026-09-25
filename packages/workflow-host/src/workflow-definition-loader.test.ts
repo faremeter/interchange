@@ -3,6 +3,14 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { defineAgent, UnknownDirectorIdError } from "@intx/agent";
+import {
+  defineWorkflow,
+  step,
+  type Primitive,
+  type WorkflowDefinition,
+} from "@intx/workflow/definition";
+
 import {
   loadWorkflowActionHandlersFromClosure,
   loadWorkflowDefinitionFromClosure,
@@ -29,6 +37,17 @@ afterEach(async () => {
   }
 });
 
+interface DependencyFixtureSpec {
+  /** Package name, e.g. "@fixture/director-pkg" (scoped names lay out one dir deep). */
+  readonly name: string;
+  /** Value written to `interchange.directors`; omitted when absent. */
+  readonly directorsEntry?: string;
+  /** Source of the directors module, written to `directorsEntry`'s path. */
+  readonly directorsSource?: string;
+  /** Transitive deps, declared by and laid out under THIS dep. */
+  readonly dependencies?: readonly DependencyFixtureSpec[];
+}
+
 interface ClosureFixtureSpec {
   /** Value written to `interchange.workflow`; omitted when `null`. */
   readonly workflowEntry: string | null;
@@ -48,11 +67,98 @@ interface ClosureFixtureSpec {
   readonly actionsEntry?: string;
   /** Source of the actions module, written to `actionsEntry`'s path. */
   readonly actionsSource?: string;
+  /** Dependency packages declared on and laid out under this package. */
+  readonly dependencies?: readonly DependencyFixtureSpec[];
+}
+
+// The `dependencies` map written to the declaring package's package.json:
+// the loader resolves a dep by id prefix through the requirer's
+// `node_modules/`, so the declaration mirrors what a real manifest carries.
+function depMap(
+  specs: readonly DependencyFixtureSpec[],
+): Record<string, string> {
+  const dependencies: Record<string, string> = {};
+  for (const dep of specs) {
+    dependencies[dep.name] = "*";
+  }
+  return dependencies;
+}
+
+// Each materialization gets its own store slot so two copies of one package
+// name stay distinct on disk.
+let depStoreCounter = 0;
+
+// Materialize one dependency package: a REAL directory under `storeDir`
+// (mirroring the materializer, which extracts each package once and symlinks
+// it into the requirer's `node_modules/`). Node resolves a module's
+// bare-specifier imports from the realpath of the importing file, so the dep
+// carries its own `node_modules/@intx/agent` link for `defineDirector`.
+async function materializeDep(
+  spec: DependencyFixtureSpec,
+  storeDir: string,
+): Promise<string> {
+  const depDir = path.join(
+    storeDir,
+    String(depStoreCounter++),
+    ...spec.name.split("/"),
+  );
+  await fs.mkdir(depDir, { recursive: true });
+
+  const pkgJson: Record<string, unknown> = {
+    name: spec.name,
+    version: "1.0.0",
+  };
+  const interchange: Record<string, unknown> = {};
+  if (spec.directorsEntry !== undefined) {
+    interchange.directors = spec.directorsEntry;
+  }
+  if (Object.keys(interchange).length > 0) {
+    pkgJson.interchange = interchange;
+  }
+  if (spec.dependencies !== undefined && spec.dependencies.length > 0) {
+    pkgJson.dependencies = depMap(spec.dependencies);
+  }
+  await fs.writeFile(
+    path.join(depDir, "package.json"),
+    JSON.stringify(pkgJson, null, 2),
+  );
+
+  const intxScopeDir = path.join(depDir, "node_modules", "@intx");
+  await fs.mkdir(intxScopeDir, { recursive: true });
+  await fs.symlink(AGENT_PACKAGE_DIR, path.join(intxScopeDir, "agent"), "dir");
+
+  if (spec.directorsSource !== undefined) {
+    const rel = spec.directorsEntry ?? "./directors.js";
+    const abs = path.join(depDir, rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, spec.directorsSource);
+  }
+
+  for (const dep of spec.dependencies ?? []) {
+    await linkDep(dep, depDir, storeDir);
+  }
+  return depDir;
+}
+
+// Declare nothing on the requirer -- the maps are written by the caller --
+// just symlink the materialized dep into `requirerDir/node_modules/<name>`
+// (scoped names sit one directory deep), as the store layout does.
+async function linkDep(
+  spec: DependencyFixtureSpec,
+  requirerDir: string,
+  storeDir: string,
+): Promise<void> {
+  const depDir = await materializeDep(spec, storeDir);
+  const linkPath = path.join(requirerDir, "node_modules", spec.name);
+  await fs.mkdir(path.dirname(linkPath), { recursive: true });
+  await fs.symlink(depDir, linkPath, "dir");
 }
 
 async function createClosureFixture(spec: ClosureFixtureSpec): Promise<string> {
   const packageDir = await fs.mkdtemp(path.join(os.tmpdir(), "wf-closure-"));
   createdDirs.push(packageDir);
+  const storeDir = await fs.mkdtemp(path.join(os.tmpdir(), "wf-store-"));
+  createdDirs.push(storeDir);
 
   // Lay out `node_modules/@intx/workflow` the way the closure
   // machinery would, so the entry module's `@intx/workflow/definition`
@@ -86,10 +192,17 @@ async function createClosureFixture(spec: ClosureFixtureSpec): Promise<string> {
   if (Object.keys(interchange).length > 0) {
     pkgJson.interchange = interchange;
   }
+  if (spec.dependencies !== undefined && spec.dependencies.length > 0) {
+    pkgJson.dependencies = depMap(spec.dependencies);
+  }
   await fs.writeFile(
     path.join(packageDir, "package.json"),
     JSON.stringify(pkgJson, null, 2),
   );
+
+  for (const dep of spec.dependencies ?? []) {
+    await linkDep(dep, packageDir, storeDir);
+  }
 
   if (spec.entrySource !== undefined) {
     const entryRelPath = spec.entryRelPath ?? "workflow.js";
@@ -274,13 +387,42 @@ export const second = defineWorkflow({
   });
 });
 
+// A definition whose steps name the given director ids (one agent step per
+// id): the registry loader resolves only the ids the definition references.
+function definitionNamingDirectors(
+  ...directorIds: string[]
+): WorkflowDefinition {
+  const steps: Record<string, Primitive> = {};
+  if (directorIds.length === 0) {
+    steps.wait = { kind: "sleep", id: "", duration: 1 };
+  }
+  for (const [index, id] of directorIds.entries()) {
+    steps[`s${String(index)}`] = step({
+      agent: defineAgent({
+        id: `agent-${String(index)}`,
+        systemPrompt: "fixture agent",
+        tools: [],
+        capabilities: [],
+        inference: {
+          sources: [{ provider: "anthropic", model: "mock-model" }],
+        },
+        director: { id, config: {} },
+      }),
+    });
+  }
+  return defineWorkflow({
+    id: "fixture-director-wf",
+    steps,
+  });
+}
+
 // A directors entry module exports the AnnotatedDirectorFactory (the
 // defineDirector(...).factory), which is what the loader's structural check
 // accepts and the registry stores -- not the { factory, build } wrapper.
 const CUSTOM_DIRECTOR_ENTRY = `
 import { defineDirector } from "@intx/agent";
 export const custom = defineDirector({
-  id: "@fixture/pkg/custom-director",
+  id: "@fixture/workflow-package/custom-director",
   configSchema: (config) => config,
   factory: () => ({
     async decide() {
@@ -290,26 +432,26 @@ export const custom = defineDirector({
 }).factory;
 `;
 
+// The directors entry a dependency package ships: one `defineDirector`
+// factory under the given id. Same shape as CUSTOM_DIRECTOR_ENTRY, keyed
+// per dep so collision and transitive fixtures pick their own ids.
+function dependencyDirectorEntry(id: string): string {
+  return `
+import { defineDirector } from "@intx/agent";
+export const director = defineDirector({
+  id: ${JSON.stringify(id)},
+  configSchema: (config) => config,
+  factory: () => ({
+    async decide() {
+      return { type: "wait" };
+    },
+  }),
+}).factory;
+`;
+}
+
 describe("loadWorkflowDirectorRegistryFromClosure", () => {
-  test("composes the built-in default when the package ships no directors", async () => {
-    const packageDir = await createClosureFixture({
-      workflowEntry: "./workflow.js",
-      entrySource: DEFAULT_EXPORT_ENTRY,
-    });
-
-    const registry = await loadWorkflowDirectorRegistryFromClosure({
-      packageDir,
-    });
-
-    // The built-in default resolves; a custom id the package did not ship
-    // does not.
-    expect(() => registry.resolve(registry.buildDefaultRef())).not.toThrow();
-    expect(() =>
-      registry.resolve({ id: "@fixture/pkg/custom-director", config: {} }),
-    ).toThrow();
-  });
-
-  test("resolves a custom director the closure package ships", async () => {
+  test("composes the built-in default when the definition names no director", async () => {
     const packageDir = await createClosureFixture({
       workflowEntry: "./workflow.js",
       entrySource: DEFAULT_EXPORT_ENTRY,
@@ -319,15 +461,251 @@ describe("loadWorkflowDirectorRegistryFromClosure", () => {
 
     const registry = await loadWorkflowDirectorRegistryFromClosure({
       packageDir,
+      definition: definitionNamingDirectors(),
+    });
+
+    expect(() => registry.resolve(registry.buildDefaultRef())).not.toThrow();
+    // The package's own director is NOT loaded: no step references it.
+    expect(() =>
+      registry.resolve({
+        id: "@fixture/workflow-package/custom-director",
+        config: {},
+      }),
+    ).toThrow(UnknownDirectorIdError);
+  });
+
+  test("resolves a director the workflow package ships when a step names it", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      directorsEntry: "./directors.js",
+      directorsSource: CUSTOM_DIRECTOR_ENTRY,
+    });
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors(
+        "@fixture/workflow-package/custom-director",
+      ),
     });
 
     const factory = registry.resolve({
-      id: "@fixture/pkg/custom-director",
+      id: "@fixture/workflow-package/custom-director",
       config: {},
     });
-    expect(factory.id).toBe("@fixture/pkg/custom-director");
+    expect(factory.id).toBe("@fixture/workflow-package/custom-director");
     // The built-in default still resolves alongside the custom director.
     expect(() => registry.resolve(registry.buildDefaultRef())).not.toThrow();
+  });
+
+  test("resolves a director shipped by a direct dependency package", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      dependencies: [
+        {
+          name: "@fixture/director-pkg",
+          directorsEntry: "./directors.js",
+          directorsSource: dependencyDirectorEntry(
+            "@fixture/director-pkg/coding",
+          ),
+        },
+      ],
+    });
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("@fixture/director-pkg/coding"),
+    });
+
+    const factory = registry.resolve({
+      id: "@fixture/director-pkg/coding",
+      config: {},
+    });
+    expect(factory.id).toBe("@fixture/director-pkg/coding");
+    expect(() => registry.resolve(registry.buildDefaultRef())).not.toThrow();
+  });
+
+  test("composes the workflow package's own directors with a dependency's", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      directorsEntry: "./directors.js",
+      directorsSource: CUSTOM_DIRECTOR_ENTRY,
+      dependencies: [
+        {
+          name: "@fixture/director-pkg",
+          directorsEntry: "./directors.js",
+          directorsSource: dependencyDirectorEntry(
+            "@fixture/director-pkg/coding",
+          ),
+        },
+      ],
+    });
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors(
+        "@fixture/workflow-package/custom-director",
+        "@fixture/director-pkg/coding",
+      ),
+    });
+
+    expect(
+      registry.resolve({
+        id: "@fixture/workflow-package/custom-director",
+        config: {},
+      }).id,
+    ).toBe("@fixture/workflow-package/custom-director");
+    expect(
+      registry.resolve({ id: "@fixture/director-pkg/coding", config: {} }).id,
+    ).toBe("@fixture/director-pkg/coding");
+  });
+
+  test("loads a package's directors module once when two ids name it", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      dependencies: [
+        {
+          name: "@fixture/director-pkg",
+          directorsEntry: "./directors.js",
+          directorsSource: `
+import { defineDirector } from "@intx/agent";
+const make = (id) =>
+  defineDirector({
+    id,
+    configSchema: (config) => config,
+    factory: () => ({ async decide() { return { type: "wait" }; } }),
+  }).factory;
+export const a = make("@fixture/director-pkg/a");
+export const b = make("@fixture/director-pkg/b");
+`,
+        },
+      ],
+    });
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors(
+        "@fixture/director-pkg/a",
+        "@fixture/director-pkg/b",
+      ),
+    });
+
+    expect(
+      registry.resolve({ id: "@fixture/director-pkg/a", config: {} }).id,
+    ).toBe("@fixture/director-pkg/a");
+    expect(
+      registry.resolve({ id: "@fixture/director-pkg/b", config: {} }).id,
+    ).toBe("@fixture/director-pkg/b");
+  });
+
+  test("never imports an unreferenced dependency's directors module", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      dependencies: [
+        {
+          name: "@fixture/broken-pkg",
+          directorsEntry: "./directors.js",
+          // Evaluating this module throws; the loader must never import it
+          // because no step names an id under this package's prefix.
+          directorsSource: `throw new Error("must not be imported");`,
+        },
+      ],
+    });
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors(),
+    });
+
+    expect(() => registry.resolve(registry.buildDefaultRef())).not.toThrow();
+  });
+
+  test("a director id naming a package the workflow does not depend on stays unresolved", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+    });
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("@fixture/ghost-pkg/coding"),
+    });
+
+    expect(() =>
+      registry.resolve({ id: "@fixture/ghost-pkg/coding", config: {} }),
+    ).toThrow(UnknownDirectorIdError);
+  });
+
+  test("a file at node_modules/<name> stays unresolved instead of throwing ENOTDIR", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+    });
+    await fs.writeFile(path.join(packageDir, "node_modules", "ghost-pkg"), "");
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("ghost-pkg/coding"),
+    });
+
+    expect(() =>
+      registry.resolve({ id: "ghost-pkg/coding", config: {} }),
+    ).toThrow(UnknownDirectorIdError);
+  });
+
+  test("a director reachable only transitively stays unresolved", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      dependencies: [
+        {
+          name: "@fixture/mid",
+          dependencies: [
+            {
+              name: "@fixture/deep",
+              directorsEntry: "./directors.js",
+              directorsSource: dependencyDirectorEntry(
+                "@fixture/deep/director",
+              ),
+            },
+          ],
+        },
+      ],
+    });
+
+    // `@fixture/deep` is not a direct dependency of the workflow package, so
+    // `node_modules/@fixture/deep` does not exist under it and the id stays
+    // unregistered: the workflow must depend on the package it names.
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("@fixture/deep/director"),
+    });
+
+    expect(() =>
+      registry.resolve({ id: "@fixture/deep/director", config: {} }),
+    ).toThrow(UnknownDirectorIdError);
+  });
+
+  test("a director id with no package prefix stays unresolved", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      directorsEntry: "./directors.js",
+      directorsSource: CUSTOM_DIRECTOR_ENTRY,
+    });
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("bare-director"),
+    });
+
+    expect(() => registry.resolve({ id: "bare-director", config: {} })).toThrow(
+      UnknownDirectorIdError,
+    );
   });
 
   test("throws when the directors module exports no director factory", async () => {
@@ -339,7 +717,12 @@ describe("loadWorkflowDirectorRegistryFromClosure", () => {
     });
 
     await expect(
-      loadWorkflowDirectorRegistryFromClosure({ packageDir }),
+      loadWorkflowDirectorRegistryFromClosure({
+        packageDir,
+        definition: definitionNamingDirectors(
+          "@fixture/workflow-package/custom-director",
+        ),
+      }),
     ).rejects.toThrow(/exported no AnnotatedDirectorFactory values/);
   });
 
@@ -351,8 +734,226 @@ describe("loadWorkflowDirectorRegistryFromClosure", () => {
     });
 
     await expect(
-      loadWorkflowDirectorRegistryFromClosure({ packageDir }),
+      loadWorkflowDirectorRegistryFromClosure({
+        packageDir,
+        definition: definitionNamingDirectors(
+          "@fixture/workflow-package/custom-director",
+        ),
+      }),
     ).rejects.toThrow(/escapes the workflow package directory/);
+  });
+
+  test("rejects a director declared outside the shipping package's namespace", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      dependencies: [
+        {
+          name: "@fixture/director-pkg",
+          directorsEntry: "./directors.js",
+          directorsSource: dependencyDirectorEntry("@fixture/other-pkg/coding"),
+        },
+      ],
+    });
+
+    await expect(
+      loadWorkflowDirectorRegistryFromClosure({
+        packageDir,
+        definition: definitionNamingDirectors("@fixture/director-pkg/coding"),
+      }),
+    ).rejects.toThrow(/outside the package's own namespace/);
+  });
+
+  test("throws when a referenced dependency's directors module exports no director factory", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      dependencies: [
+        {
+          name: "@fixture/director-pkg",
+          directorsEntry: "./directors.js",
+          directorsSource: `export const notADirector = 1;`,
+        },
+      ],
+    });
+
+    await expect(
+      loadWorkflowDirectorRegistryFromClosure({
+        packageDir,
+        definition: definitionNamingDirectors("@fixture/director-pkg/coding"),
+      }),
+    ).rejects.toThrow(/exported no AnnotatedDirectorFactory values/);
+  });
+
+  test("does not import a directors module reached by a .. prefix", async () => {
+    // `../coding` is a legal namespaced id (`pkg=..`, `name=coding`). Joining
+    // that prefix as a path walks out of node_modules onto the workflow
+    // package itself. The workflow's directors module throws on evaluation;
+    // containment must refuse the prefix so the module is never imported.
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      directorsEntry: "./directors.js",
+      directorsSource: `throw new Error("escaped directors module must not be imported");`,
+    });
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("../coding"),
+    });
+
+    expect(() => registry.resolve({ id: "../coding", config: {} })).toThrow(
+      UnknownDirectorIdError,
+    );
+  });
+
+  test("does not import a transitive directors module reached through nested node_modules in the id", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+      dependencies: [
+        {
+          name: "@fixture/mid",
+          dependencies: [
+            {
+              name: "@fixture/deep",
+              directorsEntry: "./directors.js",
+              directorsSource: `throw new Error("escaped directors module must not be imported");`,
+            },
+          ],
+        },
+      ],
+    });
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors(
+        "@fixture/mid/node_modules/@fixture/deep/director",
+      ),
+    });
+
+    expect(() =>
+      registry.resolve({
+        id: "@fixture/mid/node_modules/@fixture/deep/director",
+        config: {},
+      }),
+    ).toThrow(UnknownDirectorIdError);
+  });
+
+  test("does not import a directors module reached by an absolute prefix", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+    });
+    const escapedDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "escaped-abs-directors-"),
+    );
+    createdDirs.push(escapedDir);
+    await fs.writeFile(
+      path.join(escapedDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "escaped-abs",
+          version: "1.0.0",
+          interchange: { directors: "./directors.js" },
+        },
+        null,
+        2,
+      ),
+    );
+    await fs.writeFile(
+      path.join(escapedDir, "directors.js"),
+      `throw new Error("escaped directors module must not be imported");\n`,
+    );
+
+    const directorId = `${escapedDir}/coding`;
+    // POSIX path.join discards the workflow root when a later segment is
+    // absolute; skip when this host would not actually escape.
+    if (
+      path.join(packageDir, "node_modules", escapedDir) !== escapedDir &&
+      path.join(packageDir, "node_modules", escapedDir, "package.json") !==
+        path.join(escapedDir, "package.json")
+    ) {
+      return;
+    }
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors(directorId),
+    });
+
+    expect(() => registry.resolve({ id: directorId, config: {} })).toThrow(
+      UnknownDirectorIdError,
+    );
+  });
+
+  test("does not import a package whose manifest name does not match the id prefix", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+    });
+    const spoofDir = path.join(packageDir, "node_modules", "@fixture", "spoof");
+    await fs.mkdir(spoofDir, { recursive: true });
+    await fs.writeFile(
+      path.join(spoofDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "@fixture/real",
+          version: "1.0.0",
+          interchange: { directors: "./directors.js" },
+        },
+        null,
+        2,
+      ),
+    );
+    await fs.writeFile(
+      path.join(spoofDir, "directors.js"),
+      `throw new Error("mismatched package name directors must not be imported");\n`,
+    );
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("@fixture/spoof/coding"),
+    });
+
+    expect(() =>
+      registry.resolve({ id: "@fixture/spoof/coding", config: {} }),
+    ).toThrow(UnknownDirectorIdError);
+  });
+
+  test("does not route a director whose package prefix is @intx/agent", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+    });
+    const agentDir = path.join(packageDir, "node_modules", "@intx", "agent");
+    await fs.rm(agentDir, { recursive: true, force: true });
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.writeFile(
+      path.join(agentDir, "package.json"),
+      JSON.stringify(
+        {
+          name: "@intx/agent",
+          version: "1.0.0",
+          interchange: { directors: "./directors.js" },
+        },
+        null,
+        2,
+      ),
+    );
+    await fs.writeFile(
+      path.join(agentDir, "directors.js"),
+      `throw new Error("@intx/agent directors module must not be imported");\n`,
+    );
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors("@intx/agent/other"),
+    });
+
+    expect(() =>
+      registry.resolve({ id: "@intx/agent/other", config: {} }),
+    ).toThrow(UnknownDirectorIdError);
   });
 });
 

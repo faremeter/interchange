@@ -25,17 +25,25 @@ import { pathToFileURL } from "node:url";
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import {
-  createDefaultDirectorRegistry,
   createWorkflowDirectorRegistry,
   isAnnotatedDirectorFactory,
   isAnnotatedPluginFactory,
+  isOwnedDirectorId,
+  validateNamespacedId,
+  type AnnotatedDirectorFactory,
   type AnnotatedPluginFactory,
+  type BaseEnv,
   type DirectorRegistry,
   type ToolDeclaration,
 } from "@intx/agent";
 import { PackageJSON, isContainedEntryPath } from "@intx/types/package-json";
 import { workflowDefinitionEnvelopeSchema } from "@intx/hub-sessions/substrate";
-import type { WorkflowDefinition } from "@intx/workflow/definition";
+import {
+  EXECUTABLE_STEP_DESCENT,
+  extractAgent,
+  walkWorkflowSteps,
+  type WorkflowDefinition,
+} from "@intx/workflow/definition";
 import type { ActionHandler, LoopFn, LoopFnRegistry } from "@intx/workflow";
 
 const logger = getLogger(["workflow-host", "definition-loader"]);
@@ -135,6 +143,13 @@ export interface LoadWorkflowDirectorRegistryFromClosureArgs {
    * closure, so the director set they compose cannot drift.
    */
   readonly packageDir: string;
+  /**
+   * The `WorkflowDefinition` whose director refs select which packages to
+   * load: only the packages the referenced ids name are imported, so an
+   * unreferenced dependency's directors module can neither fail nor slow
+   * the deploy.
+   */
+  readonly definition: WorkflowDefinition;
   /** See `LoadWorkflowDefinitionFromClosureArgs.importCacheKey`. */
   readonly importCacheKey?: string;
   /** Test seam for dynamic import; see the definition loader's variant. */
@@ -142,23 +157,30 @@ export interface LoadWorkflowDirectorRegistryFromClosureArgs {
 }
 
 /**
- * Compose the `DirectorRegistry` for a workflow closure from the closure
- * package's OWN `interchange.directors` module (if any), alongside the
- * built-in default director. A package with no `interchange.directors`
- * field composes to the built-ins-only registry -- absence is valid, a
- * workflow need not ship a director. A present-but-empty directors module
- * is malformed and throws, matching the tool-package loader.
+ * Compose the `DirectorRegistry` for a workflow closure: the built-in
+ * default plus the `defineDirector` factories the definition's referenced
+ * director ids resolve to. Resolution is by id prefix -- a director id is
+ * `<package-name>/<local-name>`, so the prefix names the shipping package
+ * and is sanitized as an npm package name (not a filesystem path): `.` /
+ * `..` segments and extra slashes beyond a scope (`@scope/name`) are
+ * rejected. An id prefixed by the workflow package's own name resolves to
+ * its own `interchange.directors` module; any other legal prefix resolves
+ * to `node_modules/<package-name>` under the materialized workflow
+ * package, i.e. the workflow must declare the director's package as a
+ * direct dependency (workspace member or pinned registry dep -- the
+ * closure materializer lays both out identically). After resolve, the
+ * package's `package.json` `name` must equal that prefix. A prefix that
+ * names no laid-out dependency, fails the package-name grammar, or
+ * resolves to a directory whose manifest name does not match, contributes
+ * nothing: the id stays unregistered and `registry.resolve` reports it
+ * unknown, which the probe surfaces as the "unresolvable director" deploy
+ * failure. Every loaded package's exported ids must sit under its own
+ * name, so the approved `director:<id>` grant names the package whose
+ * code runs.
  *
- * Only the workflow's OWN package directors are loaded here. Directors
- * shipped by PINNED dependency packages are deliberately not resolved on
- * the source-ref path yet: the airlocked probe does not materialize pinned
- * packages, so loading them here would let the runtime resolve a director
- * the probe never advertised for approval. A workflow referencing a
- * pinned-package director fails closed (the capability walk reports it as
- * unresolved).
- *
- * @throws if the directors entry path escapes the package, the module
- *   cannot be imported, or it exports no `AnnotatedDirectorFactory` value
+ * @throws if a directors entry path escapes its package, a module cannot
+ *   be imported, it exports no `AnnotatedDirectorFactory` value, or an
+ *   exported factory's id lies outside the package's own namespace
  */
 export async function loadWorkflowDirectorRegistryFromClosure(
   args: LoadWorkflowDirectorRegistryFromClosureArgs,
@@ -167,10 +189,200 @@ export async function loadWorkflowDirectorRegistryFromClosure(
     args.importModule ?? ((url: string) => import(url) as Promise<unknown>);
 
   const pkgJson = await readPackageJSON(args.packageDir);
+  const visited = new Set<string>();
+  const loaded: AnnotatedDirectorFactory<unknown, BaseEnv>[] = [];
+  for (const id of collectDirectorIds(args.definition)) {
+    // The built-in default is always registered and `@intx/agent` is
+    // platform code, not a closure package -- no prefix under that name
+    // may route into `node_modules/@intx/agent`. The package ships no
+    // `interchange.directors`.
+    const slash = id.lastIndexOf("/");
+    if (slash > 0 && id.slice(0, slash) === "@intx/agent") continue;
+    const packageDir = await resolveDirectorPackageDir(
+      args.packageDir,
+      pkgJson.name,
+      id,
+    );
+    if (packageDir === undefined || visited.has(packageDir)) continue;
+    visited.add(packageDir);
+    loaded.push(
+      ...(await loadDirectorFactoriesFromPackage({
+        packageDir,
+        importModule,
+        ...(args.importCacheKey !== undefined
+          ? { importCacheKey: args.importCacheKey }
+          : {}),
+      })),
+    );
+  }
+  logger.debug`loaded ${String(loaded.length)} custom director(s) for the closure at ${args.packageDir}`;
+  return createWorkflowDirectorRegistry(loaded);
+}
+
+/**
+ * The distinct director ids the definition's steps explicitly name, over the
+ * same traversal the deploy-time capability walk uses
+ * (`EXECUTABLE_STEP_DESCENT`: loop bodies, inline onTrigger sections, and
+ * inline childWorkflow bodies), so the set loaded here covers every ref the
+ * walk will resolve. Steps without a `director` field fall back to the
+ * built-in default at resolve time and contribute no id.
+ */
+function collectDirectorIds(definition: WorkflowDefinition): string[] {
+  const ids = new Set<string>();
+  walkWorkflowSteps({
+    definition,
+    descent: EXECUTABLE_STEP_DESCENT,
+    context: "director id collection: ",
+    visit: ({ step }) => {
+      const agent = extractAgent(step);
+      if (agent?.director !== undefined) {
+        ids.add(agent.director.id);
+      }
+    },
+  });
+  return [...ids];
+}
+
+/**
+ * The package directory a director id routes to: the id's prefix (everything
+ * before the last `/`) is the shipping package's name, gated as an npm
+ * package name rather than joined as a path. `.` / `..` segments and extra
+ * slashes beyond a scope (`@scope/name` is the only multi-segment form) are
+ * not a package prefix -- `path.join` would otherwise treat them as
+ * traversal. A prefix equal to the workflow package's own name resolves to
+ * the workflow package itself; any other legal prefix must be a direct
+ * dependency laid out under `node_modules/<prefix>` (scoped: one extra
+ * scope directory). After realpath, `package.json` `name` must equal the
+ * prefix so a directory whose layout name and manifest name disagree cannot
+ * register. `undefined` when the id fails `validateNamespacedId`, carries
+ * no package prefix, fails the package-name grammar, is not a direct
+ * `node_modules` child, no such dependency is laid out, or the slot is
+ * a file rather than a package directory (ENOTDIR) -- either way the
+ * id stays unregistered.
+ *
+ * The realpath targets `package.json`, not the directory: a bare scope dir
+ * (`node_modules/@scope`) exists whenever any scoped dep does but is not a
+ * package, and routing to it would fail on the missing manifest rather than
+ * reading as "not a dependency". Containment is checked on the lookup path
+ * under the workflow's `node_modules` (the symlink slot the materializer
+ * lays out); the store copy the symlink points at lives outside that tree.
+ */
+async function resolveDirectorPackageDir(
+  workflowPackageDir: string,
+  workflowPackageName: string,
+  directorId: string,
+): Promise<string | undefined> {
+  try {
+    validateNamespacedId(directorId);
+  } catch {
+    return undefined;
+  }
+  const slash = directorId.lastIndexOf("/");
+  if (slash <= 0) return undefined;
+  const packageName = directorId.slice(0, slash);
+  if (!isLegalDirectorPackageName(packageName)) return undefined;
+
+  const workflowReal = await fs.realpath(workflowPackageDir);
+  if (packageName === workflowPackageName) {
+    const pkgJson = await readPackageJSON(workflowReal);
+    if (pkgJson.name !== packageName) return undefined;
+    return workflowReal;
+  }
+
+  const lookupDir = path.join(workflowReal, "node_modules", packageName);
+  if (!isDirectNodeModulesPackage(workflowReal, lookupDir, packageName)) {
+    return undefined;
+  }
+  try {
+    const manifest = await fs.realpath(path.join(lookupDir, "package.json"));
+    const pkgDir = path.dirname(manifest);
+    const pkgJson = await readPackageJSON(pkgDir);
+    if (pkgJson.name !== packageName) return undefined;
+    return pkgDir;
+  } catch (cause) {
+    if (isErrnoNotFound(cause)) return undefined;
+    throw cause;
+  }
+}
+
+// A director-id prefix is an npm package name, not a path. Unscoped names
+// are a single segment; scoped names are exactly `@scope/name`. `.` and
+// `..` are not segments -- `packageName.includes("..")` would also reject
+// a legal name like `foo..bar`, so each slash-separated piece is checked
+// on its own.
+const PACKAGE_NAME_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+function isLegalDirectorPackageName(name: string): boolean {
+  if (name.startsWith("@")) {
+    const parts = name.split("/");
+    if (parts.length !== 2) return false;
+    const scope = parts[0];
+    const pkg = parts[1];
+    if (scope === undefined || pkg === undefined) return false;
+    return isPackageNameSegment(scope.slice(1)) && isPackageNameSegment(pkg);
+  }
+  if (name.includes("/")) return false;
+  return isPackageNameSegment(name);
+}
+
+function isPackageNameSegment(segment: string): boolean {
+  return (
+    segment !== "." && segment !== ".." && PACKAGE_NAME_SEGMENT.test(segment)
+  );
+}
+
+// The lookup path -- not the store realpath the materializer's symlink
+// resolves to -- must be the workflow package's `node_modules/<name>` slot
+// (scoped: `node_modules/@scope/name`). `path.relative` catching `..` or
+// an absolute remainder is belt-and-braces on top of the package-name
+// grammar: a legal name cannot traverse, but a join bug still must not
+// import an escaped directory.
+function isDirectNodeModulesPackage(
+  workflowReal: string,
+  lookupDir: string,
+  packageName: string,
+): boolean {
+  const nodeModules = path.join(workflowReal, "node_modules");
+  const expected = path.join(nodeModules, packageName);
+  if (path.normalize(lookupDir) !== path.normalize(expected)) {
+    return false;
+  }
+  const rel = path.relative(nodeModules, lookupDir);
+  if (rel === "" || path.isAbsolute(rel)) return false;
+  const segments = rel.split(path.sep);
+  if (segments.includes("..") || segments.includes(".")) return false;
+  return segments.join("/") === packageName;
+}
+
+function isErrnoNotFound(cause: unknown): boolean {
+  if (cause === null || typeof cause !== "object") return false;
+  const code = (cause as { code?: unknown }).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/**
+ * Load the `AnnotatedDirectorFactory` exports of ONE package's
+ * `interchange.directors` module. A package with no `interchange.directors`
+ * field contributes an empty list.
+ *
+ * Every exported factory id must sit under the shipping package's own name
+ * (`<pkgJson.name>/<suffix>`): the operator approves `director:<id>` only,
+ * so the id prefix is the only thing that ties the approved grant to the
+ * package whose code runs.
+ *
+ * @throws if the entry path escapes the package, the module cannot be
+ *   imported, it exports no `AnnotatedDirectorFactory` value, or an
+ *   exported factory's id lies outside the package's own namespace
+ */
+async function loadDirectorFactoriesFromPackage(args: {
+  packageDir: string;
+  importCacheKey?: string;
+  importModule: (importUrl: string) => Promise<unknown>;
+}): Promise<AnnotatedDirectorFactory<unknown, BaseEnv>[]> {
+  const pkgJson = await readPackageJSON(args.packageDir);
   const entryRel = pkgJson.interchange?.directors;
   if (entryRel === undefined) {
-    // No custom directors: built-ins only.
-    return createDefaultDirectorRegistry();
+    return [];
   }
 
   const entryAbs = await resolveContainedEntry(
@@ -186,27 +398,34 @@ export async function loadWorkflowDirectorRegistryFromClosure(
 
   let mod: unknown;
   try {
-    mod = await importModule(importUrl);
+    mod = await args.importModule(importUrl);
   } catch (cause) {
     throw new Error(
-      `failed to import interchange.directors entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir}`,
+      `failed to import interchange.directors entry ${JSON.stringify(entryRel)} for package at ${args.packageDir}`,
       { cause },
     );
   }
   if (mod === null || typeof mod !== "object") {
     throw new Error(
-      `interchange.directors entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir} did not evaluate to a module object`,
+      `interchange.directors entry ${JSON.stringify(entryRel)} for package at ${args.packageDir} did not evaluate to a module object`,
     );
   }
 
   const loaded = Object.values(mod).filter(isAnnotatedDirectorFactory);
   if (loaded.length === 0) {
     throw new Error(
-      `interchange.directors entry ${JSON.stringify(entryRel)} for workflow package at ${args.packageDir} exported no AnnotatedDirectorFactory values`,
+      `interchange.directors entry ${JSON.stringify(entryRel)} for package at ${args.packageDir} exported no AnnotatedDirectorFactory values`,
     );
   }
+  for (const factory of loaded) {
+    if (!isOwnedDirectorId(factory.id, pkgJson.name)) {
+      throw new Error(
+        `interchange.directors entry ${JSON.stringify(entryRel)} for package at ${args.packageDir} exports director ${JSON.stringify(factory.id)} outside the package's own namespace ${JSON.stringify(pkgJson.name)}`,
+      );
+    }
+  }
   logger.debug`loaded ${String(loaded.length)} custom director(s) from ${args.packageDir}`;
-  return createWorkflowDirectorRegistry(loaded);
+  return loaded;
 }
 
 export interface LoadWorkflowLoopFnsFromClosureArgs {
@@ -552,24 +771,22 @@ async function readPackageJSON(packageDir: string): Promise<PackageJSON> {
   try {
     raw = await fs.readFile(pkgJsonPath, "utf8");
   } catch (cause) {
-    throw new Error(
-      `cannot read package.json for workflow package at ${packageDir}`,
-      { cause },
-    );
+    throw new Error(`cannot read package.json for package at ${packageDir}`, {
+      cause,
+    });
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (cause) {
-    throw new Error(
-      `malformed package.json for workflow package at ${packageDir}`,
-      { cause },
-    );
+    throw new Error(`malformed package.json for package at ${packageDir}`, {
+      cause,
+    });
   }
   const validated = PackageJSON(parsed);
   if (validated instanceof type.errors) {
     throw new Error(
-      `package.json for workflow package at ${packageDir} failed validation: ${validated.summary}`,
+      `package.json for package at ${packageDir} failed validation: ${validated.summary}`,
     );
   }
   return validated;

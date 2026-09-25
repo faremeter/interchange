@@ -43,3 +43,13 @@ export function validateNamespacedId(id: string): void {
     );
   }
 }
+
+/**
+ * Whether a director id sits under `packageName`'s own namespace
+ * (`<packageName>/<local-name>`). The workflow-host closure loader and the
+ * tool-packaging loader share this predicate; each site keeps its own
+ * throw when it is false.
+ */
+export function isOwnedDirectorId(id: string, packageName: string): boolean {
+  return id.startsWith(`${packageName}/`);
+}
