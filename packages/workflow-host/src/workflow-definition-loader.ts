@@ -28,6 +28,7 @@ import {
   createWorkflowDirectorRegistry,
   isAnnotatedDirectorFactory,
   isAnnotatedPluginFactory,
+  isOwnedDirectorId,
   validateNamespacedId,
   type AnnotatedDirectorFactory,
   type AnnotatedPluginFactory,
@@ -416,7 +417,7 @@ async function loadDirectorFactoriesFromPackage(args: {
     );
   }
   for (const factory of loaded) {
-    if (!factory.id.startsWith(`${pkgJson.name}/`)) {
+    if (!isOwnedDirectorId(factory.id, pkgJson.name)) {
       throw new Error(
         `interchange.directors entry ${JSON.stringify(entryRel)} for package at ${args.packageDir} exports director ${JSON.stringify(factory.id)} outside the package's own namespace ${JSON.stringify(pkgJson.name)}`,
       );
