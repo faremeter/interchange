@@ -12,11 +12,12 @@ import {
 import { noopAuditStore } from "@intx/agent/testing";
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import { createInboundTurn } from "@intx/inference";
-import type {
-  AuthorizeContext,
-  StepInvokeRequest,
-  StepInvokeResult,
-  WorkflowAuthorizeFn,
+import {
+  StepOutcomeCommitError,
+  type AuthorizeContext,
+  type StepInvokeRequest,
+  type StepInvokeResult,
+  type WorkflowAuthorizeFn,
 } from "@intx/workflow";
 import type {
   BlobReader,
@@ -770,6 +771,184 @@ describe("workflow-host StepInvoker adapter - onEvent contract", () => {
     });
     await sendPromise;
     expect(stub.events).toContain("close");
+  });
+});
+
+describe("workflow-host StepInvoker adapter - cold settle hook", () => {
+  const replyTurn = {
+    role: "assistant" as const,
+    content: [{ type: "text" as const, text: "ok" }],
+    model: STUB_SOURCE.model,
+    timestamp: 0,
+  };
+  const allow: WorkflowAuthorizeFn = async () => ({
+    effect: "allow",
+    matchingGrants: [],
+    resolvedBy: null,
+  });
+
+  test("settles with the env buildEnv produced, after the agent closes, before the result returns", async () => {
+    const stub = buildStubAgent();
+    const built = stubBuildEnv();
+    const settledWith: StepEnvBase[] = [];
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => built,
+      agentFactory: async () => stub.agent,
+      onColdStepSettled: async (env) => {
+        stub.events.push("settled");
+        settledWith.push(env);
+      },
+    });
+
+    const pending = invoker(buildRequest({ input: "turn" }));
+    await Promise.resolve();
+    stub.resolveSend({ type: "reply", reply: "ok", turn: replyTurn });
+    await pending;
+
+    expect(settledWith).toEqual([built]);
+    expect(settledWith[0]).toBe(built);
+    expect(stub.events.slice(-2)).toEqual(["close", "settled"]);
+  });
+
+  test("settles a step whose send rejected and still surfaces the send error", async () => {
+    const stub = buildStubAgent();
+    let settled = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+      onColdStepSettled: async () => {
+        settled += 1;
+        throw new Error("settle boom");
+      },
+    });
+
+    const pending = invoker(buildRequest({ input: "turn" }));
+    await Promise.resolve();
+    stub.rejectSend(new Error("send boom"));
+    await expect(pending).rejects.toThrow(/send boom/);
+    expect(settled).toBe(1);
+  });
+
+  test("a settle failure after a clean turn fails the step as an uncommitted outcome", async () => {
+    const stub = buildStubAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+      onColdStepSettled: async () => {
+        throw new Error("settle boom");
+      },
+    });
+
+    const pending = invoker(buildRequest({ input: "turn" }));
+    await Promise.resolve();
+    stub.resolveSend({ type: "reply", reply: "ok", turn: replyTurn });
+    const failure = await pending.then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    expect(failure).toBeInstanceOf(StepOutcomeCommitError);
+    expect(failure).toHaveProperty(
+      "message",
+      expect.stringMatching(/settle boom/),
+    );
+  });
+
+  // The wrapped close runs the tool disposers after the agent's own close,
+  // and a failing disposer rejects it.
+  function closeFails(stub: StubAgentControl): Agent {
+    return {
+      ...stub.agent,
+      async close() {
+        await stub.agent.close();
+        throw new Error("disposer boom");
+      },
+    };
+  }
+
+  test("a close failure after a clean turn still settles and fails the step without a retry", async () => {
+    const stub = buildStubAgent();
+    let settled = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => closeFails(stub),
+      onColdStepSettled: async () => {
+        settled += 1;
+      },
+    });
+
+    const pending = invoker(buildRequest({ input: "turn" }));
+    await Promise.resolve();
+    stub.resolveSend({ type: "reply", reply: "ok", turn: replyTurn });
+    const failure = await pending.then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+
+    expect(settled).toBe(1);
+    expect(failure).toBeInstanceOf(StepOutcomeCommitError);
+    expect(failure).toHaveProperty(
+      "message",
+      "closing the step's agent failed after its turn: disposer boom",
+    );
+  });
+
+  test("a close failure after a clean turn fails the step without a retry when no settle hook is wired", async () => {
+    const stub = buildStubAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => closeFails(stub),
+    });
+
+    const pending = invoker(buildRequest({ input: "turn" }));
+    await Promise.resolve();
+    stub.resolveSend({ type: "reply", reply: "ok", turn: replyTurn });
+
+    await expect(pending).rejects.toBeInstanceOf(StepOutcomeCommitError);
+  });
+
+  test("a close failure while a send error unwinds still settles and surfaces the send error", async () => {
+    const stub = buildStubAgent();
+    let settled = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => closeFails(stub),
+      onColdStepSettled: async () => {
+        settled += 1;
+      },
+    });
+
+    const pending = invoker(buildRequest({ input: "turn" }));
+    await Promise.resolve();
+    stub.rejectSend(new Error("send boom"));
+
+    await expect(pending).rejects.toThrow(/send boom/);
+    expect(settled).toBe(1);
+  });
+
+  test("the warm path never calls the cold settle hook", async () => {
+    const warmCache = createWarmAgentCache();
+    const stub = buildWarmStubAgent();
+    let settled = 0;
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allow,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => stub.agent,
+      warmCache,
+      onColdStepSettled: async () => {
+        settled += 1;
+      },
+    });
+
+    await invoker(buildRequest({ input: "first message" }));
+    await invoker(buildRequest({ input: "second message" }));
+    expect(settled).toBe(0);
+    await warmCache.evictAll("test teardown");
   });
 });
 
