@@ -702,7 +702,7 @@ export interface WorkflowSupervisorBindings {
  *   - `markconsumed` — `markConsumed` at the tail of `dispatchOne`, AFTER
  *                      `reply-produced` (paid OUTSIDE the window).
  *   - `wal`          — the D1 conversation WAL append / checkpoint
- *                      (`agent-state/<key>/...`), arriving as a
+ *                      (`runs/<runId>/steps/...`), arriving as a
  *                      child-proxied `substrate.write.request`. The control
  *                      leg: post-D1 it should be small and flat.
  */

@@ -47,9 +47,9 @@ import { waitForNthEvent } from "@intx/workflow/testing";
 
 // ---------------------------------------------------------------------------
 // The durable conversation store the run rehydrates from. In production this
-// is the sidecar's per-agent `agent-state/<key>` substrate; here an in-memory
-// map the two "processes" (phase A and phase B) share by instance, standing in
-// for a store that survives a child respawn. `load` returns a copy so a caller
+// is the step's state directory in the workflow-run substrate; here an
+// in-memory map the two "processes" (phase A and phase B) share by instance,
+// standing in for a store that survives a child respawn. `load` returns a copy so a caller
 // mutating the returned array cannot corrupt the stored history.
 // ---------------------------------------------------------------------------
 interface ConversationStore {

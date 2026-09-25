@@ -80,6 +80,7 @@ import {
 } from "@intx/sidecar-app/src/conversation-state";
 import {
   createAgentRepoStore,
+  workflowRunStepStatePrefix,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
 import { tenant as tenantTable } from "@intx/db/schema";
@@ -350,18 +351,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // ---- STAGE 4: DURABLE CONVERSATION SNAPSHOT (4.4) ----
 
       // The run-boundary hook mirrors the warm agent's conversation into the
-      // workflow-run substrate. The stable per-agent store is keyed by stepId,
-      // not by the terminal run or its attempt.
-      const agentStateDir = substrateAgentStateDir(
+      // step's state directory under the deployment's top-level run, keyed
+      // by stepId rather than by the attempt.
+      const stateDir = substrateStepStateDir(
         env,
         workflowRunRepoId.id,
         STEP_ID,
       );
       await waitFor(
-        async () => (await readSnapshotUserTexts(agentStateDir)).length >= 1,
+        async () => (await readSnapshotUserTexts(stateDir)).length >= 1,
         { diagnostics: env.sidecarDiagnostics },
       );
-      const afterBoundary = await readSnapshotUserTexts(agentStateDir);
+      const afterBoundary = await readSnapshotUserTexts(stateDir);
       expect(afterBoundary.some((t) => t.includes(FIRST_BODY))).toBe(true);
 
       // The warm agent's conversation `.git` lives at the stable per-agent
@@ -413,6 +414,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         dataDir: freshLocalDataDir,
         workflowRunRepoId,
         workflowRunRef: WORKFLOW_RUN_REF,
+        runId: DEPLOYMENT_ID,
         substrate: respawnSubstrate,
         principal: respawnPrincipal,
         signer: respawnSigner,
@@ -490,12 +492,12 @@ function stepWorkspaceSentinelPath(
 }
 
 /**
- * Path of the per-agent conversation snapshot the durable store mirrors to
- * the sidecar's on-disk workflow-run substrate (the supervisor's
- * single-writer substrate). Deterministic, no hub pack-push timing
- * dependency.
+ * Path of the step's state directory the durable store mirrors to in the
+ * sidecar's on-disk workflow-run substrate (the supervisor's single-writer
+ * substrate), under the deployment's top-level run. Deterministic, no hub
+ * pack-push timing dependency.
  */
-function substrateAgentStateDir(
+function substrateStepStateDir(
   deployEnv: DeployFlowEnv,
   workflowRunRepoSlug: string,
   stepId: string,
@@ -504,8 +506,7 @@ function substrateAgentStateDir(
     deployEnv.sidecar.dataDir,
     "workflow-runs",
     workflowRunRepoSlug,
-    "agent-state",
-    encodeURIComponent(stepId),
+    workflowRunStepStatePrefix(DEPLOYMENT_ID, stepId),
   );
 }
 
@@ -537,16 +538,13 @@ const TurnShape = type({
 
 /**
  * Reconstruct the durable conversation from the two-tier substrate layout
- * (checkpoint + WAL) at the per-agent `agent-state/<stepId>/` dir and
- * return the user-turn texts. Goes through the production
+ * (checkpoint + WAL) in the step's state directory and return the
+ * user-turn texts. Goes through the production
  * `reconstructDurableConversation` so the test reads the conversation the
  * same way the warm agent's restore does.
  */
-async function readSnapshotUserTexts(agentStateDir: string): Promise<string[]> {
-  const reconstructed = await reconstructDurableConversation(
-    agentStateDir,
-    STEP_ID,
-  );
+async function readSnapshotUserTexts(stateDir: string): Promise<string[]> {
+  const reconstructed = await reconstructDurableConversation(stateDir, STEP_ID);
   if (reconstructed === null) return [];
   const texts: string[] = [];
   for (const rawTurn of reconstructed.turns) {

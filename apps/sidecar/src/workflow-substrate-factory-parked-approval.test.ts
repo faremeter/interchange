@@ -6,10 +6,11 @@
 //     store on disk; the read loads it, and returns undefined (without
 //     manufacturing a repo) when the store dir is absent.
 //   - WARM (single-step): the snapshot lives in the durable conversation
-//     store, mirrored to the workflow-run substrate under `agent-state/<stepId>/`.
-//     The read reconstructs it from the substrate WITHOUT going through the live
-//     registry -- proving a respawned child (whose live store is unbuilt) still
-//     recovers the snapshot.
+//     store, mirrored to the step's state directory in the workflow-run
+//     substrate (or, for a deployment that predates it, the legacy
+//     `agent-state/<stepId>/`). The read reconstructs it from the substrate
+//     WITHOUT going through the live registry -- proving a respawned child
+//     (whose live store is unbuilt) still recovers the snapshot.
 
 import { describe, test, expect } from "bun:test";
 import fs from "node:fs/promises";
@@ -17,10 +18,13 @@ import os from "node:os";
 import path from "node:path";
 
 import type { ApprovalSnapshot, PendingOperation } from "@intx/types/runtime";
-import type {
-  Principal,
-  RepoId,
-  RepoStore,
+import {
+  serializeStepStateWalEntry,
+  stepStateWalEntryPath,
+  WORKFLOW_RUN_AGENT_STATE_PREFIX,
+  type Principal,
+  type RepoId,
+  type RepoStore,
 } from "@intx/hub-sessions/substrate";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 
@@ -39,6 +43,7 @@ const WORKFLOW_RUN_REPO_ID: RepoId = {
   id: "parked-approval",
 };
 const WORKFLOW_RUN_REF = "refs/heads/main";
+const RUN_ID = "run_parked";
 const PRINCIPAL: Principal = { kind: "workflow-process" };
 const EMPTY_USAGE = {
   input: 0,
@@ -247,7 +252,8 @@ describe("readWarmParkedApprovalSnapshot", () => {
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
-      agentKey: "s",
+      runId: RUN_ID,
+      stepId: "s",
     });
     // Suspend-time state: the parked approval's pending op, then mirrored to
     // the substrate at the run boundary. No live registry is involved on the
@@ -261,6 +267,7 @@ describe("readWarmParkedApprovalSnapshot", () => {
     const got = await readWarmParkedApprovalSnapshot({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId: RUN_ID,
       stepId: "s",
       correlationId: "corr-1",
     });
@@ -273,6 +280,7 @@ describe("readWarmParkedApprovalSnapshot", () => {
     const got = await readWarmParkedApprovalSnapshot({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId: RUN_ID,
       stepId: "never-ran",
       correlationId: "corr-x",
     });
@@ -288,7 +296,8 @@ describe("readWarmParkedApprovalSnapshot", () => {
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
-      agentKey: "s",
+      runId: RUN_ID,
+      stepId: "s",
     });
     await store.storage.writeMetadata({
       pendingOperations: [pendingApproval("corr-1")],
@@ -299,6 +308,7 @@ describe("readWarmParkedApprovalSnapshot", () => {
     const got = await readWarmParkedApprovalSnapshot({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId: RUN_ID,
       stepId: "s",
       correlationId: "corr-1",
     });
@@ -359,7 +369,8 @@ describe("readWarmParkedPendingOperations", () => {
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
       workflowRunRef: WORKFLOW_RUN_REF,
       principal: PRINCIPAL,
-      agentKey: "s",
+      runId: RUN_ID,
+      stepId: "s",
     });
     await store.storage.writeMetadata({
       pendingOperations: [pendingApproval("corr-1", snapshot)],
@@ -370,6 +381,36 @@ describe("readWarmParkedPendingOperations", () => {
     const got = await readWarmParkedPendingOperations({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId: RUN_ID,
+      stepId: "s",
+    });
+    expect(got).toEqual([pendingApproval("corr-1", snapshot)]);
+  });
+
+  test("reads a legacy agent-state copy the warm restore has not moved yet", async () => {
+    const substrate = createStubSubstrate(await makeTempDir());
+    const entryPath = stepStateWalEntryPath(
+      `${WORKFLOW_RUN_AGENT_STATE_PREFIX}/s/`,
+      0,
+    );
+    const full = path.join(
+      substrate.getRepoDir(WORKFLOW_RUN_REPO_ID),
+      entryPath,
+    );
+    await fs.mkdir(path.dirname(full), { recursive: true });
+    await fs.writeFile(
+      full,
+      serializeStepStateWalEntry(0, [], {
+        pendingOperations: [pendingApproval("corr-1", snapshot)],
+        tokenUsage: EMPTY_USAGE,
+        connectorState: null,
+      }),
+    );
+
+    const got = await readWarmParkedPendingOperations({
+      substrate,
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId: RUN_ID,
       stepId: "s",
     });
     expect(got).toEqual([pendingApproval("corr-1", snapshot)]);
@@ -381,6 +422,7 @@ describe("readWarmParkedPendingOperations", () => {
     const got = await readWarmParkedPendingOperations({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      runId: RUN_ID,
       stepId: "never-ran",
     });
     expect(got).toEqual([]);

@@ -34,6 +34,8 @@ export {
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
   MAX_MAIL_PART_PATH_COMPONENT_BYTES,
+  workflowRunLegacyAgentStatePrefix,
+  workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
 export type {
   WorkflowRunSupervisorPrincipal,

@@ -10,13 +10,20 @@
 //
 // This module makes the warm agent's conversation DURABLE in the
 // workflow-run substrate (the single-writer proxy `RepoStore`, written
-// through the supervisor). The durable copy lives under the workflow-run
-// repo at a stable per-agent path (`agent-state/<agentKey>/...`), sibling
-// to the per-run event log under `runs/<runId>/...` and NOT confused with
-// it. On a new run (and after a child respawn, once the warm agent is
-// rebuilt lazily) the conversation is restored from the substrate into
-// the agent's local store BEFORE the agent's reactor loads, so multi-turn
-// continuity holds across runs and across respawn.
+// through the supervisor). The durable copy lives in the state directory
+// of the step in the run it belongs to
+// (`runs/<runId>/steps/<stepId>/state/`), beside that run's event log, so
+// the Hub's copy of the repo carries it to a replacement host. After a
+// child respawn, once the warm agent is rebuilt lazily, the conversation is
+// restored from the substrate into the agent's local store BEFORE the
+// agent's reactor loads, so multi-turn continuity holds across respawn and
+// failover.
+//
+// Deployments that predate that layout kept the conversation at
+// `agent-state/<stepId>/`. The first restore that finds state only there
+// folds it into a checkpoint in the state directory and then drops the old
+// subtree. A crash between the two writes leaves both copies; the next
+// restore prefers the state directory and finishes the drop.
 //
 // The conversation is committed in the step-state format that
 // `@intx/hub-sessions/substrate` defines: a compacted checkpoint plus an
@@ -38,21 +45,20 @@
 // the DIRECT CHILDREN of `preservePrefix`, and the substrate's
 // `clearPrefix` step recursively removes the whole `preservePrefix`
 // subtree before writing the merge's returned set (paths outside the
-// prefix pass through untouched). A WAL blob is two levels below
-// `agent-state/<key>/`, so:
+// prefix pass through untouched). A WAL blob is two levels below the
+// state directory, so:
 //
-//   - WAL append uses `preservePrefix = agent-state/<key>/wal/<bucket>/`.
+//   - WAL append uses `preservePrefix = <state dir>/wal/<bucket>/`.
 //     The bucket's existing blobs ARE direct children, so the merge
 //     pre-image is exactly that bucket and the append adds one entry --
 //     no isogit side-read, and the checkpoint / other buckets are
 //     untouched (outside the prefix).
-//   - Checkpoint write + WAL truncate uses `preservePrefix =
-//     agent-state/<key>/`. The top-level checkpoint files are direct
-//     children; the merge returns ONLY those files and NO `wal/...`
-//     paths, so the recursive `clearPrefix` at `agent-state/<key>/` drops
-//     the entire WAL subtree in the same atomic commit. The truncate
-//     needs no nested read: omitting the WAL paths from the returned set
-//     IS the truncate.
+//   - Checkpoint write + WAL truncate uses `preservePrefix = <state dir>/`.
+//     The top-level checkpoint files are direct children; the merge
+//     returns ONLY those files and NO `wal/...` paths, so the recursive
+//     `clearPrefix` at the state directory drops the entire WAL subtree in
+//     the same atomic commit. The truncate needs no nested read: omitting
+//     the WAL paths from the returned set IS the truncate.
 //
 // Persistence sink (the riskiest part, design §6). The connector router's
 // `snapshot()` / `restore()` surface and the harness's
@@ -61,11 +67,11 @@
 // substrate. Both the WAL append and the checkpoint write route through
 // the proxy `writeTreePreservingPrefix`; because the supervisor is the
 // single writer and serializes every write to the workflow-run ref under
-// a per-repo lock, and the `agent-state/<key>/...` prefix is disjoint from
-// the run-event prefix (`runs/<runId>/events/`), the conversation write
-// never races nor clobbers the run-event log -- both pass through the same
-// single writer, and the preserve-prefix merge leaves every other subtree
-// byte-for-byte intact.
+// a per-repo lock, and the state directory is disjoint from the run-event
+// prefix (`runs/<runId>/events/`), the conversation write never races nor
+// clobbers the run-event log -- both pass through the same single writer,
+// and the preserve-prefix merge leaves every other subtree byte-for-byte
+// intact.
 //
 // Timing (design §4 Phase D1, invariant 1). This is a STRUCTURE-only
 // change. The mirror is still `await`ed synchronously at the same run
@@ -117,7 +123,8 @@ import {
   stepStateWalBucket,
   stepStateWalBucketPrefix,
   stepStateWalEntryPath,
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
+  workflowRunLegacyAgentStatePrefix,
+  workflowRunStepStatePrefix,
 } from "@intx/hub-sessions/substrate";
 import type {
   AuditStore,
@@ -154,13 +161,10 @@ export interface DurableConversationStoreOpts {
   workflowRunRef: string;
   /** Principal the substrate write is authored under. */
   principal: Principal;
-  /**
-   * Stable per-agent key the snapshot is filed under
-   * (`agent-state/<agentKey>/`). The warm single-step agent's stepId is
-   * the natural key: it is stable across that agent's whole lifetime and
-   * disjoint from any runId.
-   */
-  agentKey: string;
+  /** The run the step belongs to; its state lives under that run. */
+  runId: string;
+  /** The step whose state this store holds. */
+  stepId: string;
 }
 
 /**
@@ -246,12 +250,13 @@ export async function createDurableConversationStore(
   const connectorRouter = createConnectorRouter({
     onStateChanged: () => {
       void mirrorToSubstrate().catch((cause) => {
-        logger.error`connector-state-change conversation mirror failed for ${opts.agentKey}: ${cause instanceof Error ? cause.message : String(cause)}`;
+        logger.error`connector-state-change conversation mirror failed for ${opts.stepId}: ${cause instanceof Error ? cause.message : String(cause)}`;
       });
     },
   });
 
-  const agentStatePrefix = `${WORKFLOW_RUN_AGENT_STATE_PREFIX}/${encodeURIComponent(opts.agentKey)}/`;
+  const statePrefix = workflowRunStepStatePrefix(opts.runId, opts.stepId);
+  const legacyStatePrefix = workflowRunLegacyAgentStatePrefix(opts.stepId);
 
   // The number of mirror boundaries already durably committed (the
   // checkpoint's folded boundaries plus every appended WAL entry). It is
@@ -316,20 +321,53 @@ export async function createDurableConversationStore(
     return serializeStateOp(() => runReplySent(receipt));
   }
 
-  function substrateAgentStateFsDir(): string {
-    const repoDir = opts.substrate.getRepoDir(opts.workflowRunRepoId);
-    return path.join(
-      repoDir,
-      WORKFLOW_RUN_AGENT_STATE_PREFIX,
-      encodeURIComponent(opts.agentKey),
+  function workingTreeDir(prefix: string): string {
+    return path.join(opts.substrate.getRepoDir(opts.workflowRunRepoId), prefix);
+  }
+
+  /**
+   * Read the committed state, first moving a deployment's legacy
+   * `agent-state/<stepId>/` copy into the state directory. The move is two
+   * commits -- fold the legacy conversation into a checkpoint in the state
+   * directory, then drop the legacy subtree -- and the state directory wins
+   * once it exists, so a crash between them is finished by the next read.
+   */
+  async function readCommittedState(): Promise<ReconstructedStepState | null> {
+    const current = await reconstructDurableConversation(
+      workingTreeDir(statePrefix),
+      opts.stepId,
+    );
+    const legacyDir = workingTreeDir(legacyStatePrefix);
+    if (current !== null) {
+      if (await hasEntries(legacyDir)) await dropLegacyState();
+      return current;
+    }
+    const legacy = await reconstructDurableConversation(legacyDir, opts.stepId);
+    if (legacy === null) return null;
+    await writeCheckpoint(legacy.boundaryCount, legacy.turns, {
+      pendingOperations: legacy.pendingOperations,
+      tokenUsage: legacy.tokenUsage,
+      connectorState: legacy.connectorState,
+    });
+    await dropLegacyState();
+    return { ...legacy, checkpointBoundarySeq: legacy.boundaryCount };
+  }
+
+  async function dropLegacyState(): Promise<void> {
+    await opts.substrate.writeTreePreservingPrefix(
+      opts.principal,
+      opts.workflowRunRepoId,
+      opts.workflowRunRef,
+      {
+        preservePrefix: legacyStatePrefix,
+        merge: async () => ({}),
+        message: `drop legacy agent-state conversation for ${opts.stepId} after moving it to ${statePrefix}`,
+      },
     );
   }
 
   async function runRestore(): Promise<boolean> {
-    const reconstructed = await reconstructDurableConversation(
-      substrateAgentStateFsDir(),
-      opts.agentKey,
-    );
+    const reconstructed = await readCommittedState();
     if (reconstructed === null) {
       // No durable state yet: the next mirror starts the WAL from an empty
       // checkpoint. Record the (empty) committed counts so the first
@@ -363,7 +401,7 @@ export async function createDurableConversationStore(
       tokenUsage: reconstructed.tokenUsage,
     });
     await baseStorage.commit({
-      message: `restore conversation for ${opts.agentKey} from substrate`,
+      message: `restore conversation for ${opts.stepId} from substrate`,
     });
     return true;
   }
@@ -383,14 +421,14 @@ export async function createDurableConversationStore(
     metadata: StepStateMetadata,
   ): Promise<void> {
     const serialized = serializeStepStateWalEntry(boundarySeq, turns, metadata);
-    const newPath = stepStateWalEntryPath(agentStatePrefix, boundarySeq);
+    const newPath = stepStateWalEntryPath(statePrefix, boundarySeq);
     await opts.substrate.writeTreePreservingPrefix(
       opts.principal,
       opts.workflowRunRepoId,
       opts.workflowRunRef,
       {
         preservePrefix: stepStateWalBucketPrefix(
-          agentStatePrefix,
+          statePrefix,
           stepStateWalBucket(boundarySeq),
         ),
         merge: async (existing) => {
@@ -401,18 +439,18 @@ export async function createDurableConversationStore(
           files[newPath] = serialized;
           return files;
         },
-        message: `append conversation WAL boundary ${String(boundarySeq)} (${String(turns.length)} turn(s)) for ${opts.agentKey}`,
+        message: `append conversation WAL boundary ${String(boundarySeq)} (${String(turns.length)} turn(s)) for ${opts.stepId}`,
       },
     );
   }
 
   /**
    * Fold the full conversation into a fresh checkpoint and truncate the
-   * WAL in one atomic commit at `preservePrefix = agent-state/<key>/`. The
-   * merge returns ONLY the two checkpoint files and NO `wal/...` paths;
+   * WAL in one atomic commit with the state directory as `preservePrefix`.
+   * The merge returns ONLY the two checkpoint files and NO `wal/...` paths;
    * because the substrate's `clearPrefix` recursively removes the whole
-   * `agent-state/<key>/` subtree before writing the returned set, omitting
-   * the WAL paths IS the truncate.
+   * state directory before writing the returned set, omitting the WAL
+   * paths IS the truncate.
    */
   async function writeCheckpoint(
     boundarySeq: number,
@@ -424,7 +462,7 @@ export async function createDurableConversationStore(
     // the fold captures the latest metadata into checkpoint.meta -- a
     // restore from the post-fold checkpoint sees the same metadata the
     // pre-fold WAL tail would have yielded.
-    const checkpoint = buildStepStateCheckpoint(agentStatePrefix, boundarySeq, {
+    const checkpoint = buildStepStateCheckpoint(statePrefix, boundarySeq, {
       turns,
       ...metadata,
     });
@@ -433,9 +471,9 @@ export async function createDurableConversationStore(
       opts.workflowRunRepoId,
       opts.workflowRunRef,
       {
-        preservePrefix: agentStatePrefix,
+        preservePrefix: statePrefix,
         merge: async () => checkpoint,
-        message: `compact conversation checkpoint at boundary ${String(boundarySeq)} (${String(turns.length)} turns) for ${opts.agentKey}`,
+        message: `compact conversation checkpoint at boundary ${String(boundarySeq)} (${String(turns.length)} turns) for ${opts.stepId}`,
       },
     );
   }
@@ -461,10 +499,7 @@ export async function createDurableConversationStore(
     // counts from the substrate so the append starts at the right boundary
     // seq and never re-commits boundaries the substrate already holds.
     if (mirroredBoundaryCount === null) {
-      const reconstructed = await reconstructDurableConversation(
-        substrateAgentStateFsDir(),
-        opts.agentKey,
-      );
+      const reconstructed = await readCommittedState();
       checkpointBoundarySeq = reconstructed?.checkpointBoundarySeq ?? 0;
       mirroredBoundaryCount = reconstructed?.boundaryCount ?? 0;
       mirroredTurnCount = reconstructed?.totalTurns ?? 0;
@@ -515,7 +550,7 @@ export async function createDurableConversationStore(
     try {
       return connectorRouter.route(message);
     } catch (cause) {
-      logger.warn`connector route for ${opts.agentKey} could not parse the inbound sender; leaving the thread unadvanced: ${cause instanceof Error ? cause.message : String(cause)}`;
+      logger.warn`connector route for ${opts.stepId} could not parse the inbound sender; leaving the thread unadvanced: ${cause instanceof Error ? cause.message : String(cause)}`;
       return { kind: "passthrough" };
     }
   }
@@ -541,7 +576,7 @@ export async function createDurableConversationStore(
       tokenUsage: metadata.tokenUsage,
     });
     await baseStorage.commit({
-      message: `seed connector thread for ${opts.agentKey}`,
+      message: `seed connector thread for ${opts.stepId}`,
     });
   }
 
@@ -566,7 +601,7 @@ export async function createDurableConversationStore(
       tokenUsage: metadata.tokenUsage,
     });
     await baseStorage.commit({
-      message: `advance connector thread after reply for ${opts.agentKey}`,
+      message: `advance connector thread after reply for ${opts.stepId}`,
     });
   }
 
@@ -585,6 +620,13 @@ export interface DurableConversationRegistryOpts {
   dataDir: string;
   /** Workflow-run repo identity for the deployment. */
   workflowRunRepoId: RepoId;
+  /**
+   * The deployment's one addressable top-level run. A warm agent's
+   * conversation spans every message its deployment serves, so each store
+   * files its state under this run rather than the run of whichever
+   * message first built the agent.
+   */
+  runId: string;
   /** Workflow-run repo ref. */
   workflowRunRef: string;
   /** Proxy workflow-run substrate (single-writer via the supervisor). */
@@ -597,51 +639,52 @@ export interface DurableConversationRegistryOpts {
 
 /**
  * Per-agent durable-conversation store registry (design §3c). One store
- * per warm agent key, built lazily and reused across runs in the same
- * child. The first `acquire` for a key builds the store and restores its
- * prior conversation snapshot from the substrate -- the path that runs on
- * the lazy first build AND on the respawn rebuild, so the warm agent
- * resumes its conversation across child respawn. The registry is empty
- * after a respawn (it lives in the child's address space); the substrate
- * is the durable mirror that survives.
+ * per warm agent, keyed by its step id, built lazily and reused across the
+ * agent's messages in the same child. The first `acquire` for a step builds
+ * the store and restores its prior conversation from the substrate -- the
+ * path that runs on the lazy first build AND on the respawn rebuild, so the
+ * warm agent resumes its conversation across child respawn. The registry is
+ * empty after a respawn (it lives in the child's address space); the
+ * substrate is the durable mirror that survives.
  */
 export interface DurableConversationRegistry {
-  acquire(key: string): Promise<DurableConversationStore>;
-  get(key: string): DurableConversationStore;
+  acquire(stepId: string): Promise<DurableConversationStore>;
+  get(stepId: string): DurableConversationStore;
 }
 
 export function createDurableConversationRegistry(
   opts: DurableConversationRegistryOpts,
 ): DurableConversationRegistry {
   const stores = new Map<string, DurableConversationStore>();
-  // De-dup concurrent first-acquires for the same key so two in-flight
+  // De-dup concurrent first-acquires for the same step so two in-flight
   // step invocations for one warm agent never build two stores (which
   // would double-restore and split the durable mirror).
   const building = new Map<string, Promise<DurableConversationStore>>();
 
-  function localStoreDir(key: string): string {
+  function localStoreDir(stepId: string): string {
     return path.join(
       opts.dataDir,
       "agent-conversation-state",
       opts.workflowRunRepoId.id,
-      encodeURIComponent(key),
+      encodeURIComponent(stepId),
     );
   }
 
-  async function acquire(key: string): Promise<DurableConversationStore> {
-    const existing = stores.get(key);
+  async function acquire(stepId: string): Promise<DurableConversationStore> {
+    const existing = stores.get(stepId);
     if (existing !== undefined) return existing;
-    const inFlight = building.get(key);
+    const inFlight = building.get(stepId);
     if (inFlight !== undefined) return inFlight;
     const promise = (async () => {
       const store = await createDurableConversationStore({
-        localStoreDir: localStoreDir(key),
+        localStoreDir: localStoreDir(stepId),
         signer: opts.signer,
         substrate: opts.substrate,
         workflowRunRepoId: opts.workflowRunRepoId,
         workflowRunRef: opts.workflowRunRef,
         principal: opts.principal,
-        agentKey: key,
+        runId: opts.runId,
+        stepId,
       });
       // Restore the prior conversation BEFORE the store is observable (and
       // before the warm agent's reactor `load()` reads it). On a genuine
@@ -651,22 +694,22 @@ export function createDurableConversationRegistry(
       // a lost conversation on respawn is a correctness failure, not a
       // silently-fresh start.
       await store.restoreFromSubstrate();
-      stores.set(key, store);
-      building.delete(key);
+      stores.set(stepId, store);
+      building.delete(stepId);
       return store;
     })().catch((cause) => {
-      building.delete(key);
+      building.delete(stepId);
       throw cause;
     });
-    building.set(key, promise);
+    building.set(stepId, promise);
     return promise;
   }
 
-  function get(key: string): DurableConversationStore {
-    const store = stores.get(key);
+  function get(stepId: string): DurableConversationStore {
+    const store = stores.get(stepId);
     if (store === undefined) {
       throw new Error(
-        `sidecar conversation-state: no durable conversation store for ${JSON.stringify(key)}; the run-boundary mirror ran before the warm agent's env was built`,
+        `sidecar conversation-state: no durable conversation store for ${JSON.stringify(stepId)}; the run-boundary mirror ran before the warm agent's env was built`,
       );
     }
     return store;
@@ -676,24 +719,53 @@ export function createDurableConversationRegistry(
 }
 
 /**
- * Reconstruct the warm agent's conversation from its state directory in the
- * substrate working tree (`<repoDir>/agent-state/<agentKey>/`). Pure read --
- * no inference, no commit. Returns `null` when neither a checkpoint nor any
- * WAL exists (the genuine first-ever run) and throws on a damaged durable
- * copy; see `reconstructStepState`.
+ * Read a step's committed conversation from the substrate working tree
+ * without writing: its state directory, or, for a deployment that predates
+ * that layout and has not restored since, the legacy `agent-state/<stepId>/`
+ * copy the next restore moves. Returns `null` when neither exists.
+ */
+export async function readDurableConversation(args: {
+  substrate: RepoStore;
+  workflowRunRepoId: RepoId;
+  runId: string;
+  stepId: string;
+}): Promise<ReconstructedStepState | null> {
+  const repoDir = args.substrate.getRepoDir(args.workflowRunRepoId);
+  const current = await reconstructDurableConversation(
+    path.join(repoDir, workflowRunStepStatePrefix(args.runId, args.stepId)),
+    args.stepId,
+  );
+  if (current !== null) return current;
+  return reconstructDurableConversation(
+    path.join(repoDir, workflowRunLegacyAgentStatePrefix(args.stepId)),
+    args.stepId,
+  );
+}
+
+/**
+ * Reconstruct a conversation from a step-state directory in a substrate
+ * working tree. Pure read -- no inference, no commit. Returns `null` when
+ * neither a checkpoint nor any WAL exists (the genuine first-ever run) and
+ * throws on a damaged durable copy; see `reconstructStepState`.
  *
  * Exported so a reader (durability test, recovery audit) reconstructs the
  * conversation through the SAME code path the warm agent's restore uses,
  * rather than re-deriving the WAL/checkpoint fold independently.
  */
 export function reconstructDurableConversation(
-  agentStateDir: string,
-  agentKey: string,
+  stateDir: string,
+  label: string,
 ): Promise<ReconstructedStepState | null> {
-  return reconstructStepState(
-    createDirStepStateReader(agentStateDir),
-    agentKey,
-  );
+  return reconstructStepState(createDirStepStateReader(stateDir), label);
+}
+
+async function hasEntries(dir: string): Promise<boolean> {
+  try {
+    return (await fs.promises.readdir(dir)).length > 0;
+  } catch (cause) {
+    if (isErrnoNotFound(cause)) return false;
+    throw cause;
+  }
 }
 
 function createDirStepStateReader(stateDir: string): StepStateReader {

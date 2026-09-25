@@ -526,10 +526,10 @@ export function createWorkflowSupervisor(
   // `reply-produced`. The dispatch loop is strictly serial (one message
   // in flight at a time -- the sustained interactive case the bench
   // drives), so a child-proxied `substrate.write.request` is unambiguously
-  // attributable to this message. Both the WAL leg (whose `agent-state/...`
-  // prefix names no run) and the run-event leg (whose `runs/<runId>/events/`
-  // prefix names only the stable per-deployment run id, not the message)
-  // take their per-message key from here.
+  // attributable to this message. Both the WAL leg (whose
+  // `runs/<runId>/steps/...` prefix names a step, not the message) and the
+  // run-event leg (whose `runs/<runId>/events/` prefix names only the stable
+  // per-deployment run id) take their per-message key from here.
   let currentDispatchMessageId: string | null = null;
   /**
    * Per-run drainTimeout accumulators armed by `drain()`. Held so
@@ -672,14 +672,14 @@ export function createWorkflowSupervisor(
   /**
    * Classify a child-proxied `substrate.write.request` into the D2 leg it
    * represents, plus the messageId the per-message OLS fit groups on.
-   * `runs/<runId>/events/` is the run-event bracket commit and `agent-state/...`
-   * is the D1 conversation WAL append; neither prefix carries the message
-   * identity (the run-event prefix names only the stable per-deployment run
-   * id), so both are attributed to the dispatch loop's current serial
-   * message. Any other prefix is an unmarked proxied write. Returns `null`
-   * when no observer is wired (so the supervisor samples nothing), when the
-   * prefix is not an attributed leg, or when no message is in flight to
-   * attribute it to.
+   * `runs/<runId>/events/` is the run-event bracket commit and
+   * `runs/<runId>/steps/...` is the D1 conversation WAL append; neither
+   * prefix carries the message identity (the run-event prefix names only the
+   * stable per-deployment run id), so both are attributed to the dispatch
+   * loop's current serial message. Any other prefix is an unmarked proxied
+   * write. Returns `null` when no observer is wired (so the supervisor
+   * samples nothing), when the prefix is not an attributed leg, or when no
+   * message is in flight to attribute it to.
    */
   function classifyProxiedWriteLeg(
     preservePrefix: string,
@@ -689,7 +689,7 @@ export function createWorkflowSupervisor(
     if (/^runs\/[^/]+\/events\/$/.test(preservePrefix)) {
       return { leg: "runevent", messageId: currentDispatchMessageId };
     }
-    if (preservePrefix.startsWith("agent-state/")) {
+    if (/^runs\/[^/]+\/steps\//.test(preservePrefix)) {
       return { leg: "wal", messageId: currentDispatchMessageId };
     }
     return null;
@@ -2033,9 +2033,9 @@ export function createWorkflowSupervisor(
     //     (RunStarted/StepStarted/StepCompleted/RunCompleted; one message
     //     may produce several, each a separate write -- the D2
     //     post-processing sums and counts them per message).
-    //   - `agent-state/<key>/...`  -> the D1 conversation WAL append /
-    //     checkpoint (the control leg). No runId in the prefix; attributed
-    //     to the dispatch loop's current serial runId.
+    //   - `runs/<runId>/steps/...` -> the D1 conversation WAL append /
+    //     checkpoint (the control leg). Attributed to the dispatch loop's
+    //     current serial message.
     // Any other prefix is a non-attributed proxied write (cancel/drain
     // audit) and is left unmarked. The runId join key matches the leg the
     // benchmark's per-message OLS fit groups on.

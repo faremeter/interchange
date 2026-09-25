@@ -32,6 +32,7 @@ import {
   deriveRunAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
+import { workflowRunStepStatePrefix } from "@intx/hub-sessions";
 import { reconstructDurableConversation } from "@intx/sidecar-app/src/conversation-state";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
@@ -260,10 +261,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       // The conversation is mirrored through the real proxy -> supervisor
-      // single-writer path to the workflow-run substrate at the per-agent
-      // `agent-state/<stepId>/` path (Phase D1: a bucket-sharded WAL plus a
-      // periodic checkpoint, no longer a single `conversation.json`), sibling
-      // to the per-run event log under `runs/<runId>/...`. The supervisor's
+      // single-writer path to the step's state directory in the workflow-run
+      // substrate (a bucket-sharded WAL plus a periodic checkpoint), beside
+      // the run's event log under `runs/<runId>/...`. The supervisor's
       // substrate is the sidecar's on-disk workflow-run repo; reconstruct the
       // durable conversation from it (deterministic, no hub pack-push timing
       // dependency) and assert the agent's turn is durably committed.
@@ -272,13 +272,12 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "workflow-runs",
         workflowRunRepoId.id,
       );
-      const durableSubstrateAgentStateDir = path.join(
+      const durableSubstrateStateDir = path.join(
         sidecarWorkflowRunRepoDir,
-        "agent-state",
-        encodeURIComponent(STEP_ID),
+        workflowRunStepStatePrefix(DEPLOYMENT_ID, STEP_ID),
       );
       const durableConversation = await reconstructDurableConversation(
-        durableSubstrateAgentStateDir,
+        durableSubstrateStateDir,
         STEP_ID,
       );
       if (durableConversation === null) {

@@ -186,6 +186,8 @@ export {
   WORKFLOW_RUN_CONSUMED_DIR,
   WORKFLOW_RUN_WATERMARK_FILE,
   DEFAULT_CONSUMED_RETENTION_MS,
+  workflowRunLegacyAgentStatePrefix,
+  workflowRunStepStatePrefix,
   type ClaimCheckEnvelope,
   type ConsumedEnvelope,
   type EnqueueAlreadyPresentReason,

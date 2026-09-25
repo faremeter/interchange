@@ -28,8 +28,8 @@ import type {
 import {
   createRepoStore,
   workflowRunKindHandler,
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_GITIGNORE_PATH,
+  workflowRunStepStatePrefix,
 } from "@intx/hub-sessions";
 import {
   createDurableConversationStore,
@@ -38,7 +38,8 @@ import {
 } from "@intx/sidecar-app/src/conversation-state";
 
 const WORKFLOW_RUN_REF = "refs/heads/main";
-const AGENT_KEY = "step-1";
+const RUN_ID = "run_connector_seed";
+const STEP_ID = "step-1";
 
 const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
   kind: "workflow-process",
@@ -50,7 +51,7 @@ interface Harness {
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
   signer: (payload: string) => Promise<string>;
-  agentStateDir: string;
+  stateDir: string;
 }
 
 async function makeHarness(): Promise<Harness> {
@@ -81,12 +82,11 @@ async function makeHarness(): Promise<Harness> {
     Promise.resolve(
       createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey),
     );
-  const agentStateDir = path.join(
+  const stateDir = path.join(
     substrate.getRepoDir(workflowRunRepoId),
-    WORKFLOW_RUN_AGENT_STATE_PREFIX,
-    encodeURIComponent(AGENT_KEY),
+    workflowRunStepStatePrefix(RUN_ID, STEP_ID),
   );
-  return { baseDir, substrate, workflowRunRepoId, signer, agentStateDir };
+  return { baseDir, substrate, workflowRunRepoId, signer, stateDir };
 }
 
 async function makeStore(
@@ -100,7 +100,8 @@ async function makeStore(
     workflowRunRepoId: h.workflowRunRepoId,
     workflowRunRef: WORKFLOW_RUN_REF,
     principal: PRINCIPAL,
-    agentKey: AGENT_KEY,
+    runId: RUN_ID,
+    stepId: STEP_ID,
   });
 }
 
@@ -231,8 +232,8 @@ describe("durable conversation store connector seed (design §3c)", () => {
 
     // The substrate carries the advanced connector thread, not a stale null.
     const reconstructed = await reconstructDurableConversation(
-      h.agentStateDir,
-      AGENT_KEY,
+      h.stateDir,
+      STEP_ID,
     );
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.connectorState).toEqual({

@@ -4,11 +4,11 @@
 // conversation survives a child respawn. Today (4.4) the warm agent
 // holds conversation state in memory only; kill the child and the
 // conversation is lost. 4.5 makes that state durable in the workflow-run
-// substrate -- committed at the run boundary to a per-agent path
-// (`agent-state/<stepId>/`, a bucket-sharded WAL plus a periodic
-// checkpoint, sibling to the per-run event log under `runs/<runId>/...`)
-// -- and restored (checkpoint load + WAL replay) when the warm agent is
-// rebuilt lazily after respawn.
+// substrate -- committed at the run boundary to the step's state directory
+// (`runs/<runId>/steps/<stepId>/state/`, a bucket-sharded WAL plus a
+// periodic checkpoint, beside the run's event log) -- and restored
+// (checkpoint load + WAL replay) when the warm agent is rebuilt lazily after
+// respawn.
 //
 // Harness choice (in-process run-loop, mirroring 4.4's warm round-trip
 // test). A respawn IS a second `runWorkflowChild` invocation against the
@@ -66,8 +66,8 @@ import type {
 import {
   createRepoStore,
   workflowRunKindHandler,
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_GITIGNORE_PATH,
+  workflowRunStepStatePrefix,
 } from "@intx/hub-sessions";
 import { assembleMessage, assembleSignedContent } from "@intx/mime";
 import {
@@ -146,21 +146,18 @@ const TurnShape = type({
 
 /**
  * Reconstruct the durable conversation from the two-tier substrate layout
- * (checkpoint + WAL) at the per-agent `agent-state/<stepId>/` dir and
- * return the user-turn texts. Goes through the production
+ * (checkpoint + WAL) in the step's state directory and return the
+ * user-turn texts. Goes through the production
  * `reconstructDurableConversation` so the test reads the conversation the
  * same way the warm agent's restore does -- not by re-deriving the WAL
  * fold independently. Validating each turn at the read boundary keeps the
  * test honest about the on-disk shape without an unchecked `as`.
  */
 async function readSnapshotUserTexts(
-  agentStateDir: string,
+  stateDir: string,
   stepId: string,
 ): Promise<string[]> {
-  const reconstructed = await reconstructDurableConversation(
-    agentStateDir,
-    stepId,
-  );
+  const reconstructed = await reconstructDurableConversation(stateDir, stepId);
   if (reconstructed === null) return [];
   const texts: string[] = [];
   for (const rawTurn of reconstructed.turns) {
@@ -510,6 +507,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
         dataDir: localDataDir,
         workflowRunRepoId,
         workflowRunRef: WORKFLOW_RUN_REF,
+        runId: DEPLOYMENT_ID,
         substrate,
         principal,
         signer: conversationSigner,
@@ -648,15 +646,14 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     // The warm agent was built once across the two messages.
     expect(child1.builds()).toBe(1);
 
-    // The conversation was COMMITTED to the substrate at the per-agent
-    // path (checkpoint + WAL), sibling to the run-event log. Reconstruct it
+    // The conversation was COMMITTED to the substrate in the step's state
+    // directory (checkpoint + WAL), beside the run-event log. Reconstruct it
     // straight back from the workflow-run substrate working tree.
-    const agentStateDir = path.join(
+    const stateDir = path.join(
       runRepoDir,
-      WORKFLOW_RUN_AGENT_STATE_PREFIX,
-      encodeURIComponent(STEP_ID),
+      workflowRunStepStatePrefix(DEPLOYMENT_ID, STEP_ID),
     );
-    const afterChild1 = await readSnapshotUserTexts(agentStateDir, STEP_ID);
+    const afterChild1 = await readSnapshotUserTexts(stateDir, STEP_ID);
     expect(afterChild1).toEqual(["alpha", "bravo"]);
 
     // Tear down child #1 (the respawn). Both runs reached a terminal
@@ -737,7 +734,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     // back -- overwriting the prior snapshot -- and this would read just
     // ["charlie"]. Reading the full transcript proves the substrate
     // restore reconstructed the conversation with no local-store fallback.
-    const afterRespawn = await readSnapshotUserTexts(agentStateDir, STEP_ID);
+    const afterRespawn = await readSnapshotUserTexts(stateDir, STEP_ID);
     expect(afterRespawn).toEqual(["alpha", "bravo", "charlie"]);
 
     // The restore wrote the prior conversation into the previously-empty

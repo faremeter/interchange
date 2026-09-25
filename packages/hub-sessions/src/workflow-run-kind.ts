@@ -320,20 +320,27 @@ export const WORKFLOW_RUN_WATERMARK_FILE = "watermark.json";
 export const DEFAULT_CONSUMED_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Per-agent durable conversation-state subtree (design §3c). A
- * long-lived single-step agent's multi-turn conversation context is
- * committed under `agent-state/<agentKey>/...` so it survives child
- * respawn: on respawn the rebuilt warm agent reads its prior
- * conversation back from here before the resumed run replays.
+ * Legacy per-agent conversation subtree (design §3c). Deployments that
+ * predate the per-run steps subtree (`WORKFLOW_RUN_STEPS_DIR`) committed a
+ * single-step agent's conversation under `agent-state/<stepId>/...`. The
+ * sidecar moves it into the step's state directory on its next restore and
+ * drops this subtree; until then the repo still carries it, so it stays an
+ * accepted top-level entry.
  *
  * Unlike `runs/` (append-only events, immutable blobs) this subtree is
- * MUTABLE: each run boundary overwrites the agent's conversation
- * snapshot with the latest turns. It is therefore exempt from the
- * append-only / deletion-direction walks `runs/` is subject to; the
- * only push-time constraint is segment shape (a single round-trip-safe
- * `<agentKey>` directory layer below the prefix).
+ * MUTABLE, so it is exempt from the append-only / deletion-direction walks
+ * `runs/` is subject to; the only push-time constraint is segment shape (a
+ * single round-trip-safe `<stepId>` directory layer below the prefix).
  */
 export const WORKFLOW_RUN_AGENT_STATE_PREFIX = "agent-state";
+
+/**
+ * Where a deployment that predates the steps subtree kept a step's
+ * conversation, with a trailing slash.
+ */
+export function workflowRunLegacyAgentStatePrefix(stepId: string): string {
+  return `${WORKFLOW_RUN_AGENT_STATE_PREFIX}/${encodeURIComponent(stepId)}/`;
+}
 
 /**
  * Conversational-mailbox subtree for the warm single-step agent. The

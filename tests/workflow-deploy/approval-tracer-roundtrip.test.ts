@@ -101,7 +101,7 @@ import {
 import { createApp, type GetSession } from "@intx/hub-api";
 import { generateId } from "@intx/hub-common";
 import {
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
+  workflowRunStepStatePrefix,
   type EventCollectorRegistry,
   type SessionService,
 } from "@intx/hub-sessions";
@@ -545,16 +545,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // The warm agent's durable conversation dir on the sidecar's on-disk
       // substrate. The sidecar roots each workflow-run repo at
       // `<dataDir>/workflow-runs/<repoId>` (the same layout the deployment-record
-      // path uses), and the durable conversation mirror lives under
-      // `agent-state/<stepId>` inside it. `reconstructDurableConversation` reads
-      // it the way the warm agent's own restore does, so the post-resume history
-      // it returns is the real conversation, not a re-derivation.
-      const agentStateDir = path.join(
+      // path uses), and the durable conversation mirror lives in the step's
+      // state directory under the deployment's run inside it.
+      // `reconstructDurableConversation` reads it the way the warm agent's own
+      // restore does, so the post-resume history it returns is the real
+      // conversation, not a re-derivation.
+      const stateDir = path.join(
         env.sidecar.dataDir,
         "workflow-runs",
         workflowRunRepoId.id,
-        WORKFLOW_RUN_AGENT_STATE_PREFIX,
-        encodeURIComponent(STEP_ID),
+        workflowRunStepStatePrefix(DEPLOYMENT_ID, STEP_ID),
       );
 
       // Guard the single-test warm-state assumption at the source: no prior run
@@ -792,7 +792,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // surfaces rather than racing the write.
       const readTurns = async (): Promise<ConversationTurn[]> => {
         const reconstructed = await reconstructDurableConversation(
-          agentStateDir,
+          stateDir,
           STEP_ID,
         );
         return reconstructed === null ? [] : reconstructed.turns;
