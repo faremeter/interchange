@@ -11,9 +11,12 @@ import {
   type Principal,
   type RepoId,
   type WorkflowRunSupervisorPrincipal,
+  type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
+import type { ConversationTurn } from "@intx/types/runtime";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
+import { createDurableConversationStore } from "./conversation-state";
 import { coldStepStorageRoot } from "./step-storage-root";
 import { createWorkflowRunPackClient } from "./workflow-run-pack-client";
 import { createWorkflowRunPackRestorer } from "./workflow-run-pack-restore";
@@ -264,6 +267,81 @@ test("replacing the host's history discards the multi-step step stores built on 
     );
     expect(await exists(attemptStore)).toBe(false);
     expect(await exists(warmWorkspace)).toBe(true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a warm agent restored over replaced history holding no conversation starts without one", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wfr-restore-warm-"));
+  try {
+    const source = createAgentRepoStore({
+      dataDir: path.join(root, "hub"),
+      signingKey: await generateKeyPair(),
+    });
+    const hostDataDir = path.join(root, "host");
+    const host = createAgentRepoStore({
+      dataDir: hostDataDir,
+      signingKey: await generateKeyPair(),
+    });
+    const agentAddress = "run_restore_warm@workflow.test";
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(agentAddress),
+    };
+    const hubPrincipal: Principal = { kind: "hub" };
+    const ref = "refs/heads/main";
+    await source.repoStore.writeTree(hubPrincipal, repoId, ref, {
+      files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
+      message: "Initialize workflow run",
+    });
+    const restore = createWorkflowRunPackRestorer({
+      substrate: host.repoStore,
+      dataDir: hostDataDir,
+      markRestored: () => undefined,
+    });
+    const hubTip = await source.repoStore.createPack(hubPrincipal, repoId, ref);
+    await restore({ agentAddress, repoId, ...hubTip });
+
+    const principal: WorkflowRunWorkflowProcessPrincipal = {
+      kind: "workflow-process",
+      anchorRunId: repoId.id,
+    };
+    const warmStore = () =>
+      createDurableConversationStore({
+        localStoreDir: path.join(
+          hostDataDir,
+          "agent-conversation-state",
+          repoId.id,
+          "agent",
+        ),
+        signer: (payload) => Promise.resolve(`sig:${String(payload.length)}`),
+        substrate: host.repoStore,
+        workflowRunRepoId: repoId,
+        workflowRunRef: ref,
+        principal,
+        runId: "run-1",
+        stepId: "agent",
+        lifetime: { kind: "deployment" },
+      });
+    const discarded: ConversationTurn = {
+      role: "user",
+      content: [{ type: "text", text: "a turn the Hub never received" }],
+      timestamp: 1,
+    };
+
+    // The warm agent commits a turn on the host, and the Hub then replays
+    // its own tip, which never received that commit.
+    const before = await warmStore();
+    await before.restoreFromSubstrate();
+    await before.storage.writeTurns([discarded]);
+    await before.storage.commit({ message: "turn" });
+    await before.mirrorToSubstrate();
+    await restore({ agentAddress, repoId, ...hubTip });
+
+    const after = await warmStore();
+    expect(await after.restoreFromSubstrate()).toBe(false);
+    expect((await after.storage.load()).turns).toEqual([]);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

@@ -38,6 +38,16 @@
 // subtree. A crash between the two writes leaves both copies; the next
 // restore prefers the state directory and finishes the drop.
 //
+// A deployment can import state for a step, which the Hub commits as the
+// step's seed beside its state directory before the deployment starts. A
+// restore that finds no state of the store's own starts from the seed
+// instead, and the first mirror commits the seeded turns as the step's own
+// state. That covers a step's first turn and a retried attempt starting
+// over alike, so a retry starts over from the imported state, not from
+// nothing. A restore that finds neither, and no current attempt lead,
+// starts the step with no conversation: the committed history, not the
+// local store, decides what the agent continues.
+//
 // The conversation is committed in the step-state format that
 // `@intx/hub-sessions/substrate` defines: a compacted checkpoint plus an
 // append-only, bucket-sharded WAL keyed by mirror boundary, so each
@@ -132,14 +142,17 @@ import type {
 } from "@intx/hub-sessions/substrate";
 import {
   buildStepStateCheckpoint,
+  parseStepStateSeed,
   reconstructStepState,
   serializeStepStateWalEntry,
   stepStateWalBucket,
   stepStateWalBucketPrefix,
   stepStateWalEntryPath,
   workflowRunLegacyAgentStatePrefix,
+  workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
 } from "@intx/hub-sessions/substrate";
+import type { StepStateSnapshot } from "@intx/types";
 import type {
   AuditStore,
   ContextStore,
@@ -220,11 +233,13 @@ export interface DurableConversationStore {
    * Pull the prior conversation from the substrate (checkpoint + WAL-tail
    * replay) into the local store so the agent's reactor `load()` sees it.
    * An attempt-scoped store whose local store is still current keeps it
-   * instead (see `isLocalStateCurrent`). Called
+   * instead (see `isLocalStateCurrent`). A step with no state of its own
+   * starts from the seed its deployment imported, when there is one, and
+   * with no conversation otherwise, whatever its local store held. Called
    * before the agent is built (lazy first build and respawn rebuild).
-   * Returns `true` when state was found and applied, `false` when none
-   * exists (the genuine first-ever run). A read that finds a checkpoint or
-   * WAL but cannot parse/replay it throws -- a corrupt
+   * Returns `true` when state or a seed was found and applied, `false` when
+   * neither exists. A read that finds a
+   * checkpoint, WAL, or seed but cannot parse/replay it throws -- a corrupt
    * durable copy is a correctness failure that must not silently start the
    * agent fresh.
    */
@@ -295,10 +310,12 @@ export async function createDurableConversationStore(
   const legacyStatePrefix = workflowRunLegacyAgentStatePrefix(opts.stepId);
   const stampedAttempt =
     opts.lifetime.kind === "attempt" ? { attempt: opts.lifetime.attempt } : {};
-  // Set when the substrate holds an earlier attempt's state. The next mirror
-  // folds this attempt's conversation into a fresh checkpoint, dropping the
-  // stale attempt's checkpoint and WAL in the same commit.
-  let replaceStaleAttempt = false;
+  // Set when the next mirror folds the whole conversation into a fresh
+  // checkpoint instead of appending a WAL entry: the substrate holds an
+  // earlier attempt's state, which the fold drops in the same commit, or the
+  // store started from a seed, whose turns would otherwise sit in one WAL
+  // entry that every later append to its bucket carries along.
+  let foldNextMirror = false;
 
   // The number of mirror boundaries already durably committed (the
   // checkpoint's folded boundaries plus every appended WAL entry). It is
@@ -384,7 +401,7 @@ export async function createDurableConversationStore(
         `sidecar conversation-state: ${statePrefix} holds attempt ${String(committed.attempt)}, later than attempt ${String(attempt)}; refusing to replace it`,
       );
     }
-    replaceStaleAttempt = true;
+    foldNextMirror = true;
     return null;
   }
 
@@ -478,7 +495,36 @@ export async function createDurableConversationStore(
       );
       return true;
     }
-    return false;
+    const seed = await readSeed();
+    if (seed === null) {
+      // Turns the local store still holds are in no commit: a crash beat the
+      // first mirror, or the Hub replaced the history that held them. Kept,
+      // the next mirror would commit them into the step's history.
+      await loadIntoLocalStore(
+        {
+          turns: [],
+          pendingOperations: [],
+          tokenUsage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            thinking: 0,
+          },
+          connectorState: null,
+        },
+        `start ${opts.stepId} with no conversation`,
+      );
+      return false;
+    }
+    // The seed's turns are not yet the step's own state, so the first
+    // mirror commits them along with the step's first turn.
+    await loadIntoLocalStore(
+      { ...seed, pendingOperations: [] },
+      `start ${opts.stepId} from the state its deployment imported`,
+    );
+    foldNextMirror = true;
+    return true;
   }
 
   /**
@@ -499,6 +545,21 @@ export async function createDurableConversationStore(
       tokenUsage: state.tokenUsage,
     });
     await baseStorage.commit({ message });
+  }
+
+  async function readSeed(): Promise<StepStateSnapshot | null> {
+    const seedPath = workflowRunStepSeedPath(opts.runId, opts.stepId);
+    let raw: string;
+    try {
+      raw = await fs.promises.readFile(
+        path.join(opts.substrate.getRepoDir(opts.workflowRunRepoId), seedPath),
+        "utf8",
+      );
+    } catch (cause) {
+      if (isErrnoNotFound(cause)) return null;
+      throw cause;
+    }
+    return parseStepStateSeed(raw, seedPath);
   }
 
   /**
@@ -603,14 +664,14 @@ export async function createDurableConversationStore(
       mirroredTurnCount = reconstructed?.totalTurns ?? 0;
     }
 
-    if (replaceStaleAttempt) {
+    if (foldNextMirror) {
       const folded = turns.slice();
       const boundarySeq = mirroredBoundaryCount + 1;
       await writeCheckpoint(boundarySeq, folded, metadata);
       mirroredBoundaryCount = boundarySeq;
       checkpointBoundarySeq = boundarySeq;
       mirroredTurnCount = folded.length;
-      replaceStaleAttempt = false;
+      foldNextMirror = false;
       return;
     }
 

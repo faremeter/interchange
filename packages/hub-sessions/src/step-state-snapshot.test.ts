@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
+import type { StepStateSnapshot } from "@intx/types";
 import type {
   ConnectorThreadState,
   ConversationTurn,
@@ -18,9 +19,13 @@ import {
   serializeStepStateWalEntry,
   stepStateWalEntryPath,
 } from "./step-state";
-import { readStepStateSnapshot } from "./step-state-snapshot";
+import {
+  parseStepStateSeed,
+  readStepStateSnapshot,
+} from "./step-state-snapshot";
 import {
   workflowRunLegacyAgentStatePrefix,
+  workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
 
@@ -157,6 +162,49 @@ describe("readStepStateSnapshot", () => {
       stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
     );
     expect(await read(store, "other-step")).toBeNull();
+  });
+
+  test("exports the seed of a step that has no state of its own yet", async () => {
+    const store = await createStore();
+    const seed: StepStateSnapshot = {
+      version: 1,
+      turns: [turn("imported")],
+      tokenUsage: USAGE,
+      connectorState: THREAD,
+    };
+    await commit(store, {
+      [workflowRunStepSeedPath(RUN_ID, STEP_ID)]: JSON.stringify(seed),
+    });
+
+    expect(await read(store)).toEqual(seed);
+  });
+
+  test("prefers the step's own state over its seed", async () => {
+    const store = await createStore();
+    await commit(store, {
+      [workflowRunStepSeedPath(RUN_ID, STEP_ID)]: JSON.stringify({
+        version: 1,
+        turns: [turn("imported")],
+        tokenUsage: USAGE,
+        connectorState: null,
+      }),
+      ...stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
+    });
+
+    expect((await read(store))?.turns).toEqual([
+      turn("first"),
+      turn("second"),
+      turn("third"),
+    ]);
+  });
+
+  test("refuses a seed that is not a valid snapshot", () => {
+    expect(() => parseStepStateSeed("not json", "seed.json")).toThrow(
+      /seed\.json is not valid JSON/,
+    );
+    expect(() =>
+      parseStepStateSeed(JSON.stringify({ version: 1 }), "seed.json"),
+    ).toThrow(/seed\.json is not a valid snapshot/);
   });
 
   test("refuses to export turns that are not valid conversation turns", async () => {

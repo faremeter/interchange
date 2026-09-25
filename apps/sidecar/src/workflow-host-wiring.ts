@@ -2543,10 +2543,10 @@ export function createSidecarDeployRouter(deps: {
         // dir bounded keying parks per agent) AND any cold `runs/<runId>/`
         // subtrees a multi-step deploy's per-run cleanup did not already
         // drop. Awaiting `shutdown()` above guarantees no child still
-        // holds the scratch, so this is a safe `rm -rf`. The durable
-        // conversation under `agent-conversation-state/` is a DIFFERENT
-        // root and is deliberately NOT touched here -- a re-deploy on the
-        // same address must restore the prior conversation from it.
+        // holds the scratch, so this is a safe `rm -rf`. The warm agent's
+        // conversation store under `agent-conversation-state/` is a
+        // different root and is not reclaimed here: a re-deploy on the same
+        // address rebuilds it from the run repository before the agent loads.
         if (stepStateDataDir !== undefined) {
           await rm(pathJoin(stepStateDataDir, "workflow-step-state", runId), {
             recursive: true,

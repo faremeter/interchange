@@ -2,13 +2,15 @@ import { type } from "arktype";
 
 import { StepStateSnapshot } from "@intx/types";
 
-import type { RepoId, RepoStore } from "./repo-store/types";
+import type { CommittedReads, RepoId, RepoStore } from "./repo-store/types";
 import {
   createCommittedStepStateReader,
   reconstructStepState,
 } from "./step-state";
 import {
+  WORKFLOW_RUN_STEP_SEED_FILE,
   workflowRunLegacyAgentStatePrefix,
+  workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
 
@@ -20,9 +22,11 @@ const WORKFLOW_RUN_REF = "refs/heads/main";
  * deployment's workflow-run history. `runId` is the deployment's top-level
  * run: a single-step deployment that predates the steps subtree, and whose
  * agent has not restored since, still keeps its conversation at the legacy
- * `agent-state/<stepId>/`, which is read in its place. Pending operations are
- * left out, since their correlation ids only mean something inside the run
- * that registered them. Returns `null` when the step has no committed state.
+ * `agent-state/<stepId>/`, which is read in its place. A step that has no
+ * state of its own yet exports the seed its deployment imported for it.
+ * Pending operations are left out, since their correlation ids only mean
+ * something inside the run that registered them. Returns `null` when the
+ * step has neither committed state nor a seed.
  */
 export async function readStepStateSnapshot(args: {
   repoStore: Pick<RepoStore, "openCommittedReads">;
@@ -52,7 +56,9 @@ export async function readStepStateSnapshot(args: {
       ),
       label,
     ));
-  if (state === null) return null;
+  if (state === null) {
+    return readCommittedSeed(reads, args.runId, args.stepId);
+  }
   const snapshot = StepStateSnapshot({
     version: 1,
     turns: state.turns,
@@ -65,4 +71,47 @@ export async function readStepStateSnapshot(args: {
     );
   }
   return snapshot;
+}
+
+/**
+ * Parse a step's seed (`WORKFLOW_RUN_STEP_SEED_FILE`), read from
+ * `seedPath`. A seed that is not a valid snapshot throws: starting the step
+ * without the state its deployment imported would lose that state silently.
+ */
+export function parseStepStateSeed(
+  raw: string,
+  seedPath: string,
+): StepStateSnapshot {
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch (cause) {
+    throw new Error(`step seed ${seedPath} is not valid JSON`, { cause });
+  }
+  const seed = StepStateSnapshot(body);
+  if (seed instanceof type.errors) {
+    throw new Error(
+      `step seed ${seedPath} is not a valid snapshot: ${seed.summary}`,
+    );
+  }
+  return seed;
+}
+
+async function readCommittedSeed(
+  reads: CommittedReads,
+  runId: string,
+  stepId: string,
+): Promise<StepStateSnapshot | null> {
+  const seedPath = workflowRunStepSeedPath(runId, stepId);
+  const stepDir = seedPath.slice(0, seedPath.lastIndexOf("/"));
+  const entry = (await reads.listDir(stepDir)).find(
+    (candidate) =>
+      candidate.name === WORKFLOW_RUN_STEP_SEED_FILE &&
+      candidate.type === "blob",
+  );
+  if (entry === undefined) return null;
+  return parseStepStateSeed(
+    new TextDecoder().decode(await reads.readBlobByOid(entry.oid)),
+    seedPath,
+  );
 }
