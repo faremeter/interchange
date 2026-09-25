@@ -755,8 +755,8 @@ export async function runWorkflowChild(
     }
   }
 
-  // Directors resolve from the pinned closure so a custom director authored
-  // anywhere in the workflow's closure runs. Loading directors OUTSIDE the
+  // Directors resolve from referenced ids against the workflow package and
+  // its direct node_modules slots. Loading directors OUTSIDE the
   // definition-hash re-verify is safe: the approved hash pins each director's
   // id + config (which director runs cannot change post-approval) and the
   // closure's SRI pins its module bytes. Folding directors into the hash would
