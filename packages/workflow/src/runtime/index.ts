@@ -10,6 +10,7 @@ export type {
   LoopFnRegistry,
   ParkedApprovalOp,
   PerformScope,
+  PersistRecoveredPark,
   PrimitiveKind,
   ReadParkedApprovalOps,
   RepoStore,

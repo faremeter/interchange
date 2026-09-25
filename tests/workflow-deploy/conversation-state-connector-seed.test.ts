@@ -102,6 +102,7 @@ async function makeStore(
     principal: PRINCIPAL,
     runId: RUN_ID,
     stepId: STEP_ID,
+    lifetime: { kind: "deployment" },
   });
 }
 

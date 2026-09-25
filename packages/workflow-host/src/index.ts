@@ -208,7 +208,9 @@ export {
 export {
   createDurableConversationRegistry,
   createDurableConversationStore,
+  readStepState,
   reconstructDurableConversation,
+  type DurableConversationLifetime,
   type DurableConversationRegistry,
   type DurableConversationRegistryOpts,
   type DurableConversationStore,
