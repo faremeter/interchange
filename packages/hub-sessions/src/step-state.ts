@@ -10,16 +10,20 @@
 //     checkpoint.meta.json     { checkpointSeq, turnCount, ...metadata }
 //     wal/<bucket>/<seq>.json  one entry per mirror boundary since the fold
 //
-// The WAL is keyed by mirror BOUNDARY, not by turn. Each mirror writes
-// exactly one entry, even when the boundary added no turns, and every entry
-// carries the freshest metadata, so a turnless boundary that only advanced
-// metadata (pending operations, token usage, connector state) is still
-// durable. `checkpointSeq` therefore counts boundaries while `turnCount`
+// The WAL is keyed by mirror BOUNDARY, not by turn. A mirror that does not
+// fold the conversation into a fresh checkpoint writes exactly one entry,
+// even when the boundary added no turns, and every entry carries the
+// freshest metadata, so a turnless boundary that only advanced metadata
+// (pending operations, token usage, connector state) is still durable. `checkpointSeq` therefore counts boundaries while `turnCount`
 // counts folded turns; the two diverge in general.
 //
 // `bucket = floor(seq / STEP_STATE_WAL_BUCKET_SIZE)` bounds any single WAL
 // directory's size, so no commit re-hashes a tree that grows with the
 // conversation.
+//
+// A step whose retries start over stamps the attempt that owns the state in
+// its metadata, so a later attempt can tell the stored state is not its own.
+// An agent whose conversation spans attempts leaves it unset.
 //
 // Every reader reconstructs through `reconstructStepState` behind the
 // `StepStateReader` seam, whatever it reads the files from.
@@ -43,6 +47,7 @@ const StepStateMetadata = type({
   pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
+  "attempt?": "number.integer >= 0",
 });
 
 /** The non-turn state stamped on every WAL entry and on the checkpoint. */
@@ -53,6 +58,7 @@ export const StepStateCheckpoint = type({
   pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
+  "attempt?": "number.integer >= 0",
 });
 
 export const StepStateCheckpointMeta = type({
@@ -61,6 +67,7 @@ export const StepStateCheckpointMeta = type({
   pendingOperations: PersistedPendingOperation.array(),
   tokenUsage: TokenUsage,
   connectorState: ConnectorThreadState.or("null"),
+  "attempt?": "number.integer >= 0",
 });
 
 export const StepStateWalEntry = type({
@@ -82,11 +89,13 @@ export type StepStateContent = {
  * `boundaryCount` is the number of mirror boundaries durably committed, so
  * the next WAL entry uses it as its seq. `checkpointBoundarySeq` is the
  * boundary seq the checkpoint folded to, the first WAL seq to expect.
+ * `attempt` is the attempt the latest metadata was stamped with, if any.
  */
 export type ReconstructedStepState = StepStateContent & {
   totalTurns: number;
   boundaryCount: number;
   checkpointBoundarySeq: number;
+  attempt?: number;
 };
 
 /**
@@ -144,13 +153,17 @@ export function buildStepStateCheckpoint(
     pendingOperations: readonly unknown[];
     tokenUsage: TokenUsage;
     connectorState: ConnectorThreadState | null;
+    attempt?: number;
   },
 ): Record<string, string> {
+  const attempt =
+    content.attempt !== undefined ? { attempt: content.attempt } : {};
   const snapshot = {
     turns: content.turns,
     pendingOperations: content.pendingOperations,
     tokenUsage: content.tokenUsage,
     connectorState: content.connectorState,
+    ...attempt,
   };
   const meta = {
     checkpointSeq,
@@ -158,6 +171,7 @@ export function buildStepStateCheckpoint(
     pendingOperations: content.pendingOperations,
     tokenUsage: content.tokenUsage,
     connectorState: content.connectorState,
+    ...attempt,
   };
   return {
     [`${stateDir}${STEP_STATE_CHECKPOINT_FILE}`]: JSON.stringify(snapshot),
@@ -199,6 +213,7 @@ export async function reconstructStepState(
     totalTurns: turns.length,
     boundaryCount: baseBoundarySeq + wal.length,
     checkpointBoundarySeq: baseBoundarySeq,
+    ...(metadata.attempt !== undefined ? { attempt: metadata.attempt } : {}),
   };
 }
 
@@ -251,6 +266,9 @@ async function readCheckpoint(
       pendingOperations: validatedSnapshot.pendingOperations,
       tokenUsage: validatedSnapshot.tokenUsage,
       connectorState: validatedSnapshot.connectorState,
+      ...(validatedSnapshot.attempt !== undefined
+        ? { attempt: validatedSnapshot.attempt }
+        : {}),
     },
   };
 }
@@ -306,6 +324,9 @@ async function readWalTail(
           pendingOperations: validated.metadata.pendingOperations,
           tokenUsage: validated.metadata.tokenUsage,
           connectorState: validated.metadata.connectorState,
+          ...(validated.metadata.attempt !== undefined
+            ? { attempt: validated.metadata.attempt }
+            : {}),
         },
       });
     }
