@@ -78,6 +78,7 @@ export {
   type LoopFnRegistry,
   type ParkedApprovalOp,
   type PerformScope,
+  type PersistRecoveredPark,
   type ReadParkedApprovalOps,
   type RepoStore,
   type RunResult,
