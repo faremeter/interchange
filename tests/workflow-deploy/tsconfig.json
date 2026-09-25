@@ -4,6 +4,8 @@
     "**/*.ts",
     "../hub-agent/lib/deploy-flow-env.ts",
     "../hub-agent/lib/bundle-workflow-entry.ts",
-    "../hub-agent/lib/synthetic-npm-package-tarball.ts"
+    "../hub-agent/lib/synthetic-npm-package-tarball.ts",
+    "../hub-api/lib/git-harness.ts",
+    "../hub-api/lib/git-asset-fixtures.ts"
   ]
 }
