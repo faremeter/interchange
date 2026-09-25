@@ -7,7 +7,7 @@ import { generateKeyPair } from "@intx/crypto";
 import { collectReachableObjects, runGC } from "@intx/storage-isogit/node";
 import type { KeyPair } from "@intx/types/runtime";
 import { waitUntil } from "@intx/types/testing";
-import { createRepoStore } from "./store";
+import { createRepoStore, type LocalRepoStore } from "./store";
 import { workflowAuthorize, workflowKindHandler } from "../workflow-kind";
 import { RepoRemovedDuringReceiveError } from "./types";
 import type {
@@ -3898,6 +3898,108 @@ describe("RepoStore", () => {
     );
   });
 
+  describe("a workflow-run pack must build on the ref's tip", () => {
+    const wfRepoId: RepoId = { kind: "workflow-run", id: "subject" };
+
+    async function workflowRunStore(prefix: string): Promise<LocalRepoStore> {
+      return createRepoStore({
+        dataDir: await makeTempDir(prefix),
+        signingKey,
+        handlers: {
+          "workflow-run": {
+            kind: "workflow-run",
+            directoryPrefix: "workflow-runs-under-test",
+            validatePush: () => ({ ok: true }),
+            onRefUpdated: () => undefined,
+          },
+        },
+        authorize: allowAll,
+      });
+    }
+
+    async function push(
+      from: LocalRepoStore,
+      to: LocalRepoStore,
+      ref: string,
+    ): Promise<void> {
+      const { pack, commitSha } = await from.createPack(
+        principal,
+        wfRepoId,
+        ref,
+      );
+      await to.receivePack(
+        principal,
+        wfRepoId,
+        ref,
+        pack,
+        commitSha,
+        await to.resolveRef(principal, wfRepoId, ref),
+      );
+    }
+
+    test("refuses a pack that rewinds, forks or replaces the history", async () => {
+      const source = await workflowRunStore("repo-store-ff-source-");
+      const hub = await workflowRunStore("repo-store-ff-hub-");
+      await hub.initRepo(wfRepoId);
+      const { commitSha: first } = await source.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/0.json": "v1" }, message: "v1" },
+      );
+      await push(source, hub, REF);
+      // A worker holding only the first commit forks off it.
+      const fork = await workflowRunStore("repo-store-ff-fork-");
+      await push(source, fork, REF);
+      const { commitSha: second } = await source.writeTree(
+        principal,
+        wfRepoId,
+        REF,
+        { files: { "runs/r1/events/1.json": "v2" }, message: "v2" },
+      );
+      await push(source, hub, REF);
+      await fork.writeTree(principal, wfRepoId, REF, {
+        files: { "runs/r1/events/1.json": "other" },
+        message: "fork",
+      });
+      const unrelated = await workflowRunStore("repo-store-ff-unrelated-");
+      await unrelated.writeTree(principal, wfRepoId, REF, {
+        files: { "runs/r1/events/0.json": "other" },
+        message: "unrelated",
+      });
+
+      const rewind = await source.createPack(principal, wfRepoId, REF);
+      await expect(
+        hub.receivePack(principal, wfRepoId, REF, rewind.pack, first, second),
+      ).rejects.toThrow(/does not build on the tip/);
+      await expect(push(fork, hub, REF)).rejects.toThrow(
+        /does not build on the tip/,
+      );
+      await expect(push(unrelated, hub, REF)).rejects.toThrow(
+        /does not build on the tip/,
+      );
+      expect(await hub.resolveRef(principal, wfRepoId, REF)).toBe(second);
+    });
+
+    test("lets a pack replace a tip that holds only the initial .gitignore", async () => {
+      const source = await workflowRunStore("repo-store-ff-genesis-source-");
+      const hub = await workflowRunStore("repo-store-ff-genesis-hub-");
+      await hub.initRepo(wfRepoId);
+      const { commitSha } = await source.writeTree(
+        principal,
+        wfRepoId,
+        "refs/heads/main",
+        { files: { "runs/r1/events/0.json": "v1" }, message: "v1" },
+      );
+
+      await push(source, hub, "refs/heads/main");
+
+      expect(await hub.resolveRef(principal, wfRepoId, "refs/heads/main")).toBe(
+        commitSha,
+      );
+    });
+  });
+
   test("openCommittedReads lists committed entries and reads blobs by oid", async () => {
     const dataDir = await makeTempDir("repo-store-committed-reads-");
     const handler = createTestHandler();
@@ -4911,6 +5013,7 @@ describe("RepoStore prepared pack receive", () => {
     id: RepoId,
     pack: Uint8Array,
     commitSha: string,
+    ref = REF,
   ): Promise<{
     commit: () => Promise<PackCommitResult>;
     discard: () => Promise<void>;
@@ -4918,7 +5021,7 @@ describe("RepoStore prepared pack receive", () => {
     const prepared = await store.prepareReceivePack(
       principal,
       id,
-      REF,
+      ref,
       pack,
       commitSha,
     );
@@ -5762,9 +5865,10 @@ describe("RepoStore prepared pack receive", () => {
   async function replayedSeq(
     store: ReturnType<typeof createRepoStore>,
     commitSha: string,
+    id: RepoId = repoId,
   ): Promise<number> {
     const ac = new AbortController();
-    const replay = store.subscribe(principal, repoId, REF, {
+    const replay = store.subscribe(principal, id, REF, {
       from: { seq: 0 },
       signal: ac.signal,
     });
@@ -5837,24 +5941,42 @@ describe("RepoStore prepared pack receive", () => {
     const tipA = lineA.commits.at(-1);
     const tipB = lineB.commits.at(-1);
     if (tipA === undefined || tipB === undefined) throw new Error("line");
-    const { store } = await targetStore(runsHandler());
-    await (
-      await prepare(store, repoId, await lineA.packAt(tipA), tipA)
-    ).commit();
+    // A workflow-run history only grows, so the line is replaced on a
+    // kind that allows it.
+    const stateId: RepoId = { kind: "agent-state", id: "subject" };
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-replaced-line-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    await store.receivePack(
+      principal,
+      stateId,
+      REF,
+      await lineA.packAt(tipA),
+      tipA,
+      null,
+    );
     const ac = new AbortController();
-    const live = store.subscribe(principal, repoId, REF, {
+    const live = store.subscribe(principal, stateId, REF, {
       from: "head",
       signal: ac.signal,
     });
     try {
       const next = live.next();
-      await (
-        await prepare(store, repoId, await lineB.packAt(tipB), tipB)
-      ).commit();
+      await store.receivePack(
+        principal,
+        stateId,
+        REF,
+        await lineB.packAt(tipB),
+        tipB,
+        tipA,
+      );
       const entry = await next;
       if (entry.done) throw new Error("Missing update");
       expect(asRefUpdated(entry.value.event).newSha).toBe(tipB);
-      expect(entry.value.seq).toBe(await replayedSeq(store, tipB));
+      expect(entry.value.seq).toBe(await replayedSeq(store, tipB, stateId));
     } finally {
       ac.abort();
     }
@@ -6044,10 +6166,13 @@ describe("RepoStore prepared pack receive", () => {
 
       // The scan did not see the second write's commit. The locked
       // step adds it from the other ref's moved tip, so a receive of
-      // that commit validates nothing.
+      // that commit validates nothing. It goes to a new ref, since a
+      // workflow-run ref takes only a history that builds on its tip.
       validated.length = 0;
       const w2Pack = await historyPack(repoDir, w2);
-      await (await prepare(store, scanRepoId, w2Pack, w2)).commit();
+      await (
+        await prepare(store, scanRepoId, w2Pack, w2, "refs/heads/probe")
+      ).commit();
       expect(validated).toEqual([]);
     } finally {
       readCommit.mockRestore();
@@ -6261,11 +6386,19 @@ describe("RepoStore prepared pack receive", () => {
       if (second?.status !== "fulfilled") throw new Error("second receive");
       await second.value.commit();
 
-      // The second receive's set holds w2, so a receive of w2 validates
-      // nothing.
+      // The second receive's set holds w2, so a receive of w2 into a new
+      // ref validates nothing.
       validated.length = 0;
       const w2Pack = await historyPack(repoDir, w2.commitSha);
-      await (await prepare(store, failRepoId, w2Pack, w2.commitSha)).commit();
+      await (
+        await prepare(
+          store,
+          failRepoId,
+          w2Pack,
+          w2.commitSha,
+          "refs/heads/probe",
+        )
+      ).commit();
       expect(validated).toEqual([]);
     } finally {
       readCommit.mockRestore();
