@@ -47,6 +47,7 @@ import { userTurn } from "@intx/inference-testing";
 import {
   createDurableConversationStore,
   reconstructDurableConversation,
+  type DurableConversationLifetime,
   type DurableConversationStore,
 } from "@intx/workflow-host";
 
@@ -141,6 +142,7 @@ async function makeHarness(): Promise<Harness> {
 async function makeStore(
   h: Harness,
   localDir: string,
+  lifetime: DurableConversationLifetime = { kind: "deployment" },
 ): Promise<DurableConversationStore> {
   return createDurableConversationStore({
     localStoreDir: localDir,
@@ -151,6 +153,7 @@ async function makeStore(
     principal: PRINCIPAL,
     runId: RUN_ID,
     stepId: STEP_ID,
+    lifetime,
   });
 }
 
@@ -395,6 +398,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
         principal: PRINCIPAL,
         runId: RUN_ID,
         stepId: STEP_ID,
+        lifetime: { kind: "deployment" },
       });
     }
 
@@ -625,6 +629,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
+      lifetime: { kind: "deployment" },
     });
 
     // Boundary 0: the local store holds [a]; during its WAL append the
@@ -715,6 +720,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
+      lifetime: { kind: "deployment" },
     });
 
     // The local store holds [a, b]; fire two overlapping mirrors of it.
@@ -852,6 +858,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
+      lifetime: { kind: "deployment" },
     });
 
     const restored = await store.restoreFromSubstrate();
@@ -907,5 +914,78 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     ]);
     // No two WAL appends targeted the same boundary seq.
     expect(new Set(seqsWritten).size).toBe(seqsWritten.length);
+  });
+});
+
+describe("durable conversation store attempt-scoped local store", () => {
+  let h: Harness;
+  let localDir: string;
+  const attemptOne: DurableConversationLifetime = {
+    kind: "attempt",
+    attempt: 1,
+  };
+
+  beforeEach(async () => {
+    h = await makeHarness();
+    localDir = path.join(h.baseDir, "attempt-1");
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(h.baseDir, { recursive: true, force: true });
+  });
+
+  test("an invocation after a crash that beat the mirror resumes from the local store", async () => {
+    const first = await makeStore(h, localDir, attemptOne);
+    await first.restoreFromSubstrate();
+    const committedTurns = await pushAndMirror(first, [], [userTurn("first")], {
+      tokenUsageInput: 1,
+    });
+
+    // The next invocation's reactor commits its turn locally, then the host
+    // dies before the settle mirror.
+    const crashed = await makeStore(h, localDir, attemptOne);
+    await crashed.restoreFromSubstrate();
+    const localTurns = [...committedTurns, userTurn("second")];
+    await crashed.storage.writeTurns(localTurns);
+    await crashed.storage.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: tokenUsage(2),
+    });
+    await crashed.storage.commit({ message: "turn" });
+
+    const resumed = await makeStore(h, localDir, attemptOne);
+    expect(await resumed.restoreFromSubstrate()).toBe(true);
+    const loaded = await resumed.storage.load();
+    expect(loaded.turns).toEqual(localTurns);
+    expect(loaded.tokenUsage).toEqual(tokenUsage(2));
+
+    await pushAndMirror(resumed, loaded.turns, [userTurn("third")], {
+      tokenUsageInput: 3,
+    });
+    const committed = await reconstructDurableConversation(h.stateDir, STEP_ID);
+    expect(committed?.turns).toEqual([...localTurns, userTurn("third")]);
+    expect(committed?.attempt).toBe(1);
+  });
+
+  test("a local store that no longer extends the committed turns is replaced by them", async () => {
+    const elsewhere = await makeStore(
+      h,
+      path.join(h.baseDir, "other-host"),
+      attemptOne,
+    );
+    await elsewhere.restoreFromSubstrate();
+    const committedTurns = await pushAndMirror(
+      elsewhere,
+      [],
+      [userTurn("committed")],
+      { tokenUsageInput: 1 },
+    );
+    const leftBehind = await makeStore(h, localDir, attemptOne);
+    await leftBehind.storage.writeTurns([userTurn("left behind")]);
+    await leftBehind.storage.commit({ message: "turn" });
+
+    const resumed = await makeStore(h, localDir, attemptOne);
+    await resumed.restoreFromSubstrate();
+    expect((await resumed.storage.load()).turns).toEqual(committedTurns);
   });
 });
