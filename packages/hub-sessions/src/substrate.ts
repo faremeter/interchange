@@ -29,12 +29,12 @@ export {
   replayProcessingToInbox,
   requireEventSeq,
   StaleInboxEnqueueError,
-  WORKFLOW_RUN_AGENT_STATE_PREFIX,
   WORKFLOW_RUN_GITIGNORE_PATH,
   WORKFLOW_RUN_PARTS_DIR,
   WORKFLOW_RUN_EVENTS_DIR,
   WORKFLOW_RUN_RUNS_PREFIX,
   MAX_MAIL_PART_PATH_COMPONENT_BYTES,
+  workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
 export type {
   WorkflowRunSupervisorPrincipal,
