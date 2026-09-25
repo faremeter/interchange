@@ -41,13 +41,13 @@ export type ToolHandler = (
 // model never has to hand-encode base64 for a text file -- `content` is the
 // text itself, and `encoding` only exists to opt into base64 (or to force it
 // for a text-like type the caller already has base64-encoded).
-const AttachmentInput = type({
+const AttachmentToolInput = type({
   name: "string",
   contentType: "string",
   content: "string",
   "encoding?": "'utf-8' | 'base64'",
 });
-type AttachmentInput = typeof AttachmentInput.infer;
+type AttachmentToolInput = typeof AttachmentToolInput.infer;
 
 const SendArgs = type({
   to: "string | string[]",
@@ -56,7 +56,7 @@ const SendArgs = type({
   "payload?": "Record<string, unknown>",
   "subject?": "string",
   "inReplyTo?": "string",
-  "attachments?": AttachmentInput.array(),
+  "attachments?": AttachmentToolInput.array(),
 });
 
 const ReplyArgs = type({
@@ -64,7 +64,7 @@ const ReplyArgs = type({
   "type?": InterchangeType,
   "content?": "string",
   "payload?": "Record<string, unknown>",
-  "attachments?": AttachmentInput.array(),
+  "attachments?": AttachmentToolInput.array(),
 });
 
 const SearchArgs = type({
@@ -101,7 +101,7 @@ const ExpungeArgs = type({});
  * Text-like content types carry plain-text `content` by default and
  * everything else base64; an explicit `encoding` overrides the inference.
  */
-function decodeAttachments(inputs: readonly AttachmentInput[]) {
+function decodeAttachments(inputs: readonly AttachmentToolInput[]) {
   // Text under a binary content type is almost always base64 the model
   // mislabelled; sending it would deliver a corrupt file with no error.
   const mislabelled = inputs.findIndex(
