@@ -47,6 +47,7 @@
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/mail | Send mail to a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/mail | List mail for a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/turns | List a run's turns |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/steps/:stepId/state | Export a step's state |
 | GET | /api/tenants/:tenantId/workflows/definitions | List workflow definitions |
 | GET | /api/tenants/:tenantId/workflows/definitions/:definitionId/versions | List definition versions |
 | POST | /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback | Roll back to a previous version |
@@ -553,6 +554,16 @@ Returns the run's step and lifecycle events in seq order -- the same committed e
 200: unknown -- Seq-ordered run events
 404: ErrorResponse -- Run not found
 503: ErrorResponse -- Run event log unavailable
+
+### GET /api/tenants/:tenantId/workflows/runs/:runId/steps/:stepId/state
+Export a step's state
+
+Returns an agent step's durable state as last committed to the Hub: its conversation turns, token usage, and reply-thread state. The run may be live or stopped; a live run's snapshot may trail the agent by the turns the Hub has not received yet. `runId` must be a deployment's top-level run: a step of a run that another run spawned, such as a child workflow, cannot be exported. Pending operations are not exported, since their correlation ids only mean something inside the run that registered them. Tool output the size cap spilled out of a turn is not part of step state, so the turn carries only the text left inline and its `tool-output:///` reference does not resolve after an import.
+
+200: StepStateSnapshot -- Step state snapshot
+404: ErrorResponse -- Run not found, or the step has no committed state
+500: ErrorResponse -- The step's committed state could not be read
+503: ErrorResponse -- Run history unavailable
 
 ## Workflow Definitions
 
@@ -1535,6 +1546,14 @@ Source: packages/types/src/me.ts
 ### SpanResponse
 `{ name: string, spanId: string, startTime: string, traceId: string, agentId?: string | null, attributes?: { [string]: unknown } | null, durationMs?: number | null, endTime?: string | null, parentSpanId?: string | null, status?: "error" | "ok" }`
 Source: packages/types/src/observability.ts
+
+### StepStateSnapshot
+`{ connectorState: { cc: string[], lastMessageId: string, replyTo: string, threadRoot: string, subject?: string } | null, tokenUsage: { cacheRead: number, cacheWrite: number, input: number, output: number, thinking: number }, turns: { content: ({ arguments: { [string]: unknown }, id: string, name: string, type: "tool_call", signature?: string } | { blockReason: string >= 1, type: "safety_rating" } | { callId: string, content: ({ source: { data: string, kind: "base64", mimeType: string } | { kind: "file-reference", mimeType: string, reference: string } | { kind: "url", mimeType: string, url: string }, type: "audio" } | { source: { data: string, kind: "base64", mimeType: string } | { kind: "file-reference", mimeType: string, reference: string } | { kind: "url", mimeType: string, url: string }, type: "document", context?: string, title?: string } | { source: { data: string, kind: "base64", mimeType: string } | { kind: "file-reference", mimeType: string, reference: string } | { kind: "url", mimeType: string, url: string }, type: "image", signature?: string } | { source: { data: string, kind: "base64", mimeType: string } | { kind: "file-reference", mimeType: string, reference: string } | { kind: "url", mimeType: string, url: string }, type: "video" } | { text: string, type: "text", signature?: string })[], type: "tool_result", detail?: unknown, isError?: boolean } | { citedText: string, source: { documentRef?: { index: number }, title?: string, uri?: string }, type: "citation", location?: { end: number, kind: "char" | "content-block" | "page", start: number }, textOffset?: { end: number, start: number } } | { code: string, id: string, type: "code_execution_request", language?: string, signature?: string } | { data: string, type: "redacted_thinking" } | { reason: string >= 1, type: "refusal" } | { requestId: string, status: "aborted" | "error" | "ok" | "timeout", type: "code_execution_result", abortReason?: string, providerOutcome?: string, returnCode?: number, stderr?: string, stdout?: string } | { source: { data: string, kind: "base64", mimeType: string } | { kind: "file-reference", mimeType: string, reference: string } | { kind: "url", mimeType: string, url: string }, type: "audio" } | { source: { data: string, kind: "base64", mimeType: string } | { kind: "file-reference", mimeType: string, reference: string } | { kind: "url", mimeType: string, url: string }, type: "document", context?: string, title?: string } | { source: { data: string, kind: "base64", mimeType: string } | { kind: "file-reference", mimeType: string, reference: string } | { kind: "url", mimeType: string, url: string }, type: "image", signature?: string } | { source: { data: string, kind: "base64", mimeType: string } | { kind: "file-reference", mimeType: string, reference: string } | { kind: "url", mimeType: string, url: string }, type: "video" } | { text: string, type: "text", signature?: string } | { thinking: string, type: "thinking", signature?: string })[], role: "assistant" | "system" | "user", timestamp: number, model?: string }[], version: 1 }`
+Source: packages/types/src/workflows.ts
+
+**connectorState**: Mail thread the agent replies on, or null when no thread is active.
+**turns**: The step agent's conversation history, oldest first.
+**version**: Snapshot format version.
 
 ### TenantResponse
 `{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, parentId?: string | null }`

@@ -23,6 +23,7 @@ const STATUS_BY_CODE: Readonly<Record<string, ContentfulStatusCode>> = {
   unavailable: 503,
   unsupported_source: 400,
   anchor_run_missing: 500,
+  step_state_unreadable: 500,
   reserved_signal_name: 400,
   unaddressable_run: 400,
   signal_id_conflict: 409,

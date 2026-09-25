@@ -5,6 +5,7 @@ import path from "node:path";
 import git from "isomorphic-git";
 
 import { createInMemoryGrantStore } from "@intx/authz";
+import { generateKeyPair } from "@intx/crypto";
 import type { GrantRule } from "@intx/types/authz";
 import type { SessionStatus } from "@intx/types";
 import type { ConnectorThreadState } from "@intx/types/runtime";
@@ -12,7 +13,11 @@ import type { ConnectorThreadState } from "@intx/types/runtime";
 import { createApp } from "../app";
 import { agentSession, grant, principal, workflowRun } from "@intx/db/schema";
 import {
+  createAgentRepoStore,
   createSidecarEmitter,
+  serializeStepStateWalEntry,
+  stepStateWalEntryPath,
+  workflowRunStepStatePrefix,
   type AssetService,
   type EventCollectorRegistry,
   type RepoStore,
@@ -20,6 +25,7 @@ import {
   type SidecarRouter,
 } from "@intx/hub-sessions";
 import type { GetSession } from "../session";
+import { WORKFLOW_RUN_REF, workflowRunRepoId } from "../workflow-run-lifecycle";
 
 // ---------------------------------------------------------------------------
 // Test data constants
@@ -1124,6 +1130,130 @@ describe("turns and events serve the run's committed event log", () => {
     const res = await app.request(`${runURL()}/turns`);
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ error: { code: "unavailable" } });
+  });
+});
+
+describe("GET /workflows/runs/:runId/steps/:stepId/state", () => {
+  const tokenUsage = {
+    input: 3,
+    output: 4,
+    cacheRead: 0,
+    cacheWrite: 0,
+    thinking: 0,
+  };
+  const turns = [
+    {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "Hello" }],
+      timestamp: 1,
+    },
+    {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "Hi" }],
+      model: "model-a",
+      timestamp: 2,
+    },
+  ];
+
+  /** An app over a Hub repo holding `stepId`'s committed state for the test run. */
+  async function appWithState(
+    stepId: string,
+    stateTurns: readonly unknown[] = turns,
+  ) {
+    const dataDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "runs-step-state-"),
+    );
+    const { repoStore } = createAgentRepoStore({
+      dataDir,
+      signingKey: await generateKeyPair(),
+    });
+    await repoStore.writeTree(
+      { kind: "hub" },
+      workflowRunRepoId(RUN_ID, testTenant.domain),
+      WORKFLOW_RUN_REF,
+      {
+        files: {
+          [stepStateWalEntryPath(
+            workflowRunStepStatePrefix(RUN_ID, stepId),
+            0,
+          )]: serializeStepStateWalEntry(0, stateTurns, {
+            pendingOperations: [],
+            tokenUsage,
+            connectorState: null,
+          }),
+        },
+        message: "seed step state",
+      },
+    );
+    return createTestApp({
+      grants: [makeGrant({ resource: "workflow-run:*", action: "read" })],
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        definition: testDefinition,
+        run: makeTestRun(),
+      },
+      repoStore,
+    });
+  }
+
+  test("returns the step's committed state as a snapshot", async () => {
+    const app = await appWithState("specialist");
+    const res = await app.request(`${runURL()}/steps/specialist/state`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      version: 1,
+      turns,
+      tokenUsage,
+      connectorState: null,
+    });
+  });
+
+  test("addresses a map iteration's scoped step id", async () => {
+    const app = await appWithState("review[0]");
+    const res = await app.request(
+      `${runURL()}/steps/${encodeURIComponent("review[0]")}/state`,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  test("answers a structured error when the committed state is not a valid snapshot", async () => {
+    // Push validation checks a WAL entry's envelope, not each turn's shape.
+    const app = await appWithState("specialist", [{ role: "user" }]);
+    const res = await app.request(`${runURL()}/steps/specialist/state`);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({
+      error: { code: "step_state_unreadable" },
+    });
+  });
+
+  test("404s a step with no committed state", async () => {
+    const app = await appWithState("specialist");
+    const res = await app.request(`${runURL()}/steps/other-step/state`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: { code: "not_found" } });
+  });
+
+  test("404s an unknown run", async () => {
+    const app = await appWithState("specialist");
+    const res = await app.request(
+      `${runURL(TENANT_ID, "run_missing")}/steps/specialist/state`,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test("503s when the run history is absent", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ resource: "workflow-run:*", action: "read" })],
+      db: {
+        tenant: testTenant,
+        principal: testPrincipal,
+        definition: testDefinition,
+        run: makeTestRun(),
+      },
+    });
+    const res = await app.request(`${runURL()}/steps/specialist/state`);
+    expect(res.status).toBe(503);
   });
 });
 

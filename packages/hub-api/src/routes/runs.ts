@@ -11,12 +11,14 @@ import {
 } from "@intx/db/schema";
 import type { DB, ApprovalStore, PrincipalKeyStore } from "@intx/db";
 import { authorize } from "@intx/authz";
+import { getLogger } from "@intx/log";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 import { extractPartByPath } from "@intx/mime";
 
 import {
   WorkflowRunResponse,
   ErrorResponse,
+  StepStateSnapshot,
   WorkflowRunHealth,
   RunAuthorizationResponse,
   RunApprovalsResponse,
@@ -28,6 +30,7 @@ import {
 import {
   createWorkflowRunReader,
   findRoutableById,
+  readStepStateSnapshot,
   resolveRunIdForSession,
   runRowToRoutableRecord,
   type EventCollectorRegistry,
@@ -65,6 +68,8 @@ import {
   pageParameters,
 } from "../pagination";
 import { jsonResponse } from "../openapi";
+
+const logger = getLogger(["hub", "runs"]);
 
 // Stop and mail history are not yet wired onto a workflow (anchor) run. They
 // were built for the retired folded-launch surface and need genuinely new
@@ -788,6 +793,67 @@ export function createRunRoutes({
       },
     }),
     async (c) => serveRunEvents(c, c.req.param("runId")),
+  );
+
+  app.get(
+    "/:runId/steps/:stepId/state",
+    requireGrant(idResource("workflow-run", "runId"), "read"),
+    describeRoute({
+      tags: ["Runs"],
+      summary: "Export a step's state",
+      description:
+        "Returns an agent step's durable state as last committed to the Hub: its conversation turns, token usage, and reply-thread state. The run may be live or stopped; a live run's snapshot may trail the agent by the turns the Hub has not received yet. `runId` must be a deployment's top-level run: a step of a run that another run spawned, such as a child workflow, cannot be exported. Pending operations are not exported, since their correlation ids only mean something inside the run that registered them. Tool output the size cap spilled out of a turn is not part of step state, so the turn carries only the text left inline and its `tool-output:///` reference does not resolve after an import.",
+      responses: {
+        200: jsonResponse("Step state snapshot", StepStateSnapshot),
+        404: jsonResponse(
+          "Run not found, or the step has no committed state",
+          ErrorResponse,
+        ),
+        500: jsonResponse(
+          "The step's committed state could not be read",
+          ErrorResponse,
+        ),
+        503: jsonResponse("Run history unavailable", ErrorResponse),
+      },
+    }),
+    async (c) => {
+      const tenantCtx = c.get("tenant");
+      const runId = c.req.param("runId");
+      const stepId = c.req.param("stepId");
+
+      const record = await findRoutableById(db, runId, tenantCtx.id);
+      if (record === undefined) {
+        return errorResponse(c, "not_found", "Run not found");
+      }
+      if (repoStore === null) {
+        return errorResponse(
+          c,
+          "unavailable",
+          "The run history is not available",
+        );
+      }
+
+      let snapshot: StepStateSnapshot | null;
+      try {
+        snapshot = await readStepStateSnapshot({
+          repoStore,
+          repoId: workflowRunRepoId(runId, tenantCtx.domain),
+          runId,
+          stepId,
+        });
+      } catch (cause) {
+        logger.error`Exporting step ${stepId} of run ${runId} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+        return errorResponse(
+          c,
+          "step_state_unreadable",
+          "The step's committed state could not be read",
+        );
+      }
+      if (snapshot === null) {
+        return errorResponse(c, "not_found", "The step has no committed state");
+      }
+      return c.json(snapshot);
+    },
   );
 
   return app;

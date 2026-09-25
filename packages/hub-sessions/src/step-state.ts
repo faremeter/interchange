@@ -37,6 +37,8 @@ import {
   type PendingOperation,
 } from "@intx/types/runtime";
 
+import type { CommittedReads } from "./repo-store/types";
+
 export const STEP_STATE_CHECKPOINT_FILE = "checkpoint.json";
 export const STEP_STATE_CHECKPOINT_META_FILE = "checkpoint.meta.json";
 export const STEP_STATE_WAL_DIR = "wal";
@@ -106,6 +108,36 @@ export type StepStateReader = {
   readFile(relPath: string): Promise<string | null>;
   listDir(relPath: string): Promise<string[] | null>;
 };
+
+/**
+ * Read one step's state directory from a pinned committed tree. `stateDir`
+ * is repo-relative with a trailing slash.
+ */
+export function createCommittedStepStateReader(
+  reads: CommittedReads,
+  stateDir: string,
+): StepStateReader {
+  const root = stateDir.slice(0, -1);
+  const decoder = new TextDecoder();
+  const absolute = (relPath: string) =>
+    relPath === "" ? root : `${root}/${relPath}`;
+  return {
+    async readFile(relPath) {
+      const slash = relPath.lastIndexOf("/");
+      const dir = slash === -1 ? "" : relPath.slice(0, slash);
+      const name = relPath.slice(slash + 1);
+      const entry = (await reads.listDir(absolute(dir))).find(
+        (candidate) => candidate.name === name && candidate.type === "blob",
+      );
+      if (entry === undefined) return null;
+      return decoder.decode(await reads.readBlobByOid(entry.oid));
+    },
+    async listDir(relPath) {
+      const entries = await reads.listDir(absolute(relPath));
+      return entries.length === 0 ? null : entries.map((entry) => entry.name);
+    },
+  };
+}
 
 export function stepStateWalBucket(seq: number): number {
   return Math.floor(seq / STEP_STATE_WAL_BUCKET_SIZE);
