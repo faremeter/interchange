@@ -30,7 +30,7 @@ import {
 import { withRepoDirLock } from "./repo-lock";
 import { maybeGCUnderLock, type GCPolicy } from "./gc";
 import { decodeUTF8, flushRuntime, type StorageRuntime } from "./runtime";
-import { hasCode } from "@intx/types";
+import { hasCode, hexEncode } from "@intx/types";
 
 const TURNS_FILE = "turns.jsonl";
 const PROMPT_FILE = "prompt.jsonl";
@@ -681,10 +681,7 @@ export class IsogitStore
     turns: ConversationTurn[],
     _signal?: AbortSignal,
   ): Promise<void> {
-    await this.runtime.fs.writeFile(
-      this.runtime.path.join(this.dir, TURNS_FILE),
-      encodeJsonlLines(turns),
-    );
+    await this.writeFileAtomically(TURNS_FILE, encodeJsonlLines(turns));
     // Advance the in-memory marker only after the durable write succeeds.
     // peekTurns must never surface an array that failed to persist -- a
     // write failure leaves it pointing at the last array that did.
@@ -700,6 +697,9 @@ export class IsogitStore
    * currently-buffered connector state. The reactor calls this once per cycle
    * before issuing the working-tree commit so the file is staged atomically
    * with the per-cycle conversation data.
+   *
+   * The reactor and a durable-conversation mirror can write and read this
+   * file concurrently, so it is written atomically.
    */
   async writeMetadata(
     metadata: {
@@ -713,10 +713,33 @@ export class IsogitStore
       tokenUsage: metadata.tokenUsage,
       connectorState: this.pendingConnectorState,
     };
-    await this.runtime.fs.writeFile(
-      this.runtime.path.join(this.dir, METADATA_FILE),
+    await this.writeFileAtomically(
+      METADATA_FILE,
       JSON.stringify(payload, null, 2),
     );
+  }
+
+  /**
+   * Replace a working-tree file through a per-write staging file renamed over
+   * it, so a concurrent reader or a second writer sees either the prior
+   * complete file or the new one, and a crash mid-write leaves the prior file
+   * rather than a partial one.
+   */
+  private async writeFileAtomically(
+    filepath: string,
+    contents: string,
+  ): Promise<void> {
+    const target = this.runtime.path.join(this.dir, filepath);
+    const staged = `${target}.${hexEncode(crypto.getRandomValues(new Uint8Array(8)))}.tmp`;
+    try {
+      await this.runtime.fs.writeFile(staged, contents);
+      await this.runtime.fs.rename(staged, target);
+    } catch (cause) {
+      await this.runtime.fs
+        .remove(staged, { force: true })
+        .catch(() => undefined);
+      throw cause;
+    }
   }
 
   async readManifestHistory(

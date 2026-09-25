@@ -1020,6 +1020,148 @@ describe("connector thread state", () => {
   });
 });
 
+describe("metadata and turns writes", () => {
+  // A node runtime whose next armed `writeFile` truncates its target, parks
+  // until released, and only then writes the bytes: the window a non-atomic
+  // in-place write exposes to a concurrent reader.
+  function createPausingWriteRuntime() {
+    let armed: { reached: () => void; released: Promise<boolean> } | null =
+      null;
+    const promises = {
+      ...fs.promises,
+      async writeFile(filepath: string, data: string | Uint8Array) {
+        const pause = armed;
+        if (pause === null) {
+          await fs.promises.writeFile(filepath, data);
+          return;
+        }
+        armed = null;
+        await fs.promises.writeFile(filepath, "");
+        pause.reached();
+        await pause.released;
+        await fs.promises.writeFile(filepath, data);
+      },
+    };
+    return {
+      runtime: { ...createNodeIsogitRuntime(), fs: { promises } },
+      pauseNextWrite() {
+        const reached = Promise.withResolvers<boolean>();
+        const released = Promise.withResolvers<boolean>();
+        armed = {
+          reached: () => reached.resolve(true),
+          released: released.promise,
+        };
+        return {
+          reached: reached.promise,
+          release: () => released.resolve(true),
+        };
+      },
+    };
+  }
+
+  const usage = (input: number): TokenUsage => ({ ...ZERO_USAGE, input });
+
+  test("a concurrent read sees the prior metadata while a write is in flight", async () => {
+    const dir = await tempDir();
+    const { runtime, pauseNextWrite } = createPausingWriteRuntime();
+    const store = await createIsogitStorage(runtime).createIsogitStore(dir);
+    await store.writeMetadata({ pendingOperations: [], tokenUsage: usage(1) });
+
+    const pause = pauseNextWrite();
+    const writing = store.writeMetadata({
+      pendingOperations: [],
+      tokenUsage: usage(2),
+    });
+    await pause.reached;
+    expect((await store.loadMetadata()).tokenUsage).toEqual(usage(1));
+
+    pause.release();
+    await writing;
+    expect((await store.loadMetadata()).tokenUsage).toEqual(usage(2));
+    expect(
+      (await fs.promises.readdir(dir)).filter((name) => name.endsWith(".tmp")),
+    ).toEqual([]);
+  });
+
+  test("a failed publish keeps the prior metadata and removes the staged file", async () => {
+    const dir = await tempDir();
+    const node = createNodeIsogitRuntime();
+    let failRename = false;
+    const store = await createIsogitStorage({
+      ...node,
+      rename: async (oldPath, newPath) => {
+        if (failRename) throw new Error("injected rename failure");
+        await node.rename(oldPath, newPath);
+      },
+    }).createIsogitStore(dir);
+    await store.writeMetadata({ pendingOperations: [], tokenUsage: usage(1) });
+
+    failRename = true;
+    await expect(
+      store.writeMetadata({ pendingOperations: [], tokenUsage: usage(2) }),
+    ).rejects.toThrow("injected rename failure");
+
+    expect((await store.loadMetadata()).tokenUsage).toEqual(usage(1));
+    expect(
+      (await fs.promises.readdir(dir)).filter((name) => name.endsWith(".tmp")),
+    ).toEqual([]);
+  });
+
+  const userTurn = (text: string): ConversationTurn => ({
+    role: "user",
+    content: [{ type: "text", text }],
+    timestamp: 1000,
+  });
+
+  test("a concurrent load sees the prior turns while a write is in flight", async () => {
+    const dir = await tempDir();
+    const { runtime, pauseNextWrite } = createPausingWriteRuntime();
+    const store = await createIsogitStorage(runtime).createIsogitStore(dir);
+    await store.writeTurns([userTurn("one")]);
+
+    const pause = pauseNextWrite();
+    const writing = store.writeTurns([userTurn("one"), userTurn("two")]);
+    await pause.reached;
+    expect((await store.load()).turns).toEqual([userTurn("one")]);
+
+    pause.release();
+    await writing;
+    expect((await store.load()).turns).toEqual([
+      userTurn("one"),
+      userTurn("two"),
+    ]);
+    expect(
+      (await fs.promises.readdir(dir)).filter((name) => name.endsWith(".tmp")),
+    ).toEqual([]);
+  });
+
+  test("a failed turns publish keeps the prior turns and removes the staged file", async () => {
+    const dir = await tempDir();
+    const node = createNodeIsogitRuntime();
+    let failRename = false;
+    const store = await createIsogitStorage({
+      ...node,
+      rename: async (oldPath, newPath) => {
+        if (failRename) throw new Error("injected rename failure");
+        await node.rename(oldPath, newPath);
+      },
+    }).createIsogitStore(dir);
+    const prior = [userTurn("one")];
+    await store.writeTurns(prior);
+
+    failRename = true;
+    await expect(
+      store.writeTurns([userTurn("one"), userTurn("two")]),
+    ).rejects.toThrow("injected rename failure");
+
+    expect((await store.load()).turns).toEqual(prior);
+    expect(store.peekTurns()).toBe(prior);
+    expect(
+      (await fs.promises.readdir(dir)).filter((name) => name.endsWith(".tmp")),
+    ).toEqual([]);
+  });
+});
+
 describe("commit signing", () => {
   test("commits are signed when a signer is provided", async () => {
     const dir = await tempDir();
