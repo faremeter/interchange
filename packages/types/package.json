@@ -150,6 +150,11 @@
       "types": "./dist/workflow-run-id.d.ts",
       "default": "./dist/workflow-run-id.js"
     },
+    "./step-state-snapshot": {
+      "intx-src": "./src/step-state-snapshot.ts",
+      "types": "./dist/step-state-snapshot.d.ts",
+      "default": "./dist/step-state-snapshot.js"
+    },
     "./message-id": {
       "intx-src": "./src/message-id.ts",
       "types": "./dist/message-id.d.ts",
