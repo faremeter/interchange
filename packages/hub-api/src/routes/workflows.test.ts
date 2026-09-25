@@ -1314,6 +1314,38 @@ describe("POST /workflows/deployments", () => {
     expect(prepareCalled).toBe(false);
   });
 
+  test("rejects a tarball deploy of another principal's workflow asset as forbidden, not a kind mismatch", async () => {
+    // A tarball source naming a workflow-kind asset would 409 after the
+    // kind comparison. Grant-before-kind must 403 first so the mismatch
+    // message cannot disclose kind for an asset the caller cannot read.
+    let prepareCalled = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      db: {
+        assetRow: {
+          ...workflowAssetRow,
+          creatorPrincipalId: "prn_other",
+        },
+        deploymentRow,
+      },
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          prepareCalled = true;
+          throw new Error("missing asset grant must not reach preparation");
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+
+    expect(res.status).toBe(403);
+    expect(await errorCode(res)).toBe("forbidden");
+    expect(prepareCalled).toBe(false);
+  });
+
   test("reports a tarball source naming a workflow asset as a kind mismatch", async () => {
     const app = createTestApp({
       grants: deployCreateGrants(),
