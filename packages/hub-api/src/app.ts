@@ -280,7 +280,15 @@ export function mountHubRoutes(
   app.use("/api/tenants/:tenantId/*", resolveTenant);
 
   // Global tenant routes (create needs auth, detail/update handle auth inline)
-  app.route("/api/tenants", createTenantRoutes({ db, principalKeyStore }));
+  app.route(
+    "/api/tenants",
+    createTenantRoutes({
+      db,
+      principalKeyStore,
+      grantStore,
+      conditionRegistry,
+    }),
+  );
 
   // Tenant-scoped routes
   app.route(
