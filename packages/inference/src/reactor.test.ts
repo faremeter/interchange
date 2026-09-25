@@ -6626,4 +6626,139 @@ describe("createReactor — per-send inference options", () => {
     expect(seen).toEqual([{ temperature: 0.1 }, { temperature: 0.42 }]);
     reactor.abort("admin_kill");
   });
+
+  test("a stale pending-marker correlation does not overwrite the open run's options", async () => {
+    // S1: infer then a tool returns a pendingMarker for C1; the director
+    // replies and the run closes, but C1 stays registered with no live gate.
+    // S2: a new send opens a run, infers, then parks on an ask-rail gate.
+    // S3: a stale C1 response must not adopt its inference into the still-open
+    // S2 slot; resuming S2's gate must still see S2's options.
+    const C1 = "corr-stale-c1";
+    const seen: (InferenceHarnessOptions["inferenceOptions"] | undefined)[] =
+      [];
+    let capturing = false;
+    let infers = 0;
+    const sendMessageTurn: AssistantTurn = {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_call",
+          id: "tc-async",
+          name: "send_message",
+          arguments: {},
+        },
+      ],
+      model: "test-model",
+      timestamp: 1000,
+    };
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      if (capturing) seen.push(opts.inferenceOptions);
+      const turn =
+        infers === 0
+          ? sendMessageTurn
+          : infers === 1
+            ? suspendToolCallTurn
+            : {
+                role: "assistant" as const,
+                content: [{ type: "text" as const, text: "resumed" }],
+                model: "test-model",
+                timestamp: 1000,
+              };
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn,
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+    const askExtension = createAuthzExtension({
+      authorize: async (resource) => ({
+        effect:
+          resource === "tool:charge_card"
+            ? ("ask" as const)
+            : ("allow" as const),
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs: 60_000,
+    });
+
+    const { reactor, events, waitFor } = createTestReactor({
+      inferenceRunner,
+      toolRunner: {
+        async run(call) {
+          if (call.name === "send_message") {
+            return {
+              callId: call.id,
+              content: "sent",
+              pendingMarker: {
+                status: "pending" as const,
+                correlationId: C1,
+              },
+            };
+          }
+          return { callId: call.id, content: "charged" };
+        },
+      },
+      beforeToolExtensions: [askExtension],
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (_e, _s, caps) => {
+            infers += 1;
+            if (infers === 1) {
+              return caps.executeTools([
+                { id: "tc-async", name: "send_message", arguments: {} },
+              ]);
+            }
+            if (infers === 2) {
+              return caps.executeTools([
+                { id: "call-ask", name: "charge_card", arguments: {} },
+              ]);
+            }
+            return caps.wait();
+          },
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools(e.calls, false, true),
+          "tool.done": (e, _s, caps) => {
+            if (e.result.callId === "tc-async") return caps.reply("acked");
+            return caps.infer();
+          },
+        },
+        "wait",
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitFor("connector.reply");
+    capturing = true;
+
+    reactor.deliver(makeInboundMessage(), { inference: { temperature: 0.2 } });
+    await waitUntil(
+      () => events.filter((e) => e.type === "inference.done").length >= 2,
+    );
+    const blocked = await waitFor("reactor.gate.blocked");
+    if (blocked.type !== "reactor.gate.blocked") throw new Error("unreachable");
+    const openCorrelationId = blocked.data.correlationId;
+    if (openCorrelationId === undefined) {
+      throw new Error("expected correlationId");
+    }
+
+    reactor.deliver(makeInboundMessage(C1), {
+      inference: { temperature: 0.9 },
+    });
+    await waitFor("message.correlated");
+
+    reactor.deliver(makeApprovalMessage(openCorrelationId));
+    await waitUntil(
+      () => events.filter((e) => e.type === "inference.done").length >= 3,
+    );
+
+    expect(seen).toEqual([{ temperature: 0.2 }, { temperature: 0.2 }]);
+    reactor.abort("admin_kill");
+  });
 });

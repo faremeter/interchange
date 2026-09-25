@@ -1693,19 +1693,22 @@ export function createReactor(config: ReactorConfig): Reactor {
       // A correlated resume continues the parked run rather than opening a
       // new one, and the loop may re-infer before tryCorrelate settles, so
       // the resume's options are adopted up front whenever this message's
-      // correlation ID matches a pending operation (the parked run is the
-      // only run that can be open, so a match is that run's own resume). An
-      // uncorrelated message either finds no run open yet (harmless to set
-      // now — its own run's open at line ~1360 sets the same value) or
-      // arrives while an unrelated run is still open, in which case it must
-      // not touch that run's options and instead overwrites them when its
-      // own run opens.
+      // correlation ID matches a pending operation whose gate is currently
+      // registered (the parked run is the only run that can be open, so a
+      // live gate is that run's own resume). An uncorrelated message either
+      // finds no run open yet (harmless to set now — its own run's open at
+      // line ~1360 sets the same value) or arrives while an unrelated run is
+      // still open, in which case it must not touch that run's options and
+      // instead overwrites them when its own run opens.
       const inference = deliveredInference.get(message);
       if (inference !== undefined) {
         const correlationId = message.headers.interchangeCorrelationId;
+        const pending =
+          correlationId !== undefined
+            ? correlations.lookup(correlationId)
+            : undefined;
         const correlatesToOpenRun =
-          correlationId !== undefined &&
-          correlations.lookup(correlationId) !== undefined;
+          pending !== undefined && gates.has(pending.gateId);
         if (correlatesToOpenRun || currentMessageRunId === null) {
           messageRunInference = inference;
         }
