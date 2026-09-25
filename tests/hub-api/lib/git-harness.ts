@@ -424,6 +424,10 @@ export type StartHubOptions = {
    * absent and dropped on stop.
    */
   dbSchemaName?: string;
+  /** Hub entry module, relative to the repo root. Defaults to the production entry. */
+  entry?: string;
+  /** Extra env for the spawned hub, applied over the harness env. */
+  env?: Record<string, string>;
 };
 
 export type HubHandle = {
@@ -437,6 +441,10 @@ export type HubHandle = {
    * not delete it themselves.
    */
   dataDir: string;
+  /** Process id of the spawned hub. */
+  pid: number;
+  /** Everything the hub printed so far. */
+  output: () => string;
   stop: () => Promise<void>;
 };
 
@@ -478,7 +486,10 @@ export async function startHub(
 
   // 3. Spawn the hub. The hub's bootstrap reads PG_SCHEMA and
   // threads it into the runtime DB client.
-  const hubSrc = path.join(REPO_ROOT, "apps", "hub", "src", "index.ts");
+  const hubSrc = path.join(
+    REPO_ROOT,
+    options.entry ?? path.join("apps", "hub", "src", "index.ts"),
+  );
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     DB_HOST: hubEnv.db.host,
@@ -493,6 +504,7 @@ export async function startHub(
     CREDENTIAL_ENCRYPTION_KEY: hubEnv.credentialEncryptionKey,
     PRINCIPAL_KEY_ENCRYPTION_KEY: hubEnv.principalKeyEncryptionKey,
     BETTER_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
+    ...options.env,
   };
   // --conditions=intx-src resolves @intx/* to source; the spawned hub
   // runs from the workspace, where the dev loop builds no dist.
@@ -553,5 +565,14 @@ export async function startHub(
     await rm(hubDataDir, { recursive: true, force: true });
   };
 
-  return { url, schema, dataDir: hubDataDir, stop };
+  const pid = child.pid;
+  if (pid === undefined) throw new Error("spawned hub has no pid");
+  return {
+    url,
+    schema,
+    dataDir: hubDataDir,
+    pid,
+    output: () => logs.join(""),
+    stop,
+  };
 }
