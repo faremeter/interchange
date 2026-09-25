@@ -141,6 +141,50 @@ describe("@intx/agent send-flow integration", () => {
     }
   });
 
+  test("a per-send option that survives the reactor merge beats source.defaults", async () => {
+    // Adjacent tests cover each merge in isolation: mergeInferenceOptions
+    // (reactor) and per-call vs source.defaults (harness). This send is the
+    // composed path: per-send options go through the reactor merge (the
+    // default director names systemPrompt and tools, not maxTokens) and
+    // then beat a source that actually carries defaults. The second send
+    // has no per-send bag, so source.defaults apply: 1024, not the
+    // adapter's 4096 floor that the no-defaults control observes.
+    const sourceWithDefaults: InferenceSource = {
+      ...SOURCE,
+      defaults: { maxTokens: 1024 },
+    };
+    harness.scenario.replyOnce("anthropic", { text: "first" });
+    harness.scenario.replyOnce("anthropic", { text: "second" });
+    const agent = await createAgent(
+      definition(),
+      await envFor(join(workDir, "ctx"), harness, {
+        sources: [sourceWithDefaults],
+        defaultSource: sourceWithDefaults.id,
+      }),
+    );
+    const Body = type({ max_tokens: "number" });
+
+    try {
+      const first = agent.send("Hello", {
+        inference: { maxTokens: 8192 },
+      });
+      await harness.run();
+      await first;
+      const second = agent.send("Again");
+      await harness.run();
+      await second;
+
+      const bodies = await Promise.all(
+        harness.scenario
+          .matchedRequests()
+          .map(async (r) => Body.assert(JSON.parse(await r.text()))),
+      );
+      expect(bodies.map((b) => b.max_tokens)).toEqual([8192, 1024]);
+    } finally {
+      await agent.close();
+    }
+  });
+
   test("persists the assistant turn so history() and reopened agents see it", async () => {
     harness.scenario.replyOnce("anthropic", { text: "Persisted reply" });
 
