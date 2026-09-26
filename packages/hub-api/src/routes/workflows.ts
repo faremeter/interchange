@@ -283,6 +283,16 @@ export function createWorkflowRoutes({
       }
       const definitionAssetId = body.source.assetId;
 
+      const denied = await requireAssetGrant({
+        c,
+        grantStore,
+        conditionRegistry,
+        assetId: definitionAssetId,
+      });
+      if (denied !== null) {
+        return denied;
+      }
+
       const assetRow = await db.query.asset.findFirst({
         where: and(
           eq(asset.id, definitionAssetId),
@@ -291,15 +301,6 @@ export function createWorkflowRoutes({
       });
       if (!assetRow) {
         return errorResponse(c, "not_found", "Workflow asset not found");
-      }
-      const denied = await requireAssetGrant({
-        c,
-        grantStore,
-        conditionRegistry,
-        assetId: assetRow.id,
-      });
-      if (denied !== null) {
-        return denied;
       }
       const expectedKind = workflowSourceRepoKind(body.source);
       if (assetRow.kind !== expectedKind) {

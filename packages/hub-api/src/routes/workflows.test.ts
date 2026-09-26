@@ -1314,6 +1314,35 @@ describe("POST /workflows/deployments", () => {
     expect(prepareCalled).toBe(false);
   });
 
+  test("does not reveal whether an unreadable workflow asset exists", async () => {
+    const grants = [makeGrant({ action: "create" })];
+    const existingApp = createTestApp({
+      grants,
+      db: {
+        assetRow: {
+          ...packageRegistryAssetRow,
+          creatorPrincipalId: "prn_other",
+        },
+        deploymentRow,
+      },
+    });
+    const missingApp = createTestApp({
+      grants,
+      db: { assetRow: undefined },
+    });
+
+    const existingResponse = await existingApp.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+    const missingResponse = await missingApp.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+
+    expect(existingResponse.status).toBe(403);
+    expect(missingResponse.status).toBe(existingResponse.status);
+    expect(await missingResponse.json()).toEqual(await existingResponse.json());
+  });
+
   test("rejects a tarball deploy of another principal's workflow asset as forbidden, not a kind mismatch", async () => {
     // A tarball source naming a workflow-kind asset would 409 after the
     // kind comparison. Grant-before-kind must 403 first so the mismatch
