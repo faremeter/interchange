@@ -24,14 +24,18 @@ import type {
   ConversationTurn,
   PendingOperation,
 } from "@intx/types/runtime";
+import { generateKeyPair } from "@intx/crypto";
 import {
+  createRepoStore,
   serializeStepStateWalEntry,
   stepStateWalEntryPath,
+  workflowRunKindHandler,
   WORKFLOW_RUN_AGENT_STATE_PREFIX,
-  type Principal,
+  WORKFLOW_RUN_GITIGNORE_PATH,
   type RepoId,
   type RepoStore,
-} from "@intx/hub-sessions/substrate";
+  type WorkflowRunWorkflowProcessPrincipal,
+} from "@intx/hub-sessions";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 
 import {
@@ -54,7 +58,14 @@ const WORKFLOW_RUN_REPO_ID: RepoId = {
 };
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const RUN_ID = "run_parked";
-const PRINCIPAL: Principal = { kind: "workflow-process" };
+const PRINCIPAL: WorkflowRunWorkflowProcessPrincipal = {
+  kind: "workflow-process",
+  anchorRunId: WORKFLOW_RUN_REPO_ID.id,
+};
+const COMMITTED_READS = {
+  workflowRunRef: WORKFLOW_RUN_REF,
+  principal: PRINCIPAL,
+};
 const EMPTY_USAGE = {
   input: 0,
   output: 0,
@@ -85,6 +96,27 @@ function pendingApproval(
 
 async function makeTempDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "parked-approval-"));
+}
+
+/**
+ * A workflow-run substrate with the production kind handler validating every
+ * write, rooted beside the host data dir `dataDir` so a step's local stores
+ * never land in the repo's working tree.
+ */
+async function createSubstrate(dataDir: string): Promise<RepoStore> {
+  const substrate = createRepoStore({
+    dataDir: path.join(dataDir, "substrate"),
+    signingKey: await generateKeyPair(),
+    handlers: { "workflow-run": workflowRunKindHandler },
+    authorize: () => ({ allowed: true }),
+  });
+  await substrate.writeTree(
+    { kind: "hub" },
+    WORKFLOW_RUN_REPO_ID,
+    WORKFLOW_RUN_REF,
+    { files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" }, message: "genesis" },
+  );
+  return substrate;
 }
 
 const testSigner = (payload: string): Promise<string> =>
@@ -120,129 +152,55 @@ async function parkColdStep(
 }
 
 describe("readColdParkedApprovalSnapshot", () => {
-  const coordinate = (substrate: RepoStore, correlationId: string) => ({
-    dataDir: substrate.getRepoDir(WORKFLOW_RUN_REPO_ID),
-    substrate,
-    workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
-    runId: "run-1",
-    stepId: "s",
-    attempt: 1,
-    correlationId,
-  });
+  async function coordinate(correlationId: string) {
+    const dataDir = await makeTempDir();
+    return {
+      dataDir,
+      substrate: await createSubstrate(dataDir),
+      workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
+      runId: "run-1",
+      stepId: "s",
+      attempt: 1,
+      correlationId,
+    };
+  }
 
   test("reconstructs the snapshot from the step's committed state", async () => {
-    const substrate = createStubSubstrate(await makeTempDir());
-    await parkColdStep(substrate, "run-1", 1, [
+    const at = await coordinate("corr-1");
+    await parkColdStep(at.substrate, "run-1", 1, [
       pendingApproval("corr-1", snapshot),
     ]);
 
-    const got = await readColdParkedApprovalSnapshot(
-      coordinate(substrate, "corr-1"),
-    );
-    expect(got).toEqual(snapshot);
+    expect(await readColdParkedApprovalSnapshot(at)).toEqual(snapshot);
   });
 
   test("returns undefined when the step has no committed state", async () => {
-    const substrate = createStubSubstrate(await makeTempDir());
+    const at = await coordinate("corr-x");
 
-    const got = await readColdParkedApprovalSnapshot(
-      coordinate(substrate, "corr-x"),
-    );
-    expect(got).toBeUndefined();
+    expect(await readColdParkedApprovalSnapshot(at)).toBeUndefined();
   });
 
   test("returns undefined for a correlation with no matching pending op", async () => {
-    const substrate = createStubSubstrate(await makeTempDir());
-    await parkColdStep(substrate, "run-1", 1, [
+    const at = await coordinate("corr-other");
+    await parkColdStep(at.substrate, "run-1", 1, [
       pendingApproval("corr-a", snapshot),
     ]);
 
-    const got = await readColdParkedApprovalSnapshot(
-      coordinate(substrate, "corr-other"),
-    );
-    expect(got).toBeUndefined();
+    expect(await readColdParkedApprovalSnapshot(at)).toBeUndefined();
   });
 
   test("returns undefined for a matching op that carries no snapshot", async () => {
-    const substrate = createStubSubstrate(await makeTempDir());
-    await parkColdStep(substrate, "run-1", 1, [pendingApproval("corr-1")]);
+    const at = await coordinate("corr-1");
+    await parkColdStep(at.substrate, "run-1", 1, [pendingApproval("corr-1")]);
 
-    const got = await readColdParkedApprovalSnapshot(
-      coordinate(substrate, "corr-1"),
-    );
-    expect(got).toBeUndefined();
+    expect(await readColdParkedApprovalSnapshot(at)).toBeUndefined();
   });
 });
 
-/**
- * Read every file under `<repoDir>/<prefix>` into a path->bytes map, keyed by
- * the repo-relative path, so a `writeTreePreservingPrefix` merge callback sees
- * the prior subtree the way the real substrate presents it.
- */
-async function readPrefixEntries(
-  repoDir: string,
-  prefix: string,
-): Promise<Map<string, Uint8Array>> {
-  const entries = new Map<string, Uint8Array>();
-  const prefixDir = path.join(repoDir, prefix);
-  let names: string[];
-  try {
-    names = await fs.readdir(prefixDir, { recursive: true });
-  } catch {
-    return entries;
-  }
-  for (const name of names) {
-    const full = path.join(prefixDir, name);
-    if (!(await fs.stat(full)).isFile()) continue;
-    entries.set(`${prefix}${name}`, await fs.readFile(full));
-  }
-  return entries;
-}
-
-/**
- * A substrate stub that persists `writeTreePreservingPrefix` to disk under
- * `getRepoDir`, so a durable-conversation mirror round-trips through the real
- * checkpoint/WAL layout the read reconstructs from. Any other method surfaces
- * as a precise failure.
- */
-function createStubSubstrate(baseDir: string): RepoStore {
-  const repoDirFor = (repoId: RepoId): string =>
-    path.join(baseDir, repoId.kind, repoId.id);
-  const stub: Partial<RepoStore> = {
-    getRepoDir: repoDirFor,
-    async writeTreePreservingPrefix(_principal, repoId, _ref, args) {
-      const repoDir = repoDirFor(repoId);
-      const existing = await readPrefixEntries(repoDir, args.preservePrefix);
-      const merged = await args.merge(existing);
-      await fs.rm(path.join(repoDir, args.preservePrefix), {
-        recursive: true,
-        force: true,
-      });
-      for (const [relPath, content] of Object.entries(merged)) {
-        const full = path.join(repoDir, relPath);
-        await fs.mkdir(path.dirname(full), { recursive: true });
-        await fs.writeFile(full, content);
-      }
-      return { commitSha: "deadbeefcafef00d", newlyTerminalRuns: [] };
-    },
-  };
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; missing methods surface as a precise failure via the proxy
-  return new Proxy(stub as RepoStore, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (value !== undefined) return value;
-      return () => {
-        throw new Error(
-          `stub substrate: ${String(prop)} not implemented for this test`,
-        );
-      };
-    },
-  });
-}
-
 describe("readWarmParkedApprovalSnapshot", () => {
   test("reconstructs the snapshot from the durable substrate mirror", async () => {
-    const substrate = createStubSubstrate(await makeTempDir());
+    const substrate = await createSubstrate(await makeTempDir());
     const store = await createDurableConversationStore({
       localStoreDir: await makeTempDir(),
       signer: testSigner,
@@ -266,6 +224,7 @@ describe("readWarmParkedApprovalSnapshot", () => {
     const got = await readWarmParkedApprovalSnapshot({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
       runId: RUN_ID,
       stepId: "s",
       correlationId: "corr-1",
@@ -274,11 +233,12 @@ describe("readWarmParkedApprovalSnapshot", () => {
   });
 
   test("returns undefined when no durable state exists for the agent", async () => {
-    const substrate = createStubSubstrate(await makeTempDir());
+    const substrate = await createSubstrate(await makeTempDir());
 
     const got = await readWarmParkedApprovalSnapshot({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
       runId: RUN_ID,
       stepId: "never-ran",
       correlationId: "corr-x",
@@ -287,7 +247,7 @@ describe("readWarmParkedApprovalSnapshot", () => {
   });
 
   test("returns undefined for a matching op that carries no snapshot", async () => {
-    const substrate = createStubSubstrate(await makeTempDir());
+    const substrate = await createSubstrate(await makeTempDir());
     const store = await createDurableConversationStore({
       localStoreDir: await makeTempDir(),
       signer: testSigner,
@@ -308,6 +268,7 @@ describe("readWarmParkedApprovalSnapshot", () => {
     const got = await readWarmParkedApprovalSnapshot({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
       runId: RUN_ID,
       stepId: "s",
       correlationId: "corr-1",
@@ -325,8 +286,9 @@ describe("readColdParkedPendingOperations", () => {
     const dataDir = await makeTempDir();
     return {
       dataDir,
-      substrate: createStubSubstrate(dataDir),
+      substrate: await createSubstrate(dataDir),
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
       runId,
       stepId: "s",
       attempt,
@@ -513,8 +475,6 @@ describe("readColdParkedPendingOperations", () => {
       return persistColdRecoveredPark({
         ...at,
         substrate,
-        workflowRunRef: WORKFLOW_RUN_REF,
-        principal: PRINCIPAL,
         signer: testSigner,
         correlationId,
       });
@@ -640,7 +600,7 @@ describe("readColdParkedPendingOperations", () => {
 
 describe("readWarmParkedPendingOperations", () => {
   test("reconstructs the pending operations from the durable substrate mirror", async () => {
-    const substrate = createStubSubstrate(await makeTempDir());
+    const substrate = await createSubstrate(await makeTempDir());
     const store = await createDurableConversationStore({
       localStoreDir: await makeTempDir(),
       signer: testSigner,
@@ -661,6 +621,7 @@ describe("readWarmParkedPendingOperations", () => {
     const got = await readWarmParkedPendingOperations({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
       runId: RUN_ID,
       stepId: "s",
     });
@@ -668,28 +629,31 @@ describe("readWarmParkedPendingOperations", () => {
   });
 
   test("reads a legacy agent-state copy the warm restore has not moved yet", async () => {
-    const substrate = createStubSubstrate(await makeTempDir());
+    const substrate = await createSubstrate(await makeTempDir());
     const entryPath = stepStateWalEntryPath(
       `${WORKFLOW_RUN_AGENT_STATE_PREFIX}/s/`,
       0,
     );
-    const full = path.join(
-      substrate.getRepoDir(WORKFLOW_RUN_REPO_ID),
-      entryPath,
-    );
-    await fs.mkdir(path.dirname(full), { recursive: true });
-    await fs.writeFile(
-      full,
-      serializeStepStateWalEntry(0, [], {
-        pendingOperations: [pendingApproval("corr-1", snapshot)],
-        tokenUsage: EMPTY_USAGE,
-        connectorState: null,
-      }),
+    await substrate.writeTree(
+      { kind: "hub" },
+      WORKFLOW_RUN_REPO_ID,
+      WORKFLOW_RUN_REF,
+      {
+        files: {
+          [entryPath]: serializeStepStateWalEntry(0, [], {
+            pendingOperations: [pendingApproval("corr-1", snapshot)],
+            tokenUsage: EMPTY_USAGE,
+            connectorState: null,
+          }),
+        },
+        message: "legacy conversation",
+      },
     );
 
     const got = await readWarmParkedPendingOperations({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
       runId: RUN_ID,
       stepId: "s",
     });
@@ -697,11 +661,12 @@ describe("readWarmParkedPendingOperations", () => {
   });
 
   test("returns an empty list when no durable state exists for the agent", async () => {
-    const substrate = createStubSubstrate(await makeTempDir());
+    const substrate = await createSubstrate(await makeTempDir());
 
     const got = await readWarmParkedPendingOperations({
       substrate,
       workflowRunRepoId: WORKFLOW_RUN_REPO_ID,
+      ...COMMITTED_READS,
       runId: RUN_ID,
       stepId: "never-ran",
     });

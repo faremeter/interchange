@@ -37,7 +37,7 @@ import {
   type PendingOperation,
 } from "@intx/types/runtime";
 
-import type { CommittedReads } from "./repo-store/types";
+import type { CommittedReads, CommittedTreeEntry } from "./repo-store/types";
 
 export const STEP_STATE_CHECKPOINT_FILE = "checkpoint.json";
 export const STEP_STATE_CHECKPOINT_META_FILE = "checkpoint.meta.json";
@@ -119,21 +119,30 @@ export function createCommittedStepStateReader(
 ): StepStateReader {
   const root = stateDir.slice(0, -1);
   const decoder = new TextDecoder();
-  const absolute = (relPath: string) =>
-    relPath === "" ? root : `${root}/${relPath}`;
+  // The reads are pinned to one commit, so each directory is listed once
+  // rather than once per WAL entry read from it.
+  const listings = new Map<string, Promise<CommittedTreeEntry[]>>();
+  const list = (relPath: string): Promise<CommittedTreeEntry[]> => {
+    let listing = listings.get(relPath);
+    if (listing === undefined) {
+      listing = reads.listDir(relPath === "" ? root : `${root}/${relPath}`);
+      listings.set(relPath, listing);
+    }
+    return listing;
+  };
   return {
     async readFile(relPath) {
       const slash = relPath.lastIndexOf("/");
       const dir = slash === -1 ? "" : relPath.slice(0, slash);
       const name = relPath.slice(slash + 1);
-      const entry = (await reads.listDir(absolute(dir))).find(
+      const entry = (await list(dir)).find(
         (candidate) => candidate.name === name && candidate.type === "blob",
       );
       if (entry === undefined) return null;
       return decoder.decode(await reads.readBlobByOid(entry.oid));
     },
     async listDir(relPath) {
-      const entries = await reads.listDir(absolute(relPath));
+      const entries = await list(relPath);
       return entries.length === 0 ? null : entries.map((entry) => entry.name);
     },
   };

@@ -61,13 +61,13 @@ import type {
 } from "@intx/types/runtime";
 import type {
   RepoId,
+  RepoStore,
   WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
 import {
   createRepoStore,
   workflowRunKindHandler,
   WORKFLOW_RUN_GITIGNORE_PATH,
-  workflowRunStepStatePrefix,
 } from "@intx/hub-sessions";
 import { assembleMessage, assembleSignedContent } from "@intx/mime";
 import {
@@ -90,7 +90,7 @@ import {
 } from "@intx/workflow-host";
 import {
   createDurableConversationRegistry,
-  reconstructDurableConversation,
+  readStepState,
 } from "@intx/sidecar-app/src/conversation-state";
 
 const DEPLOYMENT_ID = "run_durability-deployment";
@@ -146,18 +146,23 @@ const TurnShape = type({
 
 /**
  * Reconstruct the durable conversation from the two-tier substrate layout
- * (checkpoint + WAL) in the step's state directory and return the
- * user-turn texts. Goes through the production
- * `reconstructDurableConversation` so the test reads the conversation the
- * same way the warm agent's restore does -- not by re-deriving the WAL
- * fold independently. Validating each turn at the read boundary keeps the
+ * (checkpoint + WAL) in the step's committed state directory and return the
+ * user-turn texts. Goes through the production `readStepState` so the test
+ * reads the conversation the same way the warm agent's restore does -- not
+ * by re-deriving the WAL fold independently. Validating each turn at the read boundary keeps the
  * test honest about the on-disk shape without an unchecked `as`.
  */
-async function readSnapshotUserTexts(
-  stateDir: string,
-  stepId: string,
-): Promise<string[]> {
-  const reconstructed = await reconstructDurableConversation(stateDir, stepId);
+async function readSnapshotUserTexts(args: {
+  substrate: RepoStore;
+  workflowRunRepoId: RepoId;
+  principal: WorkflowRunWorkflowProcessPrincipal;
+}): Promise<string[]> {
+  const reconstructed = await readStepState({
+    ...args,
+    workflowRunRef: WORKFLOW_RUN_REF,
+    runId: DEPLOYMENT_ID,
+    stepId: STEP_ID,
+  });
   if (reconstructed === null) return [];
   const texts: string[] = [];
   for (const rawTurn of reconstructed.turns) {
@@ -648,12 +653,9 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
 
     // The conversation was COMMITTED to the substrate in the step's state
     // directory (checkpoint + WAL), beside the run-event log. Reconstruct it
-    // straight back from the workflow-run substrate working tree.
-    const stateDir = path.join(
-      runRepoDir,
-      workflowRunStepStatePrefix(DEPLOYMENT_ID, STEP_ID),
-    );
-    const afterChild1 = await readSnapshotUserTexts(stateDir, STEP_ID);
+    // straight back from the workflow-run substrate's committed tree.
+    const committedState = { substrate, workflowRunRepoId, principal };
+    const afterChild1 = await readSnapshotUserTexts(committedState);
     expect(afterChild1).toEqual(["alpha", "bravo"]);
 
     // Tear down child #1 (the respawn). Both runs reached a terminal
@@ -734,7 +736,7 @@ describe("single-step conversation durability across respawn (Phase 4.5)", () =>
     // back -- overwriting the prior snapshot -- and this would read just
     // ["charlie"]. Reading the full transcript proves the substrate
     // restore reconstructed the conversation with no local-store fallback.
-    const afterRespawn = await readSnapshotUserTexts(stateDir, STEP_ID);
+    const afterRespawn = await readSnapshotUserTexts(committedState);
     expect(afterRespawn).toEqual(["alpha", "bravo", "charlie"]);
 
     // The restore wrote the prior conversation into the previously-empty

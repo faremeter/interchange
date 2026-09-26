@@ -12,7 +12,7 @@
 //
 // The tests drive a REAL `createRepoStore` workflow-run substrate and a
 // REAL isogit local store (the production path), so the bucket/checkpoint
-// commits, the preserve-prefix merges, and the working-tree reconstruction
+// commits, the preserve-prefix merges, and the committed-tree reconstruction
 // are all exercised end to end -- not mocked.
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -52,7 +52,7 @@ import { userTurn } from "@intx/inference-testing";
 import {
   createDurableConversationStore,
   readDurableConversation,
-  reconstructDurableConversation,
+  readStepState,
   type DurableConversationLifetime,
   type DurableConversationStore,
 } from "@intx/sidecar-app/src/conversation-state";
@@ -60,6 +60,7 @@ import {
 const WORKFLOW_RUN_REF = "refs/heads/main";
 const RUN_ID = "run_durability";
 const STEP_ID = "step-1";
+const STATE_PREFIX = workflowRunStepStatePrefix(RUN_ID, STEP_ID);
 // Must mirror the production constant in conversation-state.ts. Asserted
 // indirectly by the bounded-WAL test below: a drift here would surface as
 // a checkpoint that folds at the wrong boundary.
@@ -104,6 +105,7 @@ function readCheckpointMeta(stateDir: string): {
 
 interface Harness {
   baseDir: string;
+  signingKey: KeyPair;
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
   signer: (payload: string) => Promise<string>;
@@ -140,9 +142,47 @@ async function makeHarness(): Promise<Harness> {
     );
   const stateDir = path.join(
     substrate.getRepoDir(workflowRunRepoId),
-    workflowRunStepStatePrefix(RUN_ID, STEP_ID),
+    STATE_PREFIX,
   );
-  return { baseDir, substrate, workflowRunRepoId, signer, stateDir };
+  return {
+    baseDir,
+    signingKey,
+    substrate,
+    workflowRunRepoId,
+    signer,
+    stateDir,
+  };
+}
+
+/** The step's committed state, read the way a restore reads it. */
+function readCommitted(h: Harness) {
+  return readStepState({
+    substrate: h.substrate,
+    workflowRunRepoId: h.workflowRunRepoId,
+    workflowRunRef: WORKFLOW_RUN_REF,
+    principal: PRINCIPAL,
+    runId: RUN_ID,
+    stepId: STEP_ID,
+  });
+}
+
+/**
+ * A second substrate over the harness repo that skips push validation, to
+ * commit damage the validated substrate refuses, as a corrupted object store
+ * would present it.
+ */
+function unvalidatedSubstrate(h: Harness): RepoStore {
+  return createRepoStore({
+    dataDir: h.baseDir,
+    signingKey: h.signingKey,
+    handlers: {
+      "workflow-run": {
+        ...workflowRunKindHandler,
+        validatePush: async () => ({ ok: true }),
+      },
+    },
+    authorize: () => ({ allowed: true }),
+  });
 }
 
 async function makeStore(
@@ -319,10 +359,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     // A fresh store (a respawn) reconstructs the LATEST metadata, not the
     // stale boundary-1 values. This is the assertion that would have caught
     // the dropped-metadata defect.
-    const reconstructed = await reconstructDurableConversation(
-      h.stateDir,
-      STEP_ID,
-    );
+    const reconstructed = await readCommitted(h);
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual(turns);
     expect(reconstructed.tokenUsage).toEqual(tokenUsage(99));
@@ -429,9 +466,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
         checkpointSeq: CHECKPOINT_INTERVAL + 1,
         turnCount: CHECKPOINT_INTERVAL + 1,
       });
-      expect(
-        (await reconstructDurableConversation(h.stateDir, STEP_ID))?.turns,
-      ).toEqual(turns);
+      expect((await readCommitted(h))?.turns).toEqual(turns);
     });
 
     test("fails the mirror once the WAL reaches twice the interval, keeping every turn", async () => {
@@ -451,9 +486,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
         `failed with ${String(limit)} WAL entries uncompacted`,
       );
       expect(countWalEntries(h.stateDir)).toBe(limit);
-      expect(
-        (await reconstructDurableConversation(h.stateDir, STEP_ID))?.turns,
-      ).toEqual(turns);
+      expect((await readCommitted(h))?.turns).toEqual(turns);
     });
   });
 
@@ -497,10 +530,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
 
     // Reconstruct via the production read path and assert byte-equivalent
     // turns + the latest metadata.
-    const reconstructed = await reconstructDurableConversation(
-      h.stateDir,
-      STEP_ID,
-    );
+    const reconstructed = await readCommitted(h);
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual(built);
     expect(reconstructed.tokenUsage).toEqual(tokenUsage(n - 1));
@@ -546,21 +576,29 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     await pushAndMirror(respawned, [], [userTurn("first committed")], {
       tokenUsageInput: 1,
     });
-    const committed = await reconstructDurableConversation(h.stateDir, STEP_ID);
-    expect(committed?.turns).toEqual([userTurn("first committed")]);
+    expect((await readCommitted(h))?.turns).toEqual([
+      userTurn("first committed"),
+    ]);
   });
 
   test("a corrupt WAL entry throws on reconstruction (no silent fresh start)", async () => {
     const store = await makeStore(h, localDir);
     await pushAndMirror(store, [], [userTurn("only")], { tokenUsageInput: 1 });
 
-    // Corrupt the single WAL blob in place.
-    fs.writeFileSync(
-      path.join(walBucketDir(h.stateDir, 0), "0.json"),
-      "{ not json",
+    await unvalidatedSubstrate(h).writeTree(
+      PRINCIPAL,
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      {
+        files: { [stepStateWalEntryPath(STATE_PREFIX, 0)]: "{ not json" },
+        message: "corrupt WAL boundary 0",
+      },
     );
+    await expect(readCommitted(h)).rejects.toThrow(/not valid JSON/);
     await expect(
-      reconstructDurableConversation(h.stateDir, STEP_ID),
+      makeStore(h, path.join(h.baseDir, "respawned")).then((respawned) =>
+        respawned.restoreFromSubstrate(),
+      ),
     ).rejects.toThrow(/not valid JSON/);
   });
 
@@ -577,11 +615,61 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
       await store.storage.commit({ message: "turn" });
       await store.mirrorToSubstrate();
     }
-    // Remove the middle WAL entry to simulate a lost append.
-    fs.rmSync(path.join(walBucketDir(h.stateDir, 0), "1.json"));
-    await expect(
-      reconstructDurableConversation(h.stateDir, STEP_ID),
-    ).rejects.toThrow(/seq gap/);
+    // Drop the middle WAL entry from the committed tree to simulate a lost
+    // append.
+    const lost = stepStateWalEntryPath(STATE_PREFIX, 1);
+    await unvalidatedSubstrate(h).writeTreePreservingPrefix(
+      PRINCIPAL,
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      {
+        preservePrefix: lost.slice(0, lost.lastIndexOf("/") + 1),
+        merge: async (existing) =>
+          Object.fromEntries(
+            [...existing].filter(([blobPath]) => blobPath !== lost),
+          ),
+        message: "lose WAL boundary 1",
+      },
+    );
+    await expect(readCommitted(h)).rejects.toThrow(/seq gap/);
+  });
+
+  test("a restore reads the committed state, not a working tree a crashed write left behind", async () => {
+    const store = await makeStore(h, localDir);
+    const first = await pushAndMirror(store, [], [userTurn("one")], {
+      tokenUsageInput: 1,
+    });
+    const committed = await pushAndMirror(store, first, [userTurn("two")], {
+      tokenUsageInput: 2,
+    });
+
+    // A write removes its prefix from the working tree and rewrites it before
+    // it commits: a crash in between leaves the bucket missing entries, and a
+    // commit that fails leaves an entry no commit holds.
+    const bucket = walBucketDir(h.stateDir, 0);
+    fs.rmSync(bucket, { recursive: true });
+    fs.mkdirSync(bucket);
+    fs.writeFileSync(
+      path.join(bucket, "2.json"),
+      serializeStepStateWalEntry(2, [userTurn("never committed")], {
+        pendingOperations: [],
+        tokenUsage: tokenUsage(9),
+        connectorState: null,
+      }),
+    );
+
+    const respawned = await makeStore(h, path.join(h.baseDir, "respawned"));
+    expect(await respawned.restoreFromSubstrate()).toBe(true);
+    const loaded = await respawned.storage.load();
+    expect(loaded.turns).toEqual(committed);
+    expect(loaded.tokenUsage).toEqual(tokenUsage(2));
+
+    await pushAndMirror(respawned, committed, [userTurn("three")], {
+      tokenUsageInput: 3,
+    });
+    const after = await readCommitted(h);
+    expect(after?.turns).toEqual([...committed, userTurn("three")]);
+    expect(after?.boundaryCount).toBe(3);
   });
 
   test("a turn appended during the WAL write is not skipped by the next mirror", async () => {
@@ -666,10 +754,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     expect(entry.turns.length).toBe(1);
 
     // Reconstruction yields both turns; under the bug it would yield only [a].
-    const reconstructed = await reconstructDurableConversation(
-      h.stateDir,
-      STEP_ID,
-    );
+    const reconstructed = await readCommitted(h);
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual([userTurn("a"), userTurn("b")]);
   });
@@ -764,10 +849,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     await store.storage.commit({ message: "abc" });
     await store.mirrorToSubstrate();
 
-    const reconstructed = await reconstructDurableConversation(
-      h.stateDir,
-      STEP_ID,
-    );
+    const reconstructed = await readCommitted(h);
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual(abc);
   });
@@ -905,10 +987,7 @@ describe("durable conversation store WAL + checkpoint (Phase D1)", () => {
     // write returns.
     await waitUntil(() => writesCompleted >= 2);
 
-    const reconstructed = await reconstructDurableConversation(
-      h.stateDir,
-      STEP_ID,
-    );
+    const reconstructed = await readCommitted(h);
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.turns).toEqual([
       userTurn("a"),
@@ -965,9 +1044,38 @@ describe("durable conversation store attempt-scoped local store", () => {
     await pushAndMirror(resumed, loaded.turns, [userTurn("third")], {
       tokenUsageInput: 3,
     });
-    const committed = await reconstructDurableConversation(h.stateDir, STEP_ID);
+    const committed = await readCommitted(h);
     expect(committed?.turns).toEqual([...localTurns, userTurn("third")]);
     expect(committed?.attempt).toBe(1);
+  });
+
+  test("a restore whose read of the state ref fails throws instead of starting over from the local store", async () => {
+    const first = await makeStore(h, localDir, attemptOne);
+    await first.restoreFromSubstrate();
+    const once = await pushAndMirror(first, [], [userTurn("one")], {
+      tokenUsageInput: 1,
+    });
+    const committedTurns = await pushAndMirror(first, once, [userTurn("two")], {
+      tokenUsageInput: 2,
+    });
+
+    // An emptied ref file reads as a missing ref to isomorphic-git. Taken as
+    // "no state", the local store would count as ahead and the next commit
+    // would rewrite WAL seq 0 over the committed history.
+    const refFile = path.join(
+      h.substrate.getRepoDir(h.workflowRunRepoId),
+      ".git",
+      ...WORKFLOW_RUN_REF.split("/"),
+    );
+    const sha = await fs.promises.readFile(refFile, "utf8");
+    await fs.promises.writeFile(refFile, "");
+    const blind = await makeStore(h, localDir, attemptOne);
+    await expect(blind.restoreFromSubstrate()).rejects.toThrow(
+      /exists but could not be read/,
+    );
+
+    await fs.promises.writeFile(refFile, sha);
+    expect((await readCommitted(h))?.turns).toEqual(committedTurns);
   });
 
   test("a local store that no longer extends the committed turns is replaced by them", async () => {
@@ -1025,9 +1133,7 @@ describe("durable conversation store attempt-scoped local store", () => {
       tokenUsage: tokenUsage(12),
     });
     await crashed.storage.commit({ message: "suspend" });
-    expect(
-      await reconstructDurableConversation(h.stateDir, STEP_ID),
-    ).toBeNull();
+    expect(await readCommitted(h)).toBeNull();
 
     const resumed = await makeStore(h, localDir, attemptOne);
     await resumed.restoreFromSubstrate();
@@ -1113,10 +1219,7 @@ describe("durable conversation store legacy agent-state move", () => {
     await pushAndMirror(store, restored.turns, [userTurn("d")], {
       tokenUsageInput: 8,
     });
-    const reconstructed = await reconstructDurableConversation(
-      h.stateDir,
-      STEP_ID,
-    );
+    const reconstructed = await readCommitted(h);
     expect(reconstructed?.turns).toEqual([
       userTurn("a"),
       userTurn("b"),
@@ -1146,6 +1249,8 @@ describe("durable conversation store legacy agent-state move", () => {
     const read = await readDurableConversation({
       substrate: h.substrate,
       workflowRunRepoId: h.workflowRunRepoId,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
       runId: RUN_ID,
       stepId: STEP_ID,
     });
@@ -1205,7 +1310,7 @@ describe("durable conversation store imported seed", () => {
     await pushAndMirror(store, loaded.turns, [userTurn("next")], {
       tokenUsageInput: 12,
     });
-    const committed = await reconstructDurableConversation(h.stateDir, STEP_ID);
+    const committed = await readCommitted(h);
     expect(committed?.turns).toEqual([...seed.turns, userTurn("next")]);
     expect(committed?.connectorState).toEqual(seed.connectorState);
 
@@ -1255,15 +1360,30 @@ describe("durable conversation store imported seed", () => {
     await pushAndMirror(attemptTwo, loaded.turns, [userTurn("attempt two")], {
       tokenUsageInput: 13,
     });
-    const committed = await reconstructDurableConversation(h.stateDir, STEP_ID);
+    const committed = await readCommitted(h);
     expect(committed?.turns).toEqual([...seed.turns, userTurn("attempt two")]);
     expect(committed?.attempt).toBe(2);
   });
 
-  test("a damaged seed fails the restore instead of starting the step without it", async () => {
+  test("a restore reads the committed seed, not the working tree's copy", async () => {
     await fs.promises.writeFile(
       path.join(h.substrate.getRepoDir(h.workflowRunRepoId), seedPath),
       "not json",
+    );
+    const store = await makeStore(h, path.join(h.baseDir, "local"));
+    expect(await store.restoreFromSubstrate()).toBe(true);
+    expect((await store.storage.load()).turns).toEqual(seed.turns);
+    // Restoring the reply thread queued a mirror; let it land before the
+    // repo is torn down.
+    await store.mirrorToSubstrate();
+  });
+
+  test("a damaged seed fails the restore instead of starting the step without it", async () => {
+    await unvalidatedSubstrate(h).writeTree(
+      { kind: "hub" },
+      h.workflowRunRepoId,
+      WORKFLOW_RUN_REF,
+      { files: { [seedPath]: "not json" }, message: "damage the seed" },
     );
     const store = await makeStore(h, path.join(h.baseDir, "local"));
     await expect(store.restoreFromSubstrate()).rejects.toThrow(

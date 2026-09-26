@@ -61,6 +61,7 @@ export {
 
 export {
   buildStepStateCheckpoint,
+  createCommittedStepStateReader,
   reconstructStepState,
   serializeStepStateWalEntry,
   stepStateWalBucket,
@@ -73,7 +74,7 @@ export type {
   StepStateMetadata,
   StepStateReader,
 } from "./step-state";
-export { parseStepStateSeed } from "./step-state-snapshot";
+export { readCommittedStepStateSeed } from "./step-state-snapshot";
 
 export { MAILBOX_INDEX_VERSION, MailboxIndex } from "./mailbox-index";
 

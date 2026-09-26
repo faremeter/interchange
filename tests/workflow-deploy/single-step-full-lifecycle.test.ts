@@ -76,11 +76,12 @@ import {
 } from "@intx/workflow-deploy";
 import {
   createDurableConversationRegistry,
-  reconstructDurableConversation,
+  readStepState,
 } from "@intx/sidecar-app/src/conversation-state";
 import {
   createAgentRepoStore,
-  workflowRunStepStatePrefix,
+  type RepoId,
+  type RepoStore,
   type WorkflowRunWorkflowProcessPrincipal,
 } from "@intx/hub-sessions";
 import { tenant as tenantTable } from "@intx/db/schema";
@@ -352,17 +353,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // The run-boundary hook mirrors the warm agent's conversation into the
       // step's state directory under the deployment's top-level run, keyed
-      // by stepId rather than by the attempt.
-      const stateDir = substrateStepStateDir(
-        env,
-        workflowRunRepoId.id,
-        STEP_ID,
-      );
+      // by stepId rather than by the attempt. Read it from the sidecar's
+      // on-disk workflow-run substrate (the supervisor's single-writer
+      // substrate): deterministic, no hub pack-push timing dependency.
+      const sidecarSubstrate = createAgentRepoStore({
+        dataDir: env.sidecar.dataDir,
+        signingKey: await generateKeyPair(),
+      }).repoStore;
       await waitFor(
-        async () => (await readSnapshotUserTexts(stateDir)).length >= 1,
+        async () =>
+          (await readSnapshotUserTexts(sidecarSubstrate, workflowRunRepoId))
+            .length >= 1,
         { diagnostics: env.sidecarDiagnostics },
       );
-      const afterBoundary = await readSnapshotUserTexts(stateDir);
+      const afterBoundary = await readSnapshotUserTexts(
+        sidecarSubstrate,
+        workflowRunRepoId,
+      );
       expect(afterBoundary.some((t) => t.includes(FIRST_BODY))).toBe(true);
 
       // The warm agent's conversation `.git` lives at the stable per-agent
@@ -399,8 +406,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(fs.existsSync(freshLocalStoreDir)).toBe(false);
 
       // Reopen the subprocess's substrate in-process. The durable registry's
-      // restore path only reads the substrate working tree (`getRepoDir` +
-      // `fs.readFile`), so a throwaway signing key is sufficient.
+      // restore path only reads the substrate's committed tree, so a throwaway
+      // signing key is sufficient.
       const respawnSubstrate = createAgentRepoStore({
         dataDir: env.sidecar.dataDir,
         signingKey: await generateKeyPair(),
@@ -491,25 +498,6 @@ function stepWorkspaceSentinelPath(
   );
 }
 
-/**
- * Path of the step's state directory the durable store mirrors to in the
- * sidecar's on-disk workflow-run substrate (the supervisor's single-writer
- * substrate), under the deployment's top-level run. Deterministic, no hub
- * pack-push timing dependency.
- */
-function substrateStepStateDir(
-  deployEnv: DeployFlowEnv,
-  workflowRunRepoSlug: string,
-  stepId: string,
-): string {
-  return path.join(
-    deployEnv.sidecar.dataDir,
-    "workflow-runs",
-    workflowRunRepoSlug,
-    workflowRunStepStatePrefix(DEPLOYMENT_ID, stepId),
-  );
-}
-
 const ReceiptSentinel = type({
   messageId: "string",
   status: "string",
@@ -539,12 +527,21 @@ const TurnShape = type({
 /**
  * Reconstruct the durable conversation from the two-tier substrate layout
  * (checkpoint + WAL) in the step's state directory and return the
- * user-turn texts. Goes through the production
- * `reconstructDurableConversation` so the test reads the conversation the
- * same way the warm agent's restore does.
+ * user-turn texts. Goes through the production `readStepState` so the test
+ * reads the conversation the same way the warm agent's restore does.
  */
-async function readSnapshotUserTexts(stateDir: string): Promise<string[]> {
-  const reconstructed = await reconstructDurableConversation(stateDir, STEP_ID);
+async function readSnapshotUserTexts(
+  substrate: RepoStore,
+  workflowRunRepoId: RepoId,
+): Promise<string[]> {
+  const reconstructed = await readStepState({
+    substrate,
+    workflowRunRepoId,
+    workflowRunRef: WORKFLOW_RUN_REF,
+    principal: { kind: "hub" },
+    runId: DEPLOYMENT_ID,
+    stepId: STEP_ID,
+  });
   if (reconstructed === null) return [];
   const texts: string[] = [];
   for (const rawTurn of reconstructed.turns) {

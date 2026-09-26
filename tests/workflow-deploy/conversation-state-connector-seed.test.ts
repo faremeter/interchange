@@ -6,7 +6,7 @@
 //
 // The tests drive a REAL `createRepoStore` workflow-run substrate and a REAL
 // isogit local store (the production path), so the connector-state flush, the
-// change-driven + run-boundary mirrors, and the working-tree reconstruction
+// change-driven + run-boundary mirrors, and the committed-tree reconstruction
 // are exercised end to end -- not mocked. This mirrors the harness in
 // conversation-state-wal.test.ts; the substrate dependency is why these live
 // under tests/ rather than co-located in apps/sidecar/src (co-location would
@@ -29,11 +29,10 @@ import {
   createRepoStore,
   workflowRunKindHandler,
   WORKFLOW_RUN_GITIGNORE_PATH,
-  workflowRunStepStatePrefix,
 } from "@intx/hub-sessions";
 import {
   createDurableConversationStore,
-  reconstructDurableConversation,
+  readStepState,
   type DurableConversationStore,
 } from "@intx/sidecar-app/src/conversation-state";
 
@@ -51,7 +50,6 @@ interface Harness {
   substrate: RepoStore;
   workflowRunRepoId: RepoId;
   signer: (payload: string) => Promise<string>;
-  stateDir: string;
 }
 
 async function makeHarness(): Promise<Harness> {
@@ -82,11 +80,7 @@ async function makeHarness(): Promise<Harness> {
     Promise.resolve(
       createSSHSignature(payload, signingKey.privateKey, signingKey.publicKey),
     );
-  const stateDir = path.join(
-    substrate.getRepoDir(workflowRunRepoId),
-    workflowRunStepStatePrefix(RUN_ID, STEP_ID),
-  );
-  return { baseDir, substrate, workflowRunRepoId, signer, stateDir };
+  return { baseDir, substrate, workflowRunRepoId, signer };
 }
 
 async function makeStore(
@@ -232,10 +226,14 @@ describe("durable conversation store connector seed (design §3c)", () => {
     await store.mirrorToSubstrate();
 
     // The substrate carries the advanced connector thread, not a stale null.
-    const reconstructed = await reconstructDurableConversation(
-      h.stateDir,
-      STEP_ID,
-    );
+    const reconstructed = await readStepState({
+      substrate: h.substrate,
+      workflowRunRepoId: h.workflowRunRepoId,
+      workflowRunRef: WORKFLOW_RUN_REF,
+      principal: PRINCIPAL,
+      runId: RUN_ID,
+      stepId: STEP_ID,
+    });
     if (reconstructed === null) throw new Error("expected a reconstruction");
     expect(reconstructed.connectorState).toEqual({
       threadRoot: "<a@example.com>",

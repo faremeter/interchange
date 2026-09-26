@@ -87,6 +87,7 @@ import {
 import { and, eq, inArray } from "drizzle-orm";
 
 import { createInMemoryGrantStore } from "@intx/authz";
+import { generateKeyPair } from "@intx/crypto";
 import {
   createApprovalStore,
   createSignalCorrelationStore,
@@ -101,12 +102,12 @@ import {
 import { createApp, type GetSession } from "@intx/hub-api";
 import { generateId } from "@intx/hub-common";
 import {
-  workflowRunStepStatePrefix,
+  createAgentRepoStore,
   type EventCollectorRegistry,
   type SessionService,
 } from "@intx/hub-sessions";
 import { assertWellFormedToolSequence } from "@intx/inference";
-import { reconstructDurableConversation } from "@intx/sidecar-app/src/conversation-state";
+import { readStepState } from "@intx/sidecar-app/src/conversation-state";
 import { signalName } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import { WireGrantRule } from "@intx/types/grant-wire";
@@ -542,20 +543,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
         SENTINEL_FILENAME,
       );
 
-      // The warm agent's durable conversation dir on the sidecar's on-disk
-      // substrate. The sidecar roots each workflow-run repo at
-      // `<dataDir>/workflow-runs/<repoId>` (the same layout the deployment-record
-      // path uses), and the durable conversation mirror lives in the step's
-      // state directory under the deployment's run inside it.
-      // `reconstructDurableConversation` reads it the way the warm agent's own
-      // restore does, so the post-resume history it returns is the real
+      // The sidecar's on-disk workflow-run substrate, where the warm agent's
+      // durable conversation mirror lives in the step's state directory under
+      // the deployment's run. `readStepState` reads it the way the warm agent's
+      // own restore does, so the post-resume history it returns is the real
       // conversation, not a re-derivation.
-      const stateDir = path.join(
-        env.sidecar.dataDir,
-        "workflow-runs",
-        workflowRunRepoId.id,
-        workflowRunStepStatePrefix(DEPLOYMENT_ID, STEP_ID),
-      );
+      const sidecarSubstrate = createAgentRepoStore({
+        dataDir: env.sidecar.dataDir,
+        signingKey: await generateKeyPair(),
+      }).repoStore;
 
       // Guard the single-test warm-state assumption at the source: no prior run
       // may have left the sentinel in this env before this test fires.
@@ -791,10 +787,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // terminal event by a mirror flush, so poll until the answered call
       // surfaces rather than racing the write.
       const readTurns = async (): Promise<ConversationTurn[]> => {
-        const reconstructed = await reconstructDurableConversation(
-          stateDir,
-          STEP_ID,
-        );
+        const reconstructed = await readStepState({
+          substrate: sidecarSubstrate,
+          workflowRunRepoId,
+          workflowRunRef: "refs/heads/main",
+          principal: { kind: "hub" },
+          runId: DEPLOYMENT_ID,
+          stepId: STEP_ID,
+        });
         return reconstructed === null ? [] : reconstructed.turns;
       };
       await waitFor(

@@ -26,14 +26,15 @@ import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
+import { generateKeyPair } from "@intx/crypto";
 import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
 import {
   createApprovalSet,
   deriveRunAddress,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { workflowRunStepStatePrefix } from "@intx/hub-sessions";
-import { reconstructDurableConversation } from "@intx/sidecar-app/src/conversation-state";
+import { createAgentRepoStore } from "@intx/hub-sessions";
+import { readStepState } from "@intx/sidecar-app/src/conversation-state";
 import { tenant as tenantTable } from "@intx/db/schema";
 import {
   createTestDb,
@@ -267,19 +268,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // substrate is the sidecar's on-disk workflow-run repo; reconstruct the
       // durable conversation from it (deterministic, no hub pack-push timing
       // dependency) and assert the agent's turn is durably committed.
-      const sidecarWorkflowRunRepoDir = path.join(
-        env.sidecar.dataDir,
-        "workflow-runs",
-        workflowRunRepoId.id,
-      );
-      const durableSubstrateStateDir = path.join(
-        sidecarWorkflowRunRepoDir,
-        workflowRunStepStatePrefix(DEPLOYMENT_ID, STEP_ID),
-      );
-      const durableConversation = await reconstructDurableConversation(
-        durableSubstrateStateDir,
-        STEP_ID,
-      );
+      const durableConversation = await readStepState({
+        substrate: createAgentRepoStore({
+          dataDir: env.sidecar.dataDir,
+          signingKey: await generateKeyPair(),
+        }).repoStore,
+        workflowRunRepoId,
+        workflowRunRef: "refs/heads/main",
+        principal: { kind: "hub" },
+        runId: DEPLOYMENT_ID,
+        stepId: STEP_ID,
+      });
       if (durableConversation === null) {
         throw new Error("expected a durable conversation in the substrate");
       }

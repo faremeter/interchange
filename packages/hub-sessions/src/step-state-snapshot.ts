@@ -63,7 +63,7 @@ export async function readStepStateSnapshot(args: {
     ));
   const snapshot =
     state === null
-      ? await readCommittedSeed(reads, args.runId, args.stepId)
+      ? await readCommittedStepStateSeed(reads, args.runId, args.stepId)
       : StepStateSnapshot({
           version: 1,
           turns: state.turns,
@@ -111,7 +111,11 @@ export function parseStepStateSeed(
   return seed;
 }
 
-async function readCommittedSeed(
+/**
+ * Read a step's seed from a committed tree, or `null` when its deployment
+ * imported none for it. A seed that is not a valid snapshot throws.
+ */
+export async function readCommittedStepStateSeed(
   reads: CommittedReads,
   runId: string,
   stepId: string,
