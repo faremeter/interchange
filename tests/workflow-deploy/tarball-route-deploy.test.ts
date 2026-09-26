@@ -373,6 +373,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
           `expected RunCompleted, got ${terminal.type}: ${JSON.stringify(terminal.body)}\n${env.sidecarDiagnostics()}`,
         );
       }
-    }, 90_000);
+    });
   },
 );
