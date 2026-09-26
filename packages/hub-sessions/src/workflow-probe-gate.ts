@@ -394,7 +394,7 @@ function describeStepsWithoutGrantRecord(
 }
 
 export type GateAndFreezeArgs = {
-  /** The `workflow`-kind asset the frozen definition projects over. */
+  /** The definition asset: a workflow source tree or package-registry tarball. */
   readonly assetId: string;
   /** The definition byte source, when the caller has source provenance available. */
   readonly source?: WorkflowDefinitionSource;
@@ -585,7 +585,7 @@ export async function gateAndFreezeProbeResult(
 type InstallAndApproveCommonArgs = {
   /** The `interchange.workflow` entry-module path the sidecar evaluates to project the definition. */
   readonly entry: string;
-  /** The `workflow`-kind asset the frozen definition projects over. */
+  /** The source asset: a workflow source tree or package-registry tarball. */
   readonly assetId: string;
   /**
    * The approval policy threaded to the gate: an operator `ApprovalSet` to gate
