@@ -52,6 +52,7 @@ import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import type {
   WorkflowDefinitionAssetSource,
   WorkflowDefinitionRegistrySource,
+  WorkflowDefinitionSource,
 } from "@intx/types/workflow-sources";
 import {
   EXECUTABLE_STEP_DESCENT,
@@ -118,8 +119,9 @@ export type PersistFrozenApprovalFn = (
 
 /**
  * The outcome of gating and freezing a probe result. `ok: true` is the frozen
- * approval the deploy hand-off consumes. The `ok: false` arms name the five
- * fail-closed paths: a shipped hash that does not match the hub recompute
+ * approval the deploy hand-off consumes. The `ok: false` arms name the
+ * fail-closed paths: unsupported creator provenance from a package-registry
+ * tarball, a shipped hash that does not match the hub recompute
  * (tamper-evidence), advisory grants the operator did not approve, declared
  * grant requirements the operator did not approve, a trigger type the runtime
  * does not implement, and an executable step the grant walk left no record for.
@@ -157,6 +159,12 @@ export type ProbeGateResult =
        * see exactly which authority the definition asked to delegate.
        */
       readonly unapprovedGrantRequirements: readonly GrantRequirement[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "creator_requirements_unsupported_for_package_registry_tarball";
+      /** Creator-sourced requirements rejected because the package publisher is unknown. */
+      readonly creatorGrantRequirements: readonly GrantRequirement[];
     }
   | {
       readonly ok: false;
@@ -386,8 +394,10 @@ function describeStepsWithoutGrantRecord(
 }
 
 export type GateAndFreezeArgs = {
-  /** The `workflow`-kind asset the frozen definition projects over. */
+  /** The definition asset: a workflow source tree or package-registry tarball. */
   readonly assetId: string;
+  /** The definition byte source, when the caller has source provenance available. */
+  readonly source?: WorkflowDefinitionSource;
   /** The sidecar's inert probe answer: projection, advisory grants, shipped hash. */
   readonly probeResult: WorkflowProbeResult;
   /**
@@ -405,11 +415,14 @@ export type GateAndFreezeArgs = {
  * inert projection and grant set -- no author code runs here and the capability
  * walk is never re-run.
  *
- * Fails closed on the three security-load-bearing checks before it writes
- * anything: the recomputed wire hash must match the hash the sidecar shipped
- * (tamper-evidence), every advisory grant must be operator-approved, and every
- * declared grant requirement must be operator-approved. It also refuses a
- * projection whose triggers include a reserved-but-unimplemented type -- not a
+ * Fails closed on the security-load-bearing checks before it writes anything:
+ * package-registry tarballs cannot claim creator authority while package
+ * publisher provenance is unavailable, the recomputed wire hash must match the
+ * hash the sidecar shipped (tamper-evidence), every advisory grant must be
+ * operator-approved, and every declared grant requirement must be
+ * operator-approved. Source-tree creator requirements retain their established
+ * semantics. It also refuses a projection whose triggers include a
+ * reserved-but-unimplemented type -- not a
  * security check, but the layer a pinned closure cannot carry a stale copy of,
  * so it is where a workflow that could only sit inert is caught -- and one
  * whose executable closure reaches a step the grant walk left no record for --
@@ -422,7 +435,21 @@ export type GateAndFreezeArgs = {
 export async function gateAndFreezeProbeResult(
   args: GateAndFreezeArgs,
 ): Promise<ProbeGateResult> {
-  const { assetId, probeResult, approvals, persist } = args;
+  const { assetId, source, probeResult, approvals, persist } = args;
+
+  const creatorGrantRequirements =
+    source?.kind === "asset" && source.package.format === "tarball"
+      ? probeResult.grantWalkSnapshot.grantRequirements.filter(
+          (requirement) => requirement.source === "creator",
+        )
+      : [];
+  if (creatorGrantRequirements.length > 0) {
+    return {
+      ok: false,
+      reason: "creator_requirements_unsupported_for_package_registry_tarball",
+      creatorGrantRequirements,
+    };
+  }
 
   // Tamper-evidence: recompute over the RECEIVED projection and compare to the
   // shipped hash. A mismatch means the projection the hub is approving is not
@@ -558,7 +585,7 @@ export async function gateAndFreezeProbeResult(
 type InstallAndApproveCommonArgs = {
   /** The `interchange.workflow` entry-module path the sidecar evaluates to project the definition. */
   readonly entry: string;
-  /** The `workflow`-kind asset the frozen definition projects over. */
+  /** The source asset: a workflow source tree or package-registry tarball. */
   readonly assetId: string;
   /**
    * The approval policy threaded to the gate: an operator `ApprovalSet` to gate
@@ -727,6 +754,7 @@ export async function installAndApproveWorkflowDefinition(
 
   const approval = await gateAndFreezeProbeResult({
     assetId: args.assetId,
+    source: args.source,
     probeResult,
     approvals: args.approvals,
     persist: createDbFrozenApprovalWriter(args.db),

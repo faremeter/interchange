@@ -116,6 +116,12 @@ const workflowAssetRow: typeof assetTable.$inferSelect = {
   updatedAt: new Date("2025-01-01"),
 };
 
+const packageRegistryAssetRow: typeof assetTable.$inferSelect = {
+  ...workflowAssetRow,
+  kind: "package-registry",
+  name: "demo-registry",
+};
+
 const deploymentRow = {
   id: DEPLOYMENT_ID,
   tenantId: TENANT_ID,
@@ -271,6 +277,18 @@ function makeGrant(overrides: Partial<GrantRule> = {}): GrantRule {
     principalId: PRINCIPAL_ID,
     ...overrides,
   };
+}
+
+function assetReadGrant(): GrantRule {
+  return makeGrant({
+    id: "grant-asset-read",
+    resource: `asset:${ASSET_ID}`,
+    action: "read",
+  });
+}
+
+function deployCreateGrants(): GrantRule[] {
+  return [makeGrant({ action: "create" }), assetReadGrant()];
 }
 
 // An insert the mock DB records: the drizzle table object it targeted and
@@ -956,6 +974,18 @@ function sourceDeployBody(
   };
 }
 
+const TARBALL_PIN = "@wf/demo@^1.0.0";
+function tarballDeployBody(): Record<string, unknown> {
+  return sourceDeployBody({
+    source: {
+      kind: "asset",
+      assetId: ASSET_ID,
+      package: { format: "tarball" },
+    },
+    pin: TARBALL_PIN,
+  });
+}
+
 test("deployment responses publish their status vocabulary in OpenAPI", async () => {
   const app = createTestApp();
   const res = await app.request("/openapi.json");
@@ -1005,7 +1035,7 @@ test("deployment responses publish their status vocabulary in OpenAPI", async ()
 
 describe("POST /workflows/deployments", () => {
   test("rejects the legacy inference-source payload", async () => {
-    const app = createTestApp({ grants: [makeGrant({ action: "create" })] });
+    const app = createTestApp({ grants: deployCreateGrants() });
     const res = await app.fetch(
       authedPost(
         `${base()}/deployments`,
@@ -1032,7 +1062,7 @@ describe("POST /workflows/deployments", () => {
   test("rejects duplicate source offering ids at the request boundary", async () => {
     let prepareCalled = false;
     const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
+      grants: deployCreateGrants(),
       workflowAllocationService: {
         prepareProvisionedDeployment: async () => {
           prepareCalled = true;
@@ -1057,7 +1087,7 @@ describe("POST /workflows/deployments", () => {
 
   test("rejects deployment when workflow provisioning is unavailable", async () => {
     const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
+      grants: deployCreateGrants(),
     });
 
     const res = await app.fetch(
@@ -1073,7 +1103,7 @@ describe("POST /workflows/deployments", () => {
       WorkflowAllocationService["prepareProvisionedDeployment"]
     >[0][] = [];
     const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
+      grants: deployCreateGrants(),
       workflowAllocationService: {
         prepareProvisionedDeployment: async (args) => {
           prepared.push(args);
@@ -1106,7 +1136,7 @@ describe("POST /workflows/deployments", () => {
 
   test("reports provisioner selection failures as conflicts", async () => {
     const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
+      grants: deployCreateGrants(),
       workflowAllocationService: {
         prepareProvisionedDeployment: async () => {
           throw new WorkflowProvisioningError(
@@ -1127,7 +1157,7 @@ describe("POST /workflows/deployments", () => {
 
   test("rejects a registry-sourced deploy as unsupported on this route", async () => {
     const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
+      grants: deployCreateGrants(),
     });
 
     const res = await app.fetch(
@@ -1154,7 +1184,7 @@ describe("POST /workflows/deployments", () => {
 
   test("reports a sidecar deploy failure as 502 sidecar_unavailable", async () => {
     const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
+      grants: deployCreateGrants(),
       workflowAllocationService: {
         prepareProvisionedDeployment: async () => {
           throw new Error("sidecar unavailable");
@@ -1174,7 +1204,7 @@ describe("POST /workflows/deployments", () => {
     // source pin (an unapproved or mis-ordered chain) is a client/definition
     // error, not a sidecar-reachability failure -- classify it as 409.
     const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
+      grants: deployCreateGrants(),
       workflowAllocationService: {
         prepareProvisionedDeployment: async () => {
           throw new WorkflowDefinitionInvalidError(
@@ -1194,7 +1224,7 @@ describe("POST /workflows/deployments", () => {
 
   test("reports a missing post-deploy anchor run as 500, not 502", async () => {
     const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
+      grants: deployCreateGrants(),
       db: { assetRow: workflowAssetRow, deploymentRow: undefined },
       workflowAllocationService: {
         prepareProvisionedDeployment: async () => ({
@@ -1213,15 +1243,166 @@ describe("POST /workflows/deployments", () => {
     expect(await errorCode(res)).toBe("anchor_run_missing");
   });
 
-  test("returns 404 when the workflow asset is missing", async () => {
+  test("returns 404 when the definition asset is missing", async () => {
     const app = createTestApp({
-      grants: [makeGrant({ action: "create" })],
+      grants: deployCreateGrants(),
       db: { assetRow: undefined },
     });
     const res = await app.fetch(
       authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
     expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "not_found",
+        message: "Definition asset not found",
+      },
+    });
+  });
+
+  test("prepares a tarball-sourced deploy from a package-registry asset", async () => {
+    const prepared: Parameters<
+      WorkflowAllocationService["prepareProvisionedDeployment"]
+    >[0][] = [];
+    const app = createTestApp({
+      grants: deployCreateGrants(),
+      db: { assetRow: packageRegistryAssetRow, deploymentRow },
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async (args) => {
+          prepared.push(args);
+          return {
+            anchorRunId: DEPLOYMENT_ID,
+            deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
+            allocationId: "sal-test",
+            status: "pending",
+          };
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+
+    expect(res.status).toBe(201);
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]?.pin).toBe(TARBALL_PIN);
+    expect(prepared[0]?.definitionAssetId).toBe(ASSET_ID);
+  });
+
+  test("rejects a tarball-sourced deploy when the caller cannot read the named asset", async () => {
+    let prepareCalled = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      db: {
+        assetRow: {
+          ...packageRegistryAssetRow,
+          creatorPrincipalId: "prn_other",
+        },
+        deploymentRow,
+      },
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          prepareCalled = true;
+          throw new Error("missing asset grant must not reach preparation");
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+
+    expect(res.status).toBe(403);
+    expect(await errorCode(res)).toBe("forbidden");
+    expect(prepareCalled).toBe(false);
+  });
+
+  test("does not reveal whether an unreadable workflow asset exists", async () => {
+    const grants = [makeGrant({ action: "create" })];
+    const existingApp = createTestApp({
+      grants,
+      db: {
+        assetRow: {
+          ...packageRegistryAssetRow,
+          creatorPrincipalId: "prn_other",
+        },
+        deploymentRow,
+      },
+    });
+    const missingApp = createTestApp({
+      grants,
+      db: { assetRow: undefined },
+    });
+
+    const existingResponse = await existingApp.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+    const missingResponse = await missingApp.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+
+    expect(existingResponse.status).toBe(403);
+    expect(missingResponse.status).toBe(existingResponse.status);
+    expect(await missingResponse.json()).toEqual(await existingResponse.json());
+  });
+
+  test("rejects a tarball deploy of another principal's workflow asset as forbidden, not a kind mismatch", async () => {
+    // A tarball source naming a workflow-kind asset would 409 after the
+    // kind comparison. Grant-before-kind must 403 first so the mismatch
+    // message cannot disclose kind for an asset the caller cannot read.
+    let prepareCalled = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      db: {
+        assetRow: {
+          ...workflowAssetRow,
+          creatorPrincipalId: "prn_other",
+        },
+        deploymentRow,
+      },
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          prepareCalled = true;
+          throw new Error("missing asset grant must not reach preparation");
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+
+    expect(res.status).toBe(403);
+    expect(await errorCode(res)).toBe("forbidden");
+    expect(prepareCalled).toBe(false);
+  });
+
+  test("reports a tarball source naming a workflow asset as a kind mismatch", async () => {
+    const app = createTestApp({
+      grants: deployCreateGrants(),
+      db: { assetRow: workflowAssetRow, deploymentRow },
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, tarballDeployBody()),
+    );
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("asset_kind_mismatch");
+  });
+
+  test("reports a source-tree source naming a package-registry asset as a kind mismatch", async () => {
+    const app = createTestApp({
+      grants: deployCreateGrants(),
+      db: { assetRow: packageRegistryAssetRow, deploymentRow },
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
+    );
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("asset_kind_mismatch");
   });
 });
 

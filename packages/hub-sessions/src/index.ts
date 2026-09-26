@@ -103,6 +103,7 @@ export {
 } from "./sidecar-allocation";
 export { ensureWorkflowDefinitionForAsset } from "./workflow-definition-ensure";
 export { workflowSourceAssetMountPath } from "./workflow-closure-resolution";
+export { workflowSourceRepoKind } from "./workflow-source-repo-kind";
 export {
   createReconciliationScheduler,
   DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
