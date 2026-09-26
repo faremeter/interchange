@@ -76,6 +76,7 @@ import {
 import { restoreWorkflowRunToAllocation } from "./workflow-run-restore";
 import { committedReadsToSourceTree } from "./committed-source-tree";
 import {
+  describeProbeGateRefusal,
   installAndApproveWorkflowDefinition,
   type InstallAndApproveArgs,
   type InstallAndApproveResult,
@@ -561,7 +562,7 @@ async function prepareSourceRefDeploy(
   const { approval, projection, closure } = args.approved;
   if (!approval.ok) {
     throw new Error(
-      `deployCodeSourcedWorkflow: refusing to deploy an unapproved workflow (gate reason: ${approval.reason})`,
+      `deployCodeSourcedWorkflow: refusing to deploy an unapproved workflow (${describeProbeGateRefusal(approval)})`,
     );
   }
 
@@ -1529,7 +1530,7 @@ export function createSessionService(
     if (!approved.approval.ok) {
       throw new WorkflowDefinitionInvalidError(
         approved.projection.id,
-        `code-sourced workflow install did not approve (reason: ${approved.approval.reason})`,
+        `code-sourced workflow install did not approve (${describeProbeGateRefusal(approved.approval)})`,
       );
     }
     return approved;
