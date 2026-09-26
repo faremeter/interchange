@@ -253,7 +253,7 @@ export function createWorkflowRoutes({
           "Workflow deployment accepted for provisioning",
           WorkflowDeploymentResponse,
         ),
-        404: jsonResponse("Workflow asset not found", ErrorResponse),
+        404: jsonResponse("Definition asset not found", ErrorResponse),
         409: jsonResponse(
           "Asset kind does not match the source's package format, workflow definition or source offering chain invalid, workflow provisioning unavailable, or provisioner selection failed",
           ErrorResponse,
@@ -300,7 +300,7 @@ export function createWorkflowRoutes({
         ),
       });
       if (!assetRow) {
-        return errorResponse(c, "not_found", "Workflow asset not found");
+        return errorResponse(c, "not_found", "Definition asset not found");
       }
       const expectedKind = workflowSourceRepoKind(body.source);
       if (assetRow.kind !== expectedKind) {

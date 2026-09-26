@@ -1243,7 +1243,7 @@ describe("POST /workflows/deployments", () => {
     expect(await errorCode(res)).toBe("anchor_run_missing");
   });
 
-  test("returns 404 when the workflow asset is missing", async () => {
+  test("returns 404 when the definition asset is missing", async () => {
     const app = createTestApp({
       grants: deployCreateGrants(),
       db: { assetRow: undefined },
@@ -1252,6 +1252,12 @@ describe("POST /workflows/deployments", () => {
       authedPost(`${base()}/deployments`, sourceDeployBody()),
     );
     expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "not_found",
+        message: "Definition asset not found",
+      },
+    });
   });
 
   test("prepares a tarball-sourced deploy from a package-registry asset", async () => {
