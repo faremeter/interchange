@@ -339,7 +339,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
           body: {
             error: {
               code: "invalid_workflow",
-              message: `Workflow asset ${definitionAssetId} not found`,
+              message: `Definition asset ${definitionAssetId} not found`,
             },
           },
         };
