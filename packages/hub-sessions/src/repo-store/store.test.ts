@@ -3122,6 +3122,128 @@ describe("RepoStore", () => {
     ).toBeNull();
   });
 
+  test("a ref that exists but cannot be read throws rather than reading as absent", async () => {
+    const dataDir = await makeTempDir("repo-store-unreadable-ref-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+    const refFile = path.join(
+      dataDir,
+      handler.directoryPrefix,
+      repoId.id,
+      ".git",
+      ...REF.split("/"),
+    );
+
+    // isomorphic-git reports a ref file it cannot read as a missing ref. An
+    // emptied file stands in for an unreadable one, which root would read
+    // regardless of its mode.
+    const sha = await fs.promises.readFile(refFile, "utf8");
+    await fs.promises.writeFile(refFile, "");
+    await expect(
+      store.openCommittedReads(principal, repoId, REF),
+    ).rejects.toThrow(/exists but could not be read/);
+    await expect(store.resolveRef(principal, repoId, REF)).rejects.toThrow(
+      /exists but could not be read/,
+    );
+    await expect(
+      store.writeTree(principal, repoId, REF, {
+        files: { "runs/r1/events/1.json": "one" },
+        message: "append",
+      }),
+    ).rejects.toThrow(/exists but could not be read/);
+
+    await fs.promises.writeFile(refFile, sha);
+    const reads = await store.openCommittedReads(principal, repoId, REF);
+    if (reads === null) throw new Error("expected committed reads");
+    expect((await reads.listDir("runs/r1/events")).map((e) => e.name)).toEqual([
+      "0.json",
+    ]);
+  });
+
+  test("a repository whose directory cannot be inspected throws rather than reading as absent", async () => {
+    const dataDir = await makeTempDir("repo-store-unreadable-repo-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+    const gitDir = path.join(
+      dataDir,
+      handler.directoryPrefix,
+      repoId.id,
+      ".git",
+    );
+
+    // A `.git` that links to itself fails every stat with ELOOP, which no
+    // file mode can do for root.
+    await fs.promises.rename(gitDir, `${gitDir}-moved`);
+    await fs.promises.symlink(".git", gitDir);
+    try {
+      await expect(
+        store.openCommittedReads(principal, repoId, REF),
+      ).rejects.toThrow();
+      await expect(store.listRefs(principal, repoId)).rejects.toThrow();
+    } finally {
+      await fs.promises.rm(gitDir);
+      await fs.promises.rename(`${gitDir}-moved`, gitDir);
+    }
+    expect(
+      await store.openCommittedReads(principal, repoId, REF),
+    ).not.toBeNull();
+  });
+
+  test("a ref whose name holds other refs reads as absent", async () => {
+    const dataDir = await makeTempDir("repo-store-ref-directory-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    const { commitSha } = await store.writeTree(principal, repoId, REF, {
+      files: { "runs/r1/events/0.json": "zero" },
+      message: "seed",
+    });
+    const nested = path.join(
+      dataDir,
+      handler.directoryPrefix,
+      repoId.id,
+      ".git",
+      "refs",
+      "heads",
+      "feature",
+      "x",
+    );
+    await fs.promises.mkdir(path.dirname(nested), { recursive: true });
+    await fs.promises.writeFile(nested, `${commitSha}\n`);
+
+    expect(
+      await store.resolveRef(principal, repoId, "refs/heads/feature"),
+    ).toBeNull();
+    expect(
+      await store.openCommittedReads(principal, repoId, "refs/heads/feature"),
+    ).toBeNull();
+    expect(
+      await store.resolveRef(principal, repoId, "refs/heads/feature/x"),
+    ).toBe(commitSha);
+  });
+
   test("openCommittedReads listing an absent directory returns the empty array", async () => {
     const dataDir = await makeTempDir("repo-store-committed-empty-");
     const handler = createTestHandler();
