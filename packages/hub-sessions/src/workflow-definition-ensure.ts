@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 
 import {
   resolveDefinitionIdForAsset,
@@ -36,6 +36,8 @@ export async function ensureWorkflowDefinitionForAsset(
   selector: WorkflowDefinitionSelector,
 ): Promise<{ definitionId: string; created: boolean }> {
   const { assetId, wireHash } = selector;
+  // The lifecycle override route writes every definition of the asset under
+  // this lock, so a revision created here cannot miss a concurrent override.
   const assetRow = await db
     .select({
       tenantId: asset.tenantId,
@@ -46,12 +48,20 @@ export async function ensureWorkflowDefinitionForAsset(
     .from(asset)
     .where(eq(asset.id, assetId))
     .limit(1)
+    .for("update")
     .then((rows) => rows[0]);
   if (assetRow === undefined) {
     throw new Error(
       `ensureWorkflowDefinitionForAsset: no asset found for id "${assetId}"`,
     );
   }
+  // A new revision keeps the lifecycle override of its installed workflow.
+  const [installed] = await db
+    .select({ lifecyclePolicy: workflowDefinition.lifecyclePolicy })
+    .from(workflowDefinition)
+    .where(eq(workflowDefinition.assetId, assetId))
+    .orderBy(desc(workflowDefinition.updatedAt))
+    .limit(1);
 
   const inserted = await db
     .insert(workflowDefinition)
@@ -63,6 +73,7 @@ export async function ensureWorkflowDefinitionForAsset(
       wireHash,
       name: assetRow.name,
       description: assetRow.displayName,
+      lifecyclePolicy: installed?.lifecyclePolicy ?? null,
     })
     .onConflictDoNothing({
       target: [workflowDefinition.assetId, workflowDefinition.wireHash],

@@ -25,6 +25,7 @@ import {
 } from "@intx/db/schema";
 import { generateId } from "@intx/hub-common";
 import {
+  createWorkflowHistoryReceiveTracker,
   createHubSessionLookups,
   createSidecarRouter,
   type AgentRepoStore,
@@ -45,13 +46,22 @@ import {
 
 import { createMockWs } from "./sidecar-test-helpers";
 
-// The register handler never touches the repo store, so a throwing stub keeps
-// the AgentRepoStore surface satisfied without a real on-disk store.
+// The lookups factory reads repoStore when constructing dispatch projection,
+// but registerSignalCorrelation never performs a committed read.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- test stub; registerSignalCorrelation does not touch the repo store
 const stubRepoStore = new Proxy(
   {},
   {
-    get() {
+    get(_target, property) {
+      if (property === "repoStore") {
+        return {
+          openCommittedReads() {
+            throw new Error(
+              "repoStore is not used by registerSignalCorrelation",
+            );
+          },
+        };
+      }
       throw new Error(
         "agentRepoStore is not used by registerSignalCorrelation",
       );
@@ -217,8 +227,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const lookups = createHubSessionLookups({
         db: h.db,
         agentRepoStore: stubRepoStore,
+        historyReceives: createWorkflowHistoryReceiveTracker(),
       });
       return createSidecarRouter({
+        withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: acceptAnySidecar,
         validateSidecarIdentity: async () => true,
         lookups,
@@ -401,6 +413,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const lookups = createHubSessionLookups({
         db: h.db,
         agentRepoStore: stubRepoStore,
+        historyReceives: createWorkflowHistoryReceiveTracker(),
       });
 
       // Call the co-write directly with the real-shaped frame: the raw-id
@@ -615,6 +628,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const lookups = createHubSessionLookups({
           db: registerHandle.db,
           agentRepoStore: stubRepoStore,
+          historyReceives: createWorkflowHistoryReceiveTracker(),
         });
 
         let outcome: unknown;

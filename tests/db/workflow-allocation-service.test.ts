@@ -27,7 +27,11 @@ import {
   type InstallAndApproveWorkflowSourceParams,
   type SidecarProvisioner,
 } from "@intx/hub-sessions";
-import { credentialAad, type SidecarCapabilityRule } from "@intx/types";
+import {
+  credentialAad,
+  type ResolvedWorkflowLifecyclePolicy,
+  type SidecarCapabilityRule,
+} from "@intx/types";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import { createApprovalSet } from "@intx/workflow-deploy";
 import {
@@ -46,6 +50,11 @@ import {
   seedTenants,
   seedWorkflowRun,
 } from "@intx/test-harness/seed";
+
+const TEST_DEFAULT_LIFECYCLE_POLICY: ResolvedWorkflowLifecyclePolicy = {
+  maxLifetime: "7d",
+  capacityRetention: { completed: "30m", failed: "24h", cancelled: "1h" },
+};
 
 const TENANT_ID = "tnt-workflow-probe";
 const PRINCIPAL_ID = "prn-workflow-probe";
@@ -252,6 +261,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           disconnectAllocation: (target) => disconnectCalls.push(target),
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
         createAllocationId: () => "sal-probe-adopted",
         createSidecarId: () => "sc-probe-adopted",
         createToken: () => "probe-token",
@@ -335,6 +345,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           disconnectAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
         createAllocationId: () => "sal-anchor-ordering",
         createSidecarId: () => "sc-anchor-ordering",
         createToken: () => "anchor-ordering-token",
@@ -358,6 +369,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("reauthenticates adopted probe capacity as its allocation", async () => {
       const credentialResolver = createSidecarCredentialResolver({ db: h.db });
       const router = createSidecarRouter({
+        withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: async ({ token }) =>
           credentialResolver.resolve(token),
         validateSidecarIdentity: credentialResolver.isCurrent,
@@ -419,6 +431,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialCipher: CIPHER,
         allocationRouter: router,
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
         createAllocationId: () => "sal-adoption-auth",
         createSidecarId: () => "sc-adoption-auth",
         createToken: () => "adoption-auth-token",
@@ -501,6 +514,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           disconnectAllocation: (target) => disconnectCalls.push(target),
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
         createAllocationId: () => "sal-probe-persistence-failure",
         createSidecarId: () => "sc-probe-persistence-failure",
         createToken: () => "probe-token",
@@ -577,6 +591,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           disconnectAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
         createAllocationId: () => "sal-probe-cleanup-retry",
         createSidecarId: () => "sc-probe-cleanup-retry",
         createToken: () => "probe-token",
@@ -672,6 +687,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           disconnectAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
       });
 
       if (service.initialize === undefined) {
@@ -752,6 +768,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           disconnectAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
         createAllocationId: () => {
           const id = ids.shift();
           if (id === undefined) throw new Error("unexpected allocation id");
@@ -827,6 +844,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           disconnectAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
         createAllocationId: () => {
           const id = ids.shift();
           if (id === undefined) throw new Error("unexpected allocation id");
@@ -885,6 +903,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             disconnectAllocation: () => undefined,
           },
           hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+          defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
         }),
       ).toThrow(/Invalid workflow probe capability rules/);
     });

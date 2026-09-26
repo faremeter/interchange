@@ -6,6 +6,8 @@ import {
   createWorkflowProbeStore,
   createWorkflowRunLaunchSpecStore,
   resolveTenantSidecarCapabilityPolicies,
+  resolveDeploymentLifecyclePolicy,
+  canExecuteWorkflowRun,
   resolveSourcesByOfferingIds,
   type DB,
   type SidecarAllocation,
@@ -16,7 +18,9 @@ import { eq } from "drizzle-orm";
 import { generateId } from "@intx/hub-common";
 import {
   hexEncode,
+  lifecycleDeadline,
   SidecarCapabilityRule,
+  type ResolvedWorkflowLifecyclePolicy,
   type CredentialCipher,
 } from "@intx/types";
 import type { FrozenApprovalBundle } from "@intx/types/sidecar";
@@ -126,6 +130,8 @@ export type WorkflowAllocationServiceDeps = {
     | "waitForAllocatedSidecar"
   >;
   readonly hubWebSocketUrl: string;
+  /** Fills lifecycle fields no tenant or installed workflow sets. */
+  readonly defaultLifecyclePolicy: ResolvedWorkflowLifecyclePolicy;
   readonly createAllocationId?: () => string;
   readonly createSidecarId?: () => string;
   readonly createToken?: () => string;
@@ -212,6 +218,7 @@ export function createWorkflowAllocationService({
   probeCapabilityRules = [],
   allocationRouter,
   hubWebSocketUrl,
+  defaultLifecyclePolicy,
   createAllocationId = randomAllocationId,
   createSidecarId = randomSidecarId,
   createToken = randomToken,
@@ -394,6 +401,12 @@ export function createWorkflowAllocationService({
     };
 
     await db.transaction(async (tx) => {
+      const lifecycle = await resolveDeploymentLifecyclePolicy(
+        tx,
+        request.tenantId,
+        approved.approval.definitionId,
+        defaultLifecyclePolicy,
+      );
       await tx.insert(workflowRun).values({
         id: request.anchorRunId,
         tenantId: request.tenantId,
@@ -401,6 +414,8 @@ export function createWorkflowAllocationService({
         definitionId: approved.approval.definitionId,
         address: deploymentAddress,
         status: "deployed",
+        lifecyclePolicy: lifecycle,
+        expiresAt: lifecycleDeadline(createdAt, lifecycle.maxLifetime),
         createdAt,
       });
       await tx.insert(grant).values({
@@ -718,11 +733,18 @@ export function createWorkflowAllocationService({
     };
     const anchor = await db.query.workflowRun.findFirst({
       where: eq(workflowRun.id, allocation.anchorRunId),
-      columns: { publicKey: true, definitionId: true },
+      columns: {
+        publicKey: true,
+        definitionId: true,
+        status: true,
+        expiresAt: true,
+        cancellationRequestedAt: true,
+      },
     });
     if (anchor === undefined) {
       throw new Error(`Allocation ${allocation.id} has no workflow anchor run`);
     }
+    if (!canExecuteWorkflowRun(anchor, now())) return null;
     if (await allocationRouter.isAllocatedWorkflowActive(allocationTarget)) {
       if (anchor.publicKey !== null) return null;
       throw new SessionLaunchError(

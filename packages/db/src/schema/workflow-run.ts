@@ -105,6 +105,16 @@ export const workflowRun = pgTable(
     // material from the credential table (dropping a revoked or deleted id,
     // picking up a rotated secret) and reconcile the reconnecting child.
     credentialRefs: jsonb("credential_refs").$type<WorkflowRunCredentialRefs>(),
+    lifecyclePolicy: jsonb("lifecycle_policy"),
+    expiresAt: timestamp("expires_at"),
+    cancellationRequestedAt: timestamp("cancellation_requested_at"),
+    cancellationReason: text("cancellation_reason"),
+    cancellationDeadline: timestamp("cancellation_deadline"),
+    capacityReleaseAt: timestamp("capacity_release_at"),
+    // When unrecoverable capacity loss happened while accepted history could
+    // still settle some runs. Set on the anchor instead of failing its live
+    // runs; they are failed at this time once that history is reconciled.
+    infrastructureFailedAt: timestamp("infrastructure_failed_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     // Nullable: a run has no end time until it reaches a terminal state.
     endedAt: timestamp("ended_at"),
@@ -120,6 +130,19 @@ export const workflowRun = pgTable(
     uniqueIndex("workflow_run_address_idx")
       .on(t.address)
       .where(sql`${t.address} is not null`),
+    // The lifecycle sweep runs every second and runs are never deleted, so its
+    // lookups use these partial indexes instead of walking every run.
+    index("workflow_run_anchor_idx")
+      .on(t.id)
+      .where(sql`${t.id} = ${t.anchorRunId}`),
+    index("workflow_run_live_anchor_idx")
+      .on(t.id)
+      .where(
+        sql`${t.id} = ${t.anchorRunId} and ${t.status} in ('deployed', 'running')`,
+      ),
+    index("workflow_run_infrastructure_failed_idx")
+      .on(t.id)
+      .where(sql`${t.infrastructureFailedAt} is not null`),
   ],
 );
 

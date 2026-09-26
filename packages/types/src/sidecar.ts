@@ -723,6 +723,34 @@ export const AgentUndeployFrame = type({
 });
 export type AgentUndeployFrame = typeof AgentUndeployFrame.infer;
 
+export const WorkflowControlFrame = type({
+  type: "'workflow.control'",
+  requestId: "string",
+  agentAddress: "string",
+  runId: "string",
+  action: "'cancel' | 'stop'",
+  reason: "string",
+});
+export type WorkflowControlFrame = typeof WorkflowControlFrame.infer;
+
+export const WORKFLOW_CONTROL_INITIALIZING_ERROR = "workflow_initializing";
+
+/** The tip of each authoritative workflow-run ref, `null` for an absent ref. */
+export const WorkflowRunRefTips = type({ "[string]": "string | null" });
+export type WorkflowRunRefTips = typeof WorkflowRunRefTips.infer;
+
+export const WorkflowControlAckFrame = type({
+  type: "'workflow.control.ack'",
+  requestId: "string",
+  "error?": "string",
+  /**
+   * A stopped worker's ref tips, read after its child exited. The Hub
+   * confirms the stop only once it holds the same tips.
+   */
+  "refTips?": WorkflowRunRefTips,
+});
+export type WorkflowControlAckFrame = typeof WorkflowControlAckFrame.infer;
+
 /**
  * Keepalive pong sent by the hub in response to a ping frame.
  * If the sidecar stops receiving pongs, it considers the hub dead.
@@ -1156,6 +1184,7 @@ export const SidecarFrame = type.or(
   MailInboundAckFrame,
   WorkflowProbeResultFrame,
   WorkflowProbeErrorFrame,
+  WorkflowControlAckFrame,
 );
 export type SidecarFrame = typeof SidecarFrame.infer;
 
@@ -1179,6 +1208,7 @@ export const HubFrame = type.or(
   SignalCorrelationRegisterAckFrame,
   DrainDeliverFrame,
   WorkflowProbeRequestFrame,
+  WorkflowControlFrame,
 );
 export type HubFrame = typeof HubFrame.infer;
 

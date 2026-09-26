@@ -54,10 +54,10 @@ import {
 } from "./commit-chain";
 import type {
   RunResult,
+  RuntimeWorkflowRun,
   SpawnSuspendableChild,
   SuspendableChildHandle,
   WorkflowPark,
-  WorkflowRun,
   WorkflowRuntimeEnv,
 } from "./env";
 import { shouldAbortForDrain } from "./drain";
@@ -178,7 +178,7 @@ export function runtimeRun(
   definition: WorkflowDefinition,
   env: WorkflowRuntimeEnv,
   options: RuntimeRunOptions = {},
-): WorkflowRun {
+): RuntimeWorkflowRun {
   const runId = options.runId ?? env.newId("run");
   // A run id is a durable-store path segment and a mail-address local part, so
   // an unconstrained caller-supplied id is a path-escape and addressing hazard.
@@ -255,6 +255,22 @@ export function runtimeRun(
         throw cause;
       }
       cancelController.abort();
+    },
+    async applyCommittedCancellation() {
+      try {
+        await emitChildCancelCascade(env, runId, await reloadState(env, runId));
+      } catch (cause) {
+        if (
+          !(cause instanceof TransitionError) ||
+          cause.code !== "terminal-phase"
+        ) {
+          throw cause;
+        }
+      } finally {
+        // A parked body waits on this abort, so a failed read or cascade must
+        // not withhold it.
+        cancelController.abort();
+      }
     },
     async signal(name, payload, signalId) {
       await env.signalChannel.deliver(name, payload, signalId);

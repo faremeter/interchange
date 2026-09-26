@@ -652,6 +652,48 @@
       "when": 1789466440782,
       "tag": "0093_sidecar_initialization",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1789653359296,
+      "tag": "0094_workflow_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1790184045154,
+      "tag": "0095_workflow_pending_projection",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1790185304332,
+      "tag": "0096_workflow_cancellation_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1790185883370,
+      "tag": "0097_workflow_dispatch_abandonment",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1790358456398,
+      "tag": "0098_workflow_lifecycle_sweep_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1790358709307,
+      "tag": "0099_workflow_infrastructure_failure",
+      "breakpoints": true
     }
   ]
 }

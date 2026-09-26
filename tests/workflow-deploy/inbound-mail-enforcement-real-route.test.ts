@@ -411,7 +411,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // Snapshot the diagnostics buffer BEFORE routing so the reject-log wait
       // scopes its match to events that arrive AFTER this route call.
       const diagBeforeDrop = env.sidecarDiagnostics();
-      const droppedDelivered = env.hub.router.routeMail(
+      const droppedDelivered = await env.hub.router.routeMail(
         d1MailAddress,
         base64Encode(droppedRaw),
         EXTERNAL_SENDER,
@@ -489,7 +489,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         [senderIdentity],
       );
       expect(d2GrantsDelivered).toBe(true);
-      const admittedDelivered = env.hub.router.routeMail(
+      const admittedDelivered = await env.hub.router.routeMail(
         d2MailAddress,
         base64Encode(admittedRaw),
         EXTERNAL_SENDER,

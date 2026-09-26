@@ -11,36 +11,34 @@ import type { DB } from "@intx/db";
 import {
   createApprovalStore,
   createSignalCorrelationStore,
-  createWorkflowRunDispatchStore,
+  createWorkflowPendingProjectionStore,
   createWorkflowRunStore,
 } from "@intx/db";
 import {
   agentSession,
   liveWorkflowRunStatuses,
-  principal,
   sessionMail,
   sidecarAllocation,
   workflowRun,
 } from "@intx/db/schema";
 import { getLogger } from "@intx/log";
 import { parseRunAddress, signalName } from "@intx/types";
-import { SignalDeliverFrame } from "@intx/types/sidecar";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
 import type { AgentRepoStore } from "./agent-repo";
 import { generateId } from "@intx/hub-common";
 import type { SidecarLookups } from "./ws/sidecar-events";
-import {
-  listAcceptedWorkflowDispatches,
-  listConsumedWorkflowDispatches,
-} from "./workflow-dispatch-settlement";
-import { readCommittedWorkflowRunLifecycle } from "./workflow-run-kind";
+import { createWorkflowDispatchProjection } from "./workflow-dispatch-projection";
+import type { WorkflowHistoryReceiveTracker } from "./workflow-history-receives";
+import { readWorkflowRunRefTips } from "./workflow-run-restore";
+import { projectTerminalRun } from "./workflow-run-terminal-projection";
 
 const logger = getLogger(["hub", "lookups"]);
 
 export type HubSessionLookupsDeps = {
   db: DB["db"];
   agentRepoStore: AgentRepoStore;
+  historyReceives: WorkflowHistoryReceiveTracker;
 };
 
 export function createHubSessionLookups(
@@ -54,12 +52,16 @@ export function createHubSessionLookups(
     | "resolveSenderKeyStrict"
   >
 > {
-  const { db, agentRepoStore } = deps;
+  const { db, agentRepoStore, historyReceives } = deps;
 
   const signalCorrelationStore = createSignalCorrelationStore(db);
   const approvalStore = createApprovalStore(db);
   const workflowRunStore = createWorkflowRunStore(db);
-  const workflowRunDispatchStore = createWorkflowRunDispatchStore(db);
+  const pendingProjections = createWorkflowPendingProjectionStore(db);
+  const dispatchProjection = createWorkflowDispatchProjection({
+    db,
+    repoStore: agentRepoStore.repoStore,
+  });
 
   return {
     async lookupDeployRef() {
@@ -67,6 +69,10 @@ export function createHubSessionLookups(
       // native deployment: it keeps its deploy-time definition and never
       // reconciles, so no address enrolls in the reconnect deploy-ref catch-up.
       return null;
+    },
+
+    readWorkflowRunRefTips(agentAddress) {
+      return readWorkflowRunRefTips(agentRepoStore.repoStore, agentAddress);
     },
 
     async persistMail({ senderAddress, recipients, raw }) {
@@ -345,6 +351,7 @@ export function createHubSessionLookups(
           anchorRunId: workflowRun.anchorRunId,
           tenantId: workflowRun.tenantId,
           definitionId: workflowRun.definitionId,
+          createdAt: workflowRun.createdAt,
         })
         .from(workflowRun)
         .where(
@@ -363,10 +370,36 @@ export function createHubSessionLookups(
         logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: source address has no live deployment anchor`;
         return { accepted: false, reason: "path_violation" as const };
       }
-      const anchorAddress = anchor.address;
-      let newlyTerminalRuns;
+      // The repository must exist before the row does. Recovery reads a
+      // missing repository as lost history and a ref-less one as a receive
+      // that never advanced Git, so a crash between the two must leave the
+      // latter.
       try {
-        newlyTerminalRuns = await db.transaction(async (tx) => {
+        await agentRepoStore.repoStore.initRepo(repoId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: cannot initialize repository: ${msg}`;
+        return { accepted: false, reason: "corrupt" as const };
+      }
+      // Recorded before Git can advance: Git acceptance and the run-status
+      // projection below are not atomic, and this row is the only durable
+      // trace of a projection that fails after the ref moves. It is removed
+      // here only when the receive provably left Git unchanged or every run
+      // reached a final decision; otherwise lifecycle recovery reconciles the
+      // deployment from Git and removes it.
+      const pendingId = generateId("workflowPendingProjection");
+      historyReceives.begin(pendingId);
+      let newlyTerminalRuns;
+      let reachedGit = false;
+      try {
+        try {
+          await pendingProjections.open(pendingId, anchor.id);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: cannot record pending projection: ${msg}`;
+          return { accepted: false, reason: "corrupt" as const };
+        }
+        const received = await db.transaction(async (tx) => {
           const [allocation] = await tx
             .select()
             .from(sidecarAllocation)
@@ -382,24 +415,58 @@ export function createHubSessionLookups(
             allocation.generation !== source.generation ||
             allocation.ensureAcceptedGeneration !== source.generation
           ) {
-            return null;
+            await pendingProjections.close(pendingId, tx);
+            return {
+              rejected:
+                "source connection does not own the deployment's current allocation",
+            } as const;
+          }
+          // Recheck under the lock: the lifecycle service records a run's
+          // outcome while holding this row, and history accepted after that
+          // would contradict the recorded outcome.
+          const [live] = await tx
+            .select({ id: workflowRun.id })
+            .from(workflowRun)
+            .where(
+              and(
+                eq(workflowRun.id, anchor.id),
+                inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+              ),
+            )
+            .limit(1);
+          if (live === undefined) {
+            await pendingProjections.close(pendingId, tx);
+            return {
+              rejected: `workflow run ${anchor.id} is no longer live`,
+            } as const;
           }
 
           // Replacement advances this same row. Keep its lock until the
           // repository ref has advanced so ownership cannot change after
           // validation but before the old worker's pack becomes authoritative.
-          return agentRepoStore.receiveWorkflowRunPack(
-            { kind: "workflow-run", id: workflowRunRepoId },
-            pack,
-            ref,
-            commitSha,
-          );
+          reachedGit = true;
+          return {
+            runs: await agentRepoStore.receiveWorkflowRunPack(
+              { kind: "workflow-run", id: workflowRunRepoId },
+              pack,
+              ref,
+              commitSha,
+            ),
+          } as const;
         });
-        if (newlyTerminalRuns === null) {
-          logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: source connection does not own the deployment's current allocation`;
+        if ("rejected" in received) {
+          logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${received.rejected}`;
           return { accepted: false, reason: "path_violation" as const };
         }
+        newlyTerminalRuns = received.runs;
       } catch (err) {
+        // A receive that reached Git keeps its pending row: the ref may have
+        // advanced before the failure, so only a Git read can prove nothing was
+        // lost. One that failed earlier provably left Git unchanged.
+        if (!reachedGit)
+          await pendingProjections.close(pendingId).catch((cause: unknown) => {
+            logger.warn`Cannot clear pending projection for ${anchor.id}: ${cause instanceof Error ? cause.message : String(cause)}`;
+          });
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.startsWith("path_violation")) {
           logger.warn`Workflow-run pack rejected for ${workflowRunRepoId}: ${msg}`;
@@ -413,220 +480,58 @@ export function createHubSessionLookups(
         // side.
         logger.error`Workflow-run pack receive failed for ${workflowRunRepoId}: ${msg}`;
         return { accepted: false, reason: "corrupt" as const };
+      } finally {
+        historyReceives.end(pendingId);
       }
 
       // The substrate has already durably advanced the git ref by the time it
       // returns, so the pack is accepted regardless of what happens below. The
-      // per-run status flip and principal deactivation are a best-effort
-      // downstream side effect of that durable advance, not part of accepting
-      // the pack. A failure here leaves the run "running" in the DB with its
-      // principal still active; there is no automatic re-fire, because a
-      // redelivery of the same durable tip produces no newly-terminal signal
-      // (the substrate's per-commit walk short-circuits on an already-present
-      // tip). The failure is therefore logged at ERROR as the only record that
-      // the row needs a manual flip, and the pack verdict stays accepted so the
-      // sidecar is acked and does not wedge re-pushing a pack that already
-      // landed.
+      // per-run status flip and principal deactivation are a downstream side
+      // effect of that durable advance, not part of accepting the pack, so the
+      // verdict stays accepted and the sidecar does not wedge re-pushing a pack
+      // that already landed. A redelivery of the same durable tip produces no
+      // newly-terminal signal, so a failed flip is not retried here; the
+      // pending row stays and lifecycle recovery projects the run from Git.
       const now = new Date();
-      for (const { runId, status } of newlyTerminalRuns) {
+      let decided = true;
+      for (const { runId, status, terminalEventJson } of newlyTerminalRuns) {
         try {
-          await db.transaction(async (tx) => {
-            // Lazily anchor the run before settling it. An internal run that
-            // parks only on a plain signal gate never reaches
-            // `registerSignalCorrelation`, the sole other path that mints an
-            // internal run row, so its terminal event can be the first the hub
-            // sees of the run. A never-minted row is ordinary bookkeeping, not
-            // a deployment-boundary violation, so mint it here against this
-            // deployment's anchor rather than letting the ownership guard below
-            // mistake absence for foreignness. The insert no-ops when any row
-            // already exists, which keeps that guard authoritative for a row
-            // that exists and anchors elsewhere. The principal is null: an
-            // internal run inherits its deployment's grants and has none of its
-            // own.
-            //
-            // The mint necessarily precedes the ownership guard, so an id the
-            // hub has never seen is claimed under THIS anchor before anything
-            // establishes it belongs here. That ordering is required -- the
-            // guard reads the row the mint may have to create -- and it is
-            // bounded rather than unbounded: internal run ids are supplied by
-            // the sidecar and accepted verbatim, so the value is
-            // caller-influenced, but it is a different population from the
-            // anchor ids the hub mints itself, and nothing resolves an
-            // internal id without also constraining the anchor or the tenant.
-            // The insert cannot take a row away from another deployment; the
-            // worst it does is create one for an id that deployment would
-            // otherwise have created later.
-            await workflowRunStore.createIfAbsent(
-              {
-                id: runId,
-                anchorRunId: anchor.id,
-                definitionId: anchor.definitionId,
-                tenantId: anchor.tenantId,
-                principalId: null,
-                status: "running",
-              },
-              tx,
-            );
-            const [ownedRun] = await tx
-              .select({ anchorRunId: workflowRun.anchorRunId })
-              .from(workflowRun)
-              .where(eq(workflowRun.id, runId))
-              .limit(1);
-            if (ownedRun?.anchorRunId !== anchor.id) {
-              logger.error`Ignoring terminal event for run ${runId}: it does not belong to source deployment ${anchor.id}`;
-              return;
-            }
-            const won = await workflowRunStore.markTerminal(
+          const outcome = await db.transaction((tx) =>
+            projectTerminalRun(tx, workflowRunStore, {
+              anchor,
               runId,
               status,
+              terminalEvent: JSON.parse(terminalEventJson) as unknown,
               now,
-              tx,
-            );
-            if (won === null) {
-              // The row exists (the mint above guarantees it) and belongs to
-              // this deployment (the guard above), so no running row matched
-              // only because the run is already terminal -- a benign replay
-              // against an already-settled row. Leave its settled status and
-              // `endedAt` alone.
-              return;
-            }
-            // Deactivate the run's own principal, if it has one. Externally-
-            // triggered runs carry a principal; internal, workflow-spawned runs
-            // have `principalId = null` and inherit the deployment's grants, so
-            // there is nothing to deactivate. Deactivation is gated on winning
-            // the flip -- the single claim point -- not on the principal's own
-            // status.
-            if (won.principalId !== null) {
-              await tx
-                .update(principal)
-                .set({ status: "deactivated", updatedAt: now })
-                // The `refId` clause is a defensive mirror of the per-instance
-                // teardown in instances.ts: `won.principalId` is already this
-                // run's own principal, and `principal.id` is the primary key,
-                // so the `refId` match is belt-and-suspenders that the id we
-                // won belongs to this run.
-                .where(
-                  and(
-                    eq(principal.id, won.principalId),
-                    eq(principal.refId, runId),
-                  ),
-                );
-            }
-          });
+            }),
+          );
+          if (outcome === "foreign")
+            logger.error`Ignoring terminal event for run ${runId}: it does not belong to source deployment ${anchor.id}`;
         } catch (err) {
           // Per-run isolation: a failed flip for one run must not abort the
           // rest of the batch, and must not throw out of this method -- a throw
           // would leave the sidecar with neither an ack nor a reject for a pack
-          // the substrate already accepted. This ERROR is the only signal that
-          // the run is stuck "running" in the DB with its principal active, so
-          // it carries enough to find and flip the row by hand.
+          // the substrate already accepted.
+          decided = false;
           const msg = err instanceof Error ? err.message : String(err);
-          logger.error`Terminal DB flip failed for run ${runId} (deployment ${anchor.id}, target status ${status}); run left running in the DB: ${msg}`;
+          logger.error`Terminal DB flip failed for run ${runId} (deployment ${anchor.id}, target status ${status}); its projection stays pending: ${msg}`;
         }
       }
-
-      // A sidecar-local mail ack is only receipt. The raw trigger remains in
-      // workflow_run_dispatch until the accepted Git tip proves either that
-      // the run recorded it (RunStarted / SignalReceived), or that the
-      // supervisor consumed it with an explicit rejection. Rescan the bounded
-      // retained claim-check index after every accepted pack, and search the
-      // stable run log newest-first only for currently-unsettled ids. Settlement
-      // is idempotent, and a later pack naturally retries a transient database
-      // failure here.
-      let topLevelTerminalSettlementProjected = false;
-      try {
-        const reads = await agentRepoStore.repoStore.openCommittedReads(
-          { kind: "hub" },
-          repoId,
-          ref,
-        );
-        if (reads !== null) {
-          const unsettledDispatches =
-            await workflowRunDispatchStore.listUnsettled(anchor.id);
-          const unsettledByMessageId = new Map(
-            unsettledDispatches.map((dispatch) => [
-              dispatch.messageId,
-              dispatch,
-            ]),
-          );
-          for (const consumed of await listConsumedWorkflowDispatches(reads)) {
-            if (consumed.address !== anchorAddress) continue;
-            const persisted = unsettledByMessageId.get(consumed.messageId);
-            if (persisted?.kind !== "mail") continue;
-            if (consumed.rejection === undefined) {
-              await workflowRunDispatchStore.settle(
-                anchor.id,
-                consumed.messageId,
-                now,
-              );
-            } else {
-              await workflowRunDispatchStore.fail({
-                anchorRunId: anchor.id,
-                messageId: consumed.messageId,
-                code: consumed.rejection.code,
-                message: consumed.rejection.message,
-                now,
-              });
-            }
-            unsettledByMessageId.delete(consumed.messageId);
-          }
-
-          // Mail is recorded on the stable deployment run, while a signal is
-          // recorded on the exact run named by its durable delivery frame.
-          // Group retained dispatches by that Git run before scanning so an
-          // internal run's SignalReceived evidence settles its own dispatch.
-          // The `runs/<runId>/` log keys on the run id (the address local
-          // part), NOT the full address: post-collapse the top-level run's id
-          // IS `anchor.id`, so mail keys on `anchor.id`; a signal keys on its
-          // frame's own run id. (The `addresses/<address>/` consumed subtree
-          // above keys on the full address -- a different subtree.)
-          const messageIdsByRun = new Map<string, Set<string>>();
-          for (const dispatch of unsettledByMessageId.values()) {
-            const runId =
-              dispatch.kind === "mail"
-                ? anchor.id
-                : SignalDeliverFrame.assert(
-                    JSON.parse(new TextDecoder().decode(dispatch.rawMessage)),
-                  ).runId;
-            const messageIds = messageIdsByRun.get(runId) ?? new Set<string>();
-            messageIds.add(dispatch.messageId);
-            messageIdsByRun.set(runId, messageIds);
-          }
-          for (const [runId, messageIds] of messageIdsByRun) {
-            for (const accepted of await listAcceptedWorkflowDispatches(
-              reads,
-              runId,
-              messageIds,
-            )) {
-              const persisted = unsettledByMessageId.get(accepted.messageId);
-              if (persisted?.kind !== accepted.kind) continue;
-              await workflowRunDispatchStore.settle(
-                anchor.id,
-                accepted.messageId,
-                now,
-              );
-              unsettledByMessageId.delete(accepted.messageId);
-            }
-          }
-          topLevelTerminalSettlementProjected =
-            (await readCommittedWorkflowRunLifecycle(reads, anchor.id)) ===
-            "terminal";
-        }
-      } catch (error) {
-        logger.error`Workflow dispatch settlement failed for ${anchor.id}; accepted Git state remains authoritative and the retained payload will be retried: ${error instanceof Error ? error.message : String(error)}`;
-      }
-
-      if (topLevelTerminalSettlementProjected) {
+      if (decided) {
         try {
-          await workflowRunDispatchStore.failUnsettled(
-            anchor.id,
-            "workflow_run_terminal",
-            `Workflow run ${anchorAddress} is terminal and cannot accept this dispatch`,
-            now,
-          );
-        } catch (error) {
-          logger.error`Failed to close unsettled workflow dispatches for terminal run ${anchorAddress}: ${error instanceof Error ? error.message : String(error)}`;
+          await pendingProjections.close(pendingId);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.warn`Cannot clear pending projection for ${anchor.id}: ${msg}`;
         }
+      }
+
+      // Git acceptance survives projection failures. The terminal recovery pass
+      // retries these outcomes even after the allocation has been released.
+      try {
+        await dispatchProjection.project(anchor.id);
+      } catch (error) {
+        logger.error`Workflow dispatch settlement failed for ${anchor.id}: ${error instanceof Error ? error.message : String(error)}`;
       }
 
       return { accepted: true };

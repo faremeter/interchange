@@ -66,6 +66,7 @@ export {
   type RepoStore,
   type RunResult,
   type RuntimeRunOptions,
+  type RuntimeWorkflowRun,
   type Scheduler,
   type SignalChannel,
   type SpawnChildWorkflow,

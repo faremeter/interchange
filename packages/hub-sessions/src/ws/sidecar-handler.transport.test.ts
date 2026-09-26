@@ -35,6 +35,132 @@ function lastFrame(ws: { sent: string[] }): Record<string, unknown> {
 }
 
 describe("SidecarRouter allocation initialization cancellation", () => {
+  test.each(["deploy", "restore"] as const)(
+    "rechecks connection ownership and abort before admitted %s sends",
+    async (operation) => {
+      for (const change of ["abort", "disconnect", "fence"] as const) {
+        const entered = Promise.withResolvers<undefined>();
+        const release = Promise.withResolvers<undefined>();
+        const controller = new AbortController();
+        const router = createAllocatedRouter({
+          withExecutableWorkflowRun: async (_target, send) => {
+            entered.resolve(undefined);
+            await release.promise;
+            return send();
+          },
+        });
+        const ws = await connectAllocated(router);
+        const before = [...ws.sent];
+        const sending = (
+          operation === "deploy"
+            ? router.sendAgentDeployToAllocation(
+                TEST_TARGET,
+                TEST_IDENTITY.workflowRunAddress,
+                TEST_CONFIG,
+                undefined,
+                controller.signal,
+              )
+            : router.sendWorkflowRunPackToAllocation(
+                TEST_TARGET,
+                TEST_IDENTITY.workflowRunAddress,
+                new Uint8Array([1]),
+                "refs/heads/main",
+                "a".repeat(40),
+                controller.signal,
+              )
+        ).catch((cause: unknown) => cause);
+        try {
+          await Promise.race([entered.promise, sending]);
+          if (change === "abort") controller.abort(new Error("Lease lost"));
+          if (change === "disconnect") router.handleClose(ws);
+          if (change === "fence")
+            router.fenceAllocation(
+              TEST_TARGET.allocationId,
+              TEST_TARGET.generation + 1,
+            );
+          release.resolve(undefined);
+          expect(await sending).toBeInstanceOf(Error);
+          if (operation === "deploy")
+            expect(await sending).toMatchObject({ frameSent: false });
+          expect(ws.sent).toEqual(before);
+          expect(router.getRoutableAddresses()).toEqual([]);
+        } finally {
+          release.resolve(undefined);
+          router.handleClose(ws);
+          await sending;
+        }
+      }
+    },
+  );
+
+  test("a transaction failure after the deploy send preserves the possibly-live outcome", async () => {
+    const failure = new Error("Admission commit response lost");
+    const router = createAllocatedRouter({
+      withExecutableWorkflowRun: async (_target, send) => {
+        send();
+        throw failure;
+      },
+    });
+    const ws = await connectAllocated(router);
+    try {
+      const error = await router
+        .sendAgentDeployToAllocation(
+          TEST_TARGET,
+          TEST_IDENTITY.workflowRunAddress,
+          TEST_CONFIG,
+        )
+        .catch((cause: unknown) => cause);
+      expect(error).toMatchObject({ frameSent: true, cause: failure });
+      expect(lastFrame(ws)["type"]).toBe("agent.deploy");
+    } finally {
+      // Reject the orphaned reply wait too: it must already have an owner.
+      router.handleClose(ws);
+    }
+  });
+
+  test("owns an acknowledgement failure while admission is still finishing", async () => {
+    const sent = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const router = createAllocatedRouter({
+      withExecutableWorkflowRun: async (_target, send) => {
+        const result = send();
+        sent.resolve(undefined);
+        await release.promise;
+        return result;
+      },
+    });
+    const ws = await connectAllocated(router);
+    const sending = router
+      .sendAgentDeployToAllocation(
+        TEST_TARGET,
+        TEST_IDENTITY.workflowRunAddress,
+        TEST_CONFIG,
+      )
+      .catch((cause: unknown) => cause);
+    try {
+      await Promise.race([sent.promise, sending]);
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "agent.error",
+          agentAddress: TEST_IDENTITY.workflowRunAddress,
+          error: "Worker rejected deployment",
+        }),
+      );
+      await tick();
+      expect(router.getRoutableAddresses()).toEqual([]);
+      release.resolve(undefined);
+      expect(await sending).toMatchObject({
+        frameSent: true,
+        message: "Worker rejected deployment",
+      });
+    } finally {
+      release.resolve(undefined);
+      router.handleClose(ws);
+      await sending;
+    }
+  });
+
   for (const change of ["cancel", "disconnect", "reject"] as const) {
     test(`does not send after ${change} while persisting the deployment attempt`, async () => {
       const controller = new AbortController();
@@ -207,6 +333,7 @@ describe("SidecarRouter dispatch cancellation", () => {
 describe("SidecarRouter allocation deploy transport", () => {
   test("rejects deploys without a Hub signing key before mutating routing", async () => {
     const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: async () => TEST_IDENTITY,
       validateSidecarIdentity: async () => true,
     });
@@ -343,6 +470,7 @@ describe("SidecarRouter allocation deploy transport", () => {
       workflowRunAddress: "run-secondary@tenant.example",
     };
     const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: async ({ sidecarId }) =>
         sidecarId === secondary.sidecarId ? secondary : TEST_IDENTITY,
       validateSidecarIdentity: async () => true,

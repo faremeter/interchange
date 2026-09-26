@@ -21,7 +21,10 @@ import {
   type SubprocessSpawner,
 } from "@intx/workflow-host";
 import type { WorkflowDefinition } from "@intx/workflow";
-import type { AgentDeployFrame } from "@intx/types/sidecar";
+import {
+  WORKFLOW_CONTROL_INITIALIZING_ERROR,
+  type AgentDeployFrame,
+} from "@intx/types/sidecar";
 import { waitUntil } from "@intx/types/testing";
 import {
   createMemoryFrameStream,
@@ -117,7 +120,7 @@ describe("createSidecarWorkflowSupervisor", () => {
       at: "2026-01-01T00:00:00.000Z",
     });
     expect(result.commitSha).toBe("stub-sha");
-    expect(result.seq).toBe(0);
+    expect(result.seq).toBe(1);
   });
 
   test("routeInbound rejects when no subscriber is registered so undelivered mail is withheld", async () => {
@@ -275,6 +278,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       assertSourceBuildable: () => undefined,
       registerDeployment: () => undefined,
       unregisterDeployment: () => undefined,
+      reportDeploymentRefTips: async () => ({}),
     });
 
     const STEP_ADDR = "run_abc-step1@example.com";
@@ -714,6 +718,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       runId: string;
       agentAddress: string;
     }) => void;
+    reportDeploymentRefTips?: Parameters<
+      typeof createSidecarDeployRouter
+    >[0]["reportDeploymentRefTips"];
     assertSourceBuildable?: Parameters<
       typeof createSidecarDeployRouter
     >[0]["assertSourceBuildable"];
@@ -850,6 +857,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         (() => {
           /* no-op */
         }),
+      reportDeploymentRefTips:
+        opts.reportDeploymentRefTips ?? (async () => ({})),
       multistepSubprocessSpawner: opts.spawner,
       ...(opts.multistepBinaryPath !== undefined
         ? { multistepBinaryPath: opts.multistepBinaryPath }
@@ -1140,7 +1149,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       stepOrder: ["step-1", "step-2"],
       steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
     };
-    const frame = makeMultistepFrame({ definition, sources });
+    const frame = makeMultistepFrame({
+      definition,
+      sources,
+      agentAddress: "run_concurrent@example.com",
+    });
     const anchorRunId = deriveDeploymentId(frame.agentAddress);
     const recordFile = path.join(
       multiDataDir,
@@ -1155,6 +1168,19 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     observedEnv = await spawnObserver.first();
     const recordBefore = await fs.readFile(recordFile, "utf8");
     expect(recordBefore.length).toBeGreaterThan(0);
+
+    if (router.control === undefined)
+      throw new Error("router.control is undefined");
+    await expect(
+      router.control({
+        type: "workflow.control",
+        requestId: "stop-during-deploy",
+        agentAddress: frame.agentAddress,
+        runId: "run_concurrent",
+        action: "stop",
+        reason: "Lifetime expired",
+      }),
+    ).rejects.toThrow(WORKFLOW_CONTROL_INITIALIZING_ERROR);
 
     // The loser is rejected at the reservation guard, not the spawn-core
     // backstop -- the guard's message is the one asserted here.
@@ -1194,6 +1220,42 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
     expect(registered).toEqual([frame.agentAddress]);
     expect(router.activeAddresses()).toEqual([frame.agentAddress]);
+  });
+
+  test("a stop reports the deployment's ref tips and a cancellation reports none", async () => {
+    const agentAddress = "run_stoptips@example.com";
+    const reported: string[] = [];
+    const { router } = await buildMultistepFixture({
+      spawner: () => {
+        throw new Error("control must not spawn");
+      },
+      reportDeploymentRefTips: async (address) => {
+        reported.push(address);
+        return { "refs/heads/main": "main-tip", "refs/heads/events": null };
+      },
+    });
+    if (router.control === undefined)
+      throw new Error("router.control is undefined");
+    const command = {
+      type: "workflow.control",
+      requestId: "stop-tips",
+      agentAddress,
+      runId: "run_stoptips",
+      action: "stop",
+      reason: "Lifetime expired",
+    } as const;
+
+    expect(await router.control(command)).toEqual({
+      refTips: { "refs/heads/main": "main-tip", "refs/heads/events": null },
+    });
+    expect(
+      await router.control({
+        ...command,
+        requestId: "cancel-tips",
+        action: "cancel",
+      }),
+    ).toEqual({});
+    expect(reported).toEqual([agentAddress]);
   });
 
   test("registers a multistepMailRouter handler against the deployment address once spawn succeeds", async () => {
@@ -2853,6 +2915,62 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(router.activeAddresses()).toEqual([head]);
     expect(isRegistered(transport, head)).toBe(true);
     expect(spawner.spawnCount()).toBe(2);
+  });
+
+  test("cancelling a self-terminated deployment prevents boot restore", async () => {
+    const dataDir = await createTempBaseDir("sidecar-self-term-cancel-data-");
+    const head = "run_selfterm_cancel@example.com";
+    const deploymentId = deriveDeploymentId(head);
+    const spawner = makeReadyDrivingSpawner(9780);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+
+    const deploying = router.deploy(singleStepFrame(head, "wf-st-cancel"));
+    await spawner.driveReadyFor(0);
+    await deploying;
+    spawner.failNextSpawn();
+    await spawner.recycleRequestFor(0);
+    // The reclaim exposes no completion signal; use the existing deadline-free
+    // wait for its active-address transition, as the neighboring tests do.
+    await waitUntil(() => !router.activeAddresses().includes(head));
+    expect(await recordExists(dataDir, deploymentId)).toBe(true);
+
+    const scratch = path.join(
+      dataDir,
+      "workflow-step-state",
+      deploymentId,
+      "inspection.txt",
+    );
+    await fs.mkdir(path.dirname(scratch), { recursive: true });
+    await fs.writeFile(scratch, "retained");
+    const control = router.control;
+    if (control === undefined) throw new Error("router.control is undefined");
+    const command = {
+      type: "workflow.control",
+      requestId: "cancel-request",
+      action: "cancel",
+      runId: "run_selfterm_cancel",
+      agentAddress: head,
+      reason: "Operator cancellation after failed recycle",
+    } as const;
+    await Promise.all([
+      control(command),
+      control({ ...command, requestId: "concurrent-cancel" }),
+    ]);
+    await control({ ...command, requestId: "cancel-retry" });
+    expect(await recordExists(dataDir, deploymentId)).toBe(false);
+    expect(await fs.readFile(scratch, "utf8")).toBe("retained");
+
+    const restartedSpawner = makeReadyDrivingSpawner(9790);
+    const { router: restarted } = await buildMultistepFixture({
+      spawner: restartedSpawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    await restarted.restoreWorkflowRuns();
+    expect(restartedSpawner.spawnCount()).toBe(0);
+    expect(restarted.activeAddresses()).toEqual([]);
   });
 
   test("a reclaimed self-terminated address survives a following operator undeploy", async () => {

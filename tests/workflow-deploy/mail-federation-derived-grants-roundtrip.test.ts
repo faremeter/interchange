@@ -195,10 +195,8 @@ function createMockEventCollectors(): EventCollectorRegistry {
   };
 }
 
-// A sidecar router whose routing surface accepts the trigger's send. The
-// positive case reaches `sendRunGrants`/`routeMail` after materialization,
-// so both must return true; the negative case rejects (403) before it ever
-// routes, so its calls never fire.
+// Accept the trigger's grants and mail after materialization. The negative
+// case rejects (403) before routing, so its calls never fire.
 function createRoutingSidecarRouter(): SidecarRouter {
   function notImplRouter(name: string): never {
     throw new Error(`mail-federation mock: sidecarRouter.${name} not used`);
@@ -207,7 +205,7 @@ function createRoutingSidecarRouter(): SidecarRouter {
     handleOpen: () => notImplRouter("handleOpen"),
     handleMessage: () => notImplRouter("handleMessage"),
     handleClose: () => notImplRouter("handleClose"),
-    routeMail: () => true,
+    routeMail: async () => true,
     sendRunGrants: () => true,
     noteSenderDeployStarted: () => undefined,
     noteSenderDeploySettled: () => undefined,

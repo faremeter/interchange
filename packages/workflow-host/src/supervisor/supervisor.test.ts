@@ -26,6 +26,7 @@ import {
   createChangeNotifier,
   type UpstreamFrameSource,
 } from "@intx/workflow-host/testing";
+import { resumeFromLog } from "@intx/workflow/state-machine";
 
 import {
   createWorkflowSupervisor,
@@ -1128,6 +1129,7 @@ describe("createWorkflowSupervisor", () => {
     inboxPrimitives?: MemoryInboxPrimitives;
     mailBus?: ReturnType<typeof createMockMailBus>;
     statefulWrites?: boolean;
+    failControlWrite?: () => boolean;
   }) {
     const supervisorIpcKeyPair = await generateKeyPair();
     const childIpcKeyPair = await generateKeyPair();
@@ -1148,7 +1150,16 @@ describe("createWorkflowSupervisor", () => {
       spawnObserver.record(env);
       return {
         pid: 7777,
-        controlWriter: supervisorToChild.writer,
+        controlWriter:
+          opts.failControlWrite === undefined
+            ? supervisorToChild.writer
+            : {
+                write(line) {
+                  if (opts.failControlWrite?.())
+                    throw new Error("Child control channel closed");
+                  return supervisorToChild.writer.write(line);
+                },
+              },
         controlReader: childToSupervisor.reader,
         eventReader: eventChildToSupervisor.reader,
         kill: () => {
@@ -2921,6 +2932,37 @@ describe("createWorkflowSupervisor", () => {
     expect(onDisk.origin).toBe("self");
     expect(onDisk.signature.principalKind).toBe("supervisor");
     expect(onDisk.signature.sig).toMatch(/^01[0-9a-f]+$/);
+  });
+
+  test("requestCancel reports a committed cancellation when the child wakeup fails", async () => {
+    const baseDir = await makeTempDir("supervisor-cancel-wakeup-");
+    let failWakeup = false;
+    let committed = 0;
+    const wired = await spawnWithRunStart({
+      baseDir,
+      failControlWrite: () => failWakeup,
+      onWrite: (args) => {
+        if (args.message.startsWith("append CancelRequested")) committed += 1;
+      },
+    });
+
+    const cancellation = wired.supervisor.requestCancel({
+      runId: "run_deployment-x",
+      origin: "supervisor-operator",
+      reason: "Stop",
+      at: new Date().toISOString(),
+    });
+    await waitForUpstreamPayloads(wired.supervisorToChild, "cancel.prepare", 1);
+    failWakeup = true;
+    await wired.childSender.send({
+      type: "cancel.prepared",
+      data: { requestId: "cancel-1" },
+    });
+
+    expect((await cancellation).commitSha).toBe("deadbeefcafef00d");
+    expect(committed).toBe(1);
+    failWakeup = false;
+    await wired.supervisor.shutdown();
   });
 
   test("drain() threads the per-cohort terminal broadcaster into each accumulator's opts", async () => {
@@ -5088,15 +5130,15 @@ describe("commitCancelRequested (low-level)", () => {
       },
     });
     expect(signed.commitSha).toBe("deadbeefcafef00d");
-    expect(signed.seq).toBe(0);
+    expect(signed.seq).toBe(1);
     if (observedFiles === undefined) {
       throw new Error("writeTreePreservingPrefix was not invoked");
     }
     const entry = Object.entries(observedFiles).find(([k]) =>
-      k.endsWith("/events/0.json"),
+      k.endsWith("/events/1.json"),
     );
     if (entry === undefined) {
-      throw new Error("no events/0.json entry observed in commit");
+      throw new Error("no events/1.json entry observed in commit");
     }
     const [, blobBytes] = entry;
     const blobJson =
@@ -5109,6 +5151,17 @@ describe("commitCancelRequested (low-level)", () => {
     expect(blob.reason).toBe("tests pass");
     expect(blob.signature.principalKind).toBe("supervisor");
     expect(blob.signature.sig.length).toBe(128);
+    expect(
+      resumeFromLog("r1", [
+        {
+          kind: "CancelRequested",
+          seq: blob.seq,
+          origin: "self",
+          reason: blob.reason,
+          at: "2026-01-01T00:00:00.000Z",
+        },
+      ]).phase,
+    ).toBe("cancelling");
   });
 });
 

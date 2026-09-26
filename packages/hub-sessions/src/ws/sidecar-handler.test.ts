@@ -82,6 +82,7 @@ function createAllocatedRouter(
 ) {
   const resolved = { ...identity, ...overrides };
   const router = createSidecarRouter({
+    withExecutableWorkflowRun: async (_target, send) => send(),
     authenticateSidecar: async () => resolved,
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
@@ -96,6 +97,7 @@ function createSenderKeyRouter(
   resolveSenderKeyStrict: (address: string) => Promise<string | null>,
 ) {
   const router = createSidecarRouter({
+    withExecutableWorkflowRun: async (_target, send) => send(),
     authenticateSidecar: async () => identity,
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
@@ -150,6 +152,7 @@ async function waitForFrame(
 describe("SidecarRouter allocation routing", () => {
   test("rejects a worker whose allocation generation is not fenced", async () => {
     const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: async () => identity,
       validateSidecarIdentity: async () => true,
     });
@@ -179,6 +182,7 @@ describe("SidecarRouter allocation routing", () => {
     const resynced: string[] = [];
     const runAddress = "run_alloc1@exclusive";
     const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: async () => ({
         ...identity,
         workflowRunAddress: runAddress,
@@ -388,7 +392,7 @@ describe("SidecarRouter allocation routing", () => {
     const router = createAllocatedRouter();
     const first = await connect(router, [identity.workflowRunAddress]);
     expect(
-      router.routeMail(
+      await router.routeMail(
         identity.workflowRunAddress,
         "aGVsbG8=",
         "sender@example.test",
@@ -635,6 +639,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
     > = async () => ({ outcome: "materialized", stepGrants: [] }),
   ) {
     const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: async ({ sidecarId }) =>
         raceIdentities[sidecarId] ?? null,
       validateSidecarIdentity: async () => true,

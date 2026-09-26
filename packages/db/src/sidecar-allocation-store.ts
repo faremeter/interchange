@@ -18,7 +18,9 @@ import {
 } from "@intx/types";
 
 import type { DB, DBExecutor } from "./client";
+import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
 import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
+import { canExecuteWorkflowRun } from "./workflow-lifecycle-policy";
 import {
   isLiveWorkflowRunStatus,
   liveWorkflowRunStatuses,
@@ -299,6 +301,7 @@ function leaseCondition(expectedLeaseId?: string) {
 
 export function createSidecarAllocationStore(db: DBHandle) {
   const workflowRunDispatchStore = createWorkflowRunDispatchStore(db);
+  const pendingProjections = createWorkflowPendingProjectionStore(db);
 
   function initializationConditions(
     args: InitializationArgs,
@@ -442,6 +445,30 @@ export function createSidecarAllocationStore(db: DBHandle) {
     anchorRunId: string,
     now: Date | ReturnType<typeof sql>,
   ): Promise<void> {
+    // A pending projection means accepted history may already hold some of
+    // these runs' outcomes. Every caller has taken the allocation out of
+    // service, so no further history can land; record when capacity was lost
+    // and fail the runs once that history is reconciled.
+    if (await pendingProjections.hasAny(anchorRunId, tx)) {
+      await tx
+        .update(workflowRun)
+        .set({ infrastructureFailedAt: now })
+        .where(
+          and(
+            eq(workflowRun.id, anchorRunId),
+            isNull(workflowRun.infrastructureFailedAt),
+          ),
+        );
+      return;
+    }
+    await failLiveRuns(tx, anchorRunId, now);
+  }
+
+  async function failLiveRuns(
+    tx: DBExecutor,
+    anchorRunId: string,
+    now: Date | ReturnType<typeof sql>,
+  ): Promise<void> {
     // Fail every live run anchored here -- both "running" runs and a "deployed"
     // anchor torn down before its first trigger -- so a release settles them.
     const failedRuns = await tx
@@ -494,6 +521,18 @@ export function createSidecarAllocationStore(db: DBHandle) {
           eq(sidecarAllocation.status, args.expectedStatus),
           eq(sidecarAllocation.generation, args.expectedGeneration),
           ...leaseCondition(args.expectedLeaseId),
+          // A caller without the lease cannot interrupt an active reconciler.
+          ...(args.expectedLeaseId === undefined
+            ? [
+                or(
+                  isNull(sidecarAllocation.reconciliationLeaseExpiresAt),
+                  lte(
+                    sidecarAllocation.reconciliationLeaseExpiresAt,
+                    sql`clock_timestamp()`,
+                  ),
+                ),
+              ]
+            : []),
           ...(args.expectedInitializationLeaseId !== undefined
             ? [
                 eq(
@@ -939,7 +978,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
         if (releasing === null) return null;
 
         await failRunningRuns(tx, releasing.anchorRunId, now);
-        await workflowRunDispatchStore.failUnsettled(
+        await workflowRunDispatchStore.abandonUnsettled(
           releasing.anchorRunId,
           args.failureCode,
           args.failureMessage,
@@ -953,27 +992,39 @@ export function createSidecarAllocationStore(db: DBHandle) {
     async markReleased(
       args: MarkSidecarReleasedArgs,
     ): Promise<SidecarAllocation | null> {
-      const [updated] = await db
-        .update(sidecarAllocation)
-        .set({
-          status: "released",
-          nextAttemptAt: null,
-          reconciliationLeaseId: null,
-          reconciliationLeaseExpiresAt: null,
-          connectDeadline: null,
-          destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1`,
-          updatedAt: databaseTimestamp(args.now),
-        })
-        .where(
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, "releasing"),
-            eq(sidecarAllocation.generation, args.generation),
-            ...leaseCondition(args.expectedLeaseId),
-          ),
-        )
-        .returning();
-      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+      const now = databaseTimestamp(args.now);
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            status: "released",
+            nextAttemptAt: null,
+            reconciliationLeaseId: null,
+            reconciliationLeaseExpiresAt: null,
+            connectDeadline: null,
+            destroyAttempts: sql`${sidecarAllocation.destroyAttempts} + 1`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, "releasing"),
+              eq(sidecarAllocation.generation, args.generation),
+              ...leaseCondition(args.expectedLeaseId),
+            ),
+          )
+          .returning();
+        if (updated === undefined) return null;
+
+        await workflowRunDispatchStore.abandonUnsettled(
+          updated.anchorRunId,
+          "workflow_capacity_released",
+          "Workflow capacity was released before delivery could be confirmed",
+          now,
+          tx,
+        );
+        return parseSidecarAllocationRow(updated);
+      });
     },
 
     async markDestroyFailed(
@@ -1006,7 +1057,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
         if (updated === undefined) return null;
 
         await failRunningRuns(tx, updated.anchorRunId, now);
-        await workflowRunDispatchStore.failUnsettled(
+        await workflowRunDispatchStore.abandonUnsettled(
           updated.anchorRunId,
           args.code,
           args.message,
@@ -1049,7 +1100,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
         if (updated === undefined) return null;
 
         await failRunningRuns(executor, updated.anchorRunId, now);
-        await workflowRunDispatchStore.failUnsettled(
+        await workflowRunDispatchStore.abandonUnsettled(
           updated.anchorRunId,
           args.code,
           args.message,
@@ -1059,6 +1110,47 @@ export function createSidecarAllocationStore(db: DBHandle) {
         return parseSidecarAllocationRow(updated);
       };
       return tx === undefined ? db.transaction(fail) : fail(tx);
+    },
+
+    /**
+     * Apply an infrastructure failure deferred while accepted history was
+     * unreconciled: fail the runs still live at the recorded time. Returns
+     * false while a pending projection remains.
+     */
+    async applyDeferredInfrastructureFailure(
+      anchorRunId: string,
+      tx: DBExecutor,
+    ): Promise<boolean> {
+      const [anchor] = await tx
+        .select({ failedAt: workflowRun.infrastructureFailedAt })
+        .from(workflowRun)
+        .where(eq(workflowRun.id, anchorRunId));
+      if (anchor?.failedAt == null) return true;
+      if (await pendingProjections.hasAny(anchorRunId, tx)) return false;
+      await failLiveRuns(tx, anchorRunId, anchor.failedAt);
+      await tx
+        .update(workflowRun)
+        .set({ infrastructureFailedAt: null })
+        .where(eq(workflowRun.id, anchorRunId));
+      return true;
+    },
+
+    async hasRunnableAnchor(
+      anchorRunId: string,
+      now = new Date(),
+    ): Promise<boolean> {
+      const run = await db.query.workflowRun.findFirst({
+        where: and(
+          eq(workflowRun.id, anchorRunId),
+          eq(workflowRun.anchorRunId, anchorRunId),
+        ),
+        columns: {
+          status: true,
+          expiresAt: true,
+          cancellationRequestedAt: true,
+        },
+      });
+      return run !== undefined && canExecuteWorkflowRun(run, now);
     },
 
     async findById(id: string): Promise<SidecarAllocation | null> {

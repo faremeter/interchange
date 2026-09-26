@@ -16,12 +16,21 @@ import { workflowRun } from "./workflow-run";
 export const workflowRunDispatchStatuses = [
   "pending",
   "acknowledged",
+  "abandoned",
   "settled",
   "failed",
 ] as const;
 
 export type WorkflowRunDispatchStatus =
   (typeof workflowRunDispatchStatuses)[number];
+
+// These outcomes can still be resolved from Git. Abandoned deliveries cannot
+// be retried; stopping their workflow does not prove whether it accepted them.
+export const unresolvedWorkflowRunDispatchStatuses = [
+  "pending",
+  "acknowledged",
+  "abandoned",
+] as const;
 
 export const workflowRunDispatchKinds = ["mail", "signal"] as const;
 export type WorkflowRunDispatchKind = (typeof workflowRunDispatchKinds)[number];
@@ -74,9 +83,16 @@ export const workflowRunDispatch = pgTable(
       t.anchorRunId,
       t.status,
     ),
+    // Dispatch outcomes are projected by a sweep that runs every second, and
+    // settled rows are kept, so it reaches deployments through this index.
+    index("workflow_run_dispatch_unresolved_anchor_idx")
+      .on(t.anchorRunId)
+      .where(
+        sql`${t.status} in ('pending', 'acknowledged') or (${t.status} = 'abandoned' and ${t.nextAttemptAt} is not null)`,
+      ),
     check(
       "workflow_run_dispatch_status_check",
-      sql`${t.status} in ('pending', 'acknowledged', 'settled', 'failed')`,
+      sql`${t.status} in ('pending', 'acknowledged', 'abandoned', 'settled', 'failed')`,
     ),
     check(
       "workflow_run_dispatch_kind_check",
@@ -99,13 +115,13 @@ export const workflowRunDispatch = pgTable(
       sql`${t.status} <> 'pending' or ${t.nextAttemptAt} is not null`,
     ),
     // A deliverable mail dispatch must carry the hub-verified sender that
-    // its inbound frame is stamped with; signals have no sender. Terminal
-    // (settled/failed) mail rows are exempt because they are never
+    // its inbound frame is stamped with; signals have no sender. Abandoned
+    // and terminal (settled/failed) mail rows are exempt because they are never
     // re-dispatched and so never reconstruct a frame -- this is what lets a
     // migration fail legacy in-flight mail in place rather than delete it.
     check(
       "workflow_run_dispatch_mail_sender_check",
-      sql`${t.kind} <> 'mail' or ${t.status} in ('settled', 'failed') or ${t.senderAddress} is not null`,
+      sql`${t.kind} <> 'mail' or ${t.status} in ('abandoned', 'settled', 'failed') or ${t.senderAddress} is not null`,
     ),
   ],
 );

@@ -6,9 +6,16 @@ import {
   createWorkflowRunDispatchStore,
   resolveFrameSenderKey,
   resolveSenderKey,
+  withExecutableWorkflowRun,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
-import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
+import {
+  hexDecode,
+  LifecycleDuration,
+  lifecycleDurationMs,
+  type ResolvedWorkflowLifecyclePolicy,
+  type SidecarCapabilityRule,
+} from "@intx/types";
 import {
   createApp,
   createAuth,
@@ -28,6 +35,11 @@ import {
   createWorkflowAllocationService,
   createWorkflowDispatchService,
   createReconciliationScheduler,
+  createWorkflowLifecycleService,
+  createWorkflowDispatchProjection,
+  DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY,
+  createWorkflowRunReader,
+  createWorkflowHistoryReceiveTracker,
   recoverSenderDeploy,
   DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
   pushCredentialReconcile,
@@ -199,6 +211,42 @@ export async function createHubServer({
     return value;
   }
 
+  function readLifecycleDurationEnv(name: string, fallback: string): string {
+    const raw = process.env[name];
+    if (raw === undefined || raw.trim() === "") return fallback;
+    try {
+      return LifecycleDuration.assert(raw.trim());
+    } catch (cause) {
+      throw new Error(
+        `${name} must be a lifecycle duration such as 30m or 7d; got ${JSON.stringify(raw)}`,
+        { cause },
+      );
+    }
+  }
+
+  const defaultLifecyclePolicy: ResolvedWorkflowLifecyclePolicy = {
+    maxLifetime: readLifecycleDurationEnv(
+      "WORKFLOW_DEFAULT_MAX_LIFETIME",
+      "7d",
+    ),
+    capacityRetention: {
+      completed: readLifecycleDurationEnv(
+        "WORKFLOW_DEFAULT_RETENTION_COMPLETED",
+        "30m",
+      ),
+      failed: readLifecycleDurationEnv(
+        "WORKFLOW_DEFAULT_RETENTION_FAILED",
+        "24h",
+      ),
+      cancelled: readLifecycleDurationEnv(
+        "WORKFLOW_DEFAULT_RETENTION_CANCELLED",
+        "1h",
+      ),
+    },
+  };
+  if (lifecycleDurationMs(defaultLifecyclePolicy.maxLifetime) === 0)
+    throw new Error("WORKFLOW_DEFAULT_MAX_LIFETIME must be greater than zero");
+
   const agentRepoStore = createAgentRepoStore({
     dataDir: hubDataDir,
     signingKey: hubSigningKey,
@@ -243,13 +291,20 @@ export async function createHubServer({
     reservedPackageRegistryNames: new Set(httpRegistries.keys()),
   });
 
+  // Shared by pack ingestion and lifecycle recovery so recovery never claims a
+  // pending projection whose receive can still advance Git.
+  const workflowHistoryReceives = createWorkflowHistoryReceiveTracker();
   // Materialize a mail-triggered workflow run's grants from the receiving
   // deployment's definition, so a workflow->workflow mail run is born with
   // the same authorization an externally-triggered run gets. Threaded into
   // the sidecar router as a lookup its `mail.outbound` handler invokes for
   // each workflow-deployment recipient.
   const lookups: SidecarLookups = {
-    ...createHubSessionLookups({ db, agentRepoStore }),
+    ...createHubSessionLookups({
+      db,
+      agentRepoStore,
+      historyReceives: workflowHistoryReceives,
+    }),
     materializeMailTriggeredRunGrants: createMailTriggeredRunGrantsMaterializer(
       {
         db,
@@ -278,6 +333,8 @@ export async function createHubServer({
     hubPublicKey: hexEncode(hubSigningKey.publicKey),
     authenticateSidecar: async ({ token }) => sidecarCredentials.resolve(token),
     validateSidecarIdentity: sidecarCredentials.isCurrent,
+    withExecutableWorkflowRun: (target, send, signal) =>
+      withExecutableWorkflowRun(db, target, send, signal),
     lookups,
     ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
   });
@@ -366,11 +423,23 @@ export async function createHubServer({
     probeCapabilityRules: probeSidecarCapabilityRules,
     allocationRouter: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,
+    defaultLifecyclePolicy,
     ...(sidecarOperationTimeoutMs !== undefined
       ? { operationTimeoutMs: sidecarOperationTimeoutMs }
       : {}),
   });
   const sidecarAllocationStore = createSidecarAllocationStore(db);
+  const workflowLifecycleService = createWorkflowLifecycleService({
+    db,
+    runReader: createWorkflowRunReader(agentRepoStore.repoStore),
+    historyReceives: workflowHistoryReceives,
+    sendControl: (target, command, timeoutMs) =>
+      sidecarRouter.sendWorkflowControl(target, command, timeoutMs),
+  });
+  const dispatchProjection = createWorkflowDispatchProjection({
+    db,
+    repoStore: agentRepoStore.repoStore,
+  });
   const workflowDispatchService = createWorkflowDispatchService({
     dispatchStore: createWorkflowRunDispatchStore(db),
     allocationStore: sidecarAllocationStore,
@@ -437,6 +506,10 @@ export async function createHubServer({
       return false;
     },
   });
+  const lifecycleScheduler = createReconciliationScheduler({
+    name: "Workflow lifecycle",
+    reconcileNext: () => workflowLifecycleService.reconcileNext(),
+  });
   const dispatchScheduler = createReconciliationScheduler({
     name: "Workflow dispatch",
     concurrency: 1,
@@ -446,6 +519,14 @@ export async function createHubServer({
       // skip locked rows, so concurrent drains route around each other while
       // enqueue notifications still enter through wake().
       await workflowDispatchService.reconcileUntilIdle();
+      return false;
+    },
+  });
+  const dispatchProjectionScheduler = createReconciliationScheduler({
+    name: "Workflow dispatch projection",
+    concurrency: DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY,
+    reconcileNext: async () => {
+      await dispatchProjection.reconcileNext();
       return false;
     },
   });
@@ -462,6 +543,8 @@ export async function createHubServer({
   // Initial polls run on the next timer turn, after the websocket endpoint is assembled.
   allocationScheduler.start();
   probeCleanupScheduler.start();
+  lifecycleScheduler.start();
+  dispatchProjectionScheduler.start();
   dispatchScheduler.start();
   connectionRepairScheduler.start();
 
@@ -476,6 +559,7 @@ export async function createHubServer({
     sessionService,
     workflowAllocationService,
     workflowDispatchService,
+    workflowLifecycleService,
     eventCollectors,
     credentialCipher,
     principalKeyStore,

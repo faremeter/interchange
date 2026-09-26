@@ -13,6 +13,7 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import {
+  TenantConfigInvalidError,
   WorkflowRunDispatchPayloadConflictError,
   type DB,
   type PrincipalKeyStore,
@@ -36,6 +37,7 @@ import {
   type WorkflowAllocationService,
   type WorkflowDispatchService,
   WorkflowProvisioningError,
+  WORKFLOW_RUN_REF,
 } from "@intx/hub-sessions";
 import { generateId } from "@intx/hub-common";
 import {
@@ -44,7 +46,7 @@ import {
 } from "@intx/workflow-deploy";
 
 import type { TenantEnv } from "../context";
-import { errorResponse } from "../error-response";
+import { errorResponse, tenantConfigErrorResponse } from "../error-response";
 import { idResource, type RequireGrant } from "../middleware/grant";
 import {
   lockDispatchableAllocation,
@@ -55,7 +57,6 @@ import { WorkflowRunEventsResponse, formatRunEvent } from "./run-events-view";
 import {
   readDurableWorkflowRunLifecycle,
   workflowRunRepoId,
-  WORKFLOW_RUN_REF,
 } from "../workflow-run-lifecycle";
 import {
   createWorkflowRunTrigger,
@@ -248,7 +249,7 @@ export function createWorkflowRoutes({
         ),
         404: jsonResponse("Workflow asset not found", ErrorResponse),
         409: jsonResponse(
-          "Workflow definition or source offering chain invalid, workflow provisioning unavailable, or provisioner selection failed",
+          "Workflow definition, source offering chain, or stored tenant config invalid, workflow provisioning unavailable, or provisioner selection failed",
           ErrorResponse,
         ),
         500: jsonResponse(
@@ -324,6 +325,9 @@ export function createWorkflowRoutes({
         // is a client/definition error, not a sidecar-reachability failure.
         if (err instanceof WorkflowDefinitionInvalidError) {
           return errorResponse(c, "invalid_workflow", err.message);
+        }
+        if (err instanceof TenantConfigInvalidError) {
+          return tenantConfigErrorResponse(c, err);
         }
         if (err instanceof WorkflowProvisioningError) {
           return c.json(
@@ -639,7 +643,7 @@ export function createWorkflowRoutes({
       }
 
       try {
-        sidecarRouter.sendSignalDeliver({
+        await sidecarRouter.sendSignalDeliver({
           agentAddress,
           runId: body.runId,
           signalName: body.signalName,
@@ -679,7 +683,7 @@ export function createWorkflowRoutes({
         ),
         404: jsonResponse("Workflow deployment not found", ErrorResponse),
         409: jsonResponse(
-          "Deployment address is not routable, its allocation is no longer active, or its top-level run is terminal",
+          "Deployment address is not routable, its allocation is no longer active, or its top-level run is stopping or terminal",
           ErrorResponse,
         ),
         413: jsonResponse(

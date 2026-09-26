@@ -665,6 +665,20 @@ export interface WorkflowRun {
   signal(name: string, payload: unknown, signalId?: string): Promise<void>;
 }
 
+/**
+ * The handle `runtimeRun` gives a workflow host. A host that writes the run's
+ * log itself can commit a `CancelRequested` outside the runtime and then have
+ * the runtime act on it.
+ */
+export interface RuntimeWorkflowRun extends WorkflowRun {
+  /**
+   * Stop the run for a `CancelRequested` its log already holds. The request
+   * is durable, so the run aborts even if the child cancellation cascade
+   * fails; the run's cancelling branch retries that cascade.
+   */
+  applyCommittedCancellation(): Promise<void>;
+}
+
 export interface RunResult {
   runId: string;
   terminalStatus: TerminalRunPhase;

@@ -7,7 +7,9 @@ import { type, type Type } from "arktype";
 
 import { createInMemoryGrantStore, evaluateGrants } from "@intx/authz";
 import {
+  TenantConfigInvalidError,
   WorkflowRunDispatchPayloadConflictError,
+  WorkflowRunNotExecutableError,
   type PrincipalKeyStore,
 } from "@intx/db";
 import {
@@ -290,6 +292,8 @@ type MockDBOpts = {
   lockedAllocationStatus?: SidecarAllocationStatus;
   anchorStatus?: "running" | "completed" | "failed" | "cancelled";
   topLevelRunStatus?: "running" | "completed" | "failed" | "cancelled" | null;
+  cancellationRequestedAt?: Date;
+  expiresAt?: Date;
   // The deploy-approved grant-walk snapshot the trigger route reads from the
   // definition's version row. `null` models the "not yet approved" state
   // (fail-closed); `undefined` returns no version row (also fail-closed).
@@ -394,6 +398,8 @@ function createMockDB(opts: MockDBOpts) {
                     : (opts.allocationStatus ?? "allocated"),
                 status:
                   opts.topLevelRunStatus ?? opts.anchorStatus ?? "running",
+                cancellationRequestedAt: opts.cancellationRequestedAt ?? null,
+                expiresAt: opts.expiresAt ?? null,
               },
             ];
       };
@@ -511,6 +517,7 @@ function createMockSidecarRouter(
   runGrantsCalls: RunGrantsCall[] = [],
   sendOrder: SendCall[] = [],
   runGrantsResult = true,
+  routeMailError?: Error,
 ): SidecarRouter {
   function notImpl(name: string): never {
     throw new Error(`mock: sidecarRouter.${name} not implemented`);
@@ -519,7 +526,23 @@ function createMockSidecarRouter(
     handleOpen: () => notImpl("handleOpen"),
     handleMessage: () => notImpl("handleMessage"),
     handleClose: () => notImpl("handleClose"),
-    routeMail: (address, rawMessage, authenticatedSender) => {
+    routeMail: async (
+      address,
+      rawMessage,
+      authenticatedSender,
+      _messageId,
+      runGrants,
+    ) => {
+      if (routeMailError !== undefined) throw routeMailError;
+      if (runGrants !== undefined) {
+        runGrantsCalls.push({
+          address,
+          runId: runGrants.runId,
+          stepGrants: runGrants.stepGrants,
+        });
+        sendOrder.push({ kind: "run.grants", address });
+        if (!runGrantsResult) return false;
+      }
       routeMailCalls.push({
         address,
         rawMessage,
@@ -539,7 +562,7 @@ function createMockSidecarRouter(
     sendSourcesUpdate: () => notImpl("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImpl("sendCredentialsUpdate"),
     sendSyncRequest: () => notImpl("sendSyncRequest"),
-    sendSignalDeliver: (opts) => {
+    sendSignalDeliver: async (opts) => {
       signalCalls.push(opts);
     },
     sendDrain: () => notImpl("sendDrain"),
@@ -766,6 +789,7 @@ type TestAppOpts = {
   signalCalls?: SignalCall[];
   routeMailCalls?: RouteMailCall[];
   routeMailResult?: boolean;
+  routeMailError?: Error;
   runGrantsCalls?: RunGrantsCall[];
   sendOrder?: SendCall[];
   runGrantsResult?: boolean;
@@ -829,6 +853,7 @@ function createTestApp(opts: TestAppOpts = {}) {
       opts.runGrantsCalls ?? [],
       opts.sendOrder ?? [],
       opts.runGrantsResult ?? true,
+      opts.routeMailError,
     ),
     sessionService: createMockSessionService(),
     ...(opts.workflowAllocationService !== undefined
@@ -1192,6 +1217,31 @@ describe("POST /workflows/deployments", () => {
     expect(await errorCode(res)).toBe("invalid_workflow");
   });
 
+  test("reports invalid inherited tenant config without exposing its values", async () => {
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          throw new TenantConfigInvalidError(
+            "tnt_parent",
+            'lifecycle.maxLifetime must be a non-negative whole duration (was "1w")',
+          );
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+    const res = await app.fetch(
+      authedPost(`${base()}/deployments`, sourceDeployBody()),
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "invalid_tenant_config",
+        message: "The tenant or an ancestor has invalid configuration",
+      },
+    });
+  });
+
   test("reports a missing post-deploy anchor run as 500, not 502", async () => {
     const app = createTestApp({
       grants: [makeGrant({ action: "create" })],
@@ -1420,6 +1470,35 @@ describe("POST /workflows/:anchorRunId/signals", () => {
     expect(signalEnqueues).toEqual([]);
     expect(lifecycleRead).toBe(2);
   });
+
+  test.each(["cancelled", "expired"] as const)(
+    "reports a %s anchor as not running while its allocation is healthy",
+    async (condition) => {
+      const signalEnqueues: WorkflowSignalDispatchEnqueue[] = [];
+      const app = createTestApp({
+        grants: [manageGrant()],
+        workflowSignalDispatchEnqueues: signalEnqueues,
+        db: {
+          deploymentRow,
+          allocationId: "allocation-1",
+          ...(condition === "cancelled"
+            ? { cancellationRequestedAt: new Date() }
+            : { expiresAt: new Date(0) }),
+        },
+      });
+
+      const res = await app.fetch(
+        authedPost(`${base()}/${DEPLOYMENT_ID}/signals`, {
+          runId: RUN_ID,
+          signalName: "go",
+          signalId: `sig-${condition}-anchor`,
+        }),
+      );
+      expect(res.status).toBe(409);
+      expect(await errorCode(res)).toBe("workflow_run_not_running");
+      expect(signalEnqueues).toEqual([]);
+    },
+  );
 
   test("returns 503 when durable signal dispatch is unavailable", async () => {
     const signalCalls: SignalCall[] = [];
@@ -1777,6 +1856,32 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     expect(routeMailCalls).toEqual([]);
   });
 
+  test.each(["cancelled", "expired"] as const)(
+    "reports a %s deployment as stopping rather than terminal",
+    async (condition) => {
+      const routeMailCalls: RouteMailCall[] = [];
+      const app = createTestApp({
+        grants: [manageGrant()],
+        routeMailCalls,
+        db: {
+          deploymentRow,
+          assetRow: workflowAssetRow,
+          ...(condition === "cancelled"
+            ? { cancellationRequestedAt: new Date() }
+            : { expiresAt: new Date(0) }),
+        },
+      });
+
+      const res = await app.fetch(
+        authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "again" }),
+      );
+
+      expect(res.status).toBe(409);
+      expect(await errorCode(res)).toBe("workflow_run_stopping");
+      expect(routeMailCalls).toEqual([]);
+    },
+  );
+
   test("uses terminal Git history even if the SQL terminal projection lags", async () => {
     const routeMailCalls: RouteMailCall[] = [];
     const app = createTestApp({
@@ -1968,6 +2073,30 @@ describe("POST /workflows/:anchorRunId/mail", () => {
     expect(await errorCode(res)).toBe("deployment_unreachable");
     expect(routeMailCalls).toHaveLength(1);
   });
+
+  test.each([
+    ["terminal", "workflow_run_terminal"],
+    ["stopping", "workflow_run_stopping"],
+  ] as const)(
+    "returns 409 when mail admission observes a %s run",
+    async (reason, code) => {
+      const app = createTestApp({
+        grants: [manageGrant()],
+        routeMailError: new WorkflowRunNotExecutableError(
+          DEPLOYMENT_ID,
+          reason,
+        ),
+        db: { deploymentRow, assetRow: workflowAssetRow },
+      });
+
+      const res = await app.fetch(
+        authedPost(`${base()}/${DEPLOYMENT_ID}/mail`, { content: "too late" }),
+      );
+
+      expect(res.status).toBe(409);
+      expect(await errorCode(res)).toBe(code);
+    },
+  );
 
   test("rejects a caller without the workflow-run manage grant", async () => {
     const routeMailCalls: RouteMailCall[] = [];

@@ -1,9 +1,9 @@
-import { type } from "arktype";
 import { eq, inArray } from "drizzle-orm";
 
-import { TenantConfig, type TenantSidecarCapabilityPolicy } from "@intx/types";
+import type { TenantSidecarCapabilityPolicy } from "@intx/types";
 
-import type { DB } from "./client";
+import type { DB, DBExecutor } from "./client";
+import { parseTenantConfig } from "./parse-row";
 import { tenant } from "./schema/tenants";
 
 /**
@@ -14,7 +14,7 @@ import { tenant } from "./schema/tenants";
  * chain that could omit inherited policy or configuration.
  */
 export async function getAncestorChain(
-  db: DB["db"],
+  db: DBExecutor,
   tenantId: string,
 ): Promise<string[]> {
   const chain: string[] = [];
@@ -57,12 +57,7 @@ export async function resolveTenantSidecarCapabilityPolicies(
     const row = rowsById.get(ancestorId);
     if (row === undefined) continue;
     if (row.config === null) continue;
-    const config = TenantConfig(row.config);
-    if (config instanceof type.errors) {
-      throw new Error(
-        `Tenant ${row.id} has invalid configuration: ${config.summary}`,
-      );
-    }
+    const config = parseTenantConfig(row.id, row.config);
     const rules = config.sidecarPlacement?.capabilities;
     if (rules !== undefined && rules.length > 0) {
       policies.push({ tenantId: row.id, rules });

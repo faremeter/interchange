@@ -94,6 +94,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         authHandler: () => new Response("", { status: 404 }),
         db: h.db,
         sidecarRouter: createSidecarRouter({
+          withExecutableWorkflowRun: async (_target, send) => send(),
           authenticateSidecar: acceptAnySidecar,
           validateSidecarIdentity: async () => true,
         }),
