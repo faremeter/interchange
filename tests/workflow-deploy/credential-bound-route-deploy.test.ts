@@ -44,19 +44,13 @@ import {
   createAssetService,
   createSessionService,
   DEFAULT_ASSET_REF,
-  deployCodeSourcedWorkflow,
   type EventCollectorRegistry,
   type PreparedWorkflowDeployer,
   type SessionService,
-  type WorkflowAllocationService,
 } from "@intx/hub-sessions";
 import { credentialAad, type CredentialCipher } from "@intx/types";
-import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
-import {
-  buildInertProjectionStepSources,
-  deriveRunAddress,
-} from "@intx/workflow-deploy";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -80,6 +74,7 @@ import {
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 import { bundleWorkflowEntry } from "../hub-agent/lib/bundle-workflow-entry";
+import { createProvisionedDeploymentStandIn } from "./provisioned-deployment-stand-in";
 import { CREDENTIAL_HANDLE } from "./fixtures/credential-tool-bundle";
 import { credentialToolWorkflowEntry } from "./fixtures/credential-tool-workflow";
 
@@ -234,99 +229,15 @@ async function deployBindingThroughRoute(opts: {
     model: "mock-model",
   };
   const allocationCipher = opts.appCipher ?? createNoopCredentialCipher();
-  const workflowAllocationService: WorkflowAllocationService = {
-    async prepareProvisionedDeployment(args) {
-      if (args.source.kind !== "asset") {
-        throw new Error("credential-route test requires an asset source");
-      }
-      const source = args.source;
-      const agentAddress = deriveRunAddress({
-        runId: args.anchorRunId,
-        domain: args.deploymentDomain,
-      });
-      const allocationTarget = env.hub.prepareAllocationIdentity(
-        args.anchorRunId,
-        agentAddress,
-      );
-      const approved = await sessionService.installAndApproveWorkflowSource({
-        source,
-        entry: args.entry,
-        ...(args.pin !== undefined ? { pin: args.pin } : {}),
-        definitionAssetId: args.definitionAssetId,
-        allocationTarget,
-      });
-      if (!approved.approval.ok) {
-        throw new Error(
-          `credential-route probe was not approved: ${approved.approval.reason}`,
-        );
-      }
-      const config: HarnessConfig = {
-        sessionId: args.sessionId,
-        agentId: args.anchorRunId,
-        tenantId: args.tenantId,
-        principalId: args.sourceAuthorityPrincipalId,
-        agentAddress,
-        systemPrompt: "",
-        tools: [],
-        grants: [],
-        sources: [inferenceSource],
-        defaultSource: inferenceSource.id,
-      };
-      const sources = buildInertProjectionStepSources({
-        projection: approved.projection,
-        config,
-        operatorApprovals: approved.approval.approvedSurface,
-      });
-      const repoId = { kind: "workflow", id: source.assetId } as const;
-      const resolveAttachment = async (requestedAssetId: string) => {
-        if (requestedAssetId !== source.assetId) {
-          throw new Error(
-            `credential-route test received unexpected asset ${requestedAssetId}`,
-          );
-        }
-        const commitSha = await env.hub.agentRepoStore.repoStore.resolveRef(
-          { kind: "hub" },
-          repoId,
-          DEFAULT_ASSET_REF,
-        );
-        if (commitSha === null) {
-          throw new Error(
-            `credential-route source ${requestedAssetId} is empty`,
-          );
-        }
-        const { pack, ref } = await env.hub.agentRepoStore.repoStore.createPack(
-          { kind: "hub" },
-          repoId,
-          DEFAULT_ASSET_REF,
-        );
-        return { pack, ref, commitSha };
-      };
-      await deployCodeSourcedWorkflow({
-        approved,
-        source,
-        resolveAttachment,
-        sidecarAllocationRouter: env.hub.router,
-        allocationTarget,
-        agentAddress,
-        config,
-        sources,
-        db: h.db,
-        tenantId: args.tenantId,
-        anchorRunId: args.anchorRunId,
-        deploymentDomain: args.deploymentDomain,
-        credentialCipher: allocationCipher,
-      });
-      return {
-        anchorRunId: args.anchorRunId,
-        deploymentAddress: agentAddress,
-        allocationId: allocationTarget.allocationId,
-        status: "pending",
-      };
-    },
-    async deployReadyAllocation() {
-      throw new Error("credential-route test does not reconcile allocations");
-    },
-  };
+  const workflowAllocationService = createProvisionedDeploymentStandIn({
+    db: h.db,
+    env,
+    sessionService,
+    inferenceSource,
+    sourceRepoKind: "workflow",
+    credentialCipher: allocationCipher,
+    seedInferenceCredentials: false,
+  });
 
   const app = createApp({
     getSession: createMockGetSession(CALLER_USER_ID),

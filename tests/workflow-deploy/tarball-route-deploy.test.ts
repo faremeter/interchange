@@ -29,20 +29,13 @@ import {
   createAssetService,
   createSessionService,
   DEFAULT_ASSET_REF,
-  deployCodeSourcedWorkflow,
-  workflowSourceRepoKind,
   type EventCollectorRegistry,
   type PreparedWorkflowDeployer,
   type RepoId,
   type SessionService,
-  type WorkflowAllocationService,
 } from "@intx/hub-sessions";
-import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import type { InferenceSource } from "@intx/types/runtime";
 import type { WorkflowDefinitionAssetSource } from "@intx/types/workflow-sources";
-import {
-  buildInertProjectionStepSources,
-  deriveRunAddress,
-} from "@intx/workflow-deploy";
 import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import {
   createTestDb,
@@ -53,7 +46,6 @@ import { seedAsset, seedGrant, seedPrincipal } from "@intx/test-harness/seed";
 
 import {
   fireMailTrigger,
-  seedInferenceCredentials,
   startDeployFlowEnv,
   waitFor,
   waitForFirstRunId,
@@ -61,6 +53,10 @@ import {
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
 import { bundleWorkflowEntry } from "../hub-agent/lib/bundle-workflow-entry";
+import {
+  createProvisionedDeploymentStandIn,
+  type ProvisionedDeploymentObservation,
+} from "./provisioned-deployment-stand-in";
 import {
   buildSyntheticNpmPackageTarball,
   type SyntheticNpmPackageTarball,
@@ -269,116 +265,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
         credentialId: "sk-mock",
         model: "mock-model",
       };
-      let deployed:
-        | { anchorRunId: string; agentAddress: string; projectionId: string }
-        | undefined;
+      let deployed: ProvisionedDeploymentObservation | undefined;
 
-      const workflowAllocationService: WorkflowAllocationService = {
-        async prepareProvisionedDeployment(args) {
-          if (args.source.kind !== "asset") {
-            throw new Error("tarball-route test requires an asset source");
-          }
-          const source: WorkflowDefinitionAssetSource = args.source;
-          const agentAddress = deriveRunAddress({
-            runId: args.anchorRunId,
-            domain: args.deploymentDomain,
-          });
-          const allocationTarget = env.hub.prepareAllocationIdentity(
-            args.anchorRunId,
-            agentAddress,
-          );
-          const approved = await sessionService.installAndApproveWorkflowSource(
-            {
-              source,
-              entry: args.entry,
-              ...(args.pin !== undefined ? { pin: args.pin } : {}),
-              definitionAssetId: args.definitionAssetId,
-              allocationTarget,
-            },
-          );
-          if (!approved.approval.ok) {
-            throw new Error(
-              `tarball-route probe was not approved: ${approved.approval.reason}`,
-            );
-          }
-          const config: HarnessConfig = {
-            sessionId: args.sessionId,
-            agentId: args.anchorRunId,
-            tenantId: args.tenantId,
-            principalId: args.sourceAuthorityPrincipalId,
-            agentAddress,
-            systemPrompt: "",
-            tools: [],
-            grants: [],
-            sources: [inferenceSource],
-            defaultSource: inferenceSource.id,
-          };
-          const sources = buildInertProjectionStepSources({
-            projection: approved.projection,
-            config,
-            operatorApprovals: approved.approval.approvedSurface,
-          });
-          await seedInferenceCredentials(h.db, args.tenantId, sources, config);
-
-          const repoId: RepoId = {
-            kind: workflowSourceRepoKind(source),
-            id: source.assetId,
-          };
-          const resolveAttachment = async (requestedAssetId: string) => {
-            if (requestedAssetId !== source.assetId) {
-              throw new Error(
-                `tarball-route test received unexpected asset ${requestedAssetId}`,
-              );
-            }
-            const commitSha = await env.hub.agentRepoStore.repoStore.resolveRef(
-              HUB_PRINCIPAL,
-              repoId,
-              DEFAULT_ASSET_REF,
-            );
-            if (commitSha === null) {
-              throw new Error(
-                `tarball-route source ${requestedAssetId} is empty`,
-              );
-            }
-            const { pack, ref } =
-              await env.hub.agentRepoStore.repoStore.createPack(
-                HUB_PRINCIPAL,
-                repoId,
-                DEFAULT_ASSET_REF,
-              );
-            return { pack, ref, commitSha };
-          };
-          await deployCodeSourcedWorkflow({
-            approved,
-            source,
-            resolveAttachment,
-            sidecarAllocationRouter: env.hub.router,
-            allocationTarget,
-            agentAddress,
-            config,
-            sources,
-            db: h.db,
-            tenantId: args.tenantId,
-            anchorRunId: args.anchorRunId,
-            deploymentDomain: args.deploymentDomain,
-            credentialCipher: createNoopCredentialCipher(),
-          });
-          deployed = {
-            anchorRunId: args.anchorRunId,
-            agentAddress,
-            projectionId: approved.projection.id,
-          };
-          return {
-            anchorRunId: args.anchorRunId,
-            deploymentAddress: agentAddress,
-            allocationId: allocationTarget.allocationId,
-            status: "pending",
-          };
+      const workflowAllocationService = createProvisionedDeploymentStandIn({
+        db: h.db,
+        env,
+        sessionService,
+        inferenceSource,
+        sourceRepoKind: "package-registry",
+        credentialCipher: createNoopCredentialCipher(),
+        seedInferenceCredentials: true,
+        onDeployed(deployment) {
+          deployed = deployment;
         },
-        async deployReadyAllocation() {
-          throw new Error("tarball-route test does not reconcile allocations");
-        },
-      };
+      });
 
       const app = createApp({
         getSession: createMockGetSession(CALLER_USER_ID),
