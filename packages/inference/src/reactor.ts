@@ -396,6 +396,19 @@ export function createReactor(config: ReactorConfig): Reactor {
     PerCallInferenceOptions
   >();
   let messageRunInference: PerCallInferenceOptions | undefined;
+  // Correlation ids the currently open message run suspended on, cleared
+  // whenever that run closes. This is what tells a late correlated response
+  // apart from one that correlates to an operation some earlier, already-
+  // closed run left registered: `gates` itself never expires an entry on run
+  // close (only on clear/timeout), so a stale gate can outlive the run that
+  // opened it and still answer `gates.has`. The key is the correlation id,
+  // not the gate id, because a director may suspend under its own gate id
+  // while the tool's pending marker registered the operation under
+  // `pending-<correlationId>`; the correlation id is what both share, and it
+  // is also how `tryCorrelate` finds the gate to resume. Rehydrated gates
+  // (`rehydrateGates`) are deliberately not added here -- they predate any
+  // run this process has opened, so they can never be "this run's own".
+  const openRunCorrelationIds = new Set<string>();
 
   // Doom-loop detection state, scoped to the current message run. Each executed
   // tool-call turn is reduced to a batch signature; consecutive identical
@@ -430,6 +443,7 @@ export function createReactor(config: ReactorConfig): Reactor {
     error?: { message: string; kind?: string },
   ): void {
     messageRunInference = undefined;
+    openRunCorrelationIds.clear();
     if (currentMessageRunId === null || currentMessageId === null) return;
     const data: {
       messageRunId: string;
@@ -1260,6 +1274,12 @@ export function createReactor(config: ReactorConfig): Reactor {
       correlationId,
       onGateCleared,
     );
+    // Mark this correlation as belonging to the currently open run so a late
+    // correlated response can tell it apart from one an earlier, already-
+    // closed run left registered (see `openRunCorrelationIds`).
+    if (currentMessageRunId !== null && correlationId !== undefined) {
+      openRunCorrelationIds.add(correlationId);
+    }
 
     if (stateManager !== null) {
       stateManager.setGatesSnapshot(gates.snapshot());
@@ -1317,7 +1337,10 @@ export function createReactor(config: ReactorConfig): Reactor {
   // effective timeout the director-suspend fallback uses — rather than a
   // silent zero. This does not run through `suspendOnGate`: rehydration must
   // not re-emit `reactor.gate.blocked` (the suspension already happened before
-  // the restart) and must not commit (nothing changed).
+  // the restart) and must not commit (nothing changed). It also must not add
+  // to `openRunCorrelationIds`: a rehydrated gate predates any run this
+  // process has opened, so it can never be mistaken for the currently open
+  // run's own suspension.
   function rehydrateGates(ops: PendingOperation[]): void {
     for (const op of ops) {
       const timeoutMs =
@@ -1720,22 +1743,21 @@ export function createReactor(config: ReactorConfig): Reactor {
       // A correlated resume continues the parked run rather than opening a
       // new one, and the loop may re-infer before tryCorrelate settles, so
       // the resume's options are adopted up front whenever this message's
-      // correlation ID matches a pending operation whose gate is currently
-      // registered (the parked run is the only run that can be open, so a
-      // live gate is that run's own resume). An uncorrelated message either
-      // finds no run open yet (harmless to set now — its own run's open at
-      // line ~1360 sets the same value) or arrives while an unrelated run is
-      // still open, in which case it must not touch that run's options and
+      // correlation ID is one the currently open run suspended on
+      // (`openRunCorrelationIds`). `gates.has` alone is not enough: a gate an
+      // earlier, already-closed run left registered is still live there, and
+      // a late correlated response for it must not overwrite the run open
+      // now. An uncorrelated message either finds no run open yet (harmless
+      // to set now — opening its own run in the message.received handler
+      // sets the same value) or arrives while an unrelated run is still
+      // open, in which case it must not touch that run's options and
       // instead overwrites them when its own run opens.
       const inference = deliveredInference.get(message);
       if (inference !== undefined) {
         const correlationId = message.headers.interchangeCorrelationId;
-        const pending =
-          correlationId !== undefined
-            ? correlations.lookup(correlationId)
-            : undefined;
         const correlatesToOpenRun =
-          pending !== undefined && gates.has(pending.gateId);
+          correlationId !== undefined &&
+          openRunCorrelationIds.has(correlationId);
         if (correlatesToOpenRun || currentMessageRunId === null) {
           messageRunInference = inference;
         }

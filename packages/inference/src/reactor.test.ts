@@ -6773,6 +6773,376 @@ describe("createReactor — per-send inference options", () => {
     reactor.abort("admin_kill");
   });
 
+  test("a live gate from a closed run does not overwrite the open run's options", async () => {
+    // S1 parks on G1 (ask-rail gate) and stays open. S2, uncorrelated, closes
+    // run1 and opens run2, which itself parks on G2. G1 stays registered
+    // (closeMessageRun never touches gates), so a late correlated response
+    // for G1 must not adopt its options into the still-open run2 slot.
+    const askExtension = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs: 60_000,
+    });
+    const seen: (InferenceHarnessOptions["inferenceOptions"] | undefined)[] =
+      [];
+    // Each infer parks on a fresh tool_call id -- the shared history spans
+    // both runs, so reusing "call-ask" across them would trip the
+    // duplicate-tool_call-id well-formedness check.
+    let lastCallId = "";
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      seen.push(opts.inferenceOptions);
+      lastCallId = `call-ask-${seen.length}`;
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn: {
+            role: "assistant" as const,
+            content: [
+              {
+                type: "tool_call" as const,
+                id: lastCallId,
+                name: "charge_card",
+                arguments: {},
+              },
+            ],
+            model: "test-model",
+            timestamp: 1000,
+          },
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+
+    const { reactor, events, waitFor } = createTestReactor({
+      inferenceRunner,
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "charged",
+      })),
+      beforeToolExtensions: [askExtension],
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (_e, _s, caps) =>
+            caps.executeTools([
+              { id: lastCallId, name: "charge_card", arguments: {} },
+            ]),
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools(e.calls, false, true),
+          "tool.done": (_e, _s, caps) => caps.infer(),
+        },
+        "wait",
+      ),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage(), { inference: { temperature: 0.1 } });
+
+    const blocked1 = await waitFor("reactor.gate.blocked");
+    if (blocked1.type !== "reactor.gate.blocked") {
+      throw new Error("unreachable");
+    }
+    const correlationId1 = blocked1.data.correlationId;
+    if (correlationId1 === undefined) throw new Error("expected correlationId");
+
+    reactor.deliver(makeInboundMessage(), { inference: { temperature: 0.2 } });
+    await waitUntil(
+      () => events.filter((e) => e.type === "reactor.gate.blocked").length >= 2,
+    );
+
+    reactor.deliver(makeApprovalMessage(correlationId1), {
+      inference: { temperature: 0.9 },
+    });
+    await waitUntil(() => seen.length >= 3);
+
+    expect(seen).toEqual([
+      { temperature: 0.1 },
+      { temperature: 0.2 },
+      { temperature: 0.2 },
+    ]);
+    reactor.abort("admin_kill");
+  });
+
+  test("a resume of a director-chosen gate adopts its options", async () => {
+    // The tool's pending marker registers the operation under
+    // `pending-<correlationId>`, and the director then suspends under its own
+    // gate id with the same correlation id. The resume belongs to the open
+    // run, so its options must be adopted even though the gate id the pending
+    // operation records is not the gate that is live.
+    const CORR_ID = "corr-director-gate";
+    const seen: (InferenceHarnessOptions["inferenceOptions"] | undefined)[] =
+      [];
+    let infers = 0;
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      seen.push(opts.inferenceOptions);
+      infers += 1;
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn: {
+            role: "assistant" as const,
+            content:
+              infers === 1
+                ? [
+                    {
+                      type: "tool_call" as const,
+                      id: "call-send",
+                      name: "send_msg",
+                      arguments: {},
+                    },
+                  ]
+                : [{ type: "text" as const, text: "done" }],
+            model: "test-model",
+            timestamp: 1000,
+          },
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+
+    const { reactor, waitFor } = createTestReactor({
+      inferenceRunner,
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "sent",
+        pendingMarker: { status: "pending" as const, correlationId: CORR_ID },
+      })),
+      director: directorFromTable({
+        "message.received": (_e, _s, caps) => caps.infer(),
+        "inference.done": (_e, _s, caps) =>
+          infers === 1
+            ? caps.executeTools([
+                { id: "call-send", name: "send_msg", arguments: {} },
+              ])
+            : caps.done(),
+        "tool.done": (_e, _s, caps) =>
+          caps.suspend({
+            type: "message_response",
+            gateId: "director-chosen-gate",
+            timeoutMs: 5000,
+            correlationId: CORR_ID,
+          }),
+        "reactor.gate.cleared": (_e, _s, caps) => caps.infer(),
+      }),
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage(), { inference: { temperature: 0.1 } });
+    await waitFor("reactor.gate.blocked");
+
+    reactor.deliver(makeInboundMessage(CORR_ID), {
+      inference: { temperature: 0.9 },
+    });
+    await waitFor("reactor.done");
+
+    expect(seen).toEqual([{ temperature: 0.1 }, { temperature: 0.9 }]);
+  });
+
+  test("a rehydrated gate does not overwrite the open run's options", async () => {
+    // Same hazard as the previous test, but the stale gate comes from
+    // rehydration (a restart) rather than from a run this process closed:
+    // rehydrateGates must not mark it as belonging to any open run either.
+    const correlationId1 = "rehydrated-corr-1";
+    // The pending op's suspended call must have a matching tool_call turn
+    // already in history, exactly as it would after the original suspend
+    // (the call landed in history before the park; only the resolution
+    // carries over the restart) -- otherwise resuming it and re-inferring
+    // trips the well-formedness check on an orphaned tool_result.
+    const cell: PersistedCell = {
+      turns: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_call",
+              id: "call-ask-rehydrated",
+              name: "charge_card",
+              arguments: {},
+            },
+          ],
+          model: "test-model",
+          timestamp: 500,
+        },
+      ],
+      pendingOperations: [
+        {
+          correlationId: correlationId1,
+          kind: "approval",
+          registeredAt: Date.now(),
+          gateId: `pending-${correlationId1}`,
+          timeoutAt: Date.now() + 60_000,
+          suspendedCall: {
+            id: "call-ask-rehydrated",
+            name: "charge_card",
+            arguments: {},
+          },
+        },
+      ],
+      tokenUsage: emptyUsage(),
+    };
+    const askExtension = createAuthzExtension({
+      authorize: async () => ({
+        effect: "ask" as const,
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      approvalTimeoutMs: 60_000,
+    });
+    const seen: (InferenceHarnessOptions["inferenceOptions"] | undefined)[] =
+      [];
+    let lastCallId = "";
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      seen.push(opts.inferenceOptions);
+      lastCallId = `call-ask-${seen.length}`;
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn: {
+            role: "assistant" as const,
+            content: [
+              {
+                type: "tool_call" as const,
+                id: lastCallId,
+                name: "charge_card",
+                arguments: {},
+              },
+            ],
+            model: "test-model",
+            timestamp: 1000,
+          },
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      inferenceRunner,
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "charged",
+      })),
+      beforeToolExtensions: [askExtension],
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (_e, _s, caps) =>
+            caps.executeTools([
+              { id: lastCallId, name: "charge_card", arguments: {} },
+            ]),
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools(e.calls, false, true),
+          "tool.done": (_e, _s, caps) => caps.infer(),
+        },
+        "wait",
+      ),
+    });
+
+    reactor.start();
+    await waitFor("reactor.start");
+
+    reactor.deliver(makeInboundMessage(), { inference: { temperature: 0.2 } });
+    await waitFor("reactor.gate.blocked");
+
+    reactor.deliver(makeApprovalMessage(correlationId1), {
+      inference: { temperature: 0.9 },
+    });
+    await waitUntil(() => seen.length >= 2);
+
+    expect(seen).toEqual([{ temperature: 0.2 }, { temperature: 0.2 }]);
+    reactor.abort("admin_kill");
+  });
+
+  test("a correlated resume with no run open does not leak options into the next", async () => {
+    // Rehydrated gates resume without ever opening a message run (only
+    // message.received opens one), so the options a resume adopts must
+    // still be discarded when its cycle closes: a later resume that sets
+    // none infers with none.
+    const correlationIds = ["rehydrated-corr-a", "rehydrated-corr-b"];
+    const cell: PersistedCell = {
+      turns: [
+        {
+          role: "assistant",
+          content: correlationIds.map((id) => ({
+            type: "tool_call" as const,
+            id: `call-${id}`,
+            name: "charge_card",
+            arguments: {},
+          })),
+          model: "test-model",
+          timestamp: 500,
+        },
+      ],
+      pendingOperations: correlationIds.map((id) => ({
+        correlationId: id,
+        kind: "approval" as const,
+        registeredAt: Date.now(),
+        gateId: `pending-${id}`,
+        timeoutAt: Date.now() + 60_000,
+        suspendedCall: { id: `call-${id}`, name: "charge_card", arguments: {} },
+      })),
+      tokenUsage: emptyUsage(),
+    };
+    const seen: (InferenceHarnessOptions["inferenceOptions"] | undefined)[] =
+      [];
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      seen.push(opts.inferenceOptions);
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn: {
+            role: "assistant" as const,
+            content: [{ type: "text" as const, text: "ok" }],
+            model: "test-model",
+            timestamp: 1000,
+          },
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+
+    const { reactor, waitFor } = createTestReactor({
+      contextStore: makePersistingContextStore(cell),
+      inferenceRunner,
+      toolRunner: makeToolRunner(async (call) => ({
+        callId: call.id,
+        content: "charged",
+      })),
+      director: directorFromTable(
+        {
+          "resume.execute_tools": (e, _s, caps) =>
+            caps.executeTools(e.calls, false, true),
+          "tool.done": (_e, _s, caps) => caps.infer(),
+        },
+        "wait",
+      ),
+    });
+
+    reactor.start();
+    await waitFor("reactor.start");
+
+    reactor.deliver(makeApprovalMessage("rehydrated-corr-a"), {
+      inference: { temperature: 0.9 },
+    });
+    await waitUntil(() => seen.length >= 1);
+    reactor.deliver(makeApprovalMessage("rehydrated-corr-b"));
+    await waitUntil(() => seen.length >= 2);
+
+    expect(seen).toEqual([{ temperature: 0.9 }, undefined]);
+    reactor.abort("admin_kill");
+  });
+
   test("systemPrompt, tools, and providerOptions on deliver do not reach the harness", async () => {
     const seen: (InferenceHarnessOptions["inferenceOptions"] | undefined)[] =
       [];
