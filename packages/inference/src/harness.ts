@@ -514,19 +514,27 @@ async function* runSingleAttempt(
       responseKind = detectResponseKind(response.headers);
     } catch (cause) {
       // A 2xx whose Content-Type is neither SSE nor JSON is a protocol
-      // violation, not a transient failure — surface it loudly rather than
-      // pushing unknown bytes through the SSE parser to yield an empty turn.
-      yield {
-        type: "inference.error",
-        seq: nextSeq(),
-        data: {
-          error: classifyProtocolMismatch(
-            cause instanceof Error ? cause.message : String(cause),
-          ),
-          partial: snapshotPartial(partial),
-        },
-      };
-      return;
+      // violation, not a transient failure. The adapter gets one chance to
+      // name the protocol it asked for (some backends drop the header on a
+      // stream they otherwise serve correctly); if it declines, surface the
+      // mismatch loudly rather than pushing unknown bytes through the SSE
+      // parser to yield an empty turn.
+      const classified = adapter.classifyResponse?.(response.headers);
+      if (classified !== undefined) {
+        responseKind = classified;
+      } else {
+        yield {
+          type: "inference.error",
+          seq: nextSeq(),
+          data: {
+            error: classifyProtocolMismatch(
+              cause instanceof Error ? cause.message : String(cause),
+            ),
+            partial: snapshotPartial(partial),
+          },
+        };
+        return;
+      }
     }
 
     // Arm the inactivity timer now that the SSE stream is open. Every
