@@ -239,7 +239,7 @@ function makeSpawner(
     credentialProviders: createCredentialProviderRegistry(
       builtinCredentialProviders(),
     ),
-collectDeclaredResources: () => new Set<string>(),
+    collectDeclaredResources: () => new Set<string>(),
     collectDeclaredCredentialConsumers: () => new Set<string>(),
     filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
       parentGrants,

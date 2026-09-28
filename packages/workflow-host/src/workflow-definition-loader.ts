@@ -309,10 +309,13 @@ async function resolveDirectorPackageDir(
 // are a single segment; scoped names are exactly `@scope/name`. `.` and
 // `..` are not segments -- `packageName.includes("..")` would also reject
 // a legal name like `foo..bar`, so each slash-separated piece is checked
-// on its own.
+// on its own. The name is also capped at npm's 214-character limit, which
+// keeps the slot lookup below NAME_MAX so it cannot fail with ENAMETOOLONG.
 const PACKAGE_NAME_SEGMENT = /^[A-Za-z0-9._-]+$/;
+const NPM_PACKAGE_NAME_MAX_LENGTH = 214;
 
 function isLegalDirectorPackageName(name: string): boolean {
+  if (name.length > NPM_PACKAGE_NAME_MAX_LENGTH) return false;
   if (name.startsWith("@")) {
     const parts = name.split("/");
     if (parts.length !== 2) return false;

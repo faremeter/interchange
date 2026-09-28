@@ -259,7 +259,7 @@ function makeRunChild(
     credentialProviders: createCredentialProviderRegistry(
       builtinCredentialProviders(),
     ),
-collectDeclaredResources: grantCap.collectDeclaredResources,
+    collectDeclaredResources: grantCap.collectDeclaredResources,
     collectDeclaredCredentialConsumers:
       grantCap.collectDeclaredCredentialConsumers,
     filterGrantsToDeclaredResources: grantCap.filterGrantsToDeclaredResources,
