@@ -491,6 +491,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             deploymentPlugins: plugins,
             probePlugins: plugins,
             preparedDeployer: service,
+            workflowRunRepoStore: agentRepoStore.repoStore,
             allocationRouter: router,
             credentialCipher: createNoopCredentialCipher(),
             hubWebSocketUrl: "ws://unused",

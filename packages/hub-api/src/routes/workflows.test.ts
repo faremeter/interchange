@@ -16,7 +16,11 @@ import {
   signalName,
   WorkflowDeploymentResponse,
 } from "@intx/types";
-import type { GrantWalkSnapshot, SidecarAllocationStatus } from "@intx/types";
+import type {
+  GrantWalkSnapshot,
+  SidecarAllocationStatus,
+  StepStateSnapshot,
+} from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import {
   asset as assetTable,
@@ -1102,6 +1106,270 @@ describe("POST /workflows/deployments", () => {
     expect(prepared).toHaveLength(1);
     expect(prepared[0]?.sourceOfferingIds).toEqual(["ofr_primary"]);
     expect(prepared[0]?.defaultSourceOfferingId).toBe("ofr_primary");
+  });
+
+  test("hands imported step state to deployment preparation", async () => {
+    const snapshot: StepStateSnapshot = {
+      version: 1,
+      turns: [
+        { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 },
+      ],
+      tokenUsage: {
+        input: 1,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        thinking: 0,
+      },
+      connectorState: null,
+    };
+    const prepared: Parameters<
+      WorkflowAllocationService["prepareProvisionedDeployment"]
+    >[0][] = [];
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async (args) => {
+          prepared.push(args);
+          return {
+            anchorRunId: DEPLOYMENT_ID,
+            deploymentAddress: `${DEPLOYMENT_ID}@${DOMAIN}`,
+            allocationId: "sal-test",
+            status: "pending",
+          };
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(
+        `${base()}/deployments`,
+        sourceDeployBody({ stepState: { intake: snapshot } }),
+      ),
+    );
+
+    expect(res.status).toBe(201);
+    expect(prepared[0]?.stepState).toEqual({ intake: snapshot });
+  });
+
+  test("rejects step state that is not a snapshot at the request boundary", async () => {
+    let prepareCalled = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          prepareCalled = true;
+          throw new Error("invalid step state must not reach preparation");
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+
+    const res = await app.fetch(
+      authedPost(
+        `${base()}/deployments`,
+        sourceDeployBody({
+          stepState: { intake: { version: 2, turns: [] } },
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(400);
+    expect(prepareCalled).toBe(false);
+  });
+
+  test("rejects step state carrying a number JSON cannot represent at the request boundary", async () => {
+    let prepareCalled = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          prepareCalled = true;
+          throw new Error("invalid step state must not reach preparation");
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+    const body = JSON.stringify(
+      sourceDeployBody({
+        stepState: {
+          intake: {
+            version: 1,
+            turns: [
+              {
+                role: "user",
+                content: [{ type: "text", text: "q" }],
+                timestamp: 1,
+              },
+            ],
+            tokenUsage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              thinking: 0,
+            },
+            connectorState: null,
+          },
+        },
+      }),
+    ).replace('"timestamp":1', '"timestamp":1e999');
+
+    const res = await app.fetch(
+      new Request(`http://localhost${base()}/deployments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(prepareCalled).toBe(false);
+  });
+
+  describe("step state nesting", () => {
+    // Where the nesting goes: tool arguments are any JSON, while the other
+    // fields have a type the nesting fails, so the schema rejects them
+    // before its own depth check runs.
+    const nestingSites = {
+      arguments: {
+        find: '{"query":"status"}',
+        replace: (nested: string) => nested,
+      },
+      version: {
+        find: '"version":1',
+        replace: (nested: string) => `"version":${nested}`,
+      },
+      role: {
+        find: '"role":"assistant"',
+        replace: (nested: string) => `"role":${nested}`,
+      },
+      type: {
+        find: '"type":"tool_call"',
+        replace: (nested: string) => `"type":${nested}`,
+      },
+    };
+
+    // Built as text: a body nested past the stack limit cannot be
+    // produced by `JSON.stringify`.
+    function deployWithNestedStepState(
+      levels: number,
+      field: keyof typeof nestingSites,
+    ) {
+      let prepareCalled = false;
+      const app = createTestApp({
+        grants: [makeGrant({ action: "create" })],
+        workflowAllocationService: {
+          prepareProvisionedDeployment: async () => {
+            prepareCalled = true;
+            throw new Error("preparation is not under test");
+          },
+          deployReadyAllocation: async () => null,
+        },
+      });
+      const json = JSON.stringify(
+        sourceDeployBody({
+          stepState: {
+            intake: {
+              version: 1,
+              turns: [
+                {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "tool_call",
+                      id: "call-1",
+                      name: "lookup",
+                      arguments: { query: "status" },
+                    },
+                  ],
+                  model: "claude-a",
+                  timestamp: 1,
+                },
+              ],
+              tokenUsage: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                thinking: 0,
+              },
+              connectorState: null,
+            },
+          },
+        }),
+      );
+      const nested = `${'{"a":'.repeat(levels)}{}${"}".repeat(levels)}`;
+      const site = nestingSites[field];
+      const body = json.replace(site.find, site.replace(nested));
+      return {
+        response: app.fetch(
+          new Request(`http://localhost${base()}/deployments`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body,
+          }),
+        ),
+        prepareCalled: () => prepareCalled,
+      };
+    }
+
+    test("rejects step state nested past the limit at the request boundary", async () => {
+      const deploy = deployWithNestedStepState(100_000, "arguments");
+
+      expect((await deploy.response).status).toBe(400);
+      expect(deploy.prepareCalled()).toBe(false);
+    });
+
+    for (const field of ["version", "role", "type"] as const) {
+      test(`rejects nesting past the limit in ${field}, which also fails its type`, async () => {
+        const deploy = deployWithNestedStepState(100_000, field);
+        const res = await deploy.response;
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({
+          error: {
+            code: "invalid_request",
+            message:
+              "stepState must be state nested at most 64 levels deep (was nested deeper)",
+          },
+        });
+        expect(deploy.prepareCalled()).toBe(false);
+      });
+    }
+
+    test("leaves a body that does not parse to the validator", async () => {
+      let prepareCalled = false;
+      const app = createTestApp({
+        grants: [makeGrant({ action: "create" })],
+        workflowAllocationService: {
+          prepareProvisionedDeployment: async () => {
+            prepareCalled = true;
+            throw new Error("preparation is not under test");
+          },
+          deployReadyAllocation: async () => null,
+        },
+      });
+      const res = await app.fetch(
+        new Request(`http://localhost${base()}/deployments`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: '{"stepState":',
+        }),
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.text()).toBe("Malformed JSON in request body");
+      expect(prepareCalled).toBe(false);
+    });
+
+    test("accepts tool arguments nested as deep as real tool schemas go", async () => {
+      const deploy = deployWithNestedStepState(50, "arguments");
+
+      await deploy.response;
+      expect(deploy.prepareCalled()).toBe(true);
+    });
   });
 
   test("reports provisioner selection failures as conflicts", async () => {

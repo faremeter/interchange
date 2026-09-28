@@ -214,6 +214,11 @@ export {
   readStepStateSnapshot,
 } from "./step-state-snapshot";
 export {
+  buildStepStateSeeds,
+  writeStepStateSeeds,
+  type StepStateSeedsResult,
+} from "./step-state-import";
+export {
   buildStepStateCheckpoint,
   reconstructStepState,
   serializeStepStateWalEntry,

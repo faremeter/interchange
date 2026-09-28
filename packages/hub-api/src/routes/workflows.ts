@@ -2,6 +2,7 @@ import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { createMiddleware } from "hono/factory";
 import { describeRoute, validator } from "hono-openapi";
 import { type } from "arktype";
 
@@ -22,8 +23,10 @@ import {
   correlationIdFromSignalName,
   ErrorResponse,
   deriveWorkflowRunId,
+  findUnstorableStepState,
   isSidecarAllocationDispatchable,
   SendMessage,
+  StepStateImport,
   WorkflowDeploymentResponse,
   type SidecarAllocationStatus,
   type WorkflowDeploymentStatus,
@@ -71,6 +74,7 @@ import { jsonResponse } from "../openapi";
 // from which the Hub resolves the inference chain. `pin` selects the definition
 // package for the `registry` and asset-`tarball` variants (asset-`source`
 // selects by `packageName`). The `source` union is validated at this boundary.
+// `stepState` starts agent steps from exported state, keyed by step id.
 const SourceOfferingIds = type("string > 0")
   .array()
   .atLeastLength(1)
@@ -86,6 +90,7 @@ const DeployWorkflow = type({
   sourceOfferingIds: SourceOfferingIds,
   defaultSourceOfferingId: "string > 0",
   "pin?": "string > 0",
+  "stepState?": StepStateImport,
 });
 
 // Request body for signal delivery. `signalId` is caller-supplied and
@@ -240,17 +245,22 @@ export function createWorkflowRoutes({
       tags: ["Workflows"],
       summary: "Deploy a workflow",
       description:
-        "Installs, probes, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, then creates a pending provisioned deployment. Provisioning continues asynchronously; the response returns the deployment record.",
+        "Installs, probes, gates, and freezes a code-sourced workflow definition from its `source`/`entry`, then creates a pending provisioned deployment. Provisioning continues asynchronously; the response returns the deployment record. An optional `stepState` map starts agent steps from state exported off any earlier run, keyed by the ids of the workflow's top-level agent steps; each step starts from its snapshot until it has state of its own, including when a retried attempt starts over. A snapshot continues only on the model that produced it: the Hub refuses one with an assistant turn from any model other than the one the step is pinned to, since it does not convert a conversation between models. It closes tool calls left without a result, turns safety-rating blocks into text, and drops assistant turns with no content. It refuses a snapshot whose tool results do not follow their calls, or that repeats a tool call or a tool result, and one that carries a reply thread: an imported step starts without one, so it replies only to senders that mailed its own deployment. The body is limited to 44 MiB.",
       responses: {
         201: jsonResponse(
           "Workflow deployment accepted for provisioning",
           WorkflowDeploymentResponse,
         ),
-        404: jsonResponse("Workflow asset not found", ErrorResponse),
-        409: jsonResponse(
-          "Workflow definition or source offering chain invalid, workflow provisioning unavailable, or provisioner selection failed",
+        400: jsonResponse(
+          "Request body invalid, including step state that carries a number JSON cannot represent or nests deeper than 64 levels",
           ErrorResponse,
         ),
+        404: jsonResponse("Workflow asset not found", ErrorResponse),
+        409: jsonResponse(
+          "Workflow definition or source offering chain invalid, step state names a step that is not a top-level agent step of the workflow or cannot seed the step it names, workflow provisioning unavailable, or provisioner selection failed",
+          ErrorResponse,
+        ),
+        413: jsonResponse("Request body too large", ErrorResponse),
         500: jsonResponse(
           "Deployment projection row missing after preparation",
           ErrorResponse,
@@ -258,7 +268,53 @@ export function createWorkflowRoutes({
         502: jsonResponse("Sidecar unavailable", ErrorResponse),
       },
     }),
-    validator("json", DeployWorkflow),
+    // Imported step state makes the body client-sized, so it takes the bound
+    // the routes that carry mail bodies do.
+    bodyLimit({
+      maxSize: MAX_MAIL_BODY_BYTES,
+      onError: (c) =>
+        errorResponse(
+          c,
+          "payload_too_large",
+          "Request body exceeds the maximum allowed size",
+        ),
+    }),
+    // ArkType prints the values it rejects, even while it validates a
+    // union, and printing recurses once per level of nesting. Step state
+    // nested past its limit is rejected by that limit before the validator
+    // sees it. A body that does not parse is the validator's to report.
+    createMiddleware(async (c, next) => {
+      let body: unknown;
+      try {
+        body = await c.req.json();
+      } catch {
+        return next();
+      }
+      const unstorable = findUnstorableStepState(
+        typeof body === "object" && body !== null && "stepState" in body
+          ? body.stepState
+          : undefined,
+      );
+      if (unstorable !== null) {
+        return errorResponse(
+          c,
+          "invalid_request",
+          `stepState must be ${unstorable.expected} (was ${unstorable.actual})`,
+        );
+      }
+      return next();
+    }),
+    // The default rejection echoes the body, which can be as large as the
+    // body limit allows.
+    validator("json", DeployWorkflow, (result, c) => {
+      if (!result.success) {
+        return errorResponse(
+          c,
+          "invalid_request",
+          result.error.map((issue) => issue.message).join("; "),
+        );
+      }
+    }),
     async (c) => {
       const tenant = c.get("tenant");
       const body = c.req.valid("json");
@@ -316,6 +372,9 @@ export function createWorkflowRoutes({
             sourceOfferingIds: body.sourceOfferingIds,
             defaultSourceOfferingId: body.defaultSourceOfferingId,
             deployContent: { systemPrompt: "" },
+            ...(body.stepState !== undefined
+              ? { stepState: body.stepState }
+              : {}),
           });
         deployedId = prepared.anchorRunId;
         deploymentStatus = prepared.status;

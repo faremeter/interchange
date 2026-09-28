@@ -48,6 +48,7 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 import {
+  buildStepStateSeeds,
   committedReadsToSourceTree,
   createAgentRepoStore,
   createSessionService,
@@ -61,6 +62,7 @@ import {
   parseAgentId,
   redeployCodeSourcedWorkflow,
   restoreWorkflowRunToAllocation,
+  writeStepStateSeeds,
   type AgentRepoStore,
   type InstallAndApproveResult,
   type RepoId,
@@ -77,7 +79,7 @@ import {
   hasCode,
   hexEncode,
 } from "@intx/types";
-import type { CredentialCipher } from "@intx/types";
+import type { CredentialCipher, StepStateImport } from "@intx/types";
 import type { WireGrantRule } from "@intx/types/grant-wire";
 import {
   createEd25519Crypto,
@@ -1909,6 +1911,14 @@ export type DeployWorkflowSourceForTestOpts = {
 
   /** Credential delivery for a credential-consuming fixture. */
   credentialCipher?: CredentialCipher;
+
+  /**
+   * State to start agent steps from, imported the way the provisioned deploy
+   * imports a request's `stepState`: seeds built against the approved
+   * projection and pinned sources land in the Hub's copy of the deployment's
+   * history, which is replayed onto the allocation before the deploy frame.
+   */
+  stepState?: StepStateImport;
 };
 
 /**
@@ -2155,6 +2165,29 @@ export async function deployWorkflowSourceForTest(
   // resolves them into the unified material cell (the mock inference server
   // ignores the secret value). Idempotent across a test's repeated deploys.
   await seedInferenceCredentials(opts.db, opts.tenantId, sources, opts.config);
+
+  if (opts.stepState !== undefined) {
+    const seeds = buildStepStateSeeds({
+      projection: approved.projection,
+      sources,
+      runId: opts.anchorRunId,
+      stepState: opts.stepState,
+    });
+    if (!seeds.ok) {
+      throw new Error(`deployWorkflowSourceForTest: ${seeds.reason}`);
+    }
+    await writeStepStateSeeds({
+      repoStore: env.hub.agentRepoStore.repoStore,
+      deploymentAddress: agentAddress,
+      files: seeds.files,
+    });
+    await restoreWorkflowRunToAllocation({
+      agentRepoStore: env.hub.agentRepoStore,
+      allocationRouter: env.hub.router,
+      allocationTarget,
+      agentAddress,
+    });
+  }
 
   const deployArgs = {
     approved,

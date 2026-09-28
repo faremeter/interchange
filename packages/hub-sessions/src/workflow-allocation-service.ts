@@ -18,6 +18,7 @@ import {
   hexEncode,
   SidecarCapabilityRule,
   type CredentialCipher,
+  type StepStateImport,
 } from "@intx/types";
 import type { FrozenApprovalBundle } from "@intx/types/sidecar";
 import type { HarnessConfig } from "@intx/types/runtime";
@@ -32,6 +33,7 @@ import {
 } from "@intx/workflow-deploy";
 
 import type { DeployContent } from "./agent-repo";
+import type { RepoStore } from "./repo-store/types";
 import {
   DestroySidecarResult,
   EnsureSidecarResult,
@@ -49,6 +51,7 @@ import type {
   AllocatedSidecarTarget,
   SidecarAllocationRouter,
 } from "./ws/sidecar-handler";
+import { buildStepStateSeeds, writeStepStateSeeds } from "./step-state-import";
 import type { InstallAndApproveResult } from "./workflow-probe-gate";
 import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
 import {
@@ -87,6 +90,11 @@ export type PrepareProvisionedWorkflowDeploymentArgs = {
   readonly defaultSourceOfferingId: string;
   readonly deployContent: DeployContent;
   readonly toolPackagePins?: readonly ToolPackagePin[];
+  /**
+   * State to start agent steps from, keyed by step id. Each key must name a
+   * top-level agent step of the approved definition.
+   */
+  readonly stepState?: StepStateImport;
 };
 
 export type PreparedProvisionedWorkflowDeployment = {
@@ -113,6 +121,8 @@ export type WorkflowAllocationServiceDeps = {
   readonly deploymentPlugins: SidecarPluginRegistry;
   readonly probePlugins: SidecarPluginRegistry;
   readonly preparedDeployer: PreparedWorkflowDeployer;
+  /** The Hub's copy of workflow-run histories, where imported state lands. */
+  readonly workflowRunRepoStore: Pick<RepoStore, "writeTree">;
   /** Decrypts tenant-owned credential bindings for provisioned deployments. */
   readonly credentialCipher: CredentialCipher;
   readonly probeCapabilityRules?: readonly SidecarCapabilityRule[];
@@ -208,6 +218,7 @@ export function createWorkflowAllocationService({
   deploymentPlugins,
   probePlugins,
   preparedDeployer,
+  workflowRunRepoStore,
   credentialCipher,
   probeCapabilityRules = [],
   allocationRouter,
@@ -653,11 +664,26 @@ export function createWorkflowAllocationService({
         sources: sourceCheck.sources,
         defaultSource: defaultSource.id,
       });
-      buildInertProjectionStepSources({
+      const stepSources = buildInertProjectionStepSources({
         projection: approved.projection,
         config,
         operatorApprovals: approved.approval.approvedSurface,
       });
+      const stepStateSeeds =
+        args.stepState === undefined
+          ? null
+          : buildStepStateSeeds({
+              projection: approved.projection,
+              sources: stepSources,
+              runId: args.anchorRunId,
+              stepState: args.stepState,
+            });
+      if (stepStateSeeds?.ok === false) {
+        throw new WorkflowProvisioningError(
+          "invalid_step_state",
+          stepStateSeeds.reason,
+        );
+      }
       await buildReferencedWorkflowSourcePins({
         projection: approved.projection,
         config,
@@ -677,6 +703,18 @@ export function createWorkflowAllocationService({
           probeProvisioner.bindingFingerprint;
       if (!adoptProbe) {
         await releaseProbe(probe, "succeeded");
+      }
+      // Seeded before the deployment's rows exist: the reconciler deploys
+      // from them, and that deploy replays this history onto the sidecar.
+      if (stepStateSeeds !== null) {
+        await writeStepStateSeeds({
+          repoStore: workflowRunRepoStore,
+          deploymentAddress: deriveRunAddress({
+            runId: args.anchorRunId,
+            domain: args.deploymentDomain,
+          }),
+          files: stepStateSeeds.files,
+        });
       }
       return await createDeployment({
         request: args,

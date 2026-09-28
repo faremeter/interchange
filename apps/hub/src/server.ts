@@ -362,6 +362,7 @@ export async function createHubServer({
     deploymentPlugins: sidecarPlugins,
     probePlugins: probeSidecarPlugins,
     preparedDeployer: sessionService,
+    workflowRunRepoStore: agentRepoStore.repoStore,
     credentialCipher,
     probeCapabilityRules: probeSidecarCapabilityRules,
     allocationRouter: sidecarRouter,
