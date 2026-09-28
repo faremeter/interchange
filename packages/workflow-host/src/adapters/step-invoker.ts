@@ -862,7 +862,8 @@ function inboundMailHeaderOpts(
  * `InboundMessage` -- the same failure `buildInboundMessageFromMail` would
  * raise inside a resumed step. The supervisor runs this at the dispatch
  * boundary (before committing the mail's parts) so a malformed signal mail
- * fails that DELIVERY rather than poisoning the parked run that receives it.
+ * fails that DELIVERY and is recorded as such, rather than poisoning the
+ * parked run that receives it.
  */
 export function assertInboundMailProjectable(headers: MessageHeaders): void {
   createInboundMessage(inboundMailHeaderOpts(headers));

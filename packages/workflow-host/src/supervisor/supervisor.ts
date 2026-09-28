@@ -2814,7 +2814,8 @@ export function createWorkflowSupervisor(
     // A mail that decodes but cannot be projected into the run's
     // `InboundMessage` input would fail the receiving step post-delivery (and,
     // for a parked unbounded run, take the whole conversation down with it).
-    // Reject it HERE, at the delivery boundary, so the run stays parked.
+    // Reject it HERE, at the delivery boundary: the drop is recorded on the
+    // consumed entry as this delivery's failure and the run stays parked.
     try {
       assertInboundMailProjectable(decoded.headers);
     } catch (cause) {
@@ -3069,14 +3070,17 @@ export function createWorkflowSupervisor(
             const prepared = await prepareMail(envelope, runId);
             if (!prepared.ok) {
               // A DETERMINISTICALLY malformed turn-2 mail cannot resume the
-              // parked agent. DROP it: log loudly and consume it (break to the
-              // post-loop markConsumed) rather than throwing -- replay would
-              // re-deliver the same poison mail forever. The run stays parked
-              // on its current correlation, ready for the next valid mail; one
-              // bad mail must not tear down a long-lived conversation. A
+              // parked agent. DROP it: record the rejection on the consumed
+              // entry (break to the post-loop markConsumed) so the failure is
+              // attributed to THIS delivery -- the hub settles the dispatch as
+              // failed -- rather than throwing, which would re-deliver the same
+              // poison mail forever, or forwarding it, which would fail the
+              // parked step and take the run down. The run stays parked on its
+              // current correlation, ready for the next valid mail. A
               // TRANSIENT write failure is NOT caught here: `prepareMail`
               // throws it, so it propagates as a dispatch fault and the mail
               // stays reclaimable for retry.
+              if (rejection === undefined) rejection = prepared.rejection;
               logger.error`signal.deliver for run ${runId}: dropping malformed inbound mail ${envelope.messageId}: ${prepared.rejection.message}`;
               break;
             }

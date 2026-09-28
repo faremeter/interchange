@@ -4688,8 +4688,13 @@ describe("createWorkflowSupervisor", () => {
     await wired.inboxPrimitives.awaitState(
       () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
     );
-    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+    const consumed = wired.inboxPrimitives.snapshot(address).consumed;
+    expect(consumed.size).toBe(1);
     expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(0);
+    // The failure is recorded ON THE DELIVERY: the consumed entry carries the
+    // rejection the hub settles this dispatch as failed with.
+    const consumedEntry = [...consumed.values()][0];
+    expect(consumedEntry?.rejection?.code).toBe("malformed_mail");
     // No signal was delivered for the poison mail.
     expect(parseSignalDelivers(wired.supervisorToChild.flushed()).length).toBe(
       0,
@@ -4720,7 +4725,7 @@ describe("createWorkflowSupervisor", () => {
     await wired.supervisor.shutdown();
   });
 
-  test("a turn-2 mail whose headers cannot project is dropped and the run stays parked", async () => {
+  test("a turn-2 mail whose headers cannot project is dropped with the failure recorded on the delivery", async () => {
     const baseDir = await makeTempDir("supervisor-unprojectable-mail-");
     await seedStepGrants(
       baseDir,
@@ -4755,7 +4760,7 @@ describe("createWorkflowSupervisor", () => {
     // This mail DECODES fine but cannot be projected into an InboundMessage:
     // its From extracts to `a b@c`, which createInboundMessage rejects. Before
     // the dispatch-boundary check, the failure surfaced inside the resumed step
-    // as a StepFailed that ended the whole run; now the mail is dropped.
+    // as a StepFailed that ended the whole run; now the DELIVERY fails instead.
     const bad = new TextEncoder().encode(
       "From: Bob <a b@c>\r\nContent-Type: text/plain\r\n\r\nhello",
     );
@@ -4764,8 +4769,11 @@ describe("createWorkflowSupervisor", () => {
     await wired.inboxPrimitives.awaitState(
       () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
     );
-    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
-    expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(0);
+    const consumedEntry = [
+      ...wired.inboxPrimitives.snapshot(address).consumed.values(),
+    ][0];
+    expect(consumedEntry?.rejection?.code).toBe("malformed_mail");
+    expect(consumedEntry?.rejection?.message).toMatch(/cannot be delivered/);
     expect(parseSignalDelivers(wired.supervisorToChild.flushed()).length).toBe(
       0,
     );
