@@ -128,30 +128,22 @@ export const InterchangeType = type.enumerated(
 );
 export type InterchangeType = typeof InterchangeType.infer;
 
-const CONVERSATION_TYPES = new Set<InterchangeType>([
+const CONVERSATION_TYPES: ReadonlySet<InterchangeType> = new Set([
   "conversation.message",
   "conversation.join",
   "conversation.leave",
 ]);
 
 /**
- * Tests whether an Interchange type is a conversation type. A conversation
- * type carries text content; every other type carries a structured payload.
- *
- * Membership is enumerated rather than derived from the `conversation.`
- * name prefix, so a member added to InterchangeType is not a conversation
- * type until it is listed in CONVERSATION_TYPES. Exported so that consumers
- * classify a message body against one definition instead of each deriving
- * its own.
+ * Membership is enumerated rather than derived from the `conversation.` name
+ * prefix, so a member added to InterchangeType is not a conversation type until
+ * it is listed in CONVERSATION_TYPES.
  */
 export function isConversationType(value: InterchangeType): boolean {
   return CONVERSATION_TYPES.has(value);
 }
 
-/**
- * Attachment for an outbound message. Content is raw bytes; the transport
- * base64-encodes every attachment part, whatever its content type.
- */
+/** Attachment for an outbound message. Content is raw bytes. */
 export type MessageAttachment = {
   name: string;
   contentType: string;
@@ -224,13 +216,16 @@ export type SendReceipt = {
 /**
  * Parsed headers from an inbound message. Field names follow RFC 5322 and
  * the Interchange-specific header conventions from MESSAGE.md § Headers.
+ *
+ * `from` is optional because a message can arrive carrying no originator at
+ * all, and there is no string that honestly stands for one.
  */
 export type MessageHeaders = {
-  from: string;
+  from?: string;
   to: string[];
   cc?: string[];
-  date: string;
-  messageId: string;
+  date?: string;
+  messageId?: string;
   inReplyTo?: string;
   references?: string[];
   subject?: string;
@@ -272,17 +267,28 @@ export type SignatureStatus = typeof SignatureStatus.infer;
  * produces it.
  *
  * - `clean` — nothing suspect; always admitted
- * - `untrustedFrom` — the visible `From` cannot be trusted, either because it is
- *   present but unparseable or because a valid signature is worn under a
+ * - `untrustedFrom` — the visible `From` cannot be trusted, because it is
+ *   present but unparseable, or because a valid signature is worn under a
  *   mismatched sender identity
+ * - `absentFrom` — the message carries no usable `From`, so there is no
+ *   originator to make a claim about; the condition is a state of the `From`
+ *   header alone and says nothing about the signature axis
  * - `invalid` — the signature check failed (tampering or the wrong key)
  * - `missing` — the message carried no signature
  * - `unknown` — no key was available to verify against
  * - `error` — a fault stopped the check from running at all; always rejected
+ *
+ * `untrustedFrom` and `absentFrom` are siblings over the same axis and are
+ * deliberately separate keys: a `From` the gate read and distrusted is a
+ * different judgement from a `From` that was never there, and an author who
+ * relaxes one has said nothing about the other. `missing` sits on the
+ * unrelated signature axis -- it is the absence of a SIGNATURE, not of a
+ * `From`.
  */
 export const InboundMailOutcome = type.enumerated(
   "clean",
   "untrustedFrom",
+  "absentFrom",
   "invalid",
   "missing",
   "unknown",
@@ -299,6 +305,7 @@ export type InboundMailOutcome = typeof InboundMailOutcome.infer;
  */
 export const AuthorControllableOutcome = type.enumerated(
   "untrustedFrom",
+  "absentFrom",
   "invalid",
   "missing",
   "unknown",
@@ -307,7 +314,7 @@ export type AuthorControllableOutcome = typeof AuthorControllableOutcome.infer;
 
 /**
  * A per-workflow inbound-mail admission policy: for each admission outcome the
- * author may control, whether a message that resolved to that outcome is
+ * author may control, whether a message that raises that outcome as a finding is
  * `reject`ed or `admit`ted. The key set is exactly the
  * {@link AuthorControllableOutcome} values -- `clean` (always admitted) and
  * `error` (pinned to reject) are deliberately not keys.
@@ -322,11 +329,32 @@ export type AuthorControllableOutcome = typeof AuthorControllableOutcome.infer;
  */
 export const InboundMailPolicy = type({
   "untrustedFrom?": "'reject' | 'admit'",
+  "absentFrom?": "'reject' | 'admit'",
   "invalid?": "'reject' | 'admit'",
   "missing?": "'reject' | 'admit'",
   "unknown?": "'reject' | 'admit'",
 }).onUndeclaredKey("reject");
 export type InboundMailPolicy = typeof InboundMailPolicy.infer;
+
+type AssertEqual<A, B> = [A] extends [B]
+  ? [B] extends [A]
+    ? true
+    : false
+  : false;
+
+/**
+ * The three outcome vocabularies must move together, but nothing else connects
+ * them: each spells the same names out again in its own notation.
+ */
+const _policyKeysMatchAuthorControllable: AssertEqual<
+  keyof InboundMailPolicy,
+  AuthorControllableOutcome
+> = true;
+
+const _authorControllableAreOutcomes: AssertEqual<
+  Exclude<AuthorControllableOutcome, InboundMailOutcome>,
+  never
+> = true;
 
 /**
  * A parsed MIME part. `content` is the DECODED bytes in memory (the
@@ -396,11 +424,14 @@ export type Mail = {
 };
 
 const MailShape = type({
-  // Require the header fields a consumer dereferences unconditionally (the
-  // sender/recipient a projection reads); other header fields stay optional
-  // and are carried losslessly in `rawHeaders`.
+  // Require the recipient list a consumer dereferences unconditionally; other
+  // header fields stay optional and are carried losslessly in `rawHeaders`.
+  // `from` is optional here deliberately: a mail with no usable originator is
+  // still mail, and requiring it makes `isMail` reject one, which routes it
+  // down the arbitrary-step-value path to be JSON-stringified into a text turn
+  // with no error and no log.
   headers: {
-    from: "string",
+    "from?": "string",
     to: "string[]",
   },
   rawHeaders: "object",
@@ -1574,7 +1605,7 @@ export const InferenceEvent = type.or(
     type: "'message.run.started'",
     seq: "number",
     data: {
-      messageId: "string",
+      "messageId?": "string",
       messageRunId: "string",
       receivedAt: "number",
     },
@@ -1584,7 +1615,7 @@ export const InferenceEvent = type.or(
     seq: "number",
     data: {
       messageRunId: "string",
-      messageId: "string",
+      "messageId?": "string",
       status: type.enumerated("completed", "failed"),
       "error?": {
         message: "string",
@@ -1821,7 +1852,7 @@ export type InferenceEvent =
       type: "message.run.started";
       seq: number;
       data: {
-        messageId: string;
+        messageId?: string;
         messageRunId: string;
         receivedAt: number;
       };
@@ -1830,7 +1861,8 @@ export type InferenceEvent =
       /**
        * Per-message run-bracket close. Pairs with `message.run.started`
        * by `messageRunId`. `messageId` is carried redundantly so log
-       * readers can correlate without a join against the open event.
+       * readers can correlate without a join against the open event; it is
+       * absent for a message that named no id of its own.
        *
        * The `status` enum is `"completed" | "failed"` only.
        * Cancellation lives in the workflow-runtime's
@@ -1852,7 +1884,7 @@ export type InferenceEvent =
       seq: number;
       data: {
         messageRunId: string;
-        messageId: string;
+        messageId?: string;
         status: "completed" | "failed";
         error?: {
           message: string;
@@ -2756,8 +2788,8 @@ export type ContextCommit = {
  * re-declaring the shape.
  */
 export const ConnectorThreadState = type({
-  threadRoot: "string",
-  lastMessageId: "string",
+  "threadRoot?": "string",
+  "lastMessageId?": "string",
   replyTo: "string",
   cc: "string[]",
   "subject?": "string",

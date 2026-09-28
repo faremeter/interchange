@@ -40,6 +40,7 @@ const admitAllInboundMailPolicy: ResolvedInboundMailPolicy = {
   clean: "admit",
   error: "admit",
   untrustedFrom: "admit",
+  absentFrom: "admit",
   invalid: "admit",
   missing: "admit",
   unknown: "admit",

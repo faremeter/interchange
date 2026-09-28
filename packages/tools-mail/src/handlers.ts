@@ -152,20 +152,35 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
       );
     }
 
+    // A parent that names no originator carries no reply address, and this
+    // header is the only thing the reply is addressed from.
+    if (parentHeaders.from === undefined) {
+      return errorResult(
+        call.id,
+        "cannot reply: the parent message names no originator",
+      );
+    }
+
     const outbound: OutboundMessage = {
       to: parentHeaders.from,
       type: args.type ?? "conversation.message",
-      inReplyTo: parentHeaders.messageId,
+    };
+
+    // RFC 5322 defines both `In-Reply-To` and `References` as one-or-more
+    // message ids, so a parent naming none is referenced by neither header
+    // rather than by an empty one.
+    if (parentHeaders.messageId !== undefined) {
+      outbound.inReplyTo = parentHeaders.messageId;
       // The full RFC 5322 References chain for a reply is the parent's own
       // References plus the parent's Message-Id. The parent is in hand here
       // (fetched above for its threading headers), so build the complete
       // ancestry rather than leaving the transport to derive a single-element
       // chain from inReplyTo alone.
-      references: [
+      outbound.references = [
         ...(parentHeaders.references ?? []),
         parentHeaders.messageId,
-      ],
-    };
+      ];
+    }
 
     // Carry forward the subject if available.
     if (parentHeaders.subject !== undefined) {

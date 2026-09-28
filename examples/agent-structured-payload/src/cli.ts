@@ -167,7 +167,7 @@ export async function main(
       `  price:       ${formatPrice(offering.priceCents, offering.currency)}\n`,
     );
     stdout(`  type:        ${message.headers.interchangeType ?? "(unset)"}\n`);
-    stdout(`  messageId:   ${message.headers.messageId}\n`);
+    stdout(`  messageId:   ${message.headers.messageId ?? "(none)"}\n`);
     stdout("\n");
 
     agent.deliver(message);
@@ -189,8 +189,8 @@ export async function main(
     stdout(
       `  type:        ${delivered.headers.interchangeType ?? "(unset)"}\n`,
     );
-    stdout(`  from:        ${delivered.headers.from}\n`);
-    stdout(`  messageId:   ${delivered.headers.messageId}\n`);
+    stdout(`  from:        ${delivered.headers.from ?? "(none)"}\n`);
+    stdout(`  messageId:   ${delivered.headers.messageId ?? "(none)"}\n`);
     stdout(`  payload.type:    ${delivered.payload?.type ?? "(no payload)"}\n`);
     stdout(
       `  payload.version: ${delivered.payload?.version ?? "(no payload)"}\n`,

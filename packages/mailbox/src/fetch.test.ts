@@ -5,12 +5,14 @@ import {
   assembleSignedContent,
   createDetachedSignatureFromProvider,
   decodeMail,
+  parseHeaderSection,
   type MessageHeaders,
 } from "@intx/mime";
 import type { CryptoProvider } from "@intx/types/runtime";
 import {
   createInMemoryMailboxStore,
   executeSearch,
+  executeThread,
   fetchHeaders,
   fetchStructure,
   fetchPart,
@@ -83,6 +85,28 @@ async function signedRawMessage(crypto: CryptoProvider): Promise<Uint8Array> {
   });
   const signature = await createDetachedSignatureFromProvider(content, crypto);
   return assembleMessage(signedHeaders(), content, signature);
+}
+
+/**
+ * Drop the `From` line from a message's header section, leaving every other
+ * byte alone. The detached signature covers the signed-content part inside the
+ * body, not the outer headers, so a message stripped this way still verifies
+ * -- which is what makes it a fixture for a message that carries no
+ * originator and would otherwise have a valid signature.
+ */
+function stripFromHeader(raw: Uint8Array): Uint8Array {
+  const { headerEnd } = parseHeaderSection(raw);
+  const kept = new TextDecoder()
+    .decode(raw.subarray(0, headerEnd))
+    .split("\r\n")
+    .filter((line) => !/^from:/i.test(line))
+    .join("\r\n");
+  const keptBytes = encoder.encode(kept);
+  const rest = raw.subarray(headerEnd);
+  const out = new Uint8Array(keptBytes.length + rest.length);
+  out.set(keptBytes, 0);
+  out.set(rest, keptBytes.length);
+  return out;
 }
 
 /** A two-part multipart/mixed message; part 1 is a text/plain body. */
@@ -592,6 +616,95 @@ describe("async fetch projections route through readRaw", () => {
     }
   });
 
+  // A body that does not decode into text: RFC 2045 section 6.4 makes the
+  // first opaque octets, and the second is base64 that will not decode.
+  const undecodableBodyCases: { encoding: string; body: string }[] = [
+    { encoding: "x-uuencode", body: "begin 644 x" },
+    { encoding: "base64", body: "!!! not base64 !!!" },
+  ];
+
+  test("fetchFull delivers a message whose body it cannot decode", async () => {
+    // Refusing the message is not a behaviour any mail client has: one that
+    // cannot render a body still shows the message. `content` is text, so an
+    // undecodable body is carried as an absent one rather than as invented
+    // text; the octets remain reachable through `fetchPart`.
+    for (const c of undecodableBodyCases) {
+      const store = createInMemoryMailboxStore();
+      const uid = store.append(
+        signedConversationWithEncoding(c.encoding, c.body),
+        envelopeFor(),
+        [],
+      );
+      const full = await fetchFull(
+        { uid, mailbox: "INBOX" },
+        store,
+        () => undefined,
+      );
+      expect(full.content).toBeUndefined();
+      expect(full.payload).toBeUndefined();
+      expect(full.headers.subject).toBe("Encoded");
+      expect(full.headers.from).toBe("alice@x");
+      expect(full.flags).toEqual([]);
+      expect(full.signatureStatus).toBe("unknown");
+      expect(full.ref).toEqual({ uid, mailbox: "INBOX" });
+    }
+  });
+
+  test("fetchFull omits a structured payload it cannot decode", async () => {
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      signedStructuredWithEncoding("x-uuencode", "begin 644 x"),
+      envelopeFor({ interchangeType: "offering.catalog" }),
+      [],
+    );
+    const full = await fetchFull(
+      { uid, mailbox: "INBOX" },
+      store,
+      () => undefined,
+    );
+    expect(full.payload).toBeUndefined();
+    expect(full.content).toBeUndefined();
+    expect(full.headers.interchangeType).toBe("offering.catalog");
+  });
+
+  test("fetchPart reports an undecodable body as application/octet-stream", async () => {
+    // The two paths agree about the same bytes: what `fetchFull` declines to
+    // call text, `fetchPart` hands back as octets under the section 6.4
+    // relabel. A part path resolves against the signed content, so "1.1" is
+    // the body part `fetchFull` reads.
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      signedConversationWithEncoding("x-uuencode", "begin 644 x"),
+      envelopeFor(),
+      [],
+    );
+    const ref = { uid, mailbox: "INBOX" };
+
+    expect(
+      (await fetchFull(ref, store, () => undefined)).content,
+    ).toBeUndefined();
+
+    const part = await fetchPart(ref, "1.1", store);
+    expect(part.contentType).toBe("application/octet-stream");
+    expect(part.encoding).toBe("x-uuencode");
+    expect(new TextDecoder().decode(part.content)).toBe("begin 644 x");
+  });
+
+  test("fetchFull still refuses a structured payload that is not valid JSON", async () => {
+    // A decode failure and a payload failure are different conditions: here the
+    // bytes decoded and the sender's JSON is wrong, which is a fault to surface
+    // rather than a body this transport cannot read.
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      signedStructuredWithEncoding("7bit", "{ not json"),
+      envelopeFor({ interchangeType: "offering.catalog" }),
+      [],
+    );
+    await expect(
+      fetchFull({ uid, mailbox: "INBOX" }, store, () => undefined),
+    ).rejects.toThrow();
+  });
+
   test("fetchFull propagates a sender whose getPublicKey throws", async () => {
     // A CryptoProvider that cannot produce its own public key is a local
     // fault, not a bad signature: the error surfaces rather than being
@@ -612,5 +725,134 @@ describe("async fetch projections route through readRaw", () => {
     await expect(
       fetchFull({ uid, mailbox: "INBOX" }, store, () => brokenSender),
     ).rejects.toThrow(/no public key/);
+  });
+});
+
+describe("a message that carries no originator", () => {
+  test("matches no sender query, including the empty one", async () => {
+    // There is no sender for the substring to be found in, so no `from`
+    // query can match. The empty query is the assertion that matters: every
+    // string contains "", so it catches a stand-in substituted for the
+    // absent sender whatever address that stand-in names.
+    const store = createInMemoryMailboxStore();
+    const orphanUid = store.append(
+      stripFromHeader(rawMessage("Hello", "body text")),
+      envelopeFor({ from: undefined, messageId: "<orphan@x>" }),
+      [],
+    );
+    const namedUid = store.append(
+      rawMessage("Hello", "body text"),
+      envelopeFor(),
+      [],
+    );
+
+    const byEmpty = await executeSearch("INBOX", store, { from: "" });
+    // The named message proves the empty query is a query that matches, so
+    // the orphan's absence from the result is the guard and not a query that
+    // matches nothing.
+    expect(byEmpty.map((r) => r.uid)).toEqual([namedUid]);
+
+    const byAddress = await executeSearch("INBOX", store, { from: "alice@x" });
+    expect(byAddress.map((r) => r.uid)).toEqual([namedUid]);
+
+    // Every other predicate still sees the orphan, so it is in the mailbox
+    // and reachable -- it is the sender predicate alone that excludes it.
+    const byRecipient = await executeSearch("INBOX", store, { to: "bob@y" });
+    expect(byRecipient.map((r) => r.uid)).toEqual([orphanUid, namedUid]);
+  });
+
+  test("fetchFull reports its signature unknown without consulting the key lookup", async () => {
+    // A message with no originator names no key to verify against. Asking
+    // the lookup for a stand-in address would return whichever key that
+    // address happens to have and verify the message against it, so the
+    // lookup must not be asked at all.
+    const crypto = createEd25519Crypto(await generateKeyPair());
+    const store = createInMemoryMailboxStore();
+    const raw = stripFromHeader(await signedRawMessage(crypto));
+    const uid = store.append(raw, envelopeFor({ from: undefined }), []);
+
+    const asked: string[] = [];
+    // Answers with the signing key for any address, so a stand-in would
+    // verify and report `valid`.
+    const getCrypto = (fromAddress: string): CryptoProvider => {
+      asked.push(fromAddress);
+      return crypto;
+    };
+
+    const full = await fetchFull({ uid, mailbox: "INBOX" }, store, getCrypto);
+
+    expect(full.headers.from).toBeUndefined();
+    expect(full.signatureStatus).toBe("unknown");
+    expect(asked).toEqual([]);
+  });
+});
+
+describe("a message that carries no date", () => {
+  test("matches no date window, in either direction", async () => {
+    // Every date predicate asks where the sender placed the message in time. A
+    // message that named no date placed itself nowhere, so each window has to
+    // exclude it. The dated message in the same mailbox proves each query is
+    // one that matches, so the undated message's absence is the guard rather
+    // than a query matching nothing.
+    const store = createInMemoryMailboxStore();
+    const undatedUid = store.append(
+      rawMessage("Hello", "body text"),
+      envelopeFor({ date: undefined, messageId: "<undated@x>" }),
+      [],
+    );
+    const datedUid = store.append(
+      rawMessage("Hello", "body text"),
+      envelopeFor(),
+      [],
+    );
+
+    const on = new Date("2026-01-01T00:00:00Z");
+    const before = new Date("2026-06-01T00:00:00Z");
+    const after = new Date("2025-06-01T00:00:00Z");
+
+    for (const query of [
+      { on },
+      { sentOn: on },
+      { before },
+      { sentBefore: before },
+      { after },
+      { sentAfter: after },
+    ]) {
+      const hits = await executeSearch("INBOX", store, query);
+      expect(hits.map((r) => r.uid)).toEqual([datedUid]);
+    }
+
+    // Every other predicate still sees the undated message, so it is in the
+    // mailbox and reachable -- the date predicates alone exclude it.
+    const byRecipient = await executeSearch("INBOX", store, { to: "bob@y" });
+    expect(byRecipient.map((r) => r.uid)).toEqual([undatedUid, datedUid]);
+  });
+
+  test("sorts ahead of a dated message in a thread rather than taking a date", async () => {
+    // Threading orders by date, and an undated message supplies no key. It
+    // takes the epoch -- the same key a dummy container with no dated
+    // descendants already takes -- so it sorts first instead of being placed
+    // by a date it never carried.
+    const store = createInMemoryMailboxStore();
+    const datedUid = store.append(
+      rawMessage("Shared", "first"),
+      envelopeFor({ messageId: "<dated@x>", subject: "Shared" }),
+      [],
+    );
+    const undatedUid = store.append(
+      rawMessage("Shared", "second"),
+      envelopeFor({
+        messageId: "<undated@x>",
+        subject: "Shared",
+        date: undefined,
+      }),
+      [],
+    );
+
+    const threads = await executeThread("INBOX", store, "orderedsubject");
+
+    expect(threads).toHaveLength(1);
+    expect(threads[0]?.ref.uid).toBe(undatedUid);
+    expect(threads[0]?.children.map((c) => c.ref.uid)).toEqual([datedUid]);
   });
 });

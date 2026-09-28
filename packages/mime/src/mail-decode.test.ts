@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import type { MailPart, MessageAttachment } from "@intx/types/runtime";
 import { isMail } from "@intx/types/runtime";
+import { deriveMessageId, parseMessageIdHeader } from "@intx/types";
 
 import {
   assembleSignedContent,
@@ -213,6 +214,75 @@ describe("decodeMail", () => {
     );
   });
 
+  test("records an absent Date and Message-ID as absent, not as empty", () => {
+    // RFC 5322 defines `Date` as `date-time` and `Message-ID` as `msg-id`.
+    // Neither admits an empty body, so a message carrying neither has to come
+    // back with both fields absent: a defaulted empty string reads as a value
+    // downstream and gets written back out as a malformed header line.
+    const mail = decodeMail(
+      rawBytes(
+        [
+          "From: alice@example.com",
+          "To: bob@example.com",
+          "Subject: neither header",
+          "Content-Type: text/plain",
+          "",
+          "body",
+        ].join("\r\n"),
+      ),
+    );
+
+    expect(mail.headers.date).toBeUndefined();
+    expect(mail.headers.messageId).toBeUndefined();
+    // Absent, not present-and-undefined: the key must not survive into a
+    // serialized envelope as an explicit null-ish value.
+    expect("date" in mail.headers).toBe(false);
+    expect("messageId" in mail.headers).toBe(false);
+  });
+
+  test("treats a blank Date and Message-ID as absent", () => {
+    // A sender that writes the header and leaves it empty has named nothing,
+    // which is the same treatment a blank `From` already gets.
+    const mail = decodeMail(
+      rawBytes(
+        [
+          "From: alice@example.com",
+          "To: bob@example.com",
+          "Date:   ",
+          "Message-ID:  ",
+          "Content-Type: text/plain",
+          "",
+          "body",
+        ].join("\r\n"),
+      ),
+    );
+
+    expect("date" in mail.headers).toBe(false);
+    expect("messageId" in mail.headers).toBe(false);
+  });
+
+  test("treats a blank In-Reply-To as absent", () => {
+    // RFC 5322 defines `In-Reply-To` as `1*msg-id` under the same clause as
+    // `Message-ID`, so a header left blank names no parent. An empty value is
+    // an id no message can carry, so every message whose header was blank
+    // would otherwise read as a reply to one shared nonexistent parent.
+    const mail = decodeMail(
+      rawBytes(
+        [
+          "From: alice@example.com",
+          "To: bob@example.com",
+          "Message-ID: <blank-parent@example.com>",
+          "In-Reply-To:   ",
+          "Content-Type: text/plain",
+          "",
+          "body",
+        ].join("\r\n"),
+      ),
+    );
+
+    expect("inReplyTo" in mail.headers).toBe(false);
+  });
+
   test("decodes every part of a message with attachments, no data loss", () => {
     const mail = decodeMail(
       signedConversation("see attached", [
@@ -381,6 +451,73 @@ describe("decodeMail", () => {
     // The fields either side of the smuggled one still parse in both readings.
     expect(mail.headers.to).toEqual(["bob@example.com"]);
     expect(mail.rawHeaders["from"]).toEqual(["alice@example.com"]);
+  });
+
+  test("records a blank or absent From as no originator, not an empty one", () => {
+    // A defaulted "" made these two states indistinguishable and handed every
+    // consumer an originator the message never carried.
+    expect(
+      decodeMail(rawBytes("To: bob@example.com\r\n\r\nbody")).headers.from,
+    ).toBeUndefined();
+    expect(
+      decodeMail(rawBytes("From:   \r\nTo: bob@example.com\r\n\r\nbody"))
+        .headers.from,
+    ).toBeUndefined();
+  });
+
+  test("carries an unparseable From through verbatim", () => {
+    // This projection is lossless. An originator that is present but not a
+    // parseable address is a different judgement from one that was never
+    // there, and the admission gate keys on exactly that difference.
+    expect(
+      decodeMail(rawBytes("From: not an address\r\n\r\nbody")).headers.from,
+    ).toBe("not an address");
+  });
+
+  test("keeps every header when the header section opens with a blank line", () => {
+    // The raw parse used to break on the leading empty line and return no
+    // headers at all, where the typed parse skipped it and kept both fields.
+    const mail = decodeMail(
+      rawBytes(
+        "\r\nFrom: alice@example.com\r\nTo: bob@example.com\r\n\r\nbody",
+      ),
+    );
+    expect(mail.rawHeaders["from"]).toEqual(["alice@example.com"]);
+    expect(mail.rawHeaders["to"]).toEqual(["bob@example.com"]);
+    expect(mail.headers.from).toBe("alice@example.com");
+    expect(mail.headers.to).toEqual(["bob@example.com"]);
+  });
+
+  test("names no id in either parser for a lone-LF message", async () => {
+    // CRLF is the sole line terminator (RFC 5321 section 2.3.8, section
+    // 4.1.1.4). `decodeMail` refuses these bytes, so the claim-check id
+    // derived for them must not be one read out of the text it refused.
+    const raw = rawBytes("Message-ID: <lf@example.com>\n\nbody");
+    expect(() => decodeMail(raw)).toThrow(/must break its lines with CRLF/);
+    expect(parseMessageIdHeader(raw)).toBeNull();
+    expect(await deriveMessageId(raw)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("resolves a leading-WSP line to no field in either parser", async () => {
+    // A field begins with a printable name character (RFC 2822 section 2.2),
+    // so the smuggled line continues nothing and names no field. Reading it as
+    // one made the stored envelope id disagree with the dedup key.
+    const raw = rawBytes(
+      " Message-ID: <smuggled@evil.test>\r\n" +
+        "Message-ID: <real@example.com>\r\n" +
+        "\r\nbody",
+    );
+    const mail = decodeMail(raw);
+    expect(mail.headers.messageId).toBe("<real@example.com>");
+    expect(mail.rawHeaders["message-id"]).toEqual(["<real@example.com>"]);
+    expect(await deriveMessageId(raw)).toBe("<real@example.com>");
+
+    const solo = rawBytes(" Message-ID: <wsp@example.com>\r\n\r\nbody");
+    const soloMail = decodeMail(solo);
+    expect(soloMail.headers.messageId).toBeUndefined();
+    expect(soloMail.rawHeaders["message-id"]).toBeUndefined();
+    expect(parseMessageIdHeader(solo)).toBeNull();
+    expect(await deriveMessageId(solo)).toMatch(/^[0-9a-f]{64}$/);
   });
 
   test("throws on a multipart part with no boundary rather than dropping it", () => {
@@ -834,8 +971,15 @@ describe("isMail", () => {
     ).toBe(false);
   });
 
-  test("rejects headers missing the from/to a consumer dereferences", () => {
+  test("rejects headers missing the to a consumer dereferences", () => {
     expect(isMail({ ...validMail(), headers: {} })).toBe(false);
     expect(isMail({ ...validMail(), headers: { from: "a@b" } })).toBe(false);
+  });
+
+  test("accepts a Mail carrying no originator", () => {
+    // Mail with no usable From is still mail. Rejecting it here routed such a
+    // message down the arbitrary-step-value path, where it was stringified
+    // into a text turn with no error and no log.
+    expect(isMail({ ...validMail(), headers: { to: ["c@d"] } })).toBe(true);
   });
 });

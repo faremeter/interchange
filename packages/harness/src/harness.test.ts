@@ -64,6 +64,7 @@ interface MockTransportShape {
   fire(event: { type: string; uid: number }): void;
   fireExists(uid: number): void;
   enqueue(uid: number, message: InboundMessage): void;
+  enqueueUnfetchable(uid: number): void;
   watchCount(): number;
   unsubscribeCount(): number;
   getDeletedRefs(): MessageRef[];
@@ -104,6 +105,7 @@ function makeMockTransport(): {
   const fetchedUids: number[] = [];
   const sent: unknown[] = [];
   const messages = new Map<number, InboundMessage>();
+  const unfetchable = new Set<number>();
   let unsubscribes = 0;
 
   // The harness reads `transport.watch`, `transport.fetchFull`,
@@ -120,6 +122,9 @@ function makeMockTransport(): {
     },
     async fetchFull(ref: MessageRef): Promise<InboundMessage> {
       fetchedUids.push(ref.uid);
+      if (unfetchable.has(ref.uid)) {
+        throw new Error(`invalid message payload on uid ${String(ref.uid)}`);
+      }
       const message = messages.get(ref.uid);
       if (message === undefined) {
         throw new Error(`no message for uid ${String(ref.uid)}`);
@@ -155,6 +160,11 @@ function makeMockTransport(): {
       },
       enqueue(uid: number, message: InboundMessage) {
         messages.set(uid, message);
+      },
+      // A body `fetchFull` cannot decode: the transport throws rather than
+      // returning a message with its content omitted.
+      enqueueUnfetchable(uid: number) {
+        unfetchable.add(uid);
       },
       watchCount(): number {
         return callbacks.length;
@@ -684,6 +694,44 @@ describe("createHarness message delivery", () => {
 
       await waitUntil(() => control.getFetchedUids().length > 0);
       expect(control.getFetchedUids()).toEqual([9]);
+
+      await waitUntil(() => received.count >= 1);
+      expect(received.count).toBe(1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("a message that cannot be fetched is consumed instead of left in the INBOX", async () => {
+    const { transport, control } = makeMockTransport();
+    const storage = await createIsogitStore(workDir);
+    const received = { count: 0 };
+    const env: MailEnv = {
+      ...mailEnv({ workdir: workDir, storage, transport }),
+      directors: recordingDirectorRegistry(received),
+    };
+    const harness = await createHarness(recordingDef(), env);
+
+    try {
+      control.enqueueUnfetchable(13);
+      control.fireExists(13);
+
+      await waitUntil(() =>
+        control.getDeletedRefs().some((ref) => ref.uid === 13),
+      );
+
+      // The delivery of a message the harness can handle is the fence for
+      // the negative: `agent.deliver` runs before `consumeFromInbox` on the
+      // delivered path, so a count of one after uid 14 lands proves uid 13
+      // reached the reactor not at all.
+      const message = createInboundMessage({
+        from: "alice@example.com",
+        to: AGENT_ADDRESS,
+        content: "Hello",
+        interchangeType: "conversation.message",
+      });
+      control.enqueue(14, { ...message, ref: { uid: 14, mailbox: "INBOX" } });
+      control.fireExists(14);
 
       await waitUntil(() => received.count >= 1);
       expect(received.count).toBe(1);

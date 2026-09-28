@@ -245,7 +245,8 @@ export function driveConnectorReplies(
             // (parent absent, malformed id) yields `undefined`, and the
             // transport derives `[inReplyTo]` as before.
             const references =
-              opts.resolveReferences !== undefined
+              opts.resolveReferences !== undefined &&
+              parts.inReplyTo !== undefined
                 ? await opts.resolveReferences(parts.inReplyTo)
                 : undefined;
             const receipt = await opts.send({

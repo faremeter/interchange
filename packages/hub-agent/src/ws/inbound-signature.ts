@@ -111,8 +111,9 @@ export type ResolvedInboundMailPolicy = Record<
  *     {@link InboundMailPolicy}, so an authored policy cannot relax it -- a
  *     message we could not check through is never something an author waves past.
  *
- * The four author-controllable outcomes (`untrustedFrom`, `invalid`, `missing`,
- * `unknown`) take the authored value where the author set that key, and default
+ * The five author-controllable outcomes (`untrustedFrom`, `absentFrom`,
+ * `invalid`, `missing`, `unknown`) take the authored value where the author
+ * set that key, and default
  * to `reject` otherwise. `reject` is the secure default: an outcome the author
  * did not explicitly choose to admit stays rejected, so an omitted policy (or a
  * policy that omits one outcome) fails closed rather than open.
@@ -124,6 +125,7 @@ export function resolveInboundMailPolicy(
     clean: "admit",
     error: "reject",
     untrustedFrom: authored?.untrustedFrom ?? "reject",
+    absentFrom: authored?.absentFrom ?? "reject",
     invalid: authored?.invalid ?? "reject",
     missing: authored?.missing ?? "reject",
     unknown: authored?.unknown ?? "reject",

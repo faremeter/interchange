@@ -76,9 +76,7 @@ function orderedSubjectThread(
 
   const threads: Thread[] = [];
   for (const [, msgs] of bySubject) {
-    const sorted = msgs.sort(
-      (a, b) => a.envelope.date.getTime() - b.envelope.date.getTime(),
-    );
+    const sorted = msgs.sort((a, b) => messageDate(a) - messageDate(b));
     const root = sorted[0]!;
     const rootThread: Thread = {
       ref: { uid: root.uid, mailbox: mailboxName },
@@ -93,7 +91,7 @@ function orderedSubjectThread(
   return threads.sort((a, b) => {
     const aMsg = messages.find((m) => m.uid === a.ref.uid)!;
     const bMsg = messages.find((m) => m.uid === b.ref.uid)!;
-    return aMsg.envelope.date.getTime() - bMsg.envelope.date.getTime();
+    return messageDate(aMsg) - messageDate(bMsg);
   });
 }
 
@@ -195,7 +193,7 @@ function buildRefList(references: string[], inReplyTo?: string): string[] {
     }
   }
 
-  if (inReplyTo !== undefined && inReplyTo !== "" && !seen.has(inReplyTo)) {
+  if (inReplyTo !== undefined && !seen.has(inReplyTo)) {
     result.push(inReplyTo);
   }
 
@@ -231,9 +229,19 @@ function pruneContainers(containers: Container[]): Container[] {
   return result;
 }
 
+/**
+ * The sort key for a message's position in a thread (RFC 5256 orders by date).
+ * A message that named none takes the epoch, matching what `containerDate`
+ * gives a dummy container whose descendants are all undated.
+ */
+function messageDate(msg: StoredMessage): number {
+  const date = msg.envelope.date;
+  return date === undefined ? 0 : date.getTime();
+}
+
 function containerDate(c: Container): number {
   if (c.message !== null) {
-    return c.message.envelope.date.getTime();
+    return messageDate(c.message);
   }
   // For dummy containers, use the earliest child date.
   let earliest = Infinity;

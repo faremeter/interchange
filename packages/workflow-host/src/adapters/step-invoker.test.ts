@@ -11,6 +11,7 @@ import {
 } from "@intx/agent";
 import { noopAuditStore } from "@intx/agent/testing";
 import { createDefaultDirectorRegistry } from "@intx/agent";
+import { createInboundTurn } from "@intx/inference";
 import type {
   AuthorizeContext,
   StepInvokeRequest,
@@ -1356,7 +1357,7 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
     await warmCache.evictAll("test teardown");
   });
 
-  test("a reply-send failure fails the turn so the mail is not consumed as replied", async () => {
+  test("a reply-send failure fails the turn rather than claiming a reply", async () => {
     const warmCache = createWarmAgentCache();
     const { agent } = buildBarrierStubAgent(replySendResult("doomed reply"));
     const harness = buildReplyDriveHarness();
@@ -1379,8 +1380,9 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
     await harness.awaitBarrier(1);
     harness.settle({ ok: false, cause: sendCause });
 
-    // The step rejects rather than returning: the run's claim-check replays
-    // the inbound mail instead of consuming it with the reply dropped.
+    // The step rejects rather than returning a step result that claims a reply
+    // which never went out. The run fails, and the supervisor consumes the
+    // inbound mail without a reply rather than replaying it.
     let thrown: unknown;
     try {
       await pending;
@@ -1392,6 +1394,50 @@ describe("workflow-host StepInvoker adapter - warm reply drain", () => {
     }
     expect(thrown.message).toContain("auto-reply send failed");
     expect(thrown.cause).toBe(sendCause);
+
+    await warmCache.evictAll("test teardown");
+  });
+
+  test("a reply with no connector thread names that, not a failed send", async () => {
+    // The connector router passes a message that names no reply address
+    // through without opening a thread, so composing a reply on that step
+    // later throws `NoActiveConnectorThreadError` and nothing is ever
+    // submitted. The turn still fails, but the operator must not be told the
+    // send failed -- there was no send to fail.
+    const warmCache = createWarmAgentCache();
+    const { agent } = buildBarrierStubAgent(replySendResult("unaddressed"));
+    const harness = buildReplyDriveHarness();
+
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: async () => ({
+        effect: "allow",
+        matchingGrants: [],
+        resolvedBy: null,
+      }),
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+      warmCache,
+      driveReplies: harness.driveReplies,
+    });
+
+    const composeCause = new Error("no active connector thread");
+    composeCause.name = "NoActiveConnectorThreadError";
+    const pending = invoker(buildRequest({ input: "hello" }));
+    await harness.awaitBarrier(1);
+    harness.settle({ ok: false, cause: composeCause });
+
+    let thrown: unknown;
+    try {
+      await pending;
+    } catch (cause) {
+      thrown = cause;
+    }
+    if (!(thrown instanceof Error)) {
+      throw new Error("expected the unaddressable reply to reject the step");
+    }
+    expect(thrown.message).toContain("no active connector thread");
+    expect(thrown.message).not.toContain("send failed");
+    expect(thrown.cause).toBe(composeCause);
 
     await warmCache.evictAll("test teardown");
   });
@@ -1977,5 +2023,184 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
     });
     await invoker(buildRequest({ input: { some: "object", n: 1 } }));
     expect(captured.message).toBe(JSON.stringify({ some: "object", n: 1 }));
+  });
+
+  /**
+   * Every originator state below is one the projection cannot resolve to a
+   * real address. Each must reach the model as no claim at all, not as an
+   * address the system chose: the turn framing prefixes `[From: <addr>]`
+   * whenever the delivered message carries one, so a substituted address is
+   * presented to the model as the message's actual sender.
+   */
+  const unusableOriginators: { label: string; from: string | undefined }[] = [
+    { label: "an absent From header", from: undefined },
+    { label: "an empty From header", from: "" },
+    { label: "a whitespace-only From header", from: "   " },
+    { label: "an unparseable From header", from: "not an address" },
+    { label: "a two-at From header", from: "a@b@c.example" },
+  ];
+
+  function mailFrom(from: string | undefined): Mail {
+    return {
+      headers: {
+        ...(from !== undefined ? { from } : {}),
+        to: ["run@deployment.example.com"],
+        date: "2026-01-02T03:04:05Z",
+        messageId: "<m@example.com>",
+      },
+      rawHeaders: {},
+      parts: [
+        {
+          contentType: "text/plain",
+          ref: "mail-part:///r/m/0-text",
+          text: "who sent this",
+        },
+      ],
+    };
+  }
+
+  async function deliver(input: Mail): Promise<InboundMessage> {
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+    await invoker(buildRequest({ input }));
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error("expected an InboundMessage, not a synthesized string");
+    }
+    return msg;
+  }
+
+  for (const { label, from } of unusableOriginators) {
+    test(`tells the model no sender for ${label}`, async () => {
+      const msg = await deliver(mailFrom(from));
+      expect(msg.headers.from).toBeUndefined();
+      // The turn the model actually reads carries no originator line.
+      const turn = createInboundTurn(msg);
+      expect(turn?.content[0]).toEqual({ type: "text", text: "who sent this" });
+    });
+  }
+
+  test("recognises a Mail carrying no originator as mail", async () => {
+    // The cases above assert what the model is told about the sender; this
+    // asserts the branch that judgement rests on. A mail with no originator
+    // is still mail, and when `isMail` rejected it the payload fell through
+    // to the arbitrary-step-value path and reached the agent JSON-stringified
+    // into a text turn, with no error and no log.
+    const { agent, captured } = buildCapturingAgent();
+    const invoker = createWorkflowStepInvoker({
+      workflowAuthorize: allowAll,
+      buildEnv: async () => stubBuildEnv(),
+      agentFactory: async () => agent,
+    });
+    await invoker(buildRequest({ input: mailFrom(undefined) }));
+    const msg = captured.message;
+    if (typeof msg === "string" || msg === undefined) {
+      throw new Error(
+        "expected the mail branch to deliver an InboundMessage; the payload fell through to the arbitrary-step-value path",
+      );
+    }
+    // Only the mail branch produces these: the mail's own threading identity
+    // and recipient ride through, and the body is the text part rather than a
+    // JSON encoding of the whole Mail. The fallthrough path stringifies the
+    // input and lets agent.send stamp synthetic addressing.
+    expect(msg.headers.messageId).toBe("<m@example.com>");
+    expect(msg.headers.to).toEqual(["run@deployment.example.com"]);
+    expect(msg.content).toBe("who sent this");
+  });
+
+  test("carries a genuine originator through to the model's turn", async () => {
+    const msg = await deliver(mailFrom("alice@example.com"));
+    expect(msg.headers.from).toBe("alice@example.com");
+    const turn = createInboundTurn(msg);
+    expect(turn?.content[0]).toEqual({
+      type: "text",
+      text: "[From: alice@example.com]\n\nwho sent this",
+    });
+  });
+
+  test("reduces a display-name originator to its addr-spec", async () => {
+    const msg = await deliver(mailFrom('"Alice" <Alice@Example.com>'));
+    expect(msg.headers.from).toBe("alice@example.com");
+  });
+
+  /**
+   * Every recipient state below is one the projection cannot resolve to a real
+   * address. Each must deliver a message that names no recipient, not one the
+   * system chose. The hub routes on an out-of-band agent address rather than
+   * on this header, so a `To` that is absent, blank, or unparseable is an
+   * ordinary state of delivered mail and not an error -- but a substituted
+   * address is recorded as the message's own recipient in the run's audit
+   * trail and its mailbox index, where nothing downstream can tell an invented
+   * address from one the sender actually wrote.
+   *
+   * An absent `To` is not among these: `MailShape` requires the field, so such
+   * a payload is not a `Mail` and never reaches this projection.
+   */
+  const unusableRecipients: { label: string; to: string[] }[] = [
+    { label: "an empty recipient list", to: [] },
+    { label: "an empty To header", to: [""] },
+    { label: "a whitespace-only To header", to: ["   "] },
+    { label: "an unparseable To header", to: ["not an address"] },
+    { label: "a two-at To header", to: ["a@b@c.example"] },
+    { label: "a group-syntax To header", to: ["undisclosed-recipients:;"] },
+  ];
+
+  function mailTo(to: string[]): Mail {
+    return {
+      headers: {
+        from: "alice@example.com",
+        to,
+        date: "2026-01-02T03:04:05Z",
+        messageId: "<m@example.com>",
+      },
+      rawHeaders: {},
+      parts: [
+        {
+          contentType: "text/plain",
+          ref: "mail-part:///r/m/0-text",
+          text: "who was this sent to",
+        },
+      ],
+    };
+  }
+
+  for (const { label, to } of unusableRecipients) {
+    test(`claims no recipient for ${label}`, async () => {
+      const msg = await deliver(mailTo(to));
+      expect(msg.headers.to).toEqual([]);
+    });
+  }
+
+  test("carries a genuine recipient through unchanged", async () => {
+    const msg = await deliver(mailTo(["run@deployment.example.com"]));
+    expect(msg.headers.to).toEqual(["run@deployment.example.com"]);
+  });
+
+  test("reduces a display-name recipient to its addr-spec", async () => {
+    const msg = await deliver(mailTo(['"Run" <Run@Deployment.Example.com>']));
+    expect(msg.headers.to).toEqual(["run@deployment.example.com"]);
+  });
+
+  test("keeps the resolvable recipients of a partly unreadable list", async () => {
+    // The unreadable entry is dropped rather than replaced, and dropping it
+    // does not cost the message the recipients that were readable.
+    const msg = await deliver(
+      mailTo(["not an address", "run@deployment.example.com"]),
+    );
+    expect(msg.headers.to).toEqual(["run@deployment.example.com"]);
+  });
+
+  test("carries every recipient of a multi-recipient mail", async () => {
+    const msg = await deliver(
+      mailTo(["run@deployment.example.com", "ops@example.com"]),
+    );
+    expect(msg.headers.to).toEqual([
+      "run@deployment.example.com",
+      "ops@example.com",
+    ]);
   });
 });

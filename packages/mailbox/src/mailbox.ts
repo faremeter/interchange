@@ -4,10 +4,11 @@
  */
 export type StoredEnvelope = {
   messageId: string;
-  from: string;
+  from: string | undefined;
   to: string[];
   subject: string;
-  date: Date;
+  /** The date the sender put on the message, not the instant it arrived. */
+  date: Date | undefined;
   inReplyTo: string | undefined;
   references: string[];
   interchangeType: string | undefined;

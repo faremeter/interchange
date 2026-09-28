@@ -51,8 +51,8 @@ function blobExtensionFor(contentType: string | undefined): string {
 }
 
 const ConnectorThreadStateSchema = type({
-  threadRoot: "string",
-  lastMessageId: "string",
+  "threadRoot?": "string",
+  "lastMessageId?": "string",
   replyTo: "string",
   cc: "string[]",
   "subject?": "string",

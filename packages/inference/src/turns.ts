@@ -77,7 +77,7 @@ export function createInboundTurn(
   if (content.length > 0) {
     const { from, subject } = message.headers;
     const envelope: string[] = [];
-    if (from.length > 0) envelope.push(`[From: ${from}]`);
+    if (from !== undefined && from.length > 0) envelope.push(`[From: ${from}]`);
     if (subject !== undefined && subject.length > 0) {
       envelope.push(`[Subject: ${subject}]`);
     }

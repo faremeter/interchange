@@ -1,10 +1,13 @@
 // Connector-thread routing for the agent harness.
 //
-// The connector is one durable thread per agent. Participants accumulate
-// as they speak; no one is displaced. `replyTo` tracks the most recent
+// The connector is one durable thread per agent. On a thread holding an
+// anchor -- a thread root or a last message id -- participants accumulate
+// as they speak and no one is displaced: `replyTo` tracks the most recent
 // speaker (the primary recipient on the next outbound reply) and `cc`
 // tracks every other participant who has spoken (carried on outbound so
-// everyone stays in the loop).
+// everyone stays in the loop). A thread holding neither anchor offers
+// nothing for a later message to continue, so the next arrival opens a
+// fresh thread and the accumulated list starts over.
 //
 // Two-phase decision: route() is pure and returns a discriminated kind
 // plus an opaque carrier of the next state; commit() advances router
@@ -30,7 +33,11 @@ export type RouteDecision =
 export type ConnectorReplyParts = {
   to: string;
   cc: string[];
-  inReplyTo: string;
+  /**
+   * The nearest identified ancestor: the last message id, or the thread
+   * root when the last message named no id. Absent when neither exists.
+   */
+  inReplyTo?: string;
   subject?: string;
 };
 
@@ -67,13 +74,12 @@ export interface ConnectorRouter {
    * does not mutate router state. The returned decision must be passed to
    * `commit()` to take effect.
    *
-   * Throws when `message.headers.from` is not a parseable bare addr-spec
-   * (per `extractAddrSpec` from `@intx/mime`). The production fetch path
-   * copies the wire `From:` header verbatim, so a malformed sender is a
-   * normal-shape runtime concern, not a programmer error. Callers should
-   * treat the throw as passthrough — deliver the message to the reactor
-   * but do not advance router state or consume the message from the
-   * INBOX.
+   * Returns `passthrough` when `message.headers.from` is absent: the
+   * message names nobody to reply to.
+   *
+   * Throws when it is present but is not a parseable bare addr-spec.
+   * Callers should treat the throw as passthrough — deliver the message
+   * but do not advance router state or consume it from the INBOX.
    */
   route(message: InboundMessage): RouteDecision;
 
@@ -170,7 +176,11 @@ export function createConnectorRouter(
 
     const { inReplyTo, references } = message.headers;
 
-    if (references !== undefined && references.includes(state.threadRoot)) {
+    if (
+      state.threadRoot !== undefined &&
+      references !== undefined &&
+      references.includes(state.threadRoot)
+    ) {
       return true;
     }
 
@@ -189,12 +199,39 @@ export function createConnectorRouter(
     return [...existing, value];
   }
 
+  function speakerOf(message: InboundMessage): string | null {
+    const { from } = message.headers;
+    if (from === undefined) return null;
+    return extractAddrSpec(from);
+  }
+
+  function passthroughWithNoReplyAddress(
+    message: InboundMessage,
+  ): RouteDecision {
+    logger.debug`Message ${message.headers.messageId} carries no From header, so it has no reply address; routing it as passthrough and leaving the connector thread unadvanced`;
+    return { kind: "passthrough" };
+  }
+
+  // A thread opened by a message that named no id holds neither anchor, so
+  // `isContinuation` can never match it again. The next message starts a
+  // fresh thread rather than being absorbed by it forever.
+  function isAnchored(s: ConnectorThreadState): boolean {
+    return s.threadRoot !== undefined || s.lastMessageId !== undefined;
+  }
+
   function route(message: InboundMessage): RouteDecision {
-    if (state === null) {
+    if (state === null || !isAnchored(state)) {
+      const replyTo = speakerOf(message);
+      if (replyTo === null) return passthroughWithNoReplyAddress(message);
+
       const nextState: ConnectorThreadState = {
-        threadRoot: message.headers.messageId,
-        lastMessageId: message.headers.messageId,
-        replyTo: extractAddrSpec(message.headers.from),
+        ...(message.headers.messageId !== undefined
+          ? {
+              threadRoot: message.headers.messageId,
+              lastMessageId: message.headers.messageId,
+            }
+          : {}),
+        replyTo,
         cc: [],
         ...(message.headers.subject !== undefined
           ? { subject: message.headers.subject }
@@ -206,7 +243,9 @@ export function createConnectorRouter(
     }
 
     if (isContinuation(message)) {
-      const nextSpeaker = extractAddrSpec(message.headers.from);
+      const nextSpeaker = speakerOf(message);
+      if (nextSpeaker === null) return passthroughWithNoReplyAddress(message);
+
       // The previous most-recent speaker moves into the cc list; the
       // new speaker becomes replyTo. Dedup so a sender returning after
       // others have spoken doesn't appear twice.
@@ -214,8 +253,12 @@ export function createConnectorRouter(
         (addr) => addr !== nextSpeaker,
       );
       const nextState: ConnectorThreadState = {
-        threadRoot: state.threadRoot,
-        lastMessageId: message.headers.messageId,
+        ...(state.threadRoot !== undefined
+          ? { threadRoot: state.threadRoot }
+          : {}),
+        ...(message.headers.messageId !== undefined
+          ? { lastMessageId: message.headers.messageId }
+          : {}),
         replyTo: nextSpeaker,
         cc: carriedCc,
         ...(state.subject !== undefined ? { subject: state.subject } : {}),
@@ -247,10 +290,15 @@ export function createConnectorRouter(
       throw new NoActiveConnectorThreadError();
     }
 
+    // RFC 5322 3.6.4: a parent that named no Message-ID leaves the root as
+    // the nearest identified ancestor, and the References chain built from
+    // it is what keeps the reply on the thread.
+    const parent = state.lastMessageId ?? state.threadRoot;
+
     return {
       to: state.replyTo,
       cc: [...state.cc],
-      inReplyTo: state.lastMessageId,
+      ...(parent !== undefined ? { inReplyTo: parent } : {}),
       ...(state.subject !== undefined ? { subject: state.subject } : {}),
     };
   }
@@ -260,7 +308,9 @@ export function createConnectorRouter(
       throw new NoActiveConnectorThreadError();
     }
     applyState({
-      threadRoot: state.threadRoot,
+      ...(state.threadRoot !== undefined
+        ? { threadRoot: state.threadRoot }
+        : {}),
       lastMessageId: receipt.messageId,
       replyTo: state.replyTo,
       cc: [...state.cc],
@@ -271,8 +321,12 @@ export function createConnectorRouter(
   function snapshot(): ConnectorThreadState | null {
     if (state === null) return null;
     return {
-      threadRoot: state.threadRoot,
-      lastMessageId: state.lastMessageId,
+      ...(state.threadRoot !== undefined
+        ? { threadRoot: state.threadRoot }
+        : {}),
+      ...(state.lastMessageId !== undefined
+        ? { lastMessageId: state.lastMessageId }
+        : {}),
       replyTo: state.replyTo,
       cc: [...state.cc],
       ...(state.subject !== undefined ? { subject: state.subject } : {}),
@@ -284,8 +338,12 @@ export function createConnectorRouter(
       next === null
         ? null
         : {
-            threadRoot: next.threadRoot,
-            lastMessageId: next.lastMessageId,
+            ...(next.threadRoot !== undefined
+              ? { threadRoot: next.threadRoot }
+              : {}),
+            ...(next.lastMessageId !== undefined
+              ? { lastMessageId: next.lastMessageId }
+              : {}),
             replyTo: next.replyTo,
             cc: [...next.cc],
             ...(next.subject !== undefined ? { subject: next.subject } : {}),

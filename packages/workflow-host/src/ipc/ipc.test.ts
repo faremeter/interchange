@@ -287,6 +287,104 @@ describe("Control channel", () => {
     expect(received).toEqual([notify]);
   });
 
+  test("round-trips a mailbox.notify for a message with no originator", async () => {
+    // A message can arrive carrying no From. The notify must still validate and
+    // reach the child watcher: rejecting the frame would strand the watcher on
+    // a message whose sender is merely unknown.
+    const kp = await generateKeyPair();
+    const channelId = generateChannelId();
+    const stream = createMemoryNdjsonStream();
+    const sender = createControlChannelSender({
+      privateKeySeed: kp.privateKey,
+      channelId,
+      writer: stream.writer,
+    });
+    const crashes: string[] = [];
+    const received: ControlPayload[] = [];
+
+    const consumer = (async () => {
+      for await (const payload of receiveControlChannel({
+        publicKey: kp.publicKey,
+        channelId,
+        reader: stream.reader,
+        onCrash: (reason) => crashes.push(reason),
+      })) {
+        received.push(payload);
+        if (received.length === 1) return;
+      }
+    })();
+
+    const notify = {
+      type: "mailbox.notify" as const,
+      data: {
+        runId: "run-1",
+        mailbox: "INBOX",
+        uid: 8,
+        headers: {
+          to: ["run@integration"],
+          date: "Tue, 26 Aug 2026 00:00:00 +0000",
+          messageId: "<m8@integration>",
+        },
+      },
+    };
+    await sender.send(notify);
+
+    await consumer;
+    stream.close();
+
+    expect(crashes).toEqual([]);
+    expect(received).toEqual([notify]);
+  });
+
+  test("round-trips a mailbox.notify for a message with no date or id", async () => {
+    // A message can arrive carrying neither a Date nor a Message-ID. As with a
+    // missing From, the notify must still validate and reach the child
+    // watcher: rejecting the frame would strand the watcher on a message whose
+    // envelope is merely incomplete.
+    const kp = await generateKeyPair();
+    const channelId = generateChannelId();
+    const stream = createMemoryNdjsonStream();
+    const sender = createControlChannelSender({
+      privateKeySeed: kp.privateKey,
+      channelId,
+      writer: stream.writer,
+    });
+    const crashes: string[] = [];
+    const received: ControlPayload[] = [];
+
+    const consumer = (async () => {
+      for await (const payload of receiveControlChannel({
+        publicKey: kp.publicKey,
+        channelId,
+        reader: stream.reader,
+        onCrash: (reason) => crashes.push(reason),
+      })) {
+        received.push(payload);
+        if (received.length === 1) return;
+      }
+    })();
+
+    const notify = {
+      type: "mailbox.notify" as const,
+      data: {
+        runId: "run-1",
+        mailbox: "INBOX",
+        uid: 9,
+        headers: {
+          from: "user@integration",
+          to: ["run@integration"],
+        },
+      },
+    };
+    await sender.send(notify);
+
+    await consumer;
+    stream.close();
+
+    expect(crashes).toEqual([]);
+    expect(received).toEqual([notify]);
+  });
+
   test("crashes on a mailbox.notify whose headers omit a required field", async () => {
     const kp = await generateKeyPair();
     const channelId = generateChannelId();
@@ -305,8 +403,10 @@ describe("Control channel", () => {
     })();
 
     // Sign a structurally valid envelope whose payload is a mailbox.notify with
-    // a headers block missing the required `from` field, so the receiver's
-    // payload validation rejects it.
+    // a headers block missing the required `to` field, so the receiver's
+    // payload validation rejects it. `to` is the only required header: a
+    // message can arrive naming no originator, no date and no id, and the
+    // watcher must still be handed it.
     const envelope: FrameEnvelope = {
       seq: 1,
       channelId,
@@ -317,9 +417,9 @@ describe("Control channel", () => {
           mailbox: "INBOX",
           uid: 7,
           headers: {
-            to: ["run@integration"],
-            date: "",
-            messageId: "<m@integration>",
+            from: "user@integration",
+            date: "Mon, 1 Jan 2024 00:00:00 +0000",
+            messageId: "<m1@integration>",
           },
         },
       },

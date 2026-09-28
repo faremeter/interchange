@@ -356,20 +356,29 @@ export function createReactor(config: ReactorConfig): Reactor {
   let toolBatchRepeatCount = 0;
   let lastToolBatchNames: string[] = [];
 
-  function openMessageRun(messageId: string): void {
+  function openMessageRun(messageId: string | undefined): void {
     currentMessageRunId = crypto.randomUUID();
-    currentMessageId = messageId;
+    currentMessageId = messageId ?? null;
     lastToolBatchSignature = null;
     toolBatchRepeatCount = 0;
     lastToolBatchNames = [];
+    // The bracket is keyed on its own run id; the message's own id is only a
+    // correlation label, and a message is not obliged to carry one. Opening
+    // the bracket regardless is what keeps every tool event inside the turn
+    // attributed -- skipping it would leave the turn unbracketed entirely.
+    const data: {
+      messageId?: string;
+      messageRunId: string;
+      receivedAt: number;
+    } = {
+      messageRunId: currentMessageRunId,
+      receivedAt: Date.now(),
+    };
+    if (messageId !== undefined) data.messageId = messageId;
     emit({
       type: "message.run.started",
       seq: nextSeq(),
-      data: {
-        messageId,
-        messageRunId: currentMessageRunId,
-        receivedAt: Date.now(),
-      },
+      data,
     });
   }
 
@@ -377,17 +386,19 @@ export function createReactor(config: ReactorConfig): Reactor {
     status: "completed" | "failed",
     error?: { message: string; kind?: string },
   ): void {
-    if (currentMessageRunId === null || currentMessageId === null) return;
+    // Gated on the run id alone: the bracket has to close even for a message
+    // that named no id, or the run stays open for the rest of the session.
+    if (currentMessageRunId === null) return;
     const data: {
       messageRunId: string;
-      messageId: string;
+      messageId?: string;
       status: "completed" | "failed";
       error?: { message: string; kind?: string };
     } = {
       messageRunId: currentMessageRunId,
-      messageId: currentMessageId,
       status,
     };
+    if (currentMessageId !== null) data.messageId = currentMessageId;
     if (error !== undefined) data.error = error;
     emit({ type: "message.run.ended", seq: nextSeq(), data });
     currentMessageRunId = null;

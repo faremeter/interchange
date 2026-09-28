@@ -55,7 +55,11 @@ async function matchMessage(
   readRaw: () => Promise<Uint8Array>,
 ): Promise<boolean> {
   if (query.from !== undefined) {
-    if (!msg.envelope.from.toLowerCase().includes(query.from.toLowerCase())) {
+    const sender = msg.envelope.from;
+    if (
+      sender === undefined ||
+      !sender.toLowerCase().includes(query.from.toLowerCase())
+    ) {
       return false;
     }
   }
@@ -93,19 +97,23 @@ async function matchMessage(
     }
   }
 
+  // A message that named no date placed itself nowhere in time, so it falls
+  // outside every date window below rather than inside one.
+  const sent = msg.envelope.date;
+
   if (query.before !== undefined) {
-    if (msg.envelope.date >= query.before) return false;
+    if (sent === undefined || sent >= query.before) return false;
   }
   if (query.after !== undefined) {
-    if (msg.envelope.date <= query.after) return false;
+    if (sent === undefined || sent <= query.after) return false;
   }
   if (query.on !== undefined) {
-    const d = msg.envelope.date;
+    if (sent === undefined) return false;
     const q = query.on;
     if (
-      d.getUTCFullYear() !== q.getUTCFullYear() ||
-      d.getUTCMonth() !== q.getUTCMonth() ||
-      d.getUTCDate() !== q.getUTCDate()
+      sent.getUTCFullYear() !== q.getUTCFullYear() ||
+      sent.getUTCMonth() !== q.getUTCMonth() ||
+      sent.getUTCDate() !== q.getUTCDate()
     ) {
       return false;
     }
@@ -113,18 +121,18 @@ async function matchMessage(
 
   // Sent date filters use the Date header (same as envelope date here).
   if (query.sentBefore !== undefined) {
-    if (msg.envelope.date >= query.sentBefore) return false;
+    if (sent === undefined || sent >= query.sentBefore) return false;
   }
   if (query.sentAfter !== undefined) {
-    if (msg.envelope.date <= query.sentAfter) return false;
+    if (sent === undefined || sent <= query.sentAfter) return false;
   }
   if (query.sentOn !== undefined) {
-    const d = msg.envelope.date;
+    if (sent === undefined) return false;
     const q = query.sentOn;
     if (
-      d.getUTCFullYear() !== q.getUTCFullYear() ||
-      d.getUTCMonth() !== q.getUTCMonth() ||
-      d.getUTCDate() !== q.getUTCDate()
+      sent.getUTCFullYear() !== q.getUTCFullYear() ||
+      sent.getUTCMonth() !== q.getUTCMonth() ||
+      sent.getUTCDate() !== q.getUTCDate()
     ) {
       return false;
     }

@@ -128,6 +128,7 @@ const ADMIT_ALL_INBOUND_MAIL_POLICY: ResolvedInboundMailPolicy = {
   clean: "admit",
   error: "admit",
   untrustedFrom: "admit",
+  absentFrom: "admit",
   invalid: "admit",
   missing: "admit",
   unknown: "admit",
