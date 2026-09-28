@@ -52,9 +52,9 @@ export type CompactRunEventsOpts = {
  *
  * The combined file is the verbatim byte concatenation of the per-event
  * blobs in seq order (`encodeCombinedEventLog`), the exact shape the
- * workflow-run kind handler's compaction validation requires. It is written
- * as a sibling of `events/`, so returning it from the merge while omitting
- * the per-event files lets the substrate's prefix clear drop them.
+ * workflow-run kind handler's compaction validation requires. It is a
+ * sibling of `events/`, so the fold is one delta over the run directory:
+ * put the combined file and delete the `events/` subtree.
  */
 export async function compactRunEvents(
   opts: CompactRunEventsOpts,
@@ -65,8 +65,8 @@ export async function compactRunEvents(
   const eventsDir = path.join(dir, RUNS_PREFIX, opts.runId, EVENTS_DIR);
 
   // Cheap pre-check off the working tree to skip an empty commit when there
-  // is nothing to seal (already combined, or not yet terminal). The merge
-  // re-reads the prefix under the per-repo lock, so the seal stays
+  // is nothing to seal (already combined, or not yet terminal). The delta
+  // re-reads `events/` under the per-repo lock, so the seal stays
   // consistent if another writer raced in between.
   let filenames: string[];
   try {
@@ -103,41 +103,41 @@ export async function compactRunEvents(
     return { compacted: false };
   }
 
-  const prefix = `${RUNS_PREFIX}/${opts.runId}/${EVENTS_DIR}/`;
-  const combinedPath = `${RUNS_PREFIX}/${opts.runId}/${WORKFLOW_RUN_EVENTS_FILE}`;
+  const runDir = `${RUNS_PREFIX}/${opts.runId}`;
+  const eventsPath = `${runDir}/${EVENTS_DIR}`;
+  const combinedPath = `${runDir}/${WORKFLOW_RUN_EVENTS_FILE}`;
   const principal: WorkflowRunSupervisorPrincipal = {
     kind: SUPERVISOR_PRINCIPAL_KIND,
     anchorRunId: opts.anchorRunId,
   };
   let sealed = false;
-  await opts.substrate.writeTreePreservingPrefix(
-    principal,
-    opts.repoId,
-    opts.ref,
-    {
-      preservePrefix: prefix,
-      merge: async (existing) => {
-        const entries: { seq: number; bytes: Uint8Array }[] = [];
-        for (const [filepath, bytes] of existing) {
-          const name = filepath.slice(prefix.length);
-          const seq = parseEventSeq(name);
-          if (seq === null) {
-            throw new Error(
-              `supervisor run-event-compaction: unexpected non-event file ${filepath} under run ${opts.runId}; refusing to compact`,
-            );
-          }
-          entries.push({ seq, bytes });
+  await opts.substrate.writeTreeDelta(principal, opts.repoId, opts.ref, {
+    changedPathPrefixes: new Set([`${runDir}/`]),
+    message: `compact run ${opts.runId} events`,
+    computeDelta: async (_parentCommitSha, prior) => {
+      const entries: { seq: number; oid: string }[] = [];
+      for (const { name, oid } of await prior.listDirOids(eventsPath)) {
+        const seq = parseEventSeq(name);
+        if (seq === null) {
+          throw new Error(
+            `supervisor run-event-compaction: unexpected non-event file ${eventsPath}/${name} under run ${opts.runId}; refusing to compact`,
+          );
         }
-        if (entries.length === 0) return {};
-        entries.sort((a, b) => a.seq - b.seq);
-        sealed = true;
-        return {
-          [combinedPath]: encodeCombinedEventLog(entries.map((e) => e.bytes)),
-        };
-      },
-      message: `compact run ${opts.runId} events`,
+        entries.push({ seq, oid });
+      }
+      if (entries.length === 0) return { puts: {}, deletes: [] };
+      entries.sort((a, b) => a.seq - b.seq);
+      const blobs: Uint8Array[] = [];
+      for (const entry of entries) {
+        blobs.push(await prior.readBlobByOid(entry.oid));
+      }
+      sealed = true;
+      return {
+        puts: { [combinedPath]: encodeCombinedEventLog(blobs) },
+        deletes: [`${eventsPath}/`],
+      };
     },
-  );
+  });
   return { compacted: sealed };
 }
 
