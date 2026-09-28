@@ -1,5 +1,6 @@
 import {
   isAllowedMimeType,
+  MAX_ATTACHMENTS_PER_MESSAGE,
   mimeTypeAndSubtype,
   PER_ATTACHMENT_LIMIT_BYTES,
   PER_MESSAGE_TOTAL_LIMIT_BYTES,
@@ -29,12 +30,14 @@ export type AttachmentPolicy = {
   isAllowed: (mimeType: string) => boolean;
   perAttachmentLimitBytes: number;
   perMessageTotalLimitBytes: number;
+  maxAttachments: number;
 };
 
 export const DEFAULT_ATTACHMENT_POLICY: AttachmentPolicy = {
   isAllowed: isAllowedMimeType,
   perAttachmentLimitBytes: PER_ATTACHMENT_LIMIT_BYTES,
   perMessageTotalLimitBytes: PER_MESSAGE_TOTAL_LIMIT_BYTES,
+  maxAttachments: MAX_ATTACHMENTS_PER_MESSAGE,
 };
 
 // The error shape is the wire contract `AttachmentError` from @intx/types:
@@ -69,6 +72,7 @@ function decode(data: string | Uint8Array): Uint8Array | null {
  * Validate and decode attachments against a policy at either boundary
  * (mail tools or the request body).
  *
+ * The attachment count is checked first, before anything is decoded.
  * Encoded base64 is size-checked from its compact length (whitespace
  * stripped, padding counted) before decode, and the first error returns
  * without decoding later entries. Remaining checks, in encounter order:
@@ -82,6 +86,18 @@ export function validateAttachments(
   inputs: readonly AttachmentInput[],
   policy: AttachmentPolicy = DEFAULT_ATTACHMENT_POLICY,
 ): AttachmentValidationResult {
+  if (inputs.length > policy.maxAttachments) {
+    return {
+      ok: false,
+      error: {
+        code: "too_many_attachments",
+        message: `${inputs.length} attachments, over the limit of ${policy.maxAttachments}`,
+        count: inputs.length,
+        limit: policy.maxAttachments,
+      },
+    };
+  }
+
   const decoded: MessageAttachment[] = [];
 
   for (const [index, input] of inputs.entries()) {

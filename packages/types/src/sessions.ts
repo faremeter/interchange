@@ -131,6 +131,12 @@ export const AttachmentError = type.or(
     totalBytes: "number",
     limitBytes: "number",
   },
+  {
+    code: "'too_many_attachments'",
+    message: "string",
+    count: "number",
+    limit: "number",
+  },
 );
 export type AttachmentError = typeof AttachmentError.infer;
 
