@@ -9,8 +9,9 @@ import {
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import {
-  AdapterManifest,
+  type AdapterManifest,
   hexDecode,
+  parseAdapterManifestEnv,
   type SidecarCapabilityRule,
 } from "@intx/types";
 import {
@@ -211,26 +212,6 @@ export async function createHubServer({
     return value;
   }
 
-  // The operator-declared adapter manifest is forwarded verbatim on every
-  // sidecar ensure request. The hub only validates its shape so a malformed
-  // declaration fails at boot; the sidecar's adapter registry stays the
-  // single authority that resolves entries and admits plugin values.
-  function readAdapterManifestEnv(): AdapterManifest | undefined {
-    const raw = process.env["SIDECAR_ADAPTER_MANIFEST"];
-    if (raw === undefined || raw.trim() === "") return undefined;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (cause) {
-      throw new Error("SIDECAR_ADAPTER_MANIFEST is not valid JSON", { cause });
-    }
-    try {
-      return AdapterManifest.assert(parsed);
-    } catch (cause) {
-      throw new Error("SIDECAR_ADAPTER_MANIFEST failed validation", { cause });
-    }
-  }
-
   const agentRepoStore = createAgentRepoStore({
     dataDir: hubDataDir,
     signingKey: hubSigningKey,
@@ -389,7 +370,13 @@ export async function createHubServer({
   const hubSidecarWebSocketUrl =
     process.env["HUB_SIDECAR_WEBSOCKET_URL"] ??
     `ws://127.0.0.1:${String(port)}/api/sidecars/ws`;
-  const adapterManifest = sidecarAdapterManifest ?? readAdapterManifestEnv();
+  // Forwarded verbatim on every sidecar ensure request; the sidecar's
+  // adapter registry stays the authority that resolves entries and admits
+  // plugin values. An absent declaration is left absent so the request
+  // carries no manifest rather than an empty one.
+  const adapterManifest =
+    sidecarAdapterManifest ??
+    parseAdapterManifestEnv(process.env["SIDECAR_ADAPTER_MANIFEST"]);
   const workflowAllocationService = createWorkflowAllocationService({
     db,
     deploymentPlugins: sidecarPlugins,
