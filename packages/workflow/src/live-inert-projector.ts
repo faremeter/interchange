@@ -117,6 +117,7 @@ export interface InertStepStep {
   readonly agent: InertAgent;
   readonly after?: readonly string[];
   readonly input?: Selector;
+  readonly inference?: Selector;
   readonly reads?: readonly Selector[];
   readonly writes?: readonly Selector[];
   readonly retry?: RetryPolicy;
@@ -353,6 +354,7 @@ function projectStepPrimitive(step: StepPrimitive): InertStepStep {
     agent: projectAgent(step.agent),
     ...(step.after !== undefined ? { after: [...step.after] } : {}),
     ...(step.input !== undefined ? { input: step.input } : {}),
+    ...(step.inference !== undefined ? { inference: step.inference } : {}),
     ...(step.reads !== undefined ? { reads: [...step.reads] } : {}),
     ...(step.writes !== undefined ? { writes: [...step.writes] } : {}),
     ...(step.retry !== undefined ? { retry: step.retry } : {}),

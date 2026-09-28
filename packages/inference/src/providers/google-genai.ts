@@ -15,6 +15,7 @@ import type {
 import { formatSafetyRatingText } from "@intx/types/runtime";
 import type { ProviderAdapter, BuiltRequest } from "../adapter";
 import { CREDENTIAL_SENTINEL } from "../auth";
+import { warnDroppedEffort } from "../dropped-effort";
 import { ProtocolMismatchError } from "../errors";
 import {
   decodeToolName,
@@ -117,6 +118,14 @@ function buildRequest(
   });
 
   const body: Record<string, unknown> = { contents };
+
+  if (options.effort !== undefined) {
+    warnDroppedEffort(
+      model,
+      options.effort,
+      "Gemini has no effort field on the wire",
+    );
+  }
 
   if (effectiveSystem !== undefined) {
     body["systemInstruction"] = { parts: [{ text: effectiveSystem }] };

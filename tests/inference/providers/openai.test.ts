@@ -76,7 +76,7 @@ const OpenAIRequestBody = type({
   "temperature?": "number",
   "tools?": "unknown[]",
   "response_format?": "unknown",
-  "reasoning_effort?": "'none'",
+  "reasoning_effort?": "'none' | 'off' | 'low' | 'medium' | 'high' | 'max'",
 });
 
 // Drives a sequence of wire DSL chunks (full SSE-framed Uint8Arrays) through
@@ -1133,6 +1133,50 @@ describe("OpenAI adapter: responseFormat translation", () => {
     const legacy = adapter.buildRequest(conversation, "gpt-5.5", { tools });
     const legacyBody = OpenAIRequestBody.assert(JSON.parse(legacy.body));
     expect(legacyBody.reasoning_effort).toBeUndefined();
+  });
+
+  test("emits effort as reasoning_effort, as given", () => {
+    const req = adapter.buildRequest(conversation, "gpt-5.5", {
+      effort: "high",
+    });
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    expect(body.reasoning_effort).toBe("high");
+  });
+
+  test("omits reasoning_effort when effort is unset", () => {
+    const req = adapter.buildRequest(conversation, "gpt-5.5", {});
+    expect(JSON.parse(req.body)).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("gpt-5.6 tool calls force reasoning_effort none over a named effort", () => {
+    const req = adapter.buildRequest(conversation, "gpt-5.6-sol", {
+      effort: "high",
+      tools: [{ name: "t", description: "t", inputSchema: {} }],
+    });
+    const body = OpenAIRequestBody.assert(JSON.parse(req.body));
+    expect(body.reasoning_effort).toBe("none");
+  });
+
+  test("the output cap reaches both wire spellings", () => {
+    const CapBody = type({
+      "max_tokens?": "number",
+      "max_completion_tokens?": "number",
+    });
+    const legacy = CapBody.assert(
+      JSON.parse(
+        adapter.buildRequest(conversation, "gpt-5.5", { maxTokens: 777 }).body,
+      ),
+    );
+    expect(legacy.max_tokens).toBe(777);
+    const firstParty = CapBody.assert(
+      JSON.parse(
+        createOpenAIAdapter(TEST_SOURCE, {
+          maxTokensField: "max_completion_tokens",
+        }).buildRequest(conversation, "gpt-5.5", { maxTokens: 777 }).body,
+      ),
+    );
+    expect(firstParty.max_completion_tokens).toBe(777);
+    expect(firstParty).not.toHaveProperty("max_tokens");
   });
 
   test("translates responseFormat.kind=text to { type: 'text' }", () => {

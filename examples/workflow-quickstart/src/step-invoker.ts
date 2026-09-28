@@ -69,7 +69,7 @@ export interface AgentStepInvokerArgs {
 export function createAgentStepInvoker(
   args: AgentStepInvokerArgs,
 ): StepInvoker {
-  return async ({ agent, input, authzContext, signal }) => {
+  return async ({ agent, input, inference, authzContext, signal }) => {
     const stepName = stepInvocationName(authzContext);
     const workdir = join(args.contextDir, stepName);
     mkdirSync(workdir, { recursive: true });
@@ -98,7 +98,10 @@ export function createAgentStepInvoker(
       // A step's input is arbitrary JSON; the agent takes a string. The
       // deployed host encodes a non-string input exactly this way, so the
       // step agent's system prompt is written against the JSON it sees.
-      const result = await instance.send(JSON.stringify(input), { signal });
+      const result = await instance.send(JSON.stringify(input), {
+        signal,
+        ...optional("inference", inference),
+      });
       if (result.type !== "reply") {
         // The other arm is a suspend: the agent parked on an approval
         // gate and wants a decision delivered before it can answer. A

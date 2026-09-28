@@ -1,0 +1,198 @@
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
+import { type } from "arktype";
+
+import { getLogger } from "@intx/log";
+import type { ConversationTurn, LastCycleSource } from "@intx/types/runtime";
+
+import { resetDroppedEffortReports } from "./dropped-effort";
+import { createAnthropicAdapter } from "./providers/anthropic";
+import { createGoogleGenAIAdapter } from "./providers/google-genai";
+import { createOpenAIAdapter } from "./providers/openai";
+
+const logger = getLogger(["interchange", "inference", "adapter"]);
+
+const messages: ConversationTurn[] = [
+  {
+    role: "user",
+    content: [{ type: "text", text: "hi" }],
+    timestamp: 1000,
+  },
+];
+
+const anthropicSource: LastCycleSource = {
+  sourceId: "test-anthropic",
+  provider: "anthropic",
+  model: "test-anthropic-model",
+};
+
+const openaiSource: LastCycleSource = {
+  sourceId: "test-openai",
+  provider: "openai",
+  model: "test-openai-model",
+};
+
+const geminiSource: LastCycleSource = {
+  sourceId: "test-google-genai",
+  provider: "google-genai",
+  model: "test-google-genai-model",
+};
+
+const tool = {
+  name: "t",
+  description: "t",
+  inputSchema: {},
+};
+
+beforeEach(resetDroppedEffortReports);
+
+afterEach(() => {
+  mock.restore();
+});
+
+function warnSpy() {
+  return spyOn(logger, "warn");
+}
+
+const WireBody = type("Record<string, unknown>");
+
+function wireBody(body: string): Record<string, unknown> {
+  const parsed = WireBody(JSON.parse(body));
+  if (parsed instanceof type.errors) {
+    throw new Error(`unexpected request body shape: ${parsed.summary}`);
+  }
+  return parsed;
+}
+
+function droppedCall(warn: ReturnType<typeof warnSpy>): {
+  effort: unknown;
+  model: unknown;
+  reason: unknown;
+} {
+  expect(warn).toHaveBeenCalledTimes(1);
+  const args = warn.mock.calls[0];
+  if (args === undefined) throw new Error("expected a warn call");
+  const values: unknown[] = [];
+  for (const arg of args) values.push(arg);
+  return { effort: values[1], model: values[2], reason: values[3] };
+}
+
+describe("dropped effort warn", () => {
+  test("classic Anthropic drops a named effort", () => {
+    const warn = warnSpy();
+    const req = createAnthropicAdapter(anthropicSource).buildRequest(
+      messages,
+      "claude-3-7-sonnet-20250219",
+      { thinking: { enabled: true, budgetTokens: 2048 }, effort: "max" },
+    );
+    const call = droppedCall(warn);
+    expect(call.effort).toBe("max");
+    expect(call.model).toBe("claude-3-7-sonnet-20250219");
+    expect(call.reason).toBe(
+      "classic Anthropic has no effort field on the wire",
+    );
+    const body = wireBody(req.body);
+    expect(body["output_config"]).toBeUndefined();
+    expect(body["thinking"]).toEqual({ type: "enabled", budget_tokens: 2048 });
+  });
+
+  test("adaptive Anthropic without thinking drops a named effort", () => {
+    const warn = warnSpy();
+    const req = createAnthropicAdapter(anthropicSource).buildRequest(
+      messages,
+      "claude-opus-5",
+      { effort: "max" },
+    );
+    const call = droppedCall(warn);
+    expect(call.effort).toBe("max");
+    expect(call.model).toBe("claude-opus-5");
+    expect(call.reason).toBe(
+      "adaptive Anthropic emits effort only when thinking is enabled",
+    );
+    expect(wireBody(req.body)["output_config"]).toBeUndefined();
+  });
+
+  test("adaptive Anthropic with thinking on does not warn", () => {
+    const warn = warnSpy();
+    createAnthropicAdapter(anthropicSource).buildRequest(
+      messages,
+      "claude-opus-5",
+      { thinking: { enabled: true }, effort: "low" },
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("Gemini drops a named effort", () => {
+    const warn = warnSpy();
+    const req = createGoogleGenAIAdapter(geminiSource).buildRequest(
+      messages,
+      "gemini-2.5-flash",
+      { effort: "high" },
+    );
+    const call = droppedCall(warn);
+    expect(call.effort).toBe("high");
+    expect(call.model).toBe("gemini-2.5-flash");
+    expect(call.reason).toBe("Gemini has no effort field on the wire");
+    expect(JSON.stringify(wireBody(req.body))).not.toMatch(/effort/i);
+  });
+
+  test("gpt-5.6 with tools drops a named effort", () => {
+    const warn = warnSpy();
+    createOpenAIAdapter(openaiSource).buildRequest(messages, "gpt-5.6-sol", {
+      effort: "high",
+      tools: [tool],
+    });
+    const call = droppedCall(warn);
+    expect(call.effort).toBe("high");
+    expect(call.model).toBe("gpt-5.6-sol");
+    expect(call.reason).toBe(
+      "gpt-5.6 Chat Completions tool calls require reasoning_effort none",
+    );
+  });
+
+  test("gpt-5.6 with tools and no named effort does not warn", () => {
+    const warn = warnSpy();
+    createOpenAIAdapter(openaiSource).buildRequest(messages, "gpt-5.6-sol", {
+      tools: [tool],
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("OpenAI without the gpt-5.6 tool override does not warn", () => {
+    const warn = warnSpy();
+    createOpenAIAdapter(openaiSource).buildRequest(messages, "gpt-5.5", {
+      effort: "high",
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("a repeated identical drop is reported once", () => {
+    const warn = warnSpy();
+    const adapter = createGoogleGenAIAdapter(geminiSource);
+    adapter.buildRequest(messages, "gemini-2.5-pro", { effort: "low" });
+    adapter.buildRequest(messages, "gemini-2.5-pro", { effort: "low" });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  test("unset effort never warns", () => {
+    const warn = warnSpy();
+    createAnthropicAdapter(anthropicSource).buildRequest(
+      messages,
+      "claude-3-7-sonnet-20250219",
+      {},
+    );
+    createGoogleGenAIAdapter(geminiSource).buildRequest(
+      messages,
+      "gemini-2.5-flash",
+      {},
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+});

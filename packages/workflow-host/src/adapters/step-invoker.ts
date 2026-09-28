@@ -58,6 +58,7 @@ import {
   type AgentDefinition,
   type AuthorizeFn,
   type BaseEnv,
+  type SendOptions,
   type SendResult,
 } from "@intx/agent";
 import { getLogger } from "@intx/log";
@@ -580,7 +581,10 @@ async function sendWithAbort(
       };
       abortListener = onAbort;
       req.signal.addEventListener("abort", onAbort, { once: true });
-      const sendOpts = cfg.closeOnAbort ? undefined : { signal: req.signal };
+      const sendOpts: SendOptions = {
+        ...(cfg.closeOnAbort ? {} : { signal: req.signal }),
+        ...(req.inference !== undefined ? { inference: req.inference } : {}),
+      };
       agent.send(message, sendOpts).then(resolve, (cause: unknown) => {
         reject(cause instanceof Error ? cause : new Error(String(cause)));
       });

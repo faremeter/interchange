@@ -42,6 +42,7 @@ import type {
 
 import { getLogger } from "@intx/log";
 import { ApprovalDecision, signalKindToGateType } from "@intx/types";
+import { PerCallInferenceOptions } from "@intx/types/runtime";
 import type { CredentialMaterialResolver } from "@intx/types";
 import { canonicalJsonStringify } from "@intx/types/wire-definition-hash";
 import { type } from "arktype";
@@ -71,6 +72,42 @@ const SUSPENDED = Symbol("suspended");
 // here, so the switch cannot silently drop an unhandled case.
 function assertNever(x: never): never {
   throw new Error(`Unhandled resume case: ${JSON.stringify(x)}`);
+}
+
+/**
+ * Layer director-named options over per-send ones; a director key wins over
+ * the per-send value for that same key. The merge is shallow: a director that
+ * names `thinking` replaces the whole object, so nested per-send fields such
+ * as `budgetTokens` are dropped rather than merged in.
+ */
+export function mergeInferenceOptions(
+  perSend: InferenceOptions | undefined,
+  director: InferenceOptions | undefined,
+): InferenceOptions | undefined {
+  if (perSend === undefined) return director;
+  return { ...perSend, ...director };
+}
+
+/**
+ * Copy only the keys a send may set. A structurally wider bag still
+ * type-checks as `PerCallInferenceOptions`; without this copy,
+ * `systemPrompt`, `tools`, and `providerOptions` would enter the
+ * message-run slot and displace the deployed agent definition. The key
+ * set is the arktype declaration itself, so a key added there is copied
+ * without a matching edit here. The declaration also checks the values,
+ * so an out-of-range option is rejected here rather than at the provider.
+ */
+const StripToPerCallInference =
+  PerCallInferenceOptions.onDeepUndeclaredKey("delete");
+
+function perCallInference(
+  options: PerCallInferenceOptions,
+): PerCallInferenceOptions {
+  const stripped = StripToPerCallInference(options);
+  if (stripped instanceof type.errors) {
+    throw new Error(`Invalid per-call inference options: ${stripped.summary}`);
+  }
+  return stripped;
 }
 
 function buildHarnessOpts(
@@ -149,11 +186,20 @@ export type ReactorConfig = {
   doomLoopThreshold?: number | false;
 };
 
+export type DeliverOptions = {
+  inference?: PerCallInferenceOptions;
+};
+
 export type Reactor = {
   /** Begin processing. Emits reactor.start. Must be called exactly once. */
   start(): void;
-  /** Inject an inbound message into the reactor. */
-  deliver(message: InboundMessage): void;
+  /**
+   * Inject an inbound message into the reactor. `opts.inference` applies to
+   * every inference call of the message run the delivery opens, or of the
+   * parked run it resumes, beneath any option the director names; it is
+   * never retained past that run.
+   */
+  deliver(message: InboundMessage, opts?: DeliverOptions): void;
   /** Initiate graceful shutdown with a reason. */
   abort(reason: AbortReason): void;
 };
@@ -344,6 +390,26 @@ export function createReactor(config: ReactorConfig): Reactor {
   // produces unambiguous start/end pairs downstream.
   let currentMessageRunId: string | null = null;
   let currentMessageId: string | null = null;
+  // Per-send inference options, keyed by the delivered message until it is
+  // dequeued (or correlated), then held for the message run it drives.
+  const deliveredInference = new WeakMap<
+    InboundMessage,
+    PerCallInferenceOptions
+  >();
+  let messageRunInference: PerCallInferenceOptions | undefined;
+  // Correlation ids the currently open message run suspended on, cleared
+  // whenever that run closes. This is what tells a late correlated response
+  // apart from one that correlates to an operation some earlier, already-
+  // closed run left registered: `gates` itself never expires an entry on run
+  // close (only on clear/timeout), so a stale gate can outlive the run that
+  // opened it and still answer `gates.has`. The key is the correlation id,
+  // not the gate id, because a director may suspend under its own gate id
+  // while the tool's pending marker registered the operation under
+  // `pending-<correlationId>`; the correlation id is what both share, and it
+  // is also how `tryCorrelate` finds the gate to resume. Rehydrated gates
+  // (`rehydrateGates`) are deliberately not added here -- they predate any
+  // run this process has opened, so they can never be "this run's own".
+  const openRunCorrelationIds = new Set<string>();
 
   // Doom-loop detection state, scoped to the current message run. Each executed
   // tool-call turn is reduced to a batch signature; consecutive identical
@@ -377,6 +443,8 @@ export function createReactor(config: ReactorConfig): Reactor {
     status: "completed" | "failed",
     error?: { message: string; kind?: string },
   ): void {
+    messageRunInference = undefined;
+    openRunCorrelationIds.clear();
     if (currentMessageRunId === null || currentMessageId === null) return;
     const data: {
       messageRunId: string;
@@ -721,7 +789,7 @@ export function createReactor(config: ReactorConfig): Reactor {
         const harnessOpts = buildHarnessOpts(
           prompt,
           config.source,
-          options,
+          mergeInferenceOptions(messageRunInference, options),
           signal,
           nextSeq,
           config.readMaterial,
@@ -1207,6 +1275,12 @@ export function createReactor(config: ReactorConfig): Reactor {
       correlationId,
       onGateCleared,
     );
+    // Mark this correlation as belonging to the currently open run so a late
+    // correlated response can tell it apart from one an earlier, already-
+    // closed run left registered (see `openRunCorrelationIds`).
+    if (currentMessageRunId !== null && correlationId !== undefined) {
+      openRunCorrelationIds.add(correlationId);
+    }
 
     if (stateManager !== null) {
       stateManager.setGatesSnapshot(gates.snapshot());
@@ -1264,7 +1338,10 @@ export function createReactor(config: ReactorConfig): Reactor {
   // effective timeout the director-suspend fallback uses — rather than a
   // silent zero. This does not run through `suspendOnGate`: rehydration must
   // not re-emit `reactor.gate.blocked` (the suspension already happened before
-  // the restart) and must not commit (nothing changed).
+  // the restart) and must not commit (nothing changed). It also must not add
+  // to `openRunCorrelationIds`: a rehydrated gate predates any run this
+  // process has opened, so it can never be mistaken for the currently open
+  // run's own suspension.
   function rehydrateGates(ops: PendingOperation[]): void {
     for (const op of ops) {
       const timeoutMs =
@@ -1317,9 +1394,11 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       // Append inbound messages to conversation history so the provider sees them.
       // Each dequeued message.received opens a fresh per-message run bracket.
-      // If a prior bracket is still open (defensive — should not occur given
-      // the dequeue priority that drains cycle events before new messages),
-      // close it as completed first so the new bracket starts cleanly.
+      // An uncorrelated message can arrive while an earlier run is still
+      // parked on a gate (that run left no way to reject or supersede it), so
+      // finding a prior bracket still open here is a routine path, not a
+      // defensive fallback: close it as completed first so the new bracket
+      // starts cleanly.
       if (event.type === "message.received") {
         if (stateManager !== null) {
           const msg = createInboundTurn(event.message);
@@ -1331,6 +1410,8 @@ export function createReactor(config: ReactorConfig): Reactor {
           closeMessageRun("completed");
         }
         openMessageRun(event.message.headers.messageId);
+        messageRunInference = deliveredInference.get(event.message);
+        deliveredInference.delete(event.message);
       }
 
       // A parked approval that ended without running its tool (rejected or
@@ -1662,6 +1743,28 @@ export function createReactor(config: ReactorConfig): Reactor {
 
   function processDelivery(message: InboundMessage): void {
     void (async () => {
+      // A correlated resume continues the parked run rather than opening a
+      // new one, and the loop may re-infer before tryCorrelate settles, so
+      // the resume's options are adopted up front whenever this message's
+      // correlation ID is one the currently open run suspended on
+      // (`openRunCorrelationIds`). `gates.has` alone is not enough: a gate an
+      // earlier, already-closed run left registered is still live there, and
+      // a late correlated response for it must not overwrite the run open
+      // now. An uncorrelated message either finds no run open yet (harmless
+      // to set now — opening its own run in the message.received handler
+      // sets the same value) or arrives while an unrelated run is still
+      // open, in which case it must not touch that run's options and
+      // instead overwrites them when its own run opens.
+      const inference = deliveredInference.get(message);
+      if (inference !== undefined) {
+        const correlationId = message.headers.interchangeCorrelationId;
+        const correlatesToOpenRun =
+          correlationId !== undefined &&
+          openRunCorrelationIds.has(correlationId);
+        if (correlatesToOpenRun || currentMessageRunId === null) {
+          messageRunInference = inference;
+        }
+      }
       let correlated: boolean;
       try {
         correlated = await tryCorrelate(message);
@@ -1694,8 +1797,11 @@ export function createReactor(config: ReactorConfig): Reactor {
     })();
   }
 
-  function deliver(message: InboundMessage): void {
+  function deliver(message: InboundMessage, opts?: DeliverOptions): void {
     if (done) return;
+    if (opts?.inference !== undefined) {
+      deliveredInference.set(message, perCallInference(opts.inference));
+    }
     if (startupDeliveries !== null) {
       startupDeliveries.push(message);
       return;

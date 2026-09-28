@@ -255,6 +255,23 @@ describe("hash binds to the grant surface", () => {
     );
   });
 
+  test("a step inference selector projects and changes the hash", async () => {
+    const inference = { from: "trigger.payload.inference" };
+    const withInference = defineWorkflow({
+      id: "wf_main",
+      trigger: { type: "mail", to: "wf@acme.test" },
+      steps: {
+        main: step({
+          agent: mkAgent([alphaTool, betaTool], baseCapabilities, [OPENAI]),
+          inference,
+        }),
+      },
+    });
+    expect(mainStepOf(withInference).inference).toEqual(inference);
+    expect(mainStepOf(baseWorkflow())).not.toHaveProperty("inference");
+    await expectGrantMutation(withInference);
+  });
+
   test("adding a declared plugin package changes projection and hash", async () => {
     // A plugin package contributes tool grants the operator approves, so a
     // tampered plugin set must move the hashed surface and fail re-verify.

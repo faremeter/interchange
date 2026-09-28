@@ -5,6 +5,9 @@
 // Used by the step executor to materialize a step's `input` and to
 // resolve declared `reads` against the run-state subtree.
 
+import { PerCallInferenceOptions } from "@intx/types/runtime";
+import { type } from "arktype";
+
 import {
   isFromSelector,
   isLiteralSelector,
@@ -64,6 +67,33 @@ export function evaluate(selector: Selector, ctx: SelectorContext): unknown {
     return merged;
   }
   throw new SelectorError("unknown selector shape", selector);
+}
+
+/**
+ * Resolve a step's `inference` selector into per-call options. `null` and
+ * `undefined` mean the agent's defaults; any other non-object, or an object
+ * carrying a key outside `PerCallInferenceOptions`, is a selector error.
+ */
+export function resolveStepInference(
+  selector: Selector,
+  ctx: SelectorContext,
+): PerCallInferenceOptions | undefined {
+  const value = evaluate(selector, ctx);
+  if (value === null || value === undefined) return undefined;
+  if (!isRecord(value)) {
+    throw new SelectorError(
+      "inference selector must resolve to an object, null, or undefined",
+      selector,
+    );
+  }
+  const options = PerCallInferenceOptions(value);
+  if (options instanceof type.errors) {
+    throw new SelectorError(
+      `inference selector resolved to invalid options: ${options.summary}`,
+      selector,
+    );
+  }
+  return options;
 }
 
 function resolvePath(
