@@ -3,10 +3,12 @@ import type {
   SendReceipt,
   MailboxEvent,
 } from "@intx/types/runtime";
-import { buildMessageHeaders, type StoredEnvelope } from "@intx/mailbox";
+import { isConversationType } from "@intx/types/runtime";
+import type { StoredEnvelope } from "@intx/mailbox";
 import {
   assembleSignedContent,
   assembleMessage,
+  buildMessageHeaders,
   generateMessageId,
   isMessageId,
   parseHeaderSection,
@@ -16,12 +18,6 @@ import {
   type StructuredContent,
 } from "@intx/mime";
 import type { AddressEntry } from "./mailbox";
-
-const CONVERSATION_TYPES = new Set([
-  "conversation.message",
-  "conversation.join",
-  "conversation.leave",
-]);
 
 /**
  * Callback for delivering messages to recipients not registered on this
@@ -115,7 +111,7 @@ export async function executeSend(
     );
   }
 
-  const isConversation = CONVERSATION_TYPES.has(message.type);
+  const isConversation = isConversationType(message.type);
 
   if (isConversation && message.payload !== undefined) {
     throw new Error(

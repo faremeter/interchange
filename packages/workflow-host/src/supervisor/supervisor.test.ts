@@ -4677,11 +4677,11 @@ describe("createWorkflowSupervisor", () => {
       },
     });
 
-    // A mail whose only leaf part declares an unsupported content-transfer-
-    // encoding: decodeMail throws deterministically. It must be dropped and
-    // CONSUMED, not thrown-and-replayed forever.
+    // A mail whose only leaf part carries a malformed body under a recognised
+    // content-transfer-encoding: decodeMail throws deterministically. It must
+    // be dropped and CONSUMED, not thrown-and-replayed forever.
     const bad = new TextEncoder().encode(
-      "Content-Type: text/plain\r\nContent-Transfer-Encoding: banana\r\n\r\nx",
+      "Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n!!! not base64 !!!",
     );
     wired.mailBus.deliver(address, bad);
 

@@ -128,10 +128,29 @@ export const InterchangeType = type.enumerated(
 );
 export type InterchangeType = typeof InterchangeType.infer;
 
+const CONVERSATION_TYPES = new Set<InterchangeType>([
+  "conversation.message",
+  "conversation.join",
+  "conversation.leave",
+]);
+
+/**
+ * Tests whether an Interchange type is a conversation type. A conversation
+ * type carries text content; every other type carries a structured payload.
+ *
+ * Membership is enumerated rather than derived from the `conversation.`
+ * name prefix, so a member added to InterchangeType is not a conversation
+ * type until it is listed in CONVERSATION_TYPES. Exported so that consumers
+ * classify a message body against one definition instead of each deriving
+ * its own.
+ */
+export function isConversationType(value: InterchangeType): boolean {
+  return CONVERSATION_TYPES.has(value);
+}
+
 /**
  * Attachment for an outbound message. Content is raw bytes; the transport
- * handles Content-Transfer-Encoding (base64 for binary, quoted-printable
- * for 8-bit text).
+ * base64-encodes every attachment part, whatever its content type.
  */
 export type MessageAttachment = {
   name: string;
@@ -322,9 +341,9 @@ export type MessagePart = {
   filename?: string;
   disposition?: "inline" | "attachment";
   /**
-   * Original Content-Transfer-Encoding, when a producer chooses to record it.
-   * Not set for a decoded mail part -- `content` is already decoded, so the
-   * wire encoding is spent transport metadata.
+   * The Content-Transfer-Encoding the part declared. Not set for a decoded
+   * mail part -- `content` is already decoded, so the wire encoding is spent
+   * transport metadata.
    */
   encoding?: string;
 };

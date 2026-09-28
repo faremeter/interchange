@@ -8,11 +8,16 @@ export {
   parseMimePart,
   parseMultipart,
   extractBoundary,
+  extractContentTypeMime,
   extractPartByPath,
   parseMailToEmail,
   extractAttachments,
   buildMessageHeaders,
   decodeMail,
+  decodePartBytes,
+  isRecognizedTransferEncoding,
+  reportedContentType,
+  transferEncodingMechanism,
 } from "./mime";
 
 export type {

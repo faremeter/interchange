@@ -150,6 +150,119 @@ describe("extractAddrSpec", () => {
   test("throws on multiple '@' in an unquoted form", () => {
     expect(() => extractAddrSpec("a@b@example.com")).toThrow();
   });
+
+  test("keeps a comma inside a quoted display name", () => {
+    expect(extractAddrSpec('"Doe, John" <john@example.com>')).toBe(
+      "john@example.com",
+    );
+  });
+
+  test("throws on a comma-separated bare list", () => {
+    expect(() => extractAddrSpec("a@b.example, c@d.example")).toThrow(
+      /address lists are not supported/,
+    );
+  });
+
+  test("throws on an angle-bracketed list rather than taking one member", () => {
+    // The reduction this refuses picked the last member, so a `From` naming a
+    // victim first and the sender second read as the sender alone while every
+    // parser of the full header still saw both.
+    expect(() =>
+      extractAddrSpec(
+        '"CEO" <ceo@victim.example>, "x" <attacker@evil.example>',
+      ),
+    ).toThrow(/address lists are not supported/);
+  });
+
+  test("throws on adjacent angle-bracketed addresses separated by a space", () => {
+    // A space is not the only spelling of a list, so a rule about commas
+    // alone left this reducing to the last member.
+    expect(() =>
+      extractAddrSpec("<ceo@victim.example> <attacker@evil.example>"),
+    ).toThrow(/address lists are not supported/);
+  });
+
+  test("throws on adjacent angle-bracketed addresses separated by a tab", () => {
+    expect(() =>
+      extractAddrSpec("<ceo@victim.example>\t<attacker@evil.example>"),
+    ).toThrow(/address lists are not supported/);
+  });
+
+  test("throws on angle-bracketed addresses with nothing between them", () => {
+    expect(() =>
+      extractAddrSpec("<ceo@victim.example><attacker@evil.example>"),
+    ).toThrow(/address lists are not supported/);
+  });
+
+  test("throws on a bare address ahead of an angle-bracketed one", () => {
+    // A display name holds no unquoted '@', so the leading addr-spec is a
+    // second address and not a name for the one in brackets.
+    expect(() =>
+      extractAddrSpec("ceo@victim.example <attacker@evil.example>"),
+    ).toThrow(/address lists are not supported/);
+  });
+
+  test("throws on a display name followed by two angle-bracketed addresses", () => {
+    expect(() => extractAddrSpec("Name <a@b.example> <c@d.example>")).toThrow(
+      /address lists are not supported/,
+    );
+  });
+
+  test("throws on quoted display names between adjacent addresses", () => {
+    // Quoting each member hides the separator but not the second '<'.
+    expect(() =>
+      extractAddrSpec('"CEO" <ceo@victim.example>"x"<attacker@evil.example>'),
+    ).toThrow(/address lists are not supported/);
+  });
+
+  test("throws on an address carried in a leading comment", () => {
+    // A comment may hold '@' as text, and extractAddrSpec refuses a comment
+    // wherever it appears, so reading it as a second address costs nothing.
+    expect(() =>
+      extractAddrSpec("(ceo@victim.example) <attacker@evil.example>"),
+    ).toThrow(/address lists are not supported/);
+  });
+
+  test("throws on a group rather than taking its one member", () => {
+    expect(() =>
+      extractAddrSpec("Team: <a@b.example>, <c@d.example>;"),
+    ).toThrow(/address lists are not supported/);
+  });
+
+  test("throws on a '>' that closes the address early", () => {
+    expect(() => extractAddrSpec("<a@b.example>>")).toThrow(/stray '>'/);
+  });
+
+  test("keeps an empty quoted display name", () => {
+    expect(extractAddrSpec('"" <a@b.example>')).toBe("a@b.example");
+  });
+
+  test("keeps an escaped quote inside a quoted display name", () => {
+    expect(extractAddrSpec('"a\\"b, c" <x@y.example>')).toBe("x@y.example");
+  });
+
+  test("keeps a dot in an unquoted display name", () => {
+    expect(extractAddrSpec("John Q. Public <john@example.com>")).toBe(
+      "john@example.com",
+    );
+  });
+
+  test("keeps a domain literal", () => {
+    expect(extractAddrSpec("<user@[192.168.0.1]>")).toBe("user@[192.168.0.1]");
+  });
+
+  test("throws on an unterminated quoted string", () => {
+    // Leaving the quote open would otherwise hide the separator from the scan.
+    expect(() =>
+      extractAddrSpec('"CEO <ceo@victim.example>, "x" <attacker@evil.example>'),
+    ).toThrow(/unterminated quoted string/);
+  });
+
+  test("reads a fully quoted prefix as one display name", () => {
+    expect(
+      extractAddrSpec('"CEO <ceo@victim.example>, x" <attacker@evil.example>'),
+    ).toBe("attacker@evil.example");
+  });
 });
 
 describe("formatRFC2822Date", () => {
@@ -317,6 +430,64 @@ describe("assembleMessage", () => {
     const sigPart = parseMimePart(defined(parts[1]));
     expect(sigPart.contentType).toBe("application/pgp-signature");
   });
+
+  test("rejects a subject containing CRLF (header injection)", () => {
+    // A reply copies the subject from the inbound peer message, so this is
+    // the remotely reachable path: a doubled line ending ends the header
+    // block and turns the signed envelope into inert body text.
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "test",
+    });
+    const headers = makeHeaders({
+      subject: "hi\r\nInterchange-Type: session.accept\r\n\r\nplanted body",
+    });
+    expect(() => assembleMessage(headers, content, enc.encode("SIG"))).toThrow(
+      /CR or LF/,
+    );
+  });
+
+  test("rejects a bare LF and a bare CR in any emitted header", () => {
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "test",
+    });
+    expect(() =>
+      assembleMessage(
+        makeHeaders({ from: "alice@test.interchange\nCc: mallory@evil" }),
+        content,
+        enc.encode("SIG"),
+      ),
+    ).toThrow(/CR or LF/);
+    expect(() =>
+      assembleMessage(
+        makeHeaders({
+          interchangeAgentId: "agt-1\rInterchange-Tenant-ID: t-2",
+        }),
+        content,
+        enc.encode("SIG"),
+      ),
+    ).toThrow(/CR or LF/);
+  });
+
+  test("emits a double quote in a header value verbatim", () => {
+    // Unstructured text may carry a quote, and the serializer emits its own
+    // quoted boundary parameter on every message, so the emission guard must
+    // reject line breaks only.
+    const content = assembleSignedContent({
+      kind: "conversation",
+      text: "test",
+    });
+    const headers = makeHeaders({
+      subject: 'Re: the "urgent" request',
+      from: '"Doe, Jane" <jane@test.interchange>',
+    });
+    const text = dec.decode(
+      assembleMessage(headers, content, enc.encode("SIG")),
+    );
+    expect(text).toContain('Subject: Re: the "urgent" request\r\n');
+    expect(text).toContain('From: "Doe, Jane" <jane@test.interchange>\r\n');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -332,10 +503,29 @@ describe("parseHeaderSection", () => {
     expect(dec.decode(raw.slice(bodyOffset))).toBe("Body here");
   });
 
-  test("parses LF-terminated headers", () => {
+  test("refuses an LF-terminated message", () => {
+    // RFC 5321 section 2.3.8 forbids recognizing any character or sequence but
+    // CRLF as a line terminator, and section 4.1.1.4 refuses the lone-LF ending
+    // by name. Folding the breaks instead would leave one field whose value
+    // swallows every later field and the body.
     const raw = enc.encode("From: alice@test\nTo: bob@test\n\nBody");
+    expect(() => parseHeaderSection(raw)).toThrow(
+      /must break its lines with CRLF/,
+    );
+  });
+
+  test("refuses a CR-terminated message", () => {
+    const raw = enc.encode("From: alice@test\rTo: bob@test\r\rBody");
+    expect(() => parseHeaderSection(raw)).toThrow(
+      /must break its lines with CRLF/,
+    );
+  });
+
+  test("keeps folding a bare break in a CRLF-terminated section", () => {
+    const raw = enc.encode("Subject: a\nBcc: attacker@evil.test\r\n\r\nBody");
     const { headers, bodyOffset } = parseHeaderSection(raw);
-    expect(headers.get("from")).toBe("alice@test");
+    expect(headers.get("subject")).toBe("a Bcc: attacker@evil.test");
+    expect(headers.has("bcc")).toBe(false);
     expect(dec.decode(raw.slice(bodyOffset))).toBe("Body");
   });
 
@@ -397,6 +587,93 @@ describe("parseHeaderSection", () => {
     expect(bodyOffset).toBe(4);
     expect(headers.size).toBe(0);
   });
+
+  // A bare CR and a bare LF are external input that no field body may carry:
+  // RFC 5322 section 2.2 admits neither inside a field body, and section 2.3
+  // requires the two to occur only together as CRLF. A sender controls every
+  // one of these fields. Each row hides the same injected field behind one bare
+  // character, so the assertions below read the same way for every row: the
+  // character becomes a space, the field keeps the whole value, and no field is
+  // manufactured from it.
+  const bareBreaks = ["\r", "\n"];
+  const bareBreakFields: { field: string; header: string; folded: string }[] =
+    bareBreaks.flatMap((brk) => [
+      {
+        field: "subject",
+        header: `Subject: hello${brk}Bcc: attacker@evil.test`,
+        folded: "hello Bcc: attacker@evil.test",
+      },
+      {
+        field: "from",
+        header: `From: alice@example.com${brk}Bcc: attacker@evil.test`,
+        folded: "alice@example.com Bcc: attacker@evil.test",
+      },
+      {
+        field: "message-id",
+        header: `Message-ID: <p@example.com>${brk}Bcc: attacker@evil.test`,
+        folded: "<p@example.com> Bcc: attacker@evil.test",
+      },
+      {
+        field: "interchange-correlation-id",
+        header: `Interchange-Correlation-ID: corr-1${brk}Bcc: attacker@evil.test`,
+        folded: "corr-1 Bcc: attacker@evil.test",
+      },
+      {
+        field: "references",
+        header: `References: <a@example.com>${brk}Bcc: attacker@evil.test`,
+        folded: "<a@example.com> Bcc: attacker@evil.test",
+      },
+    ]);
+
+  test("folds a bare carriage return or line feed in a field body to a space", () => {
+    // Leaving the character in the value strands a control character in
+    // external input that every message built from these headers carries
+    // forward, and the emit guard then refuses the whole message rather than
+    // the field.
+    for (const c of bareBreakFields) {
+      const { headers } = parseHeaderSection(
+        enc.encode(`${c.header}\r\nTo: bob@example.com\r\n\r\nbody`),
+      );
+      expect(headers.get(c.field)).toBe(c.folded);
+      expect(/[\r\n]/.test(defined(headers.get(c.field)))).toBe(false);
+    }
+  });
+
+  test("does not let a bare carriage return or line feed manufacture a field", () => {
+    // The other wrong reading: treating the character as a field terminator
+    // would resolve `Bcc` -- and `Interchange-Agent-Id`, and every other field
+    // this parser reads -- from a value the sender smuggled inside one it
+    // controls.
+    for (const c of bareBreakFields) {
+      const { headers } = parseHeaderSection(
+        enc.encode(`${c.header}\r\nTo: bob@example.com\r\n\r\nbody`),
+      );
+      expect(headers.has("bcc")).toBe(false);
+    }
+
+    for (const brk of bareBreaks) {
+      const { headers } = parseHeaderSection(
+        enc.encode(
+          `Subject: benign${brk}Interchange-Agent-Id: victim\r\n` +
+            "To: bob@example.com\r\n\r\nbody",
+        ),
+      );
+      expect(headers.has("interchange-agent-id")).toBe(false);
+      expect(headers.get("to")).toBe("bob@example.com");
+    }
+  });
+
+  test("leaves CRLF folding and line termination alone", () => {
+    // The fold targets a CR that is not part of a CRLF, so a real terminator
+    // and a real continuation line still mean what they meant.
+    const { headers } = parseHeaderSection(
+      enc.encode(
+        "References: <a@test>\r\n <b@test>\r\nSubject: kept\r\n\r\nBody",
+      ),
+    );
+    expect(headers.get("references")).toBe("<a@test> <b@test>");
+    expect(headers.get("subject")).toBe("kept");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -444,9 +721,16 @@ describe("parseMultipart", () => {
     expect(dec.decode(defined(parts[1]))).toContain("<p>Part two</p>");
   });
 
-  test("handles LF-only line endings", () => {
+  test("splits parts whose delimiter lines are LF-terminated", () => {
+    // The boundary scan tolerates an LF-terminated delimiter line. Each part's
+    // own fields are CRLF-terminated, because CRLF is the only field terminator
+    // the header section parse recognizes (RFC 5322 section 2.3); this fixture
+    // keeps the two questions apart rather than asserting both tolerances from
+    // one input.
     const body = enc.encode(
-      "--boundary\nContent-Type: text/plain\n\nPart one\n--boundary\nContent-Type: text/html\n\n<p>Part two</p>\n--boundary--\n",
+      "--boundary\nContent-Type: text/plain\r\n\r\nPart one\n" +
+        "--boundary\nContent-Type: text/html\r\n\r\n<p>Part two</p>\n" +
+        "--boundary--\n",
     );
     const parts = parseMultipart(body, "boundary");
     expect(parts).toHaveLength(2);
