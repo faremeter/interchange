@@ -31,6 +31,7 @@ const STATUS_BY_CODE: Readonly<Record<string, ContentfulStatusCode>> = {
   asset_kind_mismatch: 409,
   anchor_run_missing: 500,
   step_state_unreadable: 500,
+  step_state_unwritable: 500,
   reserved_signal_name: 400,
   unaddressable_run: 400,
   signal_id_conflict: 409,
