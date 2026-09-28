@@ -33,7 +33,7 @@ each call.
 `content` is plain text for text-like content types and base64 for
 everything else; `encoding` (`"utf-8"` or `"base64"`) overrides that
 default, except that a type which is not text-like must be base64. Attachments are validated with `validateAttachments` from
-`@intx/types` (allowlist, filename, and size limits) before the
+`@intx/types` (allowlist, filename, count, and size limits) before the
 message is sent. `mail_read` surfaces received attachments as
 `{ name, contentType, size, part }` in its `"full"` and `"payload"`
 responses; a follow-up `mail_read` with that `part` path returns the
