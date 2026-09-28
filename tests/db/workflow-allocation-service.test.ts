@@ -28,6 +28,8 @@ import {
   createSidecarRouter,
   createWorkflowAllocationService,
   SessionLaunchError,
+  WorkflowProvisioningError,
+  workflowRunStepSeedPath,
   type InstallAndApproveWorkflowSourceParams,
   type SidecarProvisioner,
 } from "@intx/hub-sessions";
@@ -35,13 +37,18 @@ import {
   credentialAad,
   type ResolvedWorkflowLifecyclePolicy,
   type SidecarCapabilityRule,
+  type StepStateSnapshot,
 } from "@intx/types";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
   DEFAULT_SIDECAR_CAPACITY,
   DeploymentRejectedError,
 } from "@intx/types/sidecar";
-import { createApprovalSet } from "@intx/workflow-deploy";
+import {
+  createApprovalSet,
+  deriveRunAddress,
+  deriveWorkflowRunRepoId,
+} from "@intx/workflow-deploy";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -87,6 +94,12 @@ const SOURCE: WorkflowDefinitionSource = {
   package: {
     format: "source",
     commitSha: "c0ffee".padEnd(40, "0"),
+  },
+};
+
+const UNUSED_WORKFLOW_RUN_REPO_STORE = {
+  writeTree: () => {
+    throw new Error("this test imports no step state");
   },
 };
 
@@ -283,6 +296,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ),
         );
         const service = createWorkflowAllocationService({
+          workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
           db: h.db,
           ...sharedPluginPools([provisioner]),
           preparedDeployer: {
@@ -417,6 +431,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         });
         const service = createWorkflowAllocationService({
           db: h.db,
+          workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
           ...sharedPluginPools([provisioner]),
           preparedDeployer: {
             installAndApproveWorkflowSource: (params) => {
@@ -597,6 +612,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const service = createWorkflowAllocationService({
         db: h.db,
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
         probePlugins: createSidecarPluginRegistry({
           provisioners: [provisioner],
         }),
@@ -698,6 +714,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       let anchorVisibleDuringDeploy = false;
       const service = createWorkflowAllocationService({
         db: h.db,
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
         ...sharedPluginPools([provisioner]),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
@@ -760,6 +777,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       let failure: Error = new Error("catalog temporarily unavailable");
       const service = createWorkflowAllocationService({
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
         db: h.db,
         ...sharedPluginPools([provisioner]),
         preparedDeployer: {
@@ -837,6 +855,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         history?: { unreceived: string | null; reportedAt: Date };
       } = {};
       const service = createWorkflowAllocationService({
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
         db: h.db,
         ...sharedPluginPools([provisioner]),
         preparedDeployer: {
@@ -989,6 +1008,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
       const service = createWorkflowAllocationService({
         db: h.db,
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
         ...sharedPluginPools([provisioner]),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
@@ -1051,6 +1071,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const service = createWorkflowAllocationService({
         db: h.db,
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
         ...sharedPluginPools([provisioner]),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
@@ -1135,6 +1156,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const service = createWorkflowAllocationService({
         db: h.db,
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
         ...sharedPluginPools([probeProvisioner, deploymentProvisioner]),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) =>
@@ -1241,6 +1263,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const service = createWorkflowAllocationService({
         db: h.db,
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
         ...sharedPluginPools([provisioner]),
         preparedDeployer: {
           installAndApproveWorkflowSource: async () => {
@@ -1326,6 +1349,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const ids = ["sal-probe-released", "sal-workflow-pending"];
       const service = createWorkflowAllocationService({
         db: h.db,
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
         probePlugins: createSidecarPluginRegistry({
           provisioners: [sandbox],
         }),
@@ -1418,6 +1442,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const ids = ["sal-isolated-probe", "sal-general-workflow"];
       const service = createWorkflowAllocationService({
         db: h.db,
+        workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
         ...sharedPluginPools([general, sandbox]),
         preparedDeployer: {
           installAndApproveWorkflowSource: (params) => freeze(params),
@@ -1475,6 +1500,200 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
     });
 
+    const IMPORTED_STATE: StepStateSnapshot = {
+      version: 1,
+      turns: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "imported" }],
+          timestamp: 1,
+        },
+      ],
+      tokenUsage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        thinking: 0,
+      },
+      connectorState: null,
+    };
+
+    /** `freeze`, approving a definition whose one step is an agent. */
+    async function freezeAgentStep(
+      params: InstallAndApproveWorkflowSourceParams,
+    ) {
+      const frozen = await freeze(params);
+      const agentProjection = {
+        ...frozen.projection,
+        stepOrder: ["intake"],
+        steps: { intake: { kind: "step", agent: { modelSources: [] } } },
+      };
+      return {
+        ...frozen,
+        approval: {
+          ...frozen.approval,
+          approvedSurface: createApprovalSet([
+            "inference.source:anthropic:opus",
+          ]),
+          projection: agentProjection,
+        },
+        projection: agentProjection,
+      };
+    }
+
+    function importingService(args: {
+      id: string;
+      destroyCalls: unknown[];
+      writeTree: (content: {
+        repoId: unknown;
+        ref: string;
+        files: Record<string, string | Uint8Array>;
+      }) => Promise<void>;
+    }) {
+      return createWorkflowAllocationService({
+        db: h.db,
+        workflowRunRepoStore: {
+          async writeTree(_principal, repoId, ref, content) {
+            await args.writeTree({ repoId, ref, files: content.files });
+            return { commitSha: "0".repeat(40), newlyTerminalRuns: [] };
+          },
+        },
+        ...sharedPluginPools([
+          makeProvisioner({
+            id: args.id,
+            ensureCalls: [],
+            destroyCalls: args.destroyCalls,
+          }),
+        ]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: (params) => freezeAgentStep(params),
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw new Error("not reached");
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          getSidecarInventory: () => ({
+            capacity: DEFAULT_SIDECAR_CAPACITY,
+            retainedIncarnations: [],
+          }),
+          waitForSidecarInventory: async () => undefined,
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        adapterManifest: ADAPTER_MANIFEST,
+        createAllocationId: () => `sal-${args.id}`,
+        createSidecarId: () => `sc-${args.id}`,
+        createToken: () => "probe-token",
+      });
+    }
+
+    test("seeds imported step state before the deployment's rows exist", async () => {
+      const anchorRunId = "run-step-state-import";
+      const writes: unknown[] = [];
+      const service = importingService({
+        id: "step-state-import",
+        destroyCalls: [],
+        async writeTree(write) {
+          const anchor = await h.db.query.workflowRun.findFirst({
+            where: eq(workflowRun.id, anchorRunId),
+          });
+          writes.push({ ...write, anchorExisted: anchor !== undefined });
+        },
+      });
+
+      await service.prepareProvisionedDeployment({
+        ...prepareArgs(anchorRunId),
+        stepState: { intake: IMPORTED_STATE },
+      });
+
+      expect(writes).toEqual([
+        {
+          repoId: {
+            kind: "workflow-run",
+            id: deriveWorkflowRunRepoId(
+              deriveRunAddress({
+                runId: anchorRunId,
+                domain: `${TENANT_ID}.example.test`,
+              }),
+            ),
+          },
+          ref: "refs/heads/main",
+          files: {
+            [workflowRunStepSeedPath(anchorRunId, "intake")]:
+              JSON.stringify(IMPORTED_STATE),
+          },
+          anchorExisted: false,
+        },
+      ]);
+      expect(
+        await createSidecarAllocationStore(h.db).findByAnchorRunId(anchorRunId),
+      ).not.toBeNull();
+    });
+
+    test("reports imported step state it cannot store in a fixed message, keeping the storage error as its cause", async () => {
+      const storageError = new Error(
+        "ENOSPC: no space left on device, open '/srv/hub-data/runs/seed.json'",
+      );
+      const service = importingService({
+        id: "step-state-unwritable",
+        destroyCalls: [],
+        async writeTree() {
+          throw storageError;
+        },
+      });
+
+      const prepared = service.prepareProvisionedDeployment({
+        ...prepareArgs("run-step-state-unwritable"),
+        stepState: { intake: IMPORTED_STATE },
+      });
+      await expect(prepared).rejects.toBeInstanceOf(WorkflowProvisioningError);
+      await expect(prepared).rejects.toMatchObject({
+        code: "step_state_unwritable",
+        message: "The imported step state could not be stored",
+      });
+      await expect(prepared).rejects.toHaveProperty("cause", storageError);
+    });
+
+    test("rejects step state for a step that is not a top-level agent step", async () => {
+      const anchorRunId = "run-step-state-unknown";
+      const destroyCalls: unknown[] = [];
+      const writes: unknown[] = [];
+      const service = importingService({
+        id: "step-state-unknown",
+        destroyCalls,
+        async writeTree(write) {
+          writes.push(write);
+        },
+      });
+
+      await expect(
+        service.prepareProvisionedDeployment({
+          ...prepareArgs(anchorRunId),
+          stepState: { intake: IMPORTED_STATE, reviewer: IMPORTED_STATE },
+        }),
+      ).rejects.toMatchObject({
+        code: "invalid_step_state",
+        message: expect.stringContaining(`"reviewer"`),
+      });
+
+      expect(writes).toEqual([]);
+      expect(destroyCalls).toHaveLength(1);
+      expect(
+        await createSidecarAllocationStore(h.db).findByAnchorRunId(anchorRunId),
+      ).toBeNull();
+    });
+
     test("rejects invalid Hub-configured probe capability rules", () => {
       const provisioner = makeProvisioner({
         id: "invalid-probe-policy",
@@ -1485,6 +1704,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(() =>
         createWorkflowAllocationService({
           db: h.db,
+          workflowRunRepoStore: UNUSED_WORKFLOW_RUN_REPO_STORE,
           ...sharedPluginPools([provisioner]),
           preparedDeployer: {
             installAndApproveWorkflowSource: (params) => freeze(params),

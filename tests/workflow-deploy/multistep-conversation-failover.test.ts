@@ -13,10 +13,18 @@
 // copy of the workflow-run history is restored onto a new sidecar and the same
 // frozen definition is deployed there. The third mail is the step's next turn.
 //
+// The same conversation also continues on a second deployment through the
+// routes a client uses: after two turns on one deployment, `step1`'s state is
+// read from the export route and passed to the deploy route of a new
+// deployment as its `stepState`. The Hub files it as a seed in the new
+// deployment's history, the reconciler restores that history onto the new
+// sidecar, and the new deployment's first mail is the step's third turn.
+//
 // The proof is what the model sees. The mock inference server records every
 // request and echoes each turn's inbound text, so the third turn's request
 // must carry the second turn's request plus its reply, verbatim, before the
-// new mail. The run then completes through `step2` on the replacement host.
+// new mail. After the failover, the run then completes through `step2` on the
+// replacement host.
 //
 // Harness justification: SPAWN-REAL. A real Hub subprocess with a real
 // provisioner, real sidecar subprocesses, real workflow-process children, and
@@ -39,7 +47,13 @@ import {
   workflowRun as workflowRunTable,
 } from "@intx/db/schema";
 import { createAgentRepoStore, DEFAULT_ASSET_REF } from "@intx/hub-sessions";
-import { credentialAad, deriveWorkflowRunId, hexDecode } from "@intx/types";
+import {
+  credentialAad,
+  deriveWorkflowRunId,
+  hexDecode,
+  StepStateSnapshot,
+  type StepStateImport,
+} from "@intx/types";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 import { loadEnvFile, REPO_ROOT, requireKey } from "@intx/test-harness/env";
 import {
@@ -87,6 +101,10 @@ const PROVISIONED_HUB_ENTRY = path.join(
 const MARKER_ONE = "failover-fa11a7-one";
 const MARKER_TWO = "failover-fa11a7-two";
 const MARKER_THREE = "failover-fa11a7-three";
+
+const IMPORT_ONE = "route-import-2b9057-one";
+const IMPORT_TWO = "route-import-2b9057-two";
+const IMPORT_THREE = "route-import-2b9057-three";
 
 const DeployResponse = type({ id: "string" });
 const RunEvents = type({
@@ -257,6 +275,7 @@ async function deployConversation(
   tenant: Tenant,
   assetId: string,
   commitSha: string,
+  stepState?: StepStateImport,
 ) {
   const { h, db } = requireSetup();
   const deployed = await apiCall(
@@ -272,6 +291,7 @@ async function deployConversation(
       entry: "./workflow.mjs",
       sourceOfferingIds: [tenant.offeringId],
       defaultSourceOfferingId: tenant.offeringId,
+      ...(stepState !== undefined ? { stepState } : {}),
     },
     tenant.user.cookies,
   );
@@ -331,12 +351,29 @@ async function deployConversation(
       );
     }
   };
+  const exportStep1 = async (): Promise<StepStateSnapshot> => {
+    const res = await apiCall(
+      h.url,
+      "GET",
+      `/api/tenants/${tenant.tenantId}/workflows/runs/${runId}/steps/step1/state`,
+      undefined,
+      tenant.user.cookies,
+    );
+    const snapshot = StepStateSnapshot(res.data);
+    if (res.status !== 200 || snapshot instanceof type.errors) {
+      throw new Error(
+        `export failed: ${String(res.status)} ${JSON.stringify(res.data)}`,
+      );
+    }
+    return snapshot;
+  };
   return {
     readAnchor,
     readAllocation,
     readEvents,
     inputParks,
     sendMail,
+    exportStep1,
   };
 }
 
@@ -440,6 +477,71 @@ describe.skipIf(!harnessHubEnvAvailable())(
       expect(carriedReply?.role).toBe("assistant");
       expect(messageText(carriedReply)).toContain(MARKER_TWO);
       expect(thirdTurn).toHaveLength(secondTurn.length + 2);
+    });
+
+    test("a new deployment continues the conversation from state exported through the routes", async () => {
+      const { mock } = requireSetup();
+      const tenant = await provisionTenant("conversation_import");
+
+      // --- Two turns on the exporting deployment --------------------------
+      const assetA = "ast_conversation_import_a";
+      const a = await deployConversation(
+        tenant,
+        assetA,
+        await publishConversation(tenant, assetA),
+      );
+      await waitFor(async () => (await a.readAnchor())?.publicKey != null);
+      await a.sendMail(`Opening turn ${IMPORT_ONE}.`);
+      await waitFor(async () => (await a.inputParks()) >= 1);
+      await a.sendMail(`Second turn ${IMPORT_TWO}.`);
+      await waitFor(async () => (await a.inputParks()) >= 2);
+
+      // --- Export it through the route ------------------------------------
+      // The park is on the Hub, so the state its turn committed first is too.
+      const exported = await a.exportStep1();
+      expect(exported.turns.map((turn) => turn.role)).toEqual([
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+      ]);
+
+      // --- A new deployment imports it through the deploy route -----------
+      const assetB = "ast_conversation_import_b";
+      const b = await deployConversation(
+        tenant,
+        assetB,
+        await publishConversation(tenant, assetB),
+        { step1: exported },
+      );
+      await waitFor(async () => (await b.readAnchor())?.publicKey != null);
+      expect(await b.exportStep1()).toEqual(exported);
+      await b.sendMail(`Third turn ${IMPORT_THREE}.`);
+      await waitFor(async () => (await b.inputParks()) >= 1);
+
+      // --- The model saw the exporting deployment's whole conversation ----
+      const lastTurnOnA = withoutCacheMarkers(
+        step1RequestFor(mock.requests, IMPORT_ONE, IMPORT_TWO).messages ?? [],
+      );
+      const firstTurnOnB = step1RequestFor(
+        mock.requests,
+        IMPORT_ONE,
+        IMPORT_THREE,
+      );
+      const continued = withoutCacheMarkers(firstTurnOnB.messages ?? []);
+      expect(continued.slice(0, lastTurnOnA.length)).toEqual(lastTurnOnA);
+      const carriedReply = firstTurnOnB.messages?.[lastTurnOnA.length];
+      expect(carriedReply?.role).toBe("assistant");
+      expect(messageText(carriedReply)).toContain(IMPORT_TWO);
+      expect(continued).toHaveLength(lastTurnOnA.length + 2);
+
+      // --- The new deployment's own state carries the imported turns ------
+      // Its park is on the Hub, so its turn's state is there too.
+      const continuedState = await b.exportStep1();
+      expect(continuedState.turns.slice(0, exported.turns.length)).toEqual(
+        exported.turns,
+      );
+      expect(continuedState.turns).toHaveLength(exported.turns.length + 2);
     });
   },
 );
