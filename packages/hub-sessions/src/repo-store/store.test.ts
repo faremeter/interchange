@@ -362,6 +362,92 @@ describe("RepoStore", () => {
     expect(xPaths).toContain("b");
   });
 
+  test("writeTreePreservingPrefix rejects a merge that returns a file outside its prefix", async () => {
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-preserve-scope-"),
+      signingKey,
+      handlers: { "agent-state": createTestHandler() },
+      authorize: allowAll,
+    });
+    const prefix = "runs/r1/steps/s1/state/";
+    const first = await store.writeTreePreservingPrefix(
+      principal,
+      repoId,
+      REF,
+      {
+        preservePrefix: prefix,
+        merge: () => Promise.resolve({ [`${prefix}checkpoint.json`]: "{}" }),
+        message: "in prefix",
+      },
+    );
+
+    await expect(
+      store.writeTreePreservingPrefix(principal, repoId, REF, {
+        preservePrefix: prefix,
+        merge: () =>
+          Promise.resolve({
+            [`${prefix}checkpoint.json`]: "{}",
+            "runs/r1/steps/s2/seed.json": "{}",
+          }),
+        message: "outside prefix",
+      }),
+    ).rejects.toThrow(
+      'preserve_prefix_out_of_scope: merge returned "runs/r1/steps/s2/seed.json"',
+    );
+    expect(await store.resolveRef(principal, repoId, REF)).toBe(
+      first.commitSha,
+    );
+  });
+
+  test("a clearPrefix write scopes files outside its prefix to their own directories", async () => {
+    const seen: (string[] | undefined)[] = [];
+    const store = createRepoStore({
+      dataDir: await makeTempDir("repo-store-prefix-scope-"),
+      signingKey,
+      handlers: {
+        "agent-state": {
+          ...createTestHandler(),
+          validatePush({ changedPathPrefixes }) {
+            seen.push(
+              changedPathPrefixes === undefined
+                ? undefined
+                : [...changedPathPrefixes].sort(),
+            );
+            return { ok: true };
+          },
+        },
+      },
+      authorize: allowAll,
+    });
+    const prefix = "runs/r1/steps/s1/state/";
+
+    await store.writeTree(principal, repoId, REF, {
+      files: { [`${prefix}checkpoint.json`]: "{}" },
+      clearPrefix: prefix,
+      message: "in prefix",
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: {
+        [`${prefix}checkpoint.json`]: "{}",
+        "runs/r1/events/1.json": "{}",
+        "runs/r1/steps/s2/seed.json": "{}",
+      },
+      clearPrefix: prefix,
+      message: "outside prefix",
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { [`${prefix}checkpoint.json`]: "{}", "top.json": "{}" },
+      clearPrefix: prefix,
+      message: "outside any directory",
+    });
+
+    expect(seen).toEqual([
+      [prefix],
+      ["runs/r1/events/", "runs/r1/steps/s1/state/", "runs/r1/steps/s2/"],
+      undefined,
+    ]);
+  });
+
   test("interleaved writes to two refs of one repo never contaminate either ref's tree", async () => {
     const dataDir = await makeTempDir("repo-store-ref-switch-");
     const handler = createTestHandler();

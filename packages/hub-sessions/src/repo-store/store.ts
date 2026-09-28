@@ -1447,10 +1447,34 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return { commitSha, newlyTerminalRuns: validation.newlyTerminalRuns ?? [] };
   }
 
+  // A clearPrefix write clears and rewrites its prefix, but its files may
+  // land outside it. Each such file widens the change scope to its own
+  // directory, or to the whole tree for a file the scope cannot name, so no
+  // change escapes the handler's validation.
+  function prefixWriteScope(
+    prefix: string,
+    files: Record<string, string | Uint8Array>,
+  ): ReadonlySet<string> | undefined {
+    const scope = new Set([prefix]);
+    for (const filepath of Object.keys(files)) {
+      if (filepath.startsWith(prefix)) continue;
+      const slash = filepath.lastIndexOf("/");
+      if (
+        slash <= 0 ||
+        filepath.startsWith("/") ||
+        filepath.split("/").includes("..")
+      ) {
+        return undefined;
+      }
+      scope.add(filepath.slice(0, slash + 1));
+    }
+    return scope;
+  }
+
   // Normalize a `TreeContent` (files + optional clearPrefix) into the
   // puts/deletes/scope shape writeTreeUnderLock consumes. A clearPrefix
-  // becomes a single subtree-delete and the handler's change scope; its
-  // absence is a purely-additive write validated in full.
+  // becomes a single subtree-delete and anchors the handler's change
+  // scope; its absence is a purely-additive write validated in full.
   function normalizeTreeContent(content: TreeContent): {
     files: Record<string, string | Uint8Array>;
     deletes: ReadonlySet<string>;
@@ -1462,7 +1486,10 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       return {
         files: content.files,
         deletes: new Set([content.clearPrefix]),
-        changedPathPrefixes: new Set([content.clearPrefix]),
+        changedPathPrefixes: prefixWriteScope(
+          content.clearPrefix,
+          content.files,
+        ),
         message: content.message,
       };
     }
@@ -1576,6 +1603,14 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       await storageInitRepo(repoDir(repoId), storageOptsFor(repoId, undefined));
       const existing = await readPrefixBlobs(repoId, ref, args.preservePrefix);
       const files = await args.merge(existing);
+      const outside = Object.keys(files).find(
+        (filepath) => !filepath.startsWith(args.preservePrefix),
+      );
+      if (outside !== undefined) {
+        throw new Error(
+          `preserve_prefix_out_of_scope: merge returned ${JSON.stringify(outside)}, which is not under ${JSON.stringify(args.preservePrefix)}`,
+        );
+      }
       return writeTreeUnderLock(principal, repoId, ref, {
         files,
         deletes: new Set([args.preservePrefix]),

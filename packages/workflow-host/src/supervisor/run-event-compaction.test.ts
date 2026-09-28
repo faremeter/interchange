@@ -181,13 +181,12 @@ describe("compactRunEvents", () => {
   test("a sibling blobs/ subtree survives a seal", async () => {
     const { repoId, substrate, supervisor, anchorRunId } =
       await setup("dep-blobs");
-    await substrate.writeTreePreservingPrefix(supervisor, repoId, REF, {
-      preservePrefix: "runs/run-1/events/",
-      merge: async () => ({
+    await substrate.writeTree(supervisor, repoId, REF, {
+      files: {
         "runs/run-1/events/0.json": ev(0, "RunStarted"),
         "runs/run-1/events/1.json": ev(1, "RunCompleted"),
         [`runs/run-1/blobs/${"a".repeat(64)}`]: "payload-bytes",
-      }),
+      },
       message: "seed events and a blob",
     });
 
@@ -218,10 +217,9 @@ describe("compactRunEvents", () => {
 
   test("a sibling grants.json survives a seal", async () => {
     // A run's per-run grants live at `runs/<runId>/grants.json` -- a sibling
-    // of the run's `events/` subtree, NOT under it. Compaction clears and
-    // rebuilds only the `events/` prefix (`writeTreePreservingPrefix` passes
-    // paths outside the prefix through unchanged), so the grants file must
-    // survive the seal and remain readable alongside the folded
+    // of the run's `events/` subtree, NOT under it. Compaction deletes only
+    // the `events/` subtree and adds `events.jsonl` beside it, so the grants
+    // file must survive the seal and remain readable alongside the folded
     // `events.jsonl`. The `runs/<runId>/` subtree is never pruned, so
     // grants.json lives and is reclaimed on exactly the same schedule as the
     // run's own retained event log.
@@ -232,13 +230,12 @@ describe("compactRunEvents", () => {
         { id: "run-grant", resource: "tool:send-mail", effect: "allow" },
       ],
     });
-    await substrate.writeTreePreservingPrefix(supervisor, repoId, REF, {
-      preservePrefix: "runs/run-1/events/",
-      merge: async () => ({
+    await substrate.writeTree(supervisor, repoId, REF, {
+      files: {
         "runs/run-1/events/0.json": ev(0, "RunStarted"),
         "runs/run-1/events/1.json": ev(1, "RunCompleted"),
         "runs/run-1/grants.json": grantsContents,
-      }),
+      },
       message: "seed events and grants",
     });
 

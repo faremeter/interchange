@@ -86,12 +86,11 @@ async function setup(anchorRunId: string) {
     });
   // Seed an already-sealed run: the combined `events.jsonl`, no `events/`.
   const seedSealed = (runId: string, events: [number, string][]) =>
-    substrate.writeTreePreservingPrefix(supervisor, repoId, REF, {
-      preservePrefix: `runs/${runId}/events/`,
-      merge: async () => ({
+    substrate.writeTree(supervisor, repoId, REF, {
+      files: {
         [`runs/${runId}/events.jsonl`]:
           events.map(([seq, type]) => ev(runId, seq, type)).join("\n") + "\n",
-      }),
+      },
       message: `seed sealed ${runId}`,
     });
   return { repoId, substrate, anchorRunId, runDir, seedPerEvent, seedSealed };
@@ -226,14 +225,14 @@ describe("recoverInterruptedCompactions", () => {
 
     const failing: typeof substrate = {
       ...substrate,
-      writeTreePreservingPrefix: (
-        ...args: Parameters<typeof substrate.writeTreePreservingPrefix>
+      writeTreeDelta: (
+        ...args: Parameters<typeof substrate.writeTreeDelta>
       ) => {
         const [, , , writeOpts] = args;
-        if (writeOpts.preservePrefix.includes("/bad/")) {
+        if (writeOpts.changedPathPrefixes?.has("runs/bad/") === true) {
           return Promise.reject(new Error("injected fold failure for bad"));
         }
-        return substrate.writeTreePreservingPrefix(...args);
+        return substrate.writeTreeDelta(...args);
       },
     };
 

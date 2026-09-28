@@ -179,10 +179,11 @@ export type WriteTreePreservingPrefixArgs = {
    * directly under `preservePrefix` (keyed by repo-root-relative
    * path, including the prefix). Returns the full set of files the
    * substrate should write at the prefix; the prefix subtree is
-   * cleared and replaced with this set in a single commit. Paths
-   * outside the prefix are passed through unchanged. The callback may
-   * throw to abort the write; the substrate releases the lock and
-   * propagates the error.
+   * cleared and replaced with this set in a single commit. Every
+   * returned path must lie under the prefix, or the substrate rejects
+   * the write; paths outside the prefix are carried forward unchanged.
+   * The callback may throw to abort the write; the substrate releases
+   * the lock and propagates the error.
    */
   merge: (
     existing: ReadonlyMap<string, Uint8Array>,
