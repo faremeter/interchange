@@ -20,9 +20,6 @@ export type {
   AdapterRegistry,
   AdapterFactory,
 } from "./adapter";
-// The manifest schema lives in @intx/types: the hub's provisioning contract
-// carries it to sidecars.
-export { AdapterManifest, AdapterManifestEntry } from "@intx/types";
 export { CREDENTIAL_SENTINEL, BEARER_CREDENTIAL_SENTINEL } from "./auth";
 export {
   classifyHTTPError,

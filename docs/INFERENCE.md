@@ -41,7 +41,7 @@ Adapters never see the API key. The harness performs credential substitution bet
 - `CREDENTIAL_SENTINEL` — replaced with the API key verbatim. Use for headers like `x-api-key` (Anthropic) and `x-goog-api-key` (Google).
 - `BEARER_CREDENTIAL_SENTINEL` — replaced with `Bearer <apiKey>`. Use for `authorization` headers in providers that follow the Bearer convention (OpenAI and OpenAI-compatible).
 
-A new provider declares its credential header by placing the appropriate sentinel as the header value in its `buildRequest`; no harness change is required. Both sentinels are exported from `@intx/inference` so third-party adapters — loaded from an `AdapterManifest` via `loadAdapterRegistry` (`@intx/inference/providers`) — can use them directly. Match is exact: substring occurrences are not replaced.
+A new provider declares its credential header by placing the appropriate sentinel as the header value in its `buildRequest`; no harness change is required. Both sentinels are exported from `@intx/inference` so third-party adapters — loaded from an `AdapterManifest` (`@intx/types`) via `loadAdapterRegistry` (`@intx/inference/providers`) — can use them directly. Match is exact: substring occurrences are not replaced.
 
 ### Capability Detection
 

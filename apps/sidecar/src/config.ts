@@ -8,8 +8,11 @@
 // resolved value through `DefaultHarnessBuilderConfig` rather than
 // re-reading env, so the boundary stays at the boot edge.
 
-import type { AdapterManifest } from "@intx/inference";
-import { hexDecode, parseAdapterManifestEnv } from "@intx/types";
+import {
+  type AdapterManifest,
+  hexDecode,
+  parseAdapterManifestEnv,
+} from "@intx/types";
 
 const DEFAULT_CACHE_MAX_BYTES = 10 * 1024 * 1024 * 1024;
 
