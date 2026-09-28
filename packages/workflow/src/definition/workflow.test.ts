@@ -1680,6 +1680,29 @@ describe("onFailure validation", () => {
     ).toThrow(/onFailure rescue must name unit in its after/);
   });
 
+  test("accepts a gate that branches to an onFailure handler", () => {
+    for (const branches of [
+      { then: "rescue", else: "unit" },
+      { then: "unit", else: "rescue" },
+    ]) {
+      expect(() =>
+        defineWorkflow({
+          id: "w",
+          trigger: { type: "manual" },
+          steps: {
+            pick: gate({ when: { from: "trigger.payload.go" }, ...branches }),
+            unit: step({
+              agent: makeAgent("u"),
+              after: ["pick"],
+              onFailure: "rescue",
+            }),
+            rescue: step({ agent: makeAgent("r"), after: ["unit"] }),
+          },
+        }),
+      ).not.toThrow();
+    }
+  });
+
   test("rejects onFailure on a map inner step", () => {
     expect(() =>
       defineWorkflow({
