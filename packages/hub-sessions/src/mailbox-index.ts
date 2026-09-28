@@ -39,12 +39,12 @@ const MailboxIndexEnvelope = type({
  * message vanished so a QRESYNC `sync` can answer `vanished` since a client's
  * known modseq. A uid names one message for the life of the mailbox, so no
  * entry repeats one, and each is below `uidNext`: a reopened mailbox numbers
- * from there.
+ * from there, and so does a deployment that imports it.
  */
 export const MailboxIndex = type({
   version: `${MAILBOX_INDEX_VERSION}`,
   uidValidity: "number >= 0",
-  uidNext: "number >= 1",
+  uidNext: "1 <= number.integer <= 4294967295",
   highestModSeq: "number >= 0",
   messages: type({
     uid: "number.integer >= 1",
