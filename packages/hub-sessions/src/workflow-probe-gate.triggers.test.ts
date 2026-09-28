@@ -21,6 +21,16 @@ import {
   type PersistFrozenApprovalFn,
 } from "./workflow-probe-gate";
 import type { WorkflowProbeResult } from "./ws/sidecar-handler";
+import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+
+const DEFINITION_SOURCE: WorkflowDefinitionSource = {
+  kind: "asset",
+  assetId: "asset-1",
+  package: {
+    format: "source",
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
+  },
+};
 
 function projectionWithTriggers(
   triggers: unknown[],
@@ -66,6 +76,7 @@ describe("gateAndFreezeProbeResult trigger admission", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist: persistMustNotRun,
@@ -91,6 +102,7 @@ describe("gateAndFreezeProbeResult trigger admission", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals,
       persist: persistMustNotRun,
@@ -111,6 +123,7 @@ describe("gateAndFreezeProbeResult trigger admission", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals: { kind: "approve-probed" },
       persist,
@@ -131,6 +144,7 @@ describe("gateAndFreezeProbeResult trigger admission", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals: { kind: "approve-probed" },
       persist,
@@ -146,6 +160,7 @@ describe("gateAndFreezeProbeResult trigger admission", () => {
 
     const result = await gateAndFreezeProbeResult({
       assetId: "asset-1",
+      source: DEFINITION_SOURCE,
       probeResult,
       approvals: { kind: "approve-probed" },
       persist,

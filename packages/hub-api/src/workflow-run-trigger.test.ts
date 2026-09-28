@@ -5,6 +5,7 @@ import { MAX_MAIL_OUTBOUND_BODY_BYTES } from "@intx/types/sidecar";
 import {
   createWorkflowRunTrigger,
   MAX_MAIL_BODY_BYTES,
+  type TriggerWorkflowRunDeps,
 } from "./workflow-run-trigger";
 import type { PrincipalRow, TenantRow } from "./context";
 
@@ -107,6 +108,89 @@ describe("triggerWorkflowRun signing-principal guard", () => {
         message: { content: "hi" },
       }),
     ).rejects.toThrow(/db must not be used/);
+  });
+});
+
+describe("triggerWorkflowRun definition asset lookup", () => {
+  test("names a missing package-registry asset as the definition asset", async () => {
+    const definitionAssetId = "ast_package_registry";
+    const rowsBySelect = [
+      [
+        {
+          definitionId: "wfd_package_registry",
+          definitionAssetId,
+          allocationId: null,
+          allocationStatus: null,
+          anchorStatus: "deployed",
+          runStatus: null,
+        },
+      ],
+      [],
+      [{ grantSnapshot: { perStep: [], grantRequirements: [] } }],
+    ];
+    let selectIndex = 0;
+    const dbQuery = {
+      from() {
+        return dbQuery;
+      },
+      innerJoin() {
+        return dbQuery;
+      },
+      leftJoin() {
+        return dbQuery;
+      },
+      where() {
+        return dbQuery;
+      },
+      orderBy() {
+        return dbQuery;
+      },
+      limit() {
+        return Promise.resolve(rowsBySelect[selectIndex - 1]);
+      },
+    };
+    const db = {
+      select() {
+        selectIndex += 1;
+        return dbQuery;
+      },
+      query: {
+        asset: {
+          findFirst: async () => undefined,
+        },
+      },
+    };
+    const repoStore = {
+      openCommittedReads: async () => null,
+    };
+    const trigger = createWorkflowRunTrigger({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- this branch-specific mock implements only the query chains reached before the missing-asset response
+      db: db as unknown as TriggerWorkflowRunDeps["db"],
+      principalKeyStore: unusedDep("principalKeyStore"),
+      grantStore: unusedDep("grantStore"),
+      sidecarRouter: unusedDep("sidecarRouter"),
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- this branch only opens committed reads and treats a null result as an absent lifecycle
+      repoStore: repoStore as unknown as TriggerWorkflowRunDeps["repoStore"],
+    });
+
+    const result = await trigger({
+      tenant: makeTenant(),
+      principal: makePrincipal("user"),
+      userName: null,
+      anchorRunId: "run_package_registry",
+      message: { content: "hi" },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
+      body: {
+        error: {
+          code: "invalid_workflow",
+          message: `Definition asset ${definitionAssetId} not found`,
+        },
+      },
+    });
   });
 });
 

@@ -40,6 +40,16 @@ import type {
   SidecarRouter,
 } from "./ws/sidecar-handler";
 import { createSidecarEmitter } from "./ws/sidecar-events";
+import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
+
+const DEFINITION_SOURCE: WorkflowDefinitionSource = {
+  kind: "asset",
+  assetId: "asset-1",
+  package: {
+    format: "source",
+    commitSha: "0123456789abcdef0123456789abcdef01234567",
+  },
+};
 
 type Call = { method: string; args: unknown[] };
 
@@ -1255,6 +1265,7 @@ describe("deployCodeSourcedWorkflow", () => {
     const wireHash = await computeWireDefinitionHash(projection);
     const approval = await gateAndFreezeProbeResult({
       assetId: "asset-composed",
+      source: DEFINITION_SOURCE,
       probeResult: {
         projection,
         grants,
@@ -2236,6 +2247,7 @@ describe("deployCodeSourcedWorkflow", () => {
     ];
     const approval = await gateAndFreezeProbeResult({
       assetId: "asset-mixed",
+      source: DEFINITION_SOURCE,
       probeResult: {
         projection,
         grants,
@@ -2419,6 +2431,7 @@ describe("deployCodeSourcedWorkflow", () => {
     ];
     const approval = await gateAndFreezeProbeResult({
       assetId: "asset-body-mixed",
+      source: DEFINITION_SOURCE,
       probeResult: {
         projection,
         grants,
@@ -2668,6 +2681,7 @@ describe("deployCodeSourcedWorkflow", () => {
     const wireHash = await computeWireDefinitionHash(projection);
     const approval = await gateAndFreezeProbeResult({
       assetId: "asset-composed-body",
+      source: DEFINITION_SOURCE,
       probeResult: {
         projection,
         grants,
@@ -2741,6 +2755,7 @@ describe("deployCodeSourcedWorkflow", () => {
     const wireHash = await computeWireDefinitionHash(projection);
     const approval = await gateAndFreezeProbeResult({
       assetId: "asset-composed-loop-body",
+      source: DEFINITION_SOURCE,
       probeResult: {
         projection,
         grants,
@@ -2801,6 +2816,7 @@ describe("deployCodeSourcedWorkflow", () => {
     const wireHash = await computeWireDefinitionHash(projection);
     const approval = await gateAndFreezeProbeResult({
       assetId: "asset-composed-empty-body",
+      source: DEFINITION_SOURCE,
       probeResult: {
         projection,
         grants,
