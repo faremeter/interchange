@@ -13,6 +13,7 @@ import type {
 import type { RuntimeCapabilities } from "@intx/types/runtime-capabilities";
 
 import { TOOL_DEFINITIONS } from "./definitions";
+import { errorResult } from "./errors";
 import {
   makeMailExpungeHandler,
   makeMailFlagHandler,
@@ -26,6 +27,7 @@ import {
 
 export { TOOL_DEFINITIONS } from "./definitions";
 export type { MailToolName } from "./definitions";
+export type { MailToolErrorCode } from "./errors";
 
 export interface MailToolsOptions {
   capabilities: RuntimeCapabilities;
@@ -67,25 +69,18 @@ export function createMailTools(opts: MailToolsOptions): MailTools {
         // use createMailTools as a standalone ToolRunner (rather than
         // through `defineMailTools`) get the package's native
         // object-shaped error.
-        return {
-          callId: call.id,
-          content: { error: `Unknown tool: "${call.name}"` },
-          isError: true,
-        };
+        return errorResult(
+          call.id,
+          `Unknown tool: "${call.name}"`,
+          "unknown_tool",
+        );
       }
       try {
         return await handler(call, signal);
       } catch (err) {
-        // Match the per-handler errorResult shape so consumers see a
-        // single error-content shape regardless of which path produced
-        // it: { error: <string>, code?: <string> }.
         const message =
           err instanceof Error ? err.message : `unknown error: ${String(err)}`;
-        return {
-          callId: call.id,
-          content: { error: message },
-          isError: true,
-        };
+        return errorResult(call.id, message, "internal_error");
       }
     },
     async dispose() {

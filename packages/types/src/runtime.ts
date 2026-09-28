@@ -728,6 +728,42 @@ export interface MessageTransport {
   ): Promise<void>;
 }
 
+/**
+ * The condition a `MessageTransport` operation failed under. A transport that
+ * grows a condition this union does not carry takes its name from RFC 5530 § 3
+ * rather than coining one.
+ *
+ * https://www.rfc-editor.org/rfc/rfc5530.html
+ */
+export const MessageTransportCondition = type(
+  "'NONEXISTENT' | 'CANNOT' | 'SERVERBUG'",
+);
+export type MessageTransportCondition = typeof MessageTransportCondition.infer;
+
+export class MessageTransportError extends Error {
+  readonly condition: MessageTransportCondition;
+
+  constructor(condition: MessageTransportCondition, message: string) {
+    super(message);
+    this.name = "MessageTransportError";
+    this.condition = condition;
+  }
+}
+
+/**
+ * `instanceof` is not usable for this: a tool package is published as a bundle
+ * whose workspace imports are inlined (`bin/build-builtins.ts`), so a consumer
+ * loaded from a bundle holds its own copy of the class above and answers false
+ * against an error the host's copy constructed.
+ */
+export function isMessageTransportError(
+  value: unknown,
+): value is Error & { readonly condition: MessageTransportCondition } {
+  if (!(value instanceof Error)) return false;
+  if (!("condition" in value)) return false;
+  return MessageTransportCondition.allows(value.condition);
+}
+
 // ---------------------------------------------------------------------------
 // Tool Execution (ARCHITECTURE.md § Tools, INFERENCE.md § Tool Execution)
 // ---------------------------------------------------------------------------
