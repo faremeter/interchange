@@ -69,6 +69,7 @@ import {
   seedGrant,
   seedPrincipal,
   seedProvider,
+  tenantSlugFromId,
 } from "@intx/test-harness/seed";
 
 import { promises as fs } from "node:fs";
@@ -368,7 +369,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(tenantTable).values({
         id: TENANT_ID,
         name: TENANT_ID,
-        slug: TENANT_ID,
+        slug: tenantSlugFromId(TENANT_ID),
         domain: DEPLOYMENT_DOMAIN,
         parentId: null,
       });

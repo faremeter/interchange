@@ -13,6 +13,7 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
+import { tenantSlugFromId } from "@intx/test-harness/seed";
 
 describe.skipIf(!harnessDbEnvAvailable())("tenant domain uniqueness", () => {
   let h: TestDb;
@@ -33,7 +34,7 @@ describe.skipIf(!harnessDbEnvAvailable())("tenant domain uniqueness", () => {
     await h.db.insert(tenantTable).values({
       id,
       name: id,
-      slug: id,
+      slug: tenantSlugFromId(id),
       domain,
       parentId: null,
     });

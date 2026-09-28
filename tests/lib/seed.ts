@@ -10,7 +10,7 @@
 import type { DB } from "@intx/db";
 import { createPrincipalKeyStore } from "@intx/db";
 import type { WorkflowRunCredentialRefs } from "@intx/db/schema";
-import type { GrantWalkSnapshot } from "@intx/types";
+import { TenantSlug, type GrantWalkSnapshot } from "@intx/types";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   asset,
@@ -37,11 +37,54 @@ export type SeedTenant = {
 };
 
 /**
+ * Derive a tenant slug from a tenant id.
+ *
+ * `tenant_slug_dns_label_check` constrains the slug to a single DNS label,
+ * and a tenant id carries a `tnt_` prefix whose underscore is not a legal
+ * label character, so every underscore becomes a hyphen. Substitution is
+ * the whole of the derivation, so it refuses any id whose derived slug the
+ * constraint would refuse: one that runs past 63 characters, one that
+ * begins or ends with a hyphen (an id that begins or ends with an
+ * underscore), or one that keeps a character outside letters, digits and
+ * hyphens. Refusing here names the seed call that supplied the id;
+ * returning the slug instead reports a constraint violation raised by an
+ * insert, on a column the failing test's assertions never read.
+ *
+ * The gate is `TenantSlug`, the grammar the tenant create route admits, so
+ * it cannot drift from the constraint. Callers also pass ids that are not
+ * tenant ids, so nothing here assumes a `tnt_` prefix; only the derived
+ * slug is checked.
+ *
+ * Two ids can still derive one slug — `tnt_a_b` and `tnt_a-b` both give
+ * `tnt-a-b` — and that stays unchecked: `slug` is UNIQUE, so the collision
+ * already surfaces as a unique violation naming the duplicated slug.
+ */
+export function tenantSlugFromId(id: string): string {
+  const slug = id.replaceAll("_", "-");
+  try {
+    return TenantSlug.assert(slug);
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(
+      `tenantSlugFromId: id ${JSON.stringify(id)} derives the slug ` +
+        `${JSON.stringify(slug)}, which is not a legal DNS label: ${reason}`,
+      { cause },
+    );
+  }
+}
+
+/**
  * Insert a set of tenants honoring the immediate self-referential
  * `parent_id` FK: a row is inserted only once its parent already
- * exists, so callers can pass a tree in any order. `slug` and `domain`
- * are derived from the id to satisfy their NOT NULL + UNIQUE
+ * exists, so callers can pass a tree in any order. `slug` is derived from
+ * the id and `domain` from the slug, satisfying their NOT NULL + UNIQUE
  * constraints.
+ *
+ * The domain comes from the lowercased SLUG rather than from the id because
+ * that is the chain the tenant create route builds. Deriving it from the id
+ * instead put an underscore back into a domain whose slug had just had one
+ * substituted out, giving fixtures a slug/domain pair no real tenant can
+ * hold.
  */
 export async function seedTenants(
   db: Db,
@@ -64,11 +107,12 @@ export async function seedTenants(
       );
     }
     for (const t of ready) {
+      const slug = tenantSlugFromId(t.id);
       await db.insert(tenant).values({
         id: t.id,
         name: t.id,
-        slug: t.id,
-        domain: `${t.id}.example.test`,
+        slug,
+        domain: `${slug.toLowerCase()}.example.test`,
         parentId: t.parentId ?? null,
       });
       inserted.add(t.id);

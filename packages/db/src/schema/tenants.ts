@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  check,
   foreignKey,
   jsonb,
   pgTable,
@@ -30,6 +31,15 @@ export const tenant = pgTable(
   (t) => [
     foreignKey({ columns: [t.parentId], foreignColumns: [t.id] }),
     uniqueIndex("tenant_domain_lower_idx").on(sql`lower(${t.domain})`),
+    // Constrains `slug`, and only `slug`, to a single DNS label: RFC 1035
+    // section 2.3.1 as relaxed by RFC 1123 section 2.1, the same grammar the
+    // `TenantSlug` validator applies at the create route, enforced here for
+    // every write path including the ones that bypass that route. `domain`
+    // carries no grammar constraint and nothing here relates the two columns.
+    check(
+      "tenant_slug_dns_label_check",
+      sql`${t.slug} ~ '^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$' and length(${t.slug}) <= 63`,
+    ),
   ],
 );
 
