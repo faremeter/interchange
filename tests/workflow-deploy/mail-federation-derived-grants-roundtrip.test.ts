@@ -93,6 +93,7 @@ import {
   seedPrincipal,
   seedPrincipalKey,
   seedWorkflowDefinitionVersion,
+  tenantSlugFromId,
 } from "@intx/test-harness/seed";
 import { defineWorkflow, step, type WorkflowDefinition } from "@intx/workflow";
 import { createDefaultDirectorRegistry, defineAgent } from "@intx/agent";
@@ -299,7 +300,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(tenantTable).values({
         id: TENANT_ID,
         name: TENANT_ID,
-        slug: TENANT_ID,
+        slug: tenantSlugFromId(TENANT_ID),
         domain: DOMAIN,
         parentId: null,
       });

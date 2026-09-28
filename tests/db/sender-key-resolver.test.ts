@@ -21,7 +21,11 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedPrincipal, seedWorkflowRun } from "@intx/test-harness/seed";
+import {
+  seedPrincipal,
+  seedWorkflowRun,
+  tenantSlugFromId,
+} from "@intx/test-harness/seed";
 
 const cipher = createTestCredentialCipher();
 const RUN_PUBLIC_KEY = "ab".repeat(32);
@@ -47,7 +51,7 @@ describe.skipIf(!harnessDbEnvAvailable())("resolveSenderKey (real DB)", () => {
     await h.db.insert(tenantTable).values({
       id,
       name: id,
-      slug: id,
+      slug: tenantSlugFromId(id),
       domain,
       parentId: null,
     });

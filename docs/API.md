@@ -1365,7 +1365,7 @@ Source: packages/types/src/providers.ts
 Source: packages/types/src/roles.ts
 
 ### CreateTenant
-`{ name: string, slug: string, parentId?: string | null }`
+`{ name: string, slug: /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/ & <= 63, parentId?: string | null }`
 Source: packages/types/src/tenants.ts
 
 ### CreateWallet

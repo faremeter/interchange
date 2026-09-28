@@ -45,7 +45,11 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedPrincipal,
+  tenantSlugFromId,
+} from "@intx/test-harness/seed";
 
 import {
   SESSION_ID,
@@ -251,7 +255,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(tenantTable).values({
         id: TENANT_ID,
         name: TENANT_ID,
-        slug: TENANT_ID,
+        slug: tenantSlugFromId(TENANT_ID),
         domain: DEPLOYMENT_DOMAIN,
         parentId: null,
       });

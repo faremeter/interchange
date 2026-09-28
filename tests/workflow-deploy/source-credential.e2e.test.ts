@@ -51,6 +51,7 @@ import {
   seedCredential,
   seedPrincipal,
   seedProvider,
+  tenantSlugFromId,
 } from "@intx/test-harness/seed";
 
 import {
@@ -196,7 +197,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(tenantTable).values({
         id: TENANT_ID,
         name: TENANT_ID,
-        slug: TENANT_ID,
+        slug: tenantSlugFromId(TENANT_ID),
         domain: DEPLOYMENT_DOMAIN,
         parentId: null,
       });

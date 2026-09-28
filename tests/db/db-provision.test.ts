@@ -8,6 +8,7 @@ import {
   loadHarnessDbConfig,
 } from "@intx/test-harness/db-harness";
 import { provisionDatabase } from "@intx/test-harness/db-provision";
+import { tenantSlugFromId } from "@intx/test-harness/seed";
 import {
   REPO_ROOT,
   loadEnvFile,
@@ -69,9 +70,10 @@ describe.skipIf(!harnessHubEnvAvailable())(
       });
       try {
         const id = `prov_${Date.now().toString(36)}`;
+        const slug = tenantSlugFromId(id);
         await hub`
         INSERT INTO tenant (id, name, slug, domain)
-        VALUES (${id}, ${"Provisioner"}, ${id}, ${id})
+        VALUES (${id}, ${"Provisioner"}, ${slug}, ${slug})
       `;
         const selected = await hub`SELECT id FROM tenant WHERE id = ${id}`;
         expect(selected).toHaveLength(1);

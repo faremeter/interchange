@@ -388,12 +388,19 @@ The personal tenant has the same authorization machinery as any other tenant. Wh
 tenant
   id              text PK        -- tnt_...
   name            text NOT NULL
-  slug            text UNIQUE
-  domain          text UNIQUE    -- SMTP domain (slug.interchange.network)
+  slug            text NOT NULL UNIQUE
+                                 -- CHECK: a single DNS label, at most 63 chars
+  domain          text NOT NULL  -- SMTP domain; no grammar constraint
+                                 -- unique on lower(domain), via index
+                                 -- create route derives <slug>.localhost
   parent_id       text FK -> tenant (nullable, for hierarchy)
   config          jsonb
   created_at      timestamptz
   updated_at      timestamptz
 ```
+
+`tenant_slug_dns_label_check` constrains the slug to a single DNS label under RFC 1035 section 2.3.1 as relaxed by RFC 1123 section 2.1. The create route applies the same grammar through the `TenantSlug` validator, and the constraint covers every write path to `slug`, including the ones that bypass that route.
+
+What mail keys on is `domain`, not `slug`: `domain` is the sender stamp on outbound mail and the recipient run address, and the recipient address is the key into the inbound mail policy lookup and the mail router. The create route derives `domain` as the lowercased slug plus a suffix, but that derivation is the route's own convention -- nothing relates the two columns, and `domain` carries no grammar constraint. So the check bounds what the route derives a domain from; a write path that bypasses the route sets `domain` freely.
 
 Tenants can be organized hierarchically. Child tenants inherit policies from their parent (additive restrictions only). Federation between sibling tenants requires explicit trust establishment.

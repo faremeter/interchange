@@ -65,6 +65,7 @@ import {
   seedGrant,
   seedPrincipal,
   seedPrincipalKey,
+  tenantSlugFromId,
 } from "@intx/test-harness/seed";
 import { deriveRunAddress } from "@intx/workflow-deploy";
 
@@ -270,7 +271,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(tenantTable).values({
         id: TENANT_ID,
         name: TENANT_ID,
-        slug: TENANT_ID,
+        slug: tenantSlugFromId(TENANT_ID),
         domain: DEPLOYMENT_DOMAIN,
         parentId: null,
       });

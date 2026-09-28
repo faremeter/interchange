@@ -62,7 +62,11 @@ import {
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedAsset, seedPrincipal } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedPrincipal,
+  tenantSlugFromId,
+} from "@intx/test-harness/seed";
 import {
   createApprovalSet,
   deriveRunAddress,
@@ -231,7 +235,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(tenantTable).values({
         id: RECEIVER_TENANT_ID,
         name: RECEIVER_TENANT_ID,
-        slug: RECEIVER_TENANT_ID,
+        slug: tenantSlugFromId(RECEIVER_TENANT_ID),
         // The tenant's own domain is a tenant attribute distinct from the
         // deployment mail domain; the two deployments share the deployment
         // domain but each tenant carries a unique `tenant.domain`.
@@ -255,7 +259,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db.insert(tenantTable).values({
         id: SENDER_TENANT_ID,
         name: SENDER_TENANT_ID,
-        slug: SENDER_TENANT_ID,
+        slug: tenantSlugFromId(SENDER_TENANT_ID),
         domain: `send.${DEPLOYMENT_DOMAIN}`,
         parentId: null,
       });
