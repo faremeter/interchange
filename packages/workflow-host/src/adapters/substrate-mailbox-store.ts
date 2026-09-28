@@ -39,14 +39,17 @@
 // whole history on each append or flag change. The committed subtree the delta
 // leaves behind is byte-identical in shape to a full rewrite of the same live
 // set. The kind handler's push-time validation of this subtree is owned
-// separately by the hub replication layer; this module owns the on-disk shape
-// it validates.
+// separately by the hub replication layer. The `index.json` format is
+// `MailboxIndex` from `@intx/hub-sessions/substrate`, shared with the Hub;
+// this module owns the rest of the on-disk shape.
 
 import { type } from "arktype";
-import type {
-  Principal,
-  RepoId,
-  RepoStore as SubstrateRepoStore,
+import {
+  MAILBOX_INDEX_VERSION,
+  MailboxIndex,
+  type Principal,
+  type RepoId,
+  type RepoStore as SubstrateRepoStore,
 } from "@intx/hub-sessions/substrate";
 import type {
   MailboxStore,
@@ -73,54 +76,8 @@ export const MAILBOX_INBOX_PREFIX = `${MAILBOX_PREFIX}/${MAILBOX_INBOX_DIR}/`;
 /** Relative directory path of the INBOX, for `CommittedReads.listDir`. */
 const MAILBOX_INBOX_DIR_PATH = `${MAILBOX_PREFIX}/${MAILBOX_INBOX_DIR}`;
 
-/** Current on-disk schema version of `index.json`. */
-const INDEX_VERSION = 1;
-
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
-
-/**
- * On-disk envelope shape. Mirrors `StoredEnvelope` but serializes `date` as an
- * ISO string and the three nullable header fields as `string | null` (JSON has
- * no `undefined`); the loader maps `null` back to `undefined`.
- */
-const StoredEnvelopeJson = type({
-  messageId: "string",
-  from: "string",
-  to: "string[]",
-  subject: "string",
-  date: "string",
-  inReplyTo: "string | null",
-  references: "string[]",
-  interchangeType: "string | null",
-  interchangeCorrelationId: "string | null",
-});
-
-/**
- * On-disk `index.json` shape. Validated on every open: the committed tree is
- * durable but external to this process, so it is parsed at the boundary rather
- * than trusted. `expunged` records the uid and the modseq at which each
- * message vanished so a QRESYNC `sync` can answer `vanished` since a client's
- * known modseq.
- */
-const MailboxIndexJson = type({
-  version: `${INDEX_VERSION}`,
-  uidValidity: "number >= 0",
-  uidNext: "number >= 1",
-  highestModSeq: "number >= 0",
-  messages: type({
-    uid: "number >= 1",
-    modseq: "number >= 1",
-    flags: "string[]",
-    envelope: StoredEnvelopeJson,
-  }).array(),
-  expunged: type({
-    uid: "number >= 1",
-    modseq: "number >= 1",
-  }).array(),
-});
-
-type MailboxIndexJson = typeof MailboxIndexJson.infer;
 
 /** A message the client no longer holds, with the modseq at which it vanished. */
 type ExpungedRecord = { uid: number; modseq: number };
@@ -203,7 +160,7 @@ function serializeEnvelope(envelope: StoredEnvelope) {
 }
 
 function deserializeEnvelope(
-  raw: MailboxIndexJson["messages"][number]["envelope"],
+  raw: MailboxIndex["messages"][number]["envelope"],
 ): StoredEnvelope {
   return {
     messageId: raw.messageId,
@@ -298,7 +255,7 @@ async function loadCommittedState(
       { cause },
     );
   }
-  const index = MailboxIndexJson(parsedJson);
+  const index = MailboxIndex(parsedJson);
   if (index instanceof type.errors) {
     throw new Error(
       `substrate mailbox store: invalid ${MAILBOX_INBOX_PREFIX}${MAILBOX_INDEX_FILE}: ${index.summary}`,
@@ -396,7 +353,7 @@ export async function createSubstrateMailboxStore(
     if (!dirty) return;
 
     const index = {
-      version: INDEX_VERSION,
+      version: MAILBOX_INDEX_VERSION,
       uidValidity,
       uidNext: uidCounter,
       highestModSeq: modseqCounter - 1,

@@ -75,6 +75,8 @@ export type {
 } from "./step-state";
 export { parseStepStateSeed } from "./step-state-snapshot";
 
+export { MAILBOX_INDEX_VERSION, MailboxIndex } from "./mailbox-index";
+
 export {
   WORKFLOW_RUN_RESTORE_REFS,
   WORKFLOW_RUN_STATE_REF,

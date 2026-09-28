@@ -218,6 +218,7 @@ export {
   writeStepStateSeeds,
   type StepStateSeedsResult,
 } from "./step-state-import";
+export { MAILBOX_INDEX_VERSION, MailboxIndex } from "./mailbox-index";
 export {
   buildStepStateCheckpoint,
   reconstructStepState,
