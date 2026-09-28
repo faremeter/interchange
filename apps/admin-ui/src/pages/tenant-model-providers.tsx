@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
+import { modelProviderPlugins } from "@intx/types";
 
 import { TenantNav } from "@/components/tenant-nav";
 import { MutationError } from "@/components/mutation-error";
@@ -10,7 +11,6 @@ import { usePaginatedList } from "@/lib/hooks/use-paginated-list";
 import {
   createModelProviderMutation,
   type CreateModelProviderBody,
-  type ModelProviderPluginValue,
   tenantModelProvidersInfiniteQuery,
   tenantCredentialsQuery,
 } from "@/lib/queries/tenants";
@@ -40,13 +40,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-
-const PLUGINS: ModelProviderPluginValue[] = [
-  "anthropic",
-  "openai",
-  "openai-compatible",
-  "google-genai",
-];
 
 const CUSTOM_PLUGIN = "__custom__";
 
@@ -208,7 +201,7 @@ export function TenantModelProvidersPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {PLUGINS.map((p) => (
+                  {modelProviderPlugins.map((p) => (
                     <SelectItem key={p} value={p}>
                       {p}
                     </SelectItem>

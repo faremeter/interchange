@@ -896,12 +896,6 @@ export function tenantResolvedModelsQuery(tenantId: string) {
   });
 }
 
-export type ModelProviderPluginValue =
-  | "anthropic"
-  | "openai"
-  | "openai-compatible"
-  | "google-genai";
-
 export type CatalogModelResponse = {
   id: string;
   tenantId: string;

@@ -8,7 +8,6 @@ export const modelProviderPlugins = [
   "openai-compatible",
   "google-genai",
 ] as const;
-export type BuiltinModelProviderPlugin = (typeof modelProviderPlugins)[number];
 // Open-ended so an operator-registered adapter (SIDECAR_ADAPTER_MANIFEST) is
 // selectable; a key no sidecar registers fails at deploy admission. The
 // grammar excludes `:` because the key is embedded in the

@@ -12,17 +12,13 @@ import {
 } from "./catalog";
 
 describe("ModelProviderPlugin", () => {
-  test("accepts each built-in adapter key", () => {
-    for (const plugin of modelProviderPlugins) {
+  test("accepts every built-in key and an operator-registered key", () => {
+    for (const plugin of [...modelProviderPlugins, "openai-responses"]) {
       expect(ModelProviderPlugin(plugin)).toBe(plugin);
     }
   });
 
-  test("accepts an operator-registered adapter key", () => {
-    expect(ModelProviderPlugin("openai-responses")).toBe("openai-responses");
-  });
-
-  test("rejects a plugin the grant identifier cannot delimit", () => {
+  test("rejects a key the grant identifier cannot delimit", () => {
     for (const plugin of ["", "   ", "a:b", "Anthropic", "-x", "a/b"]) {
       expect(ModelProviderPlugin(plugin) instanceof type.errors).toBe(true);
     }
