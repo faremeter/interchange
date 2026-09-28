@@ -1,8 +1,17 @@
-import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
 
 import { getLogger } from "@intx/log";
 import type { ConversationTurn, LastCycleSource } from "@intx/types/runtime";
 
+import { resetDroppedEffortReports } from "./dropped-effort";
 import { createAnthropicAdapter } from "./providers/anthropic";
 import { createGoogleGenAIAdapter } from "./providers/google-genai";
 import { createOpenAIAdapter } from "./providers/openai";
@@ -40,6 +49,8 @@ const tool = {
   description: "t",
   inputSchema: {},
 };
+
+beforeEach(resetDroppedEffortReports);
 
 afterEach(() => {
   mock.restore();
@@ -144,6 +155,14 @@ describe("dropped effort warn", () => {
       effort: "high",
     });
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("a repeated identical drop is reported once", () => {
+    const warn = warnSpy();
+    const adapter = createGoogleGenAIAdapter(geminiSource);
+    adapter.buildRequest(messages, "gemini-2.5-pro", { effort: "low" });
+    adapter.buildRequest(messages, "gemini-2.5-pro", { effort: "low" });
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   test("unset effort never warns", () => {
