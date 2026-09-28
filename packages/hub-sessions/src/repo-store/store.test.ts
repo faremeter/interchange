@@ -399,6 +399,66 @@ describe("RepoStore", () => {
     expect(secondCall.newSha).toBe(second.commitSha);
   });
 
+  test("writeTree parents a never-written ref on the initial commit once HEAD has moved on", async () => {
+    const dataDir = await makeTempDir("repo-store-new-ref-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    const initial = await git.resolveRef({ fs, dir, ref: "HEAD" });
+
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: { "deploy/a.md": "on main" },
+      message: "advance main",
+    });
+    const { commitSha } = await store.writeTree(
+      principal,
+      repoId,
+      "refs/heads/side",
+      { files: { "deploy/b.md": "on side" }, message: "first side write" },
+    );
+
+    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    expect(commit.parent).toEqual([initial]);
+  });
+
+  test("writeTree to a never-written ref whose initial commit is missing fails before touching the working tree", async () => {
+    const dataDir = await makeTempDir("repo-store-new-ref-no-root-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    const initial = await git.resolveRef({ fs, dir, ref: "HEAD" });
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: { "deploy/a.md": "on main" },
+      message: "advance main",
+    });
+    await fs.promises.rm(
+      path.join(dir, ".git", "objects", initial.slice(0, 2), initial.slice(2)),
+    );
+
+    await expect(
+      store.writeTree(principal, repoId, "refs/heads/side", {
+        files: { "deploy/b.md": "on side" },
+        message: "first side write",
+      }),
+    ).rejects.toThrow(/missing commits between HEAD and its initial commit/);
+    expect(fs.existsSync(path.join(dir, "deploy", "b.md"))).toBe(false);
+    expect(
+      await store.resolveRef(principal, repoId, "refs/heads/side"),
+    ).toBeNull();
+  });
+
   test("writeTree with clearPrefix clears stale tracked files under that prefix", async () => {
     const dataDir = await makeTempDir("repo-store-clear-");
     const handler = createTestHandler();
