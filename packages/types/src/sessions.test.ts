@@ -95,6 +95,12 @@ describe("AttachmentError schema", () => {
         totalBytes: 99,
         limitBytes: 30,
       },
+      {
+        code: "too_many_attachments",
+        message: "too many",
+        count: 21,
+        limit: 20,
+      },
     ];
     for (const variant of variants) {
       expect(AttachmentError(variant) instanceof type.errors).toBe(false);

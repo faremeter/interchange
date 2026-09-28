@@ -86,3 +86,7 @@ export function isTextLikeMimeType(contentType: string): boolean {
 // limit that defaults to these.
 export const PER_ATTACHMENT_LIMIT_BYTES = 10 * 1024 * 1024;
 export const PER_MESSAGE_TOTAL_LIMIT_BYTES = 30 * 1024 * 1024;
+// Cap on attachment count. The byte limits measure decoded payload, so
+// without this a request could carry an unbounded number of empty
+// attachments, each of which becomes a MIME part.
+export const MAX_ATTACHMENTS_PER_MESSAGE = 20;

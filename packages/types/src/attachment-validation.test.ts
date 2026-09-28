@@ -22,9 +22,26 @@ const policy: AttachmentPolicy = {
   isAllowed: (m) => m === "image/png" || m === "application/pdf",
   perAttachmentLimitBytes: 100,
   perMessageTotalLimitBytes: 150,
+  maxAttachments: 3,
 };
 
 describe("validateAttachments", () => {
+  test("rejects too many attachments before decoding any", () => {
+    const inputs = Array.from({ length: 4 }, () => ({
+      mimeType: "image/png",
+      data: "not base64 and never decoded",
+    }));
+    expect(validateAttachments(inputs, policy)).toEqual({
+      ok: false,
+      error: {
+        code: "too_many_attachments",
+        message: "4 attachments, over the limit of 3",
+        count: 4,
+        limit: 3,
+      },
+    });
+  });
+
   test("accepts valid attachments and defaults names by index", () => {
     const inputs: AttachmentInput[] = [
       { mimeType: "image/png", data: b64([1, 2, 3]), name: "shot.png" },
