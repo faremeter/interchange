@@ -4720,6 +4720,77 @@ describe("createWorkflowSupervisor", () => {
     await wired.supervisor.shutdown();
   });
 
+  test("a turn-2 mail whose headers cannot project is dropped and the run stays parked", async () => {
+    const baseDir = await makeTempDir("supervisor-unprojectable-mail-");
+    await seedStepGrants(
+      baseDir,
+      defaultStepRepoId({ runId: "run_deployment-x", stepId: "step-1" }),
+      [{ resource: "thing", action: "read" }],
+    );
+    const wired = await spawnWithRunStart({
+      baseDir,
+      onRunStart: async () => {
+        return assembleCredentialsSnapshot({
+          repoStore: createStubRepoStore({ baseDir }),
+          principal: { kind: "supervisor" },
+          stepOrder: ["step-1"],
+          anchorRunId: "run_deployment-x",
+          deriveStepAddress: ({ runId, stepId }) =>
+            `${runId}-${stepId}@example.com`,
+        });
+      },
+    });
+    const address = "run_deployment-x@example.com";
+
+    // Park the run so a mail routes as signal.deliver.
+    await wired.childSender.send({
+      type: "park.notify",
+      data: {
+        runId: "run_deployment-x",
+        correlationId: "corr-input-1",
+        parkKind: "input",
+      },
+    });
+
+    // This mail DECODES fine but cannot be projected into an InboundMessage:
+    // its From extracts to `a b@c`, which createInboundMessage rejects. Before
+    // the dispatch-boundary check, the failure surfaced inside the resumed step
+    // as a StepFailed that ended the whole run; now the mail is dropped.
+    const bad = new TextEncoder().encode(
+      "From: Bob <a b@c>\r\nContent-Type: text/plain\r\n\r\nhello",
+    );
+    wired.mailBus.deliver(address, bad);
+
+    await wired.inboxPrimitives.awaitState(
+      () => wired.inboxPrimitives.snapshot(address).consumed.size >= 1,
+    );
+    expect(wired.inboxPrimitives.snapshot(address).consumed.size).toBe(1);
+    expect(wired.inboxPrimitives.snapshot(address).processing.size).toBe(0);
+    expect(parseSignalDelivers(wired.supervisorToChild.flushed()).length).toBe(
+      0,
+    );
+
+    // The run survived on its correlation: a subsequent VALID mail resumes it.
+    const good = new TextEncoder().encode(
+      "Content-Type: text/plain\r\n\r\nhello",
+    );
+    wired.mailBus.deliver(address, good);
+    await waitForUpstreamPayloads(wired.supervisorToChild, "signal.deliver", 1);
+    const signals = parseSignalDelivers(wired.supervisorToChild.flushed());
+    expect(signals[0]?.signalName).toBe(signalName("corr-input-1"));
+
+    await wired.childSender.send({
+      type: "terminal.event",
+      data: {
+        runId: "run_deployment-x",
+        seq: 0,
+        kind: "RunCompleted",
+        at: "test",
+      },
+    });
+    await wired.supervisor.shutdown();
+  });
+
   test("a transient commit failure leaves the mail reclaimable and the loop alive", async () => {
     const baseDir = await makeTempDir("supervisor-transient-commit-");
     await seedStepGrants(

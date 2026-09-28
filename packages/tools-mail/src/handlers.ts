@@ -95,8 +95,9 @@ export function makeMailSendHandler(transport: MessageTransport): ToolHandler {
       type: args.type ?? "conversation.message",
     };
 
-    if (args.subject !== undefined) {
-      outbound.subject = args.subject;
+    const subject = nonBlankSubject(args.subject);
+    if (subject !== undefined) {
+      outbound.subject = subject;
     }
     if (content !== undefined) {
       outbound.content = content;
@@ -168,8 +169,9 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
     };
 
     // Carry forward the subject if available.
-    if (parentHeaders.subject !== undefined) {
-      outbound.subject = parentHeaders.subject;
+    const subject = nonBlankSubject(parentHeaders.subject);
+    if (subject !== undefined) {
+      outbound.subject = subject;
     }
 
     if (content !== undefined) {
@@ -512,6 +514,15 @@ export function makeMailExpungeHandler(
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
+
+/**
+ * An empty or whitespace-only subject is omitted rather than forwarded: it
+ * would serialize as a `Subject:` header with no text, which decodes to `""`
+ * on the receiving side where it is treated as absent anyway.
+ */
+function nonBlankSubject(subject: string | undefined): string | undefined {
+  return subject !== undefined && subject.trim() !== "" ? subject : undefined;
+}
 
 function errorResult(
   callId: string,

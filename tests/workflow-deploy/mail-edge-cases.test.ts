@@ -90,6 +90,7 @@ import {
   waitForWorkflowRunComplete,
   type DeployFlowEnv,
 } from "../hub-agent/lib/deploy-flow-env";
+import { waitForConsumedEntries } from "./fifo-mail-helpers";
 import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
@@ -99,9 +100,10 @@ const NO_HEADER_DEPLOYMENT_ID = "run_mail-edge-no-header-1";
 const MALFORMED_DEPLOYMENT_ID = "run_mail-edge-malformed-1";
 const DUPLICATE_DEPLOYMENT_ID = "run_mail-edge-duplicate-1";
 const CONNECTED_WINDOW_DEPLOYMENT_ID = "run_mail-edge-connected-window-1";
+const UNPROJECTABLE_DEPLOYMENT_ID = "run_mail-edge-unprojectable-1";
 
 // The definition's own tenant, the caller principal that creates the
-// definition assets, and the four `workflow`-kind assets the frozen
+// definition assets, and the five `workflow`-kind assets the frozen
 // definitions project over (one per deployed anchor run id). The
 // install/approve freeze and the anchor `workflow_run` insert both write
 // against these, so they must exist in the real DB before each deploy runs.
@@ -112,6 +114,7 @@ const DEFINITION_ASSET_IDS: Record<string, string> = {
   [MALFORMED_DEPLOYMENT_ID]: "ast_mail_edge_malformed_wf",
   [DUPLICATE_DEPLOYMENT_ID]: "ast_mail_edge_duplicate_wf",
   [CONNECTED_WINDOW_DEPLOYMENT_ID]: "ast_mail_edge_connected_window_wf",
+  [UNPROJECTABLE_DEPLOYMENT_ID]: "ast_mail_edge_unprojectable_wf",
 };
 
 let env: DeployFlowEnv;
@@ -394,6 +397,40 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     const runIds = await listRunIds(env, ctx.workflowRunRepoId);
     // Under the stable-runId model the runId is the deployment address.
     expect(runIds.filter((r) => r === runId).length).toBe(1);
+  }, 60_000);
+
+  test("turn-1 mail whose headers cannot project is rejected as malformed with no run created", async () => {
+    const ctx = await deployEdgeWorkflow(env, UNPROJECTABLE_DEPLOYMENT_ID);
+
+    // The From decodes fine but extracts to `a b@c`, which createInboundMessage
+    // rejects. The dispatch-boundary gate consumes the mail with the rejection
+    // on the delivery instead of starting a run that records RunFailed.
+    const messageId = "<unprojectable-edge-1@integration.interchange>";
+    const raw = buildMinimalMail({
+      from: "Bob <a b@c>",
+      to: ctx.deploymentMailAddress,
+      includeMessageIdHeader: true,
+      messageId,
+      body: "unprojectable sender edge case body",
+    });
+    await routeRaw(env, ctx.deploymentMailAddress, raw);
+
+    const consumed = await waitForConsumedEntries(
+      env,
+      ctx.workflowRunRepoId,
+      ctx.deploymentMailAddress,
+      [messageId],
+      { diagnostics: env.sidecarDiagnostics },
+    );
+    expect(
+      consumed.find((e) => e.messageId === messageId)?.rejection?.code,
+    ).toBe("malformed_mail");
+    const events = await readWorkflowRunEvents(
+      env,
+      UNPROJECTABLE_DEPLOYMENT_ID,
+      deriveWorkflowRunId(ctx.deploymentMailAddress),
+    );
+    expect(events.map((e) => e.type)).not.toContain("RunStarted");
   }, 60_000);
 
   test("mail into a connected window that drops before the ack survives reconnect and is processed exactly once", async () => {

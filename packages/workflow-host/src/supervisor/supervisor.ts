@@ -105,6 +105,7 @@ import { compactRunEvents } from "./run-event-compaction";
 import { recoverInterruptedCompactions } from "./run-event-recovery";
 import { decodeMail } from "@intx/mime";
 import { commitMail, InvalidMailError } from "../adapters/mail-part-store";
+import { assertInboundMailProjectable } from "../adapters/step-invoker";
 import { mergeCredentialDelivery } from "../child/credential-cell";
 import {
   createSubstrateMailboxStore,
@@ -2773,9 +2774,10 @@ export function createWorkflowSupervisor(
    * both turns share this one preparation site.
    *
    * The two failure modes are deliberately distinct:
-   *   - A DETERMINISTIC input rejection -- missing bytes, unparseable MIME, or
-   *     a messageId that cannot form a path segment -- returns `{ ok: false }`
-   *     so the caller drops the mail. Replaying it would fail identically.
+   *   - A DETERMINISTIC input rejection -- missing bytes, unparseable MIME,
+   *     a messageId that cannot form a path segment, or headers that cannot
+   *     project into an `InboundMessage` -- returns `{ ok: false }` so the
+   *     caller drops the mail. Replaying it would fail identically.
    *   - A TRANSIENT substrate write failure propagates (thrown), so the caller
    *     treats it as a dispatch fault and leaves the mail reclaimable rather
    *     than silently discarding it on an infrastructure hiccup.
@@ -2806,6 +2808,22 @@ export function createWorkflowSupervisor(
         rejection: {
           code: "malformed_mail",
           message: `inbound mail ${envelope.messageId} could not be decoded: ${message}`,
+        },
+      };
+    }
+    // A mail that decodes but cannot be projected into the run's
+    // `InboundMessage` input would fail the receiving step post-delivery (and,
+    // for a parked unbounded run, take the whole conversation down with it).
+    // Reject it HERE, at the delivery boundary, so the run stays parked.
+    try {
+      assertInboundMailProjectable(decoded.headers);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      return {
+        ok: false,
+        rejection: {
+          code: "malformed_mail",
+          message: `inbound mail ${envelope.messageId} cannot be delivered: ${message}`,
         },
       };
     }
