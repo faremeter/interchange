@@ -422,9 +422,7 @@ const MailShape = type({
   // Require the recipient list a consumer dereferences unconditionally; other
   // header fields stay optional and are carried losslessly in `rawHeaders`.
   // `from` is optional here deliberately: a mail with no usable originator is
-  // still mail, and requiring it makes `isMail` reject one, which routes it
-  // down the arbitrary-step-value path to be JSON-stringified into a text turn
-  // with no error and no log.
+  // still mail, and requiring it makes `isMail` reject one.
   headers: {
     "from?": "string",
     to: "string[]",
@@ -884,7 +882,6 @@ export const ToolResult = type({
   "pendingMarker?": {
     status: "'pending'",
     correlationId: "string",
-    "expectedFrom?": "string",
   },
 });
 export type ToolResult = typeof ToolResult.infer;
@@ -2026,7 +2023,6 @@ export function parseInferenceEvent(
 export type PendingOperation = {
   correlationId: string;
   kind: SignalKind;
-  expectedFrom?: string;
   registeredAt: number;
   gateId: string;
   /**

@@ -18,7 +18,7 @@ run_xxxxx@tenant.interchange.network
 
 The local part identifies the agent within a tenant. The domain identifies the tenant. Tenant boundaries map directly to SMTP domains, providing natural isolation and federation semantics. DNS MX records route messages to the correct infrastructure. Each agent launched from a definition receives its own address, allowing multiple concurrent agents from the same definition.
 
-Address format follows RFC 5322 addr-spec: `local-part "@" domain`. The local part is a dot-atom, built from the RFC 5322 `atext` characters — letters, digits, dots, and the punctuation `atext` permits, which includes the underscore. No quoted strings. Every agent local part the system mints carries the `run_` prefix (see `parseRunAddress` in `@intx/types`), so the underscore is present in every agent address. Not every Interchange address is an agent address — a user principal is addressed as `<refId>@<domain>`, and a reference id need not contain an underscore. Addresses are assigned at agent launch time and are unique within a tenant.
+Address format follows RFC 5322 addr-spec: `local-part "@" domain`. The local part is a dot-atom built from the RFC 5322 `atext` characters — letters, digits, dots, and the punctuation `atext` permits, which includes the underscore. No quoted strings. Every agent local part carries the `run_` prefix (see `parseRunAddress` in `@intx/types`). Not every Interchange address is an agent address: a user principal is addressed as `<refId>@<domain>`. Addresses are assigned at agent launch time and are unique within a tenant.
 
 ## Message Format
 
@@ -312,13 +312,26 @@ Correlation IDs are distinct from Message-IDs and References. A correlation ID l
 
 ### Correlation Security
 
-The reactor uses a pluggable correlation validator (see INFERENCE.md, Correlation). For message correlation, the validator enforces three conditions before accepting a match:
+The reactor uses a pluggable correlation validator (see INFERENCE.md, Correlation). For message correlation, three conditions are intended to hold before a match is accepted:
 
 1. The inbound message's `Interchange-Correlation-ID` matches a registered pending correlation.
-2. The inbound message's `From` address matches the expected responder recorded at registration time.
-3. The inbound message's PGP/MIME signature is valid and was produced by the expected responder's key.
+2. The inbound message's `From` address matches the responder the validator expects for that correlation.
+3. The inbound message's PGP/MIME signature is valid and was produced by that responder's key.
 
-All three are required. A message that matches the correlation ID but fails sender or signature verification is rejected by the validator and delivered to the plugin as a regular `message.received` event. This prevents a third party from injecting forged responses with guessed or intercepted correlation IDs. The cryptographic randomness of the IDs makes guessing infeasible; the sender and signature checks make interception-based forgery infeasible.
+All three are required under that design. A message that matches the correlation ID but fails sender or signature verification is rejected by the validator and delivered to the plugin as a regular `message.received` event.
+
+> **Planned / Not Yet Implemented.** Only condition 1 is enforced today, and the reactor enforces it itself by looking the correlation ID up in its registry. `CorrelationValidator` in `@intx/inference` is an interface and an optional reactor option with no production implementation behind it: nothing in the shipped composition supplies one, so the sender and signature checks in conditions 2 and 3 do not run. A message carrying a registered correlation ID is accepted on that ID alone.
+
+**Treat a correlation ID as a capability: anyone who learns one can answer it.** With no validator wired there is no check on `From`, no check on the signature, and no check that the responder is the party the correlation was issued to. Resolving a correlation is not inert bookkeeping — on the approval rail it clears the gate a tool call suspended on and grants that call a one-shot authorization bypass.
+
+The guarantee that remains is scope: a correlation is resolved only by a message bearing an ID that same reactor registered, and the registry is per-reactor closure state. Whether the ID can be guessed depends on who minted it — the authz `ask` flow mints `crypto.randomUUID()` values, while an ID on a tool's pending marker is whatever the tool chose.
+
+Two ways an ID leaves the agent that holds it:
+
+- `to` accepts an array, so every recipient of a multi-recipient message learns the ID that message carries.
+- `mail_read` returns the whole header set for `parts: "headers"` and `parts: "full"`, `Interchange-Correlation-ID` included. The default `parts: "payload"` does not expose it.
+
+The hub and sidecar stack is not exposed: the workflow host's projection from decoded mail to the step agent drops the header, so no inbound mail reaches correlation resolution there. A composition that feeds `fetchFull` output straight into `agent.deliver` — `@intx/harness` is the one in this tree — has no such gap.
 
 ## Cryptographic Signing
 
@@ -327,7 +340,7 @@ Every outbound message is signed with the sending agent's Ed25519 private key. T
 ### Signing Process
 
 1. The signed content is assembled — `multipart/mixed` for both conversation and structured messages
-2. Content is canonicalized: CRLF line endings, trailing whitespace removed, transfer encoding applied (base64 for binary attachment parts; text parts are emitted verbatim and labelled `Content-Transfer-Encoding: 7bit`)
+2. Content is canonicalized: CRLF line endings, trailing whitespace removed, every attachment part base64-encoded whatever its content type
 3. The payload is hashed (SHA-512, as required by Ed25519's internal construction)
 4. The hash is signed with the agent's Ed25519 private key
 5. The signature is encoded as an `application/pgp-signature` part
@@ -496,9 +509,11 @@ The interface splits into three concerns: outbound delivery, inbox management, a
 
 ### Failures
 
-A transport rejects with `MessageTransportError` when the condition it failed under is one a caller has to tell apart from the others. The condition is a code from RFC 5530 § 3, the IMAP response codes for exactly these cases: `NONEXISTENT` for a mailbox that is not there, `CANNOT` for an operation that can never succeed against this transport, `SERVERBUG` for a transport that violated one of its own invariants. A consumer branches on the condition with `isMessageTransportError`, never on the text of the message: each transport words its message differently, so matching on the wording of one mis-classifies every other. The guard is structural rather than an `instanceof` check because a tool package loaded from its published bundle holds its own copy of the class.
+A transport rejects with `MessageTransportError` when the condition it failed under is one a caller has to tell apart from the others. The condition is a code from RFC 5530 § 3: `NONEXISTENT` for a mailbox that is not there, `CANNOT` for an operation that can never succeed against this transport, `SERVERBUG` for a transport that violated one of its own invariants. Branch on the condition with `isMessageTransportError`, never on the text of the message — each transport words its message differently.
 
-Which condition a failure carries is the transport's to decide, because the transport is the layer that knows. Every mail tool that names a mailbox maps `NONEXISTENT` to `invalid_mailbox`, whether the name arrived as a `mailbox` argument or inside a `ref`: the transport raises that condition before it attempts the operation, so nothing was read and nothing was written, and one transport condition does not carry a different code depending on which tool met it. Every other condition carries the code the tool answers for its own operation instead — `search_failed` for `mail.search` and `mail.wait`, `not_found` for `mail.read` and `mail.reply`, `invalid_part` for a part path, `flag_failed` for `mail.flag`. A rejection that names no condition carries the operation's code as well.
+Every tool path that names a mailbox maps `NONEXISTENT` to `invalid_mailbox`, whether the name arrived as a `mailbox` argument, inside a `ref`, or as the `INBOX` that `mail.expunge` sweeps without being told to. The condition is raised before the operation, so such a result means nothing was read and nothing was written. Every other condition carries the code the tool answers for its own operation instead — `search_failed` for `mail.search` and for the opening search of `mail.wait`, `not_found` for `mail.reply` and for a `mail.read` of the headers, `fetch_failed` for a `mail.read` of the whole message and for a `mail.wait` read-back, `invalid_part` for a part path, `flag_failed` for `mail.flag`, `expunge_failed` for `mail.expunge`. A rejection that names no condition carries the operation's code as well, except in `mail.read`.
+
+A rejection naming no condition tells `mail.read` nothing about whether the message is there, so it re-reads the headers before it answers: a reference the headers still answer for names a message that exists, and the failure is reported as `fetch_failed` for a whole-message read or `invalid_part` for a part path. A reference the headers do not answer for is `not_found`, whichever of the four `parts` modes the call named.
 
 ### Outbound
 
@@ -581,13 +596,15 @@ fetchFull(ref: MessageRef): Promise<InboundMessage>
 
 `fetchStructure` retrieves the MIME tree metadata (IMAP `BODYSTRUCTURE`): content types, sizes, dispositions, parameters for every part. No content transferred.
 
-`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or just an attachment (`1.2+`) without downloading the entire message.
+`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or just an attachment (`1.2+`) without downloading the entire message. A part under a transfer encoding the decoder does not recognize reports `application/octet-stream`, per RFC 2045 section 6.4, and carries its octets undecoded.
 
 `fetchFull` retrieves the complete message, parses the MIME structure, verifies the PGP signature, and returns a fully parsed `InboundMessage` with structured payload, headers, and attachments. The returned `InboundMessage` includes a `signatureStatus` field: `"valid"` (signature verified against sender's public key), `"invalid"` (signature check failed — tampering or wrong key), `"unknown"` (public key not available for verification), or `"missing"` (message was not signed).
 
-> **Planned / Not Yet Implemented.** Nothing branches on the `signatureStatus` carried on a delivered message. The field is computed at fetch time and passed to the agent — `mail.read` with `parts: "full"` returns it — but no harness reads it to decide anything, and the cross-tenant versus intra-tenant distinction has no enforcement point here. A harness that decides policy on this field, accepting intra-tenant messages with reduced trust, is the intended design.
+A body the decoder cannot turn into text -- an unrecognized transfer encoding, or encoded data that will not decode -- is carried as an absent `content` (or `payload`) rather than refusing the message: the rest of the `InboundMessage` is intact, and the octets stay reachable through `fetchPart`. A structured payload that decoded but is not valid JSON is a different condition and is reported as a failure.
+
+> **Planned / Not Yet Implemented.** Nothing branches on the `signatureStatus` carried on a delivered message. The field is computed at fetch time and passed to the agent — `mail.read` with `parts: "full"` returns it — but no harness reads it to decide anything.
 >
-> This is a statement about the delivered field only. It is **not** the case that a badly-signed message reaches an agent: the hub verifies the signature at its own inbound boundary and drops anything its admission policy does not admit, and an unsigned or unverifiable message is rejected there by default with no author opt-in. That decision is made by `decideInboundAdmission`, over the defaults `resolveInboundMailPolicy` applies, both in `packages/hub-agent/src/ws/inbound-signature.ts`. A workflow author widens what that boundary admits through the workflow's `inboundMailPolicy`; [`INBOUND_MAIL_POLICY.md`](./INBOUND_MAIL_POLICY.md) is the author-facing reference for it. The gap described here is the absence of a second, harness-side decision on top of that.
+> This is a statement about the delivered field only. A badly-signed message does not reach an agent: the recipient's sidecar verifies the signature at its delivery boundary and drops anything the admission policy does not admit, and an unsigned or unverifiable message is rejected there by default. See `decideInboundAdmission` in `packages/hub-agent/src/ws/inbound-signature.ts`, and [`INBOUND_MAIL_POLICY.md`](./INBOUND_MAIL_POLICY.md) for the `inboundMailPolicy` an author widens it with.
 
 **Flag management:**
 
@@ -646,9 +663,9 @@ If UIDVALIDITY has changed (mailbox was recreated), the transport signals a full
 
 The agent interacts with the message transport through tools provided by the `@intx/tools-mail` package, composed into the runtime by the sidecar alongside other tool packages. These tools are what the inference layer presents to the model. They map to the transport interface operations.
 
-Every tool below returns `{ error: string, code: string }` on failure. The `code` is always present, and it is always one of the codes the `MailToolErrorCode` union in `@intx/tools-mail` declares; that union is the authoritative list and the per-tool lists below name the subset each tool can produce. `unknown_tool` belongs to the runner rather than to any one tool and is therefore absent from those lists: it reports a call naming a tool the runner does not provide. `internal_error` reports a defect in the tool package rather than a condition the caller provoked. The runner returns it when a handler throws instead of returning a result, which is a path every tool has and no list repeats; `mail.wait` also returns it directly, from a check whose failure the runner's catch cannot reach, so that tool's list names it.
+Every tool below returns `{ error: string, code: string }` on failure. The `MailToolErrorCode` union in `@intx/tools-mail` is the authoritative list of codes; the per-tool lists below name the subset each tool can produce. Two codes belong to the runner rather than to any one tool and are absent from those lists: `unknown_tool` for a call naming a tool the runner does not provide, and `internal_error` for a handler that throws instead of returning a result. `mail.wait` names `internal_error` in its own list because it also returns that code directly.
 
-A call whose arguments do not match the tool's declared shape, or whose arguments contradict each other, is rejected with `invalid_arguments` before the tool does any work. Every tool can return it, and each list below repeats it.
+A call whose arguments do not match the tool's declared shape, or whose arguments contradict each other, is rejected with `invalid_arguments` before the tool does any work.
 
 `attachments`, described below for `mail.send` and `mail.reply`, is documented ahead of its implementation: neither tool declares it, so a call that carries it is refused.
 
@@ -671,15 +688,15 @@ Parameters:
 
 When `type` is a conversation type, the `content` string becomes the `text/plain` message body. For structured types, the `payload` object becomes the `body` field of the `application/vnd.interchange+json` part. Exactly one of the two must be present, and it must be the one the `type` takes: providing both, providing neither, or providing the field the `type` does not take is rejected as `invalid_arguments` before anything is sent.
 
-The tool enforces that pairing; the advertised JSON Schema does not state it, because `required` names keys one at a time and the composition keywords that could express "exactly one of these two" are outside the subset every inference provider accepts. The tool description carries the rule in prose instead.
+The advertised JSON Schema does not state that pairing; the tool description carries it in prose and the handler enforces it.
 
 Returns on success: `{ messageId: string }`.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (the call is malformed -- an undeclared argument key, an unknown `type`, or a body that contradicts the `type`: both `content` and `payload`, neither of them, or the one the `type` does not take), `send_failed` (the transport rejected the submission). An error result leaves the outcome unknown rather than meaning nothing was sent: the in-process transport does not roll back a local delivery when the remote leg fails, and a send routed over IPC can reject with the submission still in flight. An unresolvable recipient is reported by the transport and reaches the caller as `send_failed`: the tool does not resolve addresses itself, so it cannot refuse one ahead of the send. No size limit is enforced on the send path, so there is no `too_large`; an oversized message reaches the transport and fails there as `send_failed` if the transport refuses it.
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (the call is malformed -- an undeclared argument key, an unknown `type`, or a body that contradicts the `type`), `send_failed` (the transport rejected the submission, an unresolvable recipient included). A `send_failed` leaves the outcome unknown rather than meaning nothing was sent. No size limit is enforced on the send path, so there is no `too_large`; an oversized message reaches the transport and fails there as `send_failed` if the transport refuses it.
 
-The send opens no correlation of its own, whatever `correlationId` it carries. To await a correlated response, call `mail.wait` after the send; that pair is the complete correlated exchange available today. See the Pending Marker Pattern below for the mechanism `mail.send` does not use.
+The send opens no correlation of its own, whatever `correlationId` it carries. To await a correlated response, call `mail.wait` after the send.
 
-The `correlationId` is emitted as an `Interchange-Correlation-ID` header value, and RFC 5322 § 2.2 allows no CR and no LF in a field body outside folding, so an id carrying either is rejected as `invalid_arguments` before the send. The tool constrains nothing else about it: the correlation matches on the whole string, so an id minted by another implementation is accepted as it stands.
+The `correlationId`, the `subject` and the `inReplyTo` each become a header field body, which RFC 5322 § 2.2 allows no CR and no LF, so a value carrying either is rejected as `invalid_arguments` before the send. RFC 5322 § 3.6.4 gives `In-Reply-To` as `1*msg-id`, so a blank `inReplyTo` is rejected there too, and an empty `to` names no destination and is rejected the same way. The tool constrains nothing else about the correlation id: the correlation matches on the whole string.
 
 **mail.reply** — Reply to a specific message. Convenience wrapper around `mail.send` that automatically sets `inReplyTo` and extends the `References` chain from the parent message.
 
@@ -697,7 +714,7 @@ Returns on success: same as `mail.send`.
 
 Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (as for `mail.send`, including a body that contradicts the `type`), `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the message being replied to could not be fetched), `no_reply_address` (the parent carries no From header, so it names nobody to reply to -- send to an explicit recipient with `mail.send` instead), `send_failed` (as for `mail.send` -- the reply goes through the same send path, so an error leaves the outcome unknown there too).
 
-A reply also carries the parent's `Interchange-Correlation-ID` forward when the parent has one. That header is what resolves a requester's `mail.wait`, and nothing derives it from `In-Reply-To` or the `References` chain, so a reply that dropped it would leave the requester waiting on a response it had already received. The value is read from the parent rather than taken as an argument, so the reply cannot stamp a correlation the parent does not carry. Which of its correlations the reply answers is still the responder's choice, made by choosing the parent: any correlated message in the mailbox is a usable `ref`.
+A reply carries the parent's `Interchange-Correlation-ID` forward when the parent has one. The value is read from the parent rather than taken as an argument, so the reply cannot stamp a correlation the parent does not carry. Which correlation the reply answers is the responder's choice, made by choosing the parent: any correlated message in the mailbox is a usable `ref`. See Correlation Security above for what that means — a correlation resolves on the header alone.
 
 **mail.search** — Search the inbox.
 
@@ -707,17 +724,15 @@ Parameters:
 - `query`: search criteria (structured object matching the SearchQuery type)
 - `limit`: maximum results, a positive whole number (default: 20)
 
-A tool call is JSON, which carries no Date, so the date filters are given as date strings and the tool parses them into the Date instances `SearchQuery` declares. A date string the tool cannot parse is rejected as `invalid_query` rather than passed on to the transport.
+Date filters are given as date strings, which the tool parses into the Date instances `SearchQuery` declares. A date string it cannot parse is rejected as `invalid_query`.
 
-The filters `SearchQuery` declares are the only ones the query accepts, at the top level and inside every `and`, `or`, and `not` branch. A key the shape does not declare is rejected as `invalid_query`, and the error names the key. The matcher applies no filter it does not recognise, so accepting an undeclared key would return the whole mailbox under the name of a search, with nothing to tell the caller which filter was dropped.
+The filters `SearchQuery` declares are the only ones the query accepts, at the top level and inside every `and`, `or`, and `not` branch. A key the shape does not declare is rejected as `invalid_query`, with the key named. The three parameters above are likewise the only arguments the tool accepts; an undeclared argument is rejected with the key named rather than falling back to a default.
 
-The three parameters above are likewise the only arguments the tool accepts, and an argument it does not declare is rejected with the key named. A filter belongs inside `query`; written as an argument it would be dropped, leaving the default empty query, which matches every message. A misspelled `mailbox` or `limit` is refused on the same grounds rather than falling back to its default.
-
-`limit` is a positive whole number of results; a zero, a negative number and a fraction are each rejected as `invalid_arguments`. The tool returns the first `limit` matches, so there is no value meaning "all" and no negative index meaning "the last one": each of those would return a short set, or none, under the same success shape a complete search returns, which the caller cannot tell from a mailbox holding nothing more. There is no upper bound, because the result set is bounded by what the mailbox holds — a number larger than that returns all of it, which is how to read a whole mailbox. `timeout` on `mail.wait` is bounded for the opposite reason: a value past its ceiling returns a result that is wrong rather than large.
+`limit` is a positive whole number of results. Zero, a negative number and a fraction are each rejected as `invalid_arguments`. There is no value meaning "all" and no upper bound: a `limit` larger than the mailbox holds returns all of it.
 
 Returns: array of message summaries (message ref, headers, payload type, preview text, flags, timestamp). Not full content.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `search_failed` (the transport rejected the search for a reason of its own: the mailbox may be unreadable, the address may have been deregistered, or the transport may have no reader wired). The query is never the cause of a `search_failed` -- it was validated before the call -- so the same call is worth retrying, where an `invalid_mailbox` needs a different `mailbox`.
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `search_failed` (the transport rejected the search for a reason of its own). The query is never the cause of a `search_failed` -- it was validated before the call -- so the same call is worth retrying, where an `invalid_mailbox` needs a different `mailbox`.
 
 **mail.read** — Read a specific message.
 
@@ -726,9 +741,9 @@ Parameters:
 - `ref`: message reference (from search results)
 - `parts`: which parts to fetch — `"headers"`, `"payload"`, `"full"`, or a specific MIME part path like `"1.3"` (default: `"payload"`)
 
-Returns: the requested content. For `"payload"`, returns the parsed `application/vnd.interchange+json` object. For `"full"`, returns the complete parsed message including signature status.
+Returns: the requested content. For `"headers"`, returns the whole parsed header set, with no projection over its fields. For `"payload"`, returns the parsed `application/vnd.interchange+json` object. For `"full"`, returns the complete parsed message including signature status.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the message could not be fetched -- it no longer exists, or its mailbox could not be read for a reason the transport did not name), `invalid_part` (the requested MIME part could not be fetched).
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the reference names no message), `fetch_failed` (the message is there but could not be read back -- a structured payload that is not valid JSON, say), `invalid_part` (the message is there but the requested MIME part could not be fetched).
 
 **mail.threads** — Get conversation threads.
 
@@ -750,11 +765,11 @@ Parameters:
 - `set`: flags to add (system flags like `\Deleted`, or custom keywords)
 - `clear`: flags to remove
 
-Provide exactly one of `set` or `clear` — one direction per call. A single call can change several flags in that direction (e.g. `set: ["\Seen", "\Flagged"]`), but adding and removing in one call is rejected: that is two separate supervisor round-trips, and one error would then have to cover a mutation half of which landed. One direction per call keeps an error to a single mutation whose outcome is unknown.
+Provide exactly one of `set` or `clear` — one direction per call. A single call can change several flags in that direction (e.g. `set: ["\Seen", "\Flagged"]`), but adding and removing in one call is rejected.
 
 Returns: `{ ok: true }`
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (neither `set` nor `clear`, or both), `invalid_mailbox` (the mailbox named in `ref` does not exist), `flag_failed` (the transport rejected the flag mutation). A `flag_failed` leaves the outcome unknown rather than meaning the mailbox is unchanged: a flag write routed over IPC can reject with the request still in flight, after the mailbox owner applied it. Re-read the message to learn whether the flag stuck. An `invalid_mailbox` is not that case — the transport refuses a mailbox it does not hold before it writes — so the mailbox is unchanged, re-reading it would only meet the same refusal, and `ref` is what has to change.
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (neither `set` nor `clear`, or both), `invalid_mailbox` (the mailbox named in `ref` does not exist), `flag_failed` (the transport rejected the flag mutation). A `flag_failed` leaves the outcome unknown rather than meaning the mailbox is unchanged; re-read the message to learn whether the flag stuck. An `invalid_mailbox` leaves the mailbox unchanged, and `ref` is what has to change.
 
 **mail.expunge** (`mail_expunge`) — Permanently remove every `\Deleted` message from the INBOX.
 
@@ -762,7 +777,7 @@ Takes no parameters. Flag a message `\Deleted` with `mail.flag` first, then call
 
 Returns: `{ ok: true, expungedUids: number[] }` — the uids removed.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `expunge_failed`. An error result leaves the outcome unknown rather than meaning nothing was removed: an expunge routed over IPC can reject with the request still in flight, after the mailbox owner applied the sweep.
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (the INBOX does not exist), `expunge_failed` (every other transport rejection). An `expunge_failed` leaves the outcome unknown rather than meaning nothing was removed; an `invalid_mailbox` means the sweep was refused before it began, so nothing was removed. The call names no mailbox, so neither result is fixed by changing an argument.
 
 The expunged message bytes are removed from the live mailbox but retained in the workflow run's git history, so the audit trail is preserved.
 
@@ -787,15 +802,15 @@ Parameters:
 - `timeout`: maximum seconds to wait (default: 120)
 - `mailbox`: mailbox to watch (default: `INBOX`)
 
-The query is parsed exactly as `mail.search` parses it, so the date filters take date strings and a key `SearchQuery` does not declare is rejected as `invalid_query` before the wait begins, with the offending key named. The three parameters above are the only arguments the tool accepts, and an argument it does not declare is rejected with the key named; a filter written as an argument rather than inside `query` would otherwise leave the default empty query, which matches the first message to arrive from any sender.
+The query is parsed exactly as `mail.search` parses it, and the three parameters above are the only arguments the tool accepts.
 
-`timeout` is a whole number of seconds from 1 to 1740; a value outside that range is rejected as `invalid_arguments`. The ceiling is 29 minutes, the longest span RFC 2177 § 3 contemplates a client holding one IMAP IDLE open for before re-issuing it. To wait longer, call the tool again.
+`timeout` is a whole number of seconds from 1 to 1740; a value outside that range is rejected as `invalid_arguments`. The ceiling is 29 minutes, the longest span RFC 2177 § 3 contemplates for one IMAP IDLE. To wait longer, call the tool again.
 
-Checks for existing matches first via `search`. If none found, subscribes to the transport's `watch` mechanism and blocks until a matching `exists` event fires or the timeout expires. The deadline and the abort signal cover the first `search` as well as the wait that follows it, so a transport that never answers a read ends the call at the deadline rather than outliving it. The tool respects the reactor's abort signal.
+Checks for existing matches first via `search`. If none found, subscribes to the transport's `watch` mechanism and blocks until a matching `exists` event fires or the timeout expires. The deadline and the abort signal cover the first `search` as well as the wait that follows it.
 
 Returns on success: `{ ref, from, subject, content }` — the matched message's reference, sender, subject, and text content.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `search_failed` (the transport rejected a read of the mailbox, for the same reasons as in `mail.search`; the wait reports it under the same code, so one transport failure does not carry two codes depending on which tool made it), `timeout` (no matching message arrived within the deadline), `aborted` (reactor shut down while waiting), `fetch_failed` (a message the tool observed to exist could not be read back -- it was either already in the mailbox when the search ran, or it arrived while the tool waited), `internal_error` (a defect in the tool package, not a condition the call provoked; the tool settles its result from callbacks, so a failure in one of them is reported under this code rather than left to hang the call until the timeout).
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `search_failed` (the transport rejected the opening search, as in `mail.search`), `timeout` (no matching message arrived within the deadline), `aborted` (reactor shut down while waiting), `fetch_failed` (a message the tool observed to exist could not be read back; a mailbox that went while the wait held it is `invalid_mailbox` instead), `internal_error` (a defect in the tool package, not a condition the call provoked).
 
 Use this instead of polling `mail.search` in a loop. The blocking behavior is transparent to the reactor — the tool's promise simply takes longer to resolve, and the agent naturally idles until it does.
 
@@ -833,19 +848,13 @@ Returns: `{ messageId: string, status: "pending", correlationId: string }`
 
 ### Pending Marker Pattern
 
-When `mail.send` is used for an offering request (type `offering.request`), the tool returns a pending marker:
+A tool opens a correlation by returning a pending marker. The marker is `pendingMarker` on `ToolResult` — a sibling of `content`, not a field inside it. The harness reads it and the model never sees it. Marker fields written into `content` are text to the model and register nothing.
 
-```json
-{
-  "messageId": "<abc@tenant.interchange.network>",
-  "status": "pending",
-  "correlationId": "req-abc123"
-}
-```
+> **Planned / Not Yet Implemented.** No shipped tool returns a `pendingMarker`. `mail.send` returns `{ messageId }` and nothing else, so sending an `offering.request` through it opens no correlation, and the offering tools above do not exist. The reactor side of the handshake is real — `examples/agent-rich-tool` drives it end to end — but no mail tool reaches it. To await a correlated response today, call `mail.wait` after `mail.send`.
 
-The reactor registers the correlation ID and the expected responder (the `to` address from the sent message) in its async state. The plugin sees the pending marker and decides the wait strategy: suspend at a gate, continue working, or fork a child to wait. See INFERENCE.md (Tool Execution Semantics) for the full pattern.
+The reactor registers the correlation ID in its async state. The marker declares two fields, `status` and `correlationId`; the correlation ID is its only matching criterion, and the marker names no expected responder. A sender requirement belongs to the validator instead (see Correlation Security). The plugin sees the pending marker and decides the wait strategy: suspend at a gate, continue working, or fork a child to wait. See INFERENCE.md (Tool Execution Semantics) for the full pattern.
 
-When the response arrives, the reactor's message correlation validator checks the three-condition match (see Correlation Security). On success, the reactor clears the gate, injects the resolution, and emits a `message.correlated` event.
+When the response arrives, the reactor matches it against the registered correlation, and a configured validator checks the sender and signature conditions (see Correlation Security for which of the three conditions are enforced today). On success, the reactor clears the gate, injects the resolution, and emits a `message.correlated` event.
 
 ## In-Memory Transport
 

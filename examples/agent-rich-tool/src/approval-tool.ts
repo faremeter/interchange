@@ -16,9 +16,7 @@ import type { ToolResult } from "@intx/types/runtime";
  */
 export function createApprovalTool(opts?: {
   correlationIdFor?: (callId: string) => string;
-  expectedFrom?: string;
 }): AgentTool {
-  const expectedFrom = opts?.expectedFrom ?? "approver@local";
   return tool({
     definition: {
       name: "request_approval",
@@ -58,7 +56,6 @@ export function createApprovalTool(opts?: {
         pendingMarker: {
           status: "pending",
           correlationId,
-          expectedFrom,
         },
       };
     },
