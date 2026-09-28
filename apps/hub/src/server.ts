@@ -8,7 +8,12 @@ import {
   resolveSenderKey,
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
-import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
+import {
+  type AdapterManifest,
+  hexDecode,
+  parseAdapterManifestEnv,
+  type SidecarCapabilityRule,
+} from "@intx/types";
 import {
   createApp,
   createAuth,
@@ -57,6 +62,13 @@ export type CreateHubServerOpts = {
   readonly sidecarAllocationConcurrency?: number;
   /** Deadline for provider calls, allocation claims, lease validation, and connection waits. Defaults to 120 seconds. */
   readonly sidecarOperationTimeoutMs?: number;
+  /**
+   * Custom inference adapters every provisioned sidecar must load, forwarded
+   * on each ensure request. Defaults to the SIDECAR_ADAPTER_MANIFEST env var.
+   * Passed through opaquely — the sidecar's adapter registry is the authority
+   * that resolves entries and admits `model_provider.plugin` values.
+   */
+  readonly sidecarAdapterManifest?: AdapterManifest;
 };
 
 export async function createHubServer({
@@ -67,6 +79,7 @@ export async function createHubServer({
   probeSidecarCapabilityRules = [],
   sidecarAllocationConcurrency = DEFAULT_SIDECAR_ALLOCATION_CONCURRENCY,
   sidecarOperationTimeoutMs,
+  sidecarAdapterManifest,
 }: CreateHubServerOpts = {}) {
   await setup();
 
@@ -357,6 +370,13 @@ export async function createHubServer({
   const hubSidecarWebSocketUrl =
     process.env["HUB_SIDECAR_WEBSOCKET_URL"] ??
     `ws://127.0.0.1:${String(port)}/api/sidecars/ws`;
+  // Forwarded verbatim on every sidecar ensure request; the sidecar's
+  // adapter registry stays the authority that resolves entries and admits
+  // plugin values. An absent declaration is left absent so the request
+  // carries no manifest rather than an empty one.
+  const adapterManifest =
+    sidecarAdapterManifest ??
+    parseAdapterManifestEnv(process.env["SIDECAR_ADAPTER_MANIFEST"]);
   const workflowAllocationService = createWorkflowAllocationService({
     db,
     deploymentPlugins: sidecarPlugins,
@@ -366,6 +386,7 @@ export async function createHubServer({
     probeCapabilityRules: probeSidecarCapabilityRules,
     allocationRouter: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,
+    ...(adapterManifest !== undefined ? { adapterManifest } : {}),
     ...(sidecarOperationTimeoutMs !== undefined
       ? { operationTimeoutMs: sidecarOperationTimeoutMs }
       : {}),
@@ -389,6 +410,7 @@ export async function createHubServer({
     plugins: sidecarPlugins,
     router: sidecarRouter,
     hubWebSocketUrl: hubSidecarWebSocketUrl,
+    ...(adapterManifest !== undefined ? { adapterManifest } : {}),
     ...(sidecarOperationTimeoutMs !== undefined
       ? { operationTimeoutMs: sidecarOperationTimeoutMs }
       : {}),

@@ -184,6 +184,13 @@ describe("parseModelProviderRow", () => {
     const parsed = parseModelProviderRow(makeProviderRow());
     expect(parsed.plugin).toBe("anthropic");
   });
+
+  test("accepts an operator-registered plugin", () => {
+    const parsed = parseModelProviderRow(
+      makeProviderRow({ plugin: "openai-responses" }),
+    );
+    expect(parsed.plugin).toBe("openai-responses");
+  });
 });
 
 type ModelOfferingRow = typeof modelOffering.$inferSelect;

@@ -11,15 +11,17 @@ import {
   PricingRowResponse,
 } from "./catalog";
 
-describe("ModelProviderPlugin enum", () => {
-  test("accepts each adapter key", () => {
-    for (const plugin of modelProviderPlugins) {
+describe("ModelProviderPlugin", () => {
+  test("accepts every built-in key and an operator-registered key", () => {
+    for (const plugin of [...modelProviderPlugins, "openai-responses"]) {
       expect(ModelProviderPlugin(plugin)).toBe(plugin);
     }
   });
 
-  test("rejects an unknown plugin", () => {
-    expect(ModelProviderPlugin("cohere") instanceof type.errors).toBe(true);
+  test("rejects a key the grant identifier cannot delimit", () => {
+    for (const plugin of ["", "   ", "a:b", "Anthropic", "-x", "a/b"]) {
+      expect(ModelProviderPlugin(plugin) instanceof type.errors).toBe(true);
+    }
   });
 });
 

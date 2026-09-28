@@ -1,6 +1,9 @@
 import { type } from "arktype";
 
-import type { SidecarCapabilityDeclaration } from "@intx/types";
+import type {
+  AdapterManifest,
+  SidecarCapabilityDeclaration,
+} from "@intx/types";
 
 export type EnsureSidecarRequest = {
   /** Cancellation is best effort; a cancelled ensure has an uncertain outcome. */
@@ -12,6 +15,13 @@ export type EnsureSidecarRequest = {
   readonly sidecarId: string;
   readonly token: string;
   readonly hubWebSocketUrl: string;
+  /**
+   * Operator-declared custom adapter manifest the spawned sidecar must load.
+   * Passed through opaquely — the sidecar's adapter registry is the single
+   * authority that validates entries and admits `model_provider.plugin`
+   * values at deploy time. Absent means no custom adapters are declared.
+   */
+  readonly adapterManifest?: AdapterManifest;
 };
 
 export type DestroySidecarRequest = {

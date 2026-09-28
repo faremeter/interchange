@@ -896,12 +896,6 @@ export function tenantResolvedModelsQuery(tenantId: string) {
   });
 }
 
-export type ModelProviderPluginValue =
-  | "anthropic"
-  | "openai"
-  | "openai-compatible"
-  | "google-genai";
-
 export type CatalogModelResponse = {
   id: string;
   tenantId: string;
@@ -917,7 +911,7 @@ export type CatalogModelProviderResponse = {
   id: string;
   tenantId: string;
   name: string;
-  plugin: ModelProviderPluginValue;
+  plugin: string;
   baseURL: string;
   credentialId: string | null;
   walletId: string | null;
@@ -1104,7 +1098,7 @@ export function deleteCatalogModelMutation(
 
 export type CreateModelProviderBody = {
   name: string;
-  plugin: ModelProviderPluginValue;
+  plugin: string;
   baseURL: string;
   credentialId?: string | null;
   walletId?: string | null;

@@ -32,6 +32,8 @@ This inverts the typical approach where each provider implements the full stream
 
 Providers register as adapter pairs (request builder + response parser). Registration is a map keyed by provider identifier. Custom providers register the same way built-in providers do. No lazy loading ceremony, no class hierarchy.
 
+Operators declare custom adapters in `SIDECAR_ADAPTER_MANIFEST` — a JSON array of `{ provider, specifier, export }` entries whose specifiers resolve to arbitrary code, so the manifest is operator configuration, never tenant data. The sidecar merges manifest entries over the built-in registry, and that merged registry is the single authority: a `model_provider` catalog row names an adapter by its `plugin` key (a built-in or manifest-declared key: lowercase alphanumerics, `.`, `_` and `-`, so the key can sit inside the `inference.source:<plugin>:<model>` grant identifier without ambiguity), and an unknown key fails deploy admission with a clear error rather than falling back. The hub never parses the manifest for resolution; it forwards the declared entries verbatim to every provisioned sidecar on the ensure request, which process provisioners expose as `SIDECAR_ADAPTER_MANIFEST`.
+
 ### Credential Injection
 
 Adapters never see the API key. The harness performs credential substitution between the adapter's `buildRequest` and `fetch`, scanning every header value for sentinel placeholders and replacing exact matches with material derived from `InferenceSource.apiKey`. Two sentinels are defined:
@@ -39,7 +41,7 @@ Adapters never see the API key. The harness performs credential substitution bet
 - `CREDENTIAL_SENTINEL` — replaced with the API key verbatim. Use for headers like `x-api-key` (Anthropic) and `x-goog-api-key` (Google).
 - `BEARER_CREDENTIAL_SENTINEL` — replaced with `Bearer <apiKey>`. Use for `authorization` headers in providers that follow the Bearer convention (OpenAI and OpenAI-compatible).
 
-A new provider declares its credential header by placing the appropriate sentinel as the header value in its `buildRequest`; no harness change is required. Both sentinels are exported from `@intx/inference` so third-party adapters — loaded from an `AdapterManifest` via `loadAdapterRegistry` (`@intx/inference/providers`) — can use them directly. Match is exact: substring occurrences are not replaced.
+A new provider declares its credential header by placing the appropriate sentinel as the header value in its `buildRequest`; no harness change is required. Both sentinels are exported from `@intx/inference` so third-party adapters — loaded from an `AdapterManifest` (`@intx/types`) via `loadAdapterRegistry` (`@intx/inference/providers`) — can use them directly. Match is exact: substring occurrences are not replaced.
 
 ### Capability Detection
 
