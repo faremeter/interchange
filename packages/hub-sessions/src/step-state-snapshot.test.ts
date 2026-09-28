@@ -24,6 +24,9 @@ import {
   readStepStateSnapshot,
 } from "./step-state-snapshot";
 import {
+  WORKFLOW_RUN_MAILBOX_INBOX_DIR,
+  WORKFLOW_RUN_MAILBOX_INDEX_FILE,
+  WORKFLOW_RUN_MAILBOX_PREFIX,
   workflowRunLegacyAgentStatePrefix,
   workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
@@ -196,6 +199,60 @@ describe("readStepStateSnapshot", () => {
       turn("second"),
       turn("third"),
     ]);
+  });
+
+  test("bounds the mailbox UIDs the turns can name by the mailbox's uidNext", async () => {
+    const store = await createStore();
+    await commit(store, {
+      ...stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
+      [`${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]:
+        JSON.stringify({
+          version: 1,
+          uidValidity: 1,
+          uidNext: 7,
+          highestModSeq: 0,
+          messages: [],
+          expunged: [],
+        }),
+    });
+
+    expect((await read(store))?.mailboxUidNext).toBe(7);
+  });
+
+  test("exports a mailbox uidNext past the one an import accepts", async () => {
+    const store = await createStore();
+    await commit(store, {
+      ...stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
+      [`${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]:
+        JSON.stringify({
+          version: 1,
+          uidValidity: 1,
+          uidNext: 2 ** 31 + 1,
+          highestModSeq: 0,
+          messages: [],
+          expunged: [],
+        }),
+    });
+
+    expect((await read(store))?.mailboxUidNext).toBe(2 ** 31 + 1);
+  });
+
+  test("refuses to export a mailbox uidNext past the 32-bit UID space", async () => {
+    const store = await createStore();
+    await commit(store, {
+      ...stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
+      [`${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]:
+        JSON.stringify({
+          version: 1,
+          uidValidity: 1,
+          uidNext: 2 ** 32 + 1,
+          highestModSeq: 0,
+          messages: [],
+          expunged: [],
+        }),
+    });
+
+    await expect(read(store)).rejects.toThrow(/not a valid snapshot/);
   });
 
   test("refuses a seed that is not a valid snapshot", () => {

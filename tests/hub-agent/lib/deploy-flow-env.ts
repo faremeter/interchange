@@ -2172,6 +2172,7 @@ export async function deployWorkflowSourceForTest(
       sources,
       runId: opts.anchorRunId,
       stepState: opts.stepState,
+      uidValidity: Date.now(),
     });
     if (!seeds.ok) {
       throw new Error(`deployWorkflowSourceForTest: ${seeds.reason}`);

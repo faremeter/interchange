@@ -86,6 +86,9 @@ export const StepStateSnapshot = type({
   connectorState: ConnectorThreadState.or("null").describe(
     "Mail thread the agent replies on, or null when no thread is active. An import must carry null: the imported step starts without a thread, and a single-step agent starts one from the sender of its first mail.",
   ),
+  "mailboxUidNext?": type("1 <= number.integer <= 4294967295").describe(
+    "The UID the exporting deployment's mailbox assigns next, so every mailbox UID the turns name is below it. A deployment that imports the snapshot numbers its own mail from at least this UID, so those UIDs never name one of its messages. An import accepts at most 2147483648. Absent when the exporting deployment has no mailbox.",
+  ),
 });
 export type StepStateSnapshot = typeof StepStateSnapshot.infer;
 
@@ -99,12 +102,28 @@ export type StepStateSnapshot = typeof StepStateSnapshot.infer;
 // would overflow the call stack; no real conversation nests near the cap.
 const MAX_STEP_STATE_DEPTH = 64;
 
+// Mailbox UIDs are 32-bit, and nothing renumbers a mailbox that runs out of
+// them. An import numbers the new mailbox from the largest `mailboxUidNext`
+// it carries, so this bound leaves it at least 2^31 UIDs, the same order of
+// headroom as a mailbox numbering from 1.
+const MAX_IMPORTED_MAILBOX_UID_NEXT = 2 ** 31;
+
 export const StepStateImport = type({ "[string]": StepStateSnapshot }).narrow(
   (stepState, ctx) => {
     const problem = findUnstorableStepState(stepState);
     // `actual` replaces the default description of the rejected value,
     // which would print the value and overflow on the same nesting.
-    return problem === null || ctx.reject(problem);
+    if (problem !== null) return ctx.reject(problem);
+    for (const snapshot of Object.values(stepState)) {
+      const uidNext = snapshot.mailboxUidNext;
+      if (uidNext !== undefined && uidNext > MAX_IMPORTED_MAILBOX_UID_NEXT) {
+        return ctx.reject({
+          expected: `a mailboxUidNext of at most ${String(MAX_IMPORTED_MAILBOX_UID_NEXT)}`,
+          actual: String(uidNext),
+        });
+      }
+    }
+    return true;
   },
 );
 export type StepStateImport = typeof StepStateImport.infer;

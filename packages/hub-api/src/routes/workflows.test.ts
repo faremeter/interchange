@@ -1228,6 +1228,43 @@ describe("POST /workflows/deployments", () => {
     expect(prepareCalled).toBe(false);
   });
 
+  test("rejects imported state whose mailbox UIDs leave the new mailbox under 2^31 of its own", async () => {
+    let prepareCalled = false;
+    const app = createTestApp({
+      grants: [makeGrant({ action: "create" })],
+      workflowAllocationService: {
+        prepareProvisionedDeployment: async () => {
+          prepareCalled = true;
+          throw new Error("invalid step state must not reach preparation");
+        },
+        deployReadyAllocation: async () => null,
+      },
+    });
+    const intake = (mailboxUidNext: number) => ({
+      version: 1,
+      turns: [],
+      tokenUsage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        thinking: 0,
+      },
+      connectorState: null,
+      mailboxUidNext,
+    });
+
+    const res = await app.fetch(
+      authedPost(
+        `${base()}/deployments`,
+        sourceDeployBody({ stepState: { intake: intake(2 ** 31 + 1) } }),
+      ),
+    );
+
+    expect(res.status).toBe(400);
+    expect(prepareCalled).toBe(false);
+  });
+
   describe("step state nesting", () => {
     // Where the nesting goes: tool arguments are any JSON, while the other
     // fields have a type the nesting fails, so the schema rejects them

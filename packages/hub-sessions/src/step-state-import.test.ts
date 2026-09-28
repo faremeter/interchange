@@ -8,9 +8,15 @@ import {
   buildStepStateSeeds,
   type StepStateSeedsResult,
 } from "./step-state-import";
-import { workflowRunStepSeedPath } from "./workflow-run-kind";
+import {
+  WORKFLOW_RUN_MAILBOX_INBOX_DIR,
+  WORKFLOW_RUN_MAILBOX_INDEX_FILE,
+  WORKFLOW_RUN_MAILBOX_PREFIX,
+  workflowRunStepSeedPath,
+} from "./workflow-run-kind";
 
 const RUN_ID = "run_import";
+const UID_VALIDITY = 1_700_000_000_000;
 const AGENT = { modelSources: [] };
 
 const projection: WorkflowProjectionDefinition = {
@@ -86,6 +92,7 @@ function seeds(stepState: Record<string, StepStateSnapshot>) {
     sources,
     runId: RUN_ID,
     stepState,
+    uidValidity: UID_VALIDITY,
   });
   if (!result.ok) {
     throw new Error(`unexpected refusal: ${result.reason}`);
@@ -138,6 +145,7 @@ describe("buildStepStateSeeds", () => {
         sources,
         runId: RUN_ID,
         stepState: { intake: withThread },
+        uidValidity: UID_VALIDITY,
       }),
     ).toEqual(refusal("intake"));
     expect(
@@ -146,6 +154,7 @@ describe("buildStepStateSeeds", () => {
         sources,
         runId: RUN_ID,
         stepState: { review: withThread },
+        uidValidity: UID_VALIDITY,
       }),
     ).toEqual(refusal("review"));
   });
@@ -166,6 +175,7 @@ describe("buildStepStateSeeds", () => {
       projection,
       sources,
       runId: RUN_ID,
+      uidValidity: UID_VALIDITY,
       stepState: { intake: snapshot([question, orphanResult]) },
     });
 
@@ -195,6 +205,7 @@ describe("buildStepStateSeeds", () => {
       projection,
       sources,
       runId: RUN_ID,
+      uidValidity: UID_VALIDITY,
       stepState: {
         intake: snapshot([
           question,
@@ -218,6 +229,7 @@ describe("buildStepStateSeeds", () => {
       projection,
       sources,
       runId: RUN_ID,
+      uidValidity: UID_VALIDITY,
       stepState: { intake: snapshot([question, unrecorded]) },
     });
 
@@ -258,6 +270,26 @@ describe("buildStepStateSeeds", () => {
     });
   });
 
+  test("starts the deployment's mailbox past every imported mailbox UID", () => {
+    const files = seeds({
+      intake: { ...snapshot([question]), mailboxUidNext: 4 },
+      review: { ...snapshot([question]), mailboxUidNext: 9 },
+    });
+
+    expect(
+      files.get(
+        `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`,
+      ),
+    ).toEqual({
+      version: 1,
+      uidValidity: UID_VALIDITY,
+      uidNext: 9,
+      highestModSeq: 0,
+      messages: [],
+      expunged: [],
+    });
+  });
+
   test("names every step id that is not a top-level agent step", () => {
     const imported = snapshot([question]);
 
@@ -266,6 +298,7 @@ describe("buildStepStateSeeds", () => {
         projection,
         sources,
         runId: RUN_ID,
+        uidValidity: UID_VALIDITY,
         stepState: {
           intake: imported,
           notify: imported,

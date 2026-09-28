@@ -677,6 +677,7 @@ export function createWorkflowAllocationService({
               sources: stepSources,
               runId: args.anchorRunId,
               stepState: args.stepState,
+              uidValidity: now().getTime(),
             });
       if (stepStateSeeds?.ok === false) {
         throw new WorkflowProvisioningError(

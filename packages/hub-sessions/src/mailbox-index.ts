@@ -38,7 +38,7 @@ const MailboxIndexEnvelope = type({
 export const MailboxIndex = type({
   version: `${MAILBOX_INDEX_VERSION}`,
   uidValidity: "number >= 0",
-  uidNext: "number >= 1",
+  uidNext: "number.integer >= 1",
   highestModSeq: "number >= 0",
   messages: type({
     uid: "number >= 1",

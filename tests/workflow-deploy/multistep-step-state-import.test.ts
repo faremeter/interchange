@@ -14,7 +14,8 @@
 // request and echoes each turn's inbound text, so B's first request must
 // carry A's second request plus its reply, verbatim, before B's own mail.
 // B's step then commits the imported turns as its own state along with its
-// first turn.
+// first turn. B's mailbox numbers its first message past the two A received,
+// so a mailbox UID the imported turns name cannot reach one of B's messages.
 //
 // Harness justification: SPAWN-REAL. A real hub, a real sidecar subprocess,
 // real workflow-process children, and mock inference.
@@ -268,6 +269,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         "user",
         "assistant",
       ]);
+      expect(exported.mailboxUidNext).toBe(3);
 
       // --- Deployment B imports it ----------------------------------------
       const b = await deployConversation({
@@ -303,6 +305,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         exported.turns,
       );
       expect(continuedState?.turns).toHaveLength(exported.turns.length + 2);
+      expect(continuedState?.mailboxUidNext).toBe(4);
     });
   },
 );

@@ -4,6 +4,15 @@
 // (`WORKFLOW_RUN_STEP_SEED_FILE`) in the new deployment's workflow-run
 // history before the deployment first starts, so the history the deploy
 // replays onto its sidecar already carries it and the step starts from it.
+//
+// Imported turns can name messages by their mailbox UID (the mail tools
+// address a message as `{ uid, mailbox }`), and those UIDs belong to the
+// exporting deployment's mailbox. A fresh mailbox numbers from 1, so such a
+// UID would sooner or later name an unrelated message of the new deployment,
+// and a reply meant for the old message would silently go to the new one.
+// The import therefore starts the new deployment's mailbox at the largest
+// `mailboxUidNext` the snapshots carry: every imported UID then names no
+// message at all, and a tool call that uses one fails instead.
 
 import { type } from "arktype";
 
@@ -16,8 +25,15 @@ import type { ConversationTurn, InferenceSource } from "@intx/types/runtime";
 import type { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
+import { MAILBOX_INDEX_VERSION, type MailboxIndex } from "./mailbox-index";
 import type { RepoStore } from "./repo-store/types";
-import { workflowRunStepSeedPath } from "./workflow-run-kind";
+import {
+  WORKFLOW_RUN_MAILBOX_INBOX_DIR,
+  WORKFLOW_RUN_MAILBOX_INDEX_FILE,
+  WORKFLOW_RUN_MAILBOX_PREFIX,
+  WORKFLOW_RUN_STEP_SEED_FILE,
+  workflowRunStepSeedPath,
+} from "./workflow-run-kind";
 
 const HUB_PRINCIPAL = { kind: "hub" } as const;
 const WORKFLOW_RUN_REF = "refs/heads/main";
@@ -29,10 +45,11 @@ export type StepStateSeedsResult =
   | { readonly ok: false; readonly reason: string };
 
 /**
- * Build the seeds that start a new deployment's agent steps from imported
- * state, keyed by repo path. Every step id in `stepState` must name one of
- * the workflow's top-level agent steps: those run in the deployment's
- * top-level run, `runId`, where the seeds are filed.
+ * Build the files that start a new deployment from imported step state,
+ * keyed by repo path: a seed per step and, when a snapshot bounds its
+ * mailbox UIDs, the deployment's initial mailbox index. Every step id in
+ * `stepState` must name one of the workflow's top-level agent steps: those
+ * run in the deployment's top-level run, `runId`, where the seeds are filed.
  *
  * A snapshot continues only on the model that produced it: every assistant
  * turn must record the model the step is pinned to, since the Hub does not
@@ -50,12 +67,16 @@ export type StepStateSeedsResult =
  * itself replies only to senders that mailed its deployment.
  *
  * A result that is not `ok` carries the reason the import was refused.
+ *
+ * The mailbox index gets `uidValidity`, which must be fresh: the new mailbox
+ * holds none of the exporting mailbox's messages.
  */
 export function buildStepStateSeeds(args: {
   projection: WorkflowProjectionDefinition;
   sources: Readonly<Record<string, readonly InferenceSource[]>>;
   runId: string;
   stepState: StepStateImport;
+  uidValidity: number;
 }): StepStateSeedsResult {
   const imported = Object.entries(args.stepState);
   const unknownStepIds = imported
@@ -107,6 +128,22 @@ export function buildStepStateSeeds(args: {
     }
     files[workflowRunStepSeedPath(args.runId, stepId)] = JSON.stringify(seed);
   }
+  const uidNexts = imported.flatMap(([, snapshot]) =>
+    snapshot.mailboxUidNext === undefined ? [] : [snapshot.mailboxUidNext],
+  );
+  if (uidNexts.length > 0) {
+    const index: MailboxIndex = {
+      version: MAILBOX_INDEX_VERSION,
+      uidValidity: args.uidValidity,
+      uidNext: Math.max(...uidNexts),
+      highestModSeq: 0,
+      messages: [],
+      expunged: [],
+    };
+    files[
+      `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`
+    ] = JSON.stringify(index);
+  }
   return { ok: true, files };
 }
 
@@ -136,8 +173,11 @@ export async function writeStepStateSeeds(args: {
   deploymentAddress: string;
   files: Readonly<Record<string, string>>;
 }): Promise<void> {
-  const count = Object.keys(args.files).length;
-  if (count === 0) return;
+  const paths = Object.keys(args.files);
+  if (paths.length === 0) return;
+  const steps = paths.filter((p) =>
+    p.endsWith(`/${WORKFLOW_RUN_STEP_SEED_FILE}`),
+  ).length;
   await args.repoStore.writeTree(
     HUB_PRINCIPAL,
     {
@@ -147,7 +187,7 @@ export async function writeStepStateSeeds(args: {
     WORKFLOW_RUN_REF,
     {
       files: { ...args.files },
-      message: `Import state for ${String(count)} step(s)`,
+      message: `Import state for ${String(steps)} step(s)`,
     },
   );
 }

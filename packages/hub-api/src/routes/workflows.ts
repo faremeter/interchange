@@ -252,7 +252,7 @@ export function createWorkflowRoutes({
           WorkflowDeploymentResponse,
         ),
         400: jsonResponse(
-          "Request body invalid, including step state that carries a number JSON cannot represent or nests deeper than 64 levels",
+          "Request body invalid, including step state that carries a number JSON cannot represent, nests deeper than 64 levels, or has a mailboxUidNext above 2147483648",
           ErrorResponse,
         ),
         404: jsonResponse("Workflow asset not found", ErrorResponse),
