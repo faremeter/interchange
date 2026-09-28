@@ -1393,9 +1393,11 @@ export function createReactor(config: ReactorConfig): Reactor {
 
       // Append inbound messages to conversation history so the provider sees them.
       // Each dequeued message.received opens a fresh per-message run bracket.
-      // If a prior bracket is still open (defensive — should not occur given
-      // the dequeue priority that drains cycle events before new messages),
-      // close it as completed first so the new bracket starts cleanly.
+      // An uncorrelated message can arrive while an earlier run is still
+      // parked on a gate (that run left no way to reject or supersede it), so
+      // finding a prior bracket still open here is a routine path, not a
+      // defensive fallback: close it as completed first so the new bracket
+      // starts cleanly.
       if (event.type === "message.received") {
         if (stateManager !== null) {
           const msg = createInboundTurn(event.message);
