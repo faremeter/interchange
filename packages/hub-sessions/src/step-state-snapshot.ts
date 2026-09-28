@@ -2,14 +2,17 @@ import { type } from "arktype";
 
 import { StepStateSnapshot } from "@intx/types/step-state-snapshot";
 
+import { parseMailboxIndex } from "./mailbox-index";
 import type { CommittedReads, RepoId, RepoStore } from "./repo-store/types";
 import {
   createCommittedStepStateReader,
   reconstructStepState,
 } from "./step-state";
 import {
+  WORKFLOW_RUN_MAILBOX_INBOX_DIR,
+  WORKFLOW_RUN_MAILBOX_INDEX_FILE,
+  WORKFLOW_RUN_MAILBOX_PREFIX,
   WORKFLOW_RUN_REF,
-  WORKFLOW_RUN_STEP_SEED_FILE,
   workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
@@ -22,7 +25,9 @@ const HUB_PRINCIPAL = { kind: "hub" } as const;
  * run. A step that has no state of its own yet exports the seed its
  * deployment imported for it. Pending operations are left out, since their
  * correlation ids only mean something inside the run that registered them.
- * Returns `null` when the step has neither committed state nor a seed.
+ * The deployment's mailbox `uidNext` rides along as `mailboxUidNext`,
+ * bounding the mailbox UIDs the turns can name. Returns `null` when the step
+ * has neither committed state nor a seed.
  */
 export async function readStepStateSnapshot(args: {
   repoStore: Pick<RepoStore, "openCommittedReads">;
@@ -44,21 +49,30 @@ export async function readStepStateSnapshot(args: {
     ),
     label,
   );
-  if (state === null) {
-    return readCommittedSeed(reads, args.runId, args.stepId);
-  }
-  const snapshot = StepStateSnapshot({
-    version: 1,
-    turns: state.turns,
-    tokenUsage: state.tokenUsage,
-    connectorState: state.connectorState,
-  });
+  const snapshot =
+    state === null
+      ? await readCommittedSeed(reads, args.runId, args.stepId)
+      : StepStateSnapshot({
+          version: 1,
+          turns: state.turns,
+          tokenUsage: state.tokenUsage,
+          connectorState: state.connectorState,
+        });
   if (snapshot instanceof type.errors) {
     throw new Error(
       `step state for ${label} is not a valid snapshot: ${snapshot.summary}`,
     );
   }
-  return snapshot;
+  if (snapshot === null) return null;
+  const mailboxUidNext = await readCommittedMailboxUidNext(reads);
+  if (mailboxUidNext === null) return snapshot;
+  const exported = StepStateSnapshot({ ...snapshot, mailboxUidNext });
+  if (exported instanceof type.errors) {
+    throw new Error(
+      `step state for ${label} is not a valid snapshot: ${exported.summary}`,
+    );
+  }
+  return exported;
 }
 
 /**
@@ -91,15 +105,29 @@ async function readCommittedSeed(
   stepId: string,
 ): Promise<StepStateSnapshot | null> {
   const seedPath = workflowRunStepSeedPath(runId, stepId);
-  const stepDir = seedPath.slice(0, seedPath.lastIndexOf("/"));
-  const entry = (await reads.listDir(stepDir)).find(
+  const raw = await readCommittedFile(reads, seedPath);
+  return raw === null ? null : parseStepStateSeed(raw, seedPath);
+}
+
+async function readCommittedMailboxUidNext(
+  reads: CommittedReads,
+): Promise<number | null> {
+  const indexPath = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`;
+  const raw = await readCommittedFile(reads, indexPath);
+  return raw === null
+    ? null
+    : parseMailboxIndex(raw, `mailbox index ${indexPath}`).uidNext;
+}
+
+async function readCommittedFile(
+  reads: CommittedReads,
+  filePath: string,
+): Promise<string | null> {
+  const slash = filePath.lastIndexOf("/");
+  const entry = (await reads.listDir(filePath.slice(0, slash))).find(
     (candidate) =>
-      candidate.name === WORKFLOW_RUN_STEP_SEED_FILE &&
-      candidate.type === "blob",
+      candidate.name === filePath.slice(slash + 1) && candidate.type === "blob",
   );
   if (entry === undefined) return null;
-  return parseStepStateSeed(
-    new TextDecoder().decode(await reads.readBlobByOid(entry.oid)),
-    seedPath,
-  );
+  return new TextDecoder().decode(await reads.readBlobByOid(entry.oid));
 }

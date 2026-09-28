@@ -18,7 +18,10 @@
 // read from the export route and passed to the deploy route of a new
 // deployment as its `stepState`. The Hub files it as a seed in the new
 // deployment's history, the reconciler restores that history onto the new
-// sidecar, and the new deployment's first mail is the step's third turn.
+// sidecar, and the new deployment's first mail is the step's third turn. The
+// new deployment's mailbox numbers its first message past the two the first
+// one received, so a mailbox UID the imported turns name cannot reach one of
+// its messages.
 //
 // The proof is what the model sees. The mock inference server records every
 // request and echoes each turn's inbound text, so the third turn's request
@@ -505,6 +508,7 @@ describe.skipIf(!harnessHubEnvAvailable())(
         "user",
         "assistant",
       ]);
+      expect(exported.mailboxUidNext).toBe(3);
 
       // --- A new deployment imports it through the deploy route -----------
       const assetB = "ast_conversation_import_b";
@@ -542,6 +546,7 @@ describe.skipIf(!harnessHubEnvAvailable())(
         exported.turns,
       );
       expect(continuedState.turns).toHaveLength(exported.turns.length + 2);
+      expect(continuedState.mailboxUidNext).toBe(4);
     });
   },
 );

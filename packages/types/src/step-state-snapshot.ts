@@ -20,6 +20,9 @@ export const StepStateSnapshot = type({
   connectorState: ConnectorThreadState.or("null").describe(
     "Mail thread the agent replies on, or null when no thread is active. An import must carry null: the imported step starts without a thread, and a single-step agent starts one from the sender of its first mail.",
   ),
+  "mailboxUidNext?": type("1 <= number.integer <= 4294967295").describe(
+    "The UID the exporting deployment's mailbox assigns next, so every mailbox UID the turns name is below it. A deployment that imports the snapshot numbers its own mail from at least this UID, so those UIDs never name one of its messages. An import accepts at most 2147483648. Absent when the exporting deployment has no mailbox.",
+  ),
 });
 export type StepStateSnapshot = typeof StepStateSnapshot.infer;
 
@@ -39,6 +42,12 @@ const MAX_STEP_STATE_DEPTH = 64;
 // every issue beneath a key repeats it in its path, so an unbounded key makes
 // validating them grow with the key times the issues.
 const MAX_STEP_STATE_KEY_LENGTH = 255;
+
+// Mailbox UIDs are 32-bit, and nothing renumbers a mailbox that runs out of
+// them. An import numbers the new mailbox from the largest `mailboxUidNext`
+// it carries, so this bound leaves it at least 2^31 UIDs, the same order of
+// headroom as a mailbox numbering from 1.
+const MAX_IMPORTED_MAILBOX_UID_NEXT = 2 ** 31;
 
 // A key the snapshot does not declare is refused rather than stored: export
 // returns a seed as it is stored, so the key would come back out of it.
@@ -72,6 +81,13 @@ export const StepStateImport = type({
           "user or assistant, since an imported step keeps the system prompt its deployment approved",
         actual: "a system turn",
         relativePath: [stepId, "turns", systemTurn, "role"],
+      });
+    }
+    const uidNext = snapshot.mailboxUidNext;
+    if (uidNext !== undefined && uidNext > MAX_IMPORTED_MAILBOX_UID_NEXT) {
+      return ctx.reject({
+        expected: `a mailboxUidNext of at most ${String(MAX_IMPORTED_MAILBOX_UID_NEXT)}`,
+        actual: String(uidNext),
       });
     }
   }
