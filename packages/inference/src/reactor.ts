@@ -18,7 +18,6 @@ import type {
   InferenceEvent,
   InferenceOptions,
   InferenceSource,
-  PerCallInferenceOptions,
   ReactorDirector,
   ReactorInboundEvent,
   ContextStore,
@@ -43,6 +42,7 @@ import type {
 
 import { getLogger } from "@intx/log";
 import { ApprovalDecision, signalKindToGateType } from "@intx/types";
+import { PerCallInferenceOptions } from "@intx/types/runtime";
 import type { CredentialMaterialResolver } from "@intx/types";
 import { canonicalJsonStringify } from "@intx/types/wire-definition-hash";
 import { type } from "arktype";
@@ -92,21 +92,22 @@ export function mergeInferenceOptions(
  * Copy only the keys a send may set. A structurally wider bag still
  * type-checks as `PerCallInferenceOptions`; without this copy,
  * `systemPrompt`, `tools`, and `providerOptions` would enter the
- * message-run slot and displace the deployed agent definition.
+ * message-run slot and displace the deployed agent definition. The key
+ * set is the arktype declaration itself, so a key added there is copied
+ * without a matching edit here. The declaration also checks the values,
+ * so an out-of-range option is rejected here rather than at the provider.
  */
+const StripToPerCallInference =
+  PerCallInferenceOptions.onDeepUndeclaredKey("delete");
+
 function perCallInference(
   options: PerCallInferenceOptions,
 ): PerCallInferenceOptions {
-  return {
-    ...(options.maxTokens !== undefined
-      ? { maxTokens: options.maxTokens }
-      : {}),
-    ...(options.temperature !== undefined
-      ? { temperature: options.temperature }
-      : {}),
-    ...(options.thinking !== undefined ? { thinking: options.thinking } : {}),
-    ...(options.effort !== undefined ? { effort: options.effort } : {}),
-  };
+  const stripped = StripToPerCallInference(options);
+  if (stripped instanceof type.errors) {
+    throw new Error(`Invalid per-call inference options: ${stripped.summary}`);
+  }
+  return stripped;
 }
 
 function buildHarnessOpts(

@@ -15,6 +15,9 @@
 //     queue ordered against actual reactor cycles — two send() promises
 //     cannot interleave at the reactor level.
 //
+// A `start` that throws synchronously rejects that item and pumps the
+// next, so a rejected item never occupies the active slot.
+//
 // Queue depth (active + pending) is bounded by `maxDepth`; exceeding it
 // throws `SendQueueFullError` synchronously from enqueue() so a buggy
 // caller flooding sends fails loud instead of silently buffering.
@@ -106,7 +109,13 @@ export function createSendQueue<T, R>(
         continue;
       }
       active = next;
-      opts.start(next.item);
+      try {
+        opts.start(next.item);
+      } catch (cause) {
+        active = null;
+        settle(next, "reject", cause);
+        continue;
+      }
       return;
     }
   }

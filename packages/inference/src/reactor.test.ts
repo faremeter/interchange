@@ -10,6 +10,7 @@ import { createDefaultDirector } from "./default-director";
 import { assertWellFormedToolSequence } from "./turns";
 import { createInboundMessage } from "@intx/mime";
 import { waitUntil } from "@intx/types/testing";
+import { PerCallInferenceOptions } from "@intx/types/runtime";
 
 import type {
   ReactorDirector,
@@ -7189,6 +7190,62 @@ describe("createReactor — per-send inference options", () => {
     await waitUntil(() => seen.length >= 1);
 
     expect(seen).toEqual([{ temperature: 0.9, maxTokens: 100 }]);
+    reactor.abort("admin_kill");
+  });
+
+  test("deliver copies every key PerCallInferenceOptions declares", async () => {
+    const seen: (InferenceHarnessOptions["inferenceOptions"] | undefined)[] =
+      [];
+    const inferenceRunner = async function* (opts: InferenceHarnessOptions) {
+      seen.push(opts.inferenceOptions);
+      yield {
+        type: "inference.done" as const,
+        seq: opts.nextSeq(),
+        data: {
+          turn: {
+            role: "assistant" as const,
+            content: [{ type: "text" as const, text: "ok" }],
+            model: "test-model",
+            timestamp: 1000,
+          },
+          usage: emptyUsage(),
+          source: TEST_SOURCE,
+        },
+      };
+    };
+    const { reactor } = createTestReactor({
+      inferenceRunner,
+      director: directorFromTable(
+        {
+          "message.received": (_e, _s, caps) => caps.infer(),
+          "inference.done": (_e, _s, caps) => caps.wait(),
+        },
+        "wait",
+      ),
+    });
+
+    reactor.start();
+    // Names every declared key alongside one the type does not declare.
+    // A key added to the type without an entry here fails the key-set
+    // comparison below, so the copy can never silently fall behind it.
+    const inference = {
+      maxTokens: 100,
+      temperature: 0.1,
+      thinking: { enabled: true, budgetTokens: 2048, sneak: true },
+      effort: "high" as const,
+      systemPrompt: "sneak",
+    };
+    reactor.deliver(makeInboundMessage(), { inference });
+    await waitUntil(() => seen.length >= 1);
+
+    const declared = PerCallInferenceOptions.props.map((p) => p.key).sort();
+    expect(Object.keys(seen[0] ?? {}).sort()).toEqual(declared);
+    expect(seen[0]).toEqual({
+      maxTokens: 100,
+      temperature: 0.1,
+      thinking: { enabled: true, budgetTokens: 2048 },
+      effort: "high",
+    });
     reactor.abort("admin_kill");
   });
 });

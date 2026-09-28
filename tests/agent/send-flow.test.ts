@@ -398,6 +398,29 @@ describe("@intx/agent send-flow integration", () => {
     }
   });
 
+  test("invalid per-send inference options reject without stalling the queue", async () => {
+    harness.scenario.replyOnce("anthropic", { text: "after" });
+    const agent = await createAgent(
+      definition(),
+      await envFor(join(workDir, "ctx"), harness),
+    );
+
+    try {
+      await expect(
+        agent.send("bad", { inference: { temperature: -1 } }),
+      ).rejects.toThrow(/Invalid per-call inference options/);
+      const next = agent.send("good");
+      await harness.run();
+      const result = await next;
+      if (result.type !== "reply") {
+        throw new Error(`expected a reply outcome, got ${result.type}`);
+      }
+      expect(result.reply).toBe("after");
+    } finally {
+      await agent.close();
+    }
+  });
+
   test("synchronously throws SendQueueFullError past the configured cap", async () => {
     harness.scenario.replyOnce("anthropic", { text: "stalled response" });
 
