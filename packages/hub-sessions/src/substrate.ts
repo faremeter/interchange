@@ -74,6 +74,12 @@ export type {
 } from "./step-state";
 export { parseStepStateSeed } from "./step-state-snapshot";
 
+export {
+  MAILBOX_INDEX_VERSION,
+  MailboxIndex,
+  parseMailboxIndex,
+} from "./mailbox-index";
+
 export { subscribeKind } from "./repo-store/subscribe-kind";
 export type { SubscribeKindEntry } from "./repo-store/subscribe-kind";
 
