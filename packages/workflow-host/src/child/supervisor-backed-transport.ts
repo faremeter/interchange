@@ -63,6 +63,7 @@ import type {
   Thread,
   Unsubscribe,
 } from "@intx/types/runtime";
+import { MessageTransportError } from "@intx/types/runtime";
 
 import {
   executeSearch,
@@ -138,7 +139,8 @@ export function createSupervisorBackedTransport(
   inbound?: SupervisorBackedTransportInbound,
 ): MessageTransport {
   function unsupported(method: string): never {
-    throw new Error(
+    throw new MessageTransportError(
+      "CANNOT",
       `supervisor-backed transport: ${method} is not supported for unified-host step agent ${address}; the supervisor owns the mailbox and the agent owns only its own ${MAILBOX_INBOX_DIR}`,
     );
   }
@@ -148,7 +150,8 @@ export function createSupervisorBackedTransport(
   // surface is a wiring error, not a silently-empty result.
   function requireInbound(method: string): SupervisorBackedTransportInbound {
     if (inbound === undefined) {
-      throw new Error(
+      throw new MessageTransportError(
+        "SERVERBUG",
         `supervisor-backed transport: ${method} needs the inbound surface, but it is not wired for unified-host step agent ${address}; the sidecar must construct the transport with its mailbox reader, watch registry, and crypto`,
       );
     }
@@ -160,7 +163,8 @@ export function createSupervisorBackedTransport(
   // it, which would return the wrong mailbox's messages mislabeled.
   function requireInbox(mailbox: string): void {
     if (mailbox !== MAILBOX_INBOX_DIR) {
-      throw new Error(
+      throw new MessageTransportError(
+        "NONEXISTENT",
         `supervisor-backed transport: unified-host step agent ${address} owns only the "${MAILBOX_INBOX_DIR}" mailbox; "${mailbox}" is not available`,
       );
     }

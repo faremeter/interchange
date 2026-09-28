@@ -18,6 +18,7 @@ import type {
   Unsubscribe,
   CryptoProvider,
 } from "@intx/types/runtime";
+import { MessageTransportError } from "@intx/types/runtime";
 import { buildMessageHeaders, parseHeaderSection } from "@intx/mime";
 import {
   createInMemoryMailboxStore,
@@ -317,11 +318,6 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     }
 
     const { headers } = parseHeaderSection(message);
-    // The stored envelope and the `exists` event below are built from one
-    // reading of these bytes, so the two cannot disagree about which headers
-    // the message carried. `buildMessageHeaders` is that reading: it applies
-    // the RFC rule that a present-but-blank `Date`, `Message-ID`, `From` or
-    // `In-Reply-To` names nothing, so a blank one arrives here as an absence.
     const msgHeaders = buildMessageHeaders(headers);
 
     const dateRaw = msgHeaders.date;
@@ -344,9 +340,7 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
       inReplyTo: msgHeaders.inReplyTo,
       references: msgHeaders.references ?? [],
       // Read off the raw map rather than `msgHeaders`, which keeps this field
-      // only when it names a declared `InterchangeType`. The envelope mirrors
-      // what the message carried, so an unrecognized type is stored verbatim
-      // instead of being erased from the index.
+      // only when it names a declared `InterchangeType`.
       interchangeType: headers.get("interchange-type"),
       interchangeCorrelationId: msgHeaders.interchangeCorrelationId,
     };
@@ -422,7 +416,8 @@ class ScopedMessageTransport implements MessageTransport {
   #requireMailbox(name: string) {
     const store = this.#entry.mailboxes.get(name);
     if (store === undefined) {
-      throw new Error(
+      throw new MessageTransportError(
+        "NONEXISTENT",
         `Mailbox "${name}" does not exist for address "${this.#address}"`,
       );
     }
@@ -467,10 +462,6 @@ class ScopedMessageTransport implements MessageTransport {
     // need Uint8Array. We store a minimal representation.
     //
     // For now, serialize the InboundMessage as a minimal RFC 2822 message.
-    // The stored envelope keys the mailbox index on the id and serializes the
-    // date, so neither can be absent here. `deliver` refuses the same two on
-    // the same grounds. Checked before serializing so a message that cannot
-    // be stored is not encoded first and then discarded.
     const { messageId, date } = message.headers;
     if (messageId === undefined) {
       throw new Error("Cannot append message: missing Message-ID header");
@@ -512,7 +503,8 @@ class ScopedMessageTransport implements MessageTransport {
 
   async deleteMailbox(name: string, _signal?: AbortSignal): Promise<void> {
     if (!this.#entry.mailboxes.has(name)) {
-      throw new Error(
+      throw new MessageTransportError(
+        "NONEXISTENT",
         `Mailbox "${name}" does not exist for address "${this.#address}"`,
       );
     }
@@ -762,9 +754,6 @@ function inboundMessageToRaw(message: InboundMessage): Uint8Array {
   const enc = new TextEncoder();
   const CRLF = "\r\n";
   let headers = "";
-  // A message with no originator gets no From line. Interpolating the absence
-  // would write the literal `From: undefined` into the RFC 2822 bytes, which
-  // reads back as an originator named "undefined".
   if (message.headers.from !== undefined) {
     headers += `From: ${message.headers.from}${CRLF}`;
   }
@@ -772,10 +761,6 @@ function inboundMessageToRaw(message: InboundMessage): Uint8Array {
   if (message.headers.cc && message.headers.cc.length > 0) {
     headers += `Cc: ${message.headers.cc.join(", ")}${CRLF}`;
   }
-  // Omitted for the same reason as From above: interpolating an absent value
-  // writes the literal `Date: undefined` into the RFC 2822 bytes, which reads
-  // back as a real header. An omitted line is the honest encoding of a header
-  // the message never carried.
   if (message.headers.date !== undefined) {
     headers += `Date: ${message.headers.date}${CRLF}`;
   }

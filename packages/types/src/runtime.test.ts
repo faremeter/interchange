@@ -17,6 +17,8 @@ import {
   type BlobReader,
   type BlobSource,
   createBlobReader,
+  isMessageTransportError,
+  MessageTransportError,
   parseToolOutputURI,
 } from "./runtime";
 
@@ -1275,5 +1277,43 @@ describe("BoundedApprovalSnapshot", () => {
     expect(serialized.length).toBeLessThan(APPROVAL_SNAPSHOT_MAX_BYTES);
     const result = BoundedApprovalSnapshot(base);
     expect(result instanceof type.errors).toBe(true);
+  });
+});
+
+describe("isMessageTransportError", () => {
+  test("accepts a condition-bearing error the class did not construct", () => {
+    // The reason the guard is structural: a tool package is published as a
+    // bundle with its workspace imports inlined, so the consumer classifying a
+    // failure holds its own copy of MessageTransportError and an `instanceof`
+    // check against the host's copy answers false. This foreign class stands in
+    // for that second copy.
+    class ForeignTransportError extends Error {
+      readonly condition = "NONEXISTENT";
+    }
+    const foreign = new ForeignTransportError("mailbox is not here");
+
+    expect(isMessageTransportError(foreign)).toBe(true);
+    expect(foreign instanceof MessageTransportError).toBe(false);
+  });
+
+  test("accepts the error the class constructs and reads back its condition", () => {
+    const failure = new MessageTransportError("SERVERBUG", "no reader wired");
+
+    expect(isMessageTransportError(failure)).toBe(true);
+    expect(failure.condition).toBe("SERVERBUG");
+    expect(failure.name).toBe("MessageTransportError");
+  });
+
+  test("refuses an error carrying no condition, or one RFC 5530 does not name", () => {
+    expect(isMessageTransportError(new Error("the socket went away"))).toBe(
+      false,
+    );
+    expect(
+      isMessageTransportError(
+        Object.assign(new Error("invented"), { condition: "MAILBOX_MISSING" }),
+      ),
+    ).toBe(false);
+    expect(isMessageTransportError({ condition: "NONEXISTENT" })).toBe(false);
+    expect(isMessageTransportError(undefined)).toBe(false);
   });
 });

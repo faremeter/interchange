@@ -10,15 +10,24 @@
 //
 // (MESSAGE.md § Mail Tools)
 
-import { type } from "arktype";
+import { scope, type, type Type } from "arktype";
+import { getLogger } from "@intx/log";
 import type {
   MessageTransport,
   ToolCall,
   ToolResult,
   OutboundMessage,
-  SearchQuery,
 } from "@intx/types/runtime";
-import { InterchangeType } from "@intx/types/runtime";
+import {
+  InterchangeType,
+  isConversationType,
+  isMessageTransportError,
+} from "@intx/types/runtime";
+
+import type { MailToolName } from "./definitions";
+import { errorResult, type MailToolErrorCode } from "./errors";
+
+const logger = getLogger(["tools-mail", "handlers"]);
 
 export type ToolHandler = (
   call: ToolCall,
@@ -29,46 +38,236 @@ export type ToolHandler = (
 // Argument schemas
 // ---------------------------------------------------------------------------
 
+// `Record<string, unknown>` admits a JSON array, whose own keys are strings.
+const JSONObject = type("Record<string, unknown>").narrow(
+  (value, ctx) =>
+    !Array.isArray(value) || ctx.mustBe("an object, not an array"),
+);
+
+const MessageRefShape = {
+  "+": "reject",
+  uid: "number",
+  mailbox: "string",
+} as const;
+
+// A subject, an in-reply-to and a correlation id each become a header field
+// body, which RFC 5322 § 2.2 allows no CR and no LF outside folding. Stated as
+// a pattern rather than a narrow so arktype can be asked about it:
+// definitions.test.ts pairs this shape against the schema.
+const HEADER_VALUE_PATTERN = "^[^\\r\\n]*$";
+
+// RFC 5322 § 3.6.4 gives In-Reply-To as `1*msg-id`; `\S` matches no CR or LF.
+const MESSAGE_ID_PATTERN = "^[^\\r\\n]*\\S[^\\r\\n]*$";
+
+const HeaderValue = type("string").matching(HEADER_VALUE_PATTERN).configure({
+  description: "a header value, so free of carriage return and line feed",
+});
+
+const MessageIdReference = type("string")
+  .matching(MESSAGE_ID_PATTERN)
+  .configure({
+    description:
+      "a message identifier, so free of carriage return and line feed, and not blank",
+  });
+
 const SendArgs = type({
+  "+": "reject",
   to: "string | string[]",
   "type?": InterchangeType,
   "content?": "string",
-  "payload?": "Record<string, unknown>",
-  "subject?": "string",
-  "inReplyTo?": "string",
+  "payload?": JSONObject,
+  "subject?": HeaderValue,
+  "inReplyTo?": MessageIdReference,
+  "correlationId?": HeaderValue,
 });
 
 const ReplyArgs = type({
-  ref: { uid: "number", mailbox: "string" },
+  "+": "reject",
+  ref: MessageRefShape,
   "type?": InterchangeType,
   "content?": "string",
-  "payload?": "Record<string, unknown>",
+  "payload?": JSONObject,
 });
 
+// A tool call arrives as JSON, which carries no Date, and the matcher behind
+// MessageTransport.search compares the date filters as Date instances.
+const QueryDate = type("Date").or(type("string.date.parse"));
+
+// "+" governs the recursive references below as well, because and/or/not
+// resolve to this same node.
+export const SearchQueryArgs = scope({
+  searchQuery: {
+    "+": "reject",
+    "from?": "string",
+    "to?": "string",
+    "cc?": "string",
+    "bcc?": "string",
+    "header?": {
+      "+": "reject",
+      field: "string",
+      contains: "string",
+    },
+    "before?": QueryDate,
+    "after?": QueryDate,
+    "on?": QueryDate,
+    "sentBefore?": QueryDate,
+    "sentAfter?": QueryDate,
+    "sentOn?": QueryDate,
+    "hasFlags?": "string[]",
+    "missingFlags?": "string[]",
+    "body?": "string",
+    "text?": "string",
+    "largerThan?": "number",
+    "smallerThan?": "number",
+    "and?": "searchQuery[]",
+    "or?": "searchQuery[]",
+    "not?": "searchQuery",
+  },
+}).export().searchQuery;
+
+const SearchLimit = type("number.integer").atLeast(1);
+
 const SearchArgs = type({
+  "+": "reject",
   "mailbox?": "string",
-  "query?": "Record<string, unknown>",
-  "limit?": "number",
+  "query?": JSONObject,
+  "limit?": SearchLimit,
 });
 
 const ReadArgs = type({
-  ref: { uid: "number", mailbox: "string" },
+  "+": "reject",
+  ref: MessageRefShape,
   "parts?": "string",
 });
 
+// RFC 2177 § 3 advises terminating and re-issuing IDLE at least every 29
+// minutes, so that is the longest span a wait may hold open.
+// https://www.rfc-editor.org/rfc/rfc2177.txt
+const MAX_WAIT_SECONDS = 29 * 60;
+
+// `timeout * 1000` reaches setTimeout, whose delay is a signed 32-bit count: a
+// larger delay is coerced to 1ms and the wait returns almost at once.
+const WaitTimeoutSeconds = type("number.integer")
+  .atLeast(1)
+  .atMost(MAX_WAIT_SECONDS);
+
 const WaitArgs = type({
-  "query?": "Record<string, unknown>",
-  "timeout?": "number",
+  "+": "reject",
+  "query?": JSONObject,
+  "timeout?": WaitTimeoutSeconds,
   "mailbox?": "string",
 });
 
 const FlagArgs = type({
-  ref: { uid: "number", mailbox: "string" },
+  "+": "reject",
+  ref: MessageRefShape,
   "set?": "string[]",
   "clear?": "string[]",
 });
 
-const ExpungeArgs = type({});
+const ExpungeArgs = type({ "+": "reject" });
+
+// Exported so definitions.test.ts can pair each tool's advertised schema
+// against the shape enforced here.
+export const ARGUMENT_SHAPES = {
+  mail_send: SendArgs,
+  mail_reply: ReplyArgs,
+  mail_search: SearchArgs,
+  mail_read: ReadArgs,
+  mail_wait: WaitArgs,
+  mail_flag: FlagArgs,
+  mail_expunge: ExpungeArgs,
+} satisfies Record<MailToolName, Type<object>>;
+
+// The names arktype's `"+": "reject"` cannot refuse. Its compiled check asks
+// `k in propsByKey` over an ordinary object, so every name Object.prototype
+// carries answers "declared" and is accepted. arktype 2.2 offers no setting
+// for that, so the names are refused here, ahead of the shape.
+const INHERITED_NAMES: ReadonlySet<string> = new Set(
+  Object.getOwnPropertyNames(Object.prototype),
+);
+
+// The keys whose values no shape in this file closes: a 'payload' is the
+// caller's own JSON, and a 'query' is closed by SearchQueryArgs instead.
+const OPAQUE_ARGUMENT_KEYS: ReadonlySet<string> = new Set(["payload", "query"]);
+
+const NO_OPAQUE_KEYS: ReadonlySet<string> = new Set();
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * The dotted path of the first reserved name found anywhere in `value`, or
+ * undefined when it carries none. `opaque` names the keys whose values are not
+ * descended into.
+ */
+function findInheritedName(
+  value: unknown,
+  opaque: ReadonlySet<string>,
+  path = "",
+): string | undefined {
+  if (Array.isArray(value)) {
+    for (const [index, element] of value.entries()) {
+      const found = findInheritedName(element, opaque, `${path}[${index}]`);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (!isRecord(value)) return undefined;
+
+  for (const key of Object.keys(value)) {
+    const at = path === "" ? key : `${path}.${key}`;
+    if (INHERITED_NAMES.has(key)) return at;
+    if (opaque.has(key)) continue;
+    const found = findInheritedName(value[key], opaque, at);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function inheritedNameResult(
+  callId: string,
+  value: unknown,
+  opaque: ReadonlySet<string>,
+  code: MailToolErrorCode,
+): ToolResult | undefined {
+  const found = findInheritedName(value, opaque);
+  if (found === undefined) return undefined;
+  return errorResult(callId, `${found} must be removed`, code);
+}
+
+// `NONEXISTENT` is RFC 5530's condition for a mailbox that is not there, and a
+// transport raises it before it attempts the operation. Any other rejection
+// carries `operationCode`, worded by `describe`.
+function transportFailureResult(
+  callId: string,
+  cause: unknown,
+  operationCode: MailToolErrorCode,
+  describe: (message: string) => string,
+): ToolResult {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const operationFailure = () =>
+    errorResult(callId, describe(message), operationCode);
+
+  if (!isMessageTransportError(cause)) return operationFailure();
+  switch (cause.condition) {
+    case "NONEXISTENT":
+      return errorResult(callId, message, "invalid_mailbox");
+    case "CANNOT":
+    case "SERVERBUG":
+      return operationFailure();
+  }
+}
+
+function searchFailureResult(callId: string, cause: unknown): ToolResult {
+  return transportFailureResult(
+    callId,
+    cause,
+    "search_failed",
+    (message) => message,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Individual tool handlers
@@ -76,9 +275,26 @@ const ExpungeArgs = type({});
 
 export function makeMailSendHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
+    const reserved = inheritedNameResult(
+      call.id,
+      call.arguments,
+      OPAQUE_ARGUMENT_KEYS,
+      "invalid_arguments",
+    );
+    if (reserved !== undefined) return reserved;
+
     const args = SendArgs(call.arguments);
     if (args instanceof type.errors) {
-      return errorResult(call.id, args.summary);
+      return errorResult(call.id, args.summary, "invalid_arguments");
+    }
+
+    // An empty list names no destination, so the call has nowhere to send.
+    if (Array.isArray(args.to) && args.to.length === 0) {
+      return errorResult(
+        call.id,
+        "'to' must name at least one recipient",
+        "invalid_arguments",
+      );
     }
 
     const { content, payload } = args;
@@ -87,12 +303,37 @@ export function makeMailSendHandler(transport: MessageTransport): ToolHandler {
       return errorResult(
         call.id,
         "provide either 'content' or 'payload', not both",
+        "invalid_arguments",
+      );
+    }
+    if (content === undefined && payload === undefined) {
+      return errorResult(
+        call.id,
+        "provide a body in 'content' or 'payload'",
+        "invalid_arguments",
+      );
+    }
+
+    const messageType = args.type ?? "conversation.message";
+
+    if (isConversationType(messageType) && payload !== undefined) {
+      return errorResult(
+        call.id,
+        `'${messageType}' is a conversation type, so its body belongs in 'content'; 'payload' is for a structured type`,
+        "invalid_arguments",
+      );
+    }
+    if (!isConversationType(messageType) && content !== undefined) {
+      return errorResult(
+        call.id,
+        `'${messageType}' is a structured type, so its body belongs in 'payload'; 'content' is for a conversation type`,
+        "invalid_arguments",
       );
     }
 
     const outbound: OutboundMessage = {
       to: args.to,
-      type: args.type ?? "conversation.message",
+      type: messageType,
     };
 
     if (args.subject !== undefined) {
@@ -106,6 +347,9 @@ export function makeMailSendHandler(transport: MessageTransport): ToolHandler {
     }
     if (args.inReplyTo !== undefined) {
       outbound.inReplyTo = args.inReplyTo;
+    }
+    if (args.correlationId !== undefined) {
+      outbound.correlationId = args.correlationId;
     }
 
     let receipt;
@@ -125,9 +369,51 @@ export function makeMailSendHandler(transport: MessageTransport): ToolHandler {
 
 export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
+    const reserved = inheritedNameResult(
+      call.id,
+      call.arguments,
+      OPAQUE_ARGUMENT_KEYS,
+      "invalid_arguments",
+    );
+    if (reserved !== undefined) return reserved;
+
     const args = ReplyArgs(call.arguments);
     if (args instanceof type.errors) {
-      return errorResult(call.id, args.summary);
+      return errorResult(call.id, args.summary, "invalid_arguments");
+    }
+
+    const { content, payload } = args;
+
+    if (content !== undefined && payload !== undefined) {
+      return errorResult(
+        call.id,
+        "provide either 'content' or 'payload', not both",
+        "invalid_arguments",
+      );
+    }
+    if (content === undefined && payload === undefined) {
+      return errorResult(
+        call.id,
+        "provide a body in 'content' or 'payload'",
+        "invalid_arguments",
+      );
+    }
+
+    const messageType = args.type ?? "conversation.message";
+
+    if (isConversationType(messageType) && payload !== undefined) {
+      return errorResult(
+        call.id,
+        `'${messageType}' is a conversation type, so its body belongs in 'content'; 'payload' is for a structured type`,
+        "invalid_arguments",
+      );
+    }
+    if (!isConversationType(messageType) && content !== undefined) {
+      return errorResult(
+        call.id,
+        `'${messageType}' is a structured type, so its body belongs in 'payload'; 'content' is for a conversation type`,
+        "invalid_arguments",
+      );
     }
 
     const messageRef = args.ref;
@@ -137,38 +423,27 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
     try {
       parentHeaders = await transport.fetchHeaders(messageRef, signal);
     } catch (cause) {
-      return errorResult(
+      return transportFailureResult(
         call.id,
-        `failed to fetch parent message: ${cause instanceof Error ? cause.message : String(cause)}`,
+        cause,
+        "not_found",
+        (message) => `failed to fetch parent message: ${message}`,
       );
     }
 
-    const { content, payload } = args;
-
-    if (content !== undefined && payload !== undefined) {
-      return errorResult(
-        call.id,
-        "provide either 'content' or 'payload', not both",
-      );
-    }
-
-    // A parent that names no originator carries no reply address, and this
-    // header is the only thing the reply is addressed from.
     if (parentHeaders.from === undefined) {
       return errorResult(
         call.id,
-        "cannot reply: the parent message names no originator",
+        "the message being replied to carries no From header, so it has no reply address",
+        "no_reply_address",
       );
     }
 
     const outbound: OutboundMessage = {
       to: parentHeaders.from,
-      type: args.type ?? "conversation.message",
+      type: messageType,
     };
 
-    // RFC 5322 defines both `In-Reply-To` and `References` as one-or-more
-    // message ids, so a parent naming none is referenced by neither header
-    // rather than by an empty one.
     if (parentHeaders.messageId !== undefined) {
       outbound.inReplyTo = parentHeaders.messageId;
       // The full RFC 5322 References chain for a reply is the parent's own
@@ -185,6 +460,12 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
     // Carry forward the subject if available.
     if (parentHeaders.subject !== undefined) {
       outbound.subject = parentHeaders.subject;
+    }
+
+    // The reactor's tryCorrelate keys on Interchange-Correlation-ID alone, so a
+    // reply that drops it leaves the requester waiting.
+    if (parentHeaders.interchangeCorrelationId !== undefined) {
+      outbound.correlationId = parentHeaders.interchangeCorrelationId;
     }
 
     if (content !== undefined) {
@@ -213,24 +494,40 @@ export function makeMailSearchHandler(
   transport: MessageTransport,
 ): ToolHandler {
   return async (call, signal) => {
+    const reserved = inheritedNameResult(
+      call.id,
+      call.arguments,
+      OPAQUE_ARGUMENT_KEYS,
+      "invalid_arguments",
+    );
+    if (reserved !== undefined) return reserved;
+
     const args = SearchArgs(call.arguments);
     if (args instanceof type.errors) {
-      return errorResult(call.id, args.summary);
+      return errorResult(call.id, args.summary, "invalid_arguments");
     }
 
     const mailbox = args.mailbox ?? "INBOX";
-    const query = args.query ?? {};
     const limit = args.limit ?? 20;
+
+    const reservedFilter = inheritedNameResult(
+      call.id,
+      args.query,
+      NO_OPAQUE_KEYS,
+      "invalid_query",
+    );
+    if (reservedFilter !== undefined) return reservedFilter;
+
+    const query = SearchQueryArgs(args.query ?? {});
+    if (query instanceof type.errors) {
+      return errorResult(call.id, query.summary, "invalid_query");
+    }
 
     let refs;
     try {
-      refs = await transport.search(mailbox, query as SearchQuery, signal);
+      refs = await transport.search(mailbox, query, signal);
     } catch (cause) {
-      const msg = cause instanceof Error ? cause.message : String(cause);
-      const code = msg.includes("does not exist")
-        ? "invalid_mailbox"
-        : "invalid_query";
-      return errorResult(call.id, msg, code);
+      return searchFailureResult(call.id, cause);
     }
 
     const limited = refs.slice(0, limit);
@@ -260,23 +557,64 @@ export function makeMailSearchHandler(
 
 export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
+    const reserved = inheritedNameResult(
+      call.id,
+      call.arguments,
+      OPAQUE_ARGUMENT_KEYS,
+      "invalid_arguments",
+    );
+    if (reserved !== undefined) return reserved;
+
     const args = ReadArgs(call.arguments);
     if (args instanceof type.errors) {
-      return errorResult(call.id, args.summary);
+      return errorResult(call.id, args.summary, "invalid_arguments");
     }
 
     const messageRef = args.ref;
     const parts = args.parts ?? "payload";
+
+    // A rejection naming no condition leaves it open whether the message is
+    // there at all, and `fetchFull` and `fetchPart` reject that way both for a
+    // message that is gone and for one that is there but cannot be read back.
+    // Re-read the headers to find out: a reference the headers still answer
+    // for names a message that exists, so the failure is `presentCode`.
+    const readFailure = async (
+      cause: unknown,
+      presentCode: MailToolErrorCode,
+    ): Promise<ToolResult> => {
+      const operationFailure = () =>
+        transportFailureResult(
+          call.id,
+          cause,
+          presentCode,
+          (message) => `${presentCode}: ${message}`,
+        );
+
+      // A rejection that names its condition has already said what failed.
+      if (isMessageTransportError(cause)) return operationFailure();
+      try {
+        await transport.fetchHeaders(messageRef, signal);
+      } catch (probeCause) {
+        return transportFailureResult(
+          call.id,
+          probeCause,
+          "not_found",
+          (message) => `not_found: ${message}`,
+        );
+      }
+      return operationFailure();
+    };
 
     if (parts === "headers") {
       let headers;
       try {
         headers = await transport.fetchHeaders(messageRef, signal);
       } catch (cause) {
-        return errorResult(
+        return transportFailureResult(
           call.id,
-          `not_found: ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause,
           "not_found",
+          (message) => `not_found: ${message}`,
         );
       }
       return { callId: call.id, content: { headers } };
@@ -287,11 +625,7 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
       try {
         message = await transport.fetchFull(messageRef, signal);
       } catch (cause) {
-        return errorResult(
-          call.id,
-          `not_found: ${cause instanceof Error ? cause.message : String(cause)}`,
-          "not_found",
-        );
+        return await readFailure(cause, "fetch_failed");
       }
       return {
         callId: call.id,
@@ -310,11 +644,7 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
       try {
         message = await transport.fetchFull(messageRef, signal);
       } catch (cause) {
-        return errorResult(
-          call.id,
-          `not_found: ${cause instanceof Error ? cause.message : String(cause)}`,
-          "not_found",
-        );
+        return await readFailure(cause, "fetch_failed");
       }
 
       if (message.payload !== undefined) {
@@ -335,11 +665,7 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
     try {
       part = await transport.fetchPart(messageRef, parts, signal);
     } catch (cause) {
-      return errorResult(
-        call.id,
-        `invalid_part: ${cause instanceof Error ? cause.message : String(cause)}`,
-        "invalid_part",
-      );
+      return await readFailure(cause, "invalid_part");
     }
 
     return {
@@ -353,106 +679,206 @@ export function makeMailReadHandler(transport: MessageTransport): ToolHandler {
   };
 }
 
-export function makeMailWaitHandler(transport: MessageTransport): ToolHandler {
+// The deadline seam, shaped after the `Scheduler` of
+// packages/inference/src/harness.ts: setTimeout returns its canceller.
+export type WaitScheduler = {
+  setTimeout(callback: () => void, delayMs: number): () => void;
+};
+
+function createDefaultWaitScheduler(): WaitScheduler {
+  return {
+    setTimeout(callback, delayMs) {
+      const handle = setTimeout(callback, delayMs);
+      return () => {
+        clearTimeout(handle);
+      };
+    },
+  };
+}
+
+export function makeMailWaitHandler(
+  transport: MessageTransport,
+  scheduler: WaitScheduler = createDefaultWaitScheduler(),
+): ToolHandler {
   return async (call, signal) => {
+    const reserved = inheritedNameResult(
+      call.id,
+      call.arguments,
+      OPAQUE_ARGUMENT_KEYS,
+      "invalid_arguments",
+    );
+    if (reserved !== undefined) return reserved;
+
     const args = WaitArgs(call.arguments);
     if (args instanceof type.errors) {
-      return errorResult(call.id, args.summary);
+      return errorResult(call.id, args.summary, "invalid_arguments");
     }
 
-    const query = args.query ?? {};
     const timeoutSeconds = args.timeout ?? 120;
     const mailbox = args.mailbox ?? "INBOX";
 
-    // Check for an existing match first.
-    const existing = await transport.search(
-      mailbox,
-      query as SearchQuery,
-      signal,
+    const reservedFilter = inheritedNameResult(
+      call.id,
+      args.query,
+      NO_OPAQUE_KEYS,
+      "invalid_query",
     );
-    const firstMatch = existing[0];
-    if (firstMatch !== undefined) {
-      const message = await transport.fetchFull(firstMatch, signal);
+    if (reservedFilter !== undefined) return reservedFilter;
+
+    const query = SearchQueryArgs(args.query ?? {});
+    if (query instanceof type.errors) {
+      return errorResult(call.id, query.summary, "invalid_query");
+    }
+
+    // Returns undefined when nothing matched, and a result -- never a
+    // rejection -- for every other outcome: a throw out of the watch callback
+    // below has nowhere to go.
+    const firstMatch = async (): Promise<ToolResult | undefined> => {
+      let refs;
+      try {
+        refs = await transport.search(mailbox, query, signal);
+      } catch (cause) {
+        return searchFailureResult(call.id, cause);
+      }
+
+      const ref = refs[0];
+      if (ref === undefined) return undefined;
+
+      let message;
+      try {
+        message = await transport.fetchFull(ref, signal);
+      } catch (cause) {
+        return transportFailureResult(
+          call.id,
+          cause,
+          "fetch_failed",
+          (message) => `failed to fetch matching message: ${message}`,
+        );
+      }
       return {
         callId: call.id,
         content: {
-          ref: firstMatch,
+          ref,
           from: message.headers.from,
           subject: message.headers.subject,
           content: message.content,
         },
       };
-    }
+    };
 
-    // No match yet — watch for new arrivals.
+    // The first read of the mailbox lives inside the promise too, so the
+    // deadline and the abort listener armed below cover it.
     return new Promise<ToolResult>((resolve) => {
       let settled = false;
+      const teardowns: (() => void)[] = [];
 
-      const unsubscribe = transport.watch(mailbox, (event) => {
+      const runTeardown = (teardown: () => void) => {
+        try {
+          teardown();
+        } catch (cause) {
+          logger.error`mail_wait could not dismantle a settled wait on ${mailbox}: ${cause instanceof Error ? cause.message : String(cause)}`;
+        }
+      };
+
+      const settle = (result: ToolResult) => {
         if (settled) return;
-        if (event.type !== "exists") return;
+        settled = true;
+        resolve(result);
+        for (const teardown of teardowns) {
+          runTeardown(teardown);
+        }
+      };
 
-        // Match against the query's 'from' field (the primary use case).
-        if (
-          typeof query.from === "string" &&
-          event.headers.from !== query.from
-        ) {
+      // A teardown registered after the promise settled runs at once: settle
+      // walks only the list it already holds.
+      const addTeardown = (teardown: () => void) => {
+        if (settled) {
+          runTeardown(teardown);
           return;
         }
+        teardowns.push(teardown);
+      };
 
-        settled = true;
-        unsubscribe();
-        clearTimeout(timer);
+      addTeardown(
+        scheduler.setTimeout(() => {
+          settle(
+            errorResult(
+              call.id,
+              `Timed out after ${String(timeoutSeconds)}s waiting for a matching message`,
+              "timeout",
+            ),
+          );
+        }, timeoutSeconds * 1000),
+      );
 
-        void (async () => {
-          const ref = { uid: event.uid, mailbox };
-          const message = await transport.fetchFull(ref, signal);
-          resolve({
-            callId: call.id,
-            content: {
-              ref,
-              from: message.headers.from,
-              subject: message.headers.subject,
-              content: message.content,
-            },
-          });
-        })();
+      const onAbort = () => {
+        settle(errorResult(call.id, "aborted", "aborted"));
+      };
+
+      signal.addEventListener("abort", onAbort, { once: true });
+      addTeardown(() => {
+        signal.removeEventListener("abort", onAbort);
       });
+      if (signal.aborted) onAbort();
 
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        unsubscribe();
-        resolve(
+      // Reads are chained rather than overlapped, so an arrival is never
+      // checked against a mailbox the previous read has not finished with.
+      let checks = Promise.resolve();
+
+      const onCheckFailure = (cause: unknown) => {
+        settle(
           errorResult(
             call.id,
-            `Timed out after ${timeoutSeconds}s waiting for a matching message`,
-            "timeout",
+            cause instanceof Error ? cause.message : String(cause),
+            "internal_error",
           ),
         );
-      }, timeoutSeconds * 1000);
+      };
 
-      // Respect the abort signal.
-      signal.addEventListener(
-        "abort",
-        () => {
+      const watchArrivals = () => {
+        const unsubscribe = transport.watch(mailbox, (event) => {
           if (settled) return;
-          settled = true;
-          unsubscribe();
-          clearTimeout(timer);
-          resolve(errorResult(call.id, "aborted", "aborted"));
-        },
-        { once: true },
-      );
+          if (event.type !== "exists") return;
+
+          checks = checks
+            .then(async () => {
+              if (settled) return;
+              const match = await firstMatch();
+              if (match !== undefined) settle(match);
+            })
+            .catch(onCheckFailure);
+        });
+        addTeardown(unsubscribe);
+      };
+
+      checks = checks
+        .then(async () => {
+          const existing = await firstMatch();
+          if (existing !== undefined) {
+            settle(existing);
+            return;
+          }
+          if (settled) return;
+          watchArrivals();
+        })
+        .catch(onCheckFailure);
     });
   };
 }
 
 export function makeMailFlagHandler(transport: MessageTransport): ToolHandler {
   return async (call, signal) => {
+    const reserved = inheritedNameResult(
+      call.id,
+      call.arguments,
+      OPAQUE_ARGUMENT_KEYS,
+      "invalid_arguments",
+    );
+    if (reserved !== undefined) return reserved;
+
     const args = FlagArgs(call.arguments);
     if (args instanceof type.errors) {
-      return errorResult(call.id, args.summary);
+      return errorResult(call.id, args.summary, "invalid_arguments");
     }
 
     const set = args.set ?? [];
@@ -461,16 +887,20 @@ export function makeMailFlagHandler(transport: MessageTransport): ToolHandler {
     // does nothing, and firing an empty flag write would still round-trip to
     // the supervisor as a pointless commit.
     if (set.length === 0 && clear.length === 0) {
-      return errorResult(call.id, "provide flags in 'set' or 'clear'");
+      return errorResult(
+        call.id,
+        "provide flags in 'set' or 'clear'",
+        "invalid_arguments",
+      );
     }
     // One direction per call. Adding and removing flags in one call would be
     // two separate supervisor round-trips; if the first landed and the second
-    // failed, the error's "mailbox unchanged" contract would be a lie. Keeping
-    // each call a single mutation makes that contract unconditionally true.
+    // failed, one error would have to cover a half-applied mutation.
     if (set.length > 0 && clear.length > 0) {
       return errorResult(
         call.id,
         "provide 'set' or 'clear', not both -- call mail_flag once per direction",
+        "invalid_arguments",
       );
     }
 
@@ -481,13 +911,18 @@ export function makeMailFlagHandler(transport: MessageTransport): ToolHandler {
         await transport.clearFlags(args.ref, clear, signal);
       }
     } catch (cause) {
-      // A rejection means the supervisor did not apply the mutation, so the
-      // mailbox is unchanged. Surface that so the model does not assume the
-      // flag stuck (and then expunge expecting the message gone).
-      return errorResult(
+      // A rejection has three readings: the uid names no message, the
+      // supervisor refused the mutation, or it applied the mutation and lost
+      // the reply when the control channel went down. Nothing here separates
+      // the first from the other two, and IMAP does not report it either --
+      // RFC 9051 section 6.4.8 makes a UID STORE against an absent uid a
+      // silent no-op, so there is no condition for the transport to have
+      // raised. The weakest of the three is therefore what this answers.
+      return transportFailureResult(
         call.id,
-        `flag not applied: ${cause instanceof Error ? cause.message : String(cause)}`,
+        cause,
         "flag_failed",
+        (message) => `flag_failed: ${message}`,
       );
     }
 
@@ -499,9 +934,17 @@ export function makeMailExpungeHandler(
   transport: MessageTransport,
 ): ToolHandler {
   return async (call, signal) => {
+    const reserved = inheritedNameResult(
+      call.id,
+      call.arguments,
+      OPAQUE_ARGUMENT_KEYS,
+      "invalid_arguments",
+    );
+    if (reserved !== undefined) return reserved;
+
     const args = ExpungeArgs(call.arguments);
     if (args instanceof type.errors) {
-      return errorResult(call.id, args.summary);
+      return errorResult(call.id, args.summary, "invalid_arguments");
     }
 
     // The warm agent owns exactly one mailbox; expunge sweeps its INBOX.
@@ -509,11 +952,14 @@ export function makeMailExpungeHandler(
     try {
       outcome = await transport.expunge("INBOX", signal);
     } catch (cause) {
-      // A rejection means nothing was removed; the mailbox is unchanged.
-      return errorResult(
+      // A rejection naming no condition leaves the outcome unknown: the sweep
+      // may have been refused, or applied with the reply lost. NONEXISTENT is
+      // raised before the sweep, so it reports the mailbox instead.
+      return transportFailureResult(
         call.id,
-        `expunge not applied: ${cause instanceof Error ? cause.message : String(cause)}`,
+        cause,
         "expunge_failed",
+        (message) => `expunge_failed: ${message}`,
       );
     }
 
@@ -522,20 +968,4 @@ export function makeMailExpungeHandler(
       content: { ok: true, expungedUids: outcome.expungedUids },
     };
   };
-}
-
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
-
-function errorResult(
-  callId: string,
-  message: string,
-  code?: string,
-): ToolResult {
-  const content: Record<string, unknown> = { error: message };
-  if (code !== undefined) {
-    content["code"] = code;
-  }
-  return { callId, content, isError: true };
 }
