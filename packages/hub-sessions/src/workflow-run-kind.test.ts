@@ -2177,6 +2177,17 @@ describe("workflowRunKindHandler.validatePush — mailbox subtree", () => {
     );
   });
 
+  test("rejects an index whose uidNext is past the 32-bit UID space", async () => {
+    const r = await validate(
+      mailboxTree({
+        [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2 ** 32 + 1),
+      }),
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.reason).toMatch(/uidNext must be at most 4294967295/);
+  });
+
   test("rejects an index that lowers uidNext", async () => {
     const r = await validate(
       mailboxTree({ [WORKFLOW_RUN_MAILBOX_INDEX_FILE]: mailboxIndex(2) }),
