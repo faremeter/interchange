@@ -520,6 +520,278 @@ describe("createConnectorRouter", () => {
     });
   });
 
+  describe("message carrying no originator", () => {
+    // A message with no `From` at all reaches the router on the production
+    // fetch path: buildMessageHeaders omits the field when the wire message
+    // carried none. Such a message names no address a reply could go to, so
+    // the router must derive none. Naming a stand-in instead would record it
+    // as a thread participant and address the thread's replies to it. The
+    // decision is the router's own -- `passthrough`, not a throw a caller has
+    // to translate -- so each test below pins the returned kind and drives the
+    // harness's own route-then-commit sequence to pin the resulting state.
+    function inboundWithNoFrom(
+      messageId: string,
+      opts?: { references?: string[] },
+    ): InboundMessage {
+      return {
+        ref: { uid: 7, mailbox: "INBOX" },
+        headers: {
+          to: ["agent@example.com"],
+          date: new Date().toISOString(),
+          messageId,
+          ...(opts?.references !== undefined
+            ? { references: opts.references }
+            : {}),
+        },
+        flags: [],
+        content: "x",
+        signatureStatus: "missing",
+      };
+    }
+
+    test("route() passes through on start and opens no thread", () => {
+      const router = createConnectorRouter();
+      const message = inboundWithNoFrom("<orphan@example.com>");
+
+      const decision = router.route(message);
+      expect(decision.kind).toBe("passthrough");
+
+      router.commit(decision);
+
+      // No thread exists to reply on, rather than one whose reply address
+      // the router chose.
+      expect(router.snapshot()).toBeNull();
+      expect(() => router.composeReply()).toThrow(NoActiveConnectorThreadError);
+    });
+
+    test("route() passes through on continue and leaves the thread untouched", () => {
+      const router = createConnectorRouter();
+      router.commit(router.route(startMessage({ subject: "Hello" })));
+      const before = router.snapshot();
+
+      const followup = inboundWithNoFrom("<follow-orphan@example.com>", {
+        references: ["<root@example.com>"],
+      });
+      const decision = router.route(followup);
+      expect(decision.kind).toBe("passthrough");
+
+      router.commit(decision);
+
+      // The thread still names its real speaker: the message that could not
+      // be attributed neither became replyTo nor joined cc.
+      expect(router.snapshot()).toEqual(before);
+      expect(router.composeReply()).toEqual({
+        to: "user@example.com",
+        cc: [],
+        inReplyTo: "<root@example.com>",
+        subject: "Hello",
+      });
+    });
+
+    test("an absent originator passes through where an unparseable one throws", () => {
+      // The two share an outcome at the caller -- the harness delivers the
+      // message and leaves the thread unadvanced either way -- but they reach
+      // it differently, and only the throw is a failure. Pinning all three
+      // shapes in one closure keeps a change that collapses them together
+      // from passing.
+      const absent = createConnectorRouter();
+      expect(absent.route(inboundWithNoFrom("<orphan@example.com>")).kind).toBe(
+        "passthrough",
+      );
+
+      const unparseable = createConnectorRouter();
+      const malformed: InboundMessage = {
+        ref: { uid: 8, mailbox: "INBOX" },
+        headers: {
+          from: "not-an-address",
+          to: ["agent@example.com"],
+          date: new Date().toISOString(),
+          messageId: "<bad@example.com>",
+        },
+        flags: [],
+        content: "x",
+        signatureStatus: "missing",
+      };
+      expect(() => unparseable.route(malformed)).toThrow();
+
+      const named = createConnectorRouter();
+      const decision = named.route(startMessage({ subject: "Hello" }));
+      expect(decision.kind).toBe("start");
+      named.commit(decision);
+      expect(named.snapshot()).toEqual({
+        threadRoot: "<root@example.com>",
+        lastMessageId: "<root@example.com>",
+        replyTo: "user@example.com",
+        cc: [],
+        subject: "Hello",
+      });
+    });
+  });
+
+  describe("message carrying no message id", () => {
+    // A message with no `Message-ID` still names an address to reply to, so
+    // the thread opens. What it denies is an anchor: no later message can
+    // match it as a continuation, so the next one re-anchors the thread.
+    function inboundWithNoMessageId(opts?: {
+      from?: string;
+      inReplyTo?: string;
+      references?: string[];
+    }): InboundMessage {
+      return {
+        ref: { uid: 11, mailbox: "INBOX" },
+        headers: {
+          from: opts?.from ?? "user@example.com",
+          to: ["agent@example.com"],
+          date: new Date().toISOString(),
+          ...(opts?.inReplyTo !== undefined
+            ? { inReplyTo: opts.inReplyTo }
+            : {}),
+          ...(opts?.references !== undefined
+            ? { references: opts.references }
+            : {}),
+        },
+        flags: [],
+        content: "x",
+        signatureStatus: "missing",
+      };
+    }
+
+    test("route() opens a thread so the reply is not dropped", () => {
+      const router = createConnectorRouter();
+      const decision = router.route(inboundWithNoMessageId());
+
+      expect(decision.kind).toBe("start");
+      router.commit(decision);
+
+      const state = router.snapshot();
+      expect(state).not.toBeNull();
+      expect(state?.replyTo).toBe("user@example.com");
+      expect(state?.threadRoot).toBeUndefined();
+      expect(state?.lastMessageId).toBeUndefined();
+    });
+
+    test("composeReply() omits In-Reply-To rather than emitting an empty one", () => {
+      const router = createConnectorRouter();
+      router.commit(router.route(inboundWithNoMessageId()));
+
+      const parts = router.composeReply();
+      expect(parts.to).toBe("user@example.com");
+      expect(parts.inReplyTo).toBeUndefined();
+      expect("inReplyTo" in parts).toBe(false);
+    });
+
+    test("a continuation naming no id still threads against the root", () => {
+      // The reply drain only resolves a References chain when `inReplyTo` is
+      // present, so dropping it here costs the outbound reply both threading
+      // headers and starts a new thread in every participant's client.
+      const router = createConnectorRouter();
+      router.commit(router.route(startMessage({ subject: "Invoice" })));
+
+      const decision = router.route(
+        inboundWithNoMessageId({
+          from: "bob@example.com",
+          references: ["<root@example.com>"],
+        }),
+      );
+      expect(decision.kind).toBe("continue");
+      router.commit(decision);
+      expect(router.snapshot()?.lastMessageId).toBeUndefined();
+
+      expect(router.composeReply()).toEqual({
+        to: "bob@example.com",
+        cc: ["user@example.com"],
+        inReplyTo: "<root@example.com>",
+        subject: "Invoice",
+      });
+    });
+
+    test("an arriving message re-anchors the thread rather than continuing it", () => {
+      const router = createConnectorRouter();
+      router.commit(router.route(inboundWithNoMessageId()));
+
+      const next = continuationByInReplyTo("<whatever@example.com>", {
+        from: "other@example.com",
+      });
+      const decision = router.route(next);
+
+      expect(decision.kind).toBe("start");
+      router.commit(decision);
+      expect(router.snapshot()?.replyTo).toBe("other@example.com");
+      expect(router.snapshot()?.cc).toEqual([]);
+      expect(router.snapshot()?.threadRoot).toBe("<reply-2@example.com>");
+    });
+
+    test("a blank In-Reply-To does not continue an anchorless thread", () => {
+      // The empty id is the case that has to hold, not merely a non-matching
+      // one: an anchorless thread holds no `lastMessageId`, and a message
+      // whose `In-Reply-To` header was written blank carries an empty id.
+      // Compared as values the two are equal, so a continue would push the
+      // real correspondent into `cc`. The value reaches the router through
+      // the wire, not through `createInboundMessage`, which rejects an empty
+      // `inReplyTo`.
+      const router = createConnectorRouter();
+      router.commit(router.route(inboundWithNoMessageId()));
+
+      const stranger = inboundWithNoMessageId({
+        from: "stranger@example.com",
+        inReplyTo: "",
+      });
+      const decision = router.route(stranger);
+
+      expect(decision.kind).toBe("start");
+
+      router.commit(decision);
+      expect(router.snapshot()?.replyTo).toBe("stranger@example.com");
+      expect(router.snapshot()?.cc).toEqual([]);
+    });
+
+    test("an anchorless thread is not an absorbing state", () => {
+      // Before the re-anchor rule an anchorless thread could never match
+      // `isContinuation`, so every later message routed `passthrough` -- the
+      // INBOX never drained and the first sender kept the reply address for
+      // the life of the agent.
+      const router = createConnectorRouter();
+      router.commit(router.route(inboundWithNoMessageId()));
+
+      const anchored = startMessage();
+      const decision = router.route(anchored);
+      expect(decision.kind).toBe("start");
+      router.commit(decision);
+
+      expect(router.snapshot()?.threadRoot).toBe("<root@example.com>");
+      expect(router.snapshot()?.lastMessageId).toBe("<root@example.com>");
+
+      // The re-anchored thread continues normally from here.
+      const follow = router.route(
+        continuationByReferences("<root@example.com>", {
+          from: "other@example.com",
+        }),
+      );
+      expect(follow.kind).toBe("continue");
+      router.commit(follow);
+      expect(router.snapshot()?.replyTo).toBe("other@example.com");
+      expect(router.snapshot()?.cc).toEqual(["user@example.com"]);
+    });
+
+    test("onReplySent anchors the thread so later replies continue it", () => {
+      // The agent replying is the ordinary way an anchorless thread acquires
+      // an anchor: the reply's own id becomes `lastMessageId`.
+      const router = createConnectorRouter();
+      router.commit(router.route(inboundWithNoMessageId()));
+      router.onReplySent({
+        messageId: "<agent-reply@example.com>",
+        status: "delivered",
+      });
+
+      const decision = router.route(
+        continuationByInReplyTo("<agent-reply@example.com>"),
+      );
+      expect(decision.kind).toBe("continue");
+      router.commit(decision);
+      expect(router.snapshot()?.replyTo).toBe("user@example.com");
+    });
+  });
+
   describe("onStateChanged callback", () => {
     test("fires after a start decision commits", () => {
       const events: (ConnectorThreadState | null)[] = [];

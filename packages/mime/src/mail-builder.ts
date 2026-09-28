@@ -56,7 +56,10 @@ export type InboundPayloadInput = {
 };
 
 export type CreateInboundMessageOpts = {
-  from: string;
+  /** Originator; omit it when the message has none. */
+  from?: string;
+
+  /** Recipients; pass an empty array when the message names none. */
   to: string | string[];
 
   /** Plain-text body. Mutually exclusive with `payload`. */
@@ -113,8 +116,8 @@ export function createInboundMessage(
 ): InboundMessage {
   const fn = "createInboundMessage";
 
-  requireAddress(opts.from, "from", fn);
-  const to = normalizeAndValidateAddressArray(opts.to, "to", fn);
+  if (opts.from !== undefined) requireAddress(opts.from, "from", fn);
+  const to = normalizeAndValidateAddressArray(opts.to, "to", fn, true);
 
   validateBodyExclusivity(opts.content, opts.payload, fn);
 
@@ -170,7 +173,7 @@ export function createInboundMessage(
   const cc =
     opts.cc === undefined
       ? undefined
-      : normalizeAndValidateAddressArray(opts.cc, "cc", fn);
+      : normalizeAndValidateAddressArray(opts.cc, "cc", fn, false);
 
   rejectEmptyStringIfPresent(opts.content, "content", fn);
   rejectEmptyStringIfPresent(opts.subject, "subject", fn);
@@ -204,7 +207,8 @@ export function createInboundMessage(
   const messageId = opts.messageId ?? generateMessageId(opts.from);
   const derivedInterchangeType = opts.interchangeType ?? opts.payload?.type;
 
-  const headers: MessageHeaders = { from: opts.from, to, date, messageId };
+  const headers: MessageHeaders = { to, date, messageId };
+  if (opts.from !== undefined) headers.from = opts.from;
   if (cc !== undefined) headers.cc = cc;
   if (opts.subject !== undefined) headers.subject = opts.subject;
   if (opts.inReplyTo !== undefined) headers.inReplyTo = opts.inReplyTo;
@@ -312,9 +316,9 @@ export function createOutboundMessage(
   validateInterchangeType(opts.type, "type", fn);
   // Validate addresses without mutating the source shape; the OutboundMessage
   // type preserves `string | string[]` and downstream consumers handle both.
-  normalizeAndValidateAddressArray(opts.to, "to", fn);
+  normalizeAndValidateAddressArray(opts.to, "to", fn, false);
   if (opts.cc !== undefined) {
-    normalizeAndValidateAddressArray(opts.cc, "cc", fn);
+    normalizeAndValidateAddressArray(opts.cc, "cc", fn, false);
   }
 
   validateBodyExclusivity(opts.content, opts.payload, fn);
@@ -414,17 +418,19 @@ function requireAddress(value: unknown, field: string, fn: string): void {
 
 /**
  * Validate an address list and normalize a bare string into a one-entry array.
+ * `allowNone` permits an empty list, which only an inbound `to` does.
  */
 function normalizeAndValidateAddressArray(
   input: string | string[],
   field: string,
   fn: string,
+  allowNone: boolean,
 ): string[] {
   if (typeof input === "string") {
     requireAddress(input, field, fn);
     return [input];
   }
-  if (!Array.isArray(input) || input.length === 0) {
+  if (!Array.isArray(input) || (input.length === 0 && !allowNone)) {
     throw new Error(
       `${fn}: \`${field}\` must contain at least one recipient address`,
     );

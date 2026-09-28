@@ -108,16 +108,21 @@ function parseMailboxNotifies(lines: readonly string[]): {
   runId: string;
   mailbox: string;
   uid: number;
-  headers: { from: string; to: string[]; messageId: string; subject?: string };
+  headers: {
+    from?: string;
+    to: string[];
+    messageId?: string;
+    subject?: string;
+  };
 }[] {
   const out: {
     runId: string;
     mailbox: string;
     uid: number;
     headers: {
-      from: string;
+      from?: string;
       to: string[];
-      messageId: string;
+      messageId?: string;
       subject?: string;
     };
   }[] = [];
@@ -134,9 +139,13 @@ function parseMailboxNotifies(lines: readonly string[]): {
       mailbox: payload.data.mailbox,
       uid: payload.data.uid,
       headers: {
-        from: payload.data.headers.from,
+        ...(payload.data.headers.from !== undefined
+          ? { from: payload.data.headers.from }
+          : {}),
         to: payload.data.headers.to,
-        messageId: payload.data.headers.messageId,
+        ...(payload.data.headers.messageId !== undefined
+          ? { messageId: payload.data.headers.messageId }
+          : {}),
         ...(payload.data.headers.subject !== undefined
           ? { subject: payload.data.headers.subject }
           : {}),

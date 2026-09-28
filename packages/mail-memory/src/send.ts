@@ -3,8 +3,8 @@ import type {
   SendReceipt,
   MailboxEvent,
 } from "@intx/types/runtime";
-import { isConversationType } from "@intx/types/runtime";
 import type { StoredEnvelope } from "@intx/mailbox";
+import { isConversationType } from "@intx/types/runtime";
 import {
   assembleSignedContent,
   assembleMessage,
@@ -120,6 +120,17 @@ export async function executeSend(
   }
   if (!isConversation && message.content !== undefined) {
     throw new Error("Structured messages must not carry a text content field");
+  }
+
+  // RFC 5322 section 3.6.4 defines `In-Reply-To` as `1*msg-id`, so a blank
+  // value names nothing rather than naming a shorter parent.
+  if (
+    message.inReplyTo !== undefined &&
+    message.inReplyTo.trim().length === 0
+  ) {
+    throw new Error(
+      "OutboundMessage inReplyTo, when provided, must name a message identifier",
+    );
   }
 
   const messageId = generateMessageId(senderAddress);

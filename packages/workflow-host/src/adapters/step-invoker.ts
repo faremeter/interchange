@@ -342,6 +342,20 @@ async function invokeColdStep(
 }
 
 /**
+ * The connector router lives in `@intx/harness`, which this package does not
+ * depend on, so its error is recognized by `name` rather than `instanceof`.
+ */
+function describeReplyFailure(cause: unknown): string {
+  if (cause instanceof Error && cause.name === "NoActiveConnectorThreadError") {
+    return (
+      "the warm agent has no active connector thread, so its auto-reply " +
+      "names nobody to reply to and was never sent"
+    );
+  }
+  return "the warm agent's auto-reply send failed";
+}
+
+/**
  * Warm-keep path (design §3b). The agent is built once on the first
  * invocation and cached under the step's identity; every later
  * invocation reuses it. The cache owns the agent's lifetime: this
@@ -449,17 +463,16 @@ async function invokeWarmStep(
     // the auto-reply reaches the transport. Only a reply turn produces a
     // `connector.reply`; a suspended/gate turn produces none, so it must NOT
     // await the barrier (that reply never arrives and the wait would hang).
-    // A failed send resolves the barrier with `ok: false`: fail the turn so
-    // the inbound mail is not consumed as replied and the run's claim-check
-    // replays it (at-least-once via reprocessing) rather than dropping the
-    // reply.
+    // Fail the turn rather than return a step result claiming a reply that
+    // never went out. The mail is still consumed, because a replay would fail
+    // to compose the same reply again.
     if (replyDrive !== null && sendResult.type === "reply") {
       const settlement = await replyDrive.waitForReplyAfter(replySeqBeforeSend);
       if (!settlement.ok) {
         throw new Error(
-          "workflow step invoker: the warm agent's auto-reply send failed; " +
-            "failing the turn so the inbound mail replays rather than being " +
-            "consumed with the reply dropped",
+          `workflow step invoker: ${describeReplyFailure(settlement.cause)}; ` +
+            "failing the turn, so the inbound mail is consumed without a " +
+            "reply rather than replayed",
           { cause: settlement.cause },
         );
       }
@@ -740,15 +753,26 @@ async function buildSendMessage(
   return { message: synthesizeInputContent(rawInput), mailInbound: null };
 }
 
-/** Extract a bare addr-spec from a header value, or fall back to a synthetic
- * local address when the value is absent or unparseable. */
-function safeAddr(raw: string | undefined, fallback: string): string {
-  if (raw === undefined || raw === "") return fallback;
+function usableAddr(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
   try {
     return extractAddrSpec(raw);
   } catch {
-    return fallback;
+    return undefined;
   }
+}
+
+/**
+ * The hub routes on an out-of-band agent address, never on `To`, so an entry
+ * this projection cannot resolve is dropped rather than treated as a fault.
+ */
+function usableAddrs(raw: string[]): string[] {
+  const resolved: string[] = [];
+  for (const entry of raw) {
+    const addr = usableAddr(entry);
+    if (addr !== undefined) resolved.push(addr);
+  }
+  return resolved;
 }
 
 /**
@@ -816,13 +840,17 @@ async function buildInboundMessageFromMail(
   // would throw and fail the step. When the messageId is omitted here,
   // createInboundMessage synthesizes a valid one; such mail cannot thread.
   const validReferences = mail.headers.references?.filter(isMessageId) ?? [];
+  const from = usableAddr(mail.headers.from);
+  // No `correlationId` option: a sender's `Interchange-Correlation-ID` is
+  // deliberately not forwarded, because resolving one clears a parked gate.
   return createInboundMessage({
-    from: safeAddr(mail.headers.from, "trigger@local"),
-    to: safeAddr(mail.headers.to[0], "agent@local"),
+    ...(from !== undefined ? { from } : {}),
+    to: usableAddrs(mail.headers.to),
     ...(mail.headers.subject !== undefined
       ? { subject: mail.headers.subject }
       : {}),
-    ...(isMessageId(mail.headers.messageId)
+    ...(mail.headers.messageId !== undefined &&
+    isMessageId(mail.headers.messageId)
       ? { messageId: mail.headers.messageId }
       : {}),
     ...(mail.headers.inReplyTo !== undefined &&

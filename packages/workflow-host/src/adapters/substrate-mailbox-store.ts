@@ -81,15 +81,18 @@ const encoder = new TextEncoder();
 
 /**
  * On-disk envelope shape. Mirrors `StoredEnvelope` but serializes `date` as an
- * ISO string and the three nullable header fields as `string | null` (JSON has
- * no `undefined`); the loader maps `null` back to `undefined`.
+ * ISO string and the nullable header fields as `string | null` (JSON has no
+ * `undefined`); the loader maps `null` back to `undefined`.
+ *
+ * Widening a field needs no `INDEX_VERSION` bump: the version is matched
+ * exactly, so a bump rejects every existing mailbox instead of migrating it.
  */
 const StoredEnvelopeJson = type({
   messageId: "string",
-  from: "string",
+  from: "string | null",
   to: "string[]",
   subject: "string",
-  date: "string",
+  date: "string | null",
   inReplyTo: "string | null",
   references: "string[]",
   interchangeType: "string | null",
@@ -191,10 +194,10 @@ export type SubstrateMailboxStoreOpts = {
 function serializeEnvelope(envelope: StoredEnvelope) {
   return {
     messageId: envelope.messageId,
-    from: envelope.from,
+    from: envelope.from ?? null,
     to: envelope.to,
     subject: envelope.subject,
-    date: envelope.date.toISOString(),
+    date: envelope.date === undefined ? null : envelope.date.toISOString(),
     inReplyTo: envelope.inReplyTo ?? null,
     references: envelope.references,
     interchangeType: envelope.interchangeType ?? null,
@@ -207,10 +210,10 @@ function deserializeEnvelope(
 ): StoredEnvelope {
   return {
     messageId: raw.messageId,
-    from: raw.from,
+    from: raw.from === null ? undefined : raw.from,
     to: raw.to,
     subject: raw.subject,
-    date: new Date(raw.date),
+    date: raw.date === null ? undefined : new Date(raw.date),
     inReplyTo: raw.inReplyTo === null ? undefined : raw.inReplyTo,
     references: raw.references,
     interchangeType:

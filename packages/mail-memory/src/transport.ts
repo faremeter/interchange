@@ -317,43 +317,38 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     }
 
     const { headers } = parseHeaderSection(message);
+    // The stored envelope and the `exists` event below are built from one
+    // reading of these bytes, so the two cannot disagree about which headers
+    // the message carried. `buildMessageHeaders` is that reading: it applies
+    // the RFC rule that a present-but-blank `Date`, `Message-ID`, `From` or
+    // `In-Reply-To` names nothing, so a blank one arrives here as an absence.
+    const msgHeaders = buildMessageHeaders(headers);
 
-    const messageId = headers.get("message-id");
-    const from = headers.get("from");
-    const dateRaw = headers.get("date");
-    if (messageId === undefined) {
+    const dateRaw = msgHeaders.date;
+    if (msgHeaders.messageId === undefined) {
       throw new Error("Cannot deliver message: missing Message-ID header");
     }
-    if (from === undefined) {
+    if (msgHeaders.from === undefined) {
       throw new Error("Cannot deliver message: missing From header");
     }
     if (dateRaw === undefined) {
       throw new Error("Cannot deliver message: missing Date header");
     }
 
-    const msgHeaders = buildMessageHeaders(headers);
-
-    const toRaw = headers.get("to") ?? "";
-    const to = toRaw
-      ? toRaw
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
-      : [];
-
-    const refsRaw = headers.get("references");
-    const references = refsRaw ? refsRaw.split(/\s+/).filter(Boolean) : [];
-
     const envelope: StoredEnvelope = {
-      messageId,
-      from,
-      to,
-      subject: headers.get("subject") ?? "",
+      messageId: msgHeaders.messageId,
+      from: msgHeaders.from,
+      to: msgHeaders.to,
+      subject: msgHeaders.subject ?? "",
       date: new Date(dateRaw),
-      inReplyTo: headers.get("in-reply-to"),
-      references,
+      inReplyTo: msgHeaders.inReplyTo,
+      references: msgHeaders.references ?? [],
+      // Read off the raw map rather than `msgHeaders`, which keeps this field
+      // only when it names a declared `InterchangeType`. The envelope mirrors
+      // what the message carried, so an unrecognized type is stored verbatim
+      // instead of being erased from the index.
       interchangeType: headers.get("interchange-type"),
-      interchangeCorrelationId: headers.get("interchange-correlation-id"),
+      interchangeCorrelationId: msgHeaders.interchangeCorrelationId,
     };
 
     const uid = inbox.append(message, envelope, []);
@@ -472,13 +467,24 @@ class ScopedMessageTransport implements MessageTransport {
     // need Uint8Array. We store a minimal representation.
     //
     // For now, serialize the InboundMessage as a minimal RFC 2822 message.
+    // The stored envelope keys the mailbox index on the id and serializes the
+    // date, so neither can be absent here. `deliver` refuses the same two on
+    // the same grounds. Checked before serializing so a message that cannot
+    // be stored is not encoded first and then discarded.
+    const { messageId, date } = message.headers;
+    if (messageId === undefined) {
+      throw new Error("Cannot append message: missing Message-ID header");
+    }
+    if (date === undefined) {
+      throw new Error("Cannot append message: missing Date header");
+    }
     const raw = inboundMessageToRaw(message);
     const envelope = {
-      messageId: message.headers.messageId,
+      messageId,
       from: message.headers.from,
       to: message.headers.to,
       subject: message.headers.subject ?? "",
-      date: new Date(message.headers.date),
+      date: new Date(date),
       inReplyTo: message.headers.inReplyTo,
       references: message.headers.references ?? [],
       interchangeType: message.headers.interchangeType,
@@ -756,13 +762,26 @@ function inboundMessageToRaw(message: InboundMessage): Uint8Array {
   const enc = new TextEncoder();
   const CRLF = "\r\n";
   let headers = "";
-  headers += `From: ${message.headers.from}${CRLF}`;
+  // A message with no originator gets no From line. Interpolating the absence
+  // would write the literal `From: undefined` into the RFC 2822 bytes, which
+  // reads back as an originator named "undefined".
+  if (message.headers.from !== undefined) {
+    headers += `From: ${message.headers.from}${CRLF}`;
+  }
   headers += `To: ${message.headers.to.join(", ")}${CRLF}`;
   if (message.headers.cc && message.headers.cc.length > 0) {
     headers += `Cc: ${message.headers.cc.join(", ")}${CRLF}`;
   }
-  headers += `Date: ${message.headers.date}${CRLF}`;
-  headers += `Message-ID: ${message.headers.messageId}${CRLF}`;
+  // Omitted for the same reason as From above: interpolating an absent value
+  // writes the literal `Date: undefined` into the RFC 2822 bytes, which reads
+  // back as a real header. An omitted line is the honest encoding of a header
+  // the message never carried.
+  if (message.headers.date !== undefined) {
+    headers += `Date: ${message.headers.date}${CRLF}`;
+  }
+  if (message.headers.messageId !== undefined) {
+    headers += `Message-ID: ${message.headers.messageId}${CRLF}`;
+  }
   if (message.headers.subject !== undefined) {
     headers += `Subject: ${message.headers.subject}${CRLF}`;
   }

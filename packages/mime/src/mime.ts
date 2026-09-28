@@ -123,8 +123,11 @@ export type JMAPEmail = {
 // Message-ID generation
 // ---------------------------------------------------------------------------
 
-export function generateMessageId(address: string): string {
-  const domain = address.includes("@") ? address.split("@")[1]! : "local";
+export function generateMessageId(address?: string): string {
+  const domain =
+    address !== undefined && address.includes("@")
+      ? address.split("@")[1]!
+      : "local";
   const uuid = crypto.randomUUID();
   return `<${uuid}@${domain}>`;
 }
@@ -1374,11 +1377,21 @@ export function buildMessageHeaders(
         .filter(Boolean)
     : [];
 
-  const from = headers.get("from") ?? "";
-  const date = headers.get("date") ?? "";
-  const messageId = headers.get("message-id") ?? "";
+  const result: ParsedMessageHeaders = { to };
 
-  const result: ParsedMessageHeaders = { from, to, date, messageId };
+  // A blank header below is recorded as an absence, not an empty value: RFC
+  // 5322 admits no empty `Date`, `Message-ID`, `In-Reply-To` or `From` body.
+  const date = headers.get("date");
+  if (date !== undefined && date.trim().length > 0) result.date = date;
+
+  const messageId = headers.get("message-id");
+  if (messageId !== undefined && messageId.trim().length > 0) {
+    result.messageId = messageId;
+  }
+
+  // A non-blank value rides through verbatim even when it is not parseable.
+  const from = headers.get("from");
+  if (from !== undefined && from.trim().length > 0) result.from = from;
 
   const ccRaw = headers.get("cc");
   if (ccRaw !== undefined) {

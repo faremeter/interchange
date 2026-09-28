@@ -312,14 +312,12 @@ export interface DurableConversationStore {
   /**
    * Advance the connector router from a received inbound message so the
    * warm agent's reply path has thread state. Runs the router's pure
-   * `route()` then `commit()`: a `start` seeds threadRoot / lastMessageId /
-   * replyTo from the message; a `continue` advances lastMessageId / replyTo
-   * and carries prior speakers into `cc`. The advanced connector state is
-   * flushed into the local store's metadata so the run-boundary mirror
-   * persists it and a respawn restore re-seeds the router. A `passthrough`
-   * decision -- no active-thread match, or an unparseable sender -- advances
-   * nothing. Called before the warm agent's send so `composeReply()` can
-   * compose a threaded reply. A metadata write failure surfaces.
+   * `route()` then `commit()`; the router owns what each decision does to
+   * the thread. The advanced connector state is flushed into the local
+   * store's metadata so the run-boundary mirror persists it and a respawn
+   * restore re-seeds the router. Called before the warm agent's send so
+   * `composeReply()` can compose a threaded reply. A metadata write
+   * failure surfaces.
    */
   seedInbound(message: InboundMessage): Promise<void>;
   /**

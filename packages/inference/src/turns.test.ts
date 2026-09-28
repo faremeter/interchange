@@ -20,7 +20,7 @@ function msg(opts: {
   return {
     ref: { uid: 1, mailbox: "INBOX" },
     headers: {
-      from: opts.from ?? "",
+      ...(opts.from !== undefined ? { from: opts.from } : {}),
       to: [],
       date: "2026-01-01T00:00:00.000Z",
       messageId: "<m@test>",
@@ -109,6 +109,17 @@ describe("createInboundTurn", () => {
       content: [
         { type: "text", text: "[From: alice@x]\n[Subject: Hi]\n\nbody" },
       ],
+    });
+  });
+
+  test("omits the From line when the message carries no originator", () => {
+    // An absent originator is a real state: a message can arrive with no
+    // usable `From`. The envelope must then make no claim about the sender
+    // rather than naming one, so the model is never told an address the
+    // system chose.
+    const turn = createInboundTurn(msg({ content: "body", subject: "Hi" }));
+    expect(turn).toMatchObject({
+      content: [{ type: "text", text: "[Subject: Hi]\n\nbody" }],
     });
   });
 

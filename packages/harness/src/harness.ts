@@ -29,6 +29,7 @@ import type {
   ContextStore,
   InboundMessage,
   InferenceSource,
+  MessageRef,
   MessageTransport,
   Unsubscribe,
 } from "@intx/types/runtime";
@@ -327,27 +328,16 @@ export async function createHarness<EnvReq extends MailEnv>(
         : {}),
     });
 
-    // Delete a message from the INBOX after it has been delivered to the
-    // reactor.
-    //
-    // A failure here is logged and swallowed: the router state has
-    // already been committed and `agent.deliver` has accepted the
-    // message, so re-raising would unwind a half-applied delivery. The
-    // message stays in the INBOX and a future startup (or watch firing)
-    // re-fetches it, re-routes it, and re-delivers it. The router's
-    // persisted state makes that benign on the routing side: the sender
-    // is already a thread participant, so `route()` returns either a
-    // `continue` (which is a no-op state mutation since the sender is
-    // unchanged) or a `passthrough` (no headers match). The agent's
-    // director sees a duplicate `message.received`; idempotent
-    // directors are unaffected, and the audit trail records the
-    // duplicate for post-hoc reconciliation.
-    async function consumeFromInbox(message: InboundMessage): Promise<void> {
+    // A failure here is logged and swallowed: the router state is already
+    // committed and `agent.deliver` has accepted the message, so re-raising
+    // would unwind a half-applied delivery. A redelivery shows the director
+    // a duplicate `message.received`.
+    async function consumeFromInbox(ref: MessageRef): Promise<void> {
       try {
-        await transport.setFlags(message.ref, ["\\Deleted"]);
+        await transport.setFlags(ref, ["\\Deleted"]);
         await transport.expunge("INBOX");
       } catch (cause) {
-        logger.warn`Failed to consume message uid=${message.ref.uid} from INBOX: ${cause}`;
+        logger.warn`Failed to consume message uid=${ref.uid} from INBOX: ${cause}`;
       }
     }
 
@@ -367,7 +357,14 @@ export async function createHarness<EnvReq extends MailEnv>(
           try {
             message = await transport.fetchFull(ref);
           } catch (cause) {
-            logger.error`Failed to fetch message uid=${event.uid}: ${cause}`;
+            // A body the transport cannot decode is delivered without content
+            // rather than failing the fetch, so what reaches here is a message
+            // it could not assemble at all. Inventing the flags and signature
+            // status it never read would vouch for a message the transport did
+            // not; consume it so it does not sit in the INBOX re-failing.
+            logger.error`Failed to fetch message uid=${event.uid}; consuming it undelivered: ${cause}`;
+            if (stopped) return;
+            await consumeFromInbox(ref);
             return;
           }
 
@@ -403,7 +400,7 @@ export async function createHarness<EnvReq extends MailEnv>(
           connectorRouter.commit(decision);
           if (stopped) return;
           agent.deliver(message);
-          await consumeFromInbox(message);
+          await consumeFromInbox(message.ref);
         } catch (cause) {
           // `agent.deliver` throws `AgentClosedError` synchronously when
           // called after the agent has closed. The `if (stopped) return`

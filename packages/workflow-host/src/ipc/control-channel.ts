@@ -161,8 +161,7 @@ export type OutboundMessagePayload = typeof OutboundMessagePayload.infer;
  * Wire shape of the parsed `MessageHeaders` the supervisor rides inline on a
  * `mailbox.notify` frame. Mirrors `@intx/types/runtime`'s `MessageHeaders`
  * field-for-field so a child watcher gets the arrived message's envelope for
- * its `exists` `MailboxEvent` without a substrate round-trip. The four
- * unconditionally-dereferenced fields (`from`, `to`, `date`, `messageId`) are
+ * its `exists` `MailboxEvent` without a substrate round-trip. Only `to` is
  * required; the rest are optional, matching the runtime type.
  *
  * Duplicated here as an arktype validator (rather than importing the TypeScript
@@ -170,11 +169,11 @@ export type OutboundMessagePayload = typeof OutboundMessagePayload.infer;
  * wire boundary, exactly as `OutboundMessagePayload` does for outbound mail.
  */
 export const MailboxNotifyHeaders = type({
-  from: "string",
+  "from?": "string",
   to: "string[]",
   "cc?": "string[]",
-  date: "string",
-  messageId: "string",
+  "date?": "string",
+  "messageId?": "string",
   "inReplyTo?": "string",
   "references?": "string[]",
   "subject?": "string",

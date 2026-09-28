@@ -479,6 +479,7 @@ describe("resolveInboundMailPolicy", () => {
     clean: "admit",
     error: "reject",
     untrustedFrom: "reject",
+    absentFrom: "reject",
     invalid: "reject",
     missing: "reject",
     unknown: "reject",
@@ -502,6 +503,7 @@ describe("resolveInboundMailPolicy", () => {
       clean: "admit",
       error: "reject",
       untrustedFrom: "admit",
+      absentFrom: "reject",
       invalid: "reject",
       missing: "admit",
       unknown: "reject",
@@ -513,6 +515,7 @@ describe("resolveInboundMailPolicy", () => {
     // relax `error` -- a fault we could not check through is never admitted.
     const authored: InboundMailPolicy = {
       untrustedFrom: "admit",
+      absentFrom: "admit",
       invalid: "admit",
       missing: "admit",
       unknown: "admit",
@@ -522,6 +525,7 @@ describe("resolveInboundMailPolicy", () => {
       clean: "admit",
       error: "reject",
       untrustedFrom: "admit",
+      absentFrom: "admit",
       invalid: "admit",
       missing: "admit",
       unknown: "admit",

@@ -1164,15 +1164,21 @@ export function createWorkflowSupervisor(
 
   function storedEnvelopeFromHeaders(
     headers: MessageHeaders,
-    receivedAt: number,
+    messageId: string,
   ): StoredEnvelope {
-    // The Date header is unvalidated external input; fall back to the arrival
-    // time when it is absent or unparseable so the store's `toISOString`
-    // serialization cannot throw on an Invalid Date.
-    const parsed = new Date(headers.date);
-    const date = Number.isNaN(parsed.getTime()) ? new Date(receivedAt) : parsed;
+    // No envelope date for a message that named none: the arrival time is
+    // this process's observation, not a date the sender ever claimed.
+    const parsed =
+      headers.date === undefined ? undefined : new Date(headers.date);
+    const date =
+      parsed === undefined || Number.isNaN(parsed.getTime())
+        ? undefined
+        : parsed;
     return {
-      messageId: headers.messageId,
+      // The header's own id, so this envelope's id and the
+      // `inReplyTo`/`references` below come from one parser -- a second
+      // reader here would split a parent from its reply.
+      messageId: headers.messageId ?? messageId,
       from: headers.from,
       to: headers.to,
       subject: headers.subject ?? "",
@@ -1197,7 +1203,6 @@ export function createWorkflowSupervisor(
   async function commitInboundToMailbox(
     messageId: string,
     rawMessage: Uint8Array,
-    receivedAt: number,
   ): Promise<void> {
     try {
       await runMailboxExclusive(async () => {
@@ -1217,7 +1222,7 @@ export function createWorkflowSupervisor(
         const store = await getMailboxStore();
         const uid = store.append(
           rawMessage,
-          storedEnvelopeFromHeaders(decoded.headers, receivedAt),
+          storedEnvelopeFromHeaders(decoded.headers, messageId),
           [],
         );
         mailboxUidByMessageId.set(messageId, uid);
@@ -1374,7 +1379,7 @@ export function createWorkflowSupervisor(
       // child BEFORE waking dispatch, so the warm agent's mail_wait can observe
       // it committed. Non-fatal by contract: the enqueue above already secured
       // the durable delivery, so this never withholds the ack.
-      await commitInboundToMailbox(messageId, rawMessage, receivedAt);
+      await commitInboundToMailbox(messageId, rawMessage);
       wakeDispatch();
     } else {
       // A redelivery of a message already durably present: the ack still

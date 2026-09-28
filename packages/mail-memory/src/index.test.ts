@@ -5,6 +5,7 @@ import {
   assembleSignedContent,
   assembleMessage,
   createDetachedSignatureFromProvider,
+  createInboundMessage,
   generateMessageId,
   type MessageHeaders,
 } from "@intx/mime";
@@ -574,6 +575,48 @@ describe("error handling", () => {
     ).rejects.toThrow(/not registered/);
   });
 
+  test("send rejects a body that contradicts the declared type", async () => {
+    // The transport owns this invariant for its own callers -- the reply drain,
+    // the connector bridges, the examples -- not only for the mail tools, which
+    // refuse the same pair at their argument boundary. Both directions are
+    // asserted because the split they test is one predicate over the type
+    // union, so a mistake in it inverts both.
+    const { alphaTransport } = await createTestTransport();
+
+    await expect(
+      alphaTransport.send({
+        to: "beta@test.interchange",
+        type: "conversation.message",
+        payload: { a: 1 },
+      }),
+    ).rejects.toThrow(/must not carry a structured payload/);
+
+    await expect(
+      alphaTransport.send({
+        to: "beta@test.interchange",
+        type: "offering.request",
+        content: "text",
+      }),
+    ).rejects.toThrow(/must not carry a text content field/);
+  });
+
+  test("send rejects a blank inReplyTo rather than emitting an empty one", async () => {
+    // RFC 5322 defines `In-Reply-To` as `1*msg-id`, so a blank value names no
+    // parent. Accepting it would put an empty id on the `In-Reply-To` line, in
+    // the `References` chain and in the stored envelope, where it is an id
+    // every caller that did the same would share.
+    const { alphaTransport } = await createTestTransport();
+
+    await expect(
+      alphaTransport.send({
+        to: "beta@test.interchange",
+        type: "conversation.message",
+        content: "hello",
+        inReplyTo: "   ",
+      }),
+    ).rejects.toThrow(/inReplyTo/);
+  });
+
   test("fetch non-existent UID throws", async () => {
     const { betaTransport } = await createTestTransport();
 
@@ -775,6 +818,46 @@ describe("deliver", () => {
     expect(headers.from).toBe("sender@remote");
   });
 
+  test("a blank In-Reply-To threads nothing together", async () => {
+    // Two unrelated federated messages, each carrying an `In-Reply-To` its
+    // sender left blank. The header names no parent, so the threading
+    // algorithm links neither to the other. An empty id read as a value is one
+    // every such message shares, and sharing it gathers strangers into a
+    // single thread whose reply address is whichever of them spoke last.
+    const { transport } = await createTestTransport();
+    const alphaTransport = transport.getTransportFor("alpha@test.interchange");
+
+    const blankReplyFrom = (from: string, messageId: string): Uint8Array =>
+      new TextEncoder().encode(
+        [
+          `From: ${from}`,
+          "To: alpha@test.interchange",
+          "Date: Thu, 17 Apr 2026 12:00:00 +0000",
+          `Message-ID: ${messageId}`,
+          "In-Reply-To:   ",
+          "Content-Type: text/plain",
+          "",
+          "Body text",
+        ].join("\r\n"),
+      );
+
+    transport.deliver(
+      "alpha@test.interchange",
+      blankReplyFrom("one@remote", "<blank-a@remote>"),
+    );
+    transport.deliver(
+      "alpha@test.interchange",
+      blankReplyFrom("two@remote", "<blank-b@remote>"),
+    );
+
+    const refs = await alphaTransport.search("INBOX", {});
+    expect(refs).toHaveLength(2);
+
+    const threads = await alphaTransport.thread("INBOX", "references");
+    expect(threads).toHaveLength(2);
+    expect(threads.map((t) => t.children)).toEqual([[], []]);
+  });
+
   test("does NOT dedup by Message-ID: redelivery appends a second copy", async () => {
     // The federation inbound path performs NO Message-ID dedup:
     // the mailbox store appends unconditionally, so delivering the same
@@ -842,6 +925,26 @@ describe("deliver", () => {
     );
   });
 
+  test("throws for a blank From header", async () => {
+    // The header parser trims, so a present-but-blank From arrives as an
+    // empty string. Accepting it would store an empty sender, while the same
+    // bytes read through buildMessageHeaders report no originator at all.
+    const { transport } = await createTestTransport();
+    const msg = new TextEncoder().encode(
+      [
+        "From:   ",
+        "Message-ID: <blank-from@y>",
+        "Date: Thu, 17 Apr 2026 12:00:00 +0000",
+        "",
+        "body",
+      ].join("\r\n"),
+    );
+
+    expect(() => transport.deliver("alpha@test.interchange", msg)).toThrow(
+      /From/,
+    );
+  });
+
   test("throws for missing Date header", async () => {
     const { transport } = await createTestTransport();
     const msg = new TextEncoder().encode(
@@ -851,6 +954,26 @@ describe("deliver", () => {
     expect(() => transport.deliver("alpha@test.interchange", msg)).toThrow(
       /Date/,
     );
+  });
+});
+
+describe("append", () => {
+  test("writes no From line for a message with no originator", async () => {
+    // The round trip goes through the RFC 2822 serializer: interpolating the
+    // absence would write `From: undefined`, which reads back as an originator
+    // literally named "undefined".
+    const { alphaTransport } = await createTestTransport();
+    const ref = await alphaTransport.append(
+      "INBOX",
+      createInboundMessage({
+        to: ["alpha@test.interchange"],
+        content: "no sender",
+        interchangeType: "conversation.message",
+      }),
+    );
+
+    const headers = await alphaTransport.fetchHeaders(ref);
+    expect(headers.from).toBeUndefined();
   });
 });
 
