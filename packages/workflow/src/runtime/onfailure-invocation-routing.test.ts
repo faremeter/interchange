@@ -166,19 +166,32 @@ describe("onFailure action / childWorkflow routing", () => {
       trigger: { type: "manual" },
       steps: {
         unit: cwUnit(),
-        rescue: step({ agent: agent("rescue"), after: ["unit"] }),
+        // Reading the trigger rather than the unit's output, the handler is
+        // invoked whenever the scheduler offers it.
+        rescue: step({
+          agent: agent("rescue"),
+          after: ["unit"],
+          input: { from: "trigger.payload" },
+        }),
       },
     });
     const { env, repoStore } = buildEnv(def, {
       spawnChild: async () => ({ terminalStatus: "cancelled" }),
     });
+    const invoked: string[] = [];
+    env.invokeStep = async (req) => {
+      invoked.push(req.agent.id);
+      return { output: null };
+    };
     const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
       .complete;
 
-    // The carve-out: a cancelled child is a bare failure, so the run fails and
-    // the unit's StepFailed carries no routedTo (it was not routed).
+    // The carve-out: a cancelled child is a bare failure, so the run fails,
+    // the unit's StepFailed carries no routedTo (it was not routed), and the
+    // handler never runs.
     expect(res.terminalStatus).toBe("failed");
     expect(routedTo(await repoStore.read("r"), "unit")).toBeUndefined();
+    expect(invoked).not.toContain("rescue");
   });
 
   test("a succeeding action prunes its handler branch", async () => {

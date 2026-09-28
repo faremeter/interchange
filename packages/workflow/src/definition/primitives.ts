@@ -108,8 +108,9 @@ export interface StepPrimitive extends PrimitiveBase {
   triggers?: number | "unbounded";
   /**
    * Names the handler step a permanent failure of this unit routes to: the
-   * failure that remains after any retries are exhausted. Absent means a
-   * permanent failure fails the run.
+   * failure that remains after any retries are exhausted. The handler names
+   * this unit, and nothing else, in its `after`. Absent means a permanent
+   * failure fails the run.
    */
   onFailure?: string;
 }

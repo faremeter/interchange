@@ -2063,7 +2063,7 @@ describe("onFailure straddler validation", () => {
           handler: step({ agent: makeAgent("h"), after: ["unit", "n"] }),
         },
       }),
-    ).toThrow(/handler must depend only on unit/);
+    ).toThrow(/onFailure handler must name only unit in its after, not n/);
   });
 
   test("rejects a handler that depends on a transitive normal dependent", () => {
@@ -2078,7 +2078,7 @@ describe("onFailure straddler validation", () => {
           handler: step({ agent: makeAgent("h"), after: ["unit", "n"] }),
         },
       }),
-    ).toThrow(/handler must depend only on unit/);
+    ).toThrow(/onFailure handler must name only unit in its after, not n/);
   });
 
   test("accepts a diamond straddler with a whole read", () => {
@@ -2160,7 +2160,9 @@ describe("onFailure straddler validation", () => {
     ).not.toThrow();
   });
 
-  test("accepts a handler that depends on a unit-independent node", () => {
+  test("rejects a handler that also depends on a unit-independent node", () => {
+    // A branch that skips the unit would leave the handler live through w0,
+    // waiting on a route that never comes.
     expect(() =>
       defineWorkflow({
         id: "w",
@@ -2171,6 +2173,6 @@ describe("onFailure straddler validation", () => {
           handler: step({ agent: makeAgent("h"), after: ["unit", "w0"] }),
         },
       }),
-    ).not.toThrow();
+    ).toThrow(/onFailure handler must name only unit in its after, not w0/);
   });
 });

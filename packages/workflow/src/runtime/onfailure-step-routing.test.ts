@@ -212,6 +212,45 @@ describe("onFailure step routing", () => {
     });
   });
 
+  test("a step that fails before it starts skips its handler branch", async () => {
+    // A throwing input selector fails the unit before its StepStarted, a
+    // failure that does not route. The handler reads the trigger, so it would
+    // be invoked if the scheduler offered it.
+    const def = defineWorkflow({
+      id: "of-prestart",
+      trigger: { type: "manual" },
+      steps: {
+        unit: step({
+          agent: agent("unit"),
+          onFailure: "rescue",
+          input: { from: "trigger.payload.missing" },
+        }),
+        rescue: step({
+          agent: agent("rescue"),
+          after: ["unit"],
+          input: { from: "trigger.payload" },
+        }),
+      },
+    });
+    const invoked: string[] = [];
+    const { env, repoStore } = buildEnv(def, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        return { output: null };
+      },
+    });
+    const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
+      .complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).toEqual([]);
+    expect(await skipSentinelOf(repoStore, env, "rescue")).toEqual({
+      skipped: true,
+      onFailureStepId: "unit",
+      settled: "failed",
+    });
+  });
+
   test("a diamond join reachable from the handler stays live on failure", async () => {
     const def = defineWorkflow({
       id: "of-diamond",

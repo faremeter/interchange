@@ -257,4 +257,71 @@ describe("onFailure success-terminalization failures do not route", () => {
     expect(res.terminalStatus).toBe("completed");
     expect(unitInvocations).toBe(2);
   });
+
+  test("an unrouted failure whose handler branch cannot be skipped stops the run until resume skips it", async () => {
+    // Neither the unit's output nor the skip of its handler branch can be
+    // recorded. The handler reads the trigger, so it would be invoked if the
+    // scheduler offered it.
+    const def = defineWorkflow({
+      id: "term-unskippable-handler",
+      trigger: { type: "manual" },
+      steps: {
+        unit: step({ agent: agent("unit"), onFailure: "rescue" }),
+        rescue: step({
+          agent: agent("rescue"),
+          after: ["unit"],
+          input: { from: "trigger.payload" },
+        }),
+        normal: step({ agent: agent("normal"), after: ["unit"] }),
+      },
+    });
+    const inner = createInMemoryBlobSubstrate();
+    let storeDown = true;
+    const { env, repoStore } = buildEnv(def, {
+      blobs: {
+        ...inner,
+        async recordOutput(stepId, attempt, value) {
+          if (stepId === "unit" || (storeDown && stepId === "rescue.input")) {
+            throw new Error("store down");
+          }
+          return inner.recordOutput(stepId, attempt, value);
+        },
+      },
+    });
+    const invoked: string[] = [];
+    env.invokeStep = async (req) => {
+      invoked.push(req.agent.id);
+      return { output: null };
+    };
+
+    await expect(
+      runtimeRun(def, env, { runId: "r", triggerPayload: null }).complete,
+    ).rejects.toThrow("store down");
+    expect(invoked).toEqual(["unit"]);
+    // The failure is durable, so resume does not read the unit as a crash
+    // mid-invocation, which would route it.
+    const failed = (await repoStore.read("r")).find(
+      (e): e is Extract<WorkflowEvent, { kind: "StepFailed" }> =>
+        e.kind === "StepFailed" && e.stepId === "unit",
+    );
+    expect(failed?.retriesExhausted).toBe(true);
+    expect(failed?.routedTo).toBeUndefined();
+
+    storeDown = false;
+    const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
+      .complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).not.toContain("rescue");
+    const skip = res.events.find(
+      (e): e is Extract<WorkflowEvent, { kind: "StepCompleted" }> =>
+        e.kind === "StepCompleted" && e.stepId === "rescue",
+    );
+    if (skip === undefined) throw new Error("rescue was not skipped");
+    expect(await env.blobs.resolveRef(skip.output.ref)).toEqual({
+      skipped: true,
+      onFailureStepId: "unit",
+      settled: "failed",
+    });
+  });
 });

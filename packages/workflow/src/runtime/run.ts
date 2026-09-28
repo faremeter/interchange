@@ -73,6 +73,7 @@ import {
   controlParkKindOf,
   decideTerminalRunFlip,
   isTerminalRunPhase,
+  isTerminalStepPhase,
   resumeFromLog,
   TransitionError,
   type RunState,
@@ -791,6 +792,18 @@ async function executeRunBody(
           if (ac !== undefined && !ac.signal.aborted) ac.abort();
         }
       }
+    }
+
+    if (state.phase === "running") {
+      state = await skipUnroutedHandlerBranches(
+        definition,
+        env,
+        runId,
+        state,
+        inFlight,
+        cancelController.signal,
+      );
+      if (isRunDone(definition, state)) break;
     }
 
     const ready = nextSchedulable(definition, state, inFlight);
@@ -3633,13 +3646,15 @@ async function routeLoopOutcome(
  * Prune around an onFailure route, the mirror of `routeLoopOutcome`. A unit
  * carrying `onFailure` settles on both outcomes, so both prune the not-taken
  * side: a routed failure prunes the unit's normal after-dependents and spares
- * the handler branch; a success prunes the handler branch and spares the
- * normal dependents. A diamond-join reachable from the spared side stays live
- * (the `collectBranchClosure` guard). The caller runs this BEFORE it commits
- * the unit's terminal event, so the unit is still in-flight while the skips
- * land -- the scheduler offers none of the unit's direct dependents until it
- * is terminal, and `emitSkipClosure`'s leaf-first order covers the deeper
- * members.
+ * the handler branch; a success, or a failure that did not route, prunes the
+ * handler branch and spares the normal dependents. A diamond-join reachable
+ * from the spared side stays live (the `collectBranchClosure` guard). A route
+ * or success runs this BEFORE it commits the unit's terminal event, so the
+ * unit is still in-flight while the skips land -- the scheduler offers none of
+ * the unit's direct dependents until it is terminal, and `emitSkipClosure`'s
+ * leaf-first order covers the deeper members. A failure that did not route
+ * runs it after its terminal, which is safe because the scheduler never offers
+ * a handler off such a unit.
  */
 async function pruneAroundRoute(
   definition: WorkflowDefinition,
@@ -3647,7 +3662,7 @@ async function pruneAroundRoute(
   runId: string,
   unitId: string,
   handlerId: string,
-  settled: "routed" | "completed",
+  settled: "routed" | "completed" | "failed",
   abort: AbortSignal,
 ): Promise<void> {
   const normalDependents = Object.entries(definition.steps)
@@ -3661,6 +3676,54 @@ async function pruneAroundRoute(
   const toSkip = collectBranchClosure(definition, notSelected, selected);
   const sentinel = { skipped: true, onFailureStepId: unitId, settled };
   await emitSkipClosure(env, runId, definition, toSkip, sentinel, abort);
+}
+
+/**
+ * Skip the handler branch of each onFailure unit whose failure did not route:
+ * one whose work succeeded but whose terminal could not land, whose child was
+ * cancelled, or that failed before it started. The scheduler never offers the
+ * handler off such a unit, so the run cannot finish until the branch is
+ * skipped. The failure is flushed first: a skip that cannot be written then
+ * fails the run body with the failure durable, and resume retries the skip,
+ * rather than finding the unit in-flight and settling it as a crash
+ * mid-invocation, which routes. A unit whose runner is still in flight may yet
+ * retry, so it waits for the runner to return.
+ */
+async function skipUnroutedHandlerBranches(
+  definition: WorkflowDefinition,
+  env: WorkflowRuntimeEnv,
+  runId: string,
+  state: RunState,
+  inFlight: ReadonlySet<string>,
+  abort: AbortSignal,
+): Promise<RunState> {
+  let skipped = false;
+  for (const [unitId, unit] of Object.entries(definition.steps)) {
+    const onFailure =
+      unit.kind === "step" ||
+      unit.kind === "action" ||
+      unit.kind === "childWorkflow"
+        ? unit.onFailure
+        : undefined;
+    if (onFailure === undefined || inFlight.has(unitId)) continue;
+    if (state.steps.get(unitId)?.phase !== "failed") continue;
+    const handlerPhase = state.steps.get(onFailure)?.phase;
+    if (handlerPhase !== undefined && isTerminalStepPhase(handlerPhase)) {
+      continue;
+    }
+    if (!skipped) await flush(env, runId);
+    skipped = true;
+    await pruneAroundRoute(
+      definition,
+      env,
+      runId,
+      unitId,
+      onFailure,
+      "failed",
+      abort,
+    );
+  }
+  return skipped ? reloadState(env, runId) : state;
 }
 
 /**

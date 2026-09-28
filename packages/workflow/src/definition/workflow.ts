@@ -379,7 +379,7 @@ function validateSteps(
   validateConcurrentAwaitSignalNames(steps);
   // Runs after validateAcyclic so its closure computations reason over an
   // acyclic graph, and after validateAfterRefs so every onFailure handler is
-  // known to exist and to `after`-depend on its unit.
+  // known to exist and to `after`-depend on its unit alone.
   validateOnFailureStraddlers(steps);
   validateLoopBody(steps, loopDepth);
   validateOnTriggerBody(steps, isTopLevel);
@@ -511,9 +511,7 @@ function straddlerOutputSelector(p: Primitive): Selector | undefined {
  * straddler reading a deep, indexed, or project-narrowed path into U's success
  * shape breaks at runtime on the failure path. Only an agent `step` selecting
  * the WHOLE `steps.<U>.output` (to branch on `.failed` in its body) is safe; an
- * action/childWorkflow straddler, or any narrowed read, is rejected. The
- * handler itself must depend only on U and on U-independent nodes -- never on a
- * normal-side dependent the route prunes, whose skip sentinel it would read.
+ * action/childWorkflow straddler, or any narrowed read, is rejected.
  */
 function validateOnFailureStraddlers(steps: Record<string, Primitive>): void {
   for (const [unitId, primitive] of Object.entries(steps)) {
@@ -525,17 +523,6 @@ function validateOnFailureStraddlers(steps: Record<string, Primitive>): void {
         : undefined;
     if (onFailure === undefined) continue;
     const handlerId = onFailure;
-
-    const unitDownstream = downstreamClosure(steps, [unitId]);
-    for (const dep of steps[handlerId]?.after ?? []) {
-      if (dep !== unitId && unitDownstream.has(dep)) {
-        throw new Error(
-          `${primitive.kind} ${unitId} onFailure handler ${handlerId} also ` +
-            `depends on ${dep}, which the failure route prunes; the handler ` +
-            `must depend only on ${unitId}`,
-        );
-      }
-    }
 
     const failureLive = downstreamClosure(steps, [handlerId]);
     const normalDependents = Object.entries(steps)
@@ -713,6 +700,17 @@ function validateAfterRefs(steps: Record<string, Primitive>): void {
         ) {
           throw new Error(
             `${primitive.kind} ${stepId} onFailure ${primitive.onFailure} must name ${stepId} in its after`,
+          );
+        }
+        // Nor may the handler depend on anything else. The runtime starts a
+        // handler only off a unit that routed to it; a unit that ends any
+        // other way skips the handler's branch, directly or inside a branch
+        // skipped around the unit. A second dependency could keep the handler
+        // live through such a skip, waiting on a route that never comes.
+        const extra = target?.after?.find((dep) => dep !== stepId);
+        if (extra !== undefined) {
+          throw new Error(
+            `${primitive.kind} ${stepId} onFailure ${primitive.onFailure} must name only ${stepId} in its after, not ${extra}`,
           );
         }
       }

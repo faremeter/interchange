@@ -1,7 +1,8 @@
 // DAG scheduling helpers for the workflow runtime.
 //
 // A step is schedulable once every dependency named in its `after`
-// field has reached a terminal phase in the run state. The runtime
+// field has reached a terminal phase in the run state, and an onFailure
+// handler only once its unit has routed its failure there. The runtime
 // asks `nextSchedulable` for the set of ids it should kick off on
 // each tick.
 
@@ -239,19 +240,35 @@ export function nextSchedulable(
     }
     const primitive = def.steps[stepId];
     if (!primitive) continue;
-    if (!areDepsResolved(primitive, state)) continue;
+    if (!areDepsResolved(def, primitive, state)) continue;
     out.push(primitive);
   }
   return out;
 }
 
-function areDepsResolved(primitive: Primitive, state: RunState): boolean {
+function areDepsResolved(
+  def: WorkflowDefinition,
+  primitive: Primitive,
+  state: RunState,
+): boolean {
   const after = primitive.after;
   if (after === undefined || after.length === 0) return true;
   for (const dep of after) {
     const depStep = state.steps.get(dep);
     if (!depStep) return false;
     if (!isTerminalStepPhase(depStep.phase)) return false;
+    // A unit resolves its onFailure handler only by routing to it. Any other
+    // terminal leaves the handler to its branch's skip, which may not have
+    // landed yet: the runtime writes it after a failure that did not route,
+    // and it cannot be written while the store that failed the unit is down.
+    const unit = def.steps[dep];
+    const onFailure =
+      unit?.kind === "step" ||
+      unit?.kind === "action" ||
+      unit?.kind === "childWorkflow"
+        ? unit.onFailure
+        : undefined;
+    if (onFailure === primitive.id && depStep.phase !== "routed") return false;
   }
   return true;
 }
