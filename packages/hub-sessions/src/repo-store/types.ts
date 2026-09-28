@@ -181,10 +181,12 @@ export type WriteTreePreservingPrefixArgs = {
    * directly under `preservePrefix` (keyed by repo-root-relative
    * path, including the prefix). Returns the full set of files the
    * substrate should write at the prefix; the prefix subtree is
-   * cleared and replaced with this set in a single commit. Paths
-   * outside the prefix are passed through unchanged. The callback may
-   * throw to abort the write; the substrate releases the lock and
-   * propagates the error.
+   * cleared and replaced with this set in a single commit. Every
+   * returned path must be a file path under the prefix with no empty,
+   * `.` or `..` segment, or the substrate rejects the write; paths
+   * outside the prefix are carried forward unchanged.
+   * The callback may throw to abort the write; the substrate releases
+   * the lock and propagates the error.
    */
   merge: (
     existing: ReadonlyMap<string, Uint8Array>,
@@ -275,13 +277,15 @@ export interface KindHandler {
    *
    * `changedPathPrefixes` is the set of repo-root-relative POSIX path
    * prefixes (each ending in `/`) under which this commit could have
-   * mutated tree entries -- the cleared prefix for a `writeTree`
-   * carrying a `clearPrefix`, or the subtrees whose object differs from
-   * the parent commit for a received pack. Every path the commit can
-   * have changed relative to its parent is under one of these prefixes;
-   * any path outside them is carried forward byte-identical by the
-   * substrate. It is `undefined` when the substrate cannot bound the
-   * change set (no parent to diff against and no `clearPrefix`), in
+   * mutated tree entries -- for a `writeTree` carrying a `clearPrefix`,
+   * the cleared prefix plus the directory of each file written outside
+   * it; for a received pack, the subtrees whose object differs
+   * from the parent commit. Every path the commit can have changed
+   * relative to its parent is under one of these prefixes; any path
+   * outside them is carried forward byte-identical by the substrate. It
+   * is `undefined` when the substrate cannot bound the change set (no
+   * parent to diff against and no `clearPrefix`, or a file written
+   * outside the `clearPrefix` whose directory cannot be named), in
    * which case the handler must validate the whole prospective tree. A
    * handler with per-subtree invariants that cannot be affected by a
    * commit outside that subtree (workflow-run's per-run append-only
