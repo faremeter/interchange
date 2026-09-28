@@ -22,7 +22,12 @@ import {
   parseStepStateSeed,
   readStepStateSnapshot,
 } from "./step-state-snapshot";
-import { workflowRunStepStatePrefix } from "./workflow-run-kind";
+import {
+  WORKFLOW_RUN_MAILBOX_INBOX_DIR,
+  WORKFLOW_RUN_MAILBOX_INDEX_FILE,
+  WORKFLOW_RUN_MAILBOX_PREFIX,
+  workflowRunStepStatePrefix,
+} from "./workflow-run-kind";
 
 const REF = "refs/heads/main";
 const RUN_ID = "run_snapshot";
@@ -131,6 +136,42 @@ describe("readStepStateSnapshot", () => {
       stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
     );
     expect(await read(store, "other-step")).toBeNull();
+  });
+
+  test("bounds the mailbox UIDs the turns can name by the mailbox's uidNext", async () => {
+    const store = await createStore();
+    await commit(store, {
+      ...stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
+      [`${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]:
+        JSON.stringify({
+          version: 1,
+          uidValidity: 1,
+          uidNext: 7,
+          highestModSeq: 0,
+          messages: [],
+          expunged: [],
+        }),
+    });
+
+    expect((await read(store))?.mailboxUidNext).toBe(7);
+  });
+
+  test("exports a mailbox uidNext past the one an import accepts", async () => {
+    const store = await createStore();
+    await commit(store, {
+      ...stateFiles(workflowRunStepStatePrefix(RUN_ID, STEP_ID)),
+      [`${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`]:
+        JSON.stringify({
+          version: 1,
+          uidValidity: 1,
+          uidNext: 2 ** 31 + 1,
+          highestModSeq: 0,
+          messages: [],
+          expunged: [],
+        }),
+    });
+
+    expect((await read(store))?.mailboxUidNext).toBe(2 ** 31 + 1);
   });
 
   test("refuses a seed that is not a valid snapshot", () => {
