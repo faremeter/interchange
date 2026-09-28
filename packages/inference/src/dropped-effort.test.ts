@@ -7,6 +7,7 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
 import type { ConversationTurn, LastCycleSource } from "@intx/types/runtime";
@@ -60,6 +61,16 @@ function warnSpy() {
   return spyOn(logger, "warn");
 }
 
+const WireBody = type("Record<string, unknown>");
+
+function wireBody(body: string): Record<string, unknown> {
+  const parsed = WireBody(JSON.parse(body));
+  if (parsed instanceof type.errors) {
+    throw new Error(`unexpected request body shape: ${parsed.summary}`);
+  }
+  return parsed;
+}
+
 function droppedCall(warn: ReturnType<typeof warnSpy>): {
   effort: unknown;
   model: unknown;
@@ -76,7 +87,7 @@ function droppedCall(warn: ReturnType<typeof warnSpy>): {
 describe("dropped effort warn", () => {
   test("classic Anthropic drops a named effort", () => {
     const warn = warnSpy();
-    createAnthropicAdapter(anthropicSource).buildRequest(
+    const req = createAnthropicAdapter(anthropicSource).buildRequest(
       messages,
       "claude-3-7-sonnet-20250219",
       { thinking: { enabled: true, budgetTokens: 2048 }, effort: "max" },
@@ -87,11 +98,14 @@ describe("dropped effort warn", () => {
     expect(call.reason).toBe(
       "classic Anthropic has no effort field on the wire",
     );
+    const body = wireBody(req.body);
+    expect(body["output_config"]).toBeUndefined();
+    expect(body["thinking"]).toEqual({ type: "enabled", budget_tokens: 2048 });
   });
 
   test("adaptive Anthropic without thinking drops a named effort", () => {
     const warn = warnSpy();
-    createAnthropicAdapter(anthropicSource).buildRequest(
+    const req = createAnthropicAdapter(anthropicSource).buildRequest(
       messages,
       "claude-opus-5",
       { effort: "max" },
@@ -102,6 +116,7 @@ describe("dropped effort warn", () => {
     expect(call.reason).toBe(
       "adaptive Anthropic emits effort only when thinking is enabled",
     );
+    expect(wireBody(req.body)["output_config"]).toBeUndefined();
   });
 
   test("adaptive Anthropic with thinking on does not warn", () => {
@@ -116,7 +131,7 @@ describe("dropped effort warn", () => {
 
   test("Gemini drops a named effort", () => {
     const warn = warnSpy();
-    createGoogleGenAIAdapter(geminiSource).buildRequest(
+    const req = createGoogleGenAIAdapter(geminiSource).buildRequest(
       messages,
       "gemini-2.5-flash",
       { effort: "high" },
@@ -125,6 +140,7 @@ describe("dropped effort warn", () => {
     expect(call.effort).toBe("high");
     expect(call.model).toBe("gemini-2.5-flash");
     expect(call.reason).toBe("Gemini has no effort field on the wire");
+    expect(JSON.stringify(wireBody(req.body))).not.toMatch(/effort/i);
   });
 
   test("gpt-5.6 with tools drops a named effort", () => {
