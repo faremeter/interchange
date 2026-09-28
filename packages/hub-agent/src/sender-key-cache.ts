@@ -37,6 +37,15 @@ const logger = getLogger(["interchange", "hub-agent", "sender-key-cache"]);
 // A raw Ed25519 public key is 32 bytes.
 const ED25519_PUBLIC_KEY_BYTES = 32;
 
+/**
+ * Length is the whole rule: a 32-byte value that is not the signer's key
+ * imports fine and verifies to false, which is a check that ran and failed
+ * rather than unusable material.
+ */
+export function isUsableSenderKey(publicKey: Uint8Array): boolean {
+  return publicKey.length === ED25519_PUBLIC_KEY_BYTES;
+}
+
 const SENDER_KEYS_DIR_NAME = "sender-keys";
 
 // The on-disk envelope carries the address alongside the key so a loaded
@@ -159,7 +168,7 @@ export async function createSenderKeyCache(
         );
       }
       const publicKey = hexDecode(parsed.publicKey);
-      if (publicKey.length !== ED25519_PUBLIC_KEY_BYTES) {
+      if (!isUsableSenderKey(publicKey)) {
         throw new Error(
           `expected a ${ED25519_PUBLIC_KEY_BYTES}-byte key, got ${publicKey.length}`,
         );
@@ -185,7 +194,7 @@ export async function createSenderKeyCache(
   }
 
   async function put(address: string, publicKey: Uint8Array): Promise<void> {
-    if (publicKey.length !== ED25519_PUBLIC_KEY_BYTES) {
+    if (!isUsableSenderKey(publicKey)) {
       throw new Error(
         `refusing to cache a ${publicKey.length}-byte key for ${address}; expected ${ED25519_PUBLIC_KEY_BYTES}`,
       );

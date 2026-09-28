@@ -48,6 +48,7 @@ import {
 import {
   verifyInboundSignature,
   outcomeForVerdict,
+  decideInboundAdmission,
   type ResolvedInboundMailPolicy,
 } from "./inbound-signature";
 import { base64Decode, base64Encode } from "@intx/types";
@@ -1588,22 +1589,20 @@ export function createHubLink(config: HubLinkConfig): HubLink {
           },
           resolveSenderCrypto,
         );
-        const outcome = outcomeForVerdict(verdict);
         // The recipient deployment's resolved admission policy. `frame.
         // agentAddress` is the mail-router registration key, so an address
         // with no registered deployment resolves to the fully-closed policy
-        // and rejects every outcome. The map is total, so index it directly.
-        // The seam admits ONLY an explicitly-admitted outcome and drops
-        // everything else: the fail direction is closed by construction, so a
-        // non-`admit` value (today only `reject`, but any future non-admit
-        // verdict too) drops rather than leaks through.
+        // and rejects every outcome.
         const policy = lookupInboundMailPolicy(frame.agentAddress);
-        if (policy[outcome] !== "admit") {
+        const admission = decideInboundAdmission(verdict, policy);
+        if (admission.rejectedBy !== null) {
           logger.warn(
-            "Rejecting inbound mail for {agentAddress}: outcome {outcome} is not admitted (authenticatedSender {authenticatedSender}, messageId {messageId})",
+            "Rejecting inbound mail for {agentAddress}: {rejectedBy} is not admitted (findings {findings}, headline outcome {outcome}, authenticatedSender {authenticatedSender}, messageId {messageId})",
             {
               agentAddress: frame.agentAddress,
-              outcome,
+              rejectedBy: admission.rejectedBy,
+              findings: admission.findings,
+              outcome: outcomeForVerdict(verdict),
               authenticatedSender: frame.authenticatedSender,
               messageId: frame.messageId ?? null,
             },

@@ -16,6 +16,7 @@ import type {
 import {
   verifyInboundSignature,
   outcomeForVerdict,
+  decideInboundAdmission,
   resolveInboundMailPolicy,
   type InboundSignatureVerdict,
   type ResolvedInboundMailPolicy,
@@ -79,6 +80,48 @@ function cacheFor(
 
 const emptyCache = (): undefined => undefined;
 
+/**
+ * Remove the top-level `From` header from an assembled message, leaving the
+ * rest of it byte-identical. The detached signature covers only the signed
+ * content part, never the top-level headers, so the result still verifies --
+ * it is a validly-signed message that carries no originator at all.
+ */
+function stripFromHeader(raw: Uint8Array): Uint8Array {
+  const text = new TextDecoder().decode(raw);
+  const bodyStart = text.indexOf("\r\n\r\n");
+  if (bodyStart === -1) throw new Error("assembled message has no body");
+  const lines = text.slice(0, bodyStart).split("\r\n");
+  const kept = lines.filter((line) => !line.toLowerCase().startsWith("from:"));
+  if (kept.length === lines.length) {
+    throw new Error("assembled message carries no From header to strip");
+  }
+  return new TextEncoder().encode(kept.join("\r\n") + text.slice(bodyStart));
+}
+
+/**
+ * Replace the top-level `From` header's VALUE with `value`, leaving the rest of
+ * the message byte-identical. Like {@link stripFromHeader} this touches only the
+ * top-level headers, which the detached signature does not cover, so the result
+ * still verifies. `value` is spliced in directly after the colon, so it can
+ * carry a CRLF and produce a folded header.
+ */
+function replaceFromValue(raw: Uint8Array, value: string): Uint8Array {
+  const text = new TextDecoder().decode(raw);
+  const bodyStart = text.indexOf("\r\n\r\n");
+  if (bodyStart === -1) throw new Error("assembled message has no body");
+  const lines = text.slice(0, bodyStart).split("\r\n");
+  let replaced = false;
+  const kept = lines.map((line) => {
+    if (!line.toLowerCase().startsWith("from:")) return line;
+    replaced = true;
+    return `From:${value}`;
+  });
+  if (!replaced) {
+    throw new Error("assembled message carries no From header to replace");
+  }
+  return new TextEncoder().encode(kept.join("\r\n") + text.slice(bodyStart));
+}
+
 describe("verifyInboundSignature", () => {
   test("signature the cached key verifies, From matches: valid/match", async () => {
     const sender = "alpha@test.interchange";
@@ -100,7 +143,7 @@ describe("verifyInboundSignature", () => {
     expect(verdict.messageFrom).toBe(sender);
   });
 
-  test("signature against a different cached key: invalid, From unchecked", async () => {
+  test("signature against a different cached key: invalid, From still matches", async () => {
     const sender = "alpha@test.interchange";
     const signer = await makeCrypto();
     const other = await makeCrypto();
@@ -117,8 +160,12 @@ describe("verifyInboundSignature", () => {
     );
 
     expect(verdict.signature).toBe("invalid");
-    // A From-binding is only meaningful atop a valid signature.
-    expect(verdict.fromMatch).toBe("unchecked");
+    // The binding is evaluated whatever the signature check found, so a From
+    // naming the stamped sender is `match` even where the signature failed.
+    // The message is then unhappy on one axis only, and the author's `invalid`
+    // decision is the only one the admission reads.
+    expect(verdict.fromMatch).toBe("match");
+    expect(verdict.messageFrom).toBe(sender);
   });
 
   test("message that is not multipart/signed: missing", async () => {
@@ -146,7 +193,7 @@ describe("verifyInboundSignature", () => {
     );
 
     expect(verdict.signature).toBe("missing");
-    expect(verdict.fromMatch).toBe("unchecked");
+    expect(verdict.fromMatch).toBe("match");
   });
 
   test("valid signature under a forged From: valid/mismatch", async () => {
@@ -174,7 +221,81 @@ describe("verifyInboundSignature", () => {
     expect(verdict.messageFrom).toBe(forgedFrom);
   });
 
-  test("cache miss: unknown, admitted", async () => {
+  test("a forged From at a cache miss is a mismatch that a relaxed unknown does not admit", async () => {
+    // The whole path from bytes to decision, for the policy an author writes to
+    // accommodate a key rotation. No key is cached for the stamped sender, so
+    // the signature axis is `unknown`; the message's visible From names somebody
+    // else entirely. Nothing downstream of the gate reads the stamp, so
+    // admitting this would deliver a message every consumer attributes to the
+    // address in its From.
+    //
+    // Relaxing `unknown` does not make this admissible, because the two are
+    // separately keyed. What relaxing `unknown` cannot buy back either way is
+    // verified identity: a sender who sets the stamp and the From to the same
+    // forged address is internally consistent and gets in, as the companion
+    // test below shows. The separation removes the INVERSION -- a
+    // self-contradictory message no longer gets in where a message that
+    // honestly names nobody is refused.
+    const stamp = "attacker@remote.example";
+    const forgedFrom = "ceo@victim.example";
+    const crypto = await makeCrypto();
+    const raw = await signedMessage(crypto, forgedFrom);
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: stamp,
+        messageId: "mid-forged-unknown",
+        agentAddress: AGENT_ADDRESS,
+      },
+      emptyCache,
+    );
+
+    expect(verdict.signature).toBe("unknown");
+    expect(verdict.fromMatch).toBe("mismatch");
+    expect(verdict.messageFrom).toBe(forgedFrom);
+    expect(outcomeForVerdict(verdict)).toBe("mismatchedFrom");
+
+    const decision = decideInboundAdmission(
+      verdict,
+      resolveInboundMailPolicy({ unknown: "admit" }),
+    );
+    expect(decision.findings).toEqual(["unknown", "mismatchedFrom"]);
+    expect(decision.rejectedBy).toBe("mismatchedFrom");
+  });
+
+  test("a consistent From at a cache miss is admitted under a relaxed unknown", async () => {
+    // The companion of the case above, and what keeps the separation from
+    // closing `unknown: "admit"` altogether. The message names the sender the
+    // hub stamped, so it raises `unknown` alone and the author who relaxed
+    // `unknown` gets it. That is the statement an operator can hold: an
+    // unverified but internally consistent identity claim is accepted.
+    const sender = "rotating@remote.example";
+    const crypto = await makeCrypto();
+    const raw = await signedMessage(crypto, sender);
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-consistent-unknown",
+        agentAddress: AGENT_ADDRESS,
+      },
+      emptyCache,
+    );
+
+    expect(verdict.signature).toBe("unknown");
+    expect(verdict.fromMatch).toBe("match");
+
+    const decision = decideInboundAdmission(
+      verdict,
+      resolveInboundMailPolicy({ unknown: "admit" }),
+    );
+    expect(decision.findings).toEqual(["unknown"]);
+    expect(decision.rejectedBy).toBeNull();
+  });
+
+  test("cache miss: unknown, with the From still bound", async () => {
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
@@ -190,7 +311,7 @@ describe("verifyInboundSignature", () => {
     );
 
     expect(verdict.signature).toBe("unknown");
-    expect(verdict.fromMatch).toBe("unchecked");
+    expect(verdict.fromMatch).toBe("match");
   });
 
   test("a resolver that throws degrades to error, not a crash", async () => {
@@ -214,7 +335,7 @@ describe("verifyInboundSignature", () => {
     );
 
     expect(verdict.signature).toBe("error");
-    expect(verdict.fromMatch).toBe("unchecked");
+    expect(verdict.fromMatch).toBe("notEvaluated");
   });
 
   test("an unreadable cached key degrades to error, not a crash", async () => {
@@ -243,7 +364,71 @@ describe("verifyInboundSignature", () => {
     );
 
     expect(verdict.signature).toBe("error");
-    expect(verdict.fromMatch).toBe("unchecked");
+    expect(verdict.fromMatch).toBe("notEvaluated");
+  });
+
+  test("a cached key that cannot verify faults, rather than failing the check", async () => {
+    // Distinct from the test above: `getPublicKey` answers, it just answers
+    // with bytes no signature can be checked against. The check never runs, so
+    // the gate must not report the signature as having been checked and found
+    // wanting -- that is `invalid`, and an author can relax `invalid`.
+    const sender = "alpha@test.interchange";
+    const crypto = await makeCrypto();
+    const raw = await signedMessage(crypto, sender);
+    // The production wrapper over a truncated key: the cache validates its
+    // entries, but this seam is injected and the wrapper vouches for nothing.
+    const truncated = createPublicKeyCrypto(crypto.getPublicKey().slice(0, 16));
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-unusable-key",
+        agentAddress: AGENT_ADDRESS,
+      },
+      () => truncated,
+    );
+
+    expect(verdict.signature).toBe("error");
+    expect(verdict.fromMatch).toBe("notEvaluated");
+    expect(outcomeForVerdict(verdict)).toBe("error");
+  });
+
+  test("no policy admits a message whose key could not verify anything", async () => {
+    // The security property the policy document states: a message the gate
+    // could not check through is never something an author waves past. The
+    // policy here relaxes every key an author can write, including the two --
+    // `invalid` and `untrustedFrom` -- that a key fault would land on if it
+    // were reported as a failed check.
+    const sender = "alpha@test.interchange";
+    const crypto = await makeCrypto();
+    const raw = await signedMessage(crypto, sender);
+    const truncated = createPublicKeyCrypto(crypto.getPublicKey().slice(0, 16));
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-unusable-key-admission",
+        agentAddress: AGENT_ADDRESS,
+      },
+      () => truncated,
+    );
+
+    const fullyOpen: InboundMailPolicy = {
+      untrustedFrom: "admit",
+      absentFrom: "admit",
+      invalid: "admit",
+      missing: "admit",
+      unknown: "admit",
+    };
+    const admission = decideInboundAdmission(
+      verdict,
+      resolveInboundMailPolicy(fullyOpen),
+    );
+
+    expect(admission.rejectedBy).toBe("error");
+    expect(admission.findings).toEqual([]);
   });
 
   test("a display-name From still binds to the stamp addr-spec", async () => {
@@ -273,7 +458,7 @@ describe("verifyInboundSignature", () => {
     // forgery verdict -- that would poison the corpus (and later drop
     // legitimate mail under enforcement). extractAddrSpec rejects the two-@
     // input; the binding is `unparseable` -- present but malformed, distinct
-    // from a benign no-From `unchecked` -- while the signature stands.
+    // from the benign no-From `absent` -- while the signature stands.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(
@@ -296,10 +481,13 @@ describe("verifyInboundSignature", () => {
     expect(verdict.messageFrom).toBeNull();
   });
 
-  test("an unparseable From at a cache miss is unparseable, not unchecked", async () => {
-    // The From presence is evaluated for every non-error status, not only
-    // valid. A present-but-unparseable From under an `unknown` signature is
-    // still `unparseable` -- a later enforcement precedence needs to see it.
+  test("an unparseable From at a cache miss is unparseable, not a mismatch", async () => {
+    // The From is evaluated for every non-error status, not only valid. A
+    // present-but-unparseable From under an `unknown` signature is still
+    // `unparseable`: the gate never reduced it to an address, so it has no
+    // addr-spec to compare and must not report the `mismatch` of a From it read
+    // and found to name somebody else. The two are separately keyed, so folding
+    // them together would hand an author one decision where they have two.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(
@@ -322,10 +510,10 @@ describe("verifyInboundSignature", () => {
     expect(verdict.messageFrom).toBeNull();
   });
 
-  test("no From header at all stays unchecked, distinct from unparseable", async () => {
-    // A message with no From carries no identity claim to bind -- a benign
-    // `unchecked` with a null messageFrom, kept distinct from a present but
-    // unparseable From.
+  test("no From header at all is absent, distinct from unparseable", async () => {
+    // A message with no From carries no identity claim to bind -- `absent`
+    // with a null messageFrom, kept distinct from a present but unparseable
+    // From.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = new TextEncoder().encode(
@@ -348,14 +536,131 @@ describe("verifyInboundSignature", () => {
       cacheFor(sender, crypto),
     );
 
-    expect(verdict.fromMatch).toBe("unchecked");
+    expect(verdict.fromMatch).toBe("absent");
     expect(verdict.messageFrom).toBeNull();
   });
 
-  test("a cache miss with a parseable From is unchecked, not unparseable", async () => {
-    // A parseable From under a non-valid signature records `messageFrom` but
-    // leaves the binding `unchecked` -- a match is only meaningful atop a valid
-    // signature, and this must NOT be mistaken for `unparseable`.
+  // A `From` that is PRESENT but blank reaches the same `absent` state as one
+  // that is not there at all: the header value is empty once trimmed, so there
+  // is no originator to bind. A sender chooses this -- writing `From:` with
+  // nothing after it is a deliberate act, not a parse accident -- so it must
+  // not buy a better outcome than omitting the header, and it must not land on
+  // the `unparseable` arm either, which is keyed to a value the gate could not
+  // reduce rather than to one that holds nothing. The last row carries the
+  // value on a folded continuation line of only whitespace, so unfolding runs
+  // before the value is read.
+  const blankFromValues: [label: string, value: string][] = [
+    ["is empty", ""],
+    ["is one space", " "],
+    ["is three spaces", "   "],
+    ["is a tab", "\t"],
+    ["mixes spaces and a tab", " \t "],
+    ["folds onto a whitespace-only line", "\r\n   "],
+  ];
+
+  for (const [label, value] of blankFromValues) {
+    test(`a present From whose value ${label} is absent, not unparseable`, async () => {
+      const sender = "alpha@test.interchange";
+      const crypto = await makeCrypto();
+      const raw = replaceFromValue(await signedMessage(crypto, sender), value);
+
+      const verdict = await verifyInboundSignature(
+        {
+          raw,
+          authenticatedSender: sender,
+          messageId: "mid-blank-from",
+          agentAddress: AGENT_ADDRESS,
+        },
+        cacheFor(sender, crypto),
+      );
+
+      expect(verdict.signature).toBe("valid");
+      expect(verdict.fromMatch).toBe("absent");
+      expect(verdict.messageFrom).toBeNull();
+      expect(outcomeForVerdict(verdict)).toBe("absentFrom");
+      // The same three admission properties the absent-header case has: closed
+      // by default, still closed when only the neighbouring From key is
+      // relaxed, and open only to the author who relaxed `absentFrom` itself.
+      expect(
+        decideInboundAdmission(verdict, resolveInboundMailPolicy(undefined))
+          .rejectedBy,
+      ).toBe("absentFrom");
+      expect(
+        decideInboundAdmission(
+          verdict,
+          resolveInboundMailPolicy({ untrustedFrom: "admit" }),
+        ).rejectedBy,
+      ).toBe("absentFrom");
+      expect(
+        decideInboundAdmission(
+          verdict,
+          resolveInboundMailPolicy({ absentFrom: "admit" }),
+        ).rejectedBy,
+      ).toBeNull();
+    });
+  }
+
+  test("a validly signed message with no From is absentFrom, not clean", async () => {
+    // The binding is `absent` -- there was nothing to bind -- but the gate
+    // must not certify its most permissive outcome for a binding it never
+    // checked. The stamp does not cross the seam into the recipient's process
+    // and every downstream consumer attributes from the message's own `From`,
+    // so a signature that verified over a message naming no originator is
+    // `absentFrom`: the gate holds a sender it cannot certify the message is
+    // from.
+    const sender = "alpha@test.interchange";
+    const crypto = await makeCrypto();
+    const raw = stripFromHeader(await signedMessage(crypto, sender));
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-signed-no-from",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(sender, crypto),
+    );
+
+    expect(verdict.signature).toBe("valid");
+    expect(verdict.fromMatch).toBe("absent");
+    expect(verdict.messageFrom).toBeNull();
+    expect(outcomeForVerdict(verdict)).toBe("absentFrom");
+  });
+
+  test("relaxing untrustedFrom alone does not admit a message with no From", async () => {
+    // The two conditions are separately keyed, and this is the separation.
+    // An author relaxes `untrustedFrom` to tolerate an external correspondent's
+    // odd headers; that judgement says nothing about mail the gate resolved no
+    // originator for at all. The latter is `absentFrom`, which this policy
+    // leaves at its `reject` default.
+    const sender = "alpha@test.interchange";
+    const crypto = await makeCrypto();
+    const raw = stripFromHeader(await signedMessage(crypto, sender));
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-relaxed-untrusted-from",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(sender, crypto),
+    );
+
+    const outcome = outcomeForVerdict(verdict);
+    expect(outcome).toBe("absentFrom");
+    // Indexed the way the delivery seam indexes it: the resolved map is total,
+    // so the outcome the gate produced selects the author's decision directly.
+    expect(resolveInboundMailPolicy({ untrustedFrom: "admit" })[outcome]).toBe(
+      "reject",
+    );
+  });
+
+  test("a cache miss with a parseable From reports the address it bound", async () => {
+    // A parseable From under a non-valid signature records `messageFrom` and
+    // the comparison's result, and must NOT be mistaken for `unparseable`, nor
+    // for the `absent` of a message that names no originator at all.
     const sender = "alpha@test.interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, sender);
@@ -371,17 +676,21 @@ describe("verifyInboundSignature", () => {
     );
 
     expect(verdict.signature).toBe("unknown");
-    expect(verdict.fromMatch).toBe("unchecked");
+    expect(verdict.fromMatch).toBe("match");
     expect(verdict.messageFrom).toBe(sender);
   });
 
-  test("valid signature with an unparseable stamped sender stays unchecked, not unparseable", async () => {
-    // The load-bearing asymmetry: a present-and-parseable message From under a
-    // VALID signature, but the stamped authenticatedSender itself is not a bare
-    // addr-spec (a two-@ string extractAddrSpec refuses). The binding must stay
-    // `unchecked` -- the signature is the primary signal, and the check must not
-    // turn an unparseable STAMP into a false `unparseable` From verdict (that
-    // state is reserved for a present-but-malformed message From).
+  test("an unparseable stamped sender faults, even under a valid signature", async () => {
+    // A present-and-parseable message From under a VALID signature, but the
+    // stamped authenticatedSender itself is not a bare addr-spec (a two-@
+    // string extractAddrSpec refuses). The stamp is the identity the whole
+    // verification is about, so one that cannot be parsed is a fault in the
+    // verification's own input: `error`, which is pinned to reject.
+    //
+    // The verdict carries a null `messageFrom` and headlines `error` even
+    // though the message's own From is perfectly readable. The stamp is parsed
+    // above the point where the visible From is read, so the gate reports no
+    // originator at all rather than one it holds and could not compare.
     const badSender = "alpha@test@interchange";
     const crypto = await makeCrypto();
     const raw = await signedMessage(crypto, "alpha@test.interchange");
@@ -396,9 +705,83 @@ describe("verifyInboundSignature", () => {
       cacheFor(badSender, crypto),
     );
 
+    expect(verdict.signature).toBe("error");
+    expect(verdict.fromMatch).toBe("notEvaluated");
+    expect(verdict.messageFrom).toBeNull();
+    expect(outcomeForVerdict(verdict)).toBe("error");
+  });
+
+  test("an unparseable stamped sender faults when no key is cached", async () => {
+    // The stamp is parsed above the cache lookup, so a malformed stamp faults
+    // where a cache miss would otherwise have produced `unknown` -- an outcome
+    // an author may legitimately relax to admit across a key rotation.
+    const badSender = "alpha@test@interchange";
+    const crypto = await makeCrypto();
+    const raw = await signedMessage(crypto, "alpha@test.interchange");
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: badSender,
+        messageId: "mid-bad-sender-miss",
+        agentAddress: AGENT_ADDRESS,
+      },
+      emptyCache,
+    );
+
+    expect(verdict.signature).toBe("error");
+    expect(verdict.fromMatch).toBe("notEvaluated");
+  });
+
+  test("an unparseable stamped sender faults on a message with no From", async () => {
+    // The stamp is parsed above the no-From early return too, so a malformed
+    // stamp faults even where there is no visible originator to bind it to.
+    const badSender = "alpha@test@interchange";
+    const crypto = await makeCrypto();
+    const raw = new TextEncoder().encode(
+      [
+        "To: beta@test.interchange",
+        "Subject: no from",
+        "Content-Type: text/plain",
+        "",
+        "no from header",
+      ].join("\r\n"),
+    );
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: badSender,
+        messageId: "mid-bad-sender-no-from",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(badSender, crypto),
+    );
+
+    expect(verdict.signature).toBe("error");
+    expect(verdict.fromMatch).toBe("notEvaluated");
+  });
+
+  test("the cached key is resolved under the raw stamp, not the parsed one", async () => {
+    // extractAddrSpec lowercases, so looking the key up under the parsed stamp
+    // would miss a cache keyed on the stamp the hub actually sent. The lookup
+    // uses the raw stamp; only the From-binding compares the parsed form.
+    const sender = "Alpha@Test.Interchange";
+    const crypto = await makeCrypto();
+    const raw = await signedMessage(crypto, "alpha@test.interchange");
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: sender,
+        messageId: "mid-raw-stamp-key",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(sender, crypto),
+    );
+
     expect(verdict.signature).toBe("valid");
-    expect(verdict.messageFrom).toBe("alpha@test.interchange");
-    expect(verdict.fromMatch).toBe("unchecked");
+    expect(verdict.fromMatch).toBe("match");
   });
 
   test("case-variant From still matches the stamp", async () => {
@@ -423,45 +806,58 @@ describe("verifyInboundSignature", () => {
   });
 });
 
-describe("outcomeForVerdict", () => {
-  function verdict(
-    signature: InboundSignatureVerdict["signature"],
-    fromMatch: InboundSignatureVerdict["fromMatch"],
-  ): InboundSignatureVerdict {
-    return {
-      signature,
-      fromMatch,
-      authenticatedSender: AGENT_ADDRESS,
-      messageFrom: null,
-    };
-  }
+function verdict(
+  signature: InboundSignatureVerdict["signature"],
+  fromMatch: InboundSignatureVerdict["fromMatch"],
+): InboundSignatureVerdict {
+  return {
+    signature,
+    fromMatch,
+    authenticatedSender: AGENT_ADDRESS,
+    messageFrom: null,
+  };
+}
 
-  // Every reachable (signature, fromMatch) pair mapped to its outcome. match
-  // and mismatch only occur atop a valid signature; unparseable can accompany
-  // any non-error status. error carries fromMatch unchecked in practice, but
-  // the mapping treats error as dominant regardless of the From axis.
+describe("outcomeForVerdict", () => {
+  // Every (signature, fromMatch) pair mapped to its outcome. match, mismatch,
+  // absent and unparseable each accompany any non-error signature status, since
+  // the From is evaluated whatever the signature check found. notEvaluated is
+  // reachable only on an `error` verdict; the notEvaluated rows below a
+  // non-error status pin the mapping of a pair the gate does not produce, which
+  // `decideInboundAdmission` separately refuses. error is dominant regardless of
+  // the From axis.
   const table: [
     InboundSignatureVerdict["signature"],
     InboundSignatureVerdict["fromMatch"],
     InboundMailOutcome,
   ][] = [
-    ["error", "unchecked", "error"],
+    ["error", "notEvaluated", "error"],
     ["error", "unparseable", "error"],
     ["error", "match", "error"],
     ["error", "mismatch", "error"],
 
     ["valid", "match", "clean"],
-    ["valid", "unchecked", "clean"],
-    ["valid", "mismatch", "untrustedFrom"],
+    ["valid", "absent", "absentFrom"],
+    ["valid", "notEvaluated", "untrustedFrom"],
+    ["valid", "mismatch", "mismatchedFrom"],
     ["valid", "unparseable", "untrustedFrom"],
 
-    ["invalid", "unchecked", "invalid"],
+    ["invalid", "match", "invalid"],
+    ["invalid", "absent", "invalid"],
+    ["invalid", "notEvaluated", "invalid"],
+    ["invalid", "mismatch", "mismatchedFrom"],
     ["invalid", "unparseable", "untrustedFrom"],
 
-    ["missing", "unchecked", "missing"],
+    ["missing", "match", "missing"],
+    ["missing", "absent", "missing"],
+    ["missing", "notEvaluated", "missing"],
+    ["missing", "mismatch", "mismatchedFrom"],
     ["missing", "unparseable", "untrustedFrom"],
 
-    ["unknown", "unchecked", "unknown"],
+    ["unknown", "match", "unknown"],
+    ["unknown", "absent", "unknown"],
+    ["unknown", "notEvaluated", "unknown"],
+    ["unknown", "mismatch", "mismatchedFrom"],
     ["unknown", "unparseable", "untrustedFrom"],
   ];
 
@@ -470,6 +866,49 @@ describe("outcomeForVerdict", () => {
       expect(outcomeForVerdict(verdict(signature, fromMatch))).toBe(expected);
     });
   }
+
+  test("clean is headlined only by a valid signature with a matched binding", () => {
+    // `clean` is the headline the gate claims on its own authority, so it may
+    // be claimed only where the binding was actually checked AND found to
+    // bind -- never for a binding the gate declined to evaluate. The headline
+    // reaches the log rather than the admission decision, and one that read
+    // `clean` for an unbound message would misreport what the gate found.
+    //
+    // Both axes are keyed on their own unions, so adding a member to either
+    // fails the type-check here rather than escaping the property untested.
+    const signatures: Record<
+      InboundSignatureVerdict["signature"],
+      InboundSignatureVerdict["signature"]
+    > = {
+      valid: "valid",
+      invalid: "invalid",
+      missing: "missing",
+      unknown: "unknown",
+      error: "error",
+    };
+    const bindings: Record<
+      InboundSignatureVerdict["fromMatch"],
+      InboundSignatureVerdict["fromMatch"]
+    > = {
+      match: "match",
+      mismatch: "mismatch",
+      absent: "absent",
+      notEvaluated: "notEvaluated",
+      unparseable: "unparseable",
+    };
+
+    for (const signature of Object.values(signatures)) {
+      for (const fromMatch of Object.values(bindings)) {
+        const clean =
+          outcomeForVerdict(verdict(signature, fromMatch)) === "clean";
+        expect({ signature, fromMatch, clean }).toEqual({
+          signature,
+          fromMatch,
+          clean: signature === "valid" && fromMatch === "match",
+        });
+      }
+    }
+  });
 });
 
 describe("resolveInboundMailPolicy", () => {
@@ -479,6 +918,7 @@ describe("resolveInboundMailPolicy", () => {
     clean: "admit",
     error: "reject",
     untrustedFrom: "reject",
+    mismatchedFrom: "reject",
     absentFrom: "reject",
     invalid: "reject",
     missing: "reject",
@@ -503,6 +943,7 @@ describe("resolveInboundMailPolicy", () => {
       clean: "admit",
       error: "reject",
       untrustedFrom: "admit",
+      mismatchedFrom: "reject",
       absentFrom: "reject",
       invalid: "reject",
       missing: "admit",
@@ -515,6 +956,7 @@ describe("resolveInboundMailPolicy", () => {
     // relax `error` -- a fault we could not check through is never admitted.
     const authored: InboundMailPolicy = {
       untrustedFrom: "admit",
+      mismatchedFrom: "admit",
       absentFrom: "admit",
       invalid: "admit",
       missing: "admit",
@@ -525,10 +967,371 @@ describe("resolveInboundMailPolicy", () => {
       clean: "admit",
       error: "reject",
       untrustedFrom: "admit",
+      mismatchedFrom: "admit",
       absentFrom: "admit",
       invalid: "admit",
       missing: "admit",
       unknown: "admit",
     });
   });
+});
+
+describe("decideInboundAdmission", () => {
+  // The neutral policy an author who declared nothing resolves to: `clean`
+  // admits, every author-controllable outcome rejects.
+  const NEUTRAL = resolveInboundMailPolicy(undefined);
+  // Every author-controllable outcome relaxed to admit. `clean` admits and
+  // `error` stays pinned to reject, neither being an author's to set.
+  const RELAXED = resolveInboundMailPolicy({
+    untrustedFrom: "admit",
+    mismatchedFrom: "admit",
+    absentFrom: "admit",
+    invalid: "admit",
+    missing: "admit",
+    unknown: "admit",
+  });
+  // The policy an address with no live deployment behind it resolves to: even
+  // `clean` is closed. Spelled out here rather than imported so this file's
+  // decision tests do not depend on the registry module.
+  const FULLY_CLOSED: ResolvedInboundMailPolicy = {
+    clean: "reject",
+    error: "reject",
+    untrustedFrom: "reject",
+    mismatchedFrom: "reject",
+    absentFrom: "reject",
+    invalid: "reject",
+    missing: "reject",
+    unknown: "reject",
+  };
+
+  function admits(
+    signature: InboundSignatureVerdict["signature"],
+    fromMatch: InboundSignatureVerdict["fromMatch"],
+    policy: ResolvedInboundMailPolicy,
+  ): boolean {
+    return (
+      decideInboundAdmission(verdict(signature, fromMatch), policy)
+        .rejectedBy === null
+    );
+  }
+
+  test("a relaxed signature status still admits when the From agrees with the stamp", () => {
+    // The over-correction guard. A message whose visible From names the sender
+    // the hub stamped raises nothing on the binding axis, so the author's
+    // `invalid` decision is the only one the admission reads. Were the binding
+    // to complain here, an author who relaxed `invalid` would find their
+    // decision quietly overridden by an axis that found nothing wrong.
+    const decision = decideInboundAdmission(
+      verdict("invalid", "match"),
+      resolveInboundMailPolicy({ invalid: "admit" }),
+    );
+
+    expect(decision.findings).toEqual(["invalid"]);
+    expect(decision.rejectedBy).toBeNull();
+  });
+
+  // A From that contradicts the stamp is a finding under EVERY signature
+  // status, keyed on its own `mismatchedFrom`. Relaxing a signature key is a
+  // decision about how the originator's identity was ESTABLISHED; accepting a
+  // message that names one identity while the hub stamped another is a decision
+  // about identity itself, and the two are held separately.
+  //
+  // What this does not buy: it does not make a relaxed signature key safe. A
+  // sender who sets the stamp and the From to the same forged address is
+  // internally consistent, reaches `match`, and is admitted -- that is inherent
+  // in admitting an identity no key verified. What it removes is the inversion
+  // of admitting a self-contradictory claim while refusing a message that
+  // honestly names nobody, which is backwards and which no operator could state
+  // as a policy.
+  for (const signature of ["invalid", "missing", "unknown"] as const) {
+    const relaxedSignature = resolveInboundMailPolicy({ [signature]: "admit" });
+
+    test(`relaxing ${signature} does not admit a From that contradicts the stamp`, () => {
+      const decision = decideInboundAdmission(
+        verdict(signature, "mismatch"),
+        relaxedSignature,
+      );
+
+      expect(decision.findings).toEqual([signature, "mismatchedFrom"]);
+      expect(decision.rejectedBy).toBe("mismatchedFrom");
+    });
+
+    test(`relaxing ${signature} admits a From that agrees with the stamp`, () => {
+      const decision = decideInboundAdmission(
+        verdict(signature, "match"),
+        relaxedSignature,
+      );
+
+      expect(decision.findings).toEqual([signature]);
+      expect(decision.rejectedBy).toBeNull();
+    });
+
+    test(`relaxing mismatchedFrom alone does not admit a ${signature} signature behind it`, () => {
+      const decision = decideInboundAdmission(
+        verdict(signature, "mismatch"),
+        resolveInboundMailPolicy({ mismatchedFrom: "admit" }),
+      );
+
+      expect(decision.findings).toEqual([signature, "mismatchedFrom"]);
+      expect(decision.rejectedBy).toBe(signature);
+    });
+
+    test(`a ${signature} signature behind a mismatched From needs both keys relaxed`, () => {
+      const decision = decideInboundAdmission(
+        verdict(signature, "mismatch"),
+        resolveInboundMailPolicy({
+          [signature]: "admit",
+          mismatchedFrom: "admit",
+        }),
+      );
+
+      expect(decision.findings).toEqual([signature, "mismatchedFrom"]);
+      expect(decision.rejectedBy).toBeNull();
+    });
+  }
+
+  test("untrustedFrom and mismatchedFrom do not stand in for each other", () => {
+    // The two From-axis complaints an author might read as one. Tolerating a
+    // correspondent's malformed header says nothing about accepting a From that
+    // names somebody other than the stamped sender, and the reverse holds too.
+    const mismatch = decideInboundAdmission(
+      verdict("valid", "mismatch"),
+      resolveInboundMailPolicy({ untrustedFrom: "admit" }),
+    );
+    expect(mismatch.rejectedBy).toBe("mismatchedFrom");
+
+    const unparseable = decideInboundAdmission(
+      verdict("valid", "unparseable"),
+      resolveInboundMailPolicy({ mismatchedFrom: "admit" }),
+    );
+    expect(unparseable.rejectedBy).toBe("untrustedFrom");
+  });
+
+  test("relaxing unknown does not admit a message that also names no originator", () => {
+    // Two axes, two author judgements. The author relaxed `unknown` to tolerate
+    // a sender whose key the cache has not got; they said nothing about mail
+    // that names no originator, and `absentFrom` is theirs to leave closed. A
+    // decision keyed on one reduced outcome would see only `unknown` here and
+    // admit, discarding the `absentFrom` judgement in the admitting direction.
+    const decision = decideInboundAdmission(
+      verdict("unknown", "absent"),
+      resolveInboundMailPolicy({ unknown: "admit", absentFrom: "reject" }),
+    );
+
+    expect(decision.findings).toEqual(["unknown", "absentFrom"]);
+    expect(decision.rejectedBy).toBe("absentFrom");
+  });
+
+  // Relaxing `untrustedFrom` tolerates an external correspondent's odd
+  // headers. It is not a decision to stop enforcing the SIGNATURE, yet a
+  // decision keyed on one reduced outcome makes it one: `untrustedFrom`
+  // outranks the signature axis, so the author's `invalid` / `missing` /
+  // `unknown` decision is never consulted and the message is admitted --
+  // attaching a malformed `From` switches the signature check off.
+  const relaxedUntrustedFrom = resolveInboundMailPolicy({
+    untrustedFrom: "admit",
+  });
+  for (const signature of ["invalid", "missing", "unknown"] as const) {
+    test(`relaxing untrustedFrom does not admit a ${signature} signature behind an unparseable From`, () => {
+      const decision = decideInboundAdmission(
+        verdict(signature, "unparseable"),
+        relaxedUntrustedFrom,
+      );
+
+      expect(decision.findings).toEqual([signature, "untrustedFrom"]);
+      expect(decision.rejectedBy).toBe(signature);
+    });
+  }
+
+  test("an author who relaxed both axes still admits an unparseable From", () => {
+    // The complement of the four cases above, and the proof that weighing the
+    // whole finding set does not simply over-reject: where the author relaxed
+    // every finding the verdict raised, the message is admitted.
+    const decision = decideInboundAdmission(
+      verdict("invalid", "unparseable"),
+      resolveInboundMailPolicy({
+        untrustedFrom: "admit",
+        invalid: "admit",
+        missing: "admit",
+        unknown: "admit",
+      }),
+    );
+
+    expect(decision.findings).toEqual(["invalid", "untrustedFrom"]);
+    expect(decision.rejectedBy).toBeNull();
+  });
+
+  test("error rejects under every policy, including one that spells error admit", () => {
+    // `error` short-circuits: the fault stopped the check from running, so
+    // there is no finding set to weigh. It does not read the policy at all,
+    // which is why a hand-built map that admits `error` cannot relax it.
+    const admitsEverything: ResolvedInboundMailPolicy = {
+      clean: "admit",
+      error: "admit",
+      untrustedFrom: "admit",
+      mismatchedFrom: "admit",
+      absentFrom: "admit",
+      invalid: "admit",
+      missing: "admit",
+      unknown: "admit",
+    };
+
+    for (const policy of [NEUTRAL, RELAXED, FULLY_CLOSED, admitsEverything]) {
+      for (const fromMatch of [
+        "notEvaluated",
+        "absent",
+        "unparseable",
+        "match",
+        "mismatch",
+      ] as const) {
+        const decision = decideInboundAdmission(
+          verdict("error", fromMatch),
+          policy,
+        );
+        expect(decision.findings).toEqual([]);
+        expect(decision.rejectedBy).toBe("error");
+      }
+    }
+  });
+
+  test("valid and match raises nothing and admits under every policy with clean open", () => {
+    for (const policy of [NEUTRAL, RELAXED]) {
+      const decision = decideInboundAdmission(
+        verdict("valid", "match"),
+        policy,
+      );
+      expect(decision.findings).toEqual([]);
+      expect(decision.rejectedBy).toBeNull();
+    }
+  });
+
+  test("the fully-closed policy rejects even a verdict that raises nothing", () => {
+    // An address with no live deployment behind it has no author intent to
+    // honor, so it admits nothing. An empty finding set resolves to the
+    // `clean` key rather than to admission, which is what keeps that true.
+    const decision = decideInboundAdmission(
+      verdict("valid", "match"),
+      FULLY_CLOSED,
+    );
+
+    expect(decision.findings).toEqual([]);
+    expect(decision.rejectedBy).toBe("clean");
+  });
+
+  test("a binding that did not bind is refused under every signature status", () => {
+    // `notEvaluated` raises no finding: it is the placeholder on an `error`
+    // verdict, and `error` short-circuits above the finding set, so no verdict
+    // the gate produces pairs it with a non-error signature status. The
+    // decision refuses the pair anyway, and refuses it whatever the signature
+    // axis found -- the binding raises nothing of its own, so keying the
+    // refusal on an empty finding set would let an author who relaxed the
+    // signature status admit an originator the gate never checked.
+    for (const signature of [
+      "valid",
+      "invalid",
+      "missing",
+      "unknown",
+    ] as const) {
+      const decision = decideInboundAdmission(
+        verdict(signature, "notEvaluated"),
+        RELAXED,
+      );
+
+      expect({ signature, rejectedBy: decision.rejectedBy }).toEqual({
+        signature,
+        rejectedBy: "error",
+      });
+    }
+  });
+
+  test("an empty finding set is claimed only by a valid signature that bound", () => {
+    // No (signature, binding) pair other than valid/match reaches admission
+    // with nothing to complain about. Asserted under the most permissive policy
+    // an author can write, so a pair that slipped through would show up here
+    // rather than being masked by a rejecting default.
+    //
+    // Both axes are keyed on their own unions, so adding a member to either
+    // fails the type-check here rather than escaping the property untested.
+    const signatures: Record<
+      InboundSignatureVerdict["signature"],
+      InboundSignatureVerdict["signature"]
+    > = {
+      valid: "valid",
+      invalid: "invalid",
+      missing: "missing",
+      unknown: "unknown",
+      error: "error",
+    };
+    const bindings: Record<
+      InboundSignatureVerdict["fromMatch"],
+      InboundSignatureVerdict["fromMatch"]
+    > = {
+      match: "match",
+      mismatch: "mismatch",
+      absent: "absent",
+      notEvaluated: "notEvaluated",
+      unparseable: "unparseable",
+    };
+
+    for (const signature of Object.values(signatures)) {
+      for (const fromMatch of Object.values(bindings)) {
+        const decision = decideInboundAdmission(
+          verdict(signature, fromMatch),
+          RELAXED,
+        );
+        const uncomplaining =
+          decision.findings.length === 0 && decision.rejectedBy === null;
+        expect({ signature, fromMatch, uncomplaining }).toEqual({
+          signature,
+          fromMatch,
+          uncomplaining: signature === "valid" && fromMatch === "match",
+        });
+      }
+    }
+  });
+
+  // Every (signature, binding) pair the gate produces, crossed with the two
+  // policies that bracket what an author can express: the neutral policy that
+  // relaxes nothing, and the policy that relaxes every outcome an author
+  // controls. `error` is excluded -- it short-circuits and has its own test
+  // above. `notEvaluated` below a non-error status is not a pair the gate
+  // produces; it is listed because the decision refuses it regardless.
+  const decisions: [
+    InboundSignatureVerdict["signature"],
+    InboundSignatureVerdict["fromMatch"],
+    boolean,
+    boolean,
+  ][] = [
+    // signature, binding, admitted under NEUTRAL, admitted under RELAXED
+    ["valid", "match", true, true],
+    ["valid", "absent", false, true],
+    ["valid", "notEvaluated", false, false],
+    ["valid", "mismatch", false, true],
+    ["valid", "unparseable", false, true],
+
+    ["invalid", "match", false, true],
+    ["invalid", "absent", false, true],
+    ["invalid", "notEvaluated", false, false],
+    ["invalid", "mismatch", false, true],
+    ["invalid", "unparseable", false, true],
+
+    ["missing", "match", false, true],
+    ["missing", "absent", false, true],
+    ["missing", "notEvaluated", false, false],
+    ["missing", "mismatch", false, true],
+    ["missing", "unparseable", false, true],
+
+    ["unknown", "match", false, true],
+    ["unknown", "absent", false, true],
+    ["unknown", "notEvaluated", false, false],
+    ["unknown", "mismatch", false, true],
+    ["unknown", "unparseable", false, true],
+  ];
+
+  for (const [signature, fromMatch, underNeutral, underRelaxed] of decisions) {
+    test(`${signature}/${fromMatch} -> neutral ${String(underNeutral)}, relaxed ${String(underRelaxed)}`, () => {
+      expect(admits(signature, fromMatch, NEUTRAL)).toBe(underNeutral);
+      expect(admits(signature, fromMatch, RELAXED)).toBe(underRelaxed);
+    });
+  }
 });
