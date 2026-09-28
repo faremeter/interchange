@@ -213,6 +213,32 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   function invalidateGitCache(dir: string): void {
     gitCaches.delete(dir);
   }
+  // Every write has one parent and receivePack refuses merge commits, so
+  // HEAD's history is a single chain and its last entry is the root. A pack
+  // that ships only its tip leaves that chain without its older commits, and
+  // then there is no root to find.
+  async function initialCommit(dir: string): Promise<string> {
+    let history: Awaited<ReturnType<typeof git.log>>;
+    try {
+      history = await git.log({
+        fs,
+        dir,
+        cache: cacheFor(dir),
+        ref: "HEAD",
+      });
+    } catch (err) {
+      if (!hasCode(err) || err.code !== "NotFoundError") throw err;
+      throw new Error(
+        `repository ${dir} is missing commits between HEAD and its initial commit`,
+        { cause: err },
+      );
+    }
+    const root = history.at(-1);
+    if (root === undefined) {
+      throw new Error(`repository ${dir} has no initial commit`);
+    }
+    return root.oid;
+  }
 
   // Per-(repoId, ref) seq cache. Value is the seq of the ref's
   // current tip; the next commit on the ref gets `cached + 1`. The
@@ -1469,12 +1495,17 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
     // ref's tip, and the splice runs against THAT commit's root tree,
     // read under the same lock, so the pre-image is race-free. A ref
     // that does not yet exist has no base tree (the splice starts from
-    // empty) and parents on HEAD, matching the prior index-reset path
-    // which seeded an empty index for a missing ref.
+    // empty) and parents on the repo's initial commit.
     const parentCommitSha =
       pinnedParent !== undefined
         ? pinnedParent.sha
         : await resolveRefSha(dir, ref);
+    // A never-written ref parents on the initial commit, not HEAD's tip: its
+    // tree starts from empty, so parenting it on a HEAD that has moved past
+    // the initial commit would read as deleting everything HEAD holds. It is
+    // resolved before anything is written, so a history it cannot walk fails
+    // the write without touching the working tree.
+    const commitParentSha = parentCommitSha ?? (await initialCommit(dir));
     let baseRootTreeOid: string | null = null;
     if (parentCommitSha !== null) {
       const { commit } = await git.readCommit({
@@ -1568,12 +1599,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       await fs.promises.writeFile(fullPath, contents);
     }
 
-    // The parent is the pinned tip, or HEAD for a never-written ref so a
-    // first write parents on the repo's initial commit. `oldSha` is
-    // precise: null only when the ref truly does not exist.
+    // `oldSha` is precise: null only when the ref truly does not exist.
     const oldSha = parentCommitSha;
-    const parentSha =
-      parentCommitSha ?? (await git.resolveRef({ fs, dir, ref: "HEAD" }));
 
     const commitSha = await git.commit({
       fs,
@@ -1582,7 +1609,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
       tree: newRootTreeOid,
       message: w.message,
       author: AUTHOR,
-      parent: [parentSha],
+      parent: [commitParentSha],
       ref,
       signingKey: "sshsig",
       onSign: async ({ payload }) => ({
