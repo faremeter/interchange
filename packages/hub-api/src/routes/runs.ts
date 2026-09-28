@@ -691,7 +691,7 @@ export function createRunRoutes({
           WorkflowRunTriggerResponse,
         ),
         400: jsonResponse(
-          "Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.",
+          "Attachment validation error. Each variant carries a structured code (too_many_attachments, oversize_attachment, disallowed_mime_type, invalid_attachment_name, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.",
           ErrorResponse,
         ),
         404: jsonResponse("Run not found", ErrorResponse),

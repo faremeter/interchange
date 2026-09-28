@@ -91,11 +91,12 @@ export const MailResponse = type({
 });
 export type MailResponse = typeof MailResponse.infer;
 
-// Structured attachment-rejection errors returned by POST /:runId/mail.
-// Each variant carries a machine-actionable `code` plus the fields a client
-// needs to locate and explain the rejection, alongside a human-readable
-// `message`. This is the wire contract for the route's attachment 400s; the
-// route handler is the single producer.
+// Structured attachment-rejection errors. Each variant carries a
+// machine-actionable `code` plus the fields a client needs to locate and
+// explain the rejection, alongside a human-readable `message`. The shared
+// validator emits every variant but `invalid_encoding`, which only the
+// mail tools produce; the mail routes return the union as their
+// attachment 400 body and the mail tools return its `code` and `message`.
 export const AttachmentError = type.or(
   {
     code: "'oversize_attachment'",
