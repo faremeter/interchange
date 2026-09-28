@@ -2435,6 +2435,12 @@ export type FireMailTriggerOpts = {
    * `References` includes the thread root. Omitted (no header) by default.
    */
   references?: string[];
+  /**
+   * RFC 2822 `Subject` header of the synthesized mail. Omitted (no header) by
+   * default. Pass `""` to emit a `Subject:` header with no text -- the shape a
+   * sender produces when its subject argument is empty.
+   */
+  subject?: string;
 };
 
 /**
@@ -2497,7 +2503,7 @@ export async function fireMailTrigger(
     cc: undefined,
     date: new Date(),
     messageId,
-    subject: undefined,
+    subject: opts.subject,
     inReplyTo: opts.inReplyTo,
     references: opts.references,
     mimeVersion: "1.0",
