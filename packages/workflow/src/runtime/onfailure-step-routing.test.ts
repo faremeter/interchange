@@ -20,6 +20,7 @@ import {
   createInMemorySignalChannel,
   createNoopDrainController,
   defineWorkflow,
+  gate,
   runtimeRun,
   sleep,
   step,
@@ -29,6 +30,8 @@ import {
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import { createTerminalChildHandle } from "./suspendable-child-handle";
+
+import { holdFirstUntilSecond } from "./skip-race.test-helpers";
 
 // A sibling whose invocation settles only after several microtasks, waking the
 // drive loop's Promise.race in the middle of a concurrent prune.
@@ -213,6 +216,45 @@ describe("onFailure step routing", () => {
     });
   });
 
+  test("a step that fails before it starts skips its handler branch", async () => {
+    // A throwing input selector fails the unit before its StepStarted, a
+    // failure that does not route. The handler reads the trigger, so it would
+    // be invoked if the scheduler offered it.
+    const def = defineWorkflow({
+      id: "of-prestart",
+      trigger: { type: "manual" },
+      steps: {
+        unit: step({
+          agent: agent("unit"),
+          onFailure: "rescue",
+          input: { from: "trigger.payload.missing" },
+        }),
+        rescue: step({
+          agent: agent("rescue"),
+          after: ["unit"],
+          input: { from: "trigger.payload" },
+        }),
+      },
+    });
+    const invoked: string[] = [];
+    const { env, repoStore } = buildEnv(def, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        return { output: null };
+      },
+    });
+    const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
+      .complete;
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).toEqual([]);
+    expect(await skipSentinelOf(repoStore, env, "rescue")).toEqual({
+      skipped: true,
+      onFailureStepId: "unit",
+      settled: "failed",
+    });
+  });
+
   test("a diamond join reachable from the handler stays live on failure", async () => {
     const def = defineWorkflow({
       id: "of-diamond",
@@ -241,6 +283,37 @@ describe("onFailure step routing", () => {
     expect(invoked).toContain("rescue");
     expect(invoked).toContain("join");
     expect(invoked).not.toContain("normal");
+  });
+
+  test("two succeeding units skip a join below both handlers once", async () => {
+    const def = defineWorkflow({
+      id: "of-shared-join",
+      trigger: { type: "manual" },
+      steps: {
+        u1: step({ agent: agent("u1"), onFailure: "h1" }),
+        u2: step({ agent: agent("u2"), onFailure: "h2" }),
+        h1: step({ agent: agent("h1"), after: ["u1"] }),
+        h2: step({ agent: agent("h2"), after: ["u2"] }),
+        join: step({ agent: agent("join"), after: ["h1", "h2"] }),
+      },
+    });
+    const invoked: string[] = [];
+    const { env, repoStore } = buildEnv(def, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        return { output: null };
+      },
+    });
+    env.blobs = holdFirstUntilSecond(env.blobs, "join.input");
+    const res = await runtimeRun(def, env, { runId: "r", triggerPayload: null })
+      .complete;
+
+    expect(res.terminalStatus).toBe("completed");
+    expect([...invoked].sort()).toEqual(["u1", "u2"]);
+    const joinStarts = (await repoStore.read("r")).filter(
+      (e) => e.kind === "StepStarted" && e.stepId === "join",
+    );
+    expect(joinStarts).toHaveLength(1);
   });
 
   test("a routed failure under drain still prunes the normal branch", async () => {
@@ -355,5 +428,168 @@ describe("onFailure step routing", () => {
     expect(invoked).toContain("unit");
     expect(invoked).not.toContain("rescue");
     expect(invoked).not.toContain("r2");
+  });
+});
+
+// A gate may take the handler as its branch, so the handler runs without its
+// unit, and the handler may also wait on a step its unit does not lead to. A
+// failure that does not route still never starts the handler.
+describe("onFailure handler shapes", () => {
+  const gated = defineWorkflow({
+    id: "of-gated",
+    trigger: { type: "manual" },
+    steps: {
+      pick: gate({
+        when: { from: "trigger.payload.flagged" },
+        then: "rescue",
+        else: "unit",
+      }),
+      unit: step({
+        agent: agent("unit"),
+        after: ["pick"],
+        onFailure: "rescue",
+        input: { from: "trigger.payload.task" },
+      }),
+      // A gate's pick skips the unit, whose output a selector cannot read.
+      rescue: step({
+        agent: agent("rescue"),
+        after: ["unit"],
+        input: { from: "trigger.payload" },
+      }),
+    },
+  });
+
+  const joined = defineWorkflow({
+    id: "of-joined",
+    trigger: { type: "manual" },
+    steps: {
+      lookup: step({ agent: agent("lookup") }),
+      unit: step({
+        agent: agent("unit"),
+        onFailure: "rescue",
+        input: { from: "trigger.payload.task" },
+      }),
+      rescue: step({
+        agent: agent("rescue"),
+        after: ["unit", "lookup"],
+        input: { from: "steps.lookup.output" },
+      }),
+    },
+  });
+
+  async function runShape(
+    def: WorkflowDefinition,
+    triggerPayload: unknown,
+    unitFails: boolean,
+  ) {
+    const invoked: string[] = [];
+    const inputs = new Map<string, unknown>();
+    const { env, repoStore } = buildEnv(def, {
+      invokeStep: async (req) => {
+        invoked.push(req.agent.id);
+        inputs.set(req.agent.id, req.input);
+        if (req.agent.id === "unit" && unitFails) {
+          throw new Error("unit boom");
+        }
+        return { output: `${req.agent.id}-out` };
+      },
+    });
+    const res = await runtimeRun(def, env, { runId: "r", triggerPayload })
+      .complete;
+    return { res, invoked, inputs, env, repoStore };
+  }
+
+  test("a gate that picks the handler runs it without its unit", async () => {
+    const { res, invoked } = await runShape(
+      gated,
+      { flagged: true, task: "t" },
+      false,
+    );
+
+    expect(res.terminalStatus).toBe("completed");
+    expect(invoked).toEqual(["rescue"]);
+  });
+
+  test("a gate that picks the unit routes the unit's failure to the handler", async () => {
+    const { res, invoked } = await runShape(
+      gated,
+      { flagged: false, task: "t" },
+      true,
+    );
+
+    expect(res.terminalStatus).toBe("completed");
+    expect(invoked).toEqual(["unit", "rescue"]);
+  });
+
+  test("a gate that picks a succeeding unit prunes the handler", async () => {
+    const { res, invoked, env, repoStore } = await runShape(
+      gated,
+      { flagged: false, task: "t" },
+      false,
+    );
+
+    expect(res.terminalStatus).toBe("completed");
+    expect(invoked).toEqual(["unit"]);
+    expect(await skipSentinelOf(repoStore, env, "rescue")).toEqual({
+      skipped: true,
+      onFailureStepId: "unit",
+      settled: "completed",
+    });
+  });
+
+  test("a gate that picks a unit failing before it starts never starts the handler", async () => {
+    const { res, invoked, env, repoStore } = await runShape(
+      gated,
+      { flagged: false },
+      false,
+    );
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).toEqual([]);
+    expect(await skipSentinelOf(repoStore, env, "rescue")).toEqual({
+      skipped: true,
+      onFailureStepId: "unit",
+      settled: "failed",
+    });
+  });
+
+  test("a handler that also waits on a unit-independent step reads it after the route", async () => {
+    const { res, invoked, inputs } = await runShape(
+      joined,
+      { task: "t" },
+      true,
+    );
+
+    expect(res.terminalStatus).toBe("completed");
+    expect(invoked.sort()).toEqual(["lookup", "rescue", "unit"]);
+    expect(inputs.get("rescue")).toBe("lookup-out");
+  });
+
+  test("a succeeding unit prunes a handler that also waits on another step", async () => {
+    const { res, invoked, env, repoStore } = await runShape(
+      joined,
+      { task: "t" },
+      false,
+    );
+
+    expect(res.terminalStatus).toBe("completed");
+    expect(invoked.sort()).toEqual(["lookup", "unit"]);
+    expect(await skipSentinelOf(repoStore, env, "rescue")).toEqual({
+      skipped: true,
+      onFailureStepId: "unit",
+      settled: "completed",
+    });
+  });
+
+  test("a unit failing before it starts skips a handler that also waits on another step", async () => {
+    const { res, invoked, env, repoStore } = await runShape(joined, {}, false);
+
+    expect(res.terminalStatus).toBe("failed");
+    expect(invoked).not.toContain("rescue");
+    expect(await skipSentinelOf(repoStore, env, "rescue")).toEqual({
+      skipped: true,
+      onFailureStepId: "unit",
+      settled: "failed",
+    });
   });
 });
