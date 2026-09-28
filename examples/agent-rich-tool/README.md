@@ -78,9 +78,12 @@ handler })` — instead of `stringTool`. The full form lets the
      correlation ID here so the CLI can read it back without parsing
      the content text.
    - `pendingMarker` — the reactor-side handshake. `status` is
-     always `"pending"` for now; `correlationId` is the routing key;
-     `expectedFrom` is an optional hint about who should resolve
-     the gate.
+     always `"pending"` for now, and `correlationId` is the routing
+     key and the marker's only matching criterion. This example
+     wires no `CorrelationValidator`, so whoever delivers a message
+     carrying that ID resolves the gate, whatever `From` the message
+     claims. Treat a correlation ID as a capability. See MESSAGE.md
+     (Correlation Security).
 
 `src/cli.ts` drives the full flow:
 

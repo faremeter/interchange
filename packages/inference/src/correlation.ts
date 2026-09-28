@@ -11,6 +11,10 @@ import type { InboundMessage, PendingOperation } from "@intx/types/runtime";
  * Validates whether an inbound message is an authentic response to a
  * registered pending operation. Consumers provide this at reactor construction
  * time to enforce sender identity and signature checks.
+ *
+ * The reactor performs no sender check of its own, so a composition that
+ * supplies no validator resolves a pending operation for any message bearing a
+ * registered correlation ID. See MESSAGE.md (Correlation Security).
  */
 export interface CorrelationValidator {
   /**

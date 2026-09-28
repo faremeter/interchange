@@ -362,10 +362,6 @@ export function createReactor(config: ReactorConfig): Reactor {
     lastToolBatchSignature = null;
     toolBatchRepeatCount = 0;
     lastToolBatchNames = [];
-    // The bracket is keyed on its own run id; the message's own id is only a
-    // correlation label, and a message is not obliged to carry one. Opening
-    // the bracket regardless is what keeps every tool event inside the turn
-    // attributed -- skipping it would leave the turn unbracketed entirely.
     const data: {
       messageId?: string;
       messageRunId: string;
@@ -386,8 +382,8 @@ export function createReactor(config: ReactorConfig): Reactor {
     status: "completed" | "failed",
     error?: { message: string; kind?: string },
   ): void {
-    // Gated on the run id alone: the bracket has to close even for a message
-    // that named no id, or the run stays open for the rest of the session.
+    // Gated on the run id alone: a message that named no id still has to
+    // close its bracket, or the run stays open for the rest of the session.
     if (currentMessageRunId === null) return;
     const data: {
       messageRunId: string;
@@ -908,9 +904,6 @@ export function createReactor(config: ReactorConfig): Reactor {
           kind: "approval",
           registeredAt: Date.now(),
           gateId,
-          ...(marker.expectedFrom !== undefined
-            ? { expectedFrom: marker.expectedFrom }
-            : {}),
         };
         correlations.register(op);
         stateManager.addPendingOperation(op);

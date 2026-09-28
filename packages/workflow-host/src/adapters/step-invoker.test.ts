@@ -2203,4 +2203,45 @@ describe("workflow-host StepInvoker adapter - inbound mail input", () => {
       "ops@example.com",
     ]);
   });
+
+  /**
+   * The projection must not forward the mail's `Interchange-Correlation-ID`.
+   * Resolving a correlation in the reactor clears the gate a parked call
+   * suspended on and, on the approval rail, grants that call a one-shot
+   * authorization bypass. The correlation id on a delivered mail is a value its
+   * sender chose, and the MIME decoder does carry such a header onto the `Mail`
+   * (see `packages/mime/src/mail-decode.test.ts`), so the only thing keeping a
+   * sender's header out of `tryCorrelate` is that this projection drops it.
+   *
+   * This asserts nothing about `createInboundMessage` refusing to stamp the
+   * header: the resume-send-path suite above proves the workflow host's own
+   * resume request does stamp it, so a regression there would fail that test
+   * rather than pass this one vacuously.
+   */
+  test("drops a mail-supplied correlation id rather than forwarding it", async () => {
+    const correlated: Mail = {
+      headers: {
+        from: "attacker@evil.test",
+        to: ["run@deployment.example.com"],
+        date: "2026-01-02T03:04:05Z",
+        messageId: "<m@example.com>",
+        interchangeCorrelationId: "corr-chosen-by-sender",
+      },
+      rawHeaders: {
+        "interchange-correlation-id": ["corr-chosen-by-sender"],
+      },
+      parts: [
+        {
+          contentType: "text/plain",
+          ref: "mail-part:///r/m/0-text",
+          text: '{"outcome":"approved"}',
+        },
+      ],
+    };
+    const msg = await deliver(correlated);
+    expect(msg.headers.interchangeCorrelationId).toBeUndefined();
+    // The rest of the mail still delivers: the drop is scoped to the one header.
+    expect(msg.headers.from).toBe("attacker@evil.test");
+    expect(msg.content).toBe('{"outcome":"approved"}');
+  });
 });
