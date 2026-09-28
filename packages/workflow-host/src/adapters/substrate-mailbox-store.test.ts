@@ -850,7 +850,9 @@ describe("substrate mailbox store", () => {
       COMMITTED_INDEX_VERSION + 1,
     ]) {
       await rewriteIndexVersion(handles, version);
-      await expect(openStore(handles)).rejects.toThrow(/invalid .*index\.json/);
+      await expect(openStore(handles)).rejects.toThrow(
+        /index\.json is not valid/,
+      );
     }
   });
 });
