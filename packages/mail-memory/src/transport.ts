@@ -18,9 +18,8 @@ import type {
   Unsubscribe,
   CryptoProvider,
 } from "@intx/types/runtime";
-import { parseHeaderSection } from "@intx/mime";
+import { buildMessageHeaders, parseHeaderSection } from "@intx/mime";
 import {
-  buildMessageHeaders,
   createInMemoryMailboxStore,
   executeSearch,
   executeThread,

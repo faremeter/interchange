@@ -325,7 +325,7 @@ Every outbound message is signed with the sending agent's Ed25519 private key. T
 ### Signing Process
 
 1. The signed content is assembled — `multipart/mixed` for both conversation and structured messages
-2. Content is canonicalized: CRLF line endings, trailing whitespace removed, 7-bit encoding applied (base64 for binary parts, quoted-printable for 8-bit text)
+2. Content is canonicalized: CRLF line endings, trailing whitespace removed, every attachment part base64-encoded whatever its content type
 3. The payload is hashed (SHA-512, as required by Ed25519's internal construction)
 4. The hash is signed with the agent's Ed25519 private key
 5. The signature is encoded as an `application/pgp-signature` part

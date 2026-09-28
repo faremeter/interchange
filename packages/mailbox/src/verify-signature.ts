@@ -17,8 +17,8 @@ import { verifyDetachedSignature } from "@intx/crypto";
  * - `valid` — the detached signature verified against `publicKey`
  * - `invalid` — the signature check failed, or the message could not be
  *   parsed as a signed message
- * - `missing` — the message is not `multipart/signed`, or carries no
- *   `application/pgp-signature` part
+ * - `missing` — the message is not `multipart/signed`, declares no `boundary=`
+ *   parameter, or carries no `application/pgp-signature` part
  *
  * `raw` must be the original, unmodified message bytes: the signature is
  * recomputed over the exact canonical bytes of the signed part, so a

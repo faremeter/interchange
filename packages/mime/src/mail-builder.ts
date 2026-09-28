@@ -23,7 +23,11 @@ import type {
   MessageRef,
   OutboundMessage,
 } from "@intx/types/runtime";
-import { InterchangeType, SignatureStatus } from "@intx/types/runtime";
+import {
+  InterchangeType,
+  SignatureStatus,
+  isConversationType,
+} from "@intx/types/runtime";
 import { generateMessageId } from "./mime";
 
 /**
@@ -36,8 +40,6 @@ const DEFAULT_PAYLOAD_VERSION = "1";
 
 const MESSAGE_ID_RE = /^<[^<>\s@]+@[^<>\s@]+>$/;
 const ADDRESS_RE = /^[^@\s]+@[^@\s]+$/;
-
-const CONVERSATION_TYPE_PREFIX = "conversation.";
 
 // ---------------------------------------------------------------------------
 // InboundMessage builder
@@ -410,6 +412,9 @@ function requireAddress(value: unknown, field: string, fn: string): void {
   }
 }
 
+/**
+ * Validate an address list and normalize a bare string into a one-entry array.
+ */
 function normalizeAndValidateAddressArray(
   input: string | string[],
   field: string,
@@ -438,10 +443,6 @@ function validatePayloadBody(value: unknown, field: string, fn: string): void {
       })`,
     );
   }
-}
-
-function isConversationType(t: InterchangeType): boolean {
-  return t.startsWith(CONVERSATION_TYPE_PREFIX);
 }
 
 function validateInterchangeType(

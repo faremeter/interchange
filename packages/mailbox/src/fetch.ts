@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-non-null-assertion -- MIME multipart parsing with bounds checks */
 import { type } from "arktype";
 import type {
   MessageHeaders,
@@ -10,7 +9,6 @@ import type {
   MessageRef,
 } from "@intx/types/runtime";
 import { InterchangeType } from "@intx/types/runtime";
-import { base64Decode } from "@intx/types";
 import type { MailboxStore } from "./mailbox";
 import { requireMessage } from "./mailbox";
 import {
@@ -18,10 +16,16 @@ import {
   parseMimePart,
   extractBoundary,
   parseMultipart,
+  extractContentTypeMime,
   extractPartByPath,
   extractAttachments,
+  buildMessageHeaders,
+  decodePartBytes,
+  isRecognizedTransferEncoding,
+  reportedContentType,
+  transferEncodingMechanism,
 } from "@intx/mime";
-import { buildMessageHeaders } from "./headers";
+import type { ParsedMimePart } from "@intx/mime";
 import { verifyMimeSignature } from "./verify-signature";
 
 const MessagePayload = type({
@@ -62,7 +66,8 @@ export async function fetchStructure(
 }
 
 /**
- * Fetch a single MIME part by dot-separated path.
+ * Fetch a single MIME part by dot-separated path. `contentType` carries the
+ * RFC 2045 §6.4 relabel, since an undecodable part arrives undecoded.
  */
 export async function fetchPart(
   ref: MessageRef,
@@ -74,22 +79,57 @@ export async function fetchPart(
   const partBytes = extractPartByPath(raw, partPath);
   const part = parseMimePart(partBytes);
 
-  const enc = part.headers.get("content-transfer-encoding") ?? "7bit";
-  let content: Uint8Array;
-
-  if (enc.toLowerCase() === "base64") {
-    const b64 = new TextDecoder().decode(part.body).replace(/\s/g, "");
-    content = base64Decode(b64);
-  } else {
-    content = part.body;
-  }
-
   const result: MessagePart = {
-    contentType: part.contentType,
-    content,
+    contentType: reportedContentType(part.contentType, part.headers),
+    content: decodePartBytes(part.body, part.headers),
   };
-  if (enc !== "7bit") result.encoding = enc;
+  const mechanism = transferEncodingMechanism(part.headers);
+  if (mechanism !== "7bit") result.encoding = mechanism;
   return result;
+}
+
+/**
+ * Decode a leaf part's body into text, or undefined when the octets are not
+ * text: an unrecognized mechanism (RFC 2045 §6.4) or encoded data that will not
+ * decode. The octets stay reachable through `fetchPart`, which reports them
+ * under the §6.4 relabel.
+ */
+function decodePartText(part: ParsedMimePart): string | undefined {
+  if (!isRecognizedTransferEncoding(transferEncodingMechanism(part.headers))) {
+    return undefined;
+  }
+  let decoded: Uint8Array;
+  try {
+    decoded = decodePartBytes(part.body, part.headers);
+  } catch {
+    return undefined;
+  }
+  return new TextDecoder("utf-8", { fatal: false }).decode(decoded);
+}
+
+/**
+ * The leaf part a message's content lives in: part 1.1 under our assembler's
+ * multipart/mixed wrapper, part 1 when a peer signed a bare part, and the
+ * message itself when it is not multipart at the top level.
+ */
+function resolveContentPart(
+  raw: Uint8Array,
+  messageHeaders: Map<string, string>,
+  bodyOffset: number,
+): ParsedMimePart {
+  const declared = messageHeaders.get("content-type") ?? "text/plain";
+  if (!extractContentTypeMime(declared).startsWith("multipart/")) {
+    return {
+      contentType: declared,
+      headers: messageHeaders,
+      body: raw.slice(bodyOffset),
+    };
+  }
+  const part1 = parseMimePart(extractPartByPath(raw, "1"));
+  if (!extractContentTypeMime(part1.contentType).startsWith("multipart/")) {
+    return part1;
+  }
+  return parseMimePart(extractPartByPath(raw, "1.1"));
 }
 
 /**
@@ -103,7 +143,7 @@ export async function fetchFull(
 ): Promise<InboundMessage> {
   const msg = requireMessage(store, ref.uid, ref.mailbox);
   const raw = await store.readRaw(ref.uid);
-  const { headers } = parseHeaderSection(raw);
+  const { headers, bodyOffset } = parseHeaderSection(raw);
   const parsedHeaders = buildMessageHeaders(headers);
 
   const rawType = parsedHeaders.interchangeType;
@@ -126,48 +166,24 @@ export async function fetchFull(
     signatureStatus,
   };
 
-  try {
+  // A body that did not decode is not text, and both destinations here are
+  // text; the message is delivered without one rather than refused.
+  const text = decodePartText(resolveContentPart(raw, headers, bodyOffset));
+  if (text !== undefined) {
     if (isConversation) {
-      const part1 = parseMimePart(extractPartByPath(raw, "1"));
-      const part1Mime = part1.contentType.split(";")[0]!.trim().toLowerCase();
-      if (part1Mime.startsWith("multipart/")) {
-        // Conversation shape: multipart/mixed with the text body at 1.1.
-        const textPart = parseMimePart(extractPartByPath(raw, "1.1"));
-        result.content = new TextDecoder("utf-8", { fatal: false }).decode(
-          textPart.body,
-        );
-      } else {
-        // A conversation message is "literally a signed email", so a sender
-        // (e.g. a plain mail client) may sign a bare text/plain part with no
-        // multipart/mixed wrapper. This branch reads that body directly. Our
-        // own assembler always emits multipart/mixed; without this branch a
-        // bare text/plain message would fail the 1.1 lookup and silently lose
-        // its content to the catch below.
-        result.content = new TextDecoder("utf-8", { fatal: false }).decode(
-          part1.body,
-        );
-      }
+      result.content = text;
     } else {
-      // Structured messages carry their JSON payload at 1.1. Attachments on
-      // structured messages are intentionally not parsed: they have no
-      // producer today, so parsing them would handle a shape nobody sends.
-      const part11Bytes = extractPartByPath(raw, "1.1");
-      const part11 = parseMimePart(part11Bytes);
-      const jsonText = new TextDecoder("utf-8", { fatal: false }).decode(
-        part11.body,
-      );
-      const validated = MessagePayload(JSON.parse(jsonText));
+      // Attachments on structured messages are intentionally not parsed: they
+      // have no producer today.
+      const validated = MessagePayload(JSON.parse(text));
       if (validated instanceof type.errors) {
         throw new Error(`invalid message payload: ${validated.summary}`);
       }
       result.payload = validated;
     }
-  } catch {
-    // If we can't parse the content, return what we have with the signature status.
   }
 
-  // Attachment parsing is deliberately outside the catch above: a malformed
-  // attachment must surface as a thrown error, not be silently dropped.
+  // A malformed attachment throws rather than being silently dropped.
   if (isConversation) {
     const attachments = extractAttachments(raw);
     if (attachments.length > 0) {
@@ -180,9 +196,14 @@ export async function fetchFull(
 
 async function verifyMessageSignature(
   raw: Uint8Array,
-  fromAddress: string,
+  fromAddress: string | undefined,
   getCrypto: (fromAddress: string) => CryptoProvider | undefined,
 ): Promise<SignatureStatus> {
+  // No originator names no key to verify against, which is the same position
+  // as a sender we hold no key for.
+  if (fromAddress === undefined) {
+    return "unknown";
+  }
   const senderCrypto = getCrypto(fromAddress);
   if (senderCrypto === undefined) {
     return "unknown";
