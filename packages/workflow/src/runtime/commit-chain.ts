@@ -256,19 +256,41 @@ export async function commitBuffered(
   event: WorkflowEvent,
   guard?: (state: RunState) => void,
 ): Promise<RunState> {
-  return followChain(runId, async () => {
-    const fresh = await readStateWithPending(env, runId);
-    if (signalAlreadyRecorded(fresh, event)) return fresh;
+  return commitBufferedFrom(env, runId, (fresh) => {
+    if (signalAlreadyRecorded(fresh, event)) return [];
     // A throw here leaves the buffer unchanged. A check that must exclude
     // a concurrent writer of this same event belongs in the guard: the
-    // chain is the lock those writers share, and the fresh read above is
-    // the state both of them see.
+    // chain is the lock those writers share, and the state handed to it
+    // is the state both of them see.
     guard?.(fresh);
-    const adjustedEvent: WorkflowEvent = { ...event, seq: fresh.lastSeq + 1 };
-    const nextState = applyEvent(fresh, adjustedEvent);
-    getBuffer(runId).push(adjustedEvent);
+    return [event];
+  });
+}
+
+/**
+ * Like `commitBuffered`, but the caller builds the events from the
+ * canonical state inside the lock, so it can base a write on state no
+ * other commit changes in between. The events land together or not at
+ * all: each is validated in order and none is buffered unless all
+ * apply. An empty list commits nothing.
+ */
+export async function commitBufferedFrom(
+  env: CommitEnv,
+  runId: string,
+  build: (fresh: RunState) => readonly WorkflowEvent[],
+): Promise<RunState> {
+  return followChain(runId, async () => {
+    let state = await readStateWithPending(env, runId);
+    const adjusted: WorkflowEvent[] = [];
+    for (const event of build(state)) {
+      const adjustedEvent: WorkflowEvent = { ...event, seq: state.lastSeq + 1 };
+      state = applyEvent(state, adjustedEvent);
+      adjusted.push(adjustedEvent);
+    }
+    if (adjusted.length === 0) return state;
+    getBuffer(runId).push(...adjusted);
     wake(bufferWaiters, runId);
-    return nextState;
+    return state;
   });
 }
 
