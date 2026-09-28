@@ -187,6 +187,21 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   function invalidateGitCache(dir: string): void {
     gitCaches.delete(dir);
   }
+  // Every write has one parent and receivePack refuses merge commits, so
+  // HEAD's history is a single chain and its last entry is the root.
+  async function initialCommit(dir: string): Promise<string> {
+    const history = await git.log({
+      fs,
+      dir,
+      cache: cacheFor(dir),
+      ref: "HEAD",
+    });
+    const root = history.at(-1);
+    if (root === undefined) {
+      throw new Error(`repository ${dir} has no initial commit`);
+    }
+    return root.oid;
+  }
 
   // Per-(repoId, ref) seq cache. Value is the seq of the ref's
   // current tip; the next commit on the ref gets `cached + 1`. The
@@ -1376,8 +1391,8 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     // ref's tip, and the splice runs against THAT commit's root tree,
     // read under the same lock, so the pre-image is race-free. A ref
     // that does not yet exist has no base tree (the splice starts from
-    // empty) and parents on HEAD, matching the prior index-reset path
-    // which seeded an empty index for a missing ref.
+    // empty) and parents on the repo's initial commit, matching the prior
+    // index-reset path which seeded an empty index for a missing ref.
     const parentCommitSha =
       pinnedParent !== undefined
         ? pinnedParent.sha
@@ -1475,12 +1490,13 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       await fs.promises.writeFile(fullPath, contents);
     }
 
-    // The parent is the pinned tip, or HEAD for a never-written ref so a
-    // first write parents on the repo's initial commit. `oldSha` is
+    // The parent is the pinned tip, or the repo's initial commit for a
+    // never-written ref. Not HEAD's tip: the new ref's tree starts from
+    // empty, so parenting it on a HEAD that has moved past the initial
+    // commit would read as deleting everything HEAD holds. `oldSha` is
     // precise: null only when the ref truly does not exist.
     const oldSha = parentCommitSha;
-    const parentSha =
-      parentCommitSha ?? (await git.resolveRef({ fs, dir, ref: "HEAD" }));
+    const parentSha = parentCommitSha ?? (await initialCommit(dir));
 
     const commitSha = await git.commit({
       fs,

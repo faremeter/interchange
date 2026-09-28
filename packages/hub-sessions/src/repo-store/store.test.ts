@@ -211,6 +211,34 @@ describe("RepoStore", () => {
     expect(secondCall.newSha).toBe(second.commitSha);
   });
 
+  test("writeTree parents a never-written ref on the initial commit once HEAD has moved on", async () => {
+    const dataDir = await makeTempDir("repo-store-new-ref-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.initRepo(repoId);
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    const initial = await git.resolveRef({ fs, dir, ref: "HEAD" });
+
+    await store.writeTree(principal, repoId, "refs/heads/main", {
+      files: { "deploy/a.md": "on main" },
+      message: "advance main",
+    });
+    const { commitSha } = await store.writeTree(
+      principal,
+      repoId,
+      "refs/heads/side",
+      { files: { "deploy/b.md": "on side" }, message: "first side write" },
+    );
+
+    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    expect(commit.parent).toEqual([initial]);
+  });
+
   test("writeTree with clearPrefix clears stale tracked files under that prefix", async () => {
     const dataDir = await makeTempDir("repo-store-clear-");
     const handler = createTestHandler();
