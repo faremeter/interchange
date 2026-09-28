@@ -42,9 +42,9 @@ import { generateId } from "@intx/hub-common";
 import {
   createApprovalSet,
   deriveRunAddress,
+  deriveWorkflowRunRepoId,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -371,7 +371,7 @@ async function deployAndRun(spec: {
 
   const workflowRunRepoId: RepoId = {
     kind: "workflow-run",
-    id: deriveDeploymentId(spec.address),
+    id: deriveWorkflowRunRepoId(spec.address),
   };
   env.registerDeployment({
     anchorRunId: spec.anchorRunId,

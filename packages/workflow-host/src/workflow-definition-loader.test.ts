@@ -657,6 +657,23 @@ export const b = make("@fixture/director-pkg/b");
     ).toThrow(UnknownDirectorIdError);
   });
 
+  test("a package prefix over npm's 214-character limit stays unresolved instead of throwing ENAMETOOLONG", async () => {
+    const packageDir = await createClosureFixture({
+      workflowEntry: "./workflow.js",
+      entrySource: DEFAULT_EXPORT_ENTRY,
+    });
+    const id = `${"a".repeat(300)}/coding`;
+
+    const registry = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir,
+      definition: definitionNamingDirectors(id),
+    });
+
+    expect(() => registry.resolve({ id, config: {} })).toThrow(
+      UnknownDirectorIdError,
+    );
+  });
+
   test("a director reachable only transitively stays unresolved", async () => {
     const packageDir = await createClosureFixture({
       workflowEntry: "./workflow.js",
