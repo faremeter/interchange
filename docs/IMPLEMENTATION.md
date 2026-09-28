@@ -93,7 +93,7 @@ Interchange uses Ed25519 as the single key algorithm for all cryptographic ident
 The harness generates one Ed25519 key pair per harness and per agent. The same key material is used across protocols, with SSH, PGP, and X.509 serving as wire formats depending on context:
 
 - **SSH format** - Used for harness-to-harness communication, control plane interactions, and general identity verification. Public keys are published in OpenSSH format.
-- **PGP format** - Used for message-level signatures and encryption over the SMTP/IMAP transport, where PGP integration with email infrastructure is a natural fit. Agent PGP keys can be published via DNS (DANE/OPENPGPKEY records) or through the control plane.
+- **PGP format** - Used for message-level signatures and encryption over the SMTP/IMAP transport, where PGP integration with email infrastructure is a natural fit. Agent PGP keys are published through the control plane. Publication via DNS (DANE/OPENPGPKEY records), giving a federated path that does not require the receiving tenant to trust the sending tenant's control plane, is the intended design and is not yet implemented.
 - **X.509 format** - Used for TLS client certificates enabling mutual authentication. The control plane issues X.509 certificates wrapping the agent's Ed25519 public key, signed by a tenant certificate authority. This allows agents to authenticate via standard TLS mutual auth without introducing a separate key type.
 
 **Protocol mapping:**

@@ -35,6 +35,10 @@ see [`LAYOUT.md`](../LAYOUT.md).
 - [`MESSAGE.md`](./MESSAGE.md) — message transport. Mail as the
   first-class communication primitive, raw MIME storage, JMAP-style
   client views.
+- [`INBOUND_MAIL_POLICY.md`](./INBOUND_MAIL_POLICY.md) — the
+  author-declared admission policy for inbound mail. Which keys a
+  workflow author may relax, what each one accepts, and why relaxing
+  one key does not admit a message that raises a second finding.
 - [`SIDECAR_PLACEMENT.md`](./SIDECAR_PLACEMENT.md) — capability-based
   workflow placement and provisioner selection.
 - [`WORKFLOW_AUTHORING.md`](./WORKFLOW_AUTHORING.md) — skeleton for the

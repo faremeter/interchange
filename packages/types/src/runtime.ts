@@ -267,27 +267,20 @@ export type SignatureStatus = typeof SignatureStatus.infer;
  * produces it.
  *
  * - `clean` — nothing suspect; always admitted
- * - `untrustedFrom` — the visible `From` cannot be trusted, because it is
- *   present but unparseable, or because a valid signature is worn under a
- *   mismatched sender identity
- * - `absentFrom` — the message carries no usable `From`, so there is no
- *   originator to make a claim about; the condition is a state of the `From`
- *   header alone and says nothing about the signature axis
+ * - `untrustedFrom` — the visible `From` is present but cannot be reduced to a
+ *   single addr-spec
+ * - `mismatchedFrom` — the visible `From` names a different identity from the
+ *   sender the hub stamped
+ * - `absentFrom` — the message carries no usable `From`
  * - `invalid` — the signature check failed (tampering or the wrong key)
  * - `missing` — the message carried no signature
  * - `unknown` — no key was available to verify against
  * - `error` — a fault stopped the check from running at all; always rejected
- *
- * `untrustedFrom` and `absentFrom` are siblings over the same axis and are
- * deliberately separate keys: a `From` the gate read and distrusted is a
- * different judgement from a `From` that was never there, and an author who
- * relaxes one has said nothing about the other. `missing` sits on the
- * unrelated signature axis -- it is the absence of a SIGNATURE, not of a
- * `From`.
  */
 export const InboundMailOutcome = type.enumerated(
   "clean",
   "untrustedFrom",
+  "mismatchedFrom",
   "absentFrom",
   "invalid",
   "missing",
@@ -305,6 +298,7 @@ export type InboundMailOutcome = typeof InboundMailOutcome.infer;
  */
 export const AuthorControllableOutcome = type.enumerated(
   "untrustedFrom",
+  "mismatchedFrom",
   "absentFrom",
   "invalid",
   "missing",
@@ -329,6 +323,7 @@ export type AuthorControllableOutcome = typeof AuthorControllableOutcome.infer;
  */
 export const InboundMailPolicy = type({
   "untrustedFrom?": "'reject' | 'admit'",
+  "mismatchedFrom?": "'reject' | 'admit'",
   "absentFrom?": "'reject' | 'admit'",
   "invalid?": "'reject' | 'admit'",
   "missing?": "'reject' | 'admit'",

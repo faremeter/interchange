@@ -272,10 +272,14 @@ Where it lives today: nowhere in the repository.
 
 **22.** `defineWorkflow` REJECTS a `schedule` trigger outright (it is
 reserved, not implemented), and rejects an `inboundMailPolicy` on a workflow
-with no mail trigger.
+with no mail trigger. Every key of that policy defaults to REJECT, so a
+workflow declaring none receives only mail the signature gate found nothing
+to complain about, and every other message is dropped before the workflow
+sees it.
 
-Where it lives today: `normalize`,
-`packages/workflow/src/definition/workflow.ts`
+Where it lives today: [`INBOUND_MAIL_POLICY.md`](./INBOUND_MAIL_POLICY.md)
+for the policy itself; `normalize`,
+`packages/workflow/src/definition/workflow.ts` for the two rejections
 
 **23.** A loop body may contain `awaitSignal`, `childWorkflow` and a nested
 loop, but may NOT contain `sleep` or `onTrigger`. The `awaitSignal` permission

@@ -128,6 +128,7 @@ const ADMIT_ALL_INBOUND_MAIL_POLICY: ResolvedInboundMailPolicy = {
   clean: "admit",
   error: "admit",
   untrustedFrom: "admit",
+  mismatchedFrom: "admit",
   absentFrom: "admit",
   invalid: "admit",
   missing: "admit",
@@ -432,6 +433,12 @@ function verdicts(): CapturedLog[] {
   );
 }
 
+// The hub-link's own rejection line, emitted from the `ws` category rather
+// than the verify's `inbound-signature` one.
+function rejections(): CapturedLog[] {
+  return capturedLogs.filter((r) => r.properties["rejectedBy"] !== undefined);
+}
+
 function signedHeaders(from: string): MessageHeaders {
   return {
     from,
@@ -637,7 +644,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
     );
   });
 
-  test("a valid signature under a forged From is untrustedFrom and rejected", async () => {
+  test("a valid signature under a forged From is mismatchedFrom and rejected", async () => {
     const stamp = "external@remote.interchange";
     const forgedFrom = "victim@remote.interchange";
     const crypto = createEd25519Crypto(await generateKeyPair());
@@ -654,7 +661,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
         const verdict = verdicts()[0];
         expect(verdict?.properties["signature"]).toBe("valid");
         expect(verdict?.properties["fromMatch"]).toBe("mismatch");
-        // valid+mismatch -> untrustedFrom, which the neutral policy rejects.
+        // valid+mismatch -> mismatchedFrom, which the neutral policy rejects.
         expect(routed).toHaveLength(0);
       },
       {
@@ -780,6 +787,103 @@ describe("hub-link mail.inbound signature enforcement", () => {
         policy: resolveInboundMailPolicy({ unknown: "admit" }),
         resolveSenderCrypto: (address) =>
           address === invalidSender
+            ? createPublicKeyCrypto(wrongKey.getPublicKey())
+            : undefined,
+      },
+    );
+  });
+
+  test("relaxing untrustedFrom does not switch off the signature check", async () => {
+    // The bypass this seam exists to stop, driven end to end. The author
+    // relaxed `untrustedFrom` to tolerate an external correspondent's odd
+    // headers -- a judgement about HEADERS. The message's signature does not
+    // verify against the cached key AND its From cannot be reduced to one
+    // addr-spec, so the verdict is unhappy on both axes and the author's
+    // `invalid` decision is still the default reject.
+    //
+    // A decision keyed on a single reduced outcome sees only `untrustedFrom`
+    // here and admits: attaching a malformed From is then enough to stop the
+    // signature being enforced. Weighing the whole finding set keeps the
+    // author's `invalid` decision in force, so the frame never reaches the
+    // router.
+    const sender = "imposter@remote.interchange";
+    const signer = createEd25519Crypto(await generateKeyPair());
+    const wrongKey = createEd25519Crypto(await generateKeyPair());
+    const raw = await makeSignedMail(
+      signer,
+      "alpha@remote.interchange, beta@remote.interchange",
+    );
+
+    await withConnectedLink(
+      "bypass",
+      async ({ deploymentAddress, routed }) => {
+        expect(
+          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
+        ).toBe(true);
+
+        await waitUntil(() =>
+          verdicts().some((r) => r.properties["signature"] !== undefined),
+        );
+        const verdict = verdicts().find(
+          (r) => r.properties["signature"] !== undefined,
+        );
+        expect(verdict?.properties["signature"]).toBe("invalid");
+        expect(verdict?.properties["fromMatch"]).toBe("unparseable");
+
+        // The rejection names the finding that actually rejected, not the
+        // headline outcome. They differ here -- the headline is
+        // `untrustedFrom`, which this policy admits -- and a log carrying only
+        // the headline would report a judgement that did not make the call.
+        await waitUntil(() => rejections().length > 0);
+        const rejection = rejections()[0];
+        expect(rejection?.properties["rejectedBy"]).toBe("invalid");
+        expect(rejection?.properties["outcome"]).toBe("untrustedFrom");
+        expect(rejection?.properties["findings"]).toEqual([
+          "invalid",
+          "untrustedFrom",
+        ]);
+        expect(routed).toHaveLength(0);
+      },
+      {
+        policy: resolveInboundMailPolicy({ untrustedFrom: "admit" }),
+        resolveSenderCrypto: (address) =>
+          address === sender
+            ? createPublicKeyCrypto(wrongKey.getPublicKey())
+            : undefined,
+      },
+    );
+  });
+
+  test("relaxing both findings admits the same message", async () => {
+    // The complement of the case above at the same seam: the author relaxed
+    // `invalid` as well, so every finding the verdict raised is admitted and
+    // the frame is delivered. Without this, the fix above could not be
+    // distinguished from one that rejects any message unhappy on two axes.
+    const sender = "imposter@remote.interchange";
+    const signer = createEd25519Crypto(await generateKeyPair());
+    const wrongKey = createEd25519Crypto(await generateKeyPair());
+    const raw = await makeSignedMail(
+      signer,
+      "alpha@remote.interchange, beta@remote.interchange",
+    );
+
+    await withConnectedLink(
+      "bothrelaxed",
+      async ({ deploymentAddress, routed }) => {
+        expect(
+          env.router.routeMail(deploymentAddress, base64Encode(raw), sender),
+        ).toBe(true);
+
+        await waitUntil(() => routed.length > 0);
+        expect(routed).toHaveLength(1);
+      },
+      {
+        policy: resolveInboundMailPolicy({
+          untrustedFrom: "admit",
+          invalid: "admit",
+        }),
+        resolveSenderCrypto: (address) =>
+          address === sender
             ? createPublicKeyCrypto(wrongKey.getPublicKey())
             : undefined,
       },

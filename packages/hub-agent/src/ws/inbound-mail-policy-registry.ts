@@ -28,6 +28,7 @@ export const FULLY_CLOSED_INBOUND_MAIL_POLICY: ResolvedInboundMailPolicy = {
   clean: "reject",
   error: "reject",
   untrustedFrom: "reject",
+  mismatchedFrom: "reject",
   absentFrom: "reject",
   invalid: "reject",
   missing: "reject",

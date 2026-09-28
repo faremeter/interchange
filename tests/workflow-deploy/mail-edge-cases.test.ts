@@ -98,6 +98,7 @@ import { singleStepAgentEntry } from "./fixtures/single-step-agent";
 
 const DEPLOYMENT_DOMAIN = "integration.interchange";
 const STEP_ID = "edgeStep";
+const EDGE_SENDER = "edge@integration.interchange";
 
 const NO_HEADER_DEPLOYMENT_ID = "run_mail-edge-no-header-1";
 const MALFORMED_DEPLOYMENT_ID = "run_mail-edge-malformed-1";
@@ -177,7 +178,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // Under the stable-runId model the runId is the deployment address,
     // but the messageId (used for claim-check dedup) is still sha256.
     const raw = buildMinimalMail({
-      from: "edge@integration.interchange",
+      from: EDGE_SENDER,
       to: ctx.deploymentMailAddress,
       includeMessageIdHeader: false,
       body: "no-header edge case body",
@@ -277,7 +278,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // the parsed header value.
     const malformedMessageId = "<invalid";
     const raw = buildMinimalMail({
-      from: "edge@integration.interchange",
+      from: EDGE_SENDER,
       to: ctx.deploymentMailAddress,
       includeMessageIdHeader: true,
       messageId: malformedMessageId,
@@ -311,7 +312,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
 
     const messageId = "<dup-edge-1@integration.interchange>";
     const raw1 = buildMinimalMail({
-      from: "edge@integration.interchange",
+      from: EDGE_SENDER,
       to: ctx.deploymentMailAddress,
       includeMessageIdHeader: true,
       messageId,
@@ -322,7 +323,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     // so the second mail collides on the messageId index regardless
     // of body differences.
     const raw2 = buildMinimalMail({
-      from: "edge@integration.interchange",
+      from: EDGE_SENDER,
       to: ctx.deploymentMailAddress,
       includeMessageIdHeader: true,
       messageId,
@@ -442,7 +443,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
 
     const messageId = "<connected-window-1@integration.interchange>";
     const raw = buildMinimalMail({
-      from: "edge@integration.interchange",
+      from: EDGE_SENDER,
       to: ctx.deploymentMailAddress,
       includeMessageIdHeader: true,
       messageId,
@@ -475,7 +476,7 @@ describe.skipIf(!harnessDbEnvAvailable())("mail-handling edge cases", () => {
     const delivered = env.hub.router.routeMail(
       ctx.deploymentMailAddress,
       base64,
-      "edge@integration.interchange",
+      EDGE_SENDER,
       messageId,
     );
     expect(delivered).toBe(true);
@@ -671,14 +672,10 @@ async function routeRaw(
     );
   }
   const base64 = base64Encode(raw);
-  // The hub-verified sender is independent of the raw message's own (possibly
-  // malformed) MIME From -- that independence is the point of these edge-case
-  // routes -- so stamp a fixed hub-side sender the way the trigger route does.
-  const delivered = env.hub.router.routeMail(
-    address,
-    base64,
-    "user@integration.interchange",
-  );
+  // The stamped sender matches the From these messages carry, because the cases
+  // under test are Message-Id parsing. Admission rejects a From that disagrees
+  // with the authenticated sender before the parser under test sees the bytes.
+  const delivered = env.hub.router.routeMail(address, base64, EDGE_SENDER);
   if (!delivered) {
     throw new Error(
       `routeRaw: routeMail returned false for ${address}; address is not routable on the hub`,

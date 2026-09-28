@@ -5,7 +5,7 @@ import {
   extractBoundary,
   parseMultipart,
 } from "@intx/mime";
-import { verifyDetachedSignature } from "@intx/crypto";
+import { importPublicKeyBytes, verifyDetachedSignature } from "@intx/crypto";
 
 /**
  * Verify a PGP/MIME `multipart/signed` message against a public key.
@@ -20,6 +20,9 @@ import { verifyDetachedSignature } from "@intx/crypto";
  * - `missing` — the message is not `multipart/signed`, declares no `boundary=`
  *   parameter, or carries no `application/pgp-signature` part
  *
+ * Throws when `publicKey` cannot verify anything: a fault in the caller's
+ * input, not a verdict about the message.
+ *
  * `raw` must be the original, unmodified message bytes: the signature is
  * recomputed over the exact canonical bytes of the signed part, so a
  * re-serialized message will not verify. `publicKey` is the raw Ed25519
@@ -29,6 +32,7 @@ export async function verifyMimeSignature(
   raw: Uint8Array,
   publicKey: Uint8Array,
 ): Promise<"valid" | "invalid" | "missing"> {
+  await requireUsableKey(publicKey);
   try {
     const { headers, bodyOffset } = parseHeaderSection(raw);
     const body = raw.slice(bodyOffset);
@@ -63,5 +67,18 @@ export async function verifyMimeSignature(
     return valid ? "valid" : "invalid";
   } catch {
     return "invalid";
+  }
+}
+
+/**
+ * Refuse a public key that cannot verify a signature, ahead of the catch that
+ * turns every other failure into `invalid` -- inside it, an unusable key would
+ * read as a check that ran and failed.
+ */
+async function requireUsableKey(publicKey: Uint8Array): Promise<void> {
+  try {
+    await importPublicKeyBytes(publicKey);
+  } catch (cause) {
+    throw new Error("public key cannot verify a signature", { cause });
   }
 }

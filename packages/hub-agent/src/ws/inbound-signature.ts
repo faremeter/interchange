@@ -1,11 +1,14 @@
 import { getLogger } from "@intx/log";
 import type {
+  AuthorControllableOutcome,
   CryptoProvider,
   InboundMailOutcome,
   InboundMailPolicy,
 } from "@intx/types/runtime";
 import { verifyMimeSignature } from "@intx/mailbox";
 import { parseHeaderSection, extractAddrSpec } from "@intx/mime";
+
+import { isUsableSenderKey } from "../sender-key-cache";
 
 const logger = getLogger([
   "interchange",
@@ -15,56 +18,27 @@ const logger = getLogger([
 ]);
 
 /**
- * The two-axis verdict of verifying one inbound mail frame.
- *
- * `signature` reuses the `SignatureStatus` vocabulary --
- * `valid | invalid | missing | unknown` -- with an added `error` for a fault in
- * the verifier itself (verify throwing, an unparseable sender). It answers: does
- * the message's detached signature verify against the key the recipient's local
- * cache holds for `authenticatedSender`? `unknown` means the cache holds no key
- * for the sender, so there is nothing to verify against.
- *
- * `fromMatch` is an orthogonal axis over the message's visible `From`, evaluated
- * for EVERY non-error signature status (valid, invalid, missing, unknown):
- *   - `unchecked`: the message carries no `From`, OR it carries a parseable
- *     `From` but the signature is not `valid`, so a match is not meaningful.
- *   - `unparseable`: the message carries a `From` that cannot be reduced to one
- *     addr-spec. This is DISTINCT from `unchecked` (no `From` at all) -- a
- *     present but unparseable `From` is suspicious, not benign.
- *   - `match` / `mismatch`: only atop a VALID signature with a parseable `From`,
- *     whether that `From` binds to `authenticatedSender`. A valid signature over
- *     a `From` that names a different sender is an identity forgery -- a
- *     legitimate key signing under a borrowed display identity.
+ * The two-axis verdict of verifying one inbound mail frame. `absent` is the
+ * gate looking for a visible `From` and finding none; `notEvaluated` is the
+ * placeholder an `error` verdict carries for an axis the gate never reached.
  *
  * The signature covers only the message's signed content part, NOT its
- * top-level `From` header (see `@intx/mime` `assembleMessage`). The binding
- * checked here is therefore the hub-stamped sender against the visible envelope
- * `From`, not a `From` inside the signed bytes.
+ * top-level `From` header, so `fromMatch` binds the hub-stamped sender to the
+ * visible envelope `From` rather than to a `From` inside the signed bytes.
  */
 export type InboundSignatureVerdict = {
   signature: "valid" | "invalid" | "missing" | "unknown" | "error";
-  fromMatch: "match" | "mismatch" | "unchecked" | "unparseable";
+  fromMatch: "match" | "mismatch" | "absent" | "notEvaluated" | "unparseable";
   authenticatedSender: string;
   messageFrom: string | null;
 };
 
 /**
  * Reduce a two-axis {@link InboundSignatureVerdict} to the single
- * {@link InboundMailOutcome} a delivery decision keys on.
- *
- * The precedence is reject-dominant: when more than one axis is unhappy, the
- * outcome is the one that most resists admission. Two outcomes dominate, for
- * distinct reasons:
- *   - `error` outranks everything -- a fault stopped the check from running, so
- *     we could not check the message and can make no trust claim about it.
- *   - `untrustedFrom` outranks the signature axis -- a `From` we cannot trust
- *     (present but unparseable, or a valid signature worn under a mismatched
- *     identity) is a forgery signal that must not be masked by a merely
- *     unverifiable signature underneath it.
- *
- * `match`/`mismatch` only ever occur atop a `valid` signature (a guarantee of
- * how the verdict is produced), while `unparseable` can accompany any non-error
- * signature status; the ordering below reflects both facts.
+ * {@link InboundMailOutcome} that best SUMMARIZES it, for the verdict log line.
+ * This is a headline, NOT the admission decision -- that is
+ * {@link decideInboundAdmission}, and the two can name different findings. The
+ * ordering below is not a security precedence and must not be read as one.
  */
 export function outcomeForVerdict(
   verdict: InboundSignatureVerdict,
@@ -72,24 +46,22 @@ export function outcomeForVerdict(
   const { signature, fromMatch } = verdict;
   if (signature === "error") return "error";
   if (fromMatch === "unparseable") return "untrustedFrom";
-  if (signature === "valid" && fromMatch === "mismatch") return "untrustedFrom";
+  if (fromMatch === "mismatch") return "mismatchedFrom";
+  if (signature === "valid") {
+    if (fromMatch === "match") return "clean";
+    if (fromMatch === "absent") return "absentFrom";
+    if (fromMatch === "notEvaluated") return "untrustedFrom";
+    const _exhaustiveBinding: never = fromMatch;
+    return _exhaustiveBinding;
+  }
   if (signature === "invalid") return "invalid";
   if (signature === "missing") return "missing";
   if (signature === "unknown") return "unknown";
-  return "clean";
+  const _exhaustive: never = signature;
+  return _exhaustive;
 }
 
-/**
- * A TOTAL admission decision map: for EVERY {@link InboundMailOutcome}, whether a
- * message that resolved to that outcome is `reject`ed or `admit`ted. The per-mail
- * delivery decision looks this up directly by the message's outcome with no
- * fallback -- every key is present, so there is never an absent value for the
- * lookup to default.
- *
- * This is the resolved counterpart of the SPARSE authored `InboundMailPolicy`:
- * the sparse policy carries only what an author declared, and
- * {@link resolveInboundMailPolicy} expands it into this total map ONCE.
- */
+/** The total counterpart of the SPARSE authored `InboundMailPolicy`. */
 export type ResolvedInboundMailPolicy = Record<
   InboundMailOutcome,
   "reject" | "admit"
@@ -97,26 +69,17 @@ export type ResolvedInboundMailPolicy = Record<
 
 /**
  * Resolve the SPARSE authored {@link InboundMailPolicy} into a TOTAL
- * {@link ResolvedInboundMailPolicy}, applying every default HERE. This is the
- * single place inbound-admission defaults live: the resolution runs once, and
- * the per-mail delivery path looks up the resolved map directly -- it must never
- * re-derive a default with a `?? "reject"` of its own.
+ * {@link ResolvedInboundMailPolicy}, applying every default HERE. The per-mail
+ * delivery path looks up the resolved map directly -- it must never re-derive a
+ * default with a `?? "reject"` of its own.
  *
- * The two non-author-controllable outcomes are pinned regardless of what the
- * author declared:
- *   - `clean` -> always `admit`: nothing about the message was suspect, so there
- *     is nothing to relax and no reason to reject.
- *   - `error` -> always `reject`: a fault stopped the check from running, so we
- *     could make no trust claim about the message. `error` is not even a key in
- *     {@link InboundMailPolicy}, so an authored policy cannot relax it -- a
- *     message we could not check through is never something an author waves past.
+ * `clean` and `error` are pinned whatever the author declared: nothing about a
+ * clean message is suspect, and a fault stopped the check from running, so no
+ * trust claim can be made about it. `error` is not a key in
+ * {@link InboundMailPolicy} at all, so an authored policy cannot relax it.
  *
- * The five author-controllable outcomes (`untrustedFrom`, `absentFrom`,
- * `invalid`, `missing`, `unknown`) take the authored value where the author
- * set that key, and default
- * to `reject` otherwise. `reject` is the secure default: an outcome the author
- * did not explicitly choose to admit stays rejected, so an omitted policy (or a
- * policy that omits one outcome) fails closed rather than open.
+ * Every author-controllable outcome defaults to `reject`, so a policy that
+ * omits one fails closed rather than open.
  */
 export function resolveInboundMailPolicy(
   authored: InboundMailPolicy | undefined,
@@ -125,11 +88,73 @@ export function resolveInboundMailPolicy(
     clean: "admit",
     error: "reject",
     untrustedFrom: authored?.untrustedFrom ?? "reject",
+    mismatchedFrom: authored?.mismatchedFrom ?? "reject",
     absentFrom: authored?.absentFrom ?? "reject",
     invalid: authored?.invalid ?? "reject",
     missing: authored?.missing ?? "reject",
     unknown: authored?.unknown ?? "reject",
   };
+}
+
+export type InboundAdmission = {
+  findings: AuthorControllableOutcome[];
+  rejectedBy: InboundMailOutcome | null;
+};
+
+/**
+ * Decide whether one inbound mail frame is admitted, over the SET of findings
+ * its verdict raised rather than over a single reduced outcome. Each axis
+ * carries a separate author judgement, so reducing the pair to one outcome and
+ * keying admission on that discards one of the two judgements -- and it can
+ * discard it in the ADMITTING direction.
+ */
+export function decideInboundAdmission(
+  verdict: InboundSignatureVerdict,
+  policy: ResolvedInboundMailPolicy,
+): InboundAdmission {
+  const { signature, fromMatch } = verdict;
+  if (signature === "error") return { findings: [], rejectedBy: "error" };
+
+  const findings: AuthorControllableOutcome[] = [];
+  const fromSignature = signatureFinding(signature);
+  if (fromSignature !== null) findings.push(fromSignature);
+  const fromBinding = bindingFinding(fromMatch);
+  if (fromBinding !== null) findings.push(fromBinding);
+
+  for (const finding of findings) {
+    if (policy[finding] !== "admit") return { findings, rejectedBy: finding };
+  }
+  // A binding that raised nothing without binding was never evaluated, whatever
+  // the signature axis found. The gate has no trust claim to make for it, and no
+  // policy relaxes that.
+  if (fromBinding === null && fromMatch !== "match") {
+    return { findings, rejectedBy: "error" };
+  }
+  if (policy.clean !== "admit") return { findings, rejectedBy: "clean" };
+  return { findings, rejectedBy: null };
+}
+
+function signatureFinding(
+  signature: Exclude<InboundSignatureVerdict["signature"], "error">,
+): AuthorControllableOutcome | null {
+  if (signature === "valid") return null;
+  if (signature === "invalid") return "invalid";
+  if (signature === "missing") return "missing";
+  if (signature === "unknown") return "unknown";
+  const _exhaustive: never = signature;
+  return _exhaustive;
+}
+
+function bindingFinding(
+  fromMatch: InboundSignatureVerdict["fromMatch"],
+): AuthorControllableOutcome | null {
+  if (fromMatch === "match") return null;
+  if (fromMatch === "notEvaluated") return null;
+  if (fromMatch === "mismatch") return "mismatchedFrom";
+  if (fromMatch === "unparseable") return "untrustedFrom";
+  if (fromMatch === "absent") return "absentFrom";
+  const _exhaustive: never = fromMatch;
+  return _exhaustive;
 }
 
 export type InboundSignatureInput = {
@@ -150,14 +175,7 @@ export type InboundSignatureInput = {
  * This NEVER throws. A fault degrades to an `error` verdict, logged at ERROR
  * and returned like any other verdict. The enforcement caller relies on this
  * contract: it awaits this inline on the delivery path with no per-call catch,
- * gates admission on the returned outcome, and drops the mail on a reject, so a
- * throw that escaped here would wedge the delivery chain. Returns the verdict so
- * the caller (or a test) can read it without scraping the log.
- *
- * A cache miss is a quiet `unknown` (an expected, benign state -- see below),
- * not a fault. A genuine fault (the resolver throwing, the cached key being
- * unreadable, or the verify throwing) degrades to an `error` verdict logged at
- * ERROR -- surfaced loudly and kept distinct from `unknown`.
+ * so a throw that escaped here would wedge the delivery chain.
  */
 export async function verifyInboundSignature(
   input: InboundSignatureInput,
@@ -167,43 +185,33 @@ export async function verifyInboundSignature(
 
   let verdict: InboundSignatureVerdict;
   try {
-    // Resolve and read the cached key inside the try so ANY fault -- the
-    // resolver throwing, `getPublicKey` throwing, or the verify throwing --
-    // is contained as a single `error` verdict rather than escaping. This is
-    // what keeps the "never throws" contract true.
+    // Parsed above the cache lookup and above every early return below, so the
+    // fault belongs on every path.
+    const stampedAddrSpec = parseSenderStamp(authenticatedSender);
+    // Keyed on the RAW stamp, not on `stampedAddrSpec`: the cache is populated
+    // under the address the hub sends, and `extractAddrSpec` lowercases.
     const crypto = resolveSenderCrypto(authenticatedSender);
+    let signature: InboundSignatureVerdict["signature"];
     if (crypto === undefined) {
-      // Cache miss: the local keyring holds no key for this sender, so there
-      // is nothing to verify against. Expected for a sender whose key was
-      // never co-delivered (a run authorized before this shipped, relayed mail
-      // with no preceding grant co-delivery) or was unresolvable, or a
-      // rotation the cache has not yet refreshed. The mail is admitted as an
-      // unverifiable sender -- a quiet `unknown`, keyed by `authenticatedSender`
-      // in the log so the observation window stays legible.
-      verdict = {
-        signature: "unknown",
-        fromMatch: "unchecked",
-        authenticatedSender,
-        messageFrom: null,
-      };
+      signature = "unknown";
     } else {
-      // The cached key is raw bytes, already validated 32-byte Ed25519 at cache
-      // write/load time, so it feeds `verifyMimeSignature` directly.
-      const signature = await verifyMimeSignature(raw, crypto.getPublicKey());
-      verdict = {
-        signature,
-        fromMatch: "unchecked",
-        authenticatedSender,
-        messageFrom: null,
-      };
+      const publicKey = crypto.getPublicKey();
+      // The resolver is an injected seam, so the production cache's validation
+      // of its entries is not this call's to assume.
+      requireUsableSenderKey(authenticatedSender, publicKey);
+      signature = await verifyMimeSignature(raw, publicKey);
     }
-    // Evaluate the visible From for EVERY non-error status. It records
-    // `messageFrom` and, atop a VALID signature, resolves the `fromMatch`
-    // binding; a present-but-unparseable From is marked `unparseable` even
-    // under invalid/missing/unknown, so a later enforcement precedence can see
-    // it. `evaluateVisibleFrom` never throws, so it does not reach the `error`
-    // path below.
-    evaluateVisibleFrom(verdict, raw);
+    const from = evaluateVisibleFrom({
+      raw,
+      stampedAddrSpec,
+      authenticatedSender,
+    });
+    verdict = {
+      signature,
+      fromMatch: from.fromMatch,
+      authenticatedSender,
+      messageFrom: from.messageFrom,
+    };
   } catch (cause) {
     logger.error(
       "inbound mail signature verify FAULTED for {authenticatedSender} (messageId {messageId}, agentAddress {agentAddress}): {cause}",
@@ -211,7 +219,7 @@ export async function verifyInboundSignature(
         // Carry the same `signature`/`fromMatch` keys the clean verdict logs, so
         // a consumer counting the verdict corpus by `signature` sees faults too.
         signature: "error",
-        fromMatch: "unchecked",
+        fromMatch: "notEvaluated",
         authenticatedSender,
         messageId: input.messageId ?? null,
         agentAddress: input.agentAddress,
@@ -220,7 +228,7 @@ export async function verifyInboundSignature(
     );
     return {
       signature: "error",
-      fromMatch: "unchecked",
+      fromMatch: "notEvaluated",
       authenticatedSender,
       messageFrom: null,
     };
@@ -229,57 +237,68 @@ export async function verifyInboundSignature(
   return logVerdict(verdict, input);
 }
 
+type VisibleFromArgs = {
+  raw: Uint8Array;
+  stampedAddrSpec: string;
+  authenticatedSender: string;
+};
+
 /**
- * Evaluate the message's visible `From` onto `verdict`, for any non-error
- * signature status. Uses the tri-state of `readMessageFrom`:
- *   - no `From` (or empty): leaves the binding `unchecked`, `messageFrom` null.
- *   - `From` present but unparseable (`readMessageFrom` throws): marks the
- *     binding `unparseable` -- a present but malformed `From` is a distinct,
- *     suspicious state, kept separate from the benign no-`From` `unchecked`.
- *   - `From` present and parsed: records `messageFrom`, and ONLY atop a VALID
- *     signature compares it to `authenticatedSender` for `match`/`mismatch`.
- *
- * A stamped `authenticatedSender` that is not a bare addr-spec leaves the
- * binding `unchecked` rather than clobbering the standing signature verdict --
- * the signature is the primary signal, and the check must not turn an unparseable
- * header into a false verdict.
+ * The comparison does NOT consult the signature axis, and must not. Nothing
+ * downstream of the gate sees `authenticatedSender`, so a `From` contradicting
+ * the stamp is a claim the gate can refuse whether or not a verified signature
+ * stood behind it.
  */
 function evaluateVisibleFrom(
-  verdict: InboundSignatureVerdict,
-  raw: Uint8Array,
-): void {
+  args: VisibleFromArgs,
+): Pick<InboundSignatureVerdict, "fromMatch" | "messageFrom"> {
+  const { raw, stampedAddrSpec, authenticatedSender } = args;
   let messageFrom: string | null;
   try {
     messageFrom = readMessageFrom(raw);
   } catch (cause) {
-    // The message carries a `From` that `extractAddrSpec` refuses -- present
-    // but unparseable, distinct from no `From` at all.
-    verdict.fromMatch = "unparseable";
     logger.debug(
       "inbound mail From-binding unparseable for {authenticatedSender}: {cause}",
       {
-        authenticatedSender: verdict.authenticatedSender,
+        authenticatedSender,
         cause: describeCause(cause),
       },
     );
-    return;
+    return { fromMatch: "unparseable", messageFrom: null };
   }
-  if (messageFrom === null) return;
-  verdict.messageFrom = messageFrom;
-  // A From-binding is only meaningful atop a valid signature.
-  if (verdict.signature !== "valid") return;
+  if (messageFrom === null) return { fromMatch: "absent", messageFrom: null };
+  return {
+    fromMatch: messageFrom === stampedAddrSpec ? "match" : "mismatch",
+    messageFrom,
+  };
+}
+
+/**
+ * `verifyMimeSignature` refuses such a key too, so the throw is not what makes
+ * the fault reach `error`. What this adds is a log line naming the keyring as
+ * the thing at fault.
+ */
+function requireUsableSenderKey(
+  authenticatedSender: string,
+  publicKey: Uint8Array,
+): void {
+  if (isUsableSenderKey(publicKey)) return;
+  logger.error(
+    "inbound mail sender key for {authenticatedSender} is unusable: {keyBytes} bytes of cached material that is not a key, so no signature could be checked against it",
+    { authenticatedSender, keyBytes: publicKey.length },
+  );
+  throw new Error(
+    `cached sender key for ${JSON.stringify(authenticatedSender)} cannot verify a signature`,
+  );
+}
+
+function parseSenderStamp(authenticatedSender: string): string {
   try {
-    verdict.fromMatch =
-      messageFrom === extractAddrSpec(verdict.authenticatedSender)
-        ? "match"
-        : "mismatch";
+    return extractAddrSpec(authenticatedSender);
   } catch (cause) {
-    logger.debug(
-      "inbound mail sender stamp {authenticatedSender} is not a parseable addr-spec; leaving From-binding unchecked: {cause}",
-      {
-        authenticatedSender: verdict.authenticatedSender,
-        cause: describeCause(cause),
-      },
+    throw new Error(
+      `authenticated sender stamp is not a bare addr-spec: ${JSON.stringify(authenticatedSender)}`,
+      { cause },
     );
   }
 }
