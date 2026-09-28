@@ -2,14 +2,17 @@ import { type } from "arktype";
 
 import { StepStateSnapshot } from "@intx/types/step-state-snapshot";
 
+import { parseMailboxIndex } from "./mailbox-index";
 import type { CommittedReads, RepoId, RepoStore } from "./repo-store/types";
 import {
   createCommittedStepStateReader,
   reconstructStepState,
 } from "./step-state";
 import {
+  WORKFLOW_RUN_MAILBOX_INBOX_DIR,
+  WORKFLOW_RUN_MAILBOX_INDEX_FILE,
+  WORKFLOW_RUN_MAILBOX_PREFIX,
   WORKFLOW_RUN_REF,
-  WORKFLOW_RUN_STEP_SEED_FILE,
   workflowRunStepSeedPath,
   workflowRunStepStatePrefix,
 } from "./workflow-run-kind";
@@ -20,8 +23,9 @@ const HUB_PRINCIPAL = { kind: "hub" } as const;
  * Export an agent step's state as last committed to the Hub's copy of a
  * deployment's workflow-run history. `runId` is the deployment's top-level
  * run. Pending operations are left out, since their correlation ids only mean
- * something inside the run that registered them. Returns `null` when the step
- * has no committed state.
+ * something inside the run that registered them. The deployment's mailbox
+ * `uidNext` rides along as `mailboxUidNext`, bounding the mailbox UIDs the
+ * turns can name. Returns `null` when the step has no committed state.
  */
 export async function readStepStateSnapshot(args: {
   repoStore: Pick<RepoStore, "openCommittedReads">;
@@ -55,7 +59,15 @@ export async function readStepStateSnapshot(args: {
       `step state for ${label} is not a valid snapshot: ${snapshot.summary}`,
     );
   }
-  return snapshot;
+  const mailboxUidNext = await readCommittedMailboxUidNext(reads);
+  if (mailboxUidNext === null) return snapshot;
+  const exported = StepStateSnapshot({ ...snapshot, mailboxUidNext });
+  if (exported instanceof type.errors) {
+    throw new Error(
+      `step state for ${label} is not a valid snapshot: ${exported.summary}`,
+    );
+  }
+  return exported;
 }
 
 /**
@@ -92,15 +104,29 @@ export async function readCommittedStepStateSeed(
   stepId: string,
 ): Promise<StepStateSnapshot | null> {
   const seedPath = workflowRunStepSeedPath(runId, stepId);
-  const stepDir = seedPath.slice(0, seedPath.lastIndexOf("/"));
-  const entry = (await reads.listDir(stepDir)).find(
+  const raw = await readCommittedFile(reads, seedPath);
+  return raw === null ? null : parseStepStateSeed(raw, seedPath);
+}
+
+async function readCommittedMailboxUidNext(
+  reads: CommittedReads,
+): Promise<number | null> {
+  const indexPath = `${WORKFLOW_RUN_MAILBOX_PREFIX}/${WORKFLOW_RUN_MAILBOX_INBOX_DIR}/${WORKFLOW_RUN_MAILBOX_INDEX_FILE}`;
+  const raw = await readCommittedFile(reads, indexPath);
+  return raw === null
+    ? null
+    : parseMailboxIndex(raw, `mailbox index ${indexPath}`).uidNext;
+}
+
+async function readCommittedFile(
+  reads: CommittedReads,
+  filePath: string,
+): Promise<string | null> {
+  const slash = filePath.lastIndexOf("/");
+  const entry = (await reads.listDir(filePath.slice(0, slash))).find(
     (candidate) =>
-      candidate.name === WORKFLOW_RUN_STEP_SEED_FILE &&
-      candidate.type === "blob",
+      candidate.name === filePath.slice(slash + 1) && candidate.type === "blob",
   );
   if (entry === undefined) return null;
-  return parseStepStateSeed(
-    new TextDecoder().decode(await reads.readBlobByOid(entry.oid)),
-    seedPath,
-  );
+  return new TextDecoder().decode(await reads.readBlobByOid(entry.oid));
 }
