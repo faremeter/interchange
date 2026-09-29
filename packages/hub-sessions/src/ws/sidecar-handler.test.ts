@@ -19,6 +19,7 @@ import {
   type WsHandle,
 } from "./sidecar-handler";
 import type { SidecarLookups } from "./sidecar-events";
+import { sidecarAuth } from "./sidecar-handler.test-helpers";
 
 const identity: Extract<SidecarAuthIdentity, { kind: "allocated" }> = {
   kind: "allocated",
@@ -83,7 +84,7 @@ function createAllocatedRouter(
   const resolved = { ...identity, ...overrides };
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: async () => resolved,
+    ...sidecarAuth(() => [resolved]),
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
@@ -98,7 +99,7 @@ function createSenderKeyRouter(
 ) {
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: async () => identity,
+    ...sidecarAuth(() => [identity]),
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
@@ -153,7 +154,7 @@ describe("SidecarRouter allocation routing", () => {
   test("rejects a worker whose allocation generation is not fenced", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: async () => identity,
+      ...sidecarAuth(() => [identity]),
       validateSidecarIdentity: async () => true,
     });
     const ws = await connect(router);
@@ -162,7 +163,7 @@ describe("SidecarRouter allocation routing", () => {
     expect(router.getConnectedSidecars()).toEqual([]);
   });
 
-  test("registers only the exact allocation address", async () => {
+  test("routes only the allocation's own address", async () => {
     const router = createAllocatedRouter();
     const ws = await connect(router, [identity.workflowRunAddress]);
 
@@ -174,8 +175,13 @@ describe("SidecarRouter allocation routing", () => {
 
     const rogue = createAllocatedRouter();
     const rogueWs = await connect(rogue, ["other@tenant"]);
-    expect(rogueWs.closed).toBe(true);
+    expect(rogueWs.closed).toBe(false);
     expect(rogue.getRoutableAddresses()).toEqual([]);
+    expect(lastFrame(rogueWs)).toEqual({
+      type: "agent.undeploy",
+      agentAddress: "other@tenant",
+      reason: "The deployment is not current on this sidecar",
+    });
   });
 
   test("reconciles credentials for newly routed run addresses", async () => {
@@ -183,10 +189,7 @@ describe("SidecarRouter allocation routing", () => {
     const runAddress = "run_alloc1@exclusive";
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: async () => ({
-        ...identity,
-        workflowRunAddress: runAddress,
-      }),
+      ...sidecarAuth(() => [{ ...identity, workflowRunAddress: runAddress }]),
       validateSidecarIdentity: async () => true,
       hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,
@@ -640,8 +643,10 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
   ) {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: async ({ sidecarId }) =>
-        raceIdentities[sidecarId] ?? null,
+      ...sidecarAuth((sidecarId) => {
+        const binding = raceIdentities[sidecarId];
+        return binding === undefined ? [] : [binding];
+      }),
       validateSidecarIdentity: async () => true,
       hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,

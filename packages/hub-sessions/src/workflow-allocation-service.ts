@@ -123,7 +123,7 @@ export type WorkflowAllocationServiceDeps = {
   readonly probeCapabilityRules?: readonly SidecarCapabilityRule[];
   readonly allocationRouter: Pick<
     SidecarAllocationRouter,
-    | "disconnectAllocation"
+    | "detachAllocation"
     | "fenceAllocation"
     | "isAllocatedWorkflowActive"
     | "retireAllocation"
@@ -338,7 +338,7 @@ export function createWorkflowAllocationService({
           `Provisioner ${provisioner.id} rejected probe cleanup: ${destroyed.message}`,
         );
       }
-      allocationRouter.disconnectAllocation({
+      allocationRouter.detachAllocation({
         allocationId: releasing.id,
         generation: releasing.generation,
       });
@@ -494,12 +494,6 @@ export function createWorkflowAllocationService({
       }
     });
 
-    if (adoptProbe) {
-      allocationRouter.disconnectAllocation({
-        allocationId: probe.id,
-        generation: probe.generation,
-      });
-    }
     return {
       anchorRunId: request.anchorRunId,
       deploymentAddress,

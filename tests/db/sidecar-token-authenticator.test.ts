@@ -8,14 +8,23 @@ import {
 } from "bun:test";
 
 import { sha256 } from "@intx/crypto";
-import { sidecar, sidecarAllocation } from "@intx/db/schema";
-import { createSidecarTokenAuthenticator } from "@intx/hub-sessions";
+import { sidecar, sidecarAllocation, workflowProbe } from "@intx/db/schema";
+import {
+  createSidecarCredentialResolver,
+  createSidecarTokenAuthenticator,
+  type SidecarAuthIdentity,
+} from "@intx/hub-sessions";
+import { eq } from "drizzle-orm";
 import {
   createTestDb,
   harnessDbEnvAvailable,
   type TestDb,
 } from "@intx/test-harness/db-harness";
-import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+import {
+  seedAsset,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
 
 const TENANT_ID = "tnt-sidecar-auth";
 
@@ -101,6 +110,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
     }
 
+    function hosting(binding: SidecarAuthIdentity) {
+      return { sidecarId: binding.sidecarId, bindings: [binding] };
+    }
+
     test("resolves a valid token to the seeded sidecar's identity", async () => {
       const token = "sidecar-secret";
       const expected = await seedSidecar({ id: "sc-1", token });
@@ -108,7 +121,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const identity = await authenticate({ sidecarId: "sc-1", token });
 
-      expect(identity).toEqual(expected);
+      expect(identity).toEqual(hosting(expected));
     });
 
     test("rejects a wrong token with null", async () => {
@@ -156,7 +169,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       const identity = await authenticate({ sidecarId: "sc-spoofed", token });
 
-      expect(identity).toEqual(expected);
+      expect(identity).toEqual(hosting(expected));
     });
 
     test("selects the matching row by hash among several sidecars", async () => {
@@ -171,11 +184,62 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
       expect(await authenticate({ sidecarId: "sc-a", token: tokenA })).toEqual(
-        expectedA,
+        hosting(expectedA),
       );
       expect(await authenticate({ sidecarId: "sc-b", token: tokenB })).toEqual(
-        expectedB,
+        hosting(expectedB),
       );
+    });
+
+    test("resolves a probe hosted beside an allocation", async () => {
+      const token = "shared-secret";
+      const allocated = await seedSidecar({ id: "sc-shared", token });
+      await seedAsset(h.db, {
+        id: "asset-shared",
+        tenantId: TENANT_ID,
+        kind: "workflow",
+        name: "shared-workflow",
+      });
+      await h.db.insert(workflowProbe).values({
+        id: "probe-shared",
+        tenantId: TENANT_ID,
+        definitionAssetId: "asset-shared",
+        source: { kind: "registry", registry: "npmjs" },
+        entry: "./workflow.js",
+        status: "probing",
+        provisionerId: "test",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "test:v1",
+        sidecarId: "sc-shared",
+      });
+      const resolver = createSidecarCredentialResolver({ db: h.db });
+
+      expect(await resolver.resolve(token)).toEqual({
+        sidecarId: "sc-shared",
+        bindings: [
+          allocated,
+          {
+            kind: "probe",
+            sidecarId: "sc-shared",
+            allocationId: "probe-shared",
+            tenantId: TENANT_ID,
+            generation: 0,
+          },
+        ],
+      });
+    });
+
+    test("leaves out an allocation that is no longer active", async () => {
+      const token = "released-secret";
+      await seedSidecar({ id: "sc-released", token });
+      await h.db
+        .update(sidecarAllocation)
+        .set({ status: "released" })
+        .where(eq(sidecarAllocation.sidecarId, "sc-released"));
+      const resolver = createSidecarCredentialResolver({ db: h.db });
+
+      expect(await resolver.resolve(token)).toBeNull();
+      expect(await resolver.resolveBindings("sc-released")).toEqual([]);
     });
   },
 );

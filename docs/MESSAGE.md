@@ -363,7 +363,7 @@ Agent public keys are published through the control plane and included in agent 
 
 > **Planned / Not Yet Implemented.** DNS DANE/OPENPGPKEY (RFC 7929) key distribution does not exist. Nothing in the tree performs a DNS lookup, and `@intx/crypto` has no transferable public key format to publish in such a record: its OpenPGP support covers detached signature packets and signature armor only, with no public key packet. Key resolution goes to the control plane in every case (see `resolveSenderKey` in `@intx/db`). A previously established key exchange is likewise not a source any code consults. A federated path that does not require the receiving tenant to trust the sending tenant's control plane is the intended design, not current behavior.
 
-The control plane also stores agent public keys for content and commit provenance. Sidecar reconnection uses a separate allocation-scoped bearer credential that resolves to one deployment address and generation; the public key is not routing authority.
+The control plane also stores agent public keys for content and commit provenance. Sidecar reconnection uses a separate sidecar bearer credential that resolves to the probe and allocation generations the sidecar hosts, and through them to the deployment addresses it may route; the public key is not routing authority.
 
 ## Inbox Management (IMAP Semantics)
 

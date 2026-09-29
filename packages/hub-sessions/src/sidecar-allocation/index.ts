@@ -20,6 +20,8 @@ export {
   type EnsureSidecarRequest,
   type SidecarCredentialIdentity,
   type SidecarCredentialResolver,
+  type SidecarCredentials,
+  type SidecarIdentityUse,
   type SidecarProvisioner,
 } from "./contracts";
 export {
