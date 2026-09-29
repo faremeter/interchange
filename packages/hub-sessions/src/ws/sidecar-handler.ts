@@ -45,7 +45,11 @@ import type {
   HarnessConfig,
   InferenceSource,
 } from "@intx/types/runtime";
-import type { SidecarCredentialIdentity } from "../sidecar-allocation/contracts";
+import type {
+  SidecarCredentialIdentity,
+  SidecarCredentials,
+  SidecarIdentityUse,
+} from "../sidecar-allocation/contracts";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 import {
@@ -167,12 +171,19 @@ export class WorkflowControlHistoryPendingError extends Error {
 
 export type SidecarConnection = {
   sidecarId: string;
-  identity: SidecarAuthIdentity;
+  /**
+   * The probe and allocation generations this sidecar currently hosts, keyed
+   * by allocation id. A provisioner may place several on one sidecar; each
+   * keeps its own generation fence.
+   */
+  bindings: Map<string, SidecarAuthIdentity>;
   // Allocated workflows do not populate this legacy set.
   agentAddresses: Set<string>;
   // Allocated deployment routes (including first deploy and reconnect) and
-  // transient step routes.
-  workflowAddresses: Set<string>;
+  // transient step routes, each mapped to the allocation that owns it, so one
+  // allocation's routes can leave a connection that stays open for the
+  // others.
+  workflowAddresses: Map<string, string>;
   // Deploy frames the worker has not answered, kept past the Hub's own deploy
   // timeout. The worker handles frames in order, so a control frame sent
   // behind one of these cannot start until the worker answers it.
@@ -191,23 +202,44 @@ function connOwnsAddress(conn: SidecarConnection, address: string): boolean {
   );
 }
 
+/** The allocation that owns a workflow address routed on this connection. */
+function owningAllocation(
+  conn: SidecarConnection,
+  address: string,
+): Extract<SidecarAuthIdentity, { kind: "allocated" }> | undefined {
+  const allocationId = conn.workflowAddresses.get(address);
+  const binding =
+    allocationId === undefined ? undefined : conn.bindings.get(allocationId);
+  return binding?.kind === "allocated" ? binding : undefined;
+}
+
+/**
+ * The allocation this connection hosts whose deployment address is
+ * `address`, whether or not the address is routed.
+ */
+function deploymentBinding(
+  conn: SidecarConnection,
+  address: string,
+): Extract<SidecarAuthIdentity, { kind: "allocated" }> | undefined {
+  return allocationBindings(conn).find(
+    (binding) => binding.workflowRunAddress === address,
+  );
+}
+
 /**
  * Bind pack writes to the repository implied by the authenticated address.
- * An allocated credential is narrower still: it may only write its one
- * deployment's workflow-run repository and never a standalone agent-state
- * repository. That credential authorizes the write even when the address is
- * not routed: a stopped worker no longer announces its address, but its stop
- * is confirmed only once its remaining history reaches the Hub.
+ * An allocation is narrower still: it may only write its own deployment's
+ * workflow-run repository and never a standalone agent-state repository. It
+ * authorizes the write even when the address is not routed: a stopped worker
+ * no longer announces its address, but its stop is confirmed only once its
+ * remaining history reaches the Hub.
  */
 function connCanPushRepo(
   conn: SidecarConnection,
   agentAddress: string,
   repoId: RepoId,
 ): boolean {
-  if (conn.identity.kind !== "allocated") return false;
-  if (agentAddress !== conn.identity.workflowRunAddress) {
-    return false;
-  }
+  if (deploymentBinding(conn, agentAddress) === undefined) return false;
   return (
     repoId.kind === "workflow-run" &&
     repoId.id === deriveWorkflowRunRepoId(agentAddress)
@@ -216,7 +248,15 @@ function connCanPushRepo(
 
 /** The deduped set of every address this connection owns (session + workflow). */
 function ownedAddresses(conn: SidecarConnection): Set<string> {
-  return new Set([...conn.agentAddresses, ...conn.workflowAddresses]);
+  return new Set([...conn.agentAddresses, ...conn.workflowAddresses.keys()]);
+}
+
+function allocationBindings(
+  conn: SidecarConnection,
+): Extract<SidecarAuthIdentity, { kind: "allocated" }>[] {
+  return [...conn.bindings.values()].flatMap((binding) =>
+    binding.kind === "allocated" ? [binding] : [],
+  );
 }
 
 export type SendPackOptions = {
@@ -417,13 +457,10 @@ export type SidecarRouter = {
 };
 
 /**
- * A verified sidecar-connection identity resolved by an authenticator from
- * the credentials a sidecar presents on the WebSocket handshake. The
- * `sidecarId` is the connection's own trusted id; it is not the untrusted
- * `sidecarId` claimed on the register/reconnect frame, and it carries no
- * tenant scope. Modeled as a discriminated union so a future non-sidecar
- * principal (e.g. an operator user) can be added as an additional arm
- * without changing existing consumers.
+ * One probe or allocation generation a sidecar hosts, as
+ * `resolveSidecarBindings` reads it for the sidecar the WebSocket handshake
+ * authenticated. The `sidecarId` is that authenticated id, not the untrusted
+ * `sidecarId` claimed on the register/reconnect frame.
  */
 export type SidecarAuthIdentity = SidecarCredentialIdentity;
 
@@ -463,6 +500,13 @@ export type SidecarAllocationRouter = {
    */
   isAllocatedSidecarReady(target: AllocatedSidecarTarget): Promise<boolean>;
   /**
+   * Whether a connection already holds the allocation's binding at this
+   * generation, without validating it. A probe binding the allocation adopted
+   * is not that binding: only a sync or a registration attaches the allocation
+   * over it.
+   */
+  holdsAllocatedBinding(target: AllocatedSidecarTarget): boolean;
+  /**
    * Whether the generation's current connection routes its deployment. Throws
    * when the generation has no current connection or identity validation
    * fails: a sidecar that is only cut off may still hold the deployment.
@@ -473,8 +517,21 @@ export type SidecarAllocationRouter = {
     target: AllocatedSidecarTarget,
     args: SendProbeArgs,
   ): Promise<WorkflowProbeResult>;
-  /** Close an exact provisioned connection before changing its durable owner. */
-  disconnectAllocation(target: AllocatedSidecarTarget): void;
+  /**
+   * Remove an exact generation from its sidecar's connection before changing
+   * its durable owner. The sidecar is told to undeploy an allocation's
+   * deployment, and the socket stays open while the sidecar hosts other
+   * bindings.
+   */
+  detachAllocation(target: AllocatedSidecarTarget): void;
+  /**
+   * Bring a connected sidecar's bindings up to date with the database after
+   * a probe or allocation was placed on it, or left it, while it stayed
+   * connected. A sidecar that is registering, or not connected, picks its
+   * bindings up when its registration completes. The promise can settle
+   * before a binding attaches, so callers wait for its readiness instead.
+   */
+  syncSidecar(sidecarId: string): Promise<void>;
   sendAgentDeployToAllocation(
     target: AllocatedSidecarTarget,
     agentAddress: string,
@@ -548,16 +605,19 @@ export type SidecarAllocationRouter = {
 };
 
 /**
- * Resolves the credentials a sidecar presents on the handshake to a
- * verified identity, or `null` when the credentials are not recognized.
- * The claimed `sidecarId` is an unauthenticated hint; the authenticator
- * derives the trusted identity from the `token` and the returned
- * `sidecarId` is what the router keys connection state off of.
+ * Resolves the credentials a sidecar presents on the handshake to the
+ * verified sidecar and every binding it currently hosts, or `null` when the
+ * credentials are not recognized or host nothing current. The claimed
+ * `sidecarId` is an unauthenticated hint; the authenticator derives the
+ * trusted identity from the `token` and the returned `sidecarId` is what the
+ * router keys connection state off of. The router registers the bindings
+ * `resolveSidecarBindings` returns once the handshake has claimed the
+ * sidecar, not the ones returned here.
  */
 export type SidecarAuthenticator = (claim: {
   sidecarId: string;
   token: string;
-}) => Promise<SidecarAuthIdentity | null>;
+}) => Promise<SidecarCredentials | null>;
 
 export type SidecarRouterConfig = {
   requestTimeoutMs?: number;
@@ -571,7 +631,7 @@ export type SidecarRouterConfig = {
   /** Revalidate durable identity at registration and routing boundaries. */
   validateSidecarIdentity: (
     identity: SidecarAuthIdentity,
-    use: "registration" | "readiness" | "routing",
+    use: SidecarIdentityUse,
   ) => Promise<boolean>;
   /** Lock current allocation/lifecycle state while the synchronous send runs. */
   withExecutableWorkflowRun: (
@@ -579,6 +639,10 @@ export type SidecarRouterConfig = {
     send: () => boolean,
     signal?: AbortSignal,
   ) => Promise<boolean>;
+  /** The bindings a sidecar currently hosts, for `syncSidecar`. */
+  resolveSidecarBindings: (
+    sidecarId: string,
+  ) => Promise<readonly SidecarAuthIdentity[]>;
   /** Timeout for a `sendProbe` round-trip. A probe materializes a workflow's
    * dependency closure and evaluates it on the sidecar, so it can run longer
    * than a routine `sendRequest`; it gets its own timeout rather than sharing
@@ -657,6 +721,7 @@ export function createSidecarRouter(
     authenticateSidecar,
     validateSidecarIdentity,
     withExecutableWorkflowRun,
+    resolveSidecarBindings,
     disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
     disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
@@ -677,24 +742,21 @@ export function createSidecarRouter(
 
   async function withAllocationWorkAdmission(
     ws: WsHandle,
-    conn: SidecarConnection,
+    binding: Extract<SidecarAuthIdentity, { kind: "allocated" }>,
     send: () => boolean,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    if (conn.identity.kind !== "allocated")
-      throw new Error("Probe capacity cannot receive workflow work");
-    const identity = conn.identity;
     return withExecutableWorkflowRun(
-      identity,
+      binding,
       () => {
         signal?.throwIfAborted();
         if (
-          allocationFences.get(identity.allocationId) !== identity.generation ||
-          allocatedConnections.get(identity.allocationId)?.ws !== ws ||
+          allocationFences.get(binding.allocationId) !== binding.generation ||
+          allocatedConnections.get(binding.allocationId)?.ws !== ws ||
           !connections.has(ws)
         )
           throw new Error(
-            `Workflow connection changed for allocation ${identity.allocationId}`,
+            `Workflow connection changed for allocation ${binding.allocationId}`,
           );
         return send();
       },
@@ -702,21 +764,28 @@ export function createSidecarRouter(
     );
   }
 
-  function withWorkflowWorkAdmission(
+  async function withWorkflowWorkAdmission(
     ws: WsHandle,
     conn: SidecarConnection,
     agentAddress: string,
     send: () => boolean,
     signal?: AbortSignal,
   ): Promise<boolean> {
+    const binding = owningAllocation(conn, agentAddress);
+    const changed = () =>
+      new Error(
+        `Workflow connection changed before delivery to ${agentAddress}`,
+      );
+    if (binding === undefined) throw changed();
     return withAllocationWorkAdmission(
       ws,
-      conn,
+      binding,
       () => {
-        if (addressIndex.get(agentAddress) !== ws)
-          throw new Error(
-            `Workflow connection changed before delivery to ${agentAddress}`,
-          );
+        if (
+          addressIndex.get(agentAddress) !== ws ||
+          conn.workflowAddresses.get(agentAddress) !== binding.allocationId
+        )
+          throw changed();
         return send();
       },
       signal,
@@ -725,6 +794,15 @@ export function createSidecarRouter(
 
   // ws handle → registered connection
   const connections = new Map<WsHandle, SidecarConnection>();
+  // sidecar id → its current socket
+  const sidecarSockets = new Map<string, WsHandle>();
+  // sidecar id → the socket whose handshake is registering it. The previous
+  // socket keeps serving until that registration takes over, but syncs for
+  // the sidecar queue behind the registration instead.
+  const sidecarClaims = new Map<string, WsHandle>();
+  // A handshake still authenticating when its socket closes must not
+  // register the socket afterwards.
+  const closedSockets = new WeakSet<WsHandle>();
   const allocatedConnections = new Map<
     string,
     {
@@ -749,10 +827,12 @@ export function createSidecarRouter(
   // agentAddress → ws handle (routing table)
   const addressIndex = new Map<string, WsHandle>();
   // requestId → pending promise (resolved by session.ack, rejected by
-  // session.error). `PendingTracker` owns the register/timeout/settle/sweep
-  // lifecycle shared by all five pending round-trips below; each entry's
-  // resolve/reject closures carry the per-round-trip cleanup.
-  const pendingRequests = new PendingTracker<string>();
+  // session.error), carrying the target address so an allocation leaving a
+  // shared connection rejects only its own requests. `PendingTracker` owns the
+  // register/timeout/settle/sweep lifecycle shared by all five pending
+  // round-trips below; each entry's resolve/reject closures carry the
+  // per-round-trip cleanup.
+  const pendingRequests = new PendingTracker<string, void, string>();
   // agentAddress → pending deploy promise (matched by agent.deploy.ack/agent.error)
   const pendingDeploys = new PendingTracker<string, string>();
   // Run addresses whose ALLOCATED deploy is mid-flight -- key-record has been
@@ -882,10 +962,16 @@ export function createSidecarRouter(
   // requestId → pending workflow probe (resolved by workflow.probe.result,
   // rejected by workflow.probe.error). Result-carrying, unlike the other
   // trackers (which resolve void): a probe returns the sidecar's inert
-  // projection + grant set + wire hash. Keyed on requestId alone -- the
-  // probe runs in the sidecar's pre-deploy state and enters no address map,
-  // so `handleClose`'s ws-keyed sweep is its ONLY disconnect cleanup.
-  const pendingProbes = new PendingTracker<string, WorkflowProbeResult>();
+  // projection + grant set + wire hash. The probe runs in the sidecar's
+  // pre-deploy state and enters no address map, so each entry carries its
+  // probe id: the ws-keyed sweeps -- the whole connection closing, or that
+  // probe leaving a connection other bindings keep open -- are its only
+  // disconnect cleanup.
+  const pendingProbes = new PendingTracker<
+    string,
+    WorkflowProbeResult,
+    string
+  >();
 
   // Receives agent-state packs pushed from sidecars. The wire frames
   // (`repo.pack.push` / `repo.pack.done`) are shared with the
@@ -1281,11 +1367,10 @@ export function createSidecarRouter(
     const byId = pendingMail.get(agentAddress);
     if (byId === undefined) return;
     for (const entry of [...byId.values()]) {
+      const target = entry.allocatedTarget;
       if (
-        entry.allocatedTarget !== undefined &&
-        (conn.identity.kind !== "allocated" ||
-          conn.identity.allocationId !== entry.allocatedTarget.allocationId ||
-          conn.identity.generation !== entry.allocatedTarget.generation)
+        target !== undefined &&
+        owningAllocation(conn, agentAddress)?.generation !== target.generation
       ) {
         // The Hub-owned dispatch row survives generation replacement and will
         // be requeued by the allocation-ready callback. Do not leak or replay
@@ -1373,6 +1458,26 @@ export function createSidecarRouter(
     messageChains.set(ws, next);
   }
 
+  // Run Hub-initiated connection work on the same per-ws chain as inbound
+  // frames, so it observes a completed registration and a registration
+  // observes its effects. The caller sees the task's own outcome; the chain
+  // only needs it settled.
+  function enqueueOnConnection<T>(
+    ws: WsHandle,
+    task: () => Promise<T>,
+  ): Promise<T> {
+    const prev = messageChains.get(ws) ?? Promise.resolve();
+    const result = prev.then(task);
+    messageChains.set(
+      ws,
+      result.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return result;
+  }
+
   function assertNever(x: never): never {
     throw new Error(`Unclassified sidecar frame type: ${JSON.stringify(x)}`);
   }
@@ -1427,33 +1532,29 @@ export function createSidecarRouter(
     ws: WsHandle,
     frame: SidecarFrame,
   ): void | Promise<void> {
-    const registeredIdentity = connections.get(ws)?.identity;
-    if (
-      registeredIdentity?.kind === "probe" &&
-      frame.type !== "register" &&
-      frame.type !== "reconnect" &&
-      frame.type !== "ping" &&
-      frame.type !== "workflow.probe.result" &&
-      frame.type !== "workflow.probe.error"
-    ) {
-      logger.warn`Rejected ${frame.type} from probe sidecar ${registeredIdentity.sidecarId}`;
-      handleClose(ws);
-      ws.close();
-      return;
-    }
     switch (frame.type) {
       case "register": {
         const agentAddresses = frame.agentAddresses;
         const cachedSenderAddresses = frame.cachedSenderAddresses ?? [];
-        return authenticateHandshake(ws, frame, (identity) =>
-          handleRegister(ws, identity, agentAddresses, cachedSenderAddresses),
+        return authenticateHandshake(ws, frame, (sidecarId) =>
+          handleRegistration(
+            ws,
+            sidecarId,
+            agentAddresses,
+            cachedSenderAddresses,
+          ),
         );
       }
       case "reconnect": {
         const agentAddresses = frame.agentAddresses;
         const cachedSenderAddresses = frame.cachedSenderAddresses ?? [];
-        return authenticateHandshake(ws, frame, (identity) =>
-          handleReconnect(ws, identity, agentAddresses, cachedSenderAddresses),
+        return authenticateHandshake(ws, frame, (sidecarId) =>
+          handleRegistration(
+            ws,
+            sidecarId,
+            agentAddresses,
+            cachedSenderAddresses,
+          ),
         );
       }
       case "agent.deploy.ack":
@@ -1552,15 +1653,16 @@ export function createSidecarRouter(
           return;
         }
         resolvePendingMail(frame.agentAddress, frame.messageId);
+        const acknowledging = owningAllocation(conn, frame.agentAddress);
         events.emit("mail.inbound.acknowledged", {
           agentAddress: frame.agentAddress,
           messageId: frame.messageId,
-          ...(conn.identity.kind === "allocated"
+          ...(acknowledging !== undefined
             ? {
                 allocated: {
-                  allocationId: conn.identity.allocationId,
-                  anchorRunId: conn.identity.anchorRunId,
-                  generation: conn.identity.generation,
+                  allocationId: acknowledging.allocationId,
+                  anchorRunId: acknowledging.anchorRunId,
+                  generation: acknowledging.generation,
                 },
               }
             : {}),
@@ -1570,9 +1672,11 @@ export function createSidecarRouter(
       case "signal.correlation.register":
         return handleSignalCorrelationRegister(ws, frame);
       case "session.ack":
+        if (pendingRequests.get(frame.requestId)?.ws !== ws) return;
         pendingRequests.resolve(frame.requestId);
         return;
       case "session.error":
+        if (pendingRequests.get(frame.requestId)?.ws !== ws) return;
         pendingRequests.reject(frame.requestId, frame.error);
         return;
       case "repo.pack.ack":
@@ -1603,20 +1707,22 @@ export function createSidecarRouter(
   }
 
   // Authenticate a register/reconnect handshake exactly once, then run the
-  // frame's handler with the verified identity. The claimed `sidecarId` on
+  // frame's handler with the verified sidecar id. The claimed `sidecarId` on
   // the frame is an unauthenticated hint: it is logged if it disagrees with
   // the verified id but never trusted -- routing keys off the verified id.
   // Fails closed by closing the connection when the authenticator rejects
   // (returns null) or throws (e.g. a database failure), so a handshake never
-  // proceeds on unverified credentials.
+  // proceeds on unverified credentials. The bindings the authenticator
+  // returns only gate the handshake: they are read before the socket claims
+  // the sidecar, so registration reads them again once it has.
   async function authenticateHandshake(
     ws: WsHandle,
     frame: { type: string; sidecarId: string; token: string },
-    run: (identity: SidecarAuthIdentity) => Promise<void>,
+    run: (sidecarId: string) => Promise<void>,
   ): Promise<void> {
-    let identity: SidecarAuthIdentity | null;
+    let credentials: SidecarCredentials | null;
     try {
-      identity = await authenticateSidecar({
+      credentials = await authenticateSidecar({
         sidecarId: frame.sidecarId,
         token: frame.token,
       });
@@ -1625,20 +1731,16 @@ export function createSidecarRouter(
       ws.close();
       return;
     }
-    if (identity === null) {
+    if (credentials === null) {
       logger.warn`Rejected ${frame.type} from claimed sidecar ${frame.sidecarId}: invalid token`;
       ws.close();
       return;
     }
-    if (identity.sidecarId !== frame.sidecarId) {
-      logger.warn`Sidecar ${frame.type} claimed id ${frame.sidecarId} but token verifies as ${identity.sidecarId}; keying off the verified id`;
+    const sidecarId = credentials.sidecarId;
+    if (sidecarId !== frame.sidecarId) {
+      logger.warn`Sidecar ${frame.type} claimed id ${frame.sidecarId} but token verifies as ${sidecarId}; keying off the verified id`;
     }
-    if (!(await validateSidecarIdentity(identity, "registration"))) {
-      logger.warn`Rejected ${frame.type} from sidecar ${identity.sidecarId}: credential identity is no longer current`;
-      ws.close();
-      return;
-    }
-    await run(identity);
+    await run(sidecarId);
   }
 
   async function notifyAllocationWaiters(allocationId: string): Promise<void> {
@@ -1695,100 +1797,361 @@ export function createSidecarRouter(
       allocationWaiters.delete(allocationId);
   }
 
-  async function handleAllocatedRegister(
+  function isFencedAsCurrent(binding: SidecarAuthIdentity): boolean {
+    return allocationFences.get(binding.allocationId) === binding.generation;
+  }
+
+  // Make `bindings` the connection's current set. A binding the in-memory
+  // fence no longer accepts is skipped; one this socket held that is absent
+  // or superseded is detached; one still attached to another sidecar's socket
+  // moves here. Returns the attached bindings and, of those, the ones this
+  // socket did not already hold at the same generation and kind. A binding it
+  // already holds that way keeps its entry: readiness and routing checks read
+  // the entry, await its validation, and treat a replaced entry as a changed
+  // connection, so a sync that changes nothing must not replace it. The socket
+  // stays open even when nothing attaches -- the caller decides.
+  function attachBindings(
     ws: WsHandle,
-    identity: SidecarAuthIdentity,
+    conn: SidecarConnection,
+    bindings: readonly SidecarAuthIdentity[],
+  ): { attached: SidecarAuthIdentity[]; added: SidecarAuthIdentity[] } {
+    const attached = bindings.filter(isFencedAsCurrent);
+    for (const binding of bindings) {
+      if (!attached.includes(binding)) {
+        logger.warn`Sidecar ${conn.sidecarId} skipped ${binding.kind} ${binding.allocationId} generation ${String(binding.generation)}: it is not fenced as current`;
+      }
+    }
+    for (const [allocationId, held] of [...conn.bindings]) {
+      const next = attached.find(
+        (binding) => binding.allocationId === allocationId,
+      );
+      if (next === undefined || next.generation !== held.generation) {
+        detachBinding(ws, allocationId, "Its binding is no longer current", {
+          keepOpen: true,
+        });
+      }
+    }
+    const added: SidecarAuthIdentity[] = [];
+    for (const binding of attached) {
+      const elsewhere = allocatedConnections.get(binding.allocationId);
+      if (elsewhere !== undefined && elsewhere.ws !== ws) {
+        detachBinding(
+          elsewhere.ws,
+          binding.allocationId,
+          `It moved to sidecar ${conn.sidecarId}`,
+        );
+      }
+      const held = conn.bindings.get(binding.allocationId);
+      const unchanged =
+        held?.generation === binding.generation && held.kind === binding.kind;
+      if (
+        unchanged &&
+        allocatedConnections.get(binding.allocationId)?.ws === ws
+      )
+        continue;
+      if (!unchanged) added.push(binding);
+      conn.bindings.set(binding.allocationId, binding);
+      allocatedConnections.set(binding.allocationId, { ws, identity: binding });
+    }
+    return { attached, added };
+  }
+
+  // Remove one binding from its connection: drop its routes and in-flight
+  // work, tell the sidecar to undeploy the deployment it no longer hosts, and
+  // report the lost routes. The socket closes once it hosts nothing current,
+  // unless the caller is about to attach replacements.
+  function detachBinding(
+    ws: WsHandle,
+    allocationId: string,
+    reason: string,
+    { keepOpen = false }: { keepOpen?: boolean } = {},
+  ): void {
+    const conn = connections.get(ws);
+    const binding = conn?.bindings.get(allocationId);
+    if (conn === undefined || binding === undefined) return;
+    conn.bindings.delete(allocationId);
+    const allocated: { allocationId: string; generation: number }[] = [];
+    if (allocatedConnections.get(allocationId)?.ws === ws) {
+      allocatedConnections.delete(allocationId);
+      if (binding.kind === "allocated") {
+        allocated.push({ allocationId, generation: binding.generation });
+      }
+    }
+    const addresses = [...conn.workflowAddresses].flatMap(([address, owner]) =>
+      owner === allocationId ? [address] : [],
+    );
+    for (const address of addresses) {
+      conn.workflowAddresses.delete(address);
+      if (addressIndex.get(address) === ws) {
+        addressIndex.delete(address);
+        connectorStates.delete(address);
+        retainPendingMailForAddress(address);
+      }
+      agentStatePackReceiver.cancelByAgent(address);
+      workflowRunPackReceiver.cancelByAgent(address);
+    }
+    const deploymentAddress =
+      binding.kind === "allocated" ? binding.workflowRunAddress : undefined;
+    // An own-repository transfer needs no route, so the loop above can miss
+    // it.
+    if (deploymentAddress !== undefined)
+      workflowRunPackReceiver.cancelByAgent(deploymentAddress);
+    const error = `${binding.kind === "probe" ? "Probe" : "Allocation"} ${allocationId} left sidecar ${conn.sidecarId}: ${reason}`;
+    const released = new Set(addresses);
+    if (deploymentAddress !== undefined) released.add(deploymentAddress);
+    pendingRequests.rejectForWs(ws, (entry) => released.has(entry.meta), error);
+    pendingDeploys.rejectForWs(ws, (entry) => released.has(entry.key), error);
+    pendingPacks.rejectForWs(
+      ws,
+      (entry) => released.has(entry.meta.agentAddress),
+      error,
+    );
+    pendingUndeploys.rejectForWs(ws, (entry) => released.has(entry.key), error);
+    pendingProbes.rejectForWs(
+      ws,
+      (entry) => entry.meta === allocationId,
+      error,
+    );
+    pendingWorkflowControls.rejectForWs(
+      ws,
+      (entry) => entry.meta.allocationId === allocationId,
+      error,
+    );
+    // The Hub cannot tell whether the sidecar still holds the deployment: a
+    // deploy that timed out or failed has already dropped its route and
+    // pending entry, yet the sidecar may have installed it. A sidecar that
+    // never deployed the address acks the undeploy anyway.
+    if (deploymentAddress !== undefined) {
+      sendUnacknowledgedUndeploy(conn, deploymentAddress, reason);
+    }
+    if (addresses.length > 0 || allocated.length > 0) {
+      events.emit("sidecar.disconnect", {
+        ownedAddresses: addresses,
+        allocated,
+      });
+    }
+    if (!keepOpen && conn.bindings.size === 0) {
+      handleClose(ws);
+      ws.close();
+    }
+  }
+
+  // The Hub has already dropped the route, so nothing waits on the ack. A
+  // sidecar that misses the frame is told again when it next announces the
+  // address.
+  function sendUnacknowledgedUndeploy(
+    conn: SidecarConnection,
+    agentAddress: string,
+    reason: string,
+  ): void {
+    try {
+      conn.send({ type: "agent.undeploy", agentAddress, reason });
+    } catch (err) {
+      logger.warn`Failed to ask sidecar ${conn.sidecarId} to undeploy ${agentAddress}: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  async function announceAttached(
+    bindings: readonly SidecarAuthIdentity[],
+  ): Promise<void> {
+    for (const binding of bindings) {
+      await notifyAllocationWaiters(binding.allocationId);
+      if (binding.kind === "allocated") {
+        events.emit("sidecar.allocated.connected", {
+          allocationId: binding.allocationId,
+          generation: binding.generation,
+        });
+      }
+    }
+  }
+
+  // What a registering sidecar hosts: the bindings current for it and, of
+  // the addresses it announced, those that reclaim their route. Null once the
+  // registration has been rejected and its socket closed.
+  async function readHostedWork(
+    ws: WsHandle,
+    sidecarId: string,
+    existing: SidecarConnection | undefined,
+    agentAddresses: readonly string[],
+  ): Promise<{
+    bindings: SidecarAuthIdentity[];
+    reclaimed: Map<string, Extract<SidecarAuthIdentity, { kind: "allocated" }>>;
+    unauthorized: string[];
+  } | null> {
+    let bindings: SidecarAuthIdentity[];
+    try {
+      const resolved = await resolveSidecarBindings(sidecarId);
+      const current = await Promise.all(
+        resolved.map((binding) =>
+          validateSidecarIdentity(binding, "registration"),
+        ),
+      );
+      bindings = resolved.filter((_, index) => current[index]);
+    } catch (err) {
+      logger.error`Rejected registration from sidecar ${sidecarId}: cannot resolve what it hosts: ${err instanceof Error ? err.message : String(err)}`;
+      handleClose(ws);
+      ws.close();
+      return null;
+    }
+    if (bindings.length === 0) {
+      logger.warn`Rejected registration from sidecar ${sidecarId}: it hosts nothing current`;
+      handleClose(ws);
+      ws.close();
+      return null;
+    }
+
+    // An announced address reclaims its route only for a deployment this
+    // sidecar currently hosts that is ready to route. Anything else is local
+    // state the Hub no longer authorizes here, such as a deployment that left
+    // this sidecar while it was disconnected.
+    const reclaimed = new Map<
+      string,
+      Extract<SidecarAuthIdentity, { kind: "allocated" }>
+    >();
+    const unauthorized: string[] = [];
+    for (const address of agentAddresses) {
+      const binding = bindings.find(
+        (candidate) =>
+          candidate.kind === "allocated" &&
+          candidate.workflowRunAddress === address,
+      );
+      if (binding?.kind !== "allocated") {
+        unauthorized.push(address);
+        continue;
+      }
+      const alreadyRouted =
+        existing?.workflowAddresses.get(address) === binding.allocationId &&
+        existing.bindings.get(binding.allocationId)?.generation ===
+          binding.generation &&
+        addressIndex.get(address) === ws;
+      let reclaimable: boolean;
+      try {
+        reclaimable =
+          alreadyRouted || (await validateSidecarIdentity(binding, "routing"));
+      } catch (err) {
+        logger.error`Rejected registration from sidecar ${sidecarId}: cannot validate announced ${address}: ${err instanceof Error ? err.message : String(err)}`;
+        handleClose(ws);
+        ws.close();
+        return null;
+      }
+      if (reclaimable) reclaimed.set(address, binding);
+      else unauthorized.push(address);
+    }
+    return { bindings, reclaimed, unauthorized };
+  }
+
+  async function handleRegistration(
+    ws: WsHandle,
+    sidecarId: string,
     agentAddresses: string[],
     cachedSenderAddresses: string[],
   ): Promise<void> {
-    if (allocationFences.get(identity.allocationId) !== identity.generation) {
-      logger.warn`Rejected allocated sidecar ${identity.sidecarId}: allocation ${identity.allocationId} generation ${String(identity.generation)} is not fenced as current`;
-      ws.close();
-      return;
-    }
-    if (identity.kind === "probe" && agentAddresses.length > 0) {
-      logger.warn`Rejected probe sidecar ${identity.sidecarId}: probe ${identity.allocationId} claimed workflow addresses`;
-      ws.close();
-      return;
-    }
-    if (
-      agentAddresses.length > 0 &&
-      !(await validateSidecarIdentity(identity, "routing"))
-    ) {
-      logger.warn`Rejected allocated sidecar ${identity.sidecarId}: allocation ${identity.allocationId} is not ready to reclaim routes`;
+    const existing = connections.get(ws);
+    if (existing !== undefined && existing.sidecarId !== sidecarId) {
+      logger.warn`Rejected sidecar ${sidecarId}: socket is registered as sidecar ${existing.sidecarId}`;
+      handleClose(ws);
       ws.close();
       return;
     }
 
-    const existingOnSocket = connections.get(ws);
-    const newlyRoutedAddresses = new Set<string>();
-    for (const address of agentAddresses) {
-      const alreadyOwned =
-        existingOnSocket?.identity.kind === "allocated" &&
-        existingOnSocket.identity.allocationId === identity.allocationId &&
-        addressIndex.get(address) === ws &&
-        connOwnsAddress(existingOnSocket, address);
+    if (closedSockets.has(ws)) return;
+
+    // Claim the sidecar before reading what it hosts. A sync for it queues
+    // behind this registration from here on, and a sync that ran earlier
+    // followed a placement this read sees, so work placed on the sidecar
+    // while it connects is attached either way. The claim ends with the read:
+    // the takeover below runs without yielding, or the registration stops.
+    sidecarClaims.set(sidecarId, ws);
+    let hosted: Awaited<ReturnType<typeof readHostedWork>>;
+    let claimHeld: boolean;
+    try {
+      hosted = await readHostedWork(ws, sidecarId, existing, agentAddresses);
+      // Every binding the read saw advanced or was released while it ran.
+      // Work placed on the sidecar meanwhile is only in a newer read, so take
+      // one rather than turn the sidecar away.
       if (
-        identity.kind !== "allocated" ||
-        (!alreadyOwned && address !== identity.workflowRunAddress)
+        hosted !== null &&
+        !hosted.bindings.some(isFencedAsCurrent) &&
+        sidecarClaims.get(sidecarId) === ws
       ) {
-        logger.warn`Rejected allocated sidecar ${identity.sidecarId}: allocation ${identity.allocationId} claimed unrelated address ${address}`;
-        ws.close();
-        return;
+        hosted = await readHostedWork(ws, sidecarId, existing, agentAddresses);
       }
-      if (!alreadyOwned) newlyRoutedAddresses.add(address);
+    } finally {
+      claimHeld = sidecarClaims.get(sidecarId) === ws;
+      if (claimHeld) sidecarClaims.delete(sidecarId);
     }
-
-    if (allocationFences.get(identity.allocationId) !== identity.generation) {
-      ws.close();
+    if (hosted === null) return;
+    if (!claimHeld) {
+      logger.info`Dropping a registration of sidecar ${sidecarId}: its socket closed, or a newer handshake took the sidecar over`;
+      // A socket already serving the sidecar keeps serving until that
+      // handshake takes its bindings over.
+      if (existing === undefined) {
+        handleClose(ws);
+        ws.close();
+      }
       return;
     }
-    const current = allocatedConnections.get(identity.allocationId);
-    if (current !== undefined && current.ws !== ws) {
-      // A current-generation takeover is a reconnect, not a capacity loss.
-      // Remove the old socket from the allocation index before closing it so
-      // handleClose does not emit a false allocated-disconnect event.
-      allocatedConnections.delete(identity.allocationId);
-      handleClose(current.ws);
-      current.ws.close();
+    const { bindings, reclaimed, unauthorized } = hosted;
+
+    // A sidecar reconnecting on a new socket takes its bindings along. Move
+    // them off the previous socket first so its close reports only the
+    // bindings that did not follow.
+    const previous = sidecarSockets.get(sidecarId);
+    if (previous !== undefined && previous !== ws) {
+      for (const binding of bindings.filter(isFencedAsCurrent)) {
+        if (allocatedConnections.get(binding.allocationId)?.ws === previous)
+          allocatedConnections.delete(binding.allocationId);
+      }
+      handleClose(previous);
+      previous.close();
     }
 
-    const conn: SidecarConnection = existingOnSocket ?? {
-      sidecarId: identity.sidecarId,
-      identity,
+    const conn: SidecarConnection = existing ?? {
+      sidecarId,
+      bindings: new Map(),
       agentAddresses: new Set(),
-      workflowAddresses: new Set(),
+      workflowAddresses: new Map(),
       unansweredDeploys: new Set(),
       send(frame: HubFrame) {
         ws.send(JSON.stringify(frame));
       },
     };
-    if (
-      conn.identity.kind !== identity.kind ||
-      conn.identity.allocationId !== identity.allocationId ||
-      conn.identity.generation !== identity.generation
-    ) {
-      logger.warn`Rejected allocated sidecar ${identity.sidecarId}: socket identity changed during registration`;
+    connections.set(ws, conn);
+    sidecarSockets.set(sidecarId, ws);
+
+    const { attached } = attachBindings(ws, conn, bindings);
+    if (conn.bindings.size === 0) {
+      logger.warn`Rejected sidecar ${sidecarId}: none of its bindings is fenced as current`;
+      handleClose(ws);
       ws.close();
       return;
     }
 
-    connections.set(ws, conn);
-    for (const address of agentAddresses) {
-      conn.workflowAddresses.add(address);
+    const newlyRoutedAddresses = new Set<string>();
+    for (const [address, binding] of reclaimed) {
+      if (
+        conn.bindings.get(binding.allocationId)?.generation !==
+        binding.generation
+      ) {
+        unauthorized.push(address);
+        continue;
+      }
+      if (addressIndex.get(address) !== ws) newlyRoutedAddresses.add(address);
+      conn.workflowAddresses.set(address, binding.allocationId);
       addressIndex.set(address, ws);
     }
-    allocatedConnections.set(identity.allocationId, { ws, identity });
-    // Replay can wait on database admission without delaying connection readiness.
-    await notifyAllocationWaiters(identity.allocationId);
-    if (allocatedConnections.get(identity.allocationId)?.ws !== ws) return;
-    logger.info`Provisioned sidecar ${identity.sidecarId} registered for allocation ${identity.allocationId} generation ${String(identity.generation)}`;
-    if (identity.kind === "allocated") {
-      events.emit("sidecar.allocated.connected", {
-        allocationId: identity.allocationId,
-        generation: identity.generation,
-      });
+    for (const address of unauthorized) {
+      logger.warn`Sidecar ${sidecarId} announced ${address}, which it does not currently host; asking it to undeploy`;
+      sendUnacknowledgedUndeploy(
+        conn,
+        address,
+        "The deployment is not current on this sidecar",
+      );
     }
+    logger.info`Provisioned sidecar ${sidecarId} registered for ${attached.map((binding) => `${binding.kind} ${binding.allocationId} generation ${String(binding.generation)}`).join(", ")}`;
+    // Replay can wait on database admission without delaying connection readiness.
+    await announceAttached(attached);
+    if (connections.get(ws) !== conn) return;
     for (const address of newlyRoutedAddresses) {
       await redeliverPendingMail(address, conn);
     }
@@ -1814,7 +2177,10 @@ export function createSidecarRouter(
     // large cache cannot fan out into one concurrent DB query per reported
     // sender on every reconnect.
     const resolveSenderKeyStrict = lookups.resolveSenderKeyStrict;
-    if (identity.kind === "allocated" && resolveSenderKeyStrict !== undefined) {
+    if (
+      allocationBindings(conn).length > 0 &&
+      resolveSenderKeyStrict !== undefined
+    ) {
       const rotatableSenders = new Set(cachedSenderAddresses);
       // Resolve-don't-trust applied to input SIZE: bound the reported set before
       // acting on it. Run addresses count toward the cap by design -- the
@@ -1824,7 +2190,7 @@ export function createSidecarRouter(
       // log the overflow so a misbehaving sidecar is detectable.
       let sendersToResync = [...rotatableSenders];
       if (sendersToResync.length > MAX_RESYNC_SENDER_ADDRESSES) {
-        logger.warn`Sidecar ${identity.sidecarId} reported ${String(sendersToResync.length)} cached sender addresses on allocation ${identity.allocationId} generation ${String(identity.generation)}, over the ${String(MAX_RESYNC_SENDER_ADDRESSES)} resync cap; reconciling the first ${String(MAX_RESYNC_SENDER_ADDRESSES)} and ignoring the rest`;
+        logger.warn`Sidecar ${conn.sidecarId} reported ${String(sendersToResync.length)} cached sender addresses, over the ${String(MAX_RESYNC_SENDER_ADDRESSES)} resync cap; reconciling the first ${String(MAX_RESYNC_SENDER_ADDRESSES)} and ignoring the rest`;
         sendersToResync = sendersToResync.slice(0, MAX_RESYNC_SENDER_ADDRESSES);
       }
       void (async () => {
@@ -1865,37 +2231,52 @@ export function createSidecarRouter(
         // is gone. That means the connection left, so stop -- the remaining
         // sends would fail the same way.
         const message = cause instanceof Error ? cause.message : String(cause);
-        logger.warn`Sender-key resync for sidecar ${identity.sidecarId} stopped: ${message}`;
+        logger.warn`Sender-key resync for sidecar ${conn.sidecarId} stopped: ${message}`;
       });
     }
   }
 
-  async function handleRegister(
-    ws: WsHandle,
-    identity: SidecarAuthIdentity,
-    agentAddresses: string[],
-    cachedSenderAddresses: string[],
-  ): Promise<void> {
-    await handleAllocatedRegister(
-      ws,
-      identity,
-      agentAddresses,
-      cachedSenderAddresses,
-    );
+  // The socket a sync for the sidecar runs on: the one registering it while
+  // a handshake holds its claim, otherwise the one it is connected on.
+  function syncTarget(sidecarId: string): WsHandle | undefined {
+    return sidecarClaims.get(sidecarId) ?? sidecarSockets.get(sidecarId);
   }
 
-  async function handleReconnect(
-    ws: WsHandle,
-    identity: SidecarAuthIdentity,
-    agentAddresses: string[],
-    cachedSenderAddresses: string[],
-  ): Promise<void> {
-    await handleAllocatedRegister(
-      ws,
-      identity,
-      agentAddresses,
-      cachedSenderAddresses,
-    );
+  function syncSidecar(sidecarId: string): Promise<void> {
+    const ws = syncTarget(sidecarId);
+    if (ws === undefined) return Promise.resolve();
+    return enqueueOnConnection(ws, async () => {
+      // The registration this queued behind may have been rejected, leaving
+      // the sidecar on its previous socket, or superseded.
+      if (syncTarget(sidecarId) !== ws) {
+        redirectSync(sidecarId);
+        return;
+      }
+      const conn = connections.get(ws);
+      if (conn === undefined) return;
+      const bindings = await resolveSidecarBindings(sidecarId);
+      if (syncTarget(sidecarId) !== ws) {
+        redirectSync(sidecarId);
+        return;
+      }
+      if (connections.get(ws) !== conn) return;
+      const { added } = attachBindings(ws, conn, bindings);
+      if (conn.bindings.size === 0) {
+        logger.info`Sidecar ${sidecarId} hosts nothing current; closing its connection`;
+        handleClose(ws);
+        ws.close();
+        return;
+      }
+      await announceAttached(added);
+    });
+  }
+
+  // Not awaited: the socket the sync moves to may have work queued behind the
+  // one that redirects it.
+  function redirectSync(sidecarId: string): void {
+    syncSidecar(sidecarId).catch((err: unknown) => {
+      logger.warn`Failed to sync the bindings of sidecar ${sidecarId}: ${err instanceof Error ? err.message : String(err)}`;
+    });
   }
 
   // Park a pre-ack sender's mail synchronously and return its entry. Registering
@@ -2385,9 +2766,24 @@ export function createSidecarRouter(
   }
 
   function handleClose(ws: WsHandle): void {
+    closedSockets.add(ws);
+    for (const [sidecarId, claimant] of sidecarClaims) {
+      if (claimant === ws) sidecarClaims.delete(sidecarId);
+    }
+
+    // Cancel the liveness timer for this connection.
+    const cancelLiveness = livenessTimers.get(ws);
+    if (cancelLiveness !== undefined) {
+      cancelLiveness();
+      livenessTimers.delete(ws);
+    }
+
+    // Drop the per-ws serialization chain; no more frames will queue on it.
+    messageChains.delete(ws);
+
     const conn = connections.get(ws);
     if (conn === undefined) return;
-    let allocated: { allocationId: string; generation: number } | undefined;
+    const allocated: { allocationId: string; generation: number }[] = [];
 
     // Only legacy agent addresses enter this queueing path. Allocated workflow
     // routes use workflowAddresses from their first deploy.
@@ -2433,7 +2829,7 @@ export function createSidecarRouter(
     // reconstructed sidecar-locally, not from a hub-side queue. The ownership
     // guard mirrors the legacy address loop above so a takeover by a newer ws
     // is not clobbered by the prior owner's close.
-    for (const addr of conn.workflowAddresses) {
+    for (const addr of conn.workflowAddresses.keys()) {
       if (addressIndex.get(addr) === ws) {
         addressIndex.delete(addr);
         connectorStates.delete(addr);
@@ -2443,27 +2839,17 @@ export function createSidecarRouter(
         retainPendingMailForAddress(addr);
       }
     }
-    const current = allocatedConnections.get(conn.identity.allocationId);
-    if (current?.ws === ws) {
-      allocatedConnections.delete(conn.identity.allocationId);
-      if (conn.identity.kind === "allocated") {
-        allocated = {
-          allocationId: conn.identity.allocationId,
-          generation: conn.identity.generation,
-        };
+    for (const [allocationId, binding] of conn.bindings) {
+      if (allocatedConnections.get(allocationId)?.ws !== ws) continue;
+      allocatedConnections.delete(allocationId);
+      if (binding.kind === "allocated") {
+        allocated.push({ allocationId, generation: binding.generation });
       }
     }
-    connections.delete(ws);
-
-    // Cancel the liveness timer for this connection.
-    const cancelLiveness = livenessTimers.get(ws);
-    if (cancelLiveness !== undefined) {
-      cancelLiveness();
-      livenessTimers.delete(ws);
+    if (sidecarSockets.get(conn.sidecarId) === ws) {
+      sidecarSockets.delete(conn.sidecarId);
     }
-
-    // Drop the per-ws serialization chain; no more frames will queue on it.
-    messageChains.delete(ws);
+    connections.delete(ws);
 
     // Reject any in-flight requests that were sent to this sidecar. Each
     // entry's reject closure runs its own per-site cleanup (the deploy and
@@ -2511,15 +2897,15 @@ export function createSidecarRouter(
       workflowRunPackReceiver.cancelByAgent(addr);
     }
     // An own-repository transfer needs no route, so the owned addresses above
-    // can miss it. A successor for this allocation closes this connection while
-    // registering, before handling any frame of its own, so this cannot cancel
-    // the successor's transfer.
-    if (conn.identity.kind === "allocated")
-      workflowRunPackReceiver.cancelByAgent(conn.identity.workflowRunAddress);
+    // can miss it. A successor for these allocations closes this connection
+    // while registering, before handling any frame of its own, so this cannot
+    // cancel the successor's transfers.
+    for (const binding of allocationBindings(conn))
+      workflowRunPackReceiver.cancelByAgent(binding.workflowRunAddress);
 
     events.emit("sidecar.disconnect", {
       ownedAddresses: [...owned],
-      ...(allocated !== undefined ? { allocated } : {}),
+      allocated,
     });
 
     logger.info`Sidecar ${conn.sidecarId} disconnected`;
@@ -2561,7 +2947,7 @@ export function createSidecarRouter(
             reject(new Error(error));
           },
         },
-        undefined,
+        agentAddress,
       );
 
       conn.send(frame);
@@ -2688,14 +3074,14 @@ export function createSidecarRouter(
     conn: SidecarConnection,
     frame: PackPushFrame | PackDoneFrame,
   ): boolean {
+    const binding = deploymentBinding(conn, frame.agentAddress);
     if (
       frame.repoId.kind !== "workflow-run" ||
-      conn.identity.kind !== "allocated" ||
-      stoppedAllocations.get(conn.identity.allocationId) !==
-        conn.identity.generation
+      binding === undefined ||
+      stoppedAllocations.get(binding.allocationId) !== binding.generation
     )
       return false;
-    logger.warn`Rejected ${frame.type} from allocation ${conn.identity.allocationId} after its workflow stop`;
+    logger.warn`Rejected ${frame.type} from allocation ${binding.allocationId} after its workflow stop`;
     conn.send({
       type: "repo.pack.reject",
       agentAddress: frame.agentAddress,
@@ -2730,7 +3116,6 @@ export function createSidecarRouter(
       });
       return;
     }
-    if (conn.identity.kind !== "allocated") return;
 
     const picked = pickPackReceiver(frame.repoId);
     if (picked === null) {
@@ -2784,8 +3169,8 @@ export function createSidecarRouter(
       });
       return;
     }
-    if (conn.identity.kind !== "allocated") return;
-    const identity = conn.identity;
+    const identity = deploymentBinding(conn, frame.agentAddress);
+    if (identity === undefined) return;
 
     const picked = pickPackReceiver(frame.repoId);
     if (picked === null) {
@@ -2901,8 +3286,11 @@ export function createSidecarRouter(
 
     const current = allocatedConnections.get(allocationId);
     if (current !== undefined && current.identity.generation !== generation) {
-      handleClose(current.ws);
-      current.ws.close();
+      detachBinding(
+        current.ws,
+        allocationId,
+        `Generation ${String(generation)} superseded it`,
+      );
     }
 
     const waiters = allocationWaiters.get(allocationId);
@@ -2923,7 +3311,7 @@ export function createSidecarRouter(
   function retireAllocation(target: AllocatedSidecarTarget): void {
     if (allocationFences.get(target.allocationId) !== target.generation) return;
 
-    disconnectAllocation(target);
+    detachAllocation(target);
     allocationFences.delete(target.allocationId);
     stoppedAllocations.delete(target.allocationId);
 
@@ -2956,7 +3344,11 @@ export function createSidecarRouter(
   async function getProvisionedConnection(
     target: AllocatedSidecarTarget,
     use: "readiness" | "routing",
-  ): Promise<{ ws: WsHandle; conn: SidecarConnection }> {
+  ): Promise<{
+    ws: WsHandle;
+    conn: SidecarConnection;
+    binding: SidecarAuthIdentity;
+  }> {
     if (allocationFences.get(target.allocationId) !== target.generation) {
       throw new Error(
         `Allocation ${target.allocationId} generation ${String(target.generation)} is not current`,
@@ -2983,8 +3375,11 @@ export function createSidecarRouter(
     }
     if (!identityCurrent) {
       if (allocatedConnections.get(target.allocationId) === current) {
-        handleClose(current.ws);
-        current.ws.close();
+        detachBinding(
+          current.ws,
+          target.allocationId,
+          "Its identity is no longer current",
+        );
       }
       throw new Error(
         `Allocated sidecar identity is no longer current for allocation ${target.allocationId}`,
@@ -2996,16 +3391,17 @@ export function createSidecarRouter(
       );
     }
     const conn = connections.get(current.ws);
+    const binding = conn?.bindings.get(target.allocationId);
     if (
       conn === undefined ||
-      conn.identity.allocationId !== target.allocationId ||
-      conn.identity.generation !== target.generation
+      binding === undefined ||
+      binding.generation !== target.generation
     ) {
       throw new Error(
         `Allocated sidecar is not connected for allocation ${target.allocationId}`,
       );
     }
-    return { ws: current.ws, conn };
+    return { ws: current.ws, conn, binding };
   }
 
   async function getAllocatedConnection(
@@ -3013,20 +3409,16 @@ export function createSidecarRouter(
     use: "readiness" | "routing",
   ): Promise<{
     ws: WsHandle;
-    conn: SidecarConnection & {
-      identity: Extract<SidecarAuthIdentity, { kind: "allocated" }>;
-    };
+    conn: SidecarConnection;
+    binding: Extract<SidecarAuthIdentity, { kind: "allocated" }>;
   }> {
-    const current = await getProvisionedConnection(target, use);
-    if (current.conn.identity.kind !== "allocated") {
+    const { ws, conn, binding } = await getProvisionedConnection(target, use);
+    if (binding.kind !== "allocated") {
       throw new Error(
         `Allocation ${target.allocationId} is connected as probe capacity`,
       );
     }
-    return {
-      ws: current.ws,
-      conn: { ...current.conn, identity: current.conn.identity },
-    };
+    return { ws, conn, binding };
   }
 
   async function isAllocatedSidecarReady(
@@ -3044,11 +3436,19 @@ export function createSidecarRouter(
     }
   }
 
+  function holdsAllocatedBinding(target: AllocatedSidecarTarget): boolean {
+    const held = allocatedConnections.get(target.allocationId)?.identity;
+    return held?.kind === "allocated" && held.generation === target.generation;
+  }
+
   async function isAllocatedWorkflowActive(
     target: AllocatedSidecarTarget,
   ): Promise<boolean> {
-    const { conn } = await getAllocatedConnection(target, "readiness");
-    return conn.workflowAddresses.has(conn.identity.workflowRunAddress);
+    const { conn, binding } = await getAllocatedConnection(target, "readiness");
+    return (
+      conn.workflowAddresses.get(binding.workflowRunAddress) ===
+      binding.allocationId
+    );
   }
 
   async function waitForAllocatedSidecar(
@@ -3127,7 +3527,13 @@ export function createSidecarRouter(
         `Workflow step ${stepAddress} is already routed to another sidecar`,
       );
     }
-    conn.workflowAddresses.add(stepAddress);
+    const owner = conn.workflowAddresses.get(stepAddress);
+    if (owner !== undefined && owner !== target.allocationId) {
+      throw new Error(
+        `Workflow step ${stepAddress} is already routed to allocation ${owner}`,
+      );
+    }
+    conn.workflowAddresses.set(stepAddress, target.allocationId);
     addressIndex.set(stepAddress, ws);
   }
 
@@ -3143,7 +3549,10 @@ export function createSidecarRouter(
       return;
     }
     if (addressIndex.get(stepAddress) !== current.ws) return;
-    connections.get(current.ws)?.workflowAddresses.delete(stepAddress);
+    const conn = connections.get(current.ws);
+    if (conn?.workflowAddresses.get(stepAddress) !== target.allocationId)
+      return;
+    conn.workflowAddresses.delete(stepAddress);
     addressIndex.delete(stepAddress);
   }
 
@@ -3254,9 +3663,12 @@ export function createSidecarRouter(
     signal?: AbortSignal,
   ): Promise<void> {
     signal?.throwIfAborted();
-    const { ws, conn } = await getAllocatedConnection(target, "routing");
+    const { ws, conn, binding } = await getAllocatedConnection(
+      target,
+      "routing",
+    );
     signal?.throwIfAborted();
-    if (agentAddress !== conn.identity.workflowRunAddress) {
+    if (agentAddress !== binding.workflowRunAddress) {
       throw new Error(
         `Allocation ${target.allocationId} cannot restore unrelated address ${agentAddress}`,
       );
@@ -3264,7 +3676,7 @@ export function createSidecarRouter(
     let transfer: Promise<void> | undefined;
     await withAllocationWorkAdmission(
       ws,
-      conn,
+      binding,
       () => {
         if (conn.workflowAddresses.has(agentAddress)) {
           throw new Error(
@@ -3499,11 +3911,15 @@ export function createSidecarRouter(
 
     if (events.listenerCount("agent.deploy.ack") > 0) {
       try {
-        const identity = connections.get(ws)?.identity;
+        const conn = connections.get(ws);
+        const identity =
+          conn === undefined
+            ? undefined
+            : owningAllocation(conn, frame.agentAddress);
         await events.emitAndAwait("agent.deploy.ack", {
           agentAddress: frame.agentAddress,
           publicKey: frame.publicKey,
-          ...(identity?.kind === "allocated"
+          ...(identity !== undefined
             ? {
                 allocated: {
                   allocationId: identity.allocationId,
@@ -3540,6 +3956,7 @@ export function createSidecarRouter(
   function sendAgentDeployOnConnection(
     ws: WsHandle,
     conn: SidecarConnection,
+    allocationId: string,
     agentAddress: string,
     harnessConfig: HarnessConfig,
     workflow?: AgentDeployFrame["workflow"],
@@ -3558,11 +3975,7 @@ export function createSidecarRouter(
       );
     }
 
-    const addressSet =
-      conn.identity.kind === "allocated"
-        ? conn.workflowAddresses
-        : conn.agentAddresses;
-    addressSet.add(agentAddress);
+    conn.workflowAddresses.set(agentAddress, allocationId);
     addressIndex.set(agentAddress, ws);
 
     const response = Promise.withResolvers<{ publicKey: string }>();
@@ -3579,19 +3992,11 @@ export function createSidecarRouter(
         },
         reject(error: string) {
           if (addressIndex.get(agentAddress) === ws) {
-            addressSet.delete(agentAddress);
+            conn.workflowAddresses.delete(agentAddress);
             addressIndex.delete(agentAddress);
           }
-          // A non-allocated deployment's key is recorded by the deploy-ack
-          // projection, whose failure (reject/timeout/agent.error/disconnect)
-          // is observed only here. Drain any pre-ack sender mail parked on
-          // this address so it surfaces as undelivered rather than waiting out
-          // the TTL. An allocated deployment's failure is drained by its
-          // session-service owner instead, so skip it here to keep one owner
-          // per case.
-          if (conn.identity.kind !== "allocated") {
-            drainDeferredSenderMail(agentAddress, `deploy failed: ${error}`);
-          }
+          // The deployment's owner settles any pre-ack sender mail parked on
+          // this address once it knows the outcome.
           response.reject(deployFrameFailure(error, true));
         },
       },
@@ -3613,7 +4018,7 @@ export function createSidecarRouter(
       // promise below is the caller's evidence that the send took place.
       pendingDeploys.delete(agentAddress);
       if (addressIndex.get(agentAddress) === ws) {
-        addressSet.delete(agentAddress);
+        conn.workflowAddresses.delete(agentAddress);
         addressIndex.delete(agentAddress);
       }
       throw deployFrameFailure(
@@ -3636,9 +4041,12 @@ export function createSidecarRouter(
     let response: Promise<{ publicKey: string }> | undefined;
     try {
       signal?.throwIfAborted();
-      const { ws, conn } = await getAllocatedConnection(target, "routing");
+      const { ws, conn, binding } = await getAllocatedConnection(
+        target,
+        "routing",
+      );
       signal?.throwIfAborted();
-      if (agentAddress !== conn.identity.workflowRunAddress) {
+      if (agentAddress !== binding.workflowRunAddress) {
         throw new Error(
           `Allocation ${target.allocationId} cannot deploy unrelated address ${agentAddress}`,
         );
@@ -3658,11 +4066,12 @@ export function createSidecarRouter(
       await beforeSend?.();
       await withAllocationWorkAdmission(
         ws,
-        conn,
+        binding,
         () => {
           response = sendAgentDeployOnConnection(
             ws,
             conn,
+            target.allocationId,
             agentAddress,
             harnessConfig,
             workflow,
@@ -3779,6 +4188,7 @@ export function createSidecarRouter(
   function sendProbeOnConnection(
     ws: WsHandle,
     conn: SidecarConnection,
+    probeId: string,
     args: SendProbeArgs,
   ): Promise<WorkflowProbeResult> {
     const requestId = nextRequestId();
@@ -3795,7 +4205,7 @@ export function createSidecarRouter(
             reject(new Error(error));
           },
         },
-        undefined,
+        probeId,
       );
 
       conn.send({
@@ -3814,10 +4224,10 @@ export function createSidecarRouter(
     args: SendProbeArgs,
   ): Promise<WorkflowProbeResult> {
     const { ws, conn } = await getProvisionedConnection(target, "routing");
-    return sendProbeOnConnection(ws, conn, args);
+    return sendProbeOnConnection(ws, conn, target.allocationId, args);
   }
 
-  function disconnectAllocation(target: AllocatedSidecarTarget): void {
+  function detachAllocation(target: AllocatedSidecarTarget): void {
     const current = allocatedConnections.get(target.allocationId);
     if (
       current === undefined ||
@@ -3825,8 +4235,7 @@ export function createSidecarRouter(
     ) {
       return;
     }
-    handleClose(current.ws);
-    current.ws.close();
+    detachBinding(current.ws, target.allocationId, "It was released");
   }
 
   async function handleWorkflowControlAck(
@@ -3923,10 +4332,10 @@ export function createSidecarRouter(
         cause,
       );
     }
-    const { ws, conn } = connection;
+    const { ws, conn, binding } = connection;
     if (
-      command.agentAddress !== conn.identity.workflowRunAddress ||
-      command.runId !== conn.identity.anchorRunId
+      command.agentAddress !== binding.workflowRunAddress ||
+      command.runId !== binding.anchorRunId
     ) {
       throw new Error(
         "Workflow control does not target the allocation's anchor run",
@@ -4216,7 +4625,8 @@ export function createSidecarRouter(
     noteSenderDeployStarted,
     noteSenderDeploySettled,
     sendProbeToAllocation,
-    disconnectAllocation,
+    detachAllocation,
+    syncSidecar,
     sendAgentUndeploy,
     sendWorkflowControl,
     sendSourcesUpdate,
@@ -4227,6 +4637,7 @@ export function createSidecarRouter(
     retireAllocation,
     waitForAllocatedSidecar,
     isAllocatedSidecarReady,
+    holdsAllocatedBinding,
     isAllocatedWorkflowActive,
     sendAgentDeployToAllocation,
     bindAllocatedStepRoute,

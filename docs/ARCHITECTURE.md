@@ -252,7 +252,7 @@ Every harness and every agent has its own asymmetric key pair. These keys serve 
 
 **Per-agent keys** identify the agent across its lifecycle, independent of which harness instance is running it. The agent's key pair is generated at launch and persists for the agent's lifetime. When an agent produces content — messages, tool invocations, checkpoints — the harness signs it with the agent's key. Recipients can verify that a specific agent generated specific content, providing a chain of provenance.
 
-Key pairs are generated at agent launch time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems. Public keys are published to the control plane and included in the agent's discovery metadata so signed content and commits remain attributable to the producing agent. Reconnect routing is authorized separately by the allocation-scoped credential.
+Key pairs are generated at agent launch time and managed by the harness. Private keys are stored alongside the agent's persistent data and never exposed to agents or external systems. Public keys are published to the control plane and included in the agent's discovery metadata so signed content and commits remain attributable to the producing agent. Reconnect routing is authorized separately by the sidecar credential and the allocations it hosts.
 
 **Commit signing** extends per-agent keys to the git layer. Every state commit (context checkpoints, audit records) is signed with the agent's Ed25519 key using SSH signature format. This means standard `git verify-commit` works with no custom tooling. The control plane verifies signatures when the sidecar pushes state, rejecting any commit not signed by the registered key. Deploy commits are signed by the hub's own key; sidecars verify deploy signatures before accepting content. See Implementation for the wire protocol details.
 
@@ -260,14 +260,14 @@ The control plane maintains a key validity history per agent — a list of `(pub
 
 ### Agent Continuity
 
-Agents survive harness restarts when their provisioner preserves the required local state. On reconnect, the allocation-scoped credential binds the worker to one deployment and generation; the worker may re-announce only that allocation's run address. Continuity refers to a single deployment surviving its own provisioned worker restart, not portability across unrelated allocations.
+Agents survive harness restarts when their provisioner preserves the required local state. On reconnect, the sidecar credential authenticates the worker for the probe and allocation generations it currently hosts; the Hub restores the route of a re-announced run address only for one of those allocations and asks the worker to undeploy any other. Continuity refers to a deployment surviving a restart of the worker that hosts it, not portability across unrelated allocations.
 
 The authority model for agent continuity is:
 
 - **Harness local storage is authoritative** for agent inference context — conversation history, pending operations, and token usage. This is the source of truth for what the agent knows.
 - **Control plane is a delivery queue** for user messages. Messages sent while the harness is disconnected are queued and flushed to the harness on successful reconnect. The harness incorporates delivered messages into the agent's context through the normal message handling path.
 
-The reconnection protocol resolves the provisioner-issued bearer token to one allocation, anchor address, and generation. The Hub accepts only that address while the generation remains current, so a worker cannot claim another deployment's route.
+The reconnection protocol resolves the provisioner-issued bearer token to its sidecar and the current generation of every allocation that sidecar hosts. The Hub accepts only those allocations' anchor addresses while their generations remain current, so a worker cannot claim another deployment's route.
 
 Signatures are attached to:
 

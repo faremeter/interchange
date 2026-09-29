@@ -783,6 +783,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           withExecutableWorkflowRun: async (_target, send) => send(),
           authenticateSidecar: async () => null,
           validateSidecarIdentity: async () => false,
+          resolveSidecarBindings: async () => [],
         }),
         hubWebSocketUrl: "ws://localhost",
         operationTimeoutMs: 20,
@@ -847,6 +848,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: async () => null,
         validateSidecarIdentity: async () => false,
+        resolveSidecarBindings: async () => [],
       });
       const recoveries: Promise<void>[] = [];
       const reconciler = createSidecarAllocationReconciler({
@@ -1194,7 +1196,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
           fenceAllocation: () => undefined,
           retireAllocation: () => undefined,
           isAllocatedSidecarReady: async () => true,
+          holdsAllocatedBinding: () => true,
           waitForAllocatedSidecar: async () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "ws://localhost/unused",
         createLeaseId: () => `recovery-${String(++leases)}`,

@@ -134,9 +134,10 @@ export const RegisterFrame = type({
 export type RegisterFrame = typeof RegisterFrame.infer;
 
 /**
- * Sent on connect after a provisioned sidecar restores its deployment.
- * The bearer token binds the connection to one allocation generation, so the
- * Hub accepts only that allocation's workflow address.
+ * Sent on connect after a provisioned sidecar restores its deployments.
+ * The bearer token authenticates the sidecar; the Hub routes an announced
+ * workflow address only for an allocation the sidecar currently hosts and
+ * asks it to undeploy any other.
  */
 export const ReconnectFrame = type({
   type: "'reconnect'",

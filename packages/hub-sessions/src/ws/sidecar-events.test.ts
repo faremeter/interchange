@@ -28,7 +28,7 @@ describe("createSidecarEmitter", () => {
       order.push("b");
     });
 
-    emitter.emit("sidecar.disconnect", { ownedAddresses: [] });
+    emitter.emit("sidecar.disconnect", { ownedAddresses: [], allocated: [] });
 
     expect(order).toEqual(["a", "b"]);
   });
@@ -40,9 +40,9 @@ describe("createSidecarEmitter", () => {
       count++;
     });
 
-    emitter.emit("sidecar.disconnect", { ownedAddresses: [] });
+    emitter.emit("sidecar.disconnect", { ownedAddresses: [], allocated: [] });
     unsubscribe();
-    emitter.emit("sidecar.disconnect", { ownedAddresses: [] });
+    emitter.emit("sidecar.disconnect", { ownedAddresses: [], allocated: [] });
 
     expect(count).toBe(1);
   });
@@ -57,7 +57,7 @@ describe("createSidecarEmitter", () => {
       seen.push("ran");
     });
 
-    emitter.emit("sidecar.disconnect", { ownedAddresses: [] });
+    emitter.emit("sidecar.disconnect", { ownedAddresses: [], allocated: [] });
 
     expect(seen).toEqual(["ran"]);
   });

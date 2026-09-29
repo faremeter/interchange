@@ -10,7 +10,7 @@ import {
   createEventCollectorRegistry,
   createSidecarRouter,
   type SessionService,
-  type SidecarAuthenticator,
+  type SidecarAuthIdentity,
 } from "@intx/hub-sessions";
 import type { GetSession } from "./session";
 
@@ -21,18 +21,24 @@ const OpenAPISpec = type({
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- drizzle PgDatabase type cannot be structurally satisfied in tests
 const mockDb = {} as unknown as DB["db"];
-const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "allocated",
-  sidecarId,
-  allocationId: `allocation-${sidecarId}`,
-  tenantId: "tenant-test",
-  anchorRunId: `anchor-${sidecarId}`,
-  workflowRunAddress: "workflow",
-  generation: 1,
-});
+function bindingFor(sidecarId: string): SidecarAuthIdentity {
+  return {
+    kind: "allocated",
+    sidecarId,
+    allocationId: `allocation-${sidecarId}`,
+    tenantId: "tenant-test",
+    anchorRunId: `anchor-${sidecarId}`,
+    workflowRunAddress: "workflow",
+    generation: 1,
+  };
+}
 const sidecarRouter = createSidecarRouter({
   withExecutableWorkflowRun: async (_target, send) => send(),
-  authenticateSidecar: acceptAnySidecar,
+  authenticateSidecar: async ({ sidecarId }) => ({
+    sidecarId,
+    bindings: [bindingFor(sidecarId)],
+  }),
+  resolveSidecarBindings: async (sidecarId) => [bindingFor(sidecarId)],
   validateSidecarIdentity: async () => true,
 });
 const sessionService: SessionService = {

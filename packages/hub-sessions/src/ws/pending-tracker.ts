@@ -192,8 +192,20 @@ export class PendingTracker<Key, Value = void, Meta = undefined> {
    * bookkeeping), identical to a frame-error rejection.
    */
   rejectAllForWs(ws: WsHandle, error: string): void {
+    this.rejectForWs(ws, () => true, error);
+  }
+
+  /**
+   * Reject the entries owned by `ws` that `matches` selects -- the sweep for
+   * one binding leaving a connection that stays open for its other bindings.
+   */
+  rejectForWs(
+    ws: WsHandle,
+    matches: (entry: PendingEntry<Key, Value, Meta>) => boolean,
+    error: string,
+  ): void {
     for (const [key, entry] of this.entries) {
-      if (entry.ws !== ws) continue;
+      if (entry.ws !== ws || !matches(entry)) continue;
       entry.cancelTimeout();
       this.entries.delete(key);
       entry.reject(error);

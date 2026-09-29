@@ -24,7 +24,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
-  type SidecarAuthenticator,
+  type SidecarAuthIdentity,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -187,7 +187,7 @@ type TestEnv = {
 
 const identities = new Map<
   string,
-  Exclude<Awaited<ReturnType<SidecarAuthenticator>>, null>
+  Extract<SidecarAuthIdentity, { kind: "allocated" }>
 >();
 function ensureIdentity(sidecarId: string) {
   const existing = identities.get(sidecarId);
@@ -204,13 +204,14 @@ function ensureIdentity(sidecarId: string) {
   identities.set(sidecarId, identity);
   return identity;
 }
-const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) =>
-  ensureIdentity(sidecarId);
-
 function startTestServer(): TestEnv {
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: acceptAnySidecar,
+    authenticateSidecar: async ({ sidecarId }) => ({
+      sidecarId,
+      bindings: [ensureIdentity(sidecarId)],
+    }),
+    resolveSidecarBindings: async (sidecarId) => [ensureIdentity(sidecarId)],
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),

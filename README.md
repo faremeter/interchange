@@ -90,8 +90,8 @@ agent a managed principal instead of a loose script:
   the health of every running agent.
 - **Durable by default.** Conversations persist to a git-backed
   mailbox and agent state is committed locally. When provisioned capacity
-  restarts, its allocation credential binds it to one deployment and
-  generation; it restores that deployment from persisted state and resumes
+  restarts, its sidecar credential binds it to the deployment generations
+  it hosts; it restores those deployments from persisted state and resumes
   durable deliveries. Nothing is lost to a restart when the provisioner
   preserves the required storage.
 - **Model-agnostic inference with failover.** A definition declares the

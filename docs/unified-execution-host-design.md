@@ -987,7 +987,7 @@ same child/workflow-run model as the multi-step path:
   multi-step deploys share the one address shape; there is no separate
   launched-agent form and no address-space discriminator. The deploy-ack
   listener persists the published identity key against that address, while the
-  allocation credential authorizes reconnect routing
+  sidecar credential authorizes reconnect routing
   (`packages/hub-sessions/src/hub-session-orchestrator.ts`).
 - **Workflow-run repo id.** The child's workflow-run repo for a single-agent
   deploy is keyed by `deriveWorkflowRunRepoId(address)`
@@ -1823,7 +1823,7 @@ are explicitly **not** a go-live gate for INTR-209.
   (`formatRunAddress`, `parseRunAddress`, `isRunAddress`);
   `packages/hub-sessions/src/hub-session-orchestrator.ts` (deploy-ack listener);
   `packages/hub-sessions/src/hub-session-lookups.ts`
-  (`resolveRoutableAddress`); allocation-scoped reconnect identity in
+  (`resolveRoutableAddress`); sidecar reconnect identity and hosted bindings in
   `packages/hub-sessions/src/ws/sidecar-token-authenticator.ts`.
 - Grants bridge (reusable):
   `dispatch/workflow-launch-and-converge/8a-route_single_step_via_child/8a-groundwork.patch`.

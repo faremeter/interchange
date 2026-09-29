@@ -101,11 +101,17 @@ function deps(args: {
   fences?: [string, number][];
   retired?: [string, number][];
   ready?: boolean;
+  /** The binding attaches only once its sidecar is synced. */
+  readyOnlyAfterSync?: boolean;
+  synced?: string[];
+  /** Sidecar syncs and readiness checks, in the order they ran. */
+  checks?: string[];
   readyError?: Error;
   waitError?: Error;
   onReady?: (row: SidecarAllocation) => Promise<void>;
 }): SidecarAllocationReconcilerDeps {
   const provisioner = args.provisioner ?? testProvisioner();
+  let syncedOnce = false;
   return {
     allocationStore: args.store,
     plugins: {
@@ -120,11 +126,20 @@ function deps(args: {
         args.retired?.push([allocationId, generation]);
       },
       isAllocatedSidecarReady: async () => {
+        args.checks?.push("ready");
         if (args.readyError !== undefined) throw args.readyError;
+        if (args.readyOnlyAfterSync === true) return syncedOnce;
         return args.ready ?? true;
       },
       waitForAllocatedSidecar: async () => {
         if (args.waitError !== undefined) throw args.waitError;
+      },
+      holdsAllocatedBinding: () =>
+        args.readyOnlyAfterSync === true ? syncedOnce : true,
+      syncSidecar: async (sidecarId) => {
+        syncedOnce = true;
+        args.synced?.push(sidecarId);
+        args.checks?.push(`sync:${sidecarId}`);
       },
     },
     hubWebSocketUrl: "wss://hub.example/ws/sidecar",
@@ -1092,6 +1107,44 @@ describe("createSidecarAllocationReconciler", () => {
     await reconciler.reconcileNext();
 
     expect(calls).toEqual(["initialize", "ready"]);
+  });
+
+  test("syncs the sidecar's bindings only for a binding not yet attached", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-connected",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+      reconciliationLeaseId: "lease-1",
+    });
+    for (const { readyOnlyAfterSync, expected } of [
+      // The sync queues behind the sidecar's other frames, so an attached
+      // binding skips it.
+      { readyOnlyAfterSync: false, expected: ["ready"] },
+      {
+        readyOnlyAfterSync: true,
+        expected: ["sync:sc-connected", "ready"],
+      },
+    ]) {
+      let claimed = false;
+      const checks: string[] = [];
+      const store = fakeStore({
+        claimNextReconcilable: async () => {
+          if (claimed) return null;
+          claimed = true;
+          return allocated;
+        },
+        markConnectionReady: async () => allocated,
+      });
+      const reconciler = createSidecarAllocationReconciler(
+        deps({ store, ready: true, readyOnlyAfterSync, checks }),
+      );
+
+      await reconciler.reconcileNext();
+
+      expect(checks).toEqual(expected);
+    }
   });
 
   test("does not release capacity when the final ready write fails", async () => {
