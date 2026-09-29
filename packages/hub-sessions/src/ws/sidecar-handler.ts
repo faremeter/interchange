@@ -365,7 +365,6 @@ export type SidecarRouter = {
     delivery: CredentialDelivery,
     revoke?: string[],
   ): Promise<void>;
-  sendSyncRequest(agentAddress: string): void;
   /**
    * Deliver a workflow-run signal to the sidecar that hosts the named
    * deployment-level mail address. The sidecar's hub-link routes the
@@ -4124,24 +4123,6 @@ export function createSidecarRouter(
     }));
   }
 
-  function sendSyncRequest(agentAddress: string): void {
-    const ws = addressIndex.get(agentAddress);
-    if (ws === undefined) {
-      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
-    }
-    const conn = connections.get(ws);
-    if (conn === undefined) {
-      throw new Error(`No sidecar connected for agent "${agentAddress}"`);
-    }
-
-    const transferId = `sync-${++packCounter}`;
-    conn.send({
-      type: "sync.request",
-      agentAddress,
-      transferId,
-    });
-  }
-
   async function sendSignalDeliver(opts: {
     agentAddress: string;
     runId: string;
@@ -4251,7 +4232,6 @@ export function createSidecarRouter(
     unbindAllocatedStepRoute,
     sendProvisionStepToAllocation,
     sendWorkflowRunDispatchToAllocation,
-    sendSyncRequest,
     sendSignalDeliver,
     sendSignalDeliverToAllocation,
     sendDrain,

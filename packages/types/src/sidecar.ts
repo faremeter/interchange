@@ -259,12 +259,11 @@ export type SessionErrorFrame = typeof SessionErrorFrame.infer;
 
 /**
  * Acknowledges that an agent has been fully undeployed: the deployment's
- * workflow child stopped, state pushed (best-effort), and directory deleted.
+ * workflow child stopped and its directory deleted.
  */
 export const AgentUndeployAckFrame = type({
   type: "'agent.undeploy.ack'",
   agentAddress: "string",
-  statePushed: "boolean",
 });
 export type AgentUndeployAckFrame = typeof AgentUndeployAckFrame.infer;
 
@@ -713,8 +712,8 @@ export type AgentDeployFrame = typeof AgentDeployFrame.infer;
 
 /**
  * Remove an agent from this sidecar. The sidecar shuts the deployment's
- * supervisor down, pushes state to the hub (best-effort), deletes the agent
- * directory, and responds with agent.undeploy.ack.
+ * supervisor down, deletes the agent directory, and responds with
+ * agent.undeploy.ack.
  */
 export const AgentUndeployFrame = type({
   type: "'agent.undeploy'",
@@ -1059,18 +1058,6 @@ export const DeployApplyErrorCategory = type.enumerated(
 );
 export type DeployApplyErrorCategory = typeof DeployApplyErrorCategory.infer;
 
-/**
- * Hub requests the sidecar to push its current agent state. The sidecar
- * responds by sending pack.push frames followed by pack.done using the
- * same transferId.
- */
-export const SyncRequestFrame = type({
-  type: "'sync.request'",
-  agentAddress: "string",
-  transferId: "string",
-});
-export type SyncRequestFrame = typeof SyncRequestFrame.infer;
-
 // ---------------------------------------------------------------------------
 // Workflow probe (bidirectional)
 // ---------------------------------------------------------------------------
@@ -1200,7 +1187,6 @@ export const HubFrame = type.or(
   PackDoneFrame,
   PackAckFrame,
   PackRejectFrame,
-  SyncRequestFrame,
   SignalDeliverFrame,
   RunGrantsFrame,
   SenderKeyRefreshFrame,

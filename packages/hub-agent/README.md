@@ -10,7 +10,7 @@ In-process harness construction and agent provisioning are retired:
 every agent now runs as a supervised workflow-process child on the
 workflow-run substrate. What remains in `createSessionManager` is a
 thin serialization layer over the agent repo store (deploy/asset-pack
-applies, state-pack reads, deploy-ref reads, directory teardown);
+applies and directory teardown);
 operations run one at a time per agent so a teardown never races an
 in-flight git op.
 

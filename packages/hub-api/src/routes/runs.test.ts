@@ -294,9 +294,6 @@ function createMockSidecarRouter(
     sendCredentialsUpdate(_addr, _delivery) {
       return notImpl("sendCredentialsUpdate");
     },
-    sendSyncRequest(_addr) {
-      notImpl("sendSyncRequest");
-    },
     sendSignalDeliver(_opts) {
       notImpl("sendSignalDeliver");
     },

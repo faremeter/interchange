@@ -1,11 +1,9 @@
 // Pack-send protocol owner.
 //
-// Mints transferIds, chunks the pack, emits the
-// `repo.pack.push` / `repo.pack.done` frame sequence, and resolves a
-// Promise when the matching `repo.pack.ack` arrives (or rejects on
-// `repo.pack.reject`). Both the existing hub-link agent-state push
-// path and the sidecar-side workflow-run push hook consume this
-// shape; the protocol logic lives once.
+// Chunks the pack, emits the `repo.pack.push` / `repo.pack.done` frame
+// sequence, and resolves a Promise when the matching `repo.pack.ack`
+// arrives (or rejects on `repo.pack.reject`). The sidecar's workflow-run
+// push path consumes this shape; the protocol logic lives once.
 
 import type {
   PackAckFrame,
@@ -24,9 +22,7 @@ export type PackSendOpts = {
   repoId: RepoId;
   /**
    * Caller-supplied transfer id. Must be unique across the lifetime of
-   * this sender; the sender does not re-mint on collision. Hub-link
-   * uses an incoming `sync.request.transferId` for state-pack pushes;
-   * the workflow-run client mints fresh ids per push.
+   * this sender; the sender does not re-mint on collision.
    */
   transferId: string;
   pack: Uint8Array;

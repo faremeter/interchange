@@ -36,7 +36,6 @@ import {
   type DrainDeliverFrame,
   type SourcesUpdateFrame,
   type CredentialsUpdateFrame,
-  type SyncRequestFrame,
   type WorkflowProbeRequestFrame,
   type WorkflowProbeResultFrame,
 } from "@intx/types/sidecar";
@@ -806,12 +805,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   let handshakePending = true;
 
   const packReceiver = createPackReceiver();
-  // One sender owns the agent-state push path (`handleSyncRequest`,
-  // `handleAgentUndeploy`) and the workflow-run push path
-  // (`pushWorkflowRunPack`). transferIds for the two flows live in
-  // disjoint namespaces (`undeploy-*` / sync-supplied / `workflow-run-*`),
-  // so a single pending-id map is unambiguous; the protocol logic
-  // (chunking, ack-handshake) lives once in `@intx/pack-transport`.
+  // Sidecar-initiated workflow-run pushes (`pushWorkflowRunPack`). The
+  // protocol logic (chunking, ack-handshake) lives once in
+  // `@intx/pack-transport`.
   const packSender = createPackSender({ sendFrame: (frame) => send(frame) });
 
   // Retry `signal.correlation.register` until the hub acks it. A register is
@@ -988,8 +984,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   }
 
   async function handleAgentUndeploy(frame: AgentUndeployFrame): Promise<void> {
-    let statePushed = false;
-
     // Release per-deployment routing state the deploy router installed
     // for this address (multi-step mail/signal/drain handlers and the
     // deployment-address mapping) before the session tears down. With
@@ -1025,41 +1019,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       workflowRunPackBootstrappedByAddress.delete(frame.agentAddress);
     }
 
-    // Best-effort state push to the hub before deleting the directory.
-    // statePushed reflects whether we sent the pack frames, not whether
-    // the hub acknowledged them. We intentionally skip waiting for
-    // repo.pack.ack here to avoid blocking the undeploy on a round-trip
-    // that may never complete if the hub is shutting down -- so the
-    // pending Promise's rejection on disconnect is intentionally
-    // swallowed below.
-    try {
-      const { pack, commitSha, ref } = await sessions.createStatePack(
-        frame.agentAddress,
-      );
-      const repoId: RepoId = {
-        kind: "agent-state",
-        id: frame.agentAddress,
-      };
-
-      void packSender
-        .send({
-          agentAddress: frame.agentAddress,
-          repoId,
-          transferId: `undeploy-${frame.agentAddress}`,
-          pack,
-          ref,
-          commitSha,
-        })
-        .catch(() => {
-          // Intentional: undeploy's pack push is best-effort. See above.
-        });
-
-      statePushed = true;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn`State push failed for ${frame.agentAddress}: ${msg}`;
-    }
-
     // Delete the agent directory.
     try {
       await sessions.deleteAgentDir(frame.agentAddress);
@@ -1073,7 +1032,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     send({
       type: "agent.undeploy.ack",
       agentAddress: frame.agentAddress,
-      statePushed,
     });
     logger.info`Undeployed agent ${frame.agentAddress}: ${frame.reason}`;
   }
@@ -1170,9 +1128,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   }
 
   // Counter the boot edge consumes via `pushWorkflowRunPack` to mint
-  // collision-free transferIds. Lives on the link so undeploy /
-  // sync-request / workflow-run all share one monotonically increasing
-  // sequence space.
+  // collision-free transferIds.
   let workflowRunPackCounter = 0;
 
   // Per-(repoId.id, ref) flag tracking whether at least one workflow-run
@@ -1223,29 +1179,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   const workflowRunPackBootstrappedByAddress = new Map<string, Set<string>>();
   function workflowRunPackKey(repoId: RepoId, ref: string): string {
     return `${repoId.kind}:${repoId.id}:${ref}`;
-  }
-
-  async function handleSyncRequest(frame: SyncRequestFrame): Promise<void> {
-    const { agentAddress, transferId } = frame;
-    try {
-      const { pack, commitSha, ref } =
-        await sessions.createStatePack(agentAddress);
-      const repoId: RepoId = { kind: "agent-state", id: agentAddress };
-
-      await packSender.send({
-        agentAddress,
-        repoId,
-        transferId,
-        pack,
-        ref,
-        commitSha,
-      });
-
-      logger.info`State push complete for ${agentAddress} (${commitSha.slice(0, 8)})`;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn`State push failed for ${agentAddress}: ${msg}`;
-    }
   }
 
   function handlePackAck(frame: PackAckFrame): void {
@@ -1736,9 +1669,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "repo.pack.done":
         await handlePackDone(frame);
-        break;
-      case "sync.request":
-        void handleSyncRequest(frame);
         break;
       case "signal.deliver":
         await handleSignalDeliver(frame);

@@ -559,7 +559,6 @@ describe("SidecarRouter allocation deploy transport", () => {
       JSON.stringify({
         type: "agent.undeploy.ack",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
-        statePushed: true,
       }),
     );
     await undeploy;
