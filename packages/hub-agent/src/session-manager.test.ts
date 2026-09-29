@@ -25,19 +25,29 @@ afterEach(async () => {
 
 function makeStubRepoStore(opts: {
   dataDir: string;
-  createStatePack: AgentRepoStore["createStatePack"];
+  applyDeployPack: AgentRepoStore["applyDeployPack"];
   remove: AgentRepoStore["remove"];
 }): AgentRepoStore {
-  const unused = (name: string) => (): never => {
-    throw new Error(`${name} is not exercised by this test`);
-  };
   return {
     getAgentDir: (address) => path.join(opts.dataDir, address),
-    initRepo: unused("initRepo"),
-    applyDeployPack: unused("applyDeployPack"),
-    createStatePack: opts.createStatePack,
+    initRepo: () => {
+      throw new Error("initRepo is not exercised by this test");
+    },
+    applyDeployPack: opts.applyDeployPack,
     remove: opts.remove,
   };
+}
+
+function applyEmptyDeployPack(
+  manager: ReturnType<typeof createSessionManager>,
+): Promise<void> {
+  return manager.applyDeployPack(
+    "agent@local",
+    new Uint8Array(),
+    "refs/heads/main",
+    "0".repeat(40),
+    "transfer-1",
+  );
 }
 
 function makeManagerWithRepoStore(
@@ -105,8 +115,8 @@ describe("SessionManager.applyAssetPack", () => {
     // composition: `<agentDir>/workspace`. Prove the pack lands there.
     const repoStore = makeStubRepoStore({
       dataDir,
-      createStatePack: () =>
-        Promise.reject(new Error("createStatePack not exercised by this test")),
+      applyDeployPack: () =>
+        Promise.reject(new Error("applyDeployPack not exercised by this test")),
       remove: () =>
         Promise.reject(new Error("remove not exercised by this test")),
     });
@@ -132,26 +142,21 @@ describe("SessionManager.applyAssetPack", () => {
 });
 
 describe("SessionManager repo-operation serialization", () => {
-  test("deleteAgentDir removes the directory only after an in-flight state-pack read completes", async () => {
+  test("deleteAgentDir removes the directory only after an in-flight deploy-pack apply completes", async () => {
     const dataDir = await tempDir();
     const events: string[] = [];
 
-    let releaseStatePack!: () => void;
-    const statePackGate = new Promise<void>((resolve) => {
-      releaseStatePack = resolve;
+    let releaseApply!: () => void;
+    const applyGate = new Promise<void>((resolve) => {
+      releaseApply = resolve;
     });
 
     const repoStore = makeStubRepoStore({
       dataDir,
-      async createStatePack() {
-        events.push("createStatePack:start");
-        await statePackGate;
-        events.push("createStatePack:end");
-        return {
-          pack: new Uint8Array(),
-          commitSha: "0".repeat(40),
-          ref: "refs/heads/main",
-        };
+      async applyDeployPack() {
+        events.push("applyDeployPack:start");
+        await applyGate;
+        events.push("applyDeployPack:end");
       },
       async remove() {
         events.push("remove");
@@ -164,20 +169,20 @@ describe("SessionManager repo-operation serialization", () => {
     const onRejection = (reason: unknown) => rejections.push(reason);
     process.on("unhandledRejection", onRejection);
     try {
-      const statePack = manager.createStatePack("agent@local");
+      const applied = applyEmptyDeployPack(manager);
       const deletion = manager.deleteAgentDir("agent@local");
 
-      // Let the state-pack read enter its gate and the deletion reach its
-      // drain await. With the gate still closed, the removal must not run.
+      // Let the apply enter its gate and the deletion reach its drain await.
+      // With the gate still closed, the removal must not run.
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      expect(events).toEqual(["createStatePack:start"]);
+      expect(events).toEqual(["applyDeployPack:start"]);
 
-      releaseStatePack();
-      await Promise.all([statePack, deletion]);
+      releaseApply();
+      await Promise.all([applied, deletion]);
 
       expect(events).toEqual([
-        "createStatePack:start",
-        "createStatePack:end",
+        "applyDeployPack:start",
+        "applyDeployPack:end",
         "remove",
       ]);
     } finally {
@@ -195,16 +200,11 @@ describe("SessionManager repo-operation serialization", () => {
 
     const repoStore = makeStubRepoStore({
       dataDir,
-      async createStatePack() {
+      async applyDeployPack() {
         calls += 1;
         if (calls === 1) {
-          throw new Error("state pack boom");
+          throw new Error("deploy pack boom");
         }
-        return {
-          pack: new Uint8Array(),
-          commitSha: "1".repeat(40),
-          ref: "refs/heads/main",
-        };
       },
       async remove() {
         /* unused in this test */
@@ -218,13 +218,12 @@ describe("SessionManager repo-operation serialization", () => {
     process.on("unhandledRejection", onRejection);
     try {
       // The failing op's rejection reaches its own caller.
-      await expect(manager.createStatePack("agent@local")).rejects.toThrow(
-        "state pack boom",
+      await expect(applyEmptyDeployPack(manager)).rejects.toThrow(
+        "deploy pack boom",
       );
 
       // The chain is not poisoned: the next op runs and resolves normally.
-      const second = await manager.createStatePack("agent@local");
-      expect(second.commitSha).toBe("1".repeat(40));
+      await applyEmptyDeployPack(manager);
       expect(calls).toBe(2);
     } finally {
       process.off("unhandledRejection", onRejection);

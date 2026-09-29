@@ -82,9 +82,6 @@ const unusedSessions: SessionManager = {
   applyAssetPack: () => {
     throw new Error("sessions not used");
   },
-  createStatePack: () => {
-    throw new Error("sessions not used");
-  },
   deleteAgentDir: () => {
     throw new Error("sessions not used");
   },
