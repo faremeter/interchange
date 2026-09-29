@@ -19,7 +19,7 @@ import {
   type WsHandle,
 } from "./sidecar-handler";
 import type { SidecarLookups } from "./sidecar-events";
-import { sidecarAuth } from "./sidecar-handler.test-helpers";
+import { deployReply, sidecarAuth } from "./sidecar-handler.test-helpers";
 
 const identity: Extract<SidecarAuthIdentity, { kind: "allocated" }> = {
   kind: "allocated",
@@ -179,6 +179,7 @@ describe("SidecarRouter allocation routing", () => {
     expect(rogue.getRoutableAddresses()).toEqual([]);
     expect(lastFrame(rogueWs)).toEqual({
       type: "agent.undeploy",
+      requestId: expect.any(String),
       agentAddress: "other@tenant",
       reason: "The deployment is not current on this sidecar",
     });
@@ -337,14 +338,7 @@ describe("SidecarRouter allocation routing", () => {
     await tick();
     expect(lastFrame(ws).type).toBe("agent.deploy");
 
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: identity.workflowRunAddress,
-        publicKey: "b".repeat(64),
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
 
     await expect(deployed).resolves.toEqual({ publicKey: "b".repeat(64) });
     await expect(
@@ -437,14 +431,7 @@ describe("SidecarRouter allocation routing", () => {
       config,
     );
     await tick();
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: identity.workflowRunAddress,
-        publicKey: "b".repeat(64),
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
     await deployed;
 
     await router.sendWorkflowRunDispatchToAllocation(
