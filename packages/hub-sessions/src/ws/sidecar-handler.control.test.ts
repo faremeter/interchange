@@ -299,6 +299,26 @@ describe("SidecarRouter allocation control protocols", () => {
     ).rejects.toBeInstanceOf(WorkflowControlTimeoutError);
   });
 
+  test("a step the worker is still provisioning does not defer the deployment's control", async () => {
+    const router = createAllocatedRouter({ requestTimeoutMs: 5 });
+    await connectAllocated(router);
+    const stepAddress = "run_anchor-step-1@tenant.example";
+    await router.bindAllocatedStepRoute(TEST_TARGET, stepAddress);
+    // The Hub stops waiting for the step before the worker answers it, but the
+    // worker handles the step's frames apart from the deployment's.
+    await expect(
+      router.sendProvisionStepToAllocation(
+        TEST_TARGET,
+        stepAddress,
+        TEST_CONFIG,
+      ),
+    ).rejects.toThrow("timed out");
+
+    await expect(
+      router.sendWorkflowControl(TEST_IDENTITY, stopCommand(), 1),
+    ).rejects.toBeInstanceOf(WorkflowControlTimeoutError);
+  });
+
   test("a deploy the worker refused no longer defers control", async () => {
     const router = createAllocatedRouter();
     const ws = await connectAllocated(router);
