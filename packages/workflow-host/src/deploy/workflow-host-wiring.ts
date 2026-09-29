@@ -22,7 +22,6 @@ import type {
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions/substrate";
 import {
-  hexDecode,
   hexEncode,
   type CredentialCipher,
   type SignalKind,
@@ -97,9 +96,6 @@ import {
 } from "./workflow-run-record";
 
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
-
-// A raw Ed25519 public key is 32 bytes.
-const ED25519_PUBLIC_KEY_BYTES = 32;
 
 /**
  * The durable per-deployment store the sidecar checks a source-ref deployment's
@@ -860,15 +856,6 @@ export function createSidecarDeployRouter<
     recordHubKey(address: string, hexHubPublicKey: string): void;
     forgetAgent(address: string): void;
   };
-  /**
-   * Cache of hub-vouched sender public keys. The grants handler writes each
-   * co-delivered `senderIdentities` entry here before the run's grants land,
-   * so a durable grant is never missing the key its recipient needs to verify
-   * the sender's inbound mail.
-   */
-  senderKeyCache: {
-    put(address: string, publicKey: Uint8Array): Promise<void>;
-  };
   transport: HubTransport;
   repoStore: RepoStore;
   signingKeySeed: Uint8Array;
@@ -1540,8 +1527,9 @@ export function createSidecarDeployRouter<
     };
   }
 
-  // The cache counts only callers of one instance, so every deployment
-  // apply shares this instance to protect files another apply still reads.
+  // Deploys for different addresses apply closures concurrently, and the
+  // cache's in-use count protects an extraction from eviction only among
+  // callers of one instance, so every apply shares this one.
   let sharedClosureCache: TCache | undefined;
 
   function closureCache(dataDir: string): TCache {
@@ -1946,30 +1934,13 @@ export function createSidecarDeployRouter<
       // machinery still takes them.
       deps.multistepGrantsRouter?.register(spec.agentAddress, async (args) => {
         try {
-          // Cache the co-delivered sender keys BEFORE the grants file lands, so
-          // "grant durable" implies "key durable": a cache-write fault falls
-          // into the catch below and poisons the run rather than starting it
-          // with a grant whose sender the recipient cannot verify. A malformed
-          // key is a hub-side defect that is keyless from here, so skip it and
-          // cache the valid ones (no weaker than the hub having omitted it)
-          // rather than wedge the run on every replay -- but log it at ERROR,
-          // naming the address and reason, so the hub bug surfaces loudly
-          // instead of being silently dropped.
-          for (const identity of args.senderIdentities ?? []) {
-            let publicKey: Uint8Array;
-            try {
-              publicKey = hexDecode(identity.publicKey);
-            } catch (cause) {
-              const message =
-                cause instanceof Error ? cause.message : String(cause);
-              logger.error`Skipping unparseable sender key for ${identity.address} on run ${args.runId}: ${message}`;
-              continue;
-            }
-            if (publicKey.length !== ED25519_PUBLIC_KEY_BYTES) {
-              logger.error`Skipping wrong-length sender key for ${identity.address} on run ${args.runId}: got ${String(publicKey.length)} bytes`;
-              continue;
-            }
-            await deps.senderKeyCache.put(identity.address, publicKey);
+          // "Grant durable" implies "key durable": a run whose sender keys did
+          // not land must not start with a grant whose sender its recipient
+          // cannot verify.
+          if (!args.senderKeysCached) {
+            throw new Error(
+              `a sender key the grants of run ${args.runId} carry did not land in the sender-key cache`,
+            );
           }
           await writeStepGrants({
             repoStore: deps.repoStore,
@@ -2054,15 +2025,15 @@ export function createSidecarDeployRouter<
                 );
               } catch (cause) {
                 // Restoring unconditionally is safe because rotations for one
-                // deployment are serialized by the sidecar's per-connection
-                // inbound-frame queue: each hub frame, sources.update
-                // included, runs its handler to completion on that queue
-                // before the next frame's handler starts, so no second
+                // deployment are serialized by the link's per-address frame
+                // lane: each hub frame for the deployment's address,
+                // sources.update included, runs its handler to completion
+                // before the next one for that address starts, so no second
                 // rotation is in flight whose committed table this rollback
                 // could clobber. This does NOT rely on the hub pacing its
                 // sends -- the hub dispatches sources.update fire-and-forget;
-                // the sidecar frame queue is the sole serializer. Parallelizing
-                // inbound-frame dispatch would break this rollback.
+                // the frame lane is the sole serializer. Handling one
+                // address's frames concurrently would break this rollback.
                 currentSources = prevSources;
                 throw cause;
               }

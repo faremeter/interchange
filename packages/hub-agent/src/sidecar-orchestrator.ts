@@ -119,8 +119,8 @@ export type SidecarOrchestratorConfig = {
   /**
    * Persists the hub-vouched public key for a sender address. The host builds
    * it over the same sender-key cache as `resolveSenderCrypto` and the
-   * orchestrator forwards it unchanged to `createHubLink`, where an inbound
-   * `sender.key.refresh` frame drives it.
+   * orchestrator forwards it unchanged to `createHubLink`, where inbound
+   * `sender.key.refresh` and `run.grants` frames drive it.
    */
   cacheSenderKey: (address: string, publicKey: string) => Promise<void>;
   /**
