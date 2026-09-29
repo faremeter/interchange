@@ -213,7 +213,6 @@ function createRoutingSidecarRouter(): SidecarRouter {
     sendAgentUndeploy: () => notImplRouter("sendAgentUndeploy"),
     sendSourcesUpdate: () => notImplRouter("sendSourcesUpdate"),
     sendCredentialsUpdate: () => notImplRouter("sendCredentialsUpdate"),
-    sendSyncRequest: () => notImplRouter("sendSyncRequest"),
     sendSignalDeliver: () => notImplRouter("sendSignalDeliver"),
     sendDrain: () => notImplRouter("sendDrain"),
     subscribeAgent: () => notImplRouter("subscribeAgent"),

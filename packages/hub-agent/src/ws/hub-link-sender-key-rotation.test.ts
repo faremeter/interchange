@@ -65,12 +65,6 @@ function createStubSessionManager(): SessionManager {
     initRepo: () => Promise.resolve(),
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
-    createStatePack: () =>
-      Promise.resolve({
-        pack: new Uint8Array([1, 2, 3]),
-        commitSha: "abc123",
-        ref: "refs/heads/main",
-      }),
     deleteAgentDir: () => Promise.resolve(),
     getAddresses: () => [],
     getSessionId: () => undefined,
