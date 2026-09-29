@@ -286,7 +286,10 @@ transport subscription.**
 - A `MessageTransport`-shaped surface for the agent whose **inbound** side is a
   no-op (the supervisor delivers inputs via the step path) and whose
   **outbound** side (`send`, `append`) routes through the supervisor's mail bus
-  so replies are signed and audited exactly as today. The harness's
+  so replies are signed and audited exactly as today. The supervisor sends
+  only as its deployment's mail address and refuses a child that names any
+  other sender, because the host transport also holds the signing keys of
+  the other deployments on the same sidecar. The harness's
   `MailToolWrapper` (`packages/harness/src/harness.ts`) already takes a
   `MessageTransport`; we supply this supervisor-backed transport.
 - A connector-state persistence binding that writes to the workflow-run
