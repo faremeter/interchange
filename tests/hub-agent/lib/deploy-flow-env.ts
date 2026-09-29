@@ -2453,8 +2453,7 @@ export type FireMailTriggerOpts = {
 /**
  * `code` marker on the errors `fireMailTrigger` throws when the hub declines
  * to route a frame at the target address -- `sendRunGrants` or `routeMail`
- * returned false, meaning the address had neither a live connection nor a
- * disconnect queue to ride.
+ * returned false, meaning the address had no live connection.
  */
 export const MAIL_TRIGGER_UNROUTABLE_CODE = "mail_trigger_unroutable";
 

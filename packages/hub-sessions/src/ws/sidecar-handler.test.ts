@@ -653,7 +653,7 @@ describe("SidecarRouter pre-ack sender-key interlock", () => {
       mailAckRetryIntervalMs: 10_000,
       // A wide TTL: any delivery the test observes came from a settle, not from
       // the deferred-mail TTL firing.
-      disconnectQueueTTLMs: 60_000,
+      mailHoldTTLMs: 60_000,
       lookups: {
         resolveSenderKey,
         materializeMailTriggeredRunGrants,

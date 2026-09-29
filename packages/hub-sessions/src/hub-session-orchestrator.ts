@@ -81,8 +81,8 @@ export function createHubSessionOrchestrator(
   unsubscribers.push(
     events.on("mail.outbound.undelivered", ({ recipients }) => {
       // The hub has no external mail transport today. Anything that
-      // could not be delivered locally or queued for a disconnected
-      // agent is dropped; log so operators can see it.
+      // could not be delivered locally is dropped; log so operators can
+      // see it.
       log.warn("Dropping mail with no local recipient: {recipients}", {
         recipients: recipients.join(", "),
       });
