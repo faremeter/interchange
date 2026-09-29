@@ -239,16 +239,16 @@ The IMAP inbox is the source of truth for conversation history. Session channels
 **Prototype (hub-mediated sidecar transport):**
 
 1. Sidecar reconnects to the Hub with its credential and re-announces the run addresses it hosts
-2. Hub flushes queued undelivered messages as `message.send` frames for verified agents
+2. Hub redelivers mail the sidecar had not acknowledged when the connection dropped, if it is back within the mail hold
 3. Sidecar loads agent context from isogit and resumes operation
 
 A supervised deployment carries its grants in the deploy pack and refreshes them over the supervisor's IPC credentials snapshot at spawn and recycle, so reconnect does not refresh grants over the wire.
 
-In the prototype, the hub's database serves as the delivery queue for messages sent while the sidecar is disconnected. The sidecar's isogit repository is the source of truth for agent inference context. The hub maintains a sidecar-to-agent mapping so it knows which sidecar to route messages to for a given run address. See HARNESS_DESIGN.md for the reconnection wire protocol.
+In the prototype, the Hub keeps no queue of mail sent while a sidecar is disconnected. Triggers and signals wait in `workflow_run_dispatch` rows until a sidecar takes them, and mail the sidecar had not acknowledged is held in memory for the mail hold (five minutes by default). The sidecar's isogit repository is the source of truth for agent inference context. The hub maintains a sidecar-to-agent mapping so it knows which sidecar to route messages to for a given run address. See HARNESS_DESIGN.md for the reconnection wire protocol.
 
 ### Sidecar Agent Lifecycle Frames
 
-The sidecar WebSocket protocol includes frames for agent deployment, reconnection, and address verification.
+The sidecar WebSocket protocol includes frames for agent deployment and reconnection.
 
 **Agent deployment:**
 

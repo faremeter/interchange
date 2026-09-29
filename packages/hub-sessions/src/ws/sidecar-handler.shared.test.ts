@@ -974,7 +974,7 @@ describe("SidecarRouter mail across a takeover on a shared sidecar", () => {
         }
         return send();
       },
-      disconnectQueueTTLMs: 20,
+      mailHoldTTLMs: 20,
     });
     router.events.on("mail.outbound.undelivered", ({ recipients }) => {
       undelivered.push(recipients);

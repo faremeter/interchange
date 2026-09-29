@@ -270,7 +270,7 @@ describe("SidecarRouter allocation mail durability", () => {
   test("retains unacknowledged mail across an allocation reconnect", async () => {
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10_000,
-      disconnectQueueTTLMs: 60_000,
+      mailHoldTTLMs: 60_000,
     });
     const first = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
@@ -307,7 +307,7 @@ describe("SidecarRouter allocation mail durability", () => {
     });
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10_000,
-      disconnectQueueTTLMs: 20,
+      mailHoldTTLMs: 20,
     });
     router.events.on("mail.outbound.undelivered", () => {
       reportExpired();
@@ -335,7 +335,7 @@ describe("SidecarRouter allocation mail durability", () => {
   test("replays run grants before retained trigger mail", async () => {
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10_000,
-      disconnectQueueTTLMs: 60_000,
+      mailHoldTTLMs: 60_000,
     });
     const first = await connectAllocated(router, [
       TEST_IDENTITY.workflowRunAddress,
@@ -407,7 +407,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const hexKey = "dd".repeat(32);
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10_000,
-      disconnectQueueTTLMs: 60_000,
+      mailHoldTTLMs: 60_000,
       lookups: {
         async resolveSenderKey() {
           return hexKey;
@@ -450,7 +450,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const hexKey = "ee".repeat(32);
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10_000,
-      disconnectQueueTTLMs: 60_000,
+      mailHoldTTLMs: 60_000,
       lookups: {
         async resolveSenderKey() {
           return hexKey;
@@ -501,7 +501,7 @@ describe("SidecarRouter allocation mail durability", () => {
     let resolveCalls = 0;
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10_000,
-      disconnectQueueTTLMs: 60_000,
+      mailHoldTTLMs: 60_000,
       lookups: {
         async resolveSenderKey() {
           resolveCalls += 1;
@@ -542,7 +542,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const rotatedKey = "22".repeat(32);
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10_000,
-      disconnectQueueTTLMs: 60_000,
+      mailHoldTTLMs: 60_000,
       lookups: {
         async resolveSenderKey() {
           return rotatedKey;
@@ -586,7 +586,7 @@ describe("SidecarRouter allocation mail durability", () => {
     const hexKey = "33".repeat(32);
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10_000,
-      disconnectQueueTTLMs: 60_000,
+      mailHoldTTLMs: 60_000,
       lookups: {
         async resolveSenderKey() {
           return hexKey;
@@ -800,7 +800,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     const hexKey = "ff".repeat(32);
     const router = createAllocatedRouter({
       mailAckRetryIntervalMs: 10_000,
-      disconnectQueueTTLMs: 60_000,
+      mailHoldTTLMs: 60_000,
       lookups: {
         async materializeMailTriggeredRunGrants() {
           return { outcome: "materialized", stepGrants: [] };
