@@ -237,8 +237,9 @@ const reconnectDelayMs = parseReconnectDelayMs(
   process.env["SIDECAR_RECONNECT_DELAY_MS"],
 );
 
-// The cache counts only callers of one instance, so every probe shares
-// this instance to keep another probe from evicting files it still reads.
+// Probes run concurrently, and the cache's in-use count protects an extraction
+// from eviction only among callers of one instance, so every probe shares this
+// one.
 const probeTarballCache = createTarballCache({
   rootDir: cacheRoot,
   maxBytes: cacheMaxBytes,
@@ -273,8 +274,8 @@ const agentRepoStore = createAgentRepoStore({
 });
 
 // Cache of the hub-vouched public keys of senders this sidecar's deployments
-// are authorized to receive mail from. The grants handler writes each key the
-// hub co-delivers on a `run.grants` frame; the recipient's inbound-mail verify
+// are authorized to receive mail from. The hub-link writes each key the hub
+// co-delivers on a `run.grants` frame; the recipient's inbound-mail verify
 // reads it back. The keyring is loaded here at boot so a restart keeps every
 // previously-cached key. The durable-write primitive is injected so the cache
 // write is atomic and fsynced -- at least as durable as the run-grants write it
@@ -512,7 +513,8 @@ const orchestrator = createSidecarOrchestrator({
   resolveSenderCrypto,
   lookupInboundMailPolicy,
   // Write peer of `resolveSenderCrypto`: an inbound `sender.key.refresh` frame
-  // re-pushes a rotated sender key here. Decode the hex and persist through the
+  // re-pushes a rotated sender key here, and the keys a `run.grants` frame
+  // carries land here too. Decode the hex and persist through the
   // same cache the read side serves from; `put` owns the 32-byte length check
   // and `hexDecode` owns hex validity, so both faults surface to the link's
   // handler rather than being masked here.
@@ -613,7 +615,6 @@ const orchestrator = createSidecarOrchestrator({
     const router = createSidecarDeployRouter({
       sessions,
       keyStore,
-      senderKeyCache,
       transport,
       repoStore: wrappedRepoStore,
       signingKeySeed: sidecarSigningKey.privateKey,

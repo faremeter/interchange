@@ -186,9 +186,9 @@ export type SidecarConnection = {
   // others. `handleClose` cleans them out of `addressIndex`.
   workflowAddresses: Map<string, string>;
   // Deploy frames the worker has not answered, by request id to their
-  // address, kept past the Hub's own deploy timeout. The worker handles frames
-  // in order, so a control frame sent behind one of these cannot start until
-  // the worker answers it.
+  // address, kept past the Hub's own deploy timeout. The worker handles an
+  // address's frames in order, so a control frame sent behind one of these
+  // for its address cannot start until the worker answers it.
   unansweredDeploys: Map<string, string>;
   send(frame: HubFrame): void;
 };
@@ -4645,7 +4645,9 @@ export function createSidecarRouter(
             settle();
             reject(
               error === timeoutMessage
-                ? conn.unansweredDeploys.size > 0
+                ? [...conn.unansweredDeploys.values()].includes(
+                    command.agentAddress,
+                  )
                   ? new WorkflowControlInitializingError()
                   : new WorkflowControlTimeoutError(error)
                 : error === unconfirmedMessage
