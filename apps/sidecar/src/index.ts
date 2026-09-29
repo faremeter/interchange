@@ -385,11 +385,14 @@ const sidecarToken = requireEnv("SIDECAR_TOKEN");
 
 // Multi-step substrate-config the deploy router threads into the
 // workflow-process child's spawn-time env. The child's substrate
-// factory consumes these via the typed `SubstrateConfig` validator so
-// the per-step pack-push wrap can identify the deployment's hub-side
-// trust anchors. Today the IPC bridge in `pack.push.request` carries
-// the pack; the WebSocket-connection keys are reserved for a future
-// child-local hub link without redoing the boot-edge wiring.
+// factory consumes these via the typed `SubstrateConfig` validator.
+// The sidecar's Hub credential stays out of it: the child runs
+// deployment code and never talks to the Hub itself, and the token
+// authenticates the sidecar for every deployment it hosts. That keeps the
+// token out of what the child is handed, not out of its reach: a child
+// running as the sidecar's OS user can still read the sidecar's own
+// environment, token and credential encryption key included (see
+// docs/SIDECAR_PLACEMENT.md).
 //
 // `PATH`, `HOME`, and `TMPDIR` are propagated from the boot edge's own
 // environment so the child's `#!/usr/bin/env bun` shebang can resolve
@@ -401,9 +404,6 @@ const multistepSubstrateEnv: Record<string, string> = {
   SIDECAR_DATA_DIR: dataDir,
   SIDECAR_SIGNING_PUBLIC_KEY: hexEncode(sidecarSigningKey.publicKey),
   SIDECAR_SIGNING_PRIVATE_KEY: hexEncode(sidecarSigningKey.privateKey),
-  HUB_WS_URL: hubWsUrl,
-  SIDECAR_ID: sidecarId,
-  SIDECAR_TOKEN: sidecarToken,
   PATH: requireEnv("PATH"),
   // Tool-loader caps the child's per-step tool materialization uses.
   // Resolved once at the boot edge and threaded into the child through

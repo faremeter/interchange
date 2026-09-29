@@ -250,9 +250,6 @@ describe("deploy-failure registry leak", () => {
         SIDECAR_DATA_DIR: tmpDir,
         SIDECAR_SIGNING_PUBLIC_KEY: "00".repeat(32),
         SIDECAR_SIGNING_PRIVATE_KEY: "00".repeat(32),
-        HUB_WS_URL: "ws://test",
-        SIDECAR_ID: "sc",
-        SIDECAR_TOKEN: "tok",
         PATH: "/usr/bin",
         // Source-ref materialization reads both byte caps from the substrate env.
         SIDECAR_CACHE_MAX_BYTES: "1000000",
@@ -412,9 +409,6 @@ describe("deploy-failure registry leak", () => {
         SIDECAR_DATA_DIR: tmpDir,
         SIDECAR_SIGNING_PUBLIC_KEY: "00".repeat(32),
         SIDECAR_SIGNING_PRIVATE_KEY: "00".repeat(32),
-        HUB_WS_URL: "ws://test",
-        SIDECAR_ID: "sc",
-        SIDECAR_TOKEN: "tok",
         PATH: "/usr/bin",
         // Source-ref materialization reads both byte caps from the substrate env.
         SIDECAR_CACHE_MAX_BYTES: "1000000",
