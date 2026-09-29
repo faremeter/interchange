@@ -1,6 +1,7 @@
 import { type } from "arktype";
 
 import { sha256 } from "@intx/crypto";
+import { getLogger } from "@intx/log";
 import {
   createSidecarAllocationStore,
   createWorkflowProbeStore,
@@ -56,6 +57,8 @@ import {
   runSidecarOperation,
   type SidecarReconciliationContext,
 } from "./sidecar-allocation/operation";
+
+const logger = getLogger(["hub", "workflow-allocation"]);
 
 export class WorkflowProvisioningError extends Error {
   readonly code: string;
@@ -763,11 +766,15 @@ export function createWorkflowAllocationService({
     // Re-resolve the inference chain from the catalog at launch time -- the
     // launch spec stores offering ids, never resolved sources, so a rotated
     // credential is picked up here and no secret was ever persisted.
+    // An offering disabled or removed since deploy drops out of the chain
+    // rather than stranding the allocation. The default is not replaced: a
+    // step may only run on a source the operator approved at deploy.
     const resolved = await resolveSourcesByOfferingIds(
       db,
       allocation.tenantId,
       spec.sourceOfferingIds,
       credentialCipher,
+      { skipUnavailable: true },
     );
     if (!resolved.ok) {
       throw new Error(
@@ -781,6 +788,12 @@ export function createWorkflowAllocationService({
       throw new Error(
         `Default offering ${spec.defaultSourceOfferingId} was not resolved for allocation ${allocation.id}`,
       );
+    }
+    const dropped = spec.sourceOfferingIds.filter(
+      (id) => !resolved.sources.some((source) => source.id === id),
+    );
+    if (dropped.length > 0) {
+      logger.warn`Recovering allocation ${allocation.id} without unavailable offerings ${dropped.join(", ")}`;
     }
     const config = createProvisionedHarnessConfig({
       tenantId: allocation.tenantId,
