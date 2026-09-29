@@ -163,12 +163,6 @@ function createMockSessionManager(): SessionManager & {
     },
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
-    createStatePack: () =>
-      Promise.resolve({
-        pack: new Uint8Array([1, 2, 3]),
-        commitSha: "abc123",
-        ref: "refs/heads/main",
-      }),
     deleteAgentDir: () => Promise.resolve(),
     getSessionId: (_agentAddress: string) => undefined,
   };

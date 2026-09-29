@@ -1102,7 +1102,7 @@ re-serviced.
   surface, `restoreSessions`, `persistHubPublicKey`, `onAgentEvent` fan-out,
   the mail-commit queue. `createSessionManager`'s deletion is deferred to
   Phase 5; today it survives, reduced to a thin repo-ops layer over the agent
-  repo store (deploy/asset-pack applies, state-pack reads, teardown), and the
+  repo store (deploy/asset-pack applies and teardown), and the
   rest of the in-process-runtime surface is gone.
 - `apps/sidecar/src/default-harness.ts`: the **transport/reactor ownership** —
   the `createHarness` call that owns transport subscription, the connector

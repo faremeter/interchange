@@ -257,12 +257,12 @@ The sidecar WebSocket protocol includes frames for agent deployment, reconnectio
 | Hub → Sidecar | `agent.deploy`       | Stage a deploy through the workflow-run substrate |
 | Sidecar → Hub | `agent.deploy.ack`   | Confirm the deploy staged, provide the public key |
 | Hub → Sidecar | `agent.undeploy`     | Remove an agent from the sidecar                  |
-| Sidecar → Hub | `agent.undeploy.ack` | Confirm teardown (includes state push status)     |
+| Sidecar → Hub | `agent.undeploy.ack` | Confirm teardown                                  |
 | Sidecar → Hub | `agent.error`        | Report a failure at any stage                     |
 
 Agent deployment stages through the workflow-run substrate rather than a separate provision-then-start handshake. The hub sends `agent.deploy`; the sidecar's deploy router primes the per-step repo (for a provision-step frame) or spawns the supervised workflow-process child (for a workflow frame), then acks with `agent.deploy.ack` carrying the public key. The deploy tree (prompt, skills) rides in on the follow-up deploy pack, which the child reads from the substrate. The workflow-process child starts inference itself once spawned -- there is no separate `session.start` step.
 
-Undeploy is an acknowledged operation. The sidecar shuts the deployment's supervisor down, pushes state to the hub (best-effort), deletes the agent directory, and responds with `agent.undeploy.ack`. The `statePushed` field indicates whether the state push was attempted. The hub defers routing table cleanup until the ack arrives.
+Undeploy is an acknowledged operation. The sidecar shuts the deployment's supervisor down, deletes the agent directory, and responds with `agent.undeploy.ack`. The hub defers routing table cleanup until the ack arrives.
 
 **Reconnection:**
 
@@ -1303,13 +1303,12 @@ Deploy content travels from the hub to sidecars as git packfiles streamed over t
 
 The following frames are additions to the hub-sidecar protocol:
 
-| Frame              | Direction      | Purpose                                             |
-| ------------------ | -------------- | --------------------------------------------------- |
-| `repo.pack.push`   | Either         | Chunked packfile data with sequence number          |
-| `repo.pack.done`   | Either         | End of transfer; carries target refs and commit SHA |
-| `repo.pack.ack`    | Receiver       | Refs accepted                                       |
-| `repo.pack.reject` | Receiver       | Transfer rejected (with reason code)                |
-| `sync.request`     | Hub to sidecar | Request state push for a specific agent             |
+| Frame              | Direction | Purpose                                             |
+| ------------------ | --------- | --------------------------------------------------- |
+| `repo.pack.push`   | Either    | Chunked packfile data with sequence number          |
+| `repo.pack.done`   | Either    | End of transfer; carries target refs and commit SHA |
+| `repo.pack.ack`    | Receiver  | Refs accepted                                       |
+| `repo.pack.reject` | Receiver  | Transfer rejected (with reason code)                |
 
 Each pack transfer is scoped to an `agentAddress` and carries a `transferId` for correlation. Multiple transfers for different agents can be in flight concurrently.
 
@@ -1368,22 +1367,11 @@ Each provisioned deployment receives the full pack for its frozen deploy tree. R
 
 1. Hub sends `agent.undeploy` with a reason string
 2. Sidecar shuts the deployment's supervisor down, releasing the workflow-process child and its per-deployment routing state (a no-op if no supervisor is live for the address)
-3. Sidecar pushes state to the hub via `repo.pack.push`/`repo.pack.done` (best-effort — the `statePushed` field in the ack indicates whether this was attempted, not whether the hub confirmed receipt)
-4. Sidecar deletes the agent directory
-5. Sidecar responds with `agent.undeploy.ack`
-6. Hub removes the agent from the routing table
+3. Sidecar deletes the agent directory
+4. Sidecar responds with `agent.undeploy.ack`
+5. Hub removes the agent from the routing table
 
 If the sidecar disconnects before sending the ack, the hub removes the agent from the routing table on disconnect.
-
-### State Push Flow
-
-1. Sidecar commits context/audit under `state/` on its agent branch (every commit is signed with the agent's Ed25519 key using SSH signature format)
-2. On policy trigger (see State Push Policy):
-   - Sidecar produces a packfile of new commits since last successful push
-   - Sidecar sends `repo.pack.push` / `repo.pack.done` with its agent ref
-3. Hub verifies commit signatures against the stored public key for that agent
-4. Hub verifies path ownership (no commits modify `deploy/` paths)
-5. Hub responds with `repo.pack.ack` or `repo.pack.reject`
 
 ### Partial Transfer Recovery
 
@@ -1407,21 +1395,6 @@ The sidecar generates the deployment key and returns it in `agent.deploy.ack`, b
 A workflow deployment is pinned to its deploy-time definition. It keeps that definition — the frozen source closure the child re-evaluates, the workflow-asset repo, the per-step `agent-state` repos — until it is undeployed. A definition change made on the hub does **not** reconcile onto a live deployment; it affects only deployments created after the change.
 
 This holds across a sidecar↔Hub disconnect. Reconnect restores routing and resumes the locally persisted frozen definition; it does not negotiate deploy refs or pull newer definition bytes. Picking up a definition change requires a new deployment. This is orthogonal to recycle, which also keeps the same deploy tree while starting a fresh process.
-
-### State Push Policy
-
-The sidecar pushes state to the hub based on configurable policy:
-
-| Trigger                                          | Use Case                                 |
-| ------------------------------------------------ | ---------------------------------------- |
-| Debounced timer (e.g., 10-30s after last commit) | Limits data loss window on process crash |
-| Session end / graceful shutdown                  | Clean handoff before instance stops      |
-| Hub-initiated `sync.request`                     | On-demand observability, pre-migration   |
-| Per-audit-commit (no debounce)                   | Strict compliance requirements           |
-
-The push policy is a per-agent or per-tenant configuration concern, not a protocol-level one.
-
-**Data loss characteristics:** The debounce timer bounds data loss for process crashes (sidecar dies but disk survives — recoverable on restart). It does not bound data loss for disk loss (ephemeral container eviction). Deployments with ephemeral storage should use aggressive push policies. Deployments with durable local storage can rely on the sidecar pushing on restart.
 
 ### SSH Commit Signatures
 
