@@ -82,9 +82,8 @@ export type SidecarEventMap = {
 
   /** Notification. Emitted when a sidecar's connection closes, and when
    * one allocation leaves a connection that stays open for others,
-   * carrying every address that lost its route -- session addresses
-   * and hub-minted workflow-substrate deployment addresses alike --
-   * so lifecycle teardown covers both. */
+   * carrying every workflow address that lost its route: deployment
+   * addresses and the step addresses staged for them. */
   "sidecar.disconnect": {
     ownedAddresses: string[];
     /** Allocation generations whose current connection this was. */
@@ -100,10 +99,11 @@ export type SidecarEventMap = {
     generation: number;
   };
 
-  /** Notification. Emitted when a mail.outbound frame from a sidecar
-   * names recipients that the wire layer could not deliver locally and
-   * could not enqueue for a disconnected agent. The host is free to
-   * relay it onto an external transport or drop it. */
+  /** Notification. Emitted for mail the Hub gives up on: recipients no
+   * connection routes, un-acked mail it stops redelivering that no
+   * dispatch row stands behind, and mail held for a sender key that never
+   * arrived. The host is free to relay it onto an external transport or
+   * drop it. */
   "mail.outbound.undelivered": {
     rawMessage: string;
     recipients: string[];
