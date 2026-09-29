@@ -110,10 +110,11 @@ export function createSessionManager(
   // directory only after in-flight git work finishes. Capturing the tail and
   // clearing the entry means an op enqueued AFTER this point starts a fresh
   // chain this drain does not await. That is safe only because every caller
-  // invokes runRepoOp synchronously, before its first await, inside the
-  // serialized frame dispatch -- so by the time a later agent.undeploy frame
-  // reaches deleteAgentDir, every racing op is already on the chain. A handler
-  // that deferred its runRepoOp call past an await would reopen the
+  // invokes runRepoOp synchronously, before its first await, while handling a
+  // frame for the agent's address, and the link handles one address's frames
+  // one at a time -- so by the time a later agent.undeploy frame for the
+  // address reaches deleteAgentDir, every racing op is already on the chain. A
+  // handler that deferred its runRepoOp call past an await would reopen the
   // delete-under-in-flight-op race.
   async function drainRepoOps(agentAddress: string): Promise<void> {
     const inflight = repoOpQueues.get(agentAddress);

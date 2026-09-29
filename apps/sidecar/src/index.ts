@@ -216,15 +216,20 @@ const reconnectDelayMs = parseReconnectDelayMs(
   process.env["SIDECAR_RECONNECT_DELAY_MS"],
 );
 
+// Probes run concurrently, and the cache's in-use count protects an extraction
+// from eviction only among callers of one instance, so every probe shares this
+// one.
+const probeTarballCache = createTarballCache({
+  rootDir: cacheRoot,
+  maxBytes: cacheMaxBytes,
+});
+
 // Sweep any tmp staging directories left behind by a `put` or
 // `extractTarball` that crashed between staging and the final rename
 // on a previous boot. Running here, before the orchestrator starts
 // accepting apply work, keeps the cache root from accumulating
 // orphans for the lifetime of the sidecar's data directory.
-await createTarballCache({
-  rootDir: cacheRoot,
-  maxBytes: cacheMaxBytes,
-}).sweepOrphans();
+await probeTarballCache.sweepOrphans();
 
 // Load or mint the sidecar's local Ed25519 keypair. The supervisor
 // principal signs every workflow-run commit with this key; the
@@ -455,8 +460,7 @@ const buildHarness = createDefaultHarnessBuilder({ adapters });
 // streamed transfer the deploy path uses.
 const workflowProbeExecutor = createWorkflowProbeExecutor({
   materialize: createWorkflowClosureMaterializer({
-    cacheRoot,
-    cacheMaxBytes,
+    cache: probeTarballCache,
     registryMaxTarballBytes,
     maxAssetPayloadBytes: MAX_INLINE_ASSET_PAYLOAD_BYTES,
     registries: readRegistries(),

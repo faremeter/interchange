@@ -30,9 +30,9 @@ import path from "node:path";
 import { getLogger } from "@intx/log";
 import {
   type RegistryConfig,
+  type TarballCache,
   type TarballFetcher,
   applyAtomic,
-  createTarballCache,
   createToolLoader,
   storeEntryDir,
 } from "@intx/tool-packaging";
@@ -57,10 +57,12 @@ export interface ApplyFrozenWorkflowClosureArgs {
    * (`<instanceDir>/packages/<deploy-id>/store/...`).
    */
   readonly instanceDir: string;
-  /** Content-addressable tarball cache root shared across applies. */
-  readonly cacheRoot: string;
-  /** Byte cap for the tarball cache. */
-  readonly cacheMaxBytes: number;
+  /**
+   * Tarball cache shared by every apply over its root. Its in-use count keeps
+   * one apply from evicting an extraction another is still copying, and it
+   * counts only callers of the same instance.
+   */
+  readonly cache: TarballCache;
   /** Byte cap for a single HTTP-registry tarball fetch. */
   readonly registryMaxTarballBytes: number;
   /** Registry identifier -> URL + credentials the loader resolves entries against. */
@@ -156,12 +158,8 @@ export async function applyFrozenWorkflowClosure(
     }
   }
 
-  const cache = createTarballCache({
-    rootDir: args.cacheRoot,
-    maxBytes: args.cacheMaxBytes,
-  });
   const loader = createToolLoader({
-    cache,
+    cache: args.cache,
     registries: args.registries,
     host: { os: process.platform, cpu: process.arch },
     maxRegistryTarballBytes: args.registryMaxTarballBytes,

@@ -263,7 +263,7 @@ The sidecar WebSocket protocol includes frames for agent deployment, reconnectio
 
 Agent deployment stages through the workflow-run substrate rather than a separate provision-then-start handshake. The hub sends `agent.deploy`; the sidecar's deploy router primes the per-step repo (for a provision-step frame) or spawns the supervised workflow-process child (for a workflow frame), then acks with `agent.deploy.ack` carrying the public key. The deploy tree (prompt, skills) rides in on the follow-up deploy pack, which the child reads from the substrate. The workflow-process child starts inference itself once spawned -- there is no separate `session.start` step.
 
-`agent.deploy` and `agent.undeploy` carry a `requestId` that every reply echoes, so a reply settles only the request it answers and a late reply to a request the Hub already gave up on matches nothing.
+`agent.deploy` and `agent.undeploy` carry a `requestId` that every reply echoes, so a reply settles only the request it answers and a late reply to a request the Hub already gave up on matches nothing. The sidecar handles the frames for one address one at a time, in the order it received them. Frames for different addresses, probe requests, and heartbeat pongs do not wait on each other, so one deployment's slow deploy or undeploy delays neither another deployment nor the link's liveness.
 
 Undeploy is an acknowledged operation. The sidecar shuts the deployment's supervisor down, deletes the agent directory, and responds with `agent.undeploy.ack`. The hub defers routing table cleanup until the ack arrives.
 

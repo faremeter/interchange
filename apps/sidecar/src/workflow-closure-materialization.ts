@@ -40,8 +40,8 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import {
   type RegistryConfig,
+  type TarballCache,
   type TarballFetcher,
-  createTarballCache,
   createToolLoader,
   storeEntryDir,
 } from "@intx/tool-packaging";
@@ -59,10 +59,12 @@ import type {
 const logger = getLogger(["sidecar", "workflow-closure-materialization"]);
 
 export interface WorkflowClosureMaterializerConfig {
-  /** Content-addressable tarball cache root shared across materializations. */
-  readonly cacheRoot: string;
-  /** Byte cap for the tarball cache. */
-  readonly cacheMaxBytes: number;
+  /**
+   * Tarball cache shared by every materialization over its root. Its in-use
+   * count keeps one probe from evicting an extraction another is still
+   * copying, and it counts only callers of the same instance.
+   */
+  readonly cache: TarballCache;
   /** Byte cap for a single HTTP-registry tarball fetch. */
   readonly registryMaxTarballBytes: number;
   /**
@@ -155,12 +157,8 @@ export function createWorkflowClosureMaterializer(
     };
 
     try {
-      const cache = createTarballCache({
-        rootDir: config.cacheRoot,
-        maxBytes: config.cacheMaxBytes,
-      });
       const loader = createToolLoader({
-        cache,
+        cache: config.cache,
         registries: config.registries,
         host,
         maxRegistryTarballBytes: config.registryMaxTarballBytes,

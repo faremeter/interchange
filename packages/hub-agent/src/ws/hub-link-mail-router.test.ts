@@ -1,16 +1,9 @@
-// Pins the FIXED contract for the `mail.inbound` arm in
-// `handleMessage`: a throwing `mailInboundRouter.tryRoute` must not
-// wedge the per-connection `messageQueue` chain. The arm wraps the
-// router call in try/catch (mirroring `signal.deliver` and
-// `drain.deliver`), so subsequent frames -- including the heartbeat
-// `pong` -- continue to dispatch through the same chain.
-//
-// The shape of the underlying bug: an unguarded `tryRoute` call
-// rejects the chained promise (`messageQueue = messageQueue.then(()
-// => handleMessage(...))`); subsequent `.then(...)` calls against
-// the rejected chain never fire, silently dropping every later
-// frame. This test exercises the patched arm end-to-end through the
-// real hub-link WS surface to make the regression observable.
+// Pins the contract for the `mail.inbound` arm in `handleMessage`: a
+// throwing `mailInboundRouter.tryRoute` must not stop the frames after it.
+// The arm wraps the router call in try/catch (mirroring `signal.deliver`
+// and `drain.deliver`), so later frames for the address -- and the
+// heartbeat `pong` -- keep dispatching. The test drives the arm end to end
+// through the real hub-link WS surface.
 
 import {
   describe,
@@ -337,9 +330,8 @@ describe("hub-link mail.inbound throwing router", () => {
 
       const encoded = base64Encode(VALID_MESSAGE);
 
-      // First mail.inbound: the router throws. With the C4 fix in
-      // place, the link's switch arm catches the throw and logs it
-      // without rejecting the messageQueue chain.
+      // First mail.inbound: the router throws. The link's switch arm
+      // catches the throw and logs it, and the frames after it still run.
       expect(
         await env.router.routeMail(
           deploymentAddress,
@@ -812,7 +804,7 @@ describe("hub-link mail.inbound signature enforcement", () => {
       "liveness",
       async ({ deploymentAddress, routed }) => {
         // First frame: the resolver throws -> error -> rejected inline. The
-        // inline verify + reject must not wedge the messageQueue chain.
+        // inline verify + reject must not stop the frames after it.
         expect(
           await env.router.routeMail(
             deploymentAddress,

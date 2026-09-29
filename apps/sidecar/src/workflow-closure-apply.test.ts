@@ -4,7 +4,12 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-import type { RegistryConfig, TarballFetcher } from "@intx/tool-packaging";
+import {
+  createTarballCache,
+  type RegistryConfig,
+  type TarballCache,
+  type TarballFetcher,
+} from "@intx/tool-packaging";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import { applyFrozenWorkflowClosure } from "./workflow-closure-apply";
@@ -28,16 +33,17 @@ const WORKFLOW_ENTRY_SOURCE = `export default {
 `;
 
 let scratchRoot: string;
-let cacheRoot: string;
+let cache: TarballCache;
 let instanceDir: string;
 
 beforeEach(async () => {
   scratchRoot = await fs.mkdtemp(
     path.join(os.tmpdir(), "sidecar-wf-closure-apply-"),
   );
-  cacheRoot = path.join(scratchRoot, "cache");
+  const cacheRoot = path.join(scratchRoot, "cache");
   instanceDir = path.join(scratchRoot, "instance");
   await fs.mkdir(cacheRoot, { recursive: true });
+  cache = createTarballCache({ rootDir: cacheRoot, maxBytes: 10_000_000 });
   await fs.mkdir(instanceDir, { recursive: true });
 });
 
@@ -124,8 +130,7 @@ describe("applyFrozenWorkflowClosure", () => {
       source: { kind: "registry", registry: REGISTRY_NAME },
       closure: manifest,
       instanceDir,
-      cacheRoot,
-      cacheMaxBytes: 10_000_000,
+      cache,
       registryMaxTarballBytes: 10_000_000,
       registries: registries(),
       fetchTarball,
@@ -176,8 +181,7 @@ describe("applyFrozenWorkflowClosure", () => {
         source: { kind: "registry", registry: REGISTRY_NAME },
         closure: manifest,
         instanceDir,
-        cacheRoot,
-        cacheMaxBytes: 10_000_000,
+        cache,
         registryMaxTarballBytes: 10_000_000,
         registries: registries(),
         fetchTarball,
@@ -196,8 +200,7 @@ describe("applyFrozenWorkflowClosure", () => {
         source: { kind: "registry", registry: REGISTRY_NAME },
         closure: manifest,
         instanceDir,
-        cacheRoot,
-        cacheMaxBytes: 10_000_000,
+        cache,
         registryMaxTarballBytes: 10_000_000,
         registries: registries(),
       }),
@@ -227,8 +230,7 @@ describe("applyFrozenWorkflowClosure", () => {
         source: { kind: "registry", registry: "unconfigured-registry" },
         closure: manifest,
         instanceDir,
-        cacheRoot,
-        cacheMaxBytes: 10_000_000,
+        cache,
         registryMaxTarballBytes: 10_000_000,
         registries: registries(),
       }),
@@ -275,8 +277,7 @@ describe("applyFrozenWorkflowClosure", () => {
       source: { kind: "asset", assetId, package: { format: "tarball" } },
       closure: manifest,
       instanceDir,
-      cacheRoot,
-      cacheMaxBytes: 10_000_000,
+      cache,
       registryMaxTarballBytes: 10_000_000,
       registries: registries(),
       assetRoot,

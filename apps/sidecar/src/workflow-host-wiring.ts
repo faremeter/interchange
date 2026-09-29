@@ -14,6 +14,7 @@ import { type } from "arktype";
 import { derivePublicKeyBytes, signEd25519 } from "@intx/crypto";
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
+import { createTarballCache, type TarballCache } from "@intx/tool-packaging";
 import {
   parseAgentId,
   workflowSourceAssetMountPath,
@@ -1678,6 +1679,22 @@ export function createSidecarDeployRouter(deps: {
     };
   }
 
+  // Deploys for different addresses apply closures concurrently, and the
+  // cache's in-use count protects an extraction from eviction only among
+  // callers of one instance, so every apply shares this one.
+  let sharedClosureCache: TarballCache | undefined;
+
+  function closureCache(dataDir: string): TarballCache {
+    sharedClosureCache ??= createTarballCache({
+      rootDir: pathJoin(dataDir, "workflow-definition-closure-cache"),
+      maxBytes: requireSubstrateByteCap(
+        multistepSubstrateEnv,
+        "SIDECAR_CACHE_MAX_BYTES",
+      ),
+    });
+    return sharedClosureCache;
+  }
+
   /**
    * Materialize a source-ref deployment's frozen closure to its per-deployment
    * instance dir and return the applied result. Owns the plumbing both the
@@ -1719,11 +1736,7 @@ export function createSidecarDeployRouter(deps: {
       source: pin.source,
       closure: pin.closure,
       instanceDir,
-      cacheRoot: pathJoin(dataDir, "workflow-definition-closure-cache"),
-      cacheMaxBytes: requireSubstrateByteCap(
-        multistepSubstrateEnv,
-        "SIDECAR_CACHE_MAX_BYTES",
-      ),
+      cache: closureCache(dataDir),
       registryMaxTarballBytes: requireSubstrateByteCap(
         multistepSubstrateEnv,
         "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
@@ -2174,15 +2187,15 @@ export function createSidecarDeployRouter(deps: {
                 );
               } catch (cause) {
                 // Restoring unconditionally is safe because rotations for one
-                // deployment are serialized by the sidecar's per-connection
-                // inbound-frame queue: each hub frame, sources.update
-                // included, runs its handler to completion on that queue
-                // before the next frame's handler starts, so no second
+                // deployment are serialized by the link's per-address frame
+                // lane: each hub frame for the deployment's address,
+                // sources.update included, runs its handler to completion
+                // before the next one for that address starts, so no second
                 // rotation is in flight whose committed table this rollback
                 // could clobber. This does NOT rely on the hub pacing its
                 // sends -- the hub dispatches sources.update fire-and-forget;
-                // the sidecar frame queue is the sole serializer. Parallelizing
-                // inbound-frame dispatch would break this rollback.
+                // the frame lane is the sole serializer. Handling one
+                // address's frames concurrently would break this rollback.
                 currentSources = prevSources;
                 throw cause;
               }

@@ -105,6 +105,20 @@ export async function materializeClosure(
       integrity = source.package.integrity;
     }
 
+    // Pinned until extracted: another apply sharing the cache can sweep it
+    // for space between the presence check and the extraction otherwise.
+    const unpin = args.cache.pin(integrity);
+    try {
+      return await materializeTarball(entry, integrity);
+    } finally {
+      unpin();
+    }
+  }
+
+  async function materializeTarball(
+    entry: ToolPackageManifestEntry,
+    integrity: string,
+  ): Promise<{ dir: string; release: () => void }> {
     // Probe cache presence with `has` rather than `get`: the bytes are
     // only needed when they have to be fetched-then-stored, and
     // `extractTarball` below re-reads them from disk on the way to the

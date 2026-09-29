@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +21,23 @@ function makeBytes(seed: string): { bytes: Uint8Array; integrity: string } {
   const bytes = new TextEncoder().encode(`tarball-bytes-${seed}`);
   const integrity = ssri.fromData(bytes, { algorithms: ["sha512"] }).toString();
   return { bytes, integrity };
+}
+
+// Settles once the cache has removed `dir`, which a deferred reclaim does after
+// the call that triggers it returns.
+function removalOf(dir: string): Promise<void> {
+  const rm = fs.rm.bind(fs);
+  const removed = Promise.withResolvers<undefined>();
+  const spy = spyOn(fs, "rm").mockImplementation(async (target, options) => {
+    try {
+      return await rm(target, options);
+    } finally {
+      if (target === dir) removed.resolve(undefined);
+    }
+  });
+  return removed.promise.finally(() => {
+    spy.mockRestore();
+  });
 }
 
 describe("createTarballCache", () => {
@@ -185,60 +202,217 @@ describe("LRU eviction when over cap", () => {
     expect(await cache.get(c.integrity)).not.toBeNull();
   });
 
-  test("cap-driven eviction defers the extraction reclaim while a reader holds the handle", async () => {
-    // The cap-driven sweep removes the tarball blob immediately but
-    // must defer the extraction-tree rm until every in-flight reader
-    // releases — the same refcount/deferred-reclaim contract `evict`
-    // honors. Without that gate, a concurrent `copyTree` walk
-    // against the LRU victim would observe ENOENT mid-readdir when
-    // the sweep fires.
+  test("cap-driven eviction skips an entry a reader holds until it is released", async () => {
+    // A concurrent `copyTree` walk against the LRU victim would observe
+    // ENOENT mid-readdir if the sweep reclaimed a held extraction, so the
+    // sweep leaves an entry in use alone, over the cap if it must.
     const a = await packFixtureTarball(scratch, {
       "package.json": JSON.stringify({ name: "a", version: "1.0.0" }),
     });
     const b = await packFixtureTarball(scratch, {
       "package.json": JSON.stringify({ name: "b", version: "1.0.0" }),
     });
+    const c = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "c", version: "1.0.0" }),
+    });
+    // Room for one entry: every extract sweeps the older ones.
+    const cache = createTarballCache({
+      rootDir: scratch,
+      maxBytes: Math.max(a.bytes.length, b.bytes.length, c.bytes.length),
+    });
+    await cache.put(a.integrity, a.bytes);
+    const handle = await cache.extractTarball(a.integrity);
 
-    // Cap big enough for one (a or b) plus a little slack; the second
-    // put will trigger the sweep and evict the older entry.
+    await new Promise((r) => setTimeout(r, 25));
+    await cache.put(b.integrity, b.bytes);
+    (await cache.extractTarball(b.integrity)).release();
+
+    expect(await cache.has(a.integrity)).toBe(true);
+    await fs.access(handle.dir);
+
+    handle.release();
+    await new Promise((r) => setTimeout(r, 25));
+    await cache.put(c.integrity, c.bytes);
+    (await cache.extractTarball(c.integrity)).release();
+
+    expect(await cache.has(a.integrity)).toBe(false);
+    expect(
+      await fs.access(handle.dir).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
+  });
+
+  test("a pinned entry survives a sweep between its presence check and its extraction", async () => {
+    const a = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "a", version: "1.0.0" }),
+    });
+    const b = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "b", version: "1.0.0" }),
+    });
     const cache = createTarballCache({
       rootDir: scratch,
       maxBytes: Math.max(a.bytes.length, b.bytes.length),
     });
     await cache.put(a.integrity, a.bytes);
-    // Hold an extraction handle on `a` BEFORE the cap-driven sweep
-    // would target it. The handle keeps the extraction tree alive
-    // through the sweep.
-    const handle = await cache.extractTarball(a.integrity);
-    const dirBeforeEvict = handle.dir;
-    // Verify the extraction tree exists right now.
-    await fs.access(dirBeforeEvict);
 
-    // Trigger the sweep: putting + extracting `b` pushes us over cap;
-    // `a` is the older entry and gets evicted. The sweep fires inside
-    // `extractTarball`, not `put`.
+    const unpin = cache.pin(a.integrity);
+    expect(await cache.has(a.integrity)).toBe(true);
     await new Promise((r) => setTimeout(r, 25));
     await cache.put(b.integrity, b.bytes);
     (await cache.extractTarball(b.integrity)).release();
+    const handle = await cache.extractTarball(a.integrity);
+    unpin();
 
-    // The tarball blob for `a` is gone (the sweep dropped it).
-    expect(await cache.get(a.integrity)).toBeNull();
-    // The extraction tree is still readable through the held handle
-    // because reclaim was deferred behind the reader.
-    await fs.access(dirBeforeEvict);
-
-    // Releasing the handle clears the deferred reclaim; the
-    // extraction tree is removed once the refcount hits zero.
+    await fs.access(path.join(handle.dir, "package.json"));
     handle.release();
-    // Give the deferred-reclaim microtask a tick to run.
-    await new Promise((r) => setTimeout(r, 25));
-    let extractionStillThere = true;
+  });
+
+  test("an entry pinned while the sweep unlinks its tarball keeps its extraction", async () => {
+    const a = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "a", version: "1.0.0" }),
+    });
+    const b = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "b", version: "1.0.0" }),
+    });
+    const cache = createTarballCache({
+      rootDir: scratch,
+      maxBytes: Math.max(a.bytes.length, b.bytes.length),
+    });
+    await cache.put(a.integrity, a.bytes);
+    (await cache.extractTarball(a.integrity)).release();
+
+    let unpin: (() => void) | undefined;
+    const unlink = fs.unlink.bind(fs);
+    const spy = spyOn(fs, "unlink").mockImplementation(async (target) => {
+      const unlinked = await unlink(target);
+      unpin ??= cache.pin(a.integrity);
+      return unlinked;
+    });
     try {
-      await fs.access(dirBeforeEvict);
-    } catch {
-      extractionStillThere = false;
+      await new Promise((r) => setTimeout(r, 25));
+      await cache.put(b.integrity, b.bytes);
+      (await cache.extractTarball(b.integrity)).release();
+    } finally {
+      spy.mockRestore();
     }
-    expect(extractionStillThere).toBe(false);
+
+    const handle = await cache.extractTarball(a.integrity);
+    unpin?.();
+    await fs.access(path.join(handle.dir, "package.json"));
+    const removed = removalOf(handle.dir);
+    handle.release();
+    await removed;
+    expect(
+      await fs.access(handle.dir).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
+  });
+
+  test("an extraction started while the sweep removes the tree waits for the removal", async () => {
+    const a = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "a", version: "1.0.0" }),
+    });
+    const b = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "b", version: "1.0.0" }),
+    });
+    const cache = createTarballCache({
+      rootDir: scratch,
+      maxBytes: Math.max(a.bytes.length, b.bytes.length),
+    });
+    await cache.put(a.integrity, a.bytes);
+    const first = await cache.extractTarball(a.integrity);
+    const extractedDir = first.dir;
+    first.release();
+
+    let reader: Promise<{ dir: string; release: () => void }> | undefined;
+    const rm = fs.rm.bind(fs);
+    const spy = spyOn(fs, "rm").mockImplementation(async (target, options) => {
+      if (reader === undefined && target === extractedDir) {
+        await cache.put(a.integrity, a.bytes);
+        reader = cache.extractTarball(a.integrity);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return rm(target, options);
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 25));
+      await cache.put(b.integrity, b.bytes);
+      (await cache.extractTarball(b.integrity)).release();
+    } finally {
+      spy.mockRestore();
+    }
+
+    if (reader === undefined) throw new Error("the sweep did not remove a");
+    const handle = await reader;
+    await fs.access(path.join(handle.dir, "package.json"));
+    handle.release();
+  });
+
+  test("an extraction started while a deferred eviction removes the tree waits for the removal", async () => {
+    const a = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "a", version: "1.0.0" }),
+    });
+    const b = await packFixtureTarball(scratch, {
+      "package.json": JSON.stringify({ name: "b", version: "1.0.0" }),
+    });
+    const cache = createTarballCache({
+      rootDir: scratch,
+      maxBytes: Math.max(a.bytes.length, b.bytes.length),
+    });
+    await cache.put(a.integrity, a.bytes);
+    const first = await cache.extractTarball(a.integrity);
+    const extractedDir = first.dir;
+    first.release();
+
+    let unpin: (() => void) | undefined;
+    const unlink = fs.unlink.bind(fs);
+    const unlinkSpy = spyOn(fs, "unlink").mockImplementation(async (target) => {
+      const unlinked = await unlink(target);
+      unpin ??= cache.pin(a.integrity);
+      return unlinked;
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 25));
+      await cache.put(b.integrity, b.bytes);
+      (await cache.extractTarball(b.integrity)).release();
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+    if (unpin === undefined) throw new Error("the sweep did not unlink a");
+
+    let reader: Promise<{ dir: string; release: () => void }> | undefined;
+    const removed = Promise.withResolvers<undefined>();
+    const rm = fs.rm.bind(fs);
+    const rmSpy = spyOn(fs, "rm").mockImplementation(
+      async (target, options) => {
+        if (reader === undefined && target === extractedDir) {
+          await fs.unlink(path.join(extractedDir, "package.json"));
+          await cache.put(a.integrity, a.bytes);
+          reader = cache.extractTarball(a.integrity);
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        try {
+          return await rm(target, options);
+        } finally {
+          if (target === extractedDir) removed.resolve(undefined);
+        }
+      },
+    );
+    try {
+      unpin();
+      await removed.promise;
+    } finally {
+      rmSpy.mockRestore();
+    }
+
+    if (reader === undefined) throw new Error("the release did not remove a");
+    const handle = await reader;
+    await fs.access(path.join(handle.dir, "package.json"));
+    handle.release();
   });
 
   test("extractTarball advances atime so loader-pattern hits beat the LRU sweep", async () => {

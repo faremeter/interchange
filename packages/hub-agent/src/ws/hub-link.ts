@@ -42,6 +42,7 @@ import {
 } from "@intx/types/sidecar";
 import type { SignalKind } from "@intx/types";
 import { createPackReceiver, createPackSender } from "@intx/pack-transport";
+import { createFrameLanes } from "./frame-lanes";
 import {
   createRegisterAcker,
   DEFAULT_REGISTER_ACK_MAX_ATTEMPTS,
@@ -250,6 +251,8 @@ export function answerMalformedRequestFrame(
 
 const DEFAULT_PING_INTERVAL_MS = 30_000;
 const DEFAULT_RECONNECT_DELAY_MS = 3_000;
+
+const SENDER_KEY_WRITES = Symbol("sender-key writes");
 
 /**
  * The reason string `packSender.cancelAll` rejects an in-flight transfer with
@@ -836,9 +839,17 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     maxAttempts: registerAckMaxAttempts,
   });
 
-  // Serialize frame processing so async handlers (deploy, undeploy, abort)
-  // cannot race against each other.
-  let messageQueue: Promise<void> = Promise.resolve();
+  // Frames for one address are handled in the order they arrive, so a
+  // deployment's deploy, deliveries, and undeploy never race each other, while
+  // frames for different addresses do not wait on each other. Writes to the
+  // shared sender-key cache stay in arrival order across addresses: the
+  // refresh and evict frames are barriers, and `run.grants`, which caches the
+  // keys of its run's senders, also takes the sender-key lane.
+  function logFrameError(err: unknown): void {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn`Unhandled error handling a hub frame: ${msg}`;
+  }
+  const frameLanes = createFrameLanes(logFrameError);
 
   // Outbound frames queued while disconnected.
   const MAX_QUEUE = 1024;
@@ -1282,14 +1293,14 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     // until the next reconnect re-pushes, so this push is best-effort, not
     // delivery-guaranteed.
     //
-    // Awaited inline on the message chain, NOT detached the way the
-    // `mail.inbound` durable write is: the co-resident `run.grants` handler also
-    // caches sender keys on this same chain, so serializing the refresh write
-    // keeps last-write-wins deterministic against a concurrent grants write for
-    // the same address. The fan-out is bounded (one frame per rotatable cached
-    // sender, once per reconnect), so the head-of-line cost stays far short of
-    // the heartbeat window; a detached write would trade that determinism for
-    // latency this low-volume path does not need.
+    // Awaited inside a frame barrier, NOT detached the way the `mail.inbound`
+    // durable write is: the co-resident `run.grants` handler also caches sender
+    // keys, so ordering the refresh write against every grants write keeps
+    // last-write-wins deterministic for the same address. The fan-out is
+    // bounded (one frame per rotatable cached sender, once per reconnect), so
+    // holding later frames behind the barrier costs little; a detached write
+    // would trade that determinism for latency this low-volume path does not
+    // need.
     try {
       await cacheSenderKey(frame.address, frame.publicKey);
     } catch (err) {
@@ -1302,9 +1313,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     frame: SenderKeyEvictFrame,
   ): Promise<void> {
     // Mirror of `handleSenderKeyRefresh` for the evict direction: address-keyed,
-    // cross-run, no reply channel, awaited inline on the message chain so it
-    // serializes deterministically against a concurrent refresh/grants write for
-    // the same address. A fault swallowed after logging at ERROR keeps the STALE
+    // cross-run, no reply channel, awaited inside a frame barrier so it orders
+    // deterministically against refresh and grants writes for the same
+    // address. A fault swallowed after logging at ERROR keeps the STALE
     // key cached until the next reconnect re-evicts -- the evict is best-effort,
     // not delivery-guaranteed, exactly like the refresh it complements.
     try {
@@ -1529,10 +1540,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     });
   }
 
-  async function handleMessage(
-    data: string,
-    connection: WebSocket,
-  ): Promise<void> {
+  function receiveFrame(data: string, connection: WebSocket): void {
     let raw: unknown;
     try {
       raw = JSON.parse(data) as unknown;
@@ -1547,21 +1555,72 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       // usually keep an intact correlation key even when a nested field is
       // malformed, so reply with the matching error frame; a fire-and-forget
       // frame (or one with no recoverable key) is only logged and dropped.
-      answerMalformedRequestFrame(raw, validated.summary, send);
-      logger.warn`Invalid hub frame: ${validated.summary}`;
+      // The answer waits for the frames its address received before it.
+      const summary = validated.summary;
+      const answer = async (): Promise<void> => {
+        answerMalformedRequestFrame(raw, summary, send);
+        logger.warn`Invalid hub frame: ${summary}`;
+      };
+      const envelope = MalformedRequestEnvelope(raw);
+      const address =
+        envelope instanceof type.errors ? undefined : envelope.agentAddress;
+      if (address === undefined || address.length === 0) {
+        void answer().catch(logFrameError);
+      } else {
+        frameLanes.run([address], answer);
+      }
       return;
     }
     const frame = validated;
 
+    switch (frame.type) {
+      case "pong":
+        lastPongAt = Date.now();
+        return;
+      case "workflow.probe.request":
+        void handleWorkflowProbeRequest(frame).catch(logFrameError);
+        return;
+      case "sender.key.refresh":
+      case "sender.key.evict":
+        frameLanes.barrier(() => handleFrame(frame));
+        return;
+      case "run.grants":
+        frameLanes.run([frame.agentAddress, SENDER_KEY_WRITES], () =>
+          handleFrame(frame),
+        );
+        return;
+      case "workflow.control":
+        // Start in the address's order, but leave its lane free for a forced
+        // stop and the deployment's undeploy while cooperative cancellation
+        // waits for the child.
+        frameLanes.run([frame.agentAddress], async () => {
+          void handleWorkflowControl(connection, frame).catch(
+            (cause: unknown) => {
+              logger.warn`Workflow control reply failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+            },
+          );
+        });
+        return;
+      default:
+        frameLanes.run([frame.agentAddress], () => handleFrame(frame));
+    }
+  }
+
+  async function handleFrame(
+    frame: Exclude<
+      HubFrame,
+      { type: "pong" | "workflow.probe.request" | "workflow.control" }
+    >,
+  ): Promise<void> {
     switch (frame.type) {
       case "mail.inbound": {
         const rawBytes = base64Decode(frame.rawMessage);
         // This ingress is the one place raw inbound bytes meet the hub-verified
         // sender identity (`authenticatedSender` + its resolved key), and every
         // producer -- relay, trigger, durable dispatch -- converges here, so the
-        // inbound-signature verify gates delivery here. Await it INLINE on the
-        // messageQueue chain: the verdict decides admission, so delivery must
-        // not race ahead of it. The verify is CPU-bound -- a synchronous cache
+        // inbound-signature verify gates delivery here. Await it INLINE in this
+        // frame's handler: the verdict decides admission, so delivery must not
+        // race ahead of it. The verify is CPU-bound -- a synchronous cache
         // read, an Ed25519 verify, and a MIME re-parse, with no I/O and no lock
         // -- so it cannot hang and needs no timeout race around it. It never
         // throws: a fault degrades to an `error` verdict. The in-process
@@ -1604,7 +1663,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         }
         // Admitted: deliver exactly as an admitted frame always has, keeping
         // the detached durable settlement and detached ack below off the
-        // messageQueue chain -- only the verify above is awaited inline.
+        // address's frame lane -- only the verify above is awaited inline.
         //
         // Supervised deployments register the deployment-level mail
         // address on `mailInboundRouter` once their supervisor spawns;
@@ -1614,11 +1673,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         // no receiver -- the in-process session runtime that once backed
         // it is retired -- so it is logged and dropped.
         //
-        // Guard the router call with try/catch so a synchronous throw does
-        // not reject this `handleMessage` promise and wedge the per-connection
-        // `messageQueue` chain. A rejected chain would silently drop every
-        // subsequent frame -- including the heartbeat `pong` -- and stall the
-        // link. The durable settlement is observed off the chain (below).
+        // Guard the router call with try/catch so a synchronous throw is
+        // logged against this address and the mail is dropped like mail with
+        // no handler. The durable settlement is observed off the lane (below).
         let durable: Promise<void> | null = null;
         if (mailInboundRouter !== undefined) {
           try {
@@ -1634,10 +1691,10 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         }
         // Acknowledge durable receipt only AFTER the inbox write settles, and
         // only for hub-originated mail carrying a hub-minted messageId (the
-        // ack handshake). Observe the settlement DETACHED from the
-        // `messageQueue` chain so a slow or failing inbox write never wedges
-        // frame processing; on rejection (transient failure, stale refusal, or
-        // a tearing-down phase) no ack is sent, so the hub redelivers.
+        // ack handshake). Observe the settlement DETACHED from the address's
+        // frame lane so a slow or failing inbox write never holds up its later
+        // frames; on rejection (transient failure, stale refusal, or a
+        // tearing-down phase) no ack is sent, so the hub redelivers.
         const ackMessageId = frame.messageId;
         if (ackMessageId !== undefined) {
           void durable
@@ -1669,18 +1726,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       case "agent.undeploy":
         await handleAgentUndeploy(frame);
         break;
-      case "workflow.control":
-        // Start in FIFO order, but leave the queue free for forced stop and
-        // heartbeats while cooperative cancellation waits for the child.
-        void handleWorkflowControl(connection, frame).catch(
-          (cause: unknown) => {
-            logger.warn`Workflow control reply failed: ${cause instanceof Error ? cause.message : String(cause)}`;
-          },
-        );
-        break;
-      case "pong":
-        lastPongAt = Date.now();
-        break;
       case "repo.pack.push":
         handlePackPush(frame);
         break;
@@ -1707,9 +1752,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
         break;
       case "credentials.update":
         await handleCredentialsUpdate(frame);
-        break;
-      case "workflow.probe.request":
-        await handleWorkflowProbeRequest(frame);
         break;
       case "repo.pack.ack":
         handlePackAck(frame);
@@ -1800,33 +1842,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     });
 
     connection.addEventListener("message", (event) => {
-      if (typeof event.data === "string") {
-        // Attach a tail `.catch` to the chained handler so any
-        // unhandled throw inside `handleMessage` is observed and
-        // surfaces as a logged warning rather than rejecting the
-        // shared `messageQueue` chain. A rejected chain wedges every
-        // subsequent `messageQueue.then(...)` -- including the
-        // heartbeat `pong` path -- and silently stalls the link.
-        // Per-arm guards (mail/signal/drain) are the primary defence;
-        // this catch is the belt-and-braces guarantee that no future
-        // unguarded arm can wedge the link.
-        //
-        // Ordinary frame handlers run to completion before the next begins;
-        // workflow.control starts here but owns its asynchronous completion.
-        // A downstream
-        // invariant depends on that ordering -- the workflow
-        // source-rotation persist rolls back on failure assuming no second
-        // rotation is in flight, which holds only because sources.update
-        // frames are processed one at a time here. Parallelizing this
-        // dispatch would break that rollback.
-        const data = event.data;
-        messageQueue = messageQueue.then(() =>
-          handleMessage(data, connection).catch((err: unknown) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            logger.warn`Unhandled error in handleMessage: ${msg}`;
-          }),
-        );
-      }
+      if (typeof event.data === "string") receiveFrame(event.data, connection);
     });
 
     connection.addEventListener("close", () => {
