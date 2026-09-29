@@ -175,6 +175,7 @@ describe("SidecarRouter workflow probe", () => {
     expect(router.getRoutableAddresses()).toEqual([]);
     expect(ws.sent.map((raw): unknown => JSON.parse(raw))).toContainEqual({
       type: "agent.undeploy",
+      requestId: expect.any(String),
       agentAddress: "workflow@example.test",
       reason: "The deployment is not current on this sidecar",
     });

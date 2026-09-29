@@ -5,10 +5,12 @@ import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import {
   createMockWs,
+  deployReply,
   parsedFrames,
   sidecarAuth,
   TEST_CONFIG,
   tick,
+  undeployAck,
 } from "./sidecar-handler.test-helpers";
 import {
   createSidecarRouter,
@@ -266,6 +268,7 @@ describe("SidecarRouter shared sidecars", () => {
     expect(framesOfType(ws, "agent.undeploy")).toEqual([
       {
         type: "agent.undeploy",
+        requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
         reason: "Generation 2 superseded it",
       },
@@ -288,6 +291,7 @@ describe("SidecarRouter shared sidecars", () => {
     expect(framesOfType(ws, "agent.undeploy")).toEqual([
       {
         type: "agent.undeploy",
+        requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
         reason: "It was released",
       },
@@ -381,6 +385,7 @@ describe("SidecarRouter shared sidecars", () => {
     expect(framesOfType(ws, "agent.undeploy")).toEqual([
       {
         type: "agent.undeploy",
+        requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
         reason: "Its binding is no longer current",
       },
@@ -446,11 +451,7 @@ describe("SidecarRouter shared sidecars", () => {
     );
     router.handleMessage(
       ws,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: adopted.workflowRunAddress,
-        publicKey: PUBLIC_KEY,
-      }),
+      deployReply(ws, { publicKey: PUBLIC_KEY }, adopted.workflowRunAddress),
     );
 
     expect(await deployed).toEqual({ publicKey: PUBLIC_KEY });
@@ -494,6 +495,7 @@ describe("SidecarRouter shared sidecars", () => {
     expect(framesOfType(ws, "agent.undeploy")).toEqual([
       {
         type: "agent.undeploy",
+        requestId: expect.any(String),
         agentAddress: second.workflowRunAddress,
         reason: "The deployment is not current on this sidecar",
       },
@@ -539,11 +541,7 @@ describe("SidecarRouter shared sidecars", () => {
     router.fenceAllocation(first.allocationId, 2);
     router.handleMessage(
       ws,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: second.workflowRunAddress,
-        publicKey: PUBLIC_KEY,
-      }),
+      deployReply(ws, { publicKey: PUBLIC_KEY }, second.workflowRunAddress),
     );
 
     expect(await firstDeploy).toMatchObject({ frameSent: true });
@@ -551,6 +549,7 @@ describe("SidecarRouter shared sidecars", () => {
     expect(framesOfType(ws, "agent.undeploy")).toEqual([
       {
         type: "agent.undeploy",
+        requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
         reason: "Generation 2 superseded it",
       },
@@ -608,13 +607,7 @@ describe("SidecarRouter shared sidecars", () => {
     );
 
     router.fenceAllocation(first.allocationId, 2);
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.undeploy.ack",
-        agentAddress: first.workflowRunAddress,
-      }),
-    );
+    router.handleMessage(ws, undeployAck(ws, first.workflowRunAddress));
     router.handleMessage(
       ws,
       JSON.stringify({
@@ -650,6 +643,7 @@ describe("SidecarRouter shared sidecars", () => {
     expect(framesOfType(ws, "agent.undeploy")).toEqual([
       {
         type: "agent.undeploy",
+        requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
         reason: "Generation 2 superseded it",
       },
@@ -952,10 +946,99 @@ describe("SidecarRouter work placed while a shared sidecar connects", () => {
     expect(framesOfType(next, "agent.undeploy")).toEqual([
       {
         type: "agent.undeploy",
+        requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
         reason: "The deployment is not current on this sidecar",
       },
     ]);
+  });
+});
+
+describe("SidecarRouter deploy replies on a shared sidecar", () => {
+  function deployFrames(ws: TestWs): number {
+    return ws.sent.filter((raw) => raw.includes('"agent.deploy"')).length;
+  }
+
+  for (const late of ["ack", "error"] as const) {
+    test(`a late deploy ${late} for a superseded generation leaves the next deploy pending`, async () => {
+      const { router, hosted } = createSharedRouter([first, second]);
+      const ws = await reconnect(router);
+      const superseded = router
+        .sendAgentDeployToAllocation(
+          target(first),
+          first.workflowRunAddress,
+          configFor(first),
+        )
+        .catch((error: unknown) => error);
+      await ws.awaitSent(() => deployFrames(ws) === 1);
+      // The sidecar's answer to generation 1's deploy, arriving only after
+      // generation 2's deploy is in flight.
+      const lateReply = deployReply(
+        ws,
+        late === "ack"
+          ? { publicKey: "cd".repeat(32) }
+          : { error: "deploy failed" },
+        first.workflowRunAddress,
+      );
+
+      const next = allocation(first.allocationId, 2);
+      router.fenceAllocation(next.allocationId, next.generation);
+      expect(await superseded).toMatchObject({ frameSent: true });
+      hosted.bindings = [next, second];
+      await router.syncSidecar(SIDECAR);
+      let settled = false;
+      const deploying = router
+        .sendAgentDeployToAllocation(
+          target(next),
+          next.workflowRunAddress,
+          configFor(next),
+        )
+        .finally(() => {
+          settled = true;
+        });
+      await ws.awaitSent(() => deployFrames(ws) === 2);
+
+      router.handleMessage(ws, lateReply);
+      await tick();
+      expect(settled).toBe(false);
+
+      router.handleMessage(
+        ws,
+        deployReply(ws, { publicKey: PUBLIC_KEY }, first.workflowRunAddress),
+      );
+      expect(await deploying).toEqual({ publicKey: PUBLIC_KEY });
+    });
+  }
+
+  test("a deploy frame that failed to send awaits no reply", async () => {
+    const { router } = createSharedRouter([first]);
+    const ws = await reconnect(router);
+    const send = ws.send.bind(ws);
+    ws.send = () => {
+      throw new Error("socket busy");
+    };
+    const unsent = await router
+      .sendAgentDeployToAllocation(
+        target(first),
+        first.workflowRunAddress,
+        configFor(first),
+      )
+      .catch((error: unknown) => error);
+    expect(unsent).toMatchObject({ frameSent: false });
+    ws.send = send;
+
+    const deploying = router.sendAgentDeployToAllocation(
+      target(first),
+      first.workflowRunAddress,
+      configFor(first),
+    );
+    await ws.awaitSent(() => deployFrames(ws) === 1);
+    router.handleMessage(
+      ws,
+      deployReply(ws, { publicKey: PUBLIC_KEY }, first.workflowRunAddress),
+    );
+
+    expect(await deploying).toEqual({ publicKey: PUBLIC_KEY });
   });
 });
 
