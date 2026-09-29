@@ -1,0 +1,7 @@
+{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "Upstream request failed: [invalid_request_error] prompt is too long: 300024 tokens > 200000 maximum"
+  }
+}

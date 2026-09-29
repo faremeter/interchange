@@ -12,6 +12,13 @@ export function classifyHTTPError(
     return { category: "credential_failure", message, statusCode, raw };
   }
 
+  if (
+    (statusCode === 400 || statusCode === 413 || statusCode === 429) &&
+    isContextOverflowMessage(message)
+  ) {
+    return { category: "context_overflow", message, statusCode, raw };
+  }
+
   if (statusCode === 429) {
     return {
       category: "quota_exhausted",
@@ -20,15 +27,6 @@ export function classifyHTTPError(
       ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
       raw,
     };
-  }
-
-  if (statusCode === 400) {
-    // Context-overflow manifests as a 400 with a provider-specific message.
-    // Check for known patterns before falling through to fatal.
-    if (isContextOverflowMessage(message)) {
-      return { category: "context_overflow", message, statusCode, raw };
-    }
-    return { category: "fatal", message, statusCode, raw };
   }
 
   if (statusCode >= 500 && statusCode < 600) {
@@ -95,15 +93,23 @@ export function classifyStreamError(cause: unknown): InferenceError {
   return { category: "retryable", message, raw: cause };
 }
 
+// Vendor overflow wording is free text; no cross-provider error-code taxonomy
+// exists to switch on instead. Each pattern is anchored to context/prompt-size
+// vocabulary, not to a loose word like "maximum" or "tokens" alone, so a
+// rate-limit or concurrency message that happens to mention tokens does not
+// match.
+const CONTEXT_OVERFLOW_PATTERNS: readonly RegExp[] = [
+  /context_length_exceeded/i,
+  /\bprompt is too long\b/i,
+  /\binput is too long\b/i,
+  /\bmaximum context\b/i,
+  // "context" plus a size/limit word within the same message, e.g.
+  // "the context is too long for this model" or "maximum context length".
+  /\bcontext\b[^.]{0,40}\b(too long|exceeds?|exceeded|maximum|length)\b/i,
+];
+
 function isContextOverflowMessage(message: string): boolean {
-  const lower = message.toLowerCase();
-  return (
-    lower.includes("context_length_exceeded") ||
-    lower.includes("context length") ||
-    lower.includes("too many tokens") ||
-    lower.includes("maximum context") ||
-    lower.includes("input is too long")
-  );
+  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(message));
 }
 
 function isAbortError(value: unknown): boolean {
