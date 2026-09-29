@@ -130,7 +130,7 @@ The directory name is the run address with `@` replaced by `_at_` and non-alphan
 
 The sidecar manages agents, not user sessions. When the hub deploys an agent to a sidecar, the sidecar spawns a supervised **workflow-process child** for that deployment. The child runs continuously, receiving messages from any source — other agents, users, system signals — and builds the agent harness inside its own process. User sessions are a hub-side concept: the hub tracks which users are interacting with which agents and routes user messages to the agent's address accordingly, but the sidecar does not know or care about individual user sessions.
 
-The hub maintains a sidecar-to-agent mapping in its database. This mapping determines where to route messages for a given run address. When a sidecar disconnects, the hub knows which agents are affected and queues messages for them until the sidecar reconnects.
+The hub maintains a sidecar-to-agent mapping in its database. This mapping determines where to route messages for a given run address. When a sidecar disconnects, the hub knows which agents are affected: mail sent to them comes back undelivered, while triggers and signals wait in dispatch rows until the sidecar reconnects.
 
 ### Connector threads and user sessions
 
@@ -184,7 +184,7 @@ At boot, before opening the WebSocket connection, the in-tree sidecar scans its 
 
 ## Authority Model
 
-The sidecar's isogit repository is the source of truth for agent inference context (conversation history, pending operations, token usage). The hub's database is a delivery queue for user messages that have not yet reached the agent. On reconnect, the hub delivers queued messages to the sidecar, which incorporates them into the agent's context via the normal message handling path.
+The sidecar's isogit repository is the source of truth for agent inference context (conversation history, pending operations, token usage). The Hub keeps triggers and signals in dispatch rows until they are delivered, and holds mail the sidecar had not acknowledged for a limited time, redelivering it on reconnect. The sidecar incorporates delivered messages into the agent's context via the normal message handling path.
 
 ## Security Model
 

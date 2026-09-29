@@ -177,12 +177,10 @@ export type SidecarConnection = {
    * keeps its own generation fence.
    */
   bindings: Map<string, SidecarAuthIdentity>;
-  // Allocated workflows do not populate this legacy set.
-  agentAddresses: Set<string>;
   // Allocated deployment routes (including first deploy and reconnect) and
   // transient step routes, each mapped to the allocation that owns it, so one
   // allocation's routes can leave a connection that stays open for the
-  // others.
+  // others. `handleClose` cleans them out of `addressIndex`.
   workflowAddresses: Map<string, string>;
   // Deploy frames the worker has not answered, kept past the Hub's own deploy
   // timeout. The worker handles frames in order, so a control frame sent
@@ -191,15 +189,9 @@ export type SidecarConnection = {
   send(frame: HubFrame): void;
 };
 
-/**
- * Whether this connection owns `address` for routing/lifecycle purposes.
- * Ownership readers cover both address sets. Allocated workflow deployments
- * use `workflowAddresses` from their initial deploy.
- */
+/** Whether this connection owns `address` for routing/lifecycle purposes. */
 function connOwnsAddress(conn: SidecarConnection, address: string): boolean {
-  return (
-    conn.agentAddresses.has(address) || conn.workflowAddresses.has(address)
-  );
+  return conn.workflowAddresses.has(address);
 }
 
 /** The allocation that owns a workflow address routed on this connection. */
@@ -244,11 +236,6 @@ function connCanPushRepo(
     repoId.kind === "workflow-run" &&
     repoId.id === deriveWorkflowRunRepoId(agentAddress)
   );
-}
-
-/** The deduped set of every address this connection owns (session + workflow). */
-function ownedAddresses(conn: SidecarConnection): Set<string> {
-  return new Set([...conn.agentAddresses, ...conn.workflowAddresses.keys()]);
 }
 
 function allocationBindings(
@@ -342,9 +329,9 @@ export type SidecarRouter = {
   /**
    * Update a run's authorization grants independently of mail. For a trigger,
    * pass `runGrants` to `routeMail` so both frames share one admission decision.
-   * Sends on the live connection. Allocated workflows do not create disconnect
-   * queues, so an unroutable workflow returns `false`. The caller keeps any
-   * stable-run grant reservation so a later first-delivery attempt reuses it.
+   * Sends on the live connection and returns `false` whenever the address is
+   * unroutable; the caller keeps any stable-run grant reservation so a later
+   * first-delivery attempt reuses it.
    *
    * `senderIdentities` co-delivers the run's authorized senders' resolved keys
    * on the same barrier as the grant, so a recipient that caches from this
@@ -648,8 +635,9 @@ export type SidecarRouterConfig = {
    * than a routine `sendRequest`; it gets its own timeout rather than sharing
    * the request timeout. */
   probeTimeoutMs?: number;
-  disconnectQueueMaxSize?: number;
-  disconnectQueueTTLMs?: number;
+  /** How long un-acknowledged mail and mail awaiting its sender's key are
+   * held for a delivery before it is surfaced as undelivered. */
+  mailHoldTTLMs?: number;
   pingTimeoutMs?: number;
   /** Interval between redelivery attempts of a connected-window `mail.inbound`
    * the sidecar has not yet acknowledged with `mail.inbound.ack`. */
@@ -692,8 +680,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 // evaluates it on the sidecar, so it runs longer than a routine request; its
 // default timeout is correspondingly wider than DEFAULT_REQUEST_TIMEOUT_MS.
 export const DEFAULT_PROBE_TIMEOUT_MS = 60_000;
-const DEFAULT_DISCONNECT_QUEUE_MAX_SIZE = 100;
-const DEFAULT_DISCONNECT_QUEUE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_MAIL_HOLD_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_PING_TIMEOUT_MS = 60_000;
 const DEFAULT_MAIL_ACK_RETRY_INTERVAL_MS = 10_000;
 const DEFAULT_MAIL_ACK_MAX_RETRIES = 5;
@@ -722,8 +709,7 @@ export function createSidecarRouter(
     validateSidecarIdentity,
     withExecutableWorkflowRun,
     resolveSidecarBindings,
-    disconnectQueueMaxSize = DEFAULT_DISCONNECT_QUEUE_MAX_SIZE,
-    disconnectQueueTTLMs = DEFAULT_DISCONNECT_QUEUE_TTL_MS,
+    mailHoldTTLMs = DEFAULT_MAIL_HOLD_TTL_MS,
     pingTimeoutMs = DEFAULT_PING_TIMEOUT_MS,
     mailAckRetryIntervalMs = DEFAULT_MAIL_ACK_RETRY_INTERVAL_MS,
     scheduleTimeout = (handler: () => void, ms: number) => {
@@ -845,12 +831,6 @@ export function createSidecarRouter(
     string,
     AllocatedSenderDeployAttempt
   >();
-  // agentAddress → queued frames for disconnected agents awaiting reconnect
-  type DisconnectedAgent = {
-    queue: HubFrame[];
-    timer: ReturnType<typeof setTimeout>;
-  };
-  const disconnectedAgents = new Map<string, DisconnectedAgent>();
   // agentAddress → messageId → connected-window mail awaiting a
   // `mail.inbound.ack`. A `mail.inbound` delivered over a LIVE connection with
   // a hub-minted messageId is tracked here and redelivered -- identical bytes,
@@ -904,8 +884,7 @@ export function createSidecarRouter(
   // unknown sender. Each entry holds what a re-drive of `handleMailOutbound`
   // needs -- the raw message and its recipients -- plus a per-entry TTL timer.
   // This is a SIBLING of `pendingMail`, keyed by SENDER: it means "the SENDER's
-  // key is missing," the opposite axis from the recipient-keyed disconnect queue
-  // (`disconnectedAgents`), which means "the RECIPIENT socket is gone." Here the
+  // key is missing," not that the recipient is unreachable. Here the
   // recipient is live; only the sender's key is absent. `noteSenderDeploySettled`
   // drives an entry to delivery once the key lands or to
   // `mail.outbound.undelivered` when the deploy fails; the TTL backstops the case
@@ -984,46 +963,6 @@ export function createSidecarRouter(
   const workflowRunPackReceiver = createPackReceiver();
 
   let requestCounter = 0;
-
-  // Surface disconnect-queue mail that is being dropped rather than delivered.
-  // Every dropped frame reaches the same channel routing failures already use
-  // (`mail.outbound.undelivered`, logged by the orchestrator), plus a warn that
-  // names the recipient and the drop count so a size-cap eviction or a TTL
-  // expiry of a still-full queue is visible instead of silent. A queued frame
-  // is always a `mail.inbound` carrying the sender's rawMessage; a frame of any
-  // other shape has no rawMessage to relay and is surfaced by the warn alone.
-  function surfaceDroppedFrames(
-    agentAddress: string,
-    frames: HubFrame[],
-    reason: string,
-  ): void {
-    if (frames.length === 0) return;
-    logger.warn`Dropping ${String(frames.length)} queued message(s) for ${agentAddress}: ${reason}`;
-    for (const frame of frames) {
-      if (frame.type !== "mail.inbound") continue;
-      events.emit("mail.outbound.undelivered", {
-        rawMessage: frame.rawMessage,
-        recipients: [agentAddress],
-      });
-    }
-  }
-
-  function enqueueForDisconnected(
-    agentAddress: string,
-    frame: HubFrame,
-  ): boolean {
-    const entry = disconnectedAgents.get(agentAddress);
-    if (entry === undefined) return false;
-
-    if (entry.queue.length >= disconnectQueueMaxSize) {
-      const evicted = entry.queue.shift();
-      if (evicted !== undefined) {
-        surfaceDroppedFrames(agentAddress, [evicted], "disconnect queue full");
-      }
-    }
-    entry.queue.push(frame);
-    return true;
-  }
 
   // Arm a redelivery-retry timer for a tracked pending mail. Wraps the async
   // `retryPendingMail` so a rejection -- a socket write that throws once the
@@ -1321,10 +1260,10 @@ export function createSidecarRouter(
   // Hold an address's un-acked pending mail across a disconnect. The per-entry
   // retry timers are cleared -- retrying over the dead socket is pointless --
   // but the entries are KEPT so a verified reconnect can redeliver them. A
-  // retention TTL (the disconnect-queue horizon) bounds the hold so a sidecar
-  // that never reconnects does not leak; on expiry the still-un-acked entries
-  // are surfaced as `mail.outbound.undelivered` so the host can relay them,
-  // since a withheld ack means the sidecar's durable write never landed.
+  // retention TTL bounds the hold so a sidecar that never reconnects does not
+  // leak; on expiry the still-un-acked entries are surfaced as
+  // `mail.outbound.undelivered` so the host can relay them, since a withheld
+  // ack means the sidecar's durable write never landed.
   function retainPendingMailForAddress(agentAddress: string): void {
     const byId = pendingMail.get(agentAddress);
     if (byId === undefined) return;
@@ -1345,7 +1284,7 @@ export function createSidecarRouter(
         }
         logger.warn`Dropping ${String(expired.size)} un-acked message(s) for ${agentAddress}: pending-mail retention TTL expired`;
       }
-    }, disconnectQueueTTLMs);
+    }, mailHoldTTLMs);
     pendingMailRetention.set(agentAddress, timer);
   }
 
@@ -2123,7 +2062,6 @@ export function createSidecarRouter(
     const conn: SidecarConnection = existing ?? {
       sidecarId,
       bindings: new Map(),
-      agentAddresses: new Set(),
       workflowAddresses: new Map(),
       unansweredDeploys: new Set(),
       send(frame: HubFrame) {
@@ -2322,7 +2260,7 @@ export function createSidecarRouter(
           recipients: entry.recipients,
         });
         logger.warn`Dropping mail from ${entry.authenticatedSender}: its sender key was not recorded before the deferred-mail TTL expired`;
-      }, disconnectQueueTTLMs),
+      }, mailHoldTTLMs),
     };
     parked.add(entry);
     return entry;
@@ -2571,7 +2509,7 @@ export function createSidecarRouter(
     if (!resolution.deliver) return;
     const senderIdentities = resolution.senderIdentities;
 
-    // Route to locally connected sidecars first, then try disconnect queues.
+    // Route each recipient over the connection that routes its address.
     const unrouted: string[] = [];
     for (const recipient of recipients) {
       // Each recipient is isolated: a materialization failure or a
@@ -2605,8 +2543,8 @@ export function createSidecarRouter(
   // Deliver an inbound mail to one recipient, materializing a
   // mail-triggered run's grants first when the recipient is a workflow
   // deployment. Returns:
-  //   - `routed`: the mail reached a live connection, disconnect queue, or
-  //     pending redelivery after a transient admission failure.
+  //   - `routed`: the mail reached the connection that routes the recipient,
+  //     or pending redelivery after a transient admission failure.
   //   - `unrouted`: the mail was locally undeliverable and should be
   //     relayed externally by the host.
   //   - `failed-closed`: the run's grants could not be materialized safely,
@@ -2799,57 +2737,19 @@ export function createSidecarRouter(
     if (conn === undefined) return;
     const allocated: { allocationId: string; generation: number }[] = [];
 
-    // Only legacy agent addresses enter this queueing path. Allocated workflow
-    // routes use workflowAddresses from their first deploy.
-    for (const addr of conn.agentAddresses) {
-      // Only remove routing and pending state if this connection still
-      // owns the address. A reconnected sidecar may have already claimed it.
-      if (addressIndex.get(addr) === ws) {
-        addressIndex.delete(addr);
-        // Drop cached connector state for the same reason: a takeover
-        // sidecar's state lives in connectorStates under the same key,
-        // and only this owner's close should evict it. The next
-        // reconnect re-bootstraps via the router's
-        // restore-fires-callback path.
-        connectorStates.delete(addr);
-        // Retain this address's un-acked pending mail across the disconnect:
-        // its in-flight retry timers target a dead socket (cleared), but the
-        // entries are held so a verified reconnect redelivers them, closing the
-        // connected-window drop rather than losing the mail. Bounded by a
-        // retention TTL.
-        retainPendingMailForAddress(addr);
-        // Create a queue entry so messages can accumulate while the
-        // sidecar is disconnected. Skip if the agent is being undeployed --
-        // there is no point queuing messages for an agent being torn down.
-        if (!pendingUndeploys.has(addr)) {
-          const timer = setTimeout(() => {
-            const expired = disconnectedAgents.get(addr);
-            disconnectedAgents.delete(addr);
-            if (expired !== undefined) {
-              surfaceDroppedFrames(
-                addr,
-                expired.queue,
-                "disconnect queue TTL expired",
-              );
-            }
-          }, disconnectQueueTTLMs);
-          disconnectedAgents.set(addr, { queue: [], timer });
-        }
-      }
-    }
-    // Remove this connection's workflow-substrate routes. No disconnect queue
-    // is created: these addresses re-register (with the complete live set)
-    // when the sidecar reconnects, and their in-flight run state is
-    // reconstructed sidecar-locally, not from a hub-side queue. The ownership
-    // guard mirrors the legacy address loop above so a takeover by a newer ws
-    // is not clobbered by the prior owner's close.
+    // Remove this connection's workflow-substrate routes. These addresses
+    // re-register when the sidecar reconnects, and their in-flight run state is
+    // reconstructed sidecar-locally, not from a hub-side queue. Only routes
+    // this connection still owns are removed, so a takeover by a newer ws is
+    // not clobbered by the prior owner's close.
     for (const addr of conn.workflowAddresses.keys()) {
       if (addressIndex.get(addr) === ws) {
         addressIndex.delete(addr);
         connectorStates.delete(addr);
-        // Retain already-sent trigger mail until an authenticated reconnect
-        // can redeliver it. This retries unacknowledged deliveries; it does
-        // not create a disconnect queue for new frames.
+        // Retain un-acked trigger mail across the disconnect: its in-flight
+        // retry timers target a dead socket (cleared), but the entries are
+        // held so a verified reconnect redelivers them. Bounded by a retention
+        // TTL.
         retainPendingMailForAddress(addr);
       }
     }
@@ -2873,9 +2773,7 @@ export function createSidecarRouter(
       ws,
       `Sidecar ${conn.sidecarId} disconnected`,
     );
-    // Reject every deploy issued on this socket, including allocated
-    // workflow deployments stored in `workflowAddresses` rather than
-    // `agentAddresses`.
+    // Reject every deploy issued on this socket.
     pendingDeploys.rejectAllForWs(ws, `Sidecar ${conn.sidecarId} disconnected`);
     // Reject any in-flight pack transfers for this sidecar.
     pendingPacks.rejectAllForWs(ws, `Sidecar ${conn.sidecarId} disconnected`);
@@ -2898,14 +2796,8 @@ export function createSidecarRouter(
     // across both receivers. The two receivers track their own in-
     // flight transferIds, so a pending workflow-run transfer for an
     // agent that just disconnected won't outlive the connection just
-    // because the agent-state receiver has nothing to cancel. Iterate the
-    // owned union so a reconnected workflow deployment's transfer is
-    // cancelled too; the deduped set avoids a double-cancel for an address
-    // that is in both sets. A reclaimed address is not present here -- the
-    // verified reconnect path that took it over evicts it from this
-    // (superseded) connection's owned set -- so a stale close does not cancel
-    // the new owner's work.
-    const owned = ownedAddresses(conn);
+    // because the agent-state receiver has nothing to cancel.
+    const owned = new Set(conn.workflowAddresses.keys());
     for (const addr of owned) {
       agentStatePackReceiver.cancelByAgent(addr);
       workflowRunPackReceiver.cancelByAgent(addr);
@@ -3264,7 +3156,7 @@ export function createSidecarRouter(
    * and asset packs before the deployment-level frame spawns the child.
    *
    * The address is Hub-minted and workflow-derived, so it enters the
-   * `workflowAddresses` set rather than the legacy `agentAddresses` set and is
+   * `workflowAddresses` set and is
    * torn down by `unbindStepRoute` once the
    * step's packs land. `handleClose` reclaims it if the sidecar drops
    * mid-stage. Per-step addresses are not runtime-routed (mail, signals, and
@@ -3765,14 +3657,6 @@ export function createSidecarRouter(
               ? { senderIdentities: runGrants.senderIdentities }
               : {}),
           };
-    const enqueueDisconnected = () => {
-      if (
-        grantsFrame !== undefined &&
-        !enqueueForDisconnected(agentAddress, grantsFrame)
-      )
-        return false;
-      return enqueueForDisconnected(agentAddress, frame);
-    };
     const ws = addressIndex.get(agentAddress);
     if (ws !== undefined) {
       const conn = connections.get(ws);
@@ -3795,7 +3679,7 @@ export function createSidecarRouter(
         } catch (error) {
           if (error instanceof WorkflowRunNotExecutableError) throw error;
           logger.warn`Mail admission failed for ${agentAddress}: ${error instanceof Error ? error.message : String(error)}`;
-          if (messageId === undefined) return enqueueDisconnected();
+          if (messageId === undefined) return false;
           // Admission may have awaited a disconnect and missed handleClose's
           // pending-mail retention. Record the mail now, then either retry on
           // the current owner or retain it for the next verified reconnect.
@@ -3808,8 +3692,7 @@ export function createSidecarRouter(
       }
     }
 
-    // This fallback only has a queue for legacy agent addresses.
-    return enqueueDisconnected();
+    return false;
   }
 
   function sendRunGrants(
@@ -3835,9 +3718,7 @@ export function createSidecarRouter(
       }
     }
 
-    // Legacy fallback: handleClose creates no queue for allocated workflow
-    // addresses.
-    return enqueueForDisconnected(agentAddress, frame);
+    return false;
   }
 
   async function sendWorkflowRunDispatchToAllocation(
@@ -4125,8 +4006,8 @@ export function createSidecarRouter(
    * step is provisioned, spawns the child.
    *
    * The step address must already be bound via `bindStepRoute`, which
-   * resolves and records the sidecar; this reuses that route rather than
-   * touching `agentAddresses`. Waits for the sidecar's `agent.deploy.ack`
+   * resolves and records the sidecar; this reuses that route. Waits for the
+   * sidecar's `agent.deploy.ack`
    * so the caller can safely deliver the deploy pack afterward. On failure
    * the caller owns tearing the route down via `unbindStepRoute`.
    */
@@ -4311,7 +4192,7 @@ export function createSidecarRouter(
           return;
         }
         stoppedAllocations.set(entry.meta.allocationId, entry.meta.generation);
-        removeAgentAddress(ws, entry.meta.agentAddress);
+        removeRoute(ws, entry.meta.agentAddress);
       }
       pendingWorkflowControls.resolve(frame.requestId, undefined);
     }
@@ -4454,11 +4335,11 @@ export function createSidecarRouter(
           timeoutMs: requestTimeoutMs,
           timeoutMessage: `Undeploy of "${agentAddress}" timed out after ${requestTimeoutMs}ms`,
           resolve() {
-            removeAgentAddress(ws, agentAddress);
+            removeRoute(ws, agentAddress);
             resolve();
           },
           reject(error: string) {
-            removeAgentAddress(ws, agentAddress);
+            removeRoute(ws, agentAddress);
             reject(new Error(error));
           },
         },
@@ -4473,14 +4354,10 @@ export function createSidecarRouter(
     });
   }
 
-  function removeAgentAddress(ws: WsHandle, agentAddress: string): void {
+  function removeRoute(ws: WsHandle, agentAddress: string): void {
     if (addressIndex.get(agentAddress) === ws)
       addressIndex.delete(agentAddress);
-    const conn = connections.get(ws);
-    if (conn !== undefined) {
-      conn.agentAddresses.delete(agentAddress);
-      conn.workflowAddresses.delete(agentAddress);
-    }
+    connections.get(ws)?.workflowAddresses.delete(agentAddress);
   }
 
   function dispatchToSubscribers(agentAddress: string, event: unknown): void {

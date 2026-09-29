@@ -265,7 +265,7 @@ Agents survive harness restarts when their provisioner preserves the required lo
 The authority model for agent continuity is:
 
 - **Harness local storage is authoritative** for agent inference context — conversation history, pending operations, and token usage. This is the source of truth for what the agent knows.
-- **Control plane is a delivery queue** for user messages. Messages sent while the harness is disconnected are queued and flushed to the harness on successful reconnect. The harness incorporates delivered messages into the agent's context through the normal message handling path.
+- **Control plane holds undelivered work for a bounded time.** Triggers and signals wait in dispatch rows until the harness takes them. Mail the harness had not acknowledged when it disconnected is held for a limited time and redelivered if it reconnects within it. The harness incorporates delivered messages into the agent's context through the normal message handling path.
 
 The reconnection protocol resolves the provisioner-issued bearer token to its sidecar and the current generation of every allocation that sidecar hosts. The Hub accepts only those allocations' anchor addresses while their generations remain current, so a worker cannot claim another deployment's route.
 
