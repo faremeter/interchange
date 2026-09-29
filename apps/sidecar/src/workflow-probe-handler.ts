@@ -709,6 +709,28 @@ function createDeadline(ms: number): {
   };
 }
 
+const CAUSE_CHAIN_MAX_DEPTH = 8;
+
+// Walk `.cause` (depth-bounded so a self-referential cause cannot loop),
+// collecting each level's message and skipping any already contained in an
+// outer one. Loaders in this repo wrap failures in `{ cause }` (e.g.
+// `loadWorkflowDefinitionFromClosure`'s import failure), so the actionable
+// reason often sits below the outermost message. The probe is where the
+// error crosses the child process boundary as a plain string, so the chain
+// has to be flattened here or the reason never reaches the hub.
+function causeChainMessage(err: unknown): string {
+  const messages: string[] = [];
+  let cur: unknown = err;
+  for (let depth = 0; cur != null && depth < CAUSE_CHAIN_MAX_DEPTH; depth++) {
+    const message = cur instanceof Error ? cur.message : String(cur);
+    if (!messages.some((outer) => outer.includes(message))) {
+      messages.push(message);
+    }
+    cur = cur instanceof Error ? cur.cause : undefined;
+  }
+  return messages.join(": ");
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -728,7 +750,7 @@ const MISSING_MODULE_RE = /Cannot find (?:module|package) ['"]([^'"]+)['"]/;
  * actionable diagnostic. A non-resolution failure passes through unchanged.
  */
 export function enrichProbeError(err: unknown): string {
-  const message = errorMessage(err);
+  const message = causeChainMessage(err);
   const match = MISSING_MODULE_RE.exec(message);
   const specifier = match?.[1];
   if (specifier === undefined) return message;
