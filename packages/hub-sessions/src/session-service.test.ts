@@ -179,9 +179,6 @@ function createMockRouter(): TestSidecarRouter & {
     unbindStepRoute(stepAddress: string) {
       calls.push({ method: "unbindStepRoute", args: [stepAddress] });
     },
-    sendSyncRequest: track(
-      "sendSyncRequest",
-    ) as SidecarRouter["sendSyncRequest"],
     sendSignalDeliver: async (
       opts: Parameters<SidecarRouter["sendSignalDeliver"]>[0],
     ) => {
