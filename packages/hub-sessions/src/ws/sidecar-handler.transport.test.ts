@@ -8,11 +8,14 @@ import {
   connectAllocated,
   createAllocatedRouter,
   createMockWs,
+  deployReply,
+  lastRequest,
   sidecarAuth,
   TEST_CONFIG,
   TEST_IDENTITY,
   TEST_TARGET,
   tick,
+  undeployAck,
 } from "./sidecar-handler.test-helpers";
 import {
   createSidecarRouter,
@@ -148,11 +151,7 @@ describe("SidecarRouter allocation initialization cancellation", () => {
       await Promise.race([sent.promise, sending]);
       router.handleMessage(
         ws,
-        JSON.stringify({
-          type: "agent.error",
-          agentAddress: TEST_IDENTITY.workflowRunAddress,
-          error: "Worker rejected deployment",
-        }),
+        deployReply(ws, { error: "Worker rejected deployment" }),
       );
       await tick();
       expect(router.getRoutableAddresses()).toEqual([]);
@@ -404,7 +403,7 @@ describe("SidecarRouter allocation deploy transport", () => {
     expect(error.message).toContain("failed to send");
   });
 
-  test("rejects and rolls back routing on agent.error", async () => {
+  test("rejects and rolls back routing on agent.deploy.error", async () => {
     const router = createAllocatedRouter();
     const ws = await connectAllocated(router);
     const deploy = router.sendAgentDeployToAllocation(
@@ -414,17 +413,57 @@ describe("SidecarRouter allocation deploy transport", () => {
     );
     await tick();
 
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.error",
-        agentAddress: TEST_IDENTITY.workflowRunAddress,
-        error: "worker failed",
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { error: "worker failed" }));
 
     await expect(deploy).rejects.toThrow("worker failed");
     expect(router.getRoutableAddresses()).toEqual([]);
+  });
+
+  test("names the request on the deploy frame", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router);
+    void router
+      .sendAgentDeployToAllocation(
+        TEST_TARGET,
+        TEST_IDENTITY.workflowRunAddress,
+        TEST_CONFIG,
+      )
+      .catch(() => undefined);
+    await tick();
+
+    const sent = lastRequest(ws, "agent.deploy");
+    expect(sent.requestId.length).toBeGreaterThan(0);
+    router.handleClose(ws);
+  });
+
+  test("ignores a deploy reply naming another requestId", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router);
+    const deploy = router.sendAgentDeployToAllocation(
+      TEST_TARGET,
+      TEST_IDENTITY.workflowRunAddress,
+      TEST_CONFIG,
+    );
+    let settled = false;
+    void deploy
+      .finally(() => {
+        settled = true;
+      })
+      .catch(() => undefined);
+    await tick();
+
+    // A reply to an earlier deploy the Hub gave up on answers no deploy in
+    // flight, however it is ordered against the current one.
+    const reply = JSON.parse(deployReply(ws, { publicKey: "c".repeat(64) }));
+    router.handleMessage(
+      ws,
+      JSON.stringify({ ...reply, requestId: "an-earlier-request" }),
+    );
+    await tick();
+    expect(settled).toBe(false);
+
+    router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
+    await expect(deploy).resolves.toEqual({ publicKey: "b".repeat(64) });
   });
 
   test("rejects a deploy when its acknowledgement subscriber fails", async () => {
@@ -440,14 +479,7 @@ describe("SidecarRouter allocation deploy transport", () => {
     );
     await tick();
 
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: TEST_IDENTITY.workflowRunAddress,
-        publicKey: "b".repeat(64),
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
 
     await expect(deploy).rejects.toThrow("Failed to store public key");
     expect(router.getRoutableAddresses()).toEqual([]);
@@ -521,24 +553,17 @@ describe("SidecarRouter allocation deploy transport", () => {
     void deploy.finally(() => {
       settled = true;
     });
+    await tick();
     router.handleMessage(
       secondaryWs,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: TEST_IDENTITY.workflowRunAddress,
-        publicKey: "c".repeat(64),
-      }),
+      deployReply(primaryWs, { publicKey: "c".repeat(64) }),
     );
     await tick();
     expect(settled).toBe(false);
 
     router.handleMessage(
       primaryWs,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: TEST_IDENTITY.workflowRunAddress,
-        publicKey: "b".repeat(64),
-      }),
+      deployReply(primaryWs, { publicKey: "b".repeat(64) }),
     );
     await expect(deploy).resolves.toEqual({ publicKey: "b".repeat(64) });
   });
@@ -562,13 +587,7 @@ describe("SidecarRouter allocation deploy transport", () => {
       TEST_IDENTITY.workflowRunAddress,
     );
 
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.undeploy.ack",
-        agentAddress: TEST_IDENTITY.workflowRunAddress,
-      }),
-    );
+    router.handleMessage(ws, undeployAck(ws));
     await undeploy;
     expect(router.getRoutableAddresses()).toEqual([]);
   });

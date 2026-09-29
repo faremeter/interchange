@@ -156,6 +156,82 @@ export async function connectAllocated(
   return ws;
 }
 
+type SentLifecycleRequest = {
+  type: string;
+  requestId: string;
+  agentAddress: string;
+};
+
+/** The last `agent.deploy` or `agent.undeploy` the router sent on `ws`. */
+export function lastRequest(
+  ws: { sent: string[] },
+  type: "agent.deploy" | "agent.undeploy",
+  agentAddress?: string,
+): SentLifecycleRequest {
+  const found = ws.sent
+    .map((raw): SentLifecycleRequest => JSON.parse(raw))
+    .filter(
+      (frame) =>
+        frame.type === type &&
+        (agentAddress === undefined || frame.agentAddress === agentAddress),
+    )
+    .at(-1);
+  if (found === undefined) {
+    throw new Error(
+      `No ${type} was sent${agentAddress === undefined ? "" : ` for ${agentAddress}`}`,
+    );
+  }
+  return found;
+}
+
+/**
+ * The sidecar's answer to the last `agent.deploy` sent on `ws`, naming its
+ * request id.
+ */
+export function deployReply(
+  ws: { sent: string[] },
+  answer: { publicKey: string } | { error: string },
+  agentAddress?: string,
+): string {
+  const { requestId, agentAddress: address } = lastRequest(
+    ws,
+    "agent.deploy",
+    agentAddress,
+  );
+  return JSON.stringify(
+    "publicKey" in answer
+      ? {
+          type: "agent.deploy.ack",
+          requestId,
+          agentAddress: address,
+          publicKey: answer.publicKey,
+        }
+      : {
+          type: "agent.deploy.error",
+          requestId,
+          agentAddress: address,
+          error: answer.error,
+        },
+  );
+}
+
+/** The sidecar's acknowledgement of the last `agent.undeploy` sent on `ws`. */
+export function undeployAck(
+  ws: { sent: string[] },
+  agentAddress?: string,
+): string {
+  const { requestId, agentAddress: address } = lastRequest(
+    ws,
+    "agent.undeploy",
+    agentAddress,
+  );
+  return JSON.stringify({
+    type: "agent.undeploy.ack",
+    requestId,
+    agentAddress: address,
+  });
+}
+
 export function parsedFrames(ws: { sent: string[] }): unknown[] {
   return ws.sent.map((raw) => {
     const parsed: unknown = JSON.parse(raw);

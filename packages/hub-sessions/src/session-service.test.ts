@@ -29,6 +29,7 @@ import {
 import {
   createAllocatedRouter,
   connectAllocated,
+  deployReply,
   TEST_CONFIG,
   TEST_IDENTITY,
   TEST_TARGET,
@@ -1593,11 +1594,7 @@ describe("deployCodeSourcedWorkflow", () => {
           await mailParked.promise;
           router.handleMessage(
             ws,
-            JSON.stringify({
-              type: "agent.deploy.ack",
-              agentAddress: TEST_IDENTITY.workflowRunAddress,
-              publicKey: "a".repeat(64),
-            }),
+            deployReply(ws, { publicKey: "a".repeat(64) }),
           );
           await publicationFinished.promise;
           const committed = scenario !== "rolled back publication";
