@@ -88,6 +88,7 @@ function deployHostBindings() {
     multistepSubprocessSpawner: (): never => {
       throw new Error("workflow child spawner was not provided");
     },
+    createWorkflowCache: () => ({}),
     applyFrozenWorkflowClosure: (): never => {
       throw new Error("frozen closure apply was not provided");
     },
