@@ -772,7 +772,7 @@ The reactor accepts any implementation that satisfies the interface. This keeps 
 
 If the context store fails to read on reactor startup, the reactor cannot initialize. It emits `reactor.error` and terminates.
 
-If the context store fails to write during a checkpoint or commit, the reactor continues operating with in-memory state. The failure is reported as an event (`reactor.error` with a non-fatal flag). The director decides whether to retry the commit, continue without persistence, or shut down. The reactor does not silently lose data — if a commit fails, the director knows.
+If the context store fails to write during a checkpoint or commit, the reactor continues operating with in-memory state. The failure is reported as an event (`reactor.error` with a non-fatal flag). The reactor keeps the failed cycle's record — its commit message, compaction manifest entries, and checkpoint override — and the next successful commit publishes it, so committed history never shows compacted turns without the compaction that produced them. The director can also choose to shut down. The reactor does not silently lose data — if a commit fails, the director knows.
 
 For the in-memory git backend with remote sync: if the sync fails, the commit succeeds locally (data is not lost) and the sync failure is reported. The reactor continues. The next commit retries the sync.
 

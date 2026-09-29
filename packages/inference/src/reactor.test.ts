@@ -5357,14 +5357,23 @@ function truncatingCompactor(name: string): Compactor {
 
 function makeRecordingContextStore(): {
   store: ContextStore;
-  commits: { message: string; turns: ConversationTurn[] }[];
+  commits: {
+    message: string;
+    turns: ConversationTurn[];
+    manifest: TransformRecord[];
+  }[];
   manifests: TransformRecord[][];
   metadata: { pendingOperations: PendingOperation[]; tokenUsage: TokenUsage }[];
   blobs: { key: string; bytes: Uint8Array; contentType?: string }[];
   lastWrittenTurns: ConversationTurn[];
 } {
-  const commits: { message: string; turns: ConversationTurn[] }[] = [];
+  const commits: {
+    message: string;
+    turns: ConversationTurn[];
+    manifest: TransformRecord[];
+  }[] = [];
   const manifests: TransformRecord[][] = [];
+  let lastWrittenManifest: TransformRecord[] = [];
   const metadata: {
     pendingOperations: PendingOperation[];
     tokenUsage: TokenUsage;
@@ -5388,6 +5397,7 @@ function makeRecordingContextStore(): {
       commits.push({
         message: options.message,
         turns: [...lastWrittenTurns],
+        manifest: [...lastWrittenManifest],
       });
       return {
         hash: `c${String(commits.length)}`,
@@ -5422,6 +5432,7 @@ function makeRecordingContextStore(): {
     },
     async writeManifest(records) {
       manifests.push([...records]);
+      lastWrittenManifest = [...records];
     },
     async writeTurns(turns) {
       lastWrittenTurns = [...turns];
@@ -5921,6 +5932,127 @@ describe("createReactor — transform chain ordering and compact action", () => 
     for (let i = 1; i < recording.commits.length; i++) {
       expect(recording.commits[i]?.message).not.toBe("first-override");
     }
+  });
+});
+
+describe("createReactor — failed commit retries cycle state", () => {
+  test("a failed compaction commit is retried by the next successful commit", async () => {
+    const recording = makeRecordingContextStore();
+    const compactor = truncatingCompactor("tail-only");
+
+    let failuresRemaining = 1;
+    const succeed = recording.store.commit.bind(recording.store);
+    recording.store.commit = async (options, signal) => {
+      if (
+        failuresRemaining > 0 &&
+        options.message.startsWith("Cycle: compaction")
+      ) {
+        failuresRemaining--;
+        throw new Error("storage full");
+      }
+      return succeed(options, signal);
+    };
+
+    let messages = 0;
+    const director: ReactorDirector = {
+      async decide(event, _state, caps) {
+        if (event.type === "message.received") {
+          messages++;
+          if (messages === 1) return caps.infer();
+          if (messages === 2) return caps.compact("tail-only", "explicit-test");
+          return caps.infer();
+        }
+        if (event.type === "inference.done") {
+          return messages < 3 ? caps.wait() : caps.done();
+        }
+        return caps.wait();
+      },
+    };
+
+    const { reactor, events, waitFor } = createDirectReactor({
+      contextStore: recording.store,
+      inferenceRunner: mockInferenceRunner("ok"),
+      director,
+      compactors: { "tail-only": compactor },
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    // Baseline cycle: an ordinary inference commit before compaction happens.
+    await waitUntil(() => recording.commits.length >= 1);
+
+    reactor.deliver(makeInboundMessage());
+    // The compaction cycle's commit is made to fail; the non-fatal
+    // reactor.error is the signal that the failing attempt happened.
+    await waitUntil(() => failuresRemaining === 0);
+
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/storage full/);
+    expect(errorEvent.data.fatal).toBe(false);
+
+    // Only the baseline commit and the retry succeed; the retry carries the
+    // compaction's message and manifest record.
+    expect(recording.commits.length).toBe(2);
+    const retry = recording.commits[1];
+    expect(retry?.message).toBe("Cycle: compaction by tail-only");
+    expect(retry?.manifest.map((r) => r.strategy)).toEqual(["tail-only"]);
+
+    // The committed turns are the compacted history: the turn the compactor
+    // dropped is absent, and the record explaining that sits beside them.
+    const dropped = recording.commits[0]?.turns[0];
+    expect(dropped).toBeDefined();
+    expect(retry?.turns).not.toContainEqual(dropped);
+  });
+
+  test("a director checkpoint message survives a failed commit", async () => {
+    const recording = makeRecordingContextStore();
+
+    let failuresRemaining = 1;
+    const succeed = recording.store.commit.bind(recording.store);
+    recording.store.commit = async (options, signal) => {
+      if (failuresRemaining > 0) {
+        failuresRemaining--;
+        throw new Error("storage full");
+      }
+      return succeed(options, signal);
+    };
+
+    let messages = 0;
+    const director: ReactorDirector = {
+      async decide(event, _state, caps) {
+        if (event.type === "message.received") {
+          messages++;
+          if (messages === 1) {
+            return [caps.checkpoint("custom message"), caps.wait()];
+          }
+          return caps.done();
+        }
+        return caps.wait();
+      },
+    };
+
+    const { reactor, events, waitFor } = createDirectReactor({
+      contextStore: recording.store,
+      director,
+    });
+
+    reactor.start();
+    reactor.deliver(makeInboundMessage());
+    await waitUntil(() => failuresRemaining === 0);
+
+    reactor.deliver(makeInboundMessage());
+    await waitFor("reactor.done");
+
+    const errorEvent = getEvent(events, "reactor.error");
+    expect(errorEvent.data.error).toMatch(/storage full/);
+    expect(errorEvent.data.fatal).toBe(false);
+
+    // The checkpoint message is retried by the next commit, not lost.
+    expect(recording.commits.length).toBe(1);
+    expect(recording.commits[0]?.message).toBe("checkpoint: custom message");
   });
 });
 
