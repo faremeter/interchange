@@ -336,6 +336,7 @@ function singleStepFrame(
 ): AgentDeployFrame {
   return {
     type: "agent.deploy",
+    requestId: `deploy-${agentAddress}`,
     agentAddress,
     agentId: "boot-restore-agent",
     hubPublicKey: "hub-pk",

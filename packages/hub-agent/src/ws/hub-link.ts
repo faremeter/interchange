@@ -16,7 +16,8 @@ import {
   type RegisterFrame,
   type ReconnectFrame,
   type AgentDeployFrame,
-  type AgentErrorFrame,
+  type AgentDeployErrorFrame,
+  type AgentUndeployErrorFrame,
   type SessionErrorFrame,
   type AgentUndeployFrame,
   type WorkflowControlFrame,
@@ -97,8 +98,8 @@ const MalformedRequestEnvelope = type({
  * correlates by `requestId`, whose failure reply is a `session.error`.
  * `sources.update` and `credentials.update` qualify -- both are answered with a
  * `session.error`. Frames answered through the other correlation keys live in
- * `AGENT_ERROR_REQUEST_TYPES` and `PACK_REJECT_REQUEST_TYPES`; a request-shaped
- * frame in none of the three sets has no requester to answer and is dropped.
+ * `LIFECYCLE_ERROR_TYPES` and `PACK_REJECT_REQUEST_TYPES`; a malformed frame
+ * of any other type is dropped unanswered.
  */
 const SESSION_ERROR_REQUEST_TYPES: ReadonlySet<string> = new Set([
   "sources.update",
@@ -106,13 +107,15 @@ const SESSION_ERROR_REQUEST_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Inbound request/ack frames the hub correlates by `agentAddress` and
- * whose failure reply is an `agent.error` -- the frames the hub tracks in
- * its per-address pending-deploy / pending-undeploy maps.
+ * Lifecycle requests the hub correlates by `requestId`, each answered with
+ * its own typed error.
  */
-const AGENT_ERROR_REQUEST_TYPES: ReadonlySet<string> = new Set([
-  "agent.deploy",
-  "agent.undeploy",
+const LIFECYCLE_ERROR_TYPES: ReadonlyMap<
+  string,
+  AgentDeployErrorFrame["type"] | AgentUndeployErrorFrame["type"]
+> = new Map([
+  ["agent.deploy", "agent.deploy.error"],
+  ["agent.undeploy", "agent.undeploy.error"],
 ]);
 
 /**
@@ -129,10 +132,10 @@ const PACK_REJECT_REQUEST_TYPES: ReadonlySet<string> = new Set([
 /**
  * Answer a malformed inbound request/ack control frame with an error reply
  * so the hub's request does not hang to its timeout. Two control-frame
- * families answer through their correlation key: the `requestId`-correlated
- * frame (sources.update) replies `session.error`; the
- * `agentAddress`-correlated frames (agent.deploy, agent.undeploy) reply
- * `agent.error`. The fire-and-forget frames
+ * families answer through their `requestId`: sources.update and
+ * credentials.update reply `session.error`; agent.deploy and agent.undeploy
+ * reply their typed error, which also needs the frame's address. The
+ * fire-and-forget frames
  * (mail/signal/drain/...) have no requester waiting on a reply, so a
  * malformed one is correctly left to be logged and dropped by the caller.
  *
@@ -178,7 +181,13 @@ export function classifyAssetPackRejectReason(msg: string): PackRejectReason {
 export function answerMalformedRequestFrame(
   raw: unknown,
   summary: string,
-  send: (frame: SessionErrorFrame | AgentErrorFrame | PackRejectFrame) => void,
+  send: (
+    frame:
+      | SessionErrorFrame
+      | AgentDeployErrorFrame
+      | AgentUndeployErrorFrame
+      | PackRejectFrame,
+  ) => void,
 ): boolean {
   const envelope = MalformedRequestEnvelope(raw);
   if (envelope instanceof type.errors) return false;
@@ -196,13 +205,17 @@ export function answerMalformedRequestFrame(
     });
     return true;
   }
+  const lifecycleError = LIFECYCLE_ERROR_TYPES.get(frameType);
   if (
-    AGENT_ERROR_REQUEST_TYPES.has(frameType) &&
+    lifecycleError !== undefined &&
+    envelope.requestId !== undefined &&
+    envelope.requestId.length > 0 &&
     envelope.agentAddress !== undefined &&
     envelope.agentAddress.length > 0
   ) {
     send({
-      type: "agent.error",
+      type: lifecycleError,
+      requestId: envelope.requestId,
       agentAddress: envelope.agentAddress,
       error: `malformed ${frameType} frame: ${summary}`,
     });
@@ -959,6 +972,10 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   });
 
   async function handleAgentDeploy(frame: AgentDeployFrame): Promise<void> {
+    const answering = {
+      requestId: frame.requestId,
+      agentAddress: frame.agentAddress,
+    };
     try {
       // The deploy router (production: the sidecar's workflow-run deploy
       // router) stages the deploy through the substrate and returns the
@@ -968,17 +985,13 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       const result = await deployRouter.deploy(frame);
       send({
         type: "agent.deploy.ack",
-        agentAddress: frame.agentAddress,
+        ...answering,
         publicKey: result.publicKey,
       });
       logger.info`Deployed agent ${frame.agentAddress}`;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      send({
-        type: "agent.error",
-        agentAddress: frame.agentAddress,
-        error: message,
-      });
+      send({ type: "agent.deploy.error", ...answering, error: message });
     }
   }
 
@@ -1030,6 +1043,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
 
     send({
       type: "agent.undeploy.ack",
+      requestId: frame.requestId,
       agentAddress: frame.agentAddress,
     });
     logger.info`Undeployed agent ${frame.agentAddress}: ${frame.reason}`;

@@ -22,8 +22,9 @@ import {
   type ReconnectScheduler,
 } from "./hub-link";
 import type {
+  AgentDeployErrorFrame,
   AgentDeployFrame,
-  AgentErrorFrame,
+  AgentUndeployErrorFrame,
   PackRejectFrame,
   RepoId,
   SessionErrorFrame,
@@ -868,7 +869,7 @@ describe("sidecar↔hub integration", () => {
     }
   });
 
-  test("malformed hubPublicKey in deploy frame sends agent.error", async () => {
+  test("malformed hubPublicKey in deploy frame sends agent.deploy.error", async () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
 
@@ -2291,8 +2292,14 @@ describe("initial handshake on connect", () => {
 });
 
 describe("answerMalformedRequestFrame", () => {
+  type Answer =
+    | SessionErrorFrame
+    | AgentDeployErrorFrame
+    | AgentUndeployErrorFrame
+    | PackRejectFrame;
+
   test("answers a malformed sources.update with session.error carrying the requestId", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+    const sent: Answer[] = [];
     // A structurally-invalid sources list (empty source object) that failed
     // the top-level parse but kept its type + requestId.
     const answered = answerMalformedRequestFrame(
@@ -2315,11 +2322,12 @@ describe("answerMalformedRequestFrame", () => {
     });
   });
 
-  test("answers a malformed agent.deploy with agent.error carrying the agentAddress", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+  test("answers a malformed agent.deploy with agent.deploy.error naming its request", () => {
+    const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
       {
         type: "agent.deploy",
+        requestId: "req-deploy",
         agentAddress: "run_deploy@example.com",
         agentId: "x",
       },
@@ -2329,7 +2337,8 @@ describe("answerMalformedRequestFrame", () => {
     expect(answered).toBe(true);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({
-      type: "agent.error",
+      type: "agent.deploy.error",
+      requestId: "req-deploy",
       agentAddress: "run_deploy@example.com",
       error: expect.stringMatching(/malformed agent.deploy frame/),
     });
@@ -2337,11 +2346,10 @@ describe("answerMalformedRequestFrame", () => {
 
   test("drops an unhandled request-shaped frame instead of answering it", () => {
     // A request-shaped frame whose type is in none of the answerable sets
-    // (SESSION_ERROR / AGENT_ERROR / PACK_REJECT) has no requester to
+    // (session.error / lifecycle / pack reject) has no requester to
     // answer, so a malformed one is dropped rather than answered.
     for (const frameType of ["some.unhandled.request", "another.unknown"]) {
-      const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] =
-        [];
+      const sent: Answer[] = [];
       const answered = answerMalformedRequestFrame(
         {
           type: frameType,
@@ -2356,16 +2364,21 @@ describe("answerMalformedRequestFrame", () => {
     }
   });
 
-  test("answers a malformed agent.undeploy with agent.error", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+  test("answers a malformed agent.undeploy with agent.undeploy.error", () => {
+    const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
-      { type: "agent.undeploy", agentAddress: "run_undeploy@example.com" },
+      {
+        type: "agent.undeploy",
+        requestId: "req-undeploy",
+        agentAddress: "run_undeploy@example.com",
+      },
       "reason must be a string",
       (frame) => sent.push(frame),
     );
     expect(answered).toBe(true);
     expect(sent[0]).toMatchObject({
-      type: "agent.error",
+      type: "agent.undeploy.error",
+      requestId: "req-undeploy",
       agentAddress: "run_undeploy@example.com",
       error: expect.stringMatching(/malformed agent.undeploy frame/),
     });
@@ -2373,8 +2386,7 @@ describe("answerMalformedRequestFrame", () => {
 
   test("answers a malformed repo.pack frame with repo.pack.reject on its transferId", () => {
     for (const frameType of ["repo.pack.push", "repo.pack.done"]) {
-      const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] =
-        [];
+      const sent: Answer[] = [];
       const answered = answerMalformedRequestFrame(
         {
           type: frameType,
@@ -2396,7 +2408,7 @@ describe("answerMalformedRequestFrame", () => {
   });
 
   test("does not answer a repo.pack frame with no recoverable transferId", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+    const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
       {
         type: "repo.pack.push",
@@ -2411,7 +2423,7 @@ describe("answerMalformedRequestFrame", () => {
   });
 
   test("does not answer a repo.pack frame whose repoId is itself malformed", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+    const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
       {
         type: "repo.pack.push",
@@ -2430,7 +2442,7 @@ describe("answerMalformedRequestFrame", () => {
     // repoId is validated only inside the pack branch, so a requestId- or
     // agentAddress-correlated frame that happens to carry a garbage
     // repoId still recovers through its own correlation key.
-    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+    const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
       {
         type: "sources.update",
@@ -2449,7 +2461,7 @@ describe("answerMalformedRequestFrame", () => {
   });
 
   test("does not answer a sources.update with no recoverable requestId", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+    const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
       { type: "sources.update", sources: [{}] },
       "bad",
@@ -2460,7 +2472,7 @@ describe("answerMalformedRequestFrame", () => {
   });
 
   test("does not answer a fire-and-forget frame even with a requestId present", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+    const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
       { type: "signal.deliver", agentAddress: "x", requestId: "r" },
       "bad",
@@ -2471,7 +2483,7 @@ describe("answerMalformedRequestFrame", () => {
   });
 
   test("does not answer a frame with no recognizable type", () => {
-    const sent: (SessionErrorFrame | AgentErrorFrame | PackRejectFrame)[] = [];
+    const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
       { garbage: true },
       "bad",

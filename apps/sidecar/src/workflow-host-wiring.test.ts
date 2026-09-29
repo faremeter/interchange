@@ -285,6 +285,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
     const HUB_KEY = "aa".repeat(32);
     const result = await router.deploy({
       type: "agent.deploy",
+      requestId: "deploy-test",
       agentAddress: STEP_ADDR,
       agentId: "run_abc-step1",
       hubPublicKey: HUB_KEY,
@@ -569,6 +570,7 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
   );
   return {
     type: "agent.deploy",
+    requestId: "deploy-test",
     agentAddress,
     agentId: "multi-agent",
     hubPublicKey: "hub-pk",
@@ -3015,6 +3017,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await expect(
       undeploy({
         type: "agent.undeploy",
+        requestId: "undeploy-test",
         agentAddress: head,
         reason: "operator undeploy after self-termination",
       }),

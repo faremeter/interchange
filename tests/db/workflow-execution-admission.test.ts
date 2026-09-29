@@ -372,11 +372,15 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("cancellation can commit after the deploy send without waiting for its acknowledgement", async () => {
       const { router, ws } = await connectForInitialization();
       const sent = Promise.withResolvers<undefined>();
+      let requestId: string | undefined;
       const send = ws.send.bind(ws);
       ws.send = (raw) => {
         send(raw);
-        if (HubFrame.assert(JSON.parse(raw)).type === "agent.deploy")
+        const frame = HubFrame.assert(JSON.parse(raw));
+        if (frame.type === "agent.deploy") {
+          requestId = frame.requestId;
           sent.resolve(undefined);
+        }
       };
       const deployment = router.sendAgentDeployToAllocation(
         target,
@@ -408,6 +412,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           ws,
           JSON.stringify({
             type: "agent.deploy.ack",
+            requestId,
             agentAddress: target.workflowRunAddress,
             publicKey: "b".repeat(64),
           }),

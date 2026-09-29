@@ -86,17 +86,21 @@ All communication between hub and sidecar is over a single persistent WebSocket 
 
 **Hub to Sidecar:**
 
-| Frame            | Fields                                                                                                    | Description                       |
-| ---------------- | --------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| `agent.deploy`   | `agentAddress`, `agentId`, `config` (full `HarnessConfig`), `hubPublicKey`, `workflow?`, `provisionStep?` | Deploy an agent to this sidecar   |
-| `agent.undeploy` | `agentAddress`, `reason`                                                                                  | Remove an agent from this sidecar |
+| Frame            | Fields                                                                                                                 | Description                       |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `agent.deploy`   | `requestId`, `agentAddress`, `agentId`, `config` (full `HarnessConfig`), `hubPublicKey`, `workflow?`, `provisionStep?` | Deploy an agent to this sidecar   |
+| `agent.undeploy` | `requestId`, `agentAddress`, `reason`                                                                                  | Remove an agent from this sidecar |
 
 **Sidecar to Hub:**
 
-| Frame              | Fields                      | Description                            |
-| ------------------ | --------------------------- | -------------------------------------- |
-| `agent.deploy.ack` | `agentAddress`, `publicKey` | Agent deployed, here is its public key |
-| `agent.error`      | `agentAddress`, `error`     | Deployment failed                      |
+| Frame                  | Fields                                   | Description                            |
+| ---------------------- | ---------------------------------------- | -------------------------------------- |
+| `agent.deploy.ack`     | `requestId`, `agentAddress`, `publicKey` | Agent deployed, here is its public key |
+| `agent.deploy.error`   | `requestId`, `agentAddress`, `error`     | Deployment failed                      |
+| `agent.undeploy.ack`   | `requestId`, `agentAddress`              | Agent removed                          |
+| `agent.undeploy.error` | `requestId`, `agentAddress`, `error`     | Undeploy failed                        |
+
+Every reply echoes the `requestId` of the request it answers.
 
 When the Hub sends `agent.deploy`, the sidecar spawns a supervised **workflow-process child** to host the deployment and responds with `agent.deploy.ack`. The sidecar records the Hub key used for deploy-pack verification and returns the supervisor public key. The Hub publishes that key only after initialization completes under the current allocation lock; reconnect authority remains the sidecar credential, not the projected public key. Before the child is spawned, inputs a restart cannot otherwise recover are written to a per-deployment record.
 

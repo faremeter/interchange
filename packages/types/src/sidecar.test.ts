@@ -145,6 +145,7 @@ describe("AgentDeployFrame", () => {
 
   const trivialFrame = {
     type: "agent.deploy" as const,
+    requestId: "req_1",
     agentAddress: "agt_1@example.test",
     agentId: "agt_1",
     config: baseConfig,

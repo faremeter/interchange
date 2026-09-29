@@ -24,7 +24,10 @@ import {
   SidecarFrame,
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
   type AgentDeployAckFrame,
+  type AgentDeployErrorFrame,
   type AgentDeployFrame,
+  type AgentUndeployAckFrame,
+  type AgentUndeployErrorFrame,
   type PackAckFrame,
   type HubFrame,
   type PackPushFrame,
@@ -182,10 +185,11 @@ export type SidecarConnection = {
   // allocation's routes can leave a connection that stays open for the
   // others. `handleClose` cleans them out of `addressIndex`.
   workflowAddresses: Map<string, string>;
-  // Deploy frames the worker has not answered, kept past the Hub's own deploy
-  // timeout. The worker handles frames in order, so a control frame sent
-  // behind one of these cannot start until the worker answers it.
-  unansweredDeploys: Set<string>;
+  // Deploy frames the worker has not answered, by request id to their
+  // address, kept past the Hub's own deploy timeout. The worker handles frames
+  // in order, so a control frame sent behind one of these cannot start until
+  // the worker answers it.
+  unansweredDeploys: Map<string, string>;
   send(frame: HubFrame): void;
 };
 
@@ -819,8 +823,12 @@ export function createSidecarRouter(
   // round-trips below; each entry's resolve/reject closures carry the
   // per-round-trip cleanup.
   const pendingRequests = new PendingTracker<string, void, string>();
-  // agentAddress → pending deploy promise (matched by agent.deploy.ack/agent.error)
-  const pendingDeploys = new PendingTracker<string, string>();
+  // agentAddress → the deploy in flight for it, answered by the
+  // agent.deploy.ack or agent.deploy.error carrying its request id. One
+  // deploy per address is in flight at a time; a reply that names another
+  // request answers a deploy the Hub already gave up on.
+  type PendingDeploy = { requestId: string };
+  const pendingDeploys = new PendingTracker<string, string, PendingDeploy>();
   // Run addresses whose ALLOCATED deploy is mid-flight -- key-record has been
   // started but not yet committed. pendingDeploys clears at the deploy ack, but an
   // allocated run's key is recorded LATER by session-service's anchor-key update,
@@ -926,8 +934,9 @@ export function createSidecarRouter(
   type PackTransferMeta = { agentAddress: string; repoId: RepoId };
   const pendingPacks = new PendingTracker<string, void, PackTransferMeta>();
 
-  // agentAddress → pending undeploy (resolved by agent.undeploy.ack)
-  const pendingUndeploys = new PendingTracker<string>();
+  // agentAddress → the undeploy a caller awaits for it, answered by the
+  // agent.undeploy.ack or agent.undeploy.error carrying its request id.
+  const pendingUndeploys = new PendingTracker<string, void, string>();
   const pendingWorkflowControls = new PendingTracker<
     string,
     void,
@@ -1441,8 +1450,9 @@ export function createSidecarRouter(
       case "session.ack":
       case "session.error":
       case "agent.deploy.ack":
-      case "agent.error":
+      case "agent.deploy.error":
       case "agent.undeploy.ack":
+      case "agent.undeploy.error":
       case "repo.pack.ack":
       case "repo.pack.reject":
       case "workflow.probe.result":
@@ -1500,12 +1510,14 @@ export function createSidecarRouter(
         return handleDeployAck(ws, frame);
       case "workflow.control.ack":
         return handleWorkflowControlAck(ws, frame);
-      case "agent.error":
-        rejectDeployPendingFromFrame(ws, frame.agentAddress, frame.error);
-        rejectUndeployPending(ws, frame.agentAddress, frame.error);
+      case "agent.deploy.error":
+        rejectDeployPendingFromFrame(ws, frame);
         return;
       case "agent.undeploy.ack":
-        resolveUndeployPending(ws, frame.agentAddress);
+        resolveUndeployPending(ws, frame);
+        return;
+      case "agent.undeploy.error":
+        rejectUndeployPending(ws, frame);
         return;
       case "ping":
         handlePing(ws);
@@ -1884,7 +1896,12 @@ export function createSidecarRouter(
     reason: string,
   ): void {
     try {
-      conn.send({ type: "agent.undeploy", agentAddress, reason });
+      conn.send({
+        type: "agent.undeploy",
+        requestId: nextRequestId(),
+        agentAddress,
+        reason,
+      });
     } catch (err) {
       logger.warn`Failed to ask sidecar ${conn.sidecarId} to undeploy ${agentAddress}: ${err instanceof Error ? err.message : String(err)}`;
     }
@@ -2049,7 +2066,7 @@ export function createSidecarRouter(
       sidecarId,
       bindings: new Map(),
       workflowAddresses: new Map(),
-      unansweredDeploys: new Set(),
+      unansweredDeploys: new Map(),
       send(frame: HubFrame) {
         ws.send(JSON.stringify(frame));
       },
@@ -2890,25 +2907,29 @@ export function createSidecarRouter(
     );
   }
 
-  function resolveUndeployPending(ws: WsHandle, agentAddress: string): void {
-    const req = pendingUndeploys.get(agentAddress);
-    if (req === undefined) {
-      logger.warn`Received agent.undeploy.ack for "${agentAddress}" with no pending undeploy`;
+  function resolveUndeployPending(
+    ws: WsHandle,
+    frame: AgentUndeployAckFrame,
+  ): void {
+    const req = pendingUndeploys.get(frame.agentAddress);
+    if (req?.ws !== ws || req.meta !== frame.requestId) {
+      logger.debug`agent.undeploy.ack for ${frame.agentAddress} answers an undeploy no request waits on`;
       return;
     }
-    if (req.ws !== ws) return;
-    pendingUndeploys.resolve(agentAddress);
+    pendingUndeploys.resolve(frame.agentAddress);
   }
 
   function rejectUndeployPending(
     ws: WsHandle,
-    agentAddress: string,
-    error: string,
+    frame: AgentUndeployErrorFrame,
   ): void {
-    const req = pendingUndeploys.get(agentAddress);
-    if (req === undefined) return;
-    if (req.ws !== ws) return;
-    pendingUndeploys.reject(agentAddress, error);
+    const req = pendingUndeploys.get(frame.agentAddress);
+    if (req?.ws === ws && req.meta === frame.requestId) {
+      pendingUndeploys.reject(frame.agentAddress, frame.error);
+      return;
+    }
+    // No caller waits on this undeploy, so the failure surfaces only here.
+    logger.error`Sidecar failed to undeploy ${frame.agentAddress}: ${frame.error}`;
   }
 
   function resolveProbe(
@@ -3778,17 +3799,34 @@ export function createSidecarRouter(
     );
   }
 
+  function deployAnsweredBy(
+    ws: WsHandle,
+    frame: AgentDeployAckFrame | AgentDeployErrorFrame,
+  ): PendingEntry<string, string, PendingDeploy> | undefined {
+    const req = pendingDeploys.get(frame.agentAddress);
+    return req?.ws === ws && req.meta.requestId === frame.requestId
+      ? req
+      : undefined;
+  }
+
   async function handleDeployAck(
     ws: WsHandle,
     frame: AgentDeployAckFrame,
   ): Promise<void> {
-    connections.get(ws)?.unansweredDeploys.delete(frame.agentAddress);
-    const req = pendingDeploys.get(frame.agentAddress);
+    connections.get(ws)?.unansweredDeploys.delete(frame.requestId);
+    const req = deployAnsweredBy(ws, frame);
     if (req === undefined) {
-      logger.warn`Received agent.deploy.ack for "${frame.agentAddress}" with no pending deploy`;
+      logger.warn`Ignoring agent.deploy.ack ${frame.requestId} for ${frame.agentAddress}: it answers no deploy in flight on this connection`;
       return;
     }
-    if (req.ws !== ws) return;
+    // The listeners below are awaited, and the deploy this ack answers can be
+    // settled meanwhile (a timeout, the allocation leaving) and the address
+    // deployed again. Only the deploy the ack answers may be settled by it.
+    const stillAnswered = (): boolean => {
+      if (pendingDeploys.get(frame.agentAddress) === req) return true;
+      logger.warn`Dropping agent.deploy.ack ${frame.requestId} for ${frame.agentAddress}: its deploy was settled while the ack's listeners ran`;
+      return false;
+    };
 
     if (events.listenerCount("agent.deploy.ack") > 0) {
       try {
@@ -3811,27 +3849,28 @@ export function createSidecarRouter(
             : {}),
         });
       } catch (err) {
+        if (!stillAnswered()) return;
         pendingDeploys.reject(
           frame.agentAddress,
           `Failed to store public key: ${err instanceof Error ? err.message : String(err)}`,
         );
         return;
       }
+      if (!stillAnswered()) return;
     }
     pendingDeploys.resolve(frame.agentAddress, frame.publicKey);
   }
 
   function rejectDeployPendingFromFrame(
     ws: WsHandle,
-    agentAddress: string,
-    error: string,
+    frame: AgentDeployErrorFrame,
   ): void {
-    connections.get(ws)?.unansweredDeploys.delete(agentAddress);
-    const req = pendingDeploys.get(agentAddress);
-    if (req === undefined || req.ws !== ws) return;
-    // Settle by key, not by the `req` object: a key lookup observes the
-    // CURRENT entry, so a stale handle cannot settle a replaced round-trip.
-    pendingDeploys.reject(agentAddress, error);
+    connections.get(ws)?.unansweredDeploys.delete(frame.requestId);
+    if (deployAnsweredBy(ws, frame) === undefined) {
+      logger.warn`Ignoring agent.deploy.error ${frame.requestId} for ${frame.agentAddress}: it answers no deploy in flight on this connection: ${frame.error}`;
+      return;
+    }
+    pendingDeploys.reject(frame.agentAddress, frame.error);
   }
 
   function sendAgentDeployOnConnection(
@@ -3859,6 +3898,7 @@ export function createSidecarRouter(
     conn.workflowAddresses.set(agentAddress, allocationId);
     addressIndex.set(agentAddress, ws);
 
+    const requestId = nextRequestId();
     const response = Promise.withResolvers<{ publicKey: string }>();
     // Timeout and frame-error rejections share this closure, so the routing
     // rollback and the `frameSent: true` tag live in one place.
@@ -3881,19 +3921,20 @@ export function createSidecarRouter(
           response.reject(deployFrameFailure(error, true));
         },
       },
-      undefined,
+      { requestId },
     );
 
     try {
       conn.send({
         type: "agent.deploy",
+        requestId,
         agentAddress,
         agentId: harnessConfig.agentId,
         config: harnessConfig,
         hubPublicKey: hubPublicKeyHex,
         ...(workflow !== undefined ? { workflow } : {}),
       });
-      conn.unansweredDeploys.add(agentAddress);
+      conn.unansweredDeploys.set(requestId, agentAddress);
     } catch (cause) {
       // Throw synchronously on a proven-unsent frame. Returning the response
       // promise below is the caller's evidence that the send took place.
@@ -4005,6 +4046,7 @@ export function createSidecarRouter(
     }
 
     const hubKey = hubPublicKeyHex;
+    const requestId = nextRequestId();
     return new Promise<void>((resolve, reject) => {
       // The sidecar's `agent.deploy.ack` resolves this through
       // `pendingDeploys.resolve`. The per-step address is workflow-derived
@@ -4023,18 +4065,19 @@ export function createSidecarRouter(
             reject(new Error(error));
           },
         },
-        undefined,
+        { requestId },
       );
 
       conn.send({
         type: "agent.deploy",
+        requestId,
         agentAddress,
         agentId: harnessConfig.agentId,
         config: harnessConfig,
         hubPublicKey: hubKey,
         provisionStep: true,
       });
-      conn.unansweredDeploys.add(agentAddress);
+      conn.unansweredDeploys.set(requestId, agentAddress);
     });
   }
 
@@ -4302,6 +4345,7 @@ export function createSidecarRouter(
       );
     }
 
+    const requestId = nextRequestId();
     return new Promise<void>((resolve, reject) => {
       // Timeout, ack, and error rejection share one closure so the routing
       // teardown runs exactly once no matter how the round-trip settles.
@@ -4320,11 +4364,12 @@ export function createSidecarRouter(
             reject(new Error(error));
           },
         },
-        undefined,
+        requestId,
       );
 
       conn.send({
         type: "agent.undeploy",
+        requestId,
         agentAddress,
         reason,
       });

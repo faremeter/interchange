@@ -160,24 +160,24 @@ export type ReconnectFrame = typeof ReconnectFrame.infer;
 /**
  * Acknowledges a successful agent deployment. Includes the agent's Ed25519
  * public key (hex-encoded) for published identity and content provenance.
- * Reconnect authority comes from the allocation credential.
+ * Echoes the request id of the `agent.deploy` it answers.
  */
 export const AgentDeployAckFrame = type({
   type: "'agent.deploy.ack'",
+  requestId: "string",
   agentAddress: "string",
   publicKey: "string",
 });
 export type AgentDeployAckFrame = typeof AgentDeployAckFrame.infer;
 
-/**
- * Reports a failed agent deployment.
- */
-export const AgentErrorFrame = type({
-  type: "'agent.error'",
+/** Reports that the `agent.deploy` with this request id failed. */
+export const AgentDeployErrorFrame = type({
+  type: "'agent.deploy.error'",
+  requestId: "string",
   agentAddress: "string",
   error: "string",
 });
-export type AgentErrorFrame = typeof AgentErrorFrame.infer;
+export type AgentDeployErrorFrame = typeof AgentDeployErrorFrame.infer;
 
 /**
  * A message from a local agent. When `delivered` is absent or false the hub
@@ -260,13 +260,24 @@ export type SessionErrorFrame = typeof SessionErrorFrame.infer;
 
 /**
  * Acknowledges that an agent has been fully undeployed: the deployment's
- * workflow child stopped and its directory deleted.
+ * workflow child stopped and its directory deleted. Echoes the request id of
+ * the `agent.undeploy` it answers.
  */
 export const AgentUndeployAckFrame = type({
   type: "'agent.undeploy.ack'",
+  requestId: "string",
   agentAddress: "string",
 });
 export type AgentUndeployAckFrame = typeof AgentUndeployAckFrame.infer;
+
+/** Reports that the `agent.undeploy` with this request id failed. */
+export const AgentUndeployErrorFrame = type({
+  type: "'agent.undeploy.error'",
+  requestId: "string",
+  agentAddress: "string",
+  error: "string",
+});
+export type AgentUndeployErrorFrame = typeof AgentUndeployErrorFrame.infer;
 
 /**
  * Registers a control-signal correlation as a workflow agent step suspends.
@@ -699,9 +710,13 @@ export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
  *     after every step is provisioned) spawns the child.
  * A frame carrying neither is rejected -- there is no in-process
  * fall-through. `workflow` and `provisionStep` are mutually exclusive.
+ *
+ * The sidecar answers with `agent.deploy.ack` or `agent.deploy.error`
+ * carrying the same `requestId`.
  */
 export const AgentDeployFrame = type({
   type: "'agent.deploy'",
+  requestId: "string",
   agentAddress: "string",
   agentId: "string",
   config: HarnessConfig,
@@ -714,10 +729,12 @@ export type AgentDeployFrame = typeof AgentDeployFrame.infer;
 /**
  * Remove an agent from this sidecar. The sidecar shuts the deployment's
  * supervisor down, deletes the agent directory, and responds with
- * agent.undeploy.ack.
+ * `agent.undeploy.ack` or `agent.undeploy.error` carrying the same
+ * `requestId`.
  */
 export const AgentUndeployFrame = type({
   type: "'agent.undeploy'",
+  requestId: "string",
   agentAddress: "string",
   reason: "string",
 });
@@ -1156,7 +1173,7 @@ export const SidecarFrame = type.or(
   RegisterFrame,
   ReconnectFrame,
   AgentDeployAckFrame,
-  AgentErrorFrame,
+  AgentDeployErrorFrame,
   MailOutboundFrame,
   AgentEventFrame,
   ConnectorStateChangedFrame,
@@ -1164,6 +1181,7 @@ export const SidecarFrame = type.or(
   SessionAckFrame,
   SessionErrorFrame,
   AgentUndeployAckFrame,
+  AgentUndeployErrorFrame,
   SignalCorrelationRegisterFrame,
   PackPushFrame,
   PackDoneFrame,

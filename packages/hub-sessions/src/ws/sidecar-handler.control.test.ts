@@ -21,6 +21,7 @@ import {
 import {
   connectAllocated,
   createAllocatedRouter,
+  deployReply,
   parsedFrames,
   TEST_CONFIG,
   TEST_IDENTITY,
@@ -291,14 +292,7 @@ describe("SidecarRouter allocation control protocols", () => {
       router.sendWorkflowControl(TEST_IDENTITY, stopCommand(), 1),
     ).rejects.toBeInstanceOf(WorkflowControlInitializingError);
 
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: TEST_IDENTITY.workflowRunAddress,
-        publicKey: "b".repeat(64),
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
     await tick();
     await expect(
       router.sendWorkflowControl(TEST_IDENTITY, stopCommand(), 1),
@@ -314,14 +308,7 @@ describe("SidecarRouter allocation control protocols", () => {
       TEST_CONFIG,
     );
     await tick();
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.error",
-        agentAddress: TEST_IDENTITY.workflowRunAddress,
-        error: "Deploy failed",
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { error: "Deploy failed" }));
     await expect(deployed).rejects.toThrow("Deploy failed");
 
     await expect(

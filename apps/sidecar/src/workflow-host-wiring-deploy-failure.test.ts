@@ -2,7 +2,7 @@
 // `DeploymentAddressRegistry` populated. The multi-step branch defers
 // `registerDeployment` until every step that can throw (asset
 // materialization, `supervisor.spawn`) has succeeded. The link's
-// `handleAgentDeploy` catches a rejection and sends `agent.error`
+// `handleAgentDeploy` catches a rejection and sends `agent.deploy.error`
 // without invoking `deployRouter.undeploy(frame)`, so a premature
 // registration would retain a `(anchorRunId -> agentAddress)` mapping
 // for a deployment that does not exist. The multi-step test drives that
@@ -167,6 +167,7 @@ describe("deploy-failure registry leak", () => {
     // shape before reaching any deploy work.
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
+      requestId: "deploy-test",
       agentAddress: "agent-unsupported@x.example",
       agentId: "agent-unsupported",
       hubPublicKey: "00".repeat(32),
@@ -263,6 +264,7 @@ describe("deploy-failure registry leak", () => {
 
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
+      requestId: "deploy-test",
       // Single-step projection: the deploy router parses the frame
       // address into the legacy agent-state repo id, so it must carry the
       // canonical `run_<id>@<domain>` shape.
@@ -424,6 +426,7 @@ describe("deploy-failure registry leak", () => {
 
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
+      requestId: "deploy-test",
       agentAddress: "run_single@x.example",
       agentId: "single",
       hubPublicKey: "00".repeat(32),
