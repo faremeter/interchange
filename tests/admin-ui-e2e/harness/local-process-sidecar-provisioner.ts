@@ -21,14 +21,26 @@ export type SpawnLocalSidecar = (args: {
   readonly dataDir: string;
 }) => LocalSidecarProcess;
 
+/**
+ * Names the sidecar process a probe or allocation joins. Work with the same
+ * key shares one process while any of it is live; `null` gives the work a
+ * process of its own.
+ */
+export type ShareLocalSidecarsBy = (
+  request: EnsureSidecarRequest,
+) => string | null;
+
 export type CreateLocalProcessSidecarProvisionerOpts = {
   readonly dataRoot: string;
   readonly spawnSidecar?: SpawnLocalSidecar;
+  readonly shareSidecarsBy?: ShareLocalSidecarsBy;
   readonly stopTimeoutMs?: number;
 };
 
 export interface LocalProcessSidecarProvisioner {
   readonly provisioner: SidecarProvisioner;
+  /** Process ids of the running sidecars and the work each hosts. */
+  sidecars(): { readonly pid: number; readonly hosts: readonly string[] }[];
   shutdown(): Promise<void>;
 }
 
@@ -37,13 +49,22 @@ type ManagedProcess = {
   exited: boolean;
 };
 
+type LocalSidecar = {
+  readonly sidecarId: string;
+  readonly shareKey: string | null;
+  readonly dataDir: string;
+  readonly process: ManagedProcess;
+  readonly hosts: Set<string>;
+};
+
 type AllocationState =
   | {
       readonly kind: "live";
       readonly generation: number;
-      readonly sidecarId: string;
-      readonly dataDir: string;
-      readonly process: ManagedProcess;
+      // The identity this generation's ensure was offered. It differs from
+      // the sidecar's own id when the work joined an existing sidecar.
+      readonly offeredSidecarId: string;
+      readonly sidecar: LocalSidecar;
     }
   | {
       readonly kind: "destroyed";
@@ -100,9 +121,27 @@ function exitedWithin(
   });
 }
 
+function chain() {
+  const tails = new Map<string, Promise<void>>();
+  return function run<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = tails.get(key) ?? Promise.resolve();
+    const pending = previous.then(task);
+    const settled = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    tails.set(key, settled);
+    void settled.then(() => {
+      if (tails.get(key) === settled) tails.delete(key);
+    });
+    return pending;
+  };
+}
+
 export function createLocalProcessSidecarProvisioner({
   dataRoot,
   spawnSidecar = spawnSidecarProcess,
+  shareSidecarsBy = () => null,
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
 }: CreateLocalProcessSidecarProvisionerOpts): LocalProcessSidecarProvisioner {
   if (stopTimeoutMs <= 0) {
@@ -110,7 +149,12 @@ export function createLocalProcessSidecarProvisioner({
   }
 
   const allocations = new Map<string, AllocationState>();
+  const sidecars = new Set<LocalSidecar>();
   const operations = new Map<string, Promise<void>>();
+  // Placement and release on shared sidecars are ordered per share key, so
+  // two allocations cannot both start the process they were meant to share,
+  // and none joins a sidecar that is being stopped.
+  const placements = chain();
   let shutdownPromise: Promise<void> | null = null;
 
   function serialize<T>(
@@ -136,25 +180,104 @@ export function createLocalProcessSidecarProvisioner({
     return pending;
   }
 
-  async function stopAndRemove(
-    state: Extract<AllocationState, { kind: "live" }>,
-  ): Promise<void> {
-    if (!state.process.exited) {
+  function placementKey(shareKey: string | null, allocationId: string) {
+    return shareKey === null ? `own:${allocationId}` : `shared:${shareKey}`;
+  }
+
+  // A sidecar stays tracked until its process has exited, so a shutdown still
+  // finds one whose stop failed.
+  async function stopSidecar(sidecar: LocalSidecar): Promise<void> {
+    const managed = sidecar.process;
+    if (!managed.exited) {
       try {
-        state.process.handle.kill("SIGTERM");
+        managed.handle.kill("SIGTERM");
       } catch (error) {
-        if (!state.process.exited) throw error;
+        if (!managed.exited) throw error;
       }
-      if (!(await exitedWithin(state.process, stopTimeoutMs))) {
-        state.process.handle.kill("SIGKILL");
-        if (!(await exitedWithin(state.process, stopTimeoutMs))) {
+      if (!(await exitedWithin(managed, stopTimeoutMs))) {
+        managed.handle.kill("SIGKILL");
+        if (!(await exitedWithin(managed, stopTimeoutMs))) {
           throw new Error(
-            `Local sidecar process ${String(state.process.handle.pid)} did not exit`,
+            `Local sidecar process ${String(managed.handle.pid)} did not exit`,
           );
         }
       }
     }
-    await fs.rm(state.dataDir, { recursive: true, force: true });
+    sidecars.delete(sidecar);
+    await fs.rm(sidecar.dataDir, { recursive: true, force: true });
+  }
+
+  function release(
+    allocationId: string,
+    state: Extract<AllocationState, { kind: "live" }>,
+  ): Promise<void> {
+    const { sidecar } = state;
+    return placements(
+      placementKey(sidecar.shareKey, allocationId),
+      async () => {
+        sidecar.hosts.delete(allocationId);
+        if (sidecar.hosts.size === 0) await stopSidecar(sidecar);
+      },
+    );
+  }
+
+  // Joins a live sidecar with the same share key, or starts one with the
+  // identity the request offers.
+  function place(request: EnsureSidecarRequest): Promise<LocalSidecar> {
+    const shareKey = shareSidecarsBy(request);
+    return placements(
+      placementKey(shareKey, request.allocationId),
+      async () => {
+        const shared =
+          shareKey === null
+            ? undefined
+            : [...sidecars].find(
+                (sidecar) =>
+                  sidecar.shareKey === shareKey &&
+                  !sidecar.process.exited &&
+                  sidecar.hosts.size > 0,
+              );
+        if (shared !== undefined) {
+          shared.hosts.add(request.allocationId);
+          return shared;
+        }
+        await fs.mkdir(dataRoot, { recursive: true });
+        const dataDir = await fs.mkdtemp(
+          path.join(dataRoot, `${request.sidecarId}-`),
+        );
+        try {
+          request.signal?.throwIfAborted();
+          const handle = spawnSidecar({ request, dataDir });
+          const managed: ManagedProcess = { handle, exited: false };
+          void handle.exited.then(() => {
+            managed.exited = true;
+          });
+          const sidecar: LocalSidecar = {
+            sidecarId: request.sidecarId,
+            shareKey,
+            dataDir,
+            process: managed,
+            hosts: new Set([request.allocationId]),
+          };
+          sidecars.add(sidecar);
+          return sidecar;
+        } catch (error) {
+          await fs.rm(dataDir, { recursive: true, force: true });
+          throw error;
+        }
+      },
+    );
+  }
+
+  function accepted(state: Extract<AllocationState, { kind: "live" }>) {
+    const { sidecar } = state;
+    return {
+      kind: "accepted" as const,
+      externalRef: String(sidecar.process.handle.pid),
+      ...(sidecar.sidecarId !== state.offeredSidecarId
+        ? { sidecarId: sidecar.sidecarId }
+        : {}),
+    };
   }
 
   async function ensure(request: EnsureSidecarRequest) {
@@ -186,7 +309,7 @@ export function createLocalProcessSidecarProvisioner({
     if (
       existing?.kind === "live" &&
       existing.generation === request.generation &&
-      existing.sidecarId !== request.sidecarId
+      existing.offeredSidecarId !== request.sidecarId
     ) {
       return {
         kind: "rejected" as const,
@@ -198,38 +321,18 @@ export function createLocalProcessSidecarProvisioner({
     if (
       existing?.kind === "live" &&
       existing.generation === request.generation &&
-      !existing.process.exited
+      !existing.sidecar.process.exited
     ) {
-      return {
-        kind: "accepted" as const,
-        externalRef: String(existing.process.handle.pid),
-      };
+      return accepted(existing);
     }
     if (existing?.kind === "live") {
-      await stopAndRemove(existing);
+      await release(request.allocationId, existing);
     }
 
-    await fs.mkdir(dataRoot, { recursive: true });
-    const dataDir = await fs.mkdtemp(
-      path.join(dataRoot, `${request.allocationId}-`),
-    );
+    let placed: LocalSidecar;
     try {
-      request.signal?.throwIfAborted();
-      const handle = spawnSidecar({ request, dataDir });
-      const managed: ManagedProcess = { handle, exited: false };
-      void handle.exited.then(() => {
-        managed.exited = true;
-      });
-      allocations.set(request.allocationId, {
-        kind: "live",
-        generation: request.generation,
-        sidecarId: request.sidecarId,
-        dataDir,
-        process: managed,
-      });
-      return { kind: "accepted" as const, externalRef: String(handle.pid) };
+      placed = await place(request);
     } catch (error) {
-      await fs.rm(dataDir, { recursive: true, force: true });
       return {
         kind: "rejected" as const,
         code: "spawn_failed",
@@ -237,6 +340,14 @@ export function createLocalProcessSidecarProvisioner({
         retryable: true,
       };
     }
+    const state = {
+      kind: "live" as const,
+      generation: request.generation,
+      offeredSidecarId: request.sidecarId,
+      sidecar: placed,
+    };
+    allocations.set(request.allocationId, state);
+    return accepted(state);
   }
 
   async function destroy(request: DestroySidecarRequest) {
@@ -245,12 +356,23 @@ export function createLocalProcessSidecarProvisioner({
       return { kind: "destroyed" as const };
     }
     // A delayed destroy for the superseded identity must not terminate the
-    // replacement that already owns this generation.
-    if (existing !== undefined && existing.sidecarId !== request.sidecarId) {
+    // replacement that already owns this generation. The Hub names either the
+    // identity it offered or the sidecar the work was placed on.
+    if (
+      existing?.kind === "live" &&
+      request.sidecarId !== existing.offeredSidecarId &&
+      request.sidecarId !== existing.sidecar.sidecarId
+    ) {
+      return { kind: "destroyed" as const };
+    }
+    if (
+      existing?.kind === "destroyed" &&
+      existing.sidecarId !== request.sidecarId
+    ) {
       return { kind: "destroyed" as const };
     }
     if (existing?.kind === "live") {
-      await stopAndRemove(existing);
+      await release(request.allocationId, existing);
     }
     allocations.set(request.allocationId, {
       kind: "destroyed",
@@ -274,14 +396,19 @@ export function createLocalProcessSidecarProvisioner({
 
   return {
     provisioner,
+    sidecars() {
+      return [...sidecars].map((sidecar) => ({
+        pid: sidecar.process.handle.pid,
+        hosts: [...sidecar.hosts],
+      }));
+    },
     shutdown() {
       shutdownPromise ??= (async () => {
         await Promise.all(operations.values());
         const failures: unknown[] = [];
-        for (const state of allocations.values()) {
-          if (state.kind !== "live") continue;
+        for (const sidecar of [...sidecars]) {
           try {
-            await stopAndRemove(state);
+            await stopSidecar(sidecar);
           } catch (error) {
             failures.push(error);
           }

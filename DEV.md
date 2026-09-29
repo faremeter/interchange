@@ -206,7 +206,10 @@ It builds the admin UI bundle (`make build-admin-ui`), brings up a
 hermetic stack headless -- a fresh per-run database, a hub, and a vite
 preview server serving the built admin UI -- and drives a real browser
 through a login against that UI. It is excluded from `make all` and
-`make test`; run it on its own.
+`make test`; run it on its own. With `E2E_SHARE_SIDECARS=tenant` the
+harness provisioner places each tenant's probes and deployments on one
+sidecar process, and the shared-sidecar spec, which is skipped otherwise,
+runs.
 
 Local prerequisites:
 
