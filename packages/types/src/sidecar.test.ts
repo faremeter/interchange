@@ -3,10 +3,12 @@ import { type } from "arktype";
 import { APPROVAL_SNAPSHOT_MAX_BYTES } from "./runtime";
 import {
   AgentDeployFrame,
+  fitDeploymentError,
   CredentialsUpdateFrame,
   DeployApplyErrorCategory,
   FrozenApprovalBundle,
   HubFrame,
+  MAX_DEPLOYMENT_ERROR_LENGTH,
   MAX_AGENT_ADDRESSES_FRAME,
   MAX_CACHED_SENDER_ADDRESSES_FRAME,
   MAX_CREDENTIAL_REVOCATIONS_FRAME,
@@ -145,6 +147,7 @@ describe("AgentDeployFrame", () => {
 
   const trivialFrame = {
     type: "agent.deploy" as const,
+    requestId: "req_1",
     agentAddress: "agt_1@example.test",
     agentId: "agt_1",
     config: baseConfig,
@@ -504,6 +507,36 @@ describe("frame array-length ceilings", () => {
       };
       expect(RegisterFrame(frame) instanceof type.errors).toBe(true);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
+    });
+  });
+
+  describe("what a sidecar reports about a deployment", () => {
+    test.each(["agent.deploy.error", "agent.undeploy.error"])(
+      "bounds an %s's error",
+      (frameType) => {
+        const rejects = (error: string) =>
+          SidecarFrame({
+            type: frameType,
+            requestId: "req-1",
+            agentAddress: "wf@example.test",
+            error,
+          }) instanceof type.errors;
+        expect(rejects("x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH))).toBe(false);
+        expect(rejects("x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH + 1))).toBe(true);
+      },
+    );
+
+    test("fits a long error to the bound without splitting a surrogate pair", () => {
+      expect(fitDeploymentError("short")).toBe("short");
+      const fitted = fitDeploymentError(
+        "x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH + 100),
+      );
+      expect(fitted).toHaveLength(MAX_DEPLOYMENT_ERROR_LENGTH);
+      expect(fitted.endsWith("...")).toBe(true);
+      const split = fitDeploymentError(
+        `${"x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH - 4)}\u{1F600}${"y".repeat(10)}`,
+      );
+      expect(split).toBe(`${"x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH - 4)}...`);
     });
   });
 

@@ -273,6 +273,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
 
     const frame: AgentDeployFrame = {
       type: "agent.deploy",
+      requestId: "deploy-test",
       agentAddress: AGENT_ADDRESS,
       agentId: "keylifecycle-agent",
       hubPublicKey: "hub-pk",
@@ -357,6 +358,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
     if (undeploy === undefined) throw new Error("router.undeploy undefined");
     await undeploy({
       type: "agent.undeploy",
+      requestId: "undeploy-test",
       agentAddress: AGENT_ADDRESS,
       reason: "key-lifecycle undeploy",
     });

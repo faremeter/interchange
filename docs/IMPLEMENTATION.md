@@ -252,15 +252,18 @@ The sidecar WebSocket protocol includes frames for agent deployment and reconnec
 
 **Agent deployment:**
 
-| Direction     | Frame                | Purpose                                           |
-| ------------- | -------------------- | ------------------------------------------------- |
-| Hub → Sidecar | `agent.deploy`       | Stage a deploy through the workflow-run substrate |
-| Sidecar → Hub | `agent.deploy.ack`   | Confirm the deploy staged, provide the public key |
-| Hub → Sidecar | `agent.undeploy`     | Remove an agent from the sidecar                  |
-| Sidecar → Hub | `agent.undeploy.ack` | Confirm teardown                                  |
-| Sidecar → Hub | `agent.error`        | Report a failure at any stage                     |
+| Direction     | Frame                  | Purpose                                           |
+| ------------- | ---------------------- | ------------------------------------------------- |
+| Hub → Sidecar | `agent.deploy`         | Stage a deploy through the workflow-run substrate |
+| Sidecar → Hub | `agent.deploy.ack`     | Confirm the deploy staged, provide the public key |
+| Sidecar → Hub | `agent.deploy.error`   | Report that the deploy failed                     |
+| Hub → Sidecar | `agent.undeploy`       | Remove an agent from the sidecar                  |
+| Sidecar → Hub | `agent.undeploy.ack`   | Confirm teardown                                  |
+| Sidecar → Hub | `agent.undeploy.error` | Report that the undeploy failed                   |
 
 Agent deployment stages through the workflow-run substrate rather than a separate provision-then-start handshake. The hub sends `agent.deploy`; the sidecar's deploy router primes the per-step repo (for a provision-step frame) or spawns the supervised workflow-process child (for a workflow frame), then acks with `agent.deploy.ack` carrying the public key. The deploy tree (prompt, skills) rides in on the follow-up deploy pack, which the child reads from the substrate. The workflow-process child starts inference itself once spawned -- there is no separate `session.start` step.
+
+`agent.deploy` and `agent.undeploy` carry a `requestId` that every reply echoes, so a reply settles only the request it answers and a late reply to a request the Hub already gave up on matches nothing.
 
 Undeploy is an acknowledged operation. The sidecar shuts the deployment's supervisor down, deletes the agent directory, and responds with `agent.undeploy.ack`. The hub defers routing table cleanup until the ack arrives.
 
@@ -1365,7 +1368,7 @@ Each provisioned deployment receives the full pack for its frozen deploy tree. R
 
 ### Undeploy Flow
 
-1. Hub sends `agent.undeploy` with a reason string
+1. Hub sends `agent.undeploy` with a request id and a reason string
 2. Sidecar shuts the deployment's supervisor down, releasing the workflow-process child and its per-deployment routing state (a no-op if no supervisor is live for the address)
 3. Sidecar deletes the agent directory
 4. Sidecar responds with `agent.undeploy.ack`

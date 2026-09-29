@@ -11,6 +11,7 @@ import {
 import {
   connectAllocated,
   createAllocatedRouter,
+  deployReply,
   TEST_CONFIG,
   TEST_IDENTITY,
   TEST_TARGET,
@@ -1891,14 +1892,7 @@ describe("durable initialization outcomes", () => {
     await reconciler.reconcileNext();
     expect(current.initializationLeaseId).toBe("lease-1");
     await timedOut.promise;
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "agent.deploy.ack",
-        agentAddress: TEST_IDENTITY.workflowRunAddress,
-        publicKey: "c".repeat(64),
-      }),
-    );
+    router.handleMessage(ws, deployReply(ws, { publicKey: "c".repeat(64) }));
     await tick();
     expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(false);
     await reconciler.reconcileNext();

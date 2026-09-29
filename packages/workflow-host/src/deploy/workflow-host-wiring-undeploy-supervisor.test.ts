@@ -302,6 +302,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
 
       const frame: AgentDeployFrame = {
         type: "agent.deploy",
+        requestId: "deploy-test",
         // Single-step projection: the deploy router derives the sole
         // step's agent-state repo from `parseAgentId(agentAddress)`, which
         // requires the canonical `run_<id>@<domain>` instance shape.
@@ -500,6 +501,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         }
         await undeploy({
           type: "agent.undeploy",
+          requestId: "undeploy-test",
           agentAddress: frame.agentAddress,
           reason: "test undeploy",
         });
@@ -513,6 +515,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         expect(await fs.readFile(coldLeftoverFile, "utf8")).toBe("x");
         await undeploy({
           type: "agent.undeploy",
+          requestId: "undeploy-after-stop",
           agentAddress: frame.agentAddress,
           reason: "Release retained scratch after stop",
         });
