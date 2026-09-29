@@ -1128,10 +1128,6 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
-  // Counter the boot edge consumes via `pushWorkflowRunPack` to mint
-  // collision-free transferIds.
-  let workflowRunPackCounter = 0;
-
   // Per-(repoId.id, ref) flag tracking whether at least one workflow-run
   // pack push has been accepted by the hub, and a per-(repoId.id, ref)
   // serialization queue. Both are needed because the hub's
@@ -1414,11 +1410,10 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     const key = workflowRunPackKey(opts.repoId, opts.ref);
 
     async function sendOnce(): Promise<void> {
-      const transferId = `workflow-run-${++workflowRunPackCounter}-${opts.repoId.id}`;
       await packSender.send({
         agentAddress: opts.agentAddress,
         repoId: opts.repoId,
-        transferId,
+        transferId: `workflow-run-${crypto.randomUUID()}`,
         pack: opts.pack,
         ref: opts.ref,
         commitSha: opts.commitSha,
