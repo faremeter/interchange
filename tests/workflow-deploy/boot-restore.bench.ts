@@ -365,6 +365,7 @@ async function buildRouter(args: {
     // agent so it survives `projectLiveToInert`) whose id is keyed to the
     // deployment id, so each of the N deployments materializes a distinct,
     // deterministic definition on both deploy and restore.
+    createWorkflowCache: () => ({}),
     applyFrozenWorkflowClosure: stubApplyFrozenWorkflowClosure,
   });
 }

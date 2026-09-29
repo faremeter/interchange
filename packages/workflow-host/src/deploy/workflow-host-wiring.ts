@@ -845,7 +845,11 @@ export interface SidecarDeployRouter {
   reEmitParkedCorrelations(address: string): void;
 }
 
-export function createSidecarDeployRouter<THost, TRegistries>(deps: {
+export function createSidecarDeployRouter<
+  THost,
+  TRegistries,
+  TCache extends object,
+>(deps: {
   sessions: {
     initRepo(address: string): Promise<void>;
   };
@@ -1146,6 +1150,8 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
    * it.
    */
   writeWorkflowRunRecord?: typeof writeWorkflowRunRecord;
+  /** Create the closure cache shared by all deployments on this sidecar. */
+  createWorkflowCache: (args: { rootDir: string; maxBytes: number }) => TCache;
   /**
    * Materialize a source-ref deployment's frozen closure. The booting
    * process passes the real apply; a test passes a stub so the
@@ -1155,8 +1161,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
     readonly source: SourceRefPin["source"];
     readonly closure: SourceRefPin["closure"];
     readonly instanceDir: string;
-    readonly cacheRoot: string;
-    readonly cacheMaxBytes: number;
+    readonly cache: TCache;
     readonly registryMaxTarballBytes: number;
     readonly registries: TRegistries;
     readonly host: THost;
@@ -1535,6 +1540,21 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
     };
   }
 
+  // The cache counts only callers of one instance, so every deployment
+  // apply shares this instance to protect files another apply still reads.
+  let sharedClosureCache: TCache | undefined;
+
+  function closureCache(dataDir: string): TCache {
+    sharedClosureCache ??= deps.createWorkflowCache({
+      rootDir: pathJoin(dataDir, "workflow-definition-closure-cache"),
+      maxBytes: requireSubstrateByteCap(
+        multistepSubstrateEnv,
+        "SIDECAR_CACHE_MAX_BYTES",
+      ),
+    });
+    return sharedClosureCache;
+  }
+
   /**
    * Materialize a source-ref deployment's frozen closure to its per-deployment
    * instance dir and return the applied result. Owns the plumbing both the
@@ -1582,11 +1602,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
       source: pin.source,
       closure: pin.closure,
       instanceDir,
-      cacheRoot: pathJoin(dataDir, "workflow-definition-closure-cache"),
-      cacheMaxBytes: requireSubstrateByteCap(
-        multistepSubstrateEnv,
-        "SIDECAR_CACHE_MAX_BYTES",
-      ),
+      cache: closureCache(dataDir),
       registryMaxTarballBytes: requireSubstrateByteCap(
         multistepSubstrateEnv,
         "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
