@@ -43,11 +43,21 @@ export function evaluate(selector: Selector, ctx: SelectorContext): unknown {
         selector,
       );
     }
-    const projected: Record<string, unknown> = {};
+    const entries: [string, unknown][] = [];
     for (const field of selector.fields) {
-      projected[field] = source[field];
+      // Own keys only: `source[field]` reads through the prototype chain, so
+      // a field named `toString` resolves on any JSON-derived object.
+      if (!Object.hasOwn(source, field)) {
+        throw new SelectorError(
+          `missing field ${field} in project selector source`,
+          selector,
+        );
+      }
+      entries.push([field, source[field]]);
     }
-    return projected;
+    // `Object.fromEntries` defines; assigning onto an accumulator object would
+    // hit the inherited `__proto__` setter for a field of that name.
+    return Object.fromEntries(entries);
   }
   if (isMergeSelector(selector)) {
     const merged: Record<string, unknown> = {};
@@ -59,7 +69,18 @@ export function evaluate(selector: Selector, ctx: SelectorContext): unknown {
           selector,
         );
       }
-      Object.assign(merged, value);
+      for (const [key, entry] of Object.entries(value)) {
+        // Define, never `[[Set]]`: assignment sends an operand's own
+        // `__proto__` key to the accumulator's prototype setter. Spread is
+        // equally safe and was rejected -- it reads as a cosmetic rewrite of
+        // the `Object.assign` this replaces, and invites reverting.
+        Object.defineProperty(merged, key, {
+          value: entry,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
     }
     return merged;
   }
@@ -87,12 +108,8 @@ function resolvePath(
           selector,
         );
       }
-      // An out-of-range index silently returning `undefined` is the
-      // same failure mode the key branch guards against with `in`:
-      // the runtime would feed `undefined` to a step or to a
-      // subsequent path segment as though the array author had
-      // supplied a hole. Surface the path so the author can see
-      // which index missed.
+      // An out-of-range index silently returning `undefined` would feed a
+      // step as though the author had supplied a hole.
       if (segment.index < 0 || segment.index >= cursor.length) {
         throw new SelectorError(
           `index [${String(segment.index)}] out of range (length ${String(cursor.length)}) in path ${path}`,
@@ -113,13 +130,9 @@ function resolvePath(
           selector,
         );
       }
-      // Distinguish a missing key from a key whose value is `null` or
-      // `undefined`. `in` checks the key's presence on the object;
-      // bracket-indexing alone would silently return `undefined` for
-      // a typo and let the runtime feed `undefined` into a step as
-      // though no input were supplied. Surface the missing key with a
-      // path so the author can spot the typo.
-      if (!(segment.key in cursor)) {
+      // Own keys only: `in` walks the prototype chain, so a path ending in
+      // `toString` or `constructor` resolves on any JSON-derived object.
+      if (!Object.hasOwn(cursor, segment.key)) {
         throw new SelectorError(
           `missing key ${segment.key} in path ${path}`,
           selector,

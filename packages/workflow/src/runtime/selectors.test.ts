@@ -10,6 +10,14 @@ const ctx: SelectorContext = {
   },
 };
 
+function assertRecord(
+  value: unknown,
+): asserts value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) {
+    throw new Error(`expected an object result, got ${typeof value}`);
+  }
+}
+
 describe("evaluate", () => {
   test("literal returns the value unchanged", () => {
     expect(evaluate({ literal: { foo: 1 } }, ctx)).toEqual({ foo: 1 });
@@ -64,10 +72,124 @@ describe("evaluate", () => {
     expect(evaluate({ from: "trigger.payload.goal" }, nullCtx)).toBeNull();
   });
 
+  test("from on an inherited member throws", () => {
+    // Every payload arrives through `JSON.parse`, so it carries
+    // `Object.prototype`; a path segment naming one of its members is a typo,
+    // not a read.
+    const payload: unknown = JSON.parse('{"goal":"ship it"}');
+    const protoCtx: SelectorContext = {
+      trigger: { payload },
+      steps: {},
+    };
+    for (const member of [
+      "toString",
+      "constructor",
+      "hasOwnProperty",
+      "__proto__",
+    ]) {
+      expect(() =>
+        evaluate({ from: `trigger.payload.${member}` }, protoCtx),
+      ).toThrow(SelectorError);
+    }
+    expect(evaluate({ from: "trigger.payload.goal" }, protoCtx)).toBe(
+      "ship it",
+    );
+  });
+
+  test("from resolves an own key that shadows an inherited member", () => {
+    // `__proto__` is a legal mail header field name (RFC 5322 section 3.6.8),
+    // and `JSON.parse` keeps it as an own data property.
+    const payload: unknown = JSON.parse(
+      '{"rawHeaders":{"__proto__":["injected"],"subject":["hi"]}}',
+    );
+    const ownCtx: SelectorContext = { trigger: { payload }, steps: {} };
+    expect(
+      evaluate({ from: "trigger.payload.rawHeaders.__proto__" }, ownCtx),
+    ).toEqual(["injected"]);
+    expect(
+      evaluate({ from: "trigger.payload.rawHeaders.subject" }, ownCtx),
+    ).toEqual(["hi"]);
+  });
+
   test("project requires the source to be an object", () => {
     expect(() =>
       evaluate(
         { project: { from: "trigger.payload.goal" }, fields: ["x"] },
+        ctx,
+      ),
+    ).toThrow(SelectorError);
+  });
+
+  test("project on an inherited member throws", () => {
+    const payload: unknown = JSON.parse('{"goal":"ship it"}');
+    const protoCtx: SelectorContext = { trigger: { payload }, steps: {} };
+    for (const member of ["toString", "constructor", "hasOwnProperty"]) {
+      expect(() =>
+        evaluate(
+          { project: { from: "trigger.payload" }, fields: [member] },
+          protoCtx,
+        ),
+      ).toThrow(SelectorError);
+    }
+  });
+
+  test("project on an absent own field throws", () => {
+    expect(() =>
+      evaluate(
+        { project: { from: "trigger.payload" }, fields: ["goal", "nope"] },
+        ctx,
+      ),
+    ).toThrow(SelectorError);
+  });
+
+  test("project defines an own key that shadows an inherited member", () => {
+    const payload: unknown = JSON.parse(
+      '{"rawHeaders":{"__proto__":["injected"],"subject":["hi"]}}',
+    );
+    const ownCtx: SelectorContext = { trigger: { payload }, steps: {} };
+    const result = evaluate(
+      {
+        project: { from: "trigger.payload.rawHeaders" },
+        fields: ["__proto__", "subject"],
+      },
+      ownCtx,
+    );
+    assertRecord(result);
+    expect(Object.keys(result)).toEqual(["__proto__", "subject"]);
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(result, "__proto__")).toEqual({
+      value: ["injected"],
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  });
+
+  test("merge defines an operand key that names an inherited member", () => {
+    const payload: unknown = JSON.parse(
+      '{"rawHeaders":{"__proto__":["injected"]}}',
+    );
+    const ownCtx: SelectorContext = { trigger: { payload }, steps: {} };
+    const result = evaluate(
+      {
+        merge: [{ literal: { a: 1 } }, { from: "trigger.payload.rawHeaders" }],
+      },
+      ownCtx,
+    );
+    assertRecord(result);
+    expect(Object.keys(result)).toEqual(["a", "__proto__"]);
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+  });
+
+  test("merge cannot clobber an earlier operand with a missing field", () => {
+    expect(() =>
+      evaluate(
+        {
+          merge: [
+            { literal: { goal: "keep me" } },
+            { project: { from: "steps.impl.output" }, fields: ["goal"] },
+          ],
+        },
         ctx,
       ),
     ).toThrow(SelectorError);
