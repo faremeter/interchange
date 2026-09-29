@@ -4474,7 +4474,8 @@ export function createSidecarRouter(
   }
 
   function removeAgentAddress(ws: WsHandle, agentAddress: string): void {
-    addressIndex.delete(agentAddress);
+    if (addressIndex.get(agentAddress) === ws)
+      addressIndex.delete(agentAddress);
     const conn = connections.get(ws);
     if (conn !== undefined) {
       conn.agentAddresses.delete(agentAddress);
