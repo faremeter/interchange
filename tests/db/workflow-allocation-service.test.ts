@@ -229,7 +229,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
     test("persists a probe result and adopts matching provisioned capacity", async () => {
       const ensureCalls: unknown[] = [];
       const destroyCalls: unknown[] = [];
-      const disconnectCalls: unknown[] = [];
+      const detachCalls: unknown[] = [];
       const provisioner = makeProvisioner({
         id: "sandbox",
         ensureCalls,
@@ -258,7 +258,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: (target) => disconnectCalls.push(target),
+          detachAllocation: (target) => detachCalls.push(target),
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -275,9 +275,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(prepared.allocationId).toBe("sal-probe-adopted");
       expect(ensureCalls).toHaveLength(1);
       expect(destroyCalls).toHaveLength(0);
-      expect(disconnectCalls).toEqual([
-        { allocationId: "sal-probe-adopted", generation: 0 },
-      ]);
+      expect(detachCalls).toEqual([]);
       const probe = await h.db.query.workflowProbe.findFirst({
         where: eq(workflowProbe.id, "sal-probe-adopted"),
       });
@@ -342,7 +340,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: () => undefined,
+          detachAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -399,7 +397,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
               throw new Error("Allocated sidecar is not connected");
             return false;
           },
-          disconnectAllocation: () => undefined,
+          detachAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -434,13 +432,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(deploys).toBe(0);
     });
 
-    test("reauthenticates adopted probe capacity as its allocation", async () => {
+    test("turns adopted probe capacity into its allocation without reconnecting", async () => {
       const credentialResolver = createSidecarCredentialResolver({ db: h.db });
       const router = createSidecarRouter({
         withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: async ({ token }) =>
           credentialResolver.resolve(token),
         validateSidecarIdentity: credentialResolver.isCurrent,
+        resolveSidecarBindings: credentialResolver.resolveBindings,
         requestTimeoutMs: 500,
       });
       let probeWs:
@@ -510,43 +509,27 @@ describe.skipIf(!harnessDbEnvAvailable())(
         prepareArgs("run-adoption-auth"),
       );
 
-      expect(probeWs?.closed).toBe(true);
       if (issuedToken === undefined) throw new Error("expected issued token");
-      const reconnected = {
-        sent: [] as string[],
-        closed: false,
-        send(data: string) {
-          this.sent.push(data);
-        },
-        close() {
-          this.closed = true;
-        },
-      };
-      router.handleOpen(reconnected);
-      router.handleMessage(
-        reconnected,
-        JSON.stringify({
-          type: "reconnect",
-          sidecarId: "sc-adoption-auth",
-          token: issuedToken,
-          agentAddresses: [prepared.deploymentAddress],
-        }),
-      );
+      await router.syncSidecar("sc-adoption-auth");
       await router.waitForAllocatedSidecar(
         { allocationId: prepared.allocationId, generation: 0 },
         500,
       );
 
-      expect(reconnected.closed).toBe(false);
-      expect(router.getRoutableAddresses()).toContain(
-        prepared.deploymentAddress,
-      );
-      expect(await credentialResolver.resolve(issuedToken)).toMatchObject({
-        kind: "allocated",
-        allocationId: prepared.allocationId,
-        anchorRunId: prepared.anchorRunId,
-        workflowRunAddress: prepared.deploymentAddress,
-        generation: 0,
+      expect(probeWs?.closed).toBe(false);
+      expect(await credentialResolver.resolve(issuedToken)).toEqual({
+        sidecarId: "sc-adoption-auth",
+        bindings: [
+          {
+            kind: "allocated",
+            sidecarId: "sc-adoption-auth",
+            allocationId: prepared.allocationId,
+            tenantId: TENANT_ID,
+            anchorRunId: prepared.anchorRunId,
+            workflowRunAddress: prepared.deploymentAddress,
+            generation: 0,
+          },
+        ],
       });
     });
 
@@ -555,7 +538,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await seedWorkflowRun(h.db, { id: anchorRunId, tenantId: TENANT_ID });
       const ensureCalls: unknown[] = [];
       const destroyCalls: unknown[] = [];
-      const disconnectCalls: unknown[] = [];
+      const detachCalls: unknown[] = [];
       const provisioner = makeProvisioner({
         id: "sandbox",
         ensureCalls,
@@ -579,7 +562,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: (target) => disconnectCalls.push(target),
+          detachAllocation: (target) => detachCalls.push(target),
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -594,7 +577,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       expect(ensureCalls).toHaveLength(1);
       expect(destroyCalls).toHaveLength(1);
-      expect(disconnectCalls).toEqual([
+      expect(detachCalls).toEqual([
         { allocationId: "sal-probe-persistence-failure", generation: 0 },
       ]);
       expect(
@@ -656,7 +639,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: () => undefined,
+          detachAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -752,7 +735,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: () => undefined,
+          detachAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -833,7 +816,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: () => undefined,
+          detachAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -909,7 +892,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
-          disconnectAllocation: () => undefined,
+          detachAllocation: () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -968,7 +951,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             waitForAllocatedSidecar: async () => undefined,
             sendProbeToAllocation: async () => probeResult(),
             isAllocatedWorkflowActive: async () => false,
-            disconnectAllocation: () => undefined,
+            detachAllocation: () => undefined,
           },
           hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
           defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,

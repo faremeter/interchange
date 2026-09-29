@@ -81,6 +81,7 @@ export interface SidecarProvisioner {
   destroy(request: DestroySidecarRequest): Promise<DestroySidecarResult>;
 }
 
+/** One probe or allocation generation that a sidecar currently hosts. */
 export type SidecarCredentialIdentity =
   | {
       readonly kind: "allocated";
@@ -99,10 +100,23 @@ export type SidecarCredentialIdentity =
       readonly generation: number;
     };
 
+/** A verified sidecar and every probe and allocation generation it hosts. */
+export type SidecarCredentials = {
+  readonly sidecarId: string;
+  readonly bindings: readonly SidecarCredentialIdentity[];
+};
+
+export type SidecarIdentityUse = "registration" | "readiness" | "routing";
+
 export interface SidecarCredentialResolver {
-  resolve(token: string): Promise<SidecarCredentialIdentity | null>;
+  /** Resolves a bearer token, or null when it hosts nothing current. */
+  resolve(token: string): Promise<SidecarCredentials | null>;
+  /** The current bindings of a sidecar, empty when it hosts nothing. */
+  resolveBindings(
+    sidecarId: string,
+  ): Promise<readonly SidecarCredentialIdentity[]>;
   isCurrent(
     identity: SidecarCredentialIdentity,
-    use: "registration" | "readiness" | "routing",
+    use: SidecarIdentityUse,
   ): Promise<boolean>;
 }

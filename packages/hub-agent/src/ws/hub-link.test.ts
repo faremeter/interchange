@@ -4,7 +4,8 @@ import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
-  type SidecarAuthenticator,
+  type SidecarAuthIdentity,
+  type SidecarRouterConfig,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -49,10 +50,7 @@ const admitAllInboundMailPolicy: ResolvedInboundMailPolicy = {
 
 // These tests exercise routing and the hub-link protocol, not handshake
 // auth, so the router accepts any token and keys off the claimed id.
-const testIdentities = new Map<
-  string,
-  Awaited<ReturnType<SidecarAuthenticator>> & object
->();
+const testIdentities = new Map<string, SidecarAuthIdentity>();
 function ensureTestIdentity(sidecarId: string) {
   const existing = testIdentities.get(sidecarId);
   if (existing !== undefined) return existing;
@@ -68,8 +66,18 @@ function ensureTestIdentity(sidecarId: string) {
   testIdentities.set(sidecarId, identity);
   return identity;
 }
-const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) =>
-  ensureTestIdentity(sidecarId);
+const acceptAnySidecar = {
+  authenticateSidecar: async ({ sidecarId }: { sidecarId: string }) => ({
+    sidecarId,
+    bindings: [ensureTestIdentity(sidecarId)],
+  }),
+  resolveSidecarBindings: async (sidecarId: string) => [
+    ensureTestIdentity(sidecarId),
+  ],
+} satisfies Pick<
+  SidecarRouterConfig,
+  "authenticateSidecar" | "resolveSidecarBindings"
+>;
 
 function prepareAllocationFrame(
   router: ReturnType<typeof createSidecarRouter>,
@@ -303,7 +311,7 @@ function startTestServer(): TestEnv {
 
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: acceptAnySidecar,
+    ...acceptAnySidecar,
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
     hubPublicKey: "a".repeat(64),
@@ -573,7 +581,11 @@ describe("sidecar↔hub integration", () => {
         .getConnectedSidecars()
         .includes(sidecarId);
       env.router.events.on("sidecar.disconnect", ({ allocated }) => {
-        if (allocated?.allocationId === identity.allocationId)
+        if (
+          allocated.some(
+            (binding) => binding.allocationId === identity.allocationId,
+          )
+        )
           disconnected.resolve(undefined);
       });
       client.close();
@@ -865,7 +877,7 @@ describe("sidecar↔hub integration", () => {
     // Stand up a hub router with an odd-length hex key to trigger hexDecode.
     const badRouter = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: acceptAnySidecar,
+      ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,
       hubPublicKey: "abc", // odd length — hexDecode should throw
@@ -945,7 +957,7 @@ describe("sidecar↔hub integration", () => {
 
     const deployHubRouter = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: acceptAnySidecar,
+      ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,
       hubPublicKey: hubPublicKeyHex,
@@ -1732,7 +1744,7 @@ describe("sidecar↔hub integration", () => {
     } = { transferIds: [] };
     const wfrRouter = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: acceptAnySidecar,
+      ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
       requestTimeoutMs: 5000,
       hubPublicKey: "a".repeat(64),

@@ -1,5 +1,7 @@
 import type { HarnessConfig } from "@intx/types/runtime";
 
+import type { SidecarCredentials } from "../sidecar-allocation/contracts";
+
 import {
   createSidecarRouter,
   type AllocatedSidecarTarget,
@@ -20,6 +22,27 @@ export const TEST_IDENTITY: Extract<
   workflowRunAddress: "run_anchor@tenant.example",
   generation: 1,
 };
+
+export const TEST_CREDENTIALS: SidecarCredentials = {
+  sidecarId: TEST_IDENTITY.sidecarId,
+  bindings: [TEST_IDENTITY],
+};
+
+/**
+ * Router authentication that verifies each claimed sidecar id as hosting the
+ * bindings `lookup` returns for it, rejecting a sidecar that hosts none.
+ */
+export function sidecarAuth(
+  lookup: (sidecarId: string) => readonly SidecarAuthIdentity[],
+): Pick<SidecarRouterConfig, "authenticateSidecar" | "resolveSidecarBindings"> {
+  return {
+    authenticateSidecar: async ({ sidecarId }) => {
+      const bindings = lookup(sidecarId);
+      return bindings.length === 0 ? null : { sidecarId, bindings };
+    },
+    resolveSidecarBindings: async (sidecarId) => lookup(sidecarId),
+  };
+}
 
 export const TEST_TARGET: AllocatedSidecarTarget = {
   allocationId: TEST_IDENTITY.allocationId,
@@ -98,8 +121,9 @@ export function createAllocatedRouter(
 ) {
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: async () => TEST_IDENTITY,
+    authenticateSidecar: async () => TEST_CREDENTIALS,
     validateSidecarIdentity: async () => true,
+    resolveSidecarBindings: async () => [TEST_IDENTITY],
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
     ...config,

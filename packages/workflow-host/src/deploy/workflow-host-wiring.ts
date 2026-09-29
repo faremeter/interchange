@@ -1817,7 +1817,7 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
       // the key `loadOrGenerateKey` minted above and the workflow uses for
       // signed content provenance. Every deployment acks it, single- and
       // multi-step alike, so the Hub can publish the same identity. Reconnect
-      // ownership is established separately by the allocation credential.
+      // ownership is established separately by the sidecar credential.
       const deploymentPublicKey = hexEncode(keyPair.publicKey);
       if (spec.definition.stepOrder.length === 1) {
         // A single-step workflow stages its deploy tree at the head (the
