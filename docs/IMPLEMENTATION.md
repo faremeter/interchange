@@ -1310,7 +1310,7 @@ The following frames are additions to the hub-sidecar protocol:
 | `repo.pack.ack`    | Receiver  | Refs accepted                                       |
 | `repo.pack.reject` | Receiver  | Transfer rejected (with reason code)                |
 
-Each pack transfer is scoped to an `agentAddress` and carries a `transferId` for correlation. Multiple transfers for different agents can be in flight concurrently.
+Each pack transfer is scoped to an `agentAddress` and carries a `transferId` for correlation that the sender never reuses. Multiple transfers for different agents can be in flight concurrently.
 
 ### Encoding and Flow Control
 
