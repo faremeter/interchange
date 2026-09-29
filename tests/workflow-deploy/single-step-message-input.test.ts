@@ -22,7 +22,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type } from "arktype";
 
-import type { HarnessConfig, InferenceSource } from "@intx/types/runtime";
+import {
+  isMail,
+  type HarnessConfig,
+  type InferenceSource,
+} from "@intx/types/runtime";
 import {
   createApprovalSet,
   deriveRunAddress,
@@ -83,24 +87,6 @@ const DEFINITION_ASSET_ID = "ast_single_step_message_input_wf";
 // than arrive as a second mail to an already-completed run.
 const DEPLOYMENT_ID_2 = "run_single-step-message-input-2";
 const DEFINITION_ASSET_ID_2 = "ast_single_step_message_input_wf2";
-
-// The `Mail` shape a RunStarted event's trigger payload carries. Shared by both
-// tests (the text+attachment case and the non-text case).
-const RunStartedTrigger = type({
-  trigger: {
-    payload: {
-      headers: "object",
-      rawHeaders: "object",
-      parts: type({
-        contentType: "string",
-        ref: "string",
-        "filename?": "string",
-        "disposition?": "'inline' | 'attachment'",
-        "text?": "string",
-      }).array(),
-    },
-  },
-});
 
 let env: DeployFlowEnv;
 let h: TestDb;
@@ -259,28 +245,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // a ref. The run reaching RunCompleted (asserted above) is the proof the
       // child resolved the attachment ref back to bytes -- an unresolvable ref
       // fails the step rather than completing it.
-      const RunStartedTrigger = type({
-        trigger: {
-          payload: {
-            headers: "object",
-            rawHeaders: "object",
-            parts: type({
-              contentType: "string",
-              ref: "string",
-              "filename?": "string",
-              "disposition?": "'inline' | 'attachment'",
-              "text?": "string",
-            }).array(),
-          },
-        },
-      });
-      const startedTrigger = RunStartedTrigger(firstStartedBody);
-      if (startedTrigger instanceof type.errors) {
-        throw new Error(
-          `RunStarted trigger payload shape unexpected: ${startedTrigger.summary}`,
-        );
-      }
-      const parts = startedTrigger.trigger.payload.parts;
+      const parts = mailTriggerPayload(firstStartedBody).parts;
       const textPart = parts.find((p) => p.contentType === "text/plain");
       expect(textPart?.text).toBe(FIRST_BODY);
       const imagePart = parts.find((p) => p.contentType === "image/png");
@@ -404,16 +369,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
       expect(startedBody["consumedMessageId"]).toBe(fired.messageId);
 
-      const started = RunStartedTrigger(startedBody);
-      if (started instanceof type.errors) {
-        throw new Error(
-          `non-text RunStarted trigger payload shape unexpected: ${started.summary}`,
-        );
-      }
       // The decoded Mail carries the audio attachment as a committed,
       // resolvable part; the run completing proves the child resolved it back
       // to bytes for `agent.send` without an empty-string flatten.
-      const audioPart = started.trigger.payload.parts.find(
+      const audioPart = mailTriggerPayload(startedBody).parts.find(
         (p) => p.contentType === "audio/mpeg",
       );
       expect(audioPart?.filename).toBe("clip.mp3");
@@ -421,6 +380,28 @@ describe.skipIf(!harnessDbEnvAvailable())(
     });
   },
 );
+
+const RunStartedTrigger = type({
+  trigger: {
+    type: "'mail'",
+    payload: "unknown",
+  },
+});
+
+/** Narrow a `RunStarted` event body to the `Mail` its mail trigger carried. */
+function mailTriggerPayload(body: Record<string, unknown>) {
+  const started = RunStartedTrigger(body);
+  if (started instanceof type.errors) {
+    throw new Error(`RunStarted trigger shape unexpected: ${started.summary}`);
+  }
+  const payload = started.trigger.payload;
+  if (!isMail(payload)) {
+    throw new Error(
+      `RunStarted trigger payload is not a Mail: ${JSON.stringify(payload)}`,
+    );
+  }
+  return payload;
+}
 
 /** Find the single step's `StepCompleted` event body. */
 function stepCompletedBody(
