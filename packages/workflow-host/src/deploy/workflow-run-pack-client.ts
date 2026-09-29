@@ -19,7 +19,7 @@ import { getLogger } from "@intx/log";
 import { SourcesUpdatedData } from "../ipc/control-channel";
 import type { InferenceSource } from "@intx/types/runtime";
 import { CredentialDelivery } from "@intx/types/credential-delivery";
-import type { SenderIdentity, WorkflowRunRefTips } from "@intx/types/sidecar";
+import type { WorkflowRunRefTips } from "@intx/types/sidecar";
 import {
   WORKFLOW_RUN_RESTORE_REFS,
   type RepoId,
@@ -324,15 +324,15 @@ export function createMultistepSignalRouter(): MultistepSignalRouter {
  * completion means the grants are durable on disk before the next frame is
  * processed.
  *
- * `senderIdentities` carries the run's authorized senders' hub-vouched keys,
- * co-delivered on the same `run.grants` frame. The handler caches each one
- * before the grants write, so a grant that lands durably is never missing the
- * key its recipient needs to verify the sender's mail.
+ * The hub-link caches the sender keys co-delivered on the `run.grants` frame
+ * before it hands the grants over. `senderKeysCached` is false when one of
+ * them did not land; the handler then fails the grants, so a run never starts
+ * with a sender its recipient cannot verify.
  */
 export type MultistepGrantsHandler = (args: {
   runId: string;
   stepGrants: readonly unknown[];
-  senderIdentities?: readonly SenderIdentity[];
+  senderKeysCached: boolean;
 }) => Promise<void>;
 
 /**
@@ -353,13 +353,15 @@ export type MultistepGrantsHandler = (args: {
 export type MultistepGrantsRouter = {
   register(address: string, handler: MultistepGrantsHandler): void;
   unregister(address: string): void;
-  tryRoute(frame: {
-    type: "run.grants";
-    agentAddress: string;
-    runId: string;
-    stepGrants: readonly unknown[];
-    senderIdentities?: readonly SenderIdentity[];
-  }): Promise<boolean>;
+  tryRoute(
+    frame: {
+      type: "run.grants";
+      agentAddress: string;
+      runId: string;
+      stepGrants: readonly unknown[];
+    },
+    senderKeysCached: boolean,
+  ): Promise<boolean>;
 };
 
 export function createMultistepGrantsRouter(): MultistepGrantsRouter {
@@ -371,15 +373,13 @@ export function createMultistepGrantsRouter(): MultistepGrantsRouter {
     unregister(address) {
       handlers.delete(address);
     },
-    async tryRoute(frame) {
+    async tryRoute(frame, senderKeysCached) {
       const handler = handlers.get(frame.agentAddress);
       if (handler === undefined) return false;
       await handler({
         runId: frame.runId,
         stepGrants: frame.stepGrants,
-        ...(frame.senderIdentities !== undefined
-          ? { senderIdentities: frame.senderIdentities }
-          : {}),
+        senderKeysCached,
       });
       return true;
     },

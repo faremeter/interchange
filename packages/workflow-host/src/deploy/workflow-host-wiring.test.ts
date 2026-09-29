@@ -315,9 +315,6 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
-      senderKeyCache: {
-        put: async () => undefined,
-      },
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
@@ -744,14 +741,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     multistepSubstrateEnv?: Record<string, string>;
     multistepMailRouter?: MultistepMailRouter;
     multistepGrantsRouter?: MultistepGrantsRouter;
-    /**
-     * Injectable sender-key cache. The co-delivery tests pass a spy (or a
-     * throwing stub) to observe the grants handler's cache write; omitted, a
-     * no-op cache satisfies the dependency without persisting anything.
-     */
-    senderKeyCache?: Parameters<
-      typeof createSidecarDeployRouter
-    >[0]["senderKeyCache"];
     multistepSourcesRouter?: MultistepSourcesRouter;
     registerDeployment?: (args: {
       runId: string;
@@ -889,9 +878,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
-      senderKeyCache: opts.senderKeyCache ?? {
-        put: async () => undefined,
-      },
       transport,
       repoStore,
       signingKeySeed: keyPair.privateKey,
@@ -1496,12 +1482,15 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         principalId: "prn_deployment",
       },
     ];
-    const routed = await grantsRouter.tryRoute({
-      type: "run.grants",
-      agentAddress: frame.agentAddress,
-      runId,
-      stepGrants,
-    });
+    const routed = await grantsRouter.tryRoute(
+      {
+        type: "run.grants",
+        agentAddress: frame.agentAddress,
+        runId,
+        stepGrants,
+      },
+      true,
+    );
     expect(routed).toBe(true);
 
     // The write lands in the deployment's workflow-run repo at
@@ -1521,13 +1510,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   // Deploy a multi-step deployment through the full spawn/ready handshake so
   // the deploy router installs its grants handler, then hand back the pieces a
-  // co-delivery test needs to route a `run.grants` frame and inspect the write.
-  async function deployMultistepForGrants(
-    definitionId: string,
-    senderKeyCache: Parameters<
-      typeof createSidecarDeployRouter
-    >[0]["senderKeyCache"],
-  ): Promise<{
+  // grants test needs to route a `run.grants` frame and inspect the write.
+  async function deployMultistepForGrants(definitionId: string): Promise<{
     grantsRouter: MultistepGrantsRouter;
     agentAddress: string;
     anchorRunId: string;
@@ -1566,7 +1550,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const { router, tempBase } = await buildMultistepFixture({
       spawner,
       multistepGrantsRouter: grantsRouter,
-      senderKeyCache,
     });
 
     const definition = {
@@ -1613,100 +1596,20 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     };
   }
 
-  test("caches each co-delivered sender key before the run's grants land", async () => {
-    // The grants handler must cache the sender key BEFORE writing grants.json,
-    // so a durable grant is never missing the key its recipient verifies
-    // against. The spy records whether grants.json already exists when its
-    // `put` runs; it must not.
-    // A holder the spy reads at `put` time; its path is filled in only once the
-    // deploy resolves the run's on-disk location, so it starts empty.
-    const grantsFileRef: { path: string | undefined } = { path: undefined };
-    const puts: { address: string; grantsExisted: boolean }[] = [];
-    const senderKeyCache = {
-      get: () => undefined,
-      put: async (address: string) => {
-        const grantsExisted =
-          grantsFileRef.path !== undefined &&
-          (await fs
-            .stat(grantsFileRef.path)
-            .then(() => true)
-            .catch(() => false));
-        puts.push({ address, grantsExisted });
-      },
-      evict: async () => undefined,
-      addresses: () => [],
-      rotatableAddresses: () => [],
-    };
-
+  test("fails the run's grants when a sender key they carry did not land", async () => {
+    // The link reports a sender key it could not cache. The run must not
+    // start under a grant whose sender its recipient cannot verify, so the
+    // handler throws and grants.json never lands.
     const { grantsRouter, agentAddress, anchorRunId, tempBase } =
-      await deployMultistepForGrants("wf-sender-key-order", senderKeyCache);
-
-    const runId = "run-codeliver";
-    const grantsFilePath = path.join(
-      tempBase,
-      "workflow-run",
-      anchorRunId,
-      "runs",
-      runId,
-      "grants.json",
-    );
-    grantsFileRef.path = grantsFilePath;
-    const routed = await grantsRouter.tryRoute({
-      type: "run.grants",
-      agentAddress,
-      runId,
-      stepGrants: [],
-      senderIdentities: [
-        {
-          address: "sender@peer.example",
-          publicKey: hexEncode(new Uint8Array(32)),
-        },
-      ],
-    });
-
-    expect(routed).toBe(true);
-    expect(puts).toEqual([
-      { address: "sender@peer.example", grantsExisted: false },
-    ]);
-    const grantsLanded = await fs
-      .stat(grantsFilePath)
-      .then(() => true)
-      .catch(() => false);
-    expect(grantsLanded).toBe(true);
-  });
-
-  test("a sender-key cache-write failure fails the run's grants", async () => {
-    // The cache write gates the grants write: if the key cannot be cached, the
-    // run must not start under a grant whose sender the recipient cannot
-    // verify. The handler's throw propagates and grants.json never lands.
-    const senderKeyCache = {
-      get: () => undefined,
-      put: async () => {
-        throw new Error("sender-key disk full");
-      },
-      evict: async () => undefined,
-      addresses: () => [],
-      rotatableAddresses: () => [],
-    };
-
-    const { grantsRouter, agentAddress, anchorRunId, tempBase } =
-      await deployMultistepForGrants("wf-sender-key-fault", senderKeyCache);
+      await deployMultistepForGrants("wf-sender-key-fault");
 
     const runId = "run-cache-fault";
     await expect(
-      grantsRouter.tryRoute({
-        type: "run.grants",
-        agentAddress,
-        runId,
-        stepGrants: [],
-        senderIdentities: [
-          {
-            address: "sender@peer.example",
-            publicKey: hexEncode(new Uint8Array(32)),
-          },
-        ],
-      }),
-    ).rejects.toThrow("sender-key disk full");
+      grantsRouter.tryRoute(
+        { type: "run.grants", agentAddress, runId, stepGrants: [] },
+        false,
+      ),
+    ).rejects.toThrow(/did not land in the sender-key cache/);
 
     const grantsFilePath = path.join(
       tempBase,
@@ -1721,61 +1624,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       .then(() => true)
       .catch(() => false);
     expect(grantsLanded).toBe(false);
-  });
-
-  test("skips a malformed co-delivered key without failing the run's grants", async () => {
-    // A malformed key is a hub-side defect, keyless from the sidecar's view.
-    // Unlike a disk fault it must NOT poison the run -- otherwise a persistently
-    // bad key would wedge the run on every replay. The valid siblings still
-    // cache and the grants still land.
-    const puts: string[] = [];
-    const senderKeyCache = {
-      get: () => undefined,
-      put: async (address: string) => {
-        puts.push(address);
-      },
-      evict: async () => undefined,
-      addresses: () => [],
-      rotatableAddresses: () => [],
-    };
-
-    const { grantsRouter, agentAddress, anchorRunId, tempBase } =
-      await deployMultistepForGrants("wf-sender-key-malformed", senderKeyCache);
-
-    const runId = "run-malformed";
-    const routed = await grantsRouter.tryRoute({
-      type: "run.grants",
-      agentAddress,
-      runId,
-      stepGrants: [],
-      senderIdentities: [
-        // Wrong length: valid hex, but 16 bytes rather than 32.
-        {
-          address: "bad@peer.example",
-          publicKey: hexEncode(new Uint8Array(16)),
-        },
-        {
-          address: "good@peer.example",
-          publicKey: hexEncode(new Uint8Array(32)),
-        },
-      ],
-    });
-
-    expect(routed).toBe(true);
-    expect(puts).toEqual(["good@peer.example"]);
-    const grantsFilePath = path.join(
-      tempBase,
-      "workflow-run",
-      anchorRunId,
-      "runs",
-      runId,
-      "grants.json",
-    );
-    const grantsLanded = await fs
-      .stat(grantsFilePath)
-      .then(() => true)
-      .catch(() => false);
-    expect(grantsLanded).toBe(true);
   });
 
   test("does not register a multistepMailRouter handler if spawn rejects", async () => {
