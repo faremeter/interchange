@@ -7,6 +7,7 @@ import path from "node:path";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
+import { createTarballCache, type TarballCache } from "./cache";
 import type { TarballFetcher } from "./loader";
 import { hostPlatform } from "./materialization-config";
 import type { RegistryConfig } from "./resolver";
@@ -43,7 +44,7 @@ export default {
 }
 
 let scratchRoot: string;
-let cacheRoot: string;
+let cache: TarballCache;
 let materializerScratch: string;
 let fixtureSourceRoot: string;
 let assetDeliveries: Parameters<AssetDelivery>[0][];
@@ -52,11 +53,12 @@ beforeEach(async () => {
   scratchRoot = await fs.mkdtemp(
     path.join(os.tmpdir(), "sidecar-wf-probe-materialize-"),
   );
-  cacheRoot = path.join(scratchRoot, "cache");
+  const cacheRoot = path.join(scratchRoot, "cache");
   materializerScratch = path.join(scratchRoot, "probe-closures");
   fixtureSourceRoot = path.join(scratchRoot, "fixture-source");
   assetDeliveries = [];
   await fs.mkdir(cacheRoot, { recursive: true });
+  cache = createTarballCache({ rootDir: cacheRoot, maxBytes: 10_000_000 });
   await fs.mkdir(materializerScratch, { recursive: true });
   await fs.mkdir(fixtureSourceRoot, { recursive: true });
 });
@@ -149,8 +151,7 @@ function materializerConfig(
   materializeAssets: AssetDelivery = recordEmptyAssets(),
 ) {
   return {
-    cacheRoot,
-    cacheMaxBytes: 10_000_000,
+    cache,
     registryMaxTarballBytes: 10_000_000,
     maxAssetPayloadBytes: 50_000_000,
     registries: registries(),

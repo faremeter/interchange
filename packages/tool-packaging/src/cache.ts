@@ -67,6 +67,15 @@ export interface TarballCache {
    * existence without reading bytes or touching atime.
    */
   has(integrity: string): Promise<boolean>;
+  /**
+   * Keep the entry for `integrity` out of the cap sweep until the returned
+   * release is called, so a caller can check for it, `put` it and extract
+   * it without a concurrent sweep evicting it in between. An entry in use,
+   * pinned or held through an extraction handle, is never swept, so the
+   * cache can exceed `maxBytes` by those entries until they are released.
+   * Waits for a removal already in progress before returning the release.
+   */
+  pin(integrity: string): Promise<() => void>;
   put(integrity: string, bytes: Uint8Array): Promise<void>;
   /**
    * Mark the cache entry for `integrity` as poisoned and remove its
@@ -118,7 +127,7 @@ export interface TarballCache {
    * is always safe to remove.
    */
   sweepOrphans(): Promise<void>;
-  /** Test-only: total bytes currently stored. */
+  /** Test-only: await queued cap sweeps and report total bytes stored. */
   size(): Promise<number>;
 }
 
@@ -172,6 +181,33 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
   // intra-process races between two agents on the same sidecar.
   const extractionRefcounts = new Map<string, number>();
   const pendingEvictions = new Set<string>();
+  // Entries a cap sweep could not evict because they were held. Their last
+  // release requests another pass; releases in one burst share that pass.
+  const heldOverCap = new Set<string>();
+  let capSweepQueue = Promise.resolve();
+  let releaseSweepQueued = false;
+  // Release passes retain the latest extraction's oversized-entry exemption.
+  let latestExtraction: string | undefined;
+  // Removals include the tarball unlink for either kind of eviction. A new
+  // pin waits for them before checking presence or fetching, and an extraction
+  // waits before using the tree. Removals of one entry run in order.
+  const reclaims = new Map<string, Promise<unknown>>();
+
+  async function reclaimEntry(
+    integrity: string,
+    remove: () => Promise<void>,
+  ): Promise<void> {
+    // Publish the barrier before removal starts, so an acquisition cannot
+    // miss it while unlink or rm is in progress.
+    const removal = (reclaims.get(integrity) ?? Promise.resolve()).then(remove);
+    const tracked = removal.catch(() => undefined);
+    reclaims.set(integrity, tracked);
+    try {
+      await removal;
+    } finally {
+      if (reclaims.get(integrity) === tracked) reclaims.delete(integrity);
+    }
+  }
 
   function acquireExtraction(integrity: string): void {
     const next = (extractionRefcounts.get(integrity) ?? 0) + 1;
@@ -194,25 +230,28 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
     }
     if (current === 1) {
       extractionRefcounts.delete(integrity);
+      if (heldOverCap.delete(integrity)) requestReleaseSweep();
       if (pendingEvictions.has(integrity)) {
         pendingEvictions.delete(integrity);
         const entryDirPath = entryDir(integrity);
         try {
-          await fs.rm(extractedDir(integrity), {
-            recursive: true,
-            force: true,
+          await reclaimEntry(integrity, async () => {
+            await fs.rm(extractedDir(integrity), {
+              recursive: true,
+              force: true,
+            });
+            // The deferred-reclaim path is symmetric with the inline
+            // sweep at `evictUntilUnderCap`: empty entry/shard/algorithm
+            // parents must be swept too, otherwise every eviction that
+            // raced an in-flight reader leaves an orphan empty directory
+            // triple on disk that accumulates over the cache's lifetime.
+            // `rmdirIfEmpty` is best-effort (ENOTEMPTY when siblings
+            // remain) and silently no-ops if a different evict already
+            // pruned the parent.
+            await rmdirIfEmpty(entryDirPath);
+            await rmdirIfEmpty(path.dirname(entryDirPath));
+            await rmdirIfEmpty(path.dirname(path.dirname(entryDirPath)));
           });
-          // The deferred-reclaim path is symmetric with the inline
-          // sweep at `evictUntilUnderCap`: empty entry/shard/algorithm
-          // parents must be swept too, otherwise every eviction that
-          // raced an in-flight reader leaves an orphan empty directory
-          // triple on disk that accumulates over the cache's lifetime.
-          // `rmdirIfEmpty` is best-effort (ENOTEMPTY when siblings
-          // remain) and silently no-ops if a different evict already
-          // pruned the parent.
-          await rmdirIfEmpty(entryDirPath);
-          await rmdirIfEmpty(path.dirname(entryDirPath));
-          await rmdirIfEmpty(path.dirname(path.dirname(entryDirPath)));
         } catch (err) {
           logger.warn`deferred eviction of ${extractedDir(integrity)} failed: ${err instanceof Error ? err.message : String(err)}`;
         }
@@ -402,8 +441,30 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
     return total;
   }
 
-  async function evictUntilUnderCap(justWritten?: string): Promise<void> {
+  function requestReleaseSweep(): void {
+    if (releaseSweepQueued) return;
+    releaseSweepQueued = true;
+    void evictUntilUnderCap().catch((err: unknown) => {
+      logger.warn`cache sweep after release failed: ${err instanceof Error ? err.message : String(err)}`;
+    });
+  }
+
+  function evictUntilUnderCap(justWritten?: string): Promise<void> {
+    // Serialize accounting and heldOverCap updates across extraction and
+    // release passes. A release during a pass can queue one follow-up, since
+    // the pass may already have skipped that entry.
+    const sweep = capSweepQueue.then(async () => {
+      if (justWritten === undefined) releaseSweepQueued = false;
+      else latestExtraction = justWritten;
+      await sweepEntries(latestExtraction);
+    });
+    capSweepQueue = sweep.catch(() => undefined);
+    return sweep;
+  }
+
+  async function sweepEntries(justWritten?: string): Promise<void> {
     const entries = await listEntries();
+    heldOverCap.clear();
     const total = entries.reduce(
       (sum, e) => sum + e.tarballSize + e.extractedSize,
       0,
@@ -425,45 +486,49 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
     let remaining = total;
     for (const e of evictable) {
       if (remaining <= config.maxBytes) break;
+      // An entry in use is skipped: a pinned tarball is about to be
+      // extracted, and a held extraction tree is being read.
+      if ((extractionRefcounts.get(e.integrity) ?? 0) > 0) {
+        heldOverCap.add(e.integrity);
+        continue;
+      }
       const reclaimable = e.tarballSize + e.extractedSize;
       try {
-        // Drop the tarball blob immediately so a fresh `extractTarball`
-        // call cannot reuse the on-disk extraction tree from this
-        // entry. The extraction tree's physical reclaim is gated on
-        // the in-flight refcount — concurrent readers from another
-        // agent holding a `release` handle would otherwise see ENOENT
-        // mid-readdir if we rm-ed it out from under them. Defer to the
-        // last `release` to do the actual rm; if there are no readers
-        // (the common case), reclaim is immediate.
-        await fs.unlink(e.tarballPath);
-        if ((extractionRefcounts.get(e.integrity) ?? 0) > 0) {
-          pendingEvictions.add(e.integrity);
-        } else {
-          await fs.rm(e.extractedPath, { recursive: true, force: true });
-          // Sweep the now-empty entry/shard/algorithm directories so
-          // listEntries does not accumulate O(historical-evictions)
-          // cost over the cache's lifetime. ENOTEMPTY means a sibling
-          // entry still occupies the parent; that is the expected case
-          // for any cache holding more than one entry per shard, so
-          // swallow it silently and move on.
-          await rmdirIfEmpty(e.entryDir);
-          await rmdirIfEmpty(path.dirname(e.entryDir));
-          await rmdirIfEmpty(path.dirname(path.dirname(e.entryDir)));
-        }
+        await reclaimEntry(e.integrity, async () => {
+          await fs.unlink(e.tarballPath);
+          // A new pin reserves its reference before waiting for this removal.
+          // Leave its extraction for the last release in that case.
+          if ((extractionRefcounts.get(e.integrity) ?? 0) > 0) {
+            pendingEvictions.add(e.integrity);
+          } else {
+            await fs.rm(e.extractedPath, { recursive: true, force: true });
+            // Sweep the now-empty entry/shard/algorithm directories so
+            // listEntries does not accumulate O(historical-evictions)
+            // cost over the cache's lifetime. ENOTEMPTY means a sibling
+            // entry still occupies the parent; that is the expected case
+            // for any cache holding more than one entry per shard, so
+            // swallow it silently and move on.
+            await rmdirIfEmpty(e.entryDir);
+            await rmdirIfEmpty(path.dirname(e.entryDir));
+            await rmdirIfEmpty(path.dirname(path.dirname(e.entryDir)));
+          }
+        });
         remaining -= reclaimable;
         logger.debug`evicted ${e.tarballPath} (tarball ${String(e.tarballSize)} + extracted ${String(e.extractedSize)} bytes); cache now ${String(remaining)} bytes`;
       } catch (err) {
         logger.warn`failed to evict ${e.tarballPath}: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
-    if (remaining > config.maxBytes) {
+    if (remaining <= config.maxBytes) {
+      heldOverCap.clear();
+    } else {
       // This warning may fire twice for the same integrity in one
       // loader pass — once after `put` writes the bytes and once after
       // `extractTarball` unpacks them, since both invoke the sweep
       // with the same `justWritten` integrity. Operator log
       // aggregation should dedup on `integrity` if the noise becomes
       // a problem at scale.
-      logger.warn`cache exceeds maxBytes by ${String(remaining - config.maxBytes)} bytes after sweep; the just-written entry is exempt from its own sweep`;
+      logger.warn`cache exceeds maxBytes by ${String(remaining - config.maxBytes)} bytes after sweep; the just-written entry and entries in use are exempt from it`;
     }
   }
 
@@ -505,6 +570,17 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
         logger.debug`cache.get atime update failed for ${file}; LRU ordering will be stale: ${err instanceof Error ? err.message : String(err)}`;
       }
       return bytes;
+    },
+
+    async pin(integrity) {
+      acquireExtraction(integrity);
+      await reclaims.get(integrity);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        void releaseExtraction(integrity);
+      };
     },
 
     async has(integrity) {
@@ -556,33 +632,35 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
     async evict(integrity) {
       const file = entryPath(integrity);
       const extracted = extractedDir(integrity);
-      try {
-        await fs.unlink(file);
-        logger.debug`evicted cache entry for ${integrity}`;
-      } catch (err) {
-        if (!isENOENT(err)) throw err;
-      }
-      // The extraction is derived from the tarball bytes and is
-      // useless once the tarball is gone. If a copyTree walk is
-      // in-flight for the same integrity, removing the tree now would
-      // surface as ENOENT mid-walk; defer the physical reclaim until
-      // every outstanding `release` from `extractTarball` has fired.
-      // With no outstanding readers the reclaim runs inline.
-      const inFlight = extractionRefcounts.get(integrity) ?? 0;
-      if (inFlight > 0) {
-        pendingEvictions.add(integrity);
-        logger.debug`deferring extraction reclaim for ${integrity}: ${String(inFlight)} reader(s) in flight`;
-        return;
-      }
-      await fs.rm(extracted, { recursive: true, force: true });
-      // Symmetric with the inline cap-driven sweep: prune the now-empty
-      // entry/shard/algorithm parents so `listEntries` does not
-      // accumulate O(historical-evictions) cost. `rmdirIfEmpty`
-      // tolerates ENOTEMPTY (siblings remain) silently.
-      const entryDirPath = entryDir(integrity);
-      await rmdirIfEmpty(entryDirPath);
-      await rmdirIfEmpty(path.dirname(entryDirPath));
-      await rmdirIfEmpty(path.dirname(path.dirname(entryDirPath)));
+      await reclaimEntry(integrity, async () => {
+        try {
+          await fs.unlink(file);
+          logger.debug`evicted cache entry for ${integrity}`;
+        } catch (err) {
+          if (!isENOENT(err)) throw err;
+        }
+        // The extraction is derived from the tarball bytes and is
+        // useless once the tarball is gone. If a copyTree walk is
+        // in-flight for the same integrity, removing the tree now would
+        // surface as ENOENT mid-walk; defer the physical reclaim until
+        // every outstanding `release` from `extractTarball` has fired.
+        // With no outstanding readers the reclaim runs inline.
+        const inFlight = extractionRefcounts.get(integrity) ?? 0;
+        if (inFlight > 0) {
+          pendingEvictions.add(integrity);
+          logger.debug`deferring extraction reclaim for ${integrity}: ${String(inFlight)} reader(s) in flight`;
+          return;
+        }
+        await fs.rm(extracted, { recursive: true, force: true });
+        // Symmetric with the inline cap-driven sweep: prune the now-empty
+        // entry/shard/algorithm parents so `listEntries` does not
+        // accumulate O(historical-evictions) cost. `rmdirIfEmpty`
+        // tolerates ENOTEMPTY (siblings remain) silently.
+        const entryDirPath = entryDir(integrity);
+        await rmdirIfEmpty(entryDirPath);
+        await rmdirIfEmpty(path.dirname(entryDirPath));
+        await rmdirIfEmpty(path.dirname(path.dirname(entryDirPath)));
+      });
     },
 
     async extractTarball(integrity) {
@@ -620,6 +698,7 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
       // and a stat miss (no extraction yet) releases the speculative
       // refcount before falling through to the unpack path.
       acquireExtraction(integrity);
+      await reclaims.get(integrity);
       try {
         const stat = await fs.stat(finalDir);
         if (stat.isDirectory()) {
@@ -782,6 +861,11 @@ export function createTarballCache(config: TarballCacheConfig): TarballCache {
     },
 
     async size() {
+      let pending: Promise<void>;
+      do {
+        pending = capSweepQueue;
+        await pending;
+      } while (pending !== capSweepQueue);
       const entries = await listEntries();
       return entries.reduce(
         (sum, e) => sum + e.tarballSize + e.extractedSize,

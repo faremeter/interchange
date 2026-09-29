@@ -97,6 +97,7 @@ function deployHostBindings() {
     multistepSubprocessSpawner: (): never => {
       throw new Error("workflow child spawner was not provided");
     },
+    createWorkflowCache: () => ({}),
     applyFrozenWorkflowClosure: (): never => {
       throw new Error("frozen closure apply was not provided");
     },
@@ -2729,6 +2730,49 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // Rejected at the scan boundary: no child spawned, nothing registered.
     expect(spawner.spawnCount()).toBe(0);
     expect(isRegistered(freshTransport, head)).toBe(false);
+  });
+
+  test("deploys for different addresses apply their closures through one tarball cache", async () => {
+    const caches: unknown[] = [];
+    const { router } = await buildMultistepFixture({
+      spawner: makeReadyDrivingSpawner(9600).spawner,
+      applyFrozenWorkflowClosure: (applyArgs) => {
+        caches.push(applyArgs.cache);
+        return Promise.reject(new Error("closure left unapplied"));
+      },
+    });
+    const definition = {
+      id: "wf-shared-cache",
+      triggers: [{ type: "manual" }],
+      stepOrder: ["step-1", "step-2"],
+      steps: { "step-1": { kind: "step" }, "step-2": { kind: "step" } },
+    };
+    const sources = defaultMultistepSources();
+
+    const deploys = await Promise.allSettled([
+      router.deploy(
+        makeMultistepFrame({
+          agentAddress: "cache-one@example.com",
+          definition,
+          sources,
+        }),
+      ),
+      router.deploy(
+        makeMultistepFrame({
+          agentAddress: "cache-two@example.com",
+          definition,
+          sources,
+        }),
+      ),
+    ]);
+
+    expect(deploys.map((deploy) => deploy.status)).toEqual([
+      "rejected",
+      "rejected",
+    ]);
+    expect(caches).toHaveLength(2);
+    expect(caches[0]).toBeDefined();
+    expect(caches[0]).toBe(caches[1]);
   });
 
   test("restore re-materializes a source-ref deployment's closure and re-spawns it as source-ref", async () => {
