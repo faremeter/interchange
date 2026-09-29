@@ -174,13 +174,6 @@ import {
  * passes the same names to the helper; the helper enforces
  * presence-and-non-empty against this allowlist before the factory
  * runs.
- *
- * `HUB_WS_URL`, `SIDECAR_ID`, and `SIDECAR_TOKEN` carry the
- * hub-connection trust anchors the child needs to ship workflow-run
- * pack pushes back to the hub. The sidecar's deploy router populates
- * these via the supervisor's `substrateEnv` plumbing
- * (`multistepSubstrateEnv` on `createSidecarDeployRouter`), threaded
- * from the boot edge's own env reads.
  */
 export const SIDECAR_SUBSTRATE_CONFIG_KEYS = [
   "SIDECAR_DATA_DIR",
@@ -188,9 +181,6 @@ export const SIDECAR_SUBSTRATE_CONFIG_KEYS = [
   "WORKFLOW_RUN_REF",
   "SIDECAR_SIGNING_PUBLIC_KEY",
   "SIDECAR_SIGNING_PRIVATE_KEY",
-  "HUB_WS_URL",
-  "SIDECAR_ID",
-  "SIDECAR_TOKEN",
   "STEP_INFERENCE_SOURCES",
   "WORKFLOW_BODY_SOURCES",
   "SIDECAR_CACHE_MAX_BYTES",
@@ -204,9 +194,6 @@ const SubstrateConfig = type({
   WORKFLOW_RUN_REF: "string > 0",
   SIDECAR_SIGNING_PUBLIC_KEY: "string > 0",
   SIDECAR_SIGNING_PRIVATE_KEY: "string > 0",
-  HUB_WS_URL: "string > 0",
-  SIDECAR_ID: "string > 0",
-  SIDECAR_TOKEN: "string > 0",
   STEP_INFERENCE_SOURCES: "string > 0",
   // JSON `{ [definitionId]: { [stepId]: InferenceSource[] } }` of every spawned
   // body's plaintext inference sources, decrypted sidecar-side from the run
