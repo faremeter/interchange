@@ -337,6 +337,7 @@ export async function createHubServer({
     validateSidecarIdentity: sidecarCredentials.isCurrent,
     withExecutableWorkflowRun: (target, send, signal) =>
       withExecutableWorkflowRun(db, target, send, signal),
+    resolveSidecarBindings: sidecarCredentials.resolveBindings,
     lookups,
     ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
   });
@@ -496,9 +497,23 @@ export async function createHubServer({
 
   await workflowAllocationService.initialize?.();
   await sidecarAllocationReconciler.initialize();
-  sidecarRouter.events.on("sidecar.disconnect", ({ allocated }) => {
-    if (allocated === undefined) return;
-    return sidecarAllocationReconciler.handleDisconnect(allocated);
+  sidecarRouter.events.on("sidecar.disconnect", async ({ allocated }) => {
+    await Promise.all(
+      allocated.map((target) =>
+        sidecarAllocationReconciler
+          .handleDisconnect(target)
+          .catch((err: unknown) => {
+            log.error(
+              "Failed to handle the disconnect of allocation {allocationId} generation {generation}: {error}",
+              {
+                allocationId: target.allocationId,
+                generation: target.generation,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          }),
+      ),
+    );
   });
   sidecarRouter.events.on("sidecar.allocated.connected", (allocated) =>
     sidecarAllocationReconciler.handleConnected(allocated),

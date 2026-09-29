@@ -29,7 +29,7 @@ import {
   createHubSessionLookups,
   createSidecarRouter,
   type AgentRepoStore,
-  type SidecarAuthenticator,
+  type SidecarAuthIdentity,
 } from "@intx/hub-sessions";
 import {
   createTestDb,
@@ -71,15 +71,17 @@ const stubRepoStore = new Proxy(
 
 let authenticatedAddress = "";
 let authenticatedAnchorRunId = "";
-const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "allocated",
-  sidecarId,
-  allocationId: "allocation-test",
-  tenantId: TENANT,
-  anchorRunId: authenticatedAnchorRunId,
-  workflowRunAddress: authenticatedAddress,
-  generation: 1,
-});
+function bindingFor(sidecarId: string): SidecarAuthIdentity {
+  return {
+    kind: "allocated",
+    sidecarId,
+    allocationId: "allocation-test",
+    tenantId: TENANT,
+    anchorRunId: authenticatedAnchorRunId,
+    workflowRunAddress: authenticatedAddress,
+    generation: 1,
+  };
+}
 
 // The backend pid of a handle's single connection. Only meaningful for a
 // `max: 1` handle, where every query reuses the one physical connection, so the
@@ -231,7 +233,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       return createSidecarRouter({
         withExecutableWorkflowRun: async (_target, send) => send(),
-        authenticateSidecar: acceptAnySidecar,
+        authenticateSidecar: async ({ sidecarId }) => ({
+          sidecarId,
+          bindings: [bindingFor(sidecarId)],
+        }),
+        resolveSidecarBindings: async (sidecarId) => [bindingFor(sidecarId)],
         validateSidecarIdentity: async () => true,
         lookups,
       });

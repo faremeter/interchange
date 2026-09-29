@@ -107,6 +107,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
       withExecutableWorkflowRun: async (_target, send) => send(),
       authenticateSidecar: async () => null,
       validateSidecarIdentity: async () => true,
+      resolveSidecarBindings: async () => [],
     });
     const invalidWs = createMockWs();
     invalid.handleOpen(invalidWs);
@@ -127,6 +128,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
         throw new Error("auth unavailable");
       },
       validateSidecarIdentity: async () => true,
+      resolveSidecarBindings: async () => [],
     });
     const throwingWs = createMockWs();
     throwing.handleOpen(throwingWs);
@@ -179,7 +181,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
 
     expect(connected).toEqual([TEST_TARGET]);
     expect(disconnected).toEqual([
-      { ownedAddresses: [], allocated: TEST_TARGET },
+      { ownedAddresses: [], allocated: [TEST_TARGET] },
     ]);
   });
 

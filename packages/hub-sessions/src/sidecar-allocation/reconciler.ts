@@ -58,8 +58,10 @@ export type SidecarAllocationReconcilerDeps = {
   readonly router: Pick<
     SidecarAllocationRouter,
     | "fenceAllocation"
+    | "holdsAllocatedBinding"
     | "isAllocatedSidecarReady"
     | "retireAllocation"
+    | "syncSidecar"
     | "waitForAllocatedSidecar"
   >;
   readonly hubWebSocketUrl: string;
@@ -320,16 +322,25 @@ export function createSidecarAllocationReconciler({
     const active = activeAllocations.get(allocation.id);
     if (active === undefined)
       throw new ReconciliationLeaseLostError(allocation.id);
+    const sidecarId = allocation.sidecarId;
     return runSidecarOperation(
       "Sidecar readiness",
       operationTimeoutMs,
       () =>
-        trackAllocationQuery(allocation.id, () =>
-          router.isAllocatedSidecarReady({
+        trackAllocationQuery(allocation.id, async () => {
+          const target = {
             allocationId: allocation.id,
             generation: allocation.generation,
-          }),
-        ),
+          };
+          // The allocation may have been placed on a sidecar that stayed
+          // connected, which registered before this binding existed. The sync
+          // waits behind the sidecar's other frames, such as another
+          // deployment's pack ingest, so it runs only for a binding not yet
+          // attached rather than hold a claim slot for one that is.
+          if (sidecarId !== undefined && !router.holdsAllocatedBinding(target))
+            await router.syncSidecar(sidecarId);
+          return router.isAllocatedSidecarReady(target);
+        }),
       active.controller.signal,
     );
   }

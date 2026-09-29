@@ -5,21 +5,23 @@ import { waitUntil } from "@intx/types/testing";
 import {
   createSidecarRouter,
   type SendProbeArgs,
-  type SidecarAuthenticator,
   type WsHandle,
 } from "./sidecar-handler";
+import { sidecarAuth } from "./sidecar-handler.test-helpers";
 
 type TestRouter = ReturnType<typeof createSidecarRouter>;
 
-// Accept-any authenticator: probe selection is address-independent, so the
+// Accept-any authentication: probe selection is address-independent, so the
 // handshake just needs to succeed to land the sidecar in `connections`.
-const acceptAnySidecar: SidecarAuthenticator = async ({ sidecarId }) => ({
-  kind: "probe",
-  sidecarId,
-  allocationId: `allocation-${sidecarId}`,
-  tenantId: "tenant-test",
-  generation: 1,
-});
+const acceptAnySidecar = sidecarAuth((sidecarId) => [
+  {
+    kind: "probe",
+    sidecarId,
+    allocationId: `allocation-${sidecarId}`,
+    tenantId: "tenant-test",
+    generation: 1,
+  },
+]);
 
 function createMockWs(): WsHandle & { sent: string[]; closed: boolean } {
   return {
@@ -147,10 +149,10 @@ const projection = {
 };
 
 describe("SidecarRouter workflow probe", () => {
-  test("probe-scoped capacity cannot register workflow addresses", async () => {
+  test("probe-scoped capacity routes no workflow address it announces", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: acceptAnySidecar,
+      ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
     });
     const ws = createMockWs();
@@ -165,16 +167,31 @@ describe("SidecarRouter workflow probe", () => {
         agentAddresses: ["workflow@example.test"],
       }),
     );
-    await waitUntil(() => ws.closed);
+    await waitUntil(() =>
+      ws.sent.some((raw) => raw.includes('"agent.undeploy"')),
+    );
 
-    expect(ws.closed).toBe(true);
+    expect(ws.closed).toBe(false);
+    expect(router.getRoutableAddresses()).toEqual([]);
+    expect(ws.sent.map((raw): unknown => JSON.parse(raw))).toContainEqual({
+      type: "agent.undeploy",
+      agentAddress: "workflow@example.test",
+      reason: "The deployment is not current on this sidecar",
+    });
   });
 
-  test("probe-scoped capacity cannot use non-probe protocols", async () => {
+  test("probe-scoped capacity cannot send mail for an address it does not host", async () => {
+    let persisted = false;
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: acceptAnySidecar,
+      ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
+      lookups: {
+        async persistMail() {
+          persisted = true;
+          return [];
+        },
+      },
     });
     const ws = await registerBareSidecar(router, "sc-1");
 
@@ -185,17 +202,19 @@ describe("SidecarRouter workflow probe", () => {
         senderAddress: "probe@example.test",
         rawMessage: "From: probe@example.test\r\n\r\nnope",
         recipients: ["outside@example.test"],
+        delivered: true,
       }),
     );
-    await waitUntil(() => ws.closed);
+    await tick();
 
-    expect(ws.closed).toBe(true);
+    expect(persisted).toBe(false);
+    expect(ws.closed).toBe(false);
   });
 
   test("happy path resolves with the sidecar's inert probe result", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: acceptAnySidecar,
+      ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
     });
     const ws = await registerBareSidecar(router, "sc-1");
@@ -244,7 +263,7 @@ describe("SidecarRouter workflow probe", () => {
   test("a workflow.probe.error reply rejects the probe with its error", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: acceptAnySidecar,
+      ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
     });
     const ws = await registerBareSidecar(router, "sc-1");
@@ -267,7 +286,7 @@ describe("SidecarRouter workflow probe", () => {
   test("no reply rejects the probe after probeTimeoutMs", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: acceptAnySidecar,
+      ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
       probeTimeoutMs: 20,
     });
@@ -281,7 +300,7 @@ describe("SidecarRouter workflow probe", () => {
   test("disconnect sweeps the in-flight probe and rejects it", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: acceptAnySidecar,
+      ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
     });
     const ws = await registerBareSidecar(router, "sc-1");
@@ -300,7 +319,7 @@ describe("SidecarRouter workflow probe", () => {
   test("an empty connection registry throws immediately", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: acceptAnySidecar,
+      ...acceptAnySidecar,
       validateSidecarIdentity: async () => true,
     });
 

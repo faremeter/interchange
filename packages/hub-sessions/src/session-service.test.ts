@@ -218,8 +218,10 @@ function createMockAllocationRouter(
     },
     waitForAllocatedSidecar: async () => undefined,
     isAllocatedSidecarReady: async () => true,
+    holdsAllocatedBinding: () => true,
     isAllocatedWorkflowActive: async () => false,
-    disconnectAllocation: () => undefined,
+    detachAllocation: () => undefined,
+    syncSidecar: async () => undefined,
     sendProbeToAllocation: async () => {
       throw new Error("mock allocated probe is not configured");
     },
