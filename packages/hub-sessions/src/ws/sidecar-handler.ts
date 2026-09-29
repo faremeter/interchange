@@ -888,10 +888,11 @@ export function createSidecarRouter(
   // transferId → pending pack transfer (resolved by repo.pack.ack, rejected
   // by repo.pack.reject). The entry carries the send-site agentAddress and
   // repoId so an ack/reject is honored only when it comes from the
-  // connection that owns the transfer for the same repo.
+  // connection that owns the transfer for the same repo. Transfer ids are
+  // random, so an answer to a transfer from before a Hub restart never
+  // matches a new one.
   type PackTransferMeta = { agentAddress: string; repoId: RepoId };
   const pendingPacks = new PendingTracker<string, void, PackTransferMeta>();
-  let packCounter = 0;
 
   // agentAddress → pending undeploy (resolved by agent.undeploy.ack)
   const pendingUndeploys = new PendingTracker<string>();
@@ -3425,7 +3426,7 @@ export function createSidecarRouter(
     commitSha: string,
     options?: SendPackOptions,
   ): Promise<void> {
-    const transferId = `pack-${++packCounter}`;
+    const transferId = `pack-${crypto.randomUUID()}`;
     // For the agent-state flow the destination agent and the source repo
     // are the same entity, so `repoId.id === agentAddress`. Asset packs
     // override this with the SOURCE asset's id so audit can correlate

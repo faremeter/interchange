@@ -21,8 +21,8 @@ export type PackSendOpts = {
   agentAddress: string;
   repoId: RepoId;
   /**
-   * Caller-supplied transfer id. Must be unique across the lifetime of
-   * this sender; the sender does not re-mint on collision.
+   * Caller-supplied transfer id. Must never be reused; the sender does not
+   * re-mint on collision.
    */
   transferId: string;
   pack: Uint8Array;
