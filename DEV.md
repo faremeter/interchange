@@ -107,7 +107,7 @@ bin/dev
 
 This runs database migration, the Hub server (with `--watch` for auto-reload), and the admin UI dev server. Press Ctrl+C for graceful shutdown of all services.
 
-The Hub does not start or trust an ambient sidecar. Workflow probing and execution both require a configured sidecar provisioner; the provisioner receives a probe- or allocation-scoped identity and starts or reuses suitable capacity. The production composition registers no provisioner by default, so deployment is unavailable until one is injected. The admin UI E2E harness injects a test-only local-process provisioner.
+The Hub does not start or trust an ambient sidecar. Workflow probing and execution both require a configured sidecar provisioner; the provisioner receives a sidecar identity minted for the probe or allocation and starts or reuses suitable capacity, and the identity's token authenticates that sidecar for all work later placed on it. The production composition registers no provisioner by default, so deployment is unavailable until one is injected. The admin UI E2E harness injects a test-only local-process provisioner.
 
 Options:
 

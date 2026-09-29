@@ -888,10 +888,9 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       frame.agentAddresses.length > 0 &&
       onWorkflowAddressesRoutable !== undefined
     ) {
-      // Allocation authentication binds the whole connection to one workflow
-      // generation. The reconnect frame is processed ahead of later frames on
-      // the Hub's per-socket queue, so pushes triggered here cannot overtake
-      // the route restoration.
+      // The reconnect frame is processed ahead of later frames on the Hub's
+      // per-socket queue, so pushes triggered here cannot overtake the route
+      // restoration.
       onWorkflowAddressesRoutable(frame.agentAddresses);
     }
   }

@@ -23,7 +23,7 @@ import { Hono } from "hono";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import {
   createSidecarRouter,
-  type SidecarAuthenticator,
+  type SidecarAuthIdentity,
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
@@ -110,10 +110,7 @@ function makeKey(seed: number): Uint8Array {
 // records the handshake frame types so the test can assert a real reconnect.
 // ---------------------------------------------------------------------------
 
-type AllocatedIdentity = Extract<
-  Awaited<ReturnType<SidecarAuthenticator>>,
-  { kind: "allocated" }
->;
+type AllocatedIdentity = Extract<SidecarAuthIdentity, { kind: "allocated" }>;
 
 function startRotationServer(
   resolveSenderKeyStrict: (address: string) => Promise<string | null>,
@@ -141,7 +138,11 @@ function startRotationServer(
 
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: async ({ sidecarId }) => ensureIdentity(sidecarId),
+    authenticateSidecar: async ({ sidecarId }) => ({
+      sidecarId,
+      bindings: [ensureIdentity(sidecarId)],
+    }),
+    resolveSidecarBindings: async (sidecarId) => [ensureIdentity(sidecarId)],
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 5000,

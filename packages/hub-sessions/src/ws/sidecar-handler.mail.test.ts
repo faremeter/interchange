@@ -6,6 +6,7 @@ import {
   createManualRetries,
   createMockWs,
   parsedFrames,
+  sidecarAuth,
   TEST_IDENTITY,
   TEST_TARGET,
   tick,
@@ -138,8 +139,9 @@ describe("SidecarRouter allocation mail durability", () => {
     };
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: async ({ sidecarId }) =>
+      ...sidecarAuth((sidecarId) => [
         sidecarId === secondary.sidecarId ? secondary : TEST_IDENTITY,
+      ]),
       validateSidecarIdentity: async () => true,
       mailAckRetryIntervalMs: 10,
       mailAckMaxRetries: 5,

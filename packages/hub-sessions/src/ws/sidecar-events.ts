@@ -80,17 +80,18 @@ export type SidecarEventMap = {
     event: unknown;
   };
 
-  /** Notification. Emitted once when a sidecar's connection closes,
-   * carrying every address the connection owned -- session addresses
+  /** Notification. Emitted when a sidecar's connection closes, and when
+   * one allocation leaves a connection that stays open for others,
+   * carrying every address that lost its route -- session addresses
    * and hub-minted workflow-substrate deployment addresses alike --
    * so lifecycle teardown covers both. */
   "sidecar.disconnect": {
     ownedAddresses: string[];
-    /** Present only when the closing socket was the current allocated owner. */
-    allocated?: {
+    /** Allocation generations whose current connection this was. */
+    allocated: {
       allocationId: string;
       generation: number;
-    };
+    }[];
   };
 
   /** Notification after the exact authenticated allocation generation registers. */

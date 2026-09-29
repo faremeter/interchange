@@ -8,6 +8,7 @@ import {
   connectAllocated,
   createAllocatedRouter,
   createMockWs,
+  sidecarAuth,
   TEST_CONFIG,
   TEST_IDENTITY,
   TEST_TARGET,
@@ -82,7 +83,13 @@ describe("SidecarRouter allocation initialization cancellation", () => {
           expect(await sending).toBeInstanceOf(Error);
           if (operation === "deploy")
             expect(await sending).toMatchObject({ frameSent: false });
-          expect(ws.sent).toEqual(before);
+          // Advancing the fence tells the sidecar to undeploy the replaced
+          // generation, which is all that may reach it.
+          expect(
+            ws.sent
+              .slice(before.length)
+              .map((raw) => lastFrame({ sent: [raw] }).type),
+          ).toEqual(change === "fence" ? ["agent.undeploy"] : []);
           expect(router.getRoutableAddresses()).toEqual([]);
         } finally {
           release.resolve(undefined);
@@ -334,7 +341,7 @@ describe("SidecarRouter allocation deploy transport", () => {
   test("rejects deploys without a Hub signing key before mutating routing", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: async () => TEST_IDENTITY,
+      ...sidecarAuth(() => [TEST_IDENTITY]),
       validateSidecarIdentity: async () => true,
     });
     router.fenceAllocation(TEST_TARGET.allocationId, TEST_TARGET.generation);
@@ -471,8 +478,9 @@ describe("SidecarRouter allocation deploy transport", () => {
     };
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
-      authenticateSidecar: async ({ sidecarId }) =>
+      ...sidecarAuth((sidecarId) => [
         sidecarId === secondary.sidecarId ? secondary : TEST_IDENTITY,
+      ]),
       validateSidecarIdentity: async () => true,
       hubPublicKey: "a".repeat(64),
       requestTimeoutMs: 500,

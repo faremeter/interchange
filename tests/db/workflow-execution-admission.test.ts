@@ -43,6 +43,14 @@ const target = {
   anchorRunId: "run_admission",
   workflowRunAddress: "run_admission@example.test",
 };
+const binding = { kind: "allocated" as const, ...target };
+const sidecarAuth = {
+  authenticateSidecar: async () => ({
+    sidecarId: target.sidecarId,
+    bindings: [binding],
+  }),
+  resolveSidecarBindings: async () => [binding],
+};
 
 const deployConfig: HarnessConfig = {
   sessionId: "session_admission",
@@ -106,7 +114,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const registered = Promise.withResolvers<undefined>();
       const router = createSidecarRouter({
         hubPublicKey: "a".repeat(64),
-        authenticateSidecar: async () => ({ kind: "allocated", ...target }),
+        ...sidecarAuth,
         validateSidecarIdentity: async () => true,
         withExecutableWorkflowRun: (identity, send, signal) =>
           withExecutableWorkflowRun(h.db, identity, send, signal),
@@ -471,7 +479,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const preparing = Promise.withResolvers<undefined>();
       const senderKey = Promise.withResolvers<string>();
       const router = createSidecarRouter({
-        authenticateSidecar: async () => ({ kind: "allocated", ...target }),
+        ...sidecarAuth,
         validateSidecarIdentity: async () => true,
         withExecutableWorkflowRun: (identity, send, signal) =>
           withExecutableWorkflowRun(h.db, identity, send, signal),
