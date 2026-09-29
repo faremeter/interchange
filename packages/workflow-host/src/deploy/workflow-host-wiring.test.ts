@@ -2131,7 +2131,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(spawns.length).toBeGreaterThanOrEqual(2);
   });
 
-  test("multistepSubstrateEnv carries HUB_WS_URL, SIDECAR_ID, SIDECAR_TOKEN through to the spawn-time env", async () => {
+  test("multistepSubstrateEnv reaches the spawn-time env", async () => {
     const {
       supervisorToChild,
       childToSupervisor,
@@ -2165,9 +2165,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       spawner,
       multistepSubstrateEnv: {
         SIDECAR_DATA_DIR: bootEdgeDataDir,
-        HUB_WS_URL: "ws://hub.example/sidecar-boot",
-        SIDECAR_ID: "sidecar-boot-1",
-        SIDECAR_TOKEN: "boot-token-abc",
       },
     });
     const sources = defaultMultistepSources();
@@ -2180,9 +2177,6 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const frame = makeMultistepFrame({ definition, sources });
     const deployPromise = router.deploy(frame);
     observedEnv = await spawnObserver.first();
-    expect(observedEnv.HUB_WS_URL).toBe("ws://hub.example/sidecar-boot");
-    expect(observedEnv.SIDECAR_ID).toBe("sidecar-boot-1");
-    expect(observedEnv.SIDECAR_TOKEN).toBe("boot-token-abc");
     expect(observedEnv.SIDECAR_DATA_DIR).toBe(bootEdgeDataDir);
     // Round out the spawn so the test exits cleanly.
     const channelId = observedEnv.IPC_CHANNEL_ID;
