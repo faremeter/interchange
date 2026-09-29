@@ -112,6 +112,31 @@ tree types, so the inert wire projection — whose step values are
 `unknown` and are validated as the caller descends — rides the same
 traversal.
 
+## A selector names something that must exist
+
+A selector that names a path or a field fails the run rather than
+resolving to a hole. A `from` path throws on a missing key or an
+out-of-range index. A `project` throws when the source object does not
+carry a listed field as an own property. Neither shape reads an
+inherited member, so a path segment or a field named `toString`,
+`constructor`, or `hasOwnProperty` throws even though the member is
+reachable on every JSON-derived object. An own key of that name is a
+normal key and resolves normally; `merge` and `project` both build
+their result by defining keys, so an own `__proto__` key lands as data
+and never changes the result's prototype.
+
+The vocabulary therefore has no optional field. `fields: ["x"]` is a
+claim that the source carries `x`, and the run fails at the selector
+that made the claim rather than at some later step that received
+`undefined`. A field that is genuinely sometimes absent is modeled by
+the producing step, which emits the key with an explicit `null`.
+
+`merge` inherits this. Later operands override earlier ones for
+overlapping keys, so an operand carrying a hole erases a real value an
+earlier operand supplied. A `project` operand cannot carry one, because
+it throws on the absent field instead. A `from` operand carries
+whatever the producing step emitted.
+
 ## Consuming a real agent step's structured output
 
 Structural selectors (`map.over`, `input.from`, `project`, `merge`) do
