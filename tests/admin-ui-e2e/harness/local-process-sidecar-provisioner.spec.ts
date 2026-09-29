@@ -234,3 +234,125 @@ test.describe("createLocalProcessSidecarProvisioner", () => {
     expect(spawned[1]?.signals).toEqual(["SIGTERM"]);
   });
 });
+
+test.describe("createLocalProcessSidecarProvisioner sharing sidecars", () => {
+  async function createSharingHarness() {
+    const dataRoot = await fs.mkdtemp(
+      path.join(os.tmpdir(), "intx-local-provisioner-share-test-"),
+    );
+    tempDirs.push(dataRoot);
+    const spawned: ReturnType<typeof createFakeProcess>[] = [];
+    const local = createLocalProcessSidecarProvisioner({
+      dataRoot,
+      spawnSidecar() {
+        const fake = createFakeProcess(1000 + spawned.length);
+        spawned.push(fake);
+        return fake.process;
+      },
+      shareSidecarsBy: (request) => request.tenantId,
+      stopTimeoutMs: 10,
+    });
+    return { local, spawned };
+  }
+
+  function requestFor(
+    allocationId: string,
+    tenantId = "tnt_test",
+  ): EnsureSidecarRequest {
+    return {
+      ...createRequest(0, `sc_${allocationId}`),
+      allocationId,
+      tenantId,
+    };
+  }
+
+  test("places a tenant's allocations on one sidecar", async () => {
+    const { local, spawned } = await createSharingHarness();
+
+    expect(await local.provisioner.ensure(requestFor("sal_a"))).toEqual({
+      kind: "accepted",
+      externalRef: "1000",
+    });
+    expect(await local.provisioner.ensure(requestFor("sal_b"))).toEqual({
+      kind: "accepted",
+      externalRef: "1000",
+      sidecarId: "sc_sal_a",
+    });
+    expect(await local.provisioner.ensure(requestFor("sal_b"))).toEqual({
+      kind: "accepted",
+      externalRef: "1000",
+      sidecarId: "sc_sal_a",
+    });
+    expect(spawned).toHaveLength(1);
+    expect(local.sidecars()).toEqual([
+      { pid: 1000, hosts: ["sal_a", "sal_b"] },
+    ]);
+
+    await local.shutdown();
+  });
+
+  test("keeps a shared sidecar until its last allocation leaves", async () => {
+    const { local, spawned } = await createSharingHarness();
+    await local.provisioner.ensure(requestFor("sal_a"));
+    await local.provisioner.ensure(requestFor("sal_b"));
+
+    await local.provisioner.destroy({
+      allocationId: "sal_a",
+      generation: 0,
+      sidecarId: "sc_sal_a",
+    });
+    expect(spawned[0]?.signals).toEqual([]);
+    expect(local.sidecars()).toEqual([{ pid: 1000, hosts: ["sal_b"] }]);
+
+    await local.provisioner.destroy({
+      allocationId: "sal_b",
+      generation: 0,
+      sidecarId: "sc_sal_a",
+    });
+    expect(spawned[0]?.signals).toEqual(["SIGTERM"]);
+    expect(local.sidecars()).toEqual([]);
+  });
+
+  test("releases work named by the identity its ensure was offered", async () => {
+    const { local } = await createSharingHarness();
+    await local.provisioner.ensure(requestFor("sal_a"));
+    await local.provisioner.ensure(requestFor("sal_b"));
+
+    // A Hub that never recorded the placement names the offered identity.
+    await local.provisioner.destroy({
+      allocationId: "sal_b",
+      generation: 0,
+      sidecarId: "sc_sal_b",
+    });
+
+    expect(local.sidecars()).toEqual([{ pid: 1000, hosts: ["sal_a"] }]);
+    await local.shutdown();
+  });
+
+  test("starts a new sidecar once the shared one has no work left", async () => {
+    const { local, spawned } = await createSharingHarness();
+    await local.provisioner.ensure(requestFor("sal_a"));
+    await local.provisioner.destroy({
+      allocationId: "sal_a",
+      generation: 0,
+      sidecarId: "sc_sal_a",
+    });
+
+    expect(await local.provisioner.ensure(requestFor("sal_b"))).toEqual({
+      kind: "accepted",
+      externalRef: "1001",
+    });
+    expect(spawned).toHaveLength(2);
+    await local.shutdown();
+  });
+
+  test("keeps different tenants on different sidecars", async () => {
+    const { local, spawned } = await createSharingHarness();
+
+    await local.provisioner.ensure(requestFor("sal_a", "tnt_a"));
+    await local.provisioner.ensure(requestFor("sal_b", "tnt_b"));
+
+    expect(spawned).toHaveLength(2);
+    await local.shutdown();
+  });
+});

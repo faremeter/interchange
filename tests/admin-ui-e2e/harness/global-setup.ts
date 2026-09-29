@@ -633,6 +633,9 @@ async function globalSetup(): Promise<() => Promise<void>> {
     );
 
     process.env["E2E_BASE_URL"] = `http://${HOST}:${previewPort}`;
+    // The local provisioner keeps one data directory per running sidecar
+    // under here, which lets a spec observe how many processes host its work.
+    process.env["E2E_HUB_DATA_DIR"] = hubDataDir;
 
     return () => teardownStack(acquired);
   } catch (err) {
