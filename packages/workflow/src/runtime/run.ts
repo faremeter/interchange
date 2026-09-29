@@ -1493,11 +1493,33 @@ async function runStep(
       stepAbort.abort();
     };
     bridgeAbort(abort, onOuter);
+    // `timer` bounds a single turn's work (invocation + any in-turn
+    // suspend/approval park), not the idle wait between triggers -- see
+    // `armStepTimer`'s call sites in the bridge loop below. `clearStepTimer`
+    // is idempotent so the `finally` block's safety-net clear never double
+    // clears a timer an arm/clear pair already cleared.
     let timer: ReturnType<typeof setTimeout> | undefined;
-    if (step.timeout !== undefined) {
+    const armStepTimer = () => {
+      if (step.timeout === undefined) return;
       timer = setTimeout(() => {
         stepAbort.abort();
       }, step.timeout);
+    };
+    const clearStepTimer = () => {
+      if (timer === undefined) return;
+      clearTimeout(timer);
+      timer = undefined;
+    };
+    // Skip the initial arm when resuming into a recovered `"input"` park:
+    // that park IS the idle wait, so it must stay untimed until the next
+    // trigger's turn begins (armed after the recovered decision arrives,
+    // below). Any other recovered park (only `"approval"` is reachable here
+    // -- `resumeFromPark.parkKind` is this step's own recovered
+    // `awaitingSignal`, and `"signal-relay"` is exclusive to container
+    // primitives that never call `runStep`) is turn-bound work, so the
+    // initial arm covers it.
+    if (resumeFromPark?.parkKind !== "input") {
+      armStepTimer();
     }
 
     try {
@@ -1524,6 +1546,7 @@ async function runStep(
       // step; a resume that suspends AGAIN re-parks through the normal
       // `{ suspend }` arm below.
       if (resumeFromPark !== undefined) {
+        const recoveredParkKind = resumeFromPark.parkKind;
         const parkState = await reloadState(env, runId);
         const decision = await parkOnSignal(
           env,
@@ -1535,6 +1558,12 @@ async function runStep(
           parkState,
           stepAbort.signal,
         );
+        // The idle wait is over and a new turn is about to start. The
+        // initial arm above was skipped for a recovered `"input"` park, so
+        // arm the fresh per-turn timer here now that it resolved.
+        if (recoveredParkKind === "input") {
+          armStepTimer();
+        }
         resume = {
           correlationId: resumeFromPark.correlationId,
           decision,
@@ -1591,6 +1620,11 @@ async function runStep(
           const hasMoreTriggers =
             triggerBudget === "unbounded" || servicedTriggers < triggerBudget;
           if (!hasMoreTriggers) break;
+          // This turn's work is done; the step is about to idle-wait for
+          // its next trigger. Disarm the timer across that wait -- it can
+          // legitimately take hours -- and re-arm a fresh window once the
+          // next trigger's turn begins.
+          clearStepTimer();
           const inputCorrelationId = env.newId("corr");
           const rearmState = await reloadState(env, runId);
           const decision = await parkOnSignal(
@@ -1604,6 +1638,7 @@ async function runStep(
             rearmState,
             stepAbort.signal,
           );
+          armStepTimer();
           resume = {
             correlationId: inputCorrelationId,
             decision,
@@ -1834,7 +1869,7 @@ async function runStep(
       attempt = nextAttempt;
     } finally {
       abort.removeEventListener("abort", onOuter);
-      if (timer !== undefined) clearTimeout(timer);
+      clearStepTimer();
     }
   }
 }
