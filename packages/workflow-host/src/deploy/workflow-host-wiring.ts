@@ -21,7 +21,12 @@ import type {
   RepoStore,
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions/substrate";
-import { hexEncode, type CredentialCipher, type SignalKind } from "@intx/types";
+import {
+  hexEncode,
+  parseRunAddress,
+  type CredentialCipher,
+  type SignalKind,
+} from "@intx/types";
 import {
   parseInferenceEvent,
   type ApprovalSnapshot,
@@ -1224,6 +1229,17 @@ export function createSidecarDeployRouter<
    * `hello` can report; production never overrides it.
    */
   maxIncarnations?: number;
+  /**
+   * Remove a deployment's workflow-run repository from the substrate, and with
+   * it the run record the repository's directory holds. Undeploy calls it
+   * last.
+   */
+  removeRunRepository: (runId: string) => Promise<void>;
+  /**
+   * Remove an agent-state repository from the substrate. Undeploy removes the
+   * one a single-step deployment keeps its grants in.
+   */
+  removeAgentStateRepository: (id: string) => Promise<void>;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -2575,9 +2591,10 @@ export function createSidecarDeployRouter<
       const dataDir = stepStateDataDir;
       // Every step runs even when an earlier one fails, and the failures are
       // thrown together, so the answer names each step that failed. The run
-      // record goes last: after a crash mid-teardown it restores the copy on
-      // the next boot, whose hello reports it, and the Hub undeploys it again.
-      // Without the record nothing would report what the crash left behind.
+      // repository and the record inside it go last: after a crash
+      // mid-teardown the record restores the copy on the next boot, whose
+      // hello reports it, and the Hub undeploys it again. Without the record
+      // nothing would report what the crash left behind.
       const failures: Error[] = [];
       const attempt = async (
         step: string,
@@ -2607,11 +2624,12 @@ export function createSidecarDeployRouter<
         );
         // Reclaim the deployment's local state: its per-step scratch (the warm
         // agent's workspace and any cold run subtrees), its materialized
-        // closure, its source stores and its local conversation copy, which
-        // only that deployment's respawns and restarts read. All run on every
-        // undeploy, not only when a supervisor was live, so state an
-        // interrupted deploy or a failed restore left is reclaimed too. No
-        // child holds any of it: a live one was shut down above.
+        // closure, its source stores, its local conversation copy and a
+        // single-step deployment's grants, which only that deployment's
+        // respawns and restarts read. All run on every undeploy, not only when
+        // a supervisor was live, so state an interrupted deploy or a failed
+        // restore left is reclaimed too. No child holds any of it: a live one
+        // was shut down above.
         if (dataDir !== undefined) {
           const localState: [string, string][] = [
             [
@@ -2640,8 +2658,16 @@ export function createSidecarDeployRouter<
               rm(dir, { recursive: true, force: true }),
             );
           }
-          await attempt("deleting its run record", () =>
-            deleteWorkflowRunRecord(dataDir, runId),
+          // A single-step deployment's grants live in the agent-state
+          // repository of its own run address.
+          const run = parseRunAddress(frame.agentAddress);
+          if (run !== null) {
+            await attempt("removing its grants repository", () =>
+              deps.removeAgentStateRepository(run.runId),
+            );
+          }
+          await attempt("removing its run repository and record", () =>
+            deps.removeRunRepository(runId),
           );
         }
         releaseSlug(runId, frame.agentAddress);

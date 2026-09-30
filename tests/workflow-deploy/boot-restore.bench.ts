@@ -346,6 +346,8 @@ async function buildRouter(args: {
     createAgentCrypto: createEd25519Crypto,
     assertSourceBuildable: () => undefined,
     registerDeployment: () => undefined,
+    removeRunRepository: async () => undefined,
+    removeAgentStateRepository: async () => undefined,
     unregisterDeployment: () => undefined,
     reportDeploymentRefTips: async () => ({}),
     multistepSubprocessSpawner: args.spawner,
