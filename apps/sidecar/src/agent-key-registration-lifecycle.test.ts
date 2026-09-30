@@ -186,6 +186,12 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
       registerDeployment: () => undefined,
+      // Like the production hook, removes the run record with the repository.
+      removeRunRepository: (runId) =>
+        fs.rm(path.join(dataDir, "workflow-runs", runId), {
+          recursive: true,
+          force: true,
+        }),
       unregisterDeployment: () => undefined,
       reportDeploymentRefTips: async () => ({}),
       multistepSubprocessSpawner: spawner,

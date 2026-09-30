@@ -37,7 +37,7 @@ import { writeFileAtomicDurable } from "./atomic-write";
 
 const logger = getLogger(["interchange", "sidecar", "workflow-run-record"]);
 
-const RECORD_FILENAME = "deployment.json";
+export const WORKFLOW_RUN_RECORD_FILENAME = "deployment.json";
 
 /** True for a `node:fs` rejection whose `code` is `ENOENT`. */
 function isENOENT(cause: unknown): boolean {
@@ -122,7 +122,12 @@ export const WorkflowRunRecord = type({
 export type WorkflowRunRecord = typeof WorkflowRunRecord.infer;
 
 function recordPath(dataDir: string, runId: string): string {
-  return pathJoin(dataDir, "workflow-runs", runId, RECORD_FILENAME);
+  return pathJoin(
+    dataDir,
+    "workflow-runs",
+    runId,
+    WORKFLOW_RUN_RECORD_FILENAME,
+  );
 }
 
 // The AAD column binding a credential's sealed secret to its id, so a ciphertext
@@ -258,7 +263,7 @@ export async function scanWorkflowRunRecords(
       // write, or a run whose record was already reclaimed. Nothing to
       // restore from -- skip.
       if (isENOENT(cause)) {
-        logger.warn`skipping workflow-runs/${runId}: no ${RECORD_FILENAME} to restore from`;
+        logger.warn`skipping workflow-runs/${runId}: no ${WORKFLOW_RUN_RECORD_FILENAME} to restore from`;
         continue;
       }
       throw cause;
@@ -269,13 +274,13 @@ export async function scanWorkflowRunRecords(
       parsed = JSON.parse(raw);
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
-      logger.warn`skipping workflow-runs/${runId}: ${RECORD_FILENAME} is not valid JSON: ${reason}`;
+      logger.warn`skipping workflow-runs/${runId}: ${WORKFLOW_RUN_RECORD_FILENAME} is not valid JSON: ${reason}`;
       continue;
     }
 
     const record = WorkflowRunRecord(parsed);
     if (record instanceof type.errors) {
-      logger.warn`skipping workflow-runs/${runId}: ${RECORD_FILENAME} failed validation: ${record.summary}`;
+      logger.warn`skipping workflow-runs/${runId}: ${WORKFLOW_RUN_RECORD_FILENAME} failed validation: ${record.summary}`;
       continue;
     }
     // A version-2 record seals every credential secret in its `credentials`

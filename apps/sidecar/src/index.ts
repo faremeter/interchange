@@ -52,6 +52,7 @@ import {
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
 import { createWorkflowRunPackRestorer } from "./workflow-run-pack-restore";
+import { WORKFLOW_RUN_RECORD_FILENAME } from "./workflow-run-record";
 import { readRegistries } from "./sidecar-materialization-config";
 import { createWorkflowClosureMaterializer } from "./workflow-closure-materialization";
 import { MAX_INLINE_ASSET_PAYLOAD_BYTES } from "./source-asset-delivery";
@@ -601,6 +602,13 @@ const orchestrator = createSidecarOrchestrator({
       },
       reportDeploymentRefTips: (incarnation) =>
         wrappedRepoStore.reportWorkflowRunRefTips(incarnation),
+      // The run record lives in the repository and goes last, so a crash
+      // partway through leaves it for the next boot to report.
+      removeRunRepository: (runId) =>
+        agentRepoStore.repoStore.removeRepo(
+          { kind: "workflow-run", id: runId },
+          { last: WORKFLOW_RUN_RECORD_FILENAME },
+        ),
       multistepMailRouter,
       inboundMailPolicyRegistry,
       multistepSignalRouter,

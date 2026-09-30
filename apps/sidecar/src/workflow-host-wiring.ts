@@ -1382,6 +1382,12 @@ export function createSidecarDeployRouter(deps: {
    * `hello` can report; production never overrides it.
    */
   maxIncarnations?: number;
+  /**
+   * Remove a deployment's workflow-run repository from the substrate, and with
+   * it the run record the repository's directory holds. Undeploy calls it
+   * last.
+   */
+  removeRunRepository: (runId: string) => Promise<void>;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -2737,9 +2743,10 @@ export function createSidecarDeployRouter(deps: {
       const dataDir = stepStateDataDir;
       // Every step runs even when an earlier one fails, and the failures are
       // thrown together, so the answer names each step that failed. The run
-      // record goes last: after a crash mid-teardown it restores the copy on
-      // the next boot, whose hello reports it, and the Hub undeploys it again.
-      // Without the record nothing would report what the crash left behind.
+      // repository and the record inside it go last: after a crash
+      // mid-teardown the record restores the copy on the next boot, whose
+      // hello reports it, and the Hub undeploys it again. Without the record
+      // nothing would report what the crash left behind.
       const failures: Error[] = [];
       const attempt = async (
         step: string,
@@ -2799,8 +2806,8 @@ export function createSidecarDeployRouter(deps: {
               rm(dir, { recursive: true, force: true }),
             );
           }
-          await attempt("deleting its run record", () =>
-            deleteWorkflowRunRecord(dataDir, runId),
+          await attempt("removing its run repository and record", () =>
+            deps.removeRunRepository(runId),
           );
         }
         releaseSlug(runId, frame.agentAddress);

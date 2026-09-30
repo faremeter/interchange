@@ -5,9 +5,9 @@ import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { createRepoStore } from "./repo-store";
 import type {
   AuthorizeFn,
+  LocalRepoStore,
   NewlyTerminalRun,
   RepoId,
-  RepoStore,
 } from "./repo-store";
 import {
   agentStateKindHandler,
@@ -116,7 +116,7 @@ export type AgentRepoStore = {
    * skill repos) can share the same on-disk root and signing key
    * without spinning up a parallel RepoStore.
    */
-  readonly repoStore: RepoStore;
+  readonly repoStore: LocalRepoStore;
 };
 
 /**

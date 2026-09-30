@@ -20,7 +20,12 @@ import { createApprovalSet, deriveRunAddress } from "@intx/workflow-deploy";
 import { createNoopCredentialCipher } from "@intx/crypto";
 import type { AgentRepoStore, DeployContent } from "./agent-repo";
 import type { AssetService } from "./asset-service";
-import type { Principal, RepoId, RepoStore } from "./repo-store";
+import type {
+  LocalRepoStore,
+  Principal,
+  RepoId,
+  RepoStore,
+} from "./repo-store";
 import {
   createSessionService,
   recoverSenderDeploy,
@@ -296,7 +301,7 @@ function createMockRepoStore(): AgentRepoStore & { calls: Call[] } {
   };
 }
 
-function unusedRepoStore(): RepoStore {
+function unusedRepoStore(): LocalRepoStore {
   // SessionService tests never exercise the substrate; the inner
   // store is only present because AgentRepoStore exposes it. A typed
   // throwing stub keeps the surface honest without dragging in a
@@ -324,6 +329,7 @@ function unusedRepoStore(): RepoStore {
     subscribe: () => {
       throw new Error("mock AgentRepoStore.repoStore is not wired");
     },
+    removeRepo: unused,
   };
 }
 

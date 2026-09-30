@@ -1,4 +1,4 @@
-import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll, spyOn } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -173,6 +173,78 @@ describe("RepoStore", () => {
     expect(call.oldSha).toBeNull();
     expect(call.newSha).toBe(commitSha);
     expect(call.repoId).toEqual(repoId);
+  });
+
+  test("removeRepo deletes a repository so one created again starts from nothing", async () => {
+    const dataDir = await makeTempDir("repo-store-remove-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    const first = await store.writeTree(principal, repoId, REF, {
+      files: { "deploy/prompt.md": "first" },
+      message: "first",
+    });
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+
+    await store.removeRepo(repoId);
+    await store.removeRepo(repoId);
+
+    expect(fs.existsSync(dir)).toBe(false);
+    const { commitSha } = await store.writeTree(principal, repoId, REF, {
+      files: { "deploy/prompt.md": "second" },
+      message: "second",
+    });
+    const { commit } = await git.readCommit({ fs, dir, oid: commitSha });
+    expect(commit.parent).not.toContain(first.commitSha);
+    expect(handler.onRefUpdatedCalls.at(-1)?.oldSha).toBeNull();
+    await expect(
+      git.readCommit({ fs, dir, oid: first.commitSha }),
+    ).rejects.toThrow();
+  });
+
+  test("removeRepo removes the entry named last after every other one", async () => {
+    const dataDir = await makeTempDir("repo-store-remove-last-");
+    const handler = createTestHandler();
+    const store = createRepoStore({
+      dataDir,
+      signingKey,
+      handlers: { "agent-state": handler },
+      authorize: allowAll,
+    });
+    await store.writeTree(principal, repoId, REF, {
+      files: { "deploy/prompt.md": "first" },
+      message: "first",
+    });
+    const dir = path.join(dataDir, handler.directoryPrefix, repoId.id);
+    fs.writeFileSync(path.join(dir, "record.json"), "{}");
+    const entries = fs.readdirSync(dir);
+    expect(entries.length).toBeGreaterThan(1);
+
+    const removed: string[] = [];
+    const rm = fs.promises.rm.bind(fs.promises);
+    const spy = spyOn(fs.promises, "rm").mockImplementation(
+      async (target, options) => {
+        removed.push(String(target));
+        return rm(target, options);
+      },
+    );
+    try {
+      await store.removeRepo(repoId, { last: "record.json" });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(fs.existsSync(dir)).toBe(false);
+    const record = removed.indexOf(path.join(dir, "record.json"));
+    expect(record).toBe(removed.length - 2);
+    expect(removed.at(-1)).toBe(dir);
+    for (const entry of entries.filter((name) => name !== "record.json")) {
+      expect(removed.indexOf(path.join(dir, entry))).toBeLessThan(record);
+    }
   });
 
   test("writeTree on an existing ref advances from that ref", async () => {
