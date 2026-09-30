@@ -248,6 +248,8 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         registerDeployment: () => {
           /* no-op */
         },
+        removeRunRepository: async () => undefined,
+        removeAgentStateRepository: async () => undefined,
         unregisterDeployment: () => {
           /* no-op */
         },
