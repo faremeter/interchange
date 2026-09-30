@@ -1327,24 +1327,32 @@ describe("mail_search handler", () => {
     expect(result.isError).toBeUndefined();
   });
 
-  test("reports a failure of the transport itself as search_failed", async () => {
-    // Only a mailbox that is not there is the caller's to fix, and the
-    // transport says which case it is by naming its condition. Every other
-    // condition, and a rejection naming none, is a failure the caller can do
-    // nothing about but retry the same call.
-    const failures: [label: string, cause: Error][] = [
+  test("reports a failure of the transport itself under the code its condition earns", async () => {
+    // The transport says which case it is by naming its condition, and the
+    // three cases are not one. A mailbox that is not there is the caller's to
+    // fix. An operation the transport refused outright is nobody's to fix by
+    // reissuing it, so it does not get a code that invites that. Only a
+    // condition that leaves the outcome unknown, and a rejection naming none,
+    // is a failure the caller can do nothing about but retry the same call.
+    const failures: [label: string, cause: Error, code: string][] = [
       [
         "a transport that violated its own invariant",
         new MessageTransportError("SERVERBUG", "no reader is wired"),
+        "search_failed",
       ],
       [
         "an operation this transport can never serve",
         new MessageTransportError("CANNOT", "search is not supported here"),
+        "not_available",
       ],
-      ["a rejection naming no condition", new Error("the socket went away")],
+      [
+        "a rejection naming no condition",
+        new Error("the socket went away"),
+        "search_failed",
+      ],
     ];
 
-    for (const [label, cause] of failures) {
+    for (const [label, cause, code] of failures) {
       const transport = makeMockTransport();
       transport.search = async () => {
         throw cause;
@@ -1357,7 +1365,9 @@ describe("mail_search handler", () => {
 
       if (typeof result.content === "string")
         throw new Error(`${label}: expected object content`);
-      expect(result.content["code"]).toBe("search_failed");
+      expect(`${label}: ${String(result.content["code"])}`).toBe(
+        `${label}: ${code}`,
+      );
       expect(result.content["error"]).toBe(cause.message);
     }
   });
@@ -2662,9 +2672,11 @@ describe("mail_expunge handler", () => {
     );
   });
 
-  test("a condition other than NONEXISTENT keeps expunge_failed", async () => {
-    // The mapping is one condition wide here too: a transport that failed for
-    // a reason of its own may have swept the INBOX and lost the reply.
+  test("a transport that failed for its own reason keeps expunge_failed", async () => {
+    // Two conditions are mapped away from the operation's own code -- a mailbox
+    // that is not there, and an operation the transport refused outright. This
+    // is neither: a transport that violated its own invariant may have swept
+    // the INBOX and lost the reply, so the outcome is genuinely unknown.
     const transport = makeMockTransport();
     transport.expunge = async () => {
       throw new MessageTransportError(
@@ -2797,10 +2809,11 @@ describe("a mailbox the transport says is not there", () => {
     });
   }
 
-  test("a condition other than NONEXISTENT keeps the operation's own code", async () => {
-    // The carve-out is exactly one condition wide. A transport that fails for
-    // a reason of its own has not told the caller its mailbox is wrong, and a
-    // flag write that failed that way still leaves the outcome unknown.
+  test("a transport that failed for its own reason keeps the operation's own code", async () => {
+    // The carve-out covers a mailbox that is not there and an operation the
+    // transport refused outright. A transport that violated its own invariant
+    // has told the caller neither, and a flag write that failed that way still
+    // leaves the outcome unknown.
     const transport = makeMockTransport();
     transport.setFlags = async () => {
       throw new MessageTransportError(
