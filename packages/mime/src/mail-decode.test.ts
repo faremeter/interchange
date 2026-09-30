@@ -1103,4 +1103,83 @@ describe("isMail", () => {
     // into a text turn with no error and no log.
     expect(isMail({ ...validMail(), headers: { to: ["c@d"] } })).toBe(true);
   });
+
+  /** Narrow a value reached out of JSON output, without a type assertion. */
+  function asObject(value: unknown): object {
+    if (typeof value !== "object" || value === null) {
+      throw new Error(`expected an object, got ${typeof value}`);
+    }
+    return value;
+  }
+
+  /**
+   * The map the decoder builds for a message carrying `__proto__` and
+   * `Constructor` as field names. Every value is an own enumerable data
+   * property and the map has no prototype, which is the shape the sibling
+   * "keeps a header named after an Object.prototype member" case pins.
+   */
+  function hostileRawHeaders(): Record<string, string[]> {
+    return decodeMail(
+      rawBytes(
+        "From: a@b\r\n" +
+          "To: c@d\r\n" +
+          "__proto__: injected\r\n" +
+          "Constructor: hostile\r\n" +
+          "Content-Type: text/plain\r\n\r\nbody",
+      ),
+    ).rawHeaders;
+  }
+
+  test("accepts the rawHeaders map a hostile field name produces", () => {
+    // The `rawHeaders` index signature must still ACCEPT the map the decoder
+    // actually builds. A rejection here is silent: `isMail` returning false
+    // sends the step input down `synthesizeInputContent` instead of the mail
+    // projection, so an inbound mail carrying a `__proto__` header would reach
+    // the agent as stringified text with its parts and threading headers
+    // dropped, and nothing would raise.
+    const rawHeaders = hostileRawHeaders();
+    expect(Object.getPrototypeOf(rawHeaders)).toBeNull();
+    expect(Object.keys(rawHeaders)).toContain("__proto__");
+    expect(Object.keys(rawHeaders)).toContain("constructor");
+
+    expect(isMail({ ...validMail(), rawHeaders })).toBe(true);
+
+    // The acceptance above is the values passing, not the hostile keys going
+    // uninspected: the same map with a bare string under `__proto__` is
+    // refused, so the index signature does reach that key.
+    const tampered = { ...rawHeaders };
+    Object.defineProperty(tampered, "__proto__", {
+      value: "injected",
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+    expect(isMail({ ...validMail(), rawHeaders: tampered })).toBe(false);
+  });
+
+  test("accepts that map after the JSON round trip the control channel imposes", () => {
+    // Decoded mail crosses the workflow host's control channel as JSON, so the
+    // value `isMail` narrows is `JSON.parse` output rather than the decoder's
+    // own object.
+    const transported: unknown = JSON.parse(
+      JSON.stringify({ ...validMail(), rawHeaders: hostileRawHeaders() }),
+    );
+    const map = asObject(
+      Object.getOwnPropertyDescriptor(asObject(transported), "rawHeaders")
+        ?.value,
+    );
+    // `JSON.parse` writes `__proto__` as an own data property rather than
+    // through the inherited setter, so the entry survives the crossing and does
+    // not become the map's prototype. Asserted before the acceptance below,
+    // which a map that LOST the key would satisfy too.
+    expect(Object.getOwnPropertyDescriptor(map, "__proto__")?.value).toEqual([
+      "injected",
+    ]);
+    expect(Object.getOwnPropertyDescriptor(map, "constructor")?.value).toEqual([
+      "hostile",
+    ]);
+    expect(Object.getPrototypeOf(map)).toBe(Object.prototype);
+
+    expect(isMail(transported)).toBe(true);
+  });
 });

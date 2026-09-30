@@ -732,9 +732,12 @@ describe("mail_send over a transport that assembles the message", () => {
     transport.register(SENDER, createEd25519Crypto(senderKeys));
     transport.register(RECIPIENT, createEd25519Crypto(recipientKeys));
 
+    const senderTransport = transport.getTransportFor(SENDER);
     const recipientTransport = transport.getTransportFor(RECIPIENT);
     return {
-      handler: makeMailSendHandler(transport.getTransportFor(SENDER)),
+      handler: makeMailSendHandler(senderTransport),
+      senderTransport,
+      recipientTransport,
       delivered: async () =>
         await recipientTransport.search("INBOX", {}, signal),
     };
@@ -802,6 +805,107 @@ describe("mail_send over a transport that assembles the message", () => {
 
     expect(result.isError).toBeUndefined();
     expect(await delivered()).toHaveLength(1);
+  });
+
+  test("an inReplyTo names that one parent in References, where a reply names the ancestry", async () => {
+    // `mail_send` takes `inReplyTo` as an argument and never fetches the
+    // message it names, so the chain it emits holds that one identifier. Only
+    // `mail_reply` has the parent in hand and can extend the chain from the
+    // parent's own References. Nothing distinguished the two paths, which is
+    // how a claim that `mail_send` extends the chain by fetching the parent's
+    // References survived in the message documentation.
+    const { senderTransport, recipientTransport } = await boundSend();
+    const betaSend = makeMailSendHandler(recipientTransport);
+    const betaReply = makeMailReplyHandler(recipientTransport);
+    const alphaReply = makeMailReplyHandler(senderTransport);
+
+    function refAt(refs: MessageRef[], index: number): MessageRef {
+      const ref = refs[index];
+      if (ref === undefined) throw new Error(`no message at index ${index}`);
+      return ref;
+    }
+    function messageIdOf(headers: MessageHeaders): string {
+      const { messageId } = headers;
+      if (messageId === undefined) {
+        throw new Error("the assembled message carries no Message-Id");
+      }
+      return messageId;
+    }
+
+    // Generation 1: beta opens the thread to alpha, so it carries no ancestry.
+    await betaSend(
+      {
+        id: "t1",
+        name: "mail_send",
+        arguments: { to: SENDER, content: "g1", subject: "T" },
+      },
+      signal,
+    );
+    const alphaInbox = await senderTransport.search("INBOX", {}, signal);
+    expect(alphaInbox).toHaveLength(1);
+    const g1 = await senderTransport.fetchHeaders(refAt(alphaInbox, 0), signal);
+    expect(g1.references).toBeUndefined();
+
+    // Generation 2: alpha replies, so g2 carries References = [g1].
+    await alphaReply(
+      {
+        id: "t2",
+        name: "mail_reply",
+        arguments: { ref: refAt(alphaInbox, 0), content: "g2" },
+      },
+      signal,
+    );
+    const betaInbox = await recipientTransport.search("INBOX", {}, signal);
+    expect(betaInbox).toHaveLength(1);
+    const g2 = await recipientTransport.fetchHeaders(
+      refAt(betaInbox, 0),
+      signal,
+    );
+    // The parent has ancestry to lose, and it is a different message from g1.
+    expect(messageIdOf(g2)).not.toBe(messageIdOf(g1));
+    expect(g2.references).toEqual([messageIdOf(g1)]);
+
+    // Generation 3a: beta answers g2 through mail_send, naming it by id alone.
+    await betaSend(
+      {
+        id: "t3a",
+        name: "mail_send",
+        arguments: {
+          to: SENDER,
+          content: "g3 by send",
+          inReplyTo: messageIdOf(g2),
+        },
+      },
+      signal,
+    );
+    // Generation 3b: beta answers the same g2 through mail_reply.
+    await betaReply(
+      {
+        id: "t3b",
+        name: "mail_reply",
+        arguments: { ref: refAt(betaInbox, 0), content: "g3 by reply" },
+      },
+      signal,
+    );
+
+    const afterBoth = await senderTransport.search("INBOX", {}, signal);
+    expect(afterBoth).toHaveLength(3);
+    const bySend = await senderTransport.fetchHeaders(
+      refAt(afterBoth, 1),
+      signal,
+    );
+    const byReply = await senderTransport.fetchHeaders(
+      refAt(afterBoth, 2),
+      signal,
+    );
+
+    // Both answer the SAME parent, so the chains below differ on the path
+    // taken and on nothing else.
+    expect(bySend.inReplyTo).toBe(messageIdOf(g2));
+    expect(byReply.inReplyTo).toBe(messageIdOf(g2));
+
+    expect(bySend.references).toEqual([messageIdOf(g2)]);
+    expect(byReply.references).toEqual([messageIdOf(g1), messageIdOf(g2)]);
   });
 });
 

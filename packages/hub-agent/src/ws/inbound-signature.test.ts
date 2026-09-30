@@ -4,6 +4,7 @@ import {
   assembleSignedContent,
   assembleMessage,
   createDetachedSignatureFromProvider,
+  decodeMail,
   generateMessageId,
   type MessageHeaders,
 } from "@intx/mime";
@@ -120,6 +121,40 @@ function replaceFromValue(raw: Uint8Array, value: string): Uint8Array {
     throw new Error("assembled message carries no From header to replace");
   }
   return new TextEncoder().encode(kept.join("\r\n") + text.slice(bodyStart));
+}
+
+/**
+ * Insert `line` as its own top-level header field directly after the existing
+ * `From`, leaving the rest of the message byte-identical. Like
+ * {@link stripFromHeader} this touches only the top-level headers, which the
+ * detached signature does not cover, so the result still verifies. `line`
+ * carries its own field name, so this is how a message with two `From` fields
+ * is built.
+ */
+function insertHeaderLineAfterFrom(raw: Uint8Array, line: string): Uint8Array {
+  const text = new TextDecoder().decode(raw);
+  const bodyStart = text.indexOf("\r\n\r\n");
+  if (bodyStart === -1) throw new Error("assembled message has no body");
+  const lines = text.slice(0, bodyStart).split("\r\n");
+  const at = lines.findIndex((l) => l.toLowerCase().startsWith("from:"));
+  if (at === -1) {
+    throw new Error("assembled message carries no From header to insert after");
+  }
+  lines.splice(at + 1, 0, line);
+  return new TextEncoder().encode(lines.join("\r\n") + text.slice(bodyStart));
+}
+
+/**
+ * Restate a decoded mail's originator in the spelling a verdict uses, so the
+ * two are directly comparable. The asymmetry is deliberate on both sides and
+ * not an accident to paper over: `InboundSignatureVerdict.messageFrom` is
+ * `string | null`, while `Mail.headers.from` is `string | undefined` because a
+ * mail carrying no usable originator is still mail. Only the absent case is
+ * restated; a present address is carried through untouched, so a comparison
+ * through this cannot make two different addresses agree.
+ */
+function asVerdictOriginator(from: string | undefined): string | null {
+  return from === undefined ? null : from;
 }
 
 describe("verifyInboundSignature", () => {
@@ -803,6 +838,83 @@ describe("verifyInboundSignature", () => {
 
     expect(verdict.signature).toBe("valid");
     expect(verdict.fromMatch).toBe("match");
+  });
+
+  // Two top-level `From` fields is malformed under RFC 5322 section 3.6.2,
+  // which allows one. Nothing on the delivery path refuses such a message, so
+  // the gate binds one of the two values and the decoded mail a consumer reads
+  // carries both. What must hold is that the gate binds the SAME value the
+  // consumer's `headers.from` names, in either order: if the two disagreed, an
+  // attacker could get one originator past the gate and a different one
+  // delivered. `parseHeaders` keeps the first occurrence, and both the gate and
+  // `decodeMail` read through it, which is what makes them agree.
+  const DUP_SENDER = "alpha@test.interchange";
+  const DUP_ATTACKER = "evil@attacker.example";
+
+  test("duplicate From, legit value first: admitted, and both values survive", async () => {
+    const crypto = await makeCrypto();
+    const raw = insertHeaderLineAfterFrom(
+      await signedMessage(crypto, DUP_SENDER),
+      `From: ${DUP_ATTACKER}`,
+    );
+    const decoded = decodeMail(raw);
+    // The fixture really carries two From fields, in this order.
+    expect(decoded.rawHeaders["from"]).toEqual([DUP_SENDER, DUP_ATTACKER]);
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: DUP_SENDER,
+        messageId: "mid-dup-legit-first",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(DUP_SENDER, crypto),
+    );
+
+    expect(verdict.signature).toBe("valid");
+    expect(verdict.fromMatch).toBe("match");
+    expect(verdict.messageFrom).toBe(DUP_SENDER);
+    expect(asVerdictOriginator(decoded.headers.from)).toBe(verdict.messageFrom);
+    expect(
+      decideInboundAdmission(verdict, resolveInboundMailPolicy(undefined))
+        .rejectedBy,
+    ).toBe(null);
+  });
+
+  test("duplicate From, attacker value first: rejected as mismatchedFrom", async () => {
+    const crypto = await makeCrypto();
+    // The attacker's value takes the first field and the stamped sender's the
+    // second, which is the ordering a relay-prepended header produces.
+    const raw = insertHeaderLineAfterFrom(
+      replaceFromValue(
+        await signedMessage(crypto, DUP_SENDER),
+        ` ${DUP_ATTACKER}`,
+      ),
+      `From: ${DUP_SENDER}`,
+    );
+    const decoded = decodeMail(raw);
+    expect(decoded.rawHeaders["from"]).toEqual([DUP_ATTACKER, DUP_SENDER]);
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: DUP_SENDER,
+        messageId: "mid-dup-attacker-first",
+        agentAddress: AGENT_ADDRESS,
+      },
+      cacheFor(DUP_SENDER, crypto),
+    );
+
+    // The signature still verifies -- it covers the signed content part, not
+    // the top-level headers -- so the rejection is the binding's alone.
+    expect(verdict.signature).toBe("valid");
+    expect(verdict.fromMatch).toBe("mismatch");
+    expect(verdict.messageFrom).toBe(DUP_ATTACKER);
+    expect(asVerdictOriginator(decoded.headers.from)).toBe(verdict.messageFrom);
+    expect(
+      decideInboundAdmission(verdict, resolveInboundMailPolicy(undefined))
+        .rejectedBy,
+    ).toBe("mismatchedFrom");
   });
 });
 
