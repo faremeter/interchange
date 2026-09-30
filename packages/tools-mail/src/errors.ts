@@ -8,6 +8,12 @@ export type MailToolErrorCode =
   // The referenced message is gone, or its uid never named one.
   | "not_found"
   | "no_reply_address"
+  // The transport refused the operation outright: a handle whose address
+  // registration is gone, or a method the transport does not implement.
+  // Nothing about the call is what is wrong, so reissuing it unchanged is not
+  // a recovery -- which is what separates it from the `*_failed` codes, where
+  // the transport was reached and the outcome is unknown.
+  | "not_available"
   | "search_failed"
   | "send_failed"
   // A message the tool observed to exist could not be read back.

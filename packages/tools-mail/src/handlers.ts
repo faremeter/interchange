@@ -255,8 +255,11 @@ function inheritedNameResult(
 }
 
 // `NONEXISTENT` is RFC 5530's condition for a mailbox that is not there, and a
-// transport raises it before it attempts the operation. Any other rejection
-// carries `operationCode`, worded by `describe`.
+// transport raises it before it attempts the operation. `CANNOT` is its
+// condition for an operation the transport refused outright, which a retry of
+// the same call does not address. Every other condition, and a rejection naming
+// none at all, leaves the outcome unknown and carries `operationCode`, worded
+// by `describe`.
 function transportFailureResult(
   callId: string,
   cause: unknown,
@@ -272,6 +275,7 @@ function transportFailureResult(
     case "NONEXISTENT":
       return errorResult(callId, message, "invalid_mailbox");
     case "CANNOT":
+      return errorResult(callId, message, "not_available");
     case "SERVERBUG":
       return operationFailure();
   }

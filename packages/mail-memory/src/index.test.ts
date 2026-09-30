@@ -15,6 +15,7 @@ import type {
   MessageRef,
   MessageAttachment,
 } from "@intx/types/runtime";
+import { isMessageTransportError } from "@intx/types/runtime";
 import { waitUntil } from "@intx/types/testing";
 
 function conversationHeaders(): MessageHeaders {
@@ -671,6 +672,86 @@ describe("registration lifecycle", () => {
         content: "hi",
       }),
     ).rejects.toThrow(/deregistered|not registered/);
+  });
+
+  test("a deregistered scoped handle names a condition no retry can clear", async () => {
+    // No retry through the handle brings the entry back, so the rejection has
+    // to say so. Naming `CANNOT` is what separates it from a rejection carrying
+    // no condition, which leaves the outcome unknown and so reads as retriable.
+    const { transport, alphaTransport } = await createTestTransport();
+    transport.unregister("alpha@test.interchange");
+
+    const operations: [label: string, run: () => Promise<unknown>][] = [
+      [
+        "send",
+        () =>
+          alphaTransport.send({
+            to: "beta@test.interchange",
+            type: "conversation.message",
+            content: "hi",
+          }),
+      ],
+      ["search", () => alphaTransport.search("INBOX", {})],
+      ["listMailboxes", () => alphaTransport.listMailboxes()],
+    ];
+
+    for (const [label, run] of operations) {
+      const cause: unknown = await run().then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      if (cause === undefined) {
+        throw new Error(`${label}: expected the deregistered handle to reject`);
+      }
+      if (!isMessageTransportError(cause)) {
+        throw new Error(
+          `${label}: expected a condition, got ${String(cause)}`,
+          { cause },
+        );
+      }
+      expect(cause.condition).toBe("CANNOT");
+    }
+  });
+
+  test("an unimplemented method names the same condition as a dead handle", async () => {
+    // Nothing a caller changes about the call makes an unimplemented method
+    // arrive, which is the same thing `CANNOT` says about a handle whose
+    // registration is gone. No mail tool reaches these methods, so the
+    // condition is asserted here rather than through a tool.
+    const { alphaTransport } = await createTestTransport();
+
+    const operations: [label: string, run: () => Promise<unknown>][] = [
+      [
+        "sync",
+        () =>
+          alphaTransport.sync("INBOX", {
+            uidValidity: 1,
+            uidNext: 1,
+            highestModSeq: 0,
+          }),
+      ],
+      ["createList", () => alphaTransport.createList("list@test", "List")],
+      ["listMembers", () => alphaTransport.listMembers("list@test")],
+      [
+        "subscribe",
+        () => alphaTransport.subscribe("list@test", "alpha@test.interchange"),
+      ],
+      [
+        "unsubscribe",
+        () => alphaTransport.unsubscribe("list@test", "alpha@test.interchange"),
+      ],
+    ];
+
+    for (const [label, run] of operations) {
+      const cause: unknown = await run().then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      if (!isMessageTransportError(cause)) {
+        throw new Error(`${label}: expected a condition, got ${String(cause)}`);
+      }
+      expect(cause.condition).toBe("CANNOT");
+    }
   });
 
   test("fetchFull returns signatureStatus 'unknown' after sender is unregistered", async () => {
