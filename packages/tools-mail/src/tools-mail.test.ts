@@ -1341,7 +1341,7 @@ describe("mail_search handler", () => {
         "search_failed",
       ],
       [
-        "an operation this transport can never serve",
+        "an operation the transport refuses outright",
         new MessageTransportError("CANNOT", "search is not supported here"),
         "not_available",
       ],
