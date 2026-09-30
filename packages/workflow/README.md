@@ -115,10 +115,18 @@ traversal.
 ## A selector names something that must exist
 
 A selector that names a path or a field fails the run rather than
-resolving to a hole. A `from` path throws on a missing key or an
-out-of-range index. A `project` throws when the source object does not
-carry a listed field as an own property. Neither shape reads an
-inherited member, so a path segment or a field named `toString`,
+resolving to a hole. A `from` path throws on a missing key, an
+out-of-range index, and an in-range index a sparse array leaves
+unfilled; the one hole it admits is an own key whose value is
+`undefined`. The runtime canonicalizes a step input that is
+wholly `undefined` to `null`, and that check does not descend,
+so a hole nested inside a resolved object survives it. An agent
+step's two sinks agree because both see the JSON form, where the
+key is absent; a handler that receives the input object by
+reference sees the key present. A `project` throws when the
+source object does not carry a listed field as an own property, and
+when the own value of a listed field is `undefined`. Neither shape
+reads an inherited member, so a path segment or a field named `toString`,
 `constructor`, or `hasOwnProperty` throws even though the member is
 reachable on every JSON-derived object. An own key of that name is a
 normal key and resolves normally; `merge` and `project` both build
@@ -126,16 +134,18 @@ their result by defining keys, so an own `__proto__` key lands as data
 and never changes the result's prototype.
 
 The vocabulary therefore has no optional field. `fields: ["x"]` is a
-claim that the source carries `x`, and the run fails at the selector
-that made the claim rather than at some later step that received
-`undefined`. A field that is genuinely sometimes absent is modeled by
-the producing step, which emits the key with an explicit `null`.
+claim that the source carries a value for `x`, and the run fails at the
+selector that made the claim rather than at some later step that
+received `undefined`. A field that is genuinely sometimes absent is
+modeled by the producing step, which emits the key with an explicit
+`null`.
 
 `merge` inherits this. Later operands override earlier ones for
 overlapping keys, so an operand carrying a hole erases a real value an
 earlier operand supplied. A `project` operand cannot carry one, because
-it throws on the absent field instead. A `from` operand carries
-whatever the producing step emitted.
+it throws on an absent field and on a field whose own value is
+`undefined`. A `from` operand carries whatever the producing step
+emitted, so it is the shape that can.
 
 ## Consuming a real agent step's structured output
 

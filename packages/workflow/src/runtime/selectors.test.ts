@@ -194,4 +194,67 @@ describe("evaluate", () => {
       ),
     ).toThrow(SelectorError);
   });
+
+  test("project on an own field whose value is undefined throws", () => {
+    const holeCtx: SelectorContext = {
+      trigger: { payload: { goal: undefined } },
+      steps: {},
+    };
+    expect(() =>
+      evaluate(
+        { project: { from: "trigger.payload" }, fields: ["goal"] },
+        holeCtx,
+      ),
+    ).toThrow(SelectorError);
+  });
+
+  test("merge cannot clobber an earlier operand with an own undefined field", () => {
+    // The projection is the later operand, so a hole it yielded would win the
+    // overlapping key and erase the earlier operand's value instead of failing.
+    const holeCtx: SelectorContext = {
+      trigger: { payload: { goal: undefined } },
+      steps: {},
+    };
+    expect(() =>
+      evaluate(
+        {
+          merge: [
+            { literal: { goal: "keep me" } },
+            { project: { from: "trigger.payload" }, fields: ["goal"] },
+          ],
+        },
+        holeCtx,
+      ),
+    ).toThrow(SelectorError);
+  });
+
+  test("from on an in-range index a sparse array leaves unfilled throws", () => {
+    // eslint-disable-next-line no-sparse-arrays -- the hole is the subject
+    const items = [, "b"];
+    const sparseCtx: SelectorContext = {
+      trigger: { payload: { items } },
+      steps: {},
+    };
+    expect(Object.hasOwn(items, 0)).toBe(false);
+    expect(() =>
+      evaluate({ from: "trigger.payload.items[0]" }, sparseCtx),
+    ).toThrow(SelectorError);
+    expect(evaluate({ from: "trigger.payload.items[1]" }, sparseCtx)).toBe("b");
+  });
+
+  test("from resolves an own member whose value is undefined", () => {
+    // The index guard refuses an absent own property, not a stored value, so a
+    // filled element holding `undefined` resolves exactly as the key branch
+    // resolves an own key holding one. `runStep` canonicalizes a step input of
+    // `undefined` to `null` for both the audit blob and the invoker, which is
+    // why `from` admits the hole that `project` refuses.
+    const holeCtx: SelectorContext = {
+      trigger: { payload: { goal: undefined, items: [undefined] } },
+      steps: {},
+    };
+    expect(evaluate({ from: "trigger.payload.goal" }, holeCtx)).toBeUndefined();
+    expect(
+      evaluate({ from: "trigger.payload.items[0]" }, holeCtx),
+    ).toBeUndefined();
+  });
 });

@@ -53,7 +53,17 @@ export function evaluate(selector: Selector, ctx: SelectorContext): unknown {
           selector,
         );
       }
-      entries.push([field, source[field]]);
+      const value = source[field];
+      // `Object.hasOwn` accepts a key whose value is `undefined`, and `fields`
+      // claims a value rather than a key. A hole admitted here would win the
+      // key in a `merge`, erasing the value an earlier operand supplied.
+      if (value === undefined) {
+        throw new SelectorError(
+          `field ${field} is undefined in project selector source`,
+          selector,
+        );
+      }
+      entries.push([field, value]);
     }
     // `Object.fromEntries` defines; assigning onto an accumulator object would
     // hit the inherited `__proto__` setter for a field of that name.
@@ -113,6 +123,15 @@ function resolvePath(
       if (segment.index < 0 || segment.index >= cursor.length) {
         throw new SelectorError(
           `index [${String(segment.index)}] out of range (length ${String(cursor.length)}) in path ${path}`,
+          selector,
+        );
+      }
+      // Own elements only, matching the key branch below: an index a sparse
+      // array leaves unfilled is in range and is not an own property, so it
+      // yields the same hole the range guard above refuses.
+      if (!Object.hasOwn(cursor, segment.index)) {
+        throw new SelectorError(
+          `missing index [${String(segment.index)}] in path ${path}`,
           selector,
         );
       }
