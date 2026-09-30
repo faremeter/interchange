@@ -662,6 +662,15 @@ function lineBreakLength(raw: Uint8Array, at: number): number {
  * early and strips the fields after it. This search locates the boundary and
  * `assertNoBareLineBreaks` then refuses the section unless CRLF wrote it,
  * including the blank line itself.
+ *
+ * The pair is the whole test, so a body part that carries no header fields --
+ * legal under RFC 2046 §5.1.1, which makes every field of a part optional --
+ * offers one leading break, and its content reads as the header section. A
+ * leading break is not admitted as a separator here because the message path
+ * relies on this scan to step over a spurious blank line and keep the fields
+ * behind it; a strict reading of a leading break would take those fields as
+ * body and erase the message's originator. The two paths want opposite
+ * readings of the same leading break, and this scan serves the message.
  */
 function findHeaderBoundary(
   raw: Uint8Array,
