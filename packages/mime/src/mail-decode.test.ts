@@ -890,6 +890,53 @@ describe("Content-Transfer-Encoding normalization", () => {
     expect(email.bodyValues["1"]?.isEncodingProblem).toBe(true);
   });
 
+  test("widens every one of the 256 byte values", () => {
+    // RFC 2045 section 6.4 hands a body under an unrecognised transfer
+    // encoding back as octets, not text. The JMAP string value for such a
+    // body must therefore carry one code unit per byte, with every byte
+    // preserved exactly -- the case above covers one character's worth of the
+    // range, this one covers all of it.
+    //
+    // This is a regression guard against the obvious optimisation.
+    // `new TextDecoder("latin1")` looks like a one-pass replacement for the
+    // widening in `bytesToBinaryString`. It is not: the WHATWG Encoding
+    // Standard makes "latin1" and "iso-8859-1" labels for windows-1252, which
+    // maps 27 of the 256 byte values to a different code point. This test
+    // fails if anyone makes that swap.
+    const body: number[] = [];
+    for (let i = 0; i < 256; i++) body.push(i);
+    const raw = rawWithBody(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Content-Type: text/plain",
+        "Content-Transfer-Encoding: x-uuencode",
+        "",
+        "",
+      ].join("\r\n"),
+      body,
+    );
+
+    const email = parseMailToEmail(raw, "sml_cte_all_octets");
+    expect(email.bodyValues["1"]).toBeDefined();
+    expect(email.bodyValues["1"]?.isEncodingProblem).toBe(true);
+    expect(email.bodyValues["1"]?.value.length).toBe(256);
+    expect(codeUnits(email.bodyValues["1"]?.value ?? "")).toEqual(body);
+  });
+
+  test("names the windows-1252 range a latin1 decode would rewrite", () => {
+    // Documents the trap rather than the product: these are the byte values the
+    // swap would rewrite, asserted against windows-1252 because that is the
+    // encoding the "latin1" label resolves to. Kept beside the test above so
+    // the reason that test exists is visible where it is asserted.
+    const all = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) all[i] = i;
+    const decoded = new TextDecoder("windows-1252").decode(all);
+    const diverging = [...all].filter((b) => decoded.charCodeAt(b) !== b);
+    expect(diverging.length).toBe(27);
+    expect(diverging.every((b) => b >= 0x80 && b <= 0x9f)).toBe(true);
+  });
+
   test("reports a body part under an unrecognised mechanism as octet-stream", () => {
     // Without the relabel a consumer is told the part holds text in the
     // charset it declared while it holds bytes that are not that text, and

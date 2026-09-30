@@ -1060,16 +1060,32 @@ export function reportedContentType(
 }
 
 /**
+ * The number of bytes widened per `String.fromCharCode` call. Large enough
+ * that the per-call cost is amortised over the buffer, small enough to stay
+ * well clear of the engine's limit on argument count.
+ */
+const BINARY_WIDEN_CHUNK_SIZE = 8192;
+
+/**
  * Widen bytes into a string of one code unit per byte. A UTF-8 decode would
- * fold multi-byte sequences and replace any byte that is not valid UTF-8.
+ * fold multi-byte sequences and replace any byte that is not valid UTF-8, and
+ * no `TextDecoder` label widens bytes either: the WHATWG Encoding Standard
+ * makes "latin1" and "iso-8859-1" labels for windows-1252, which maps 27 of
+ * the byte values in 0x80-0x9f to other code points.
+ *
+ * Widening runs a chunk at a time. One `String.fromCharCode` per byte
+ * allocates a single-character string per byte plus an array to hold them,
+ * which on a body of tens of megabytes costs several times the body's own
+ * size in resident memory, on a caller that runs synchronously.
  */
 function bytesToBinaryString(bytes: Uint8Array): string {
-  const chars = new Array<string>(bytes.length);
-  let i = 0;
-  for (const byte of bytes) {
-    chars[i++] = String.fromCharCode(byte);
+  let out = "";
+  for (let i = 0; i < bytes.length; i += BINARY_WIDEN_CHUNK_SIZE) {
+    out += String.fromCharCode(
+      ...bytes.subarray(i, i + BINARY_WIDEN_CHUNK_SIZE),
+    );
   }
-  return chars.join("");
+  return out;
 }
 
 /**
