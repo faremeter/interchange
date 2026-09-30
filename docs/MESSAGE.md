@@ -813,7 +813,9 @@ Checks for existing matches first via `search`. If none found, subscribes to the
 
 Returns on success: `{ ref, from, subject, content }` — the matched message's reference, sender, subject, and text content.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `not_available` (the transport refused the opening search or the read-back outright), `search_failed` (the transport rejected the opening search, as in `mail.search`), `timeout` (no matching message arrived within the deadline), `aborted` (reactor shut down while waiting), `fetch_failed` (a message the tool observed to exist could not be read back; a mailbox that went while the wait held it is `invalid_mailbox` instead), `internal_error` (a defect in the tool package, not a condition the call provoked).
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `not_available` (the transport refused a search or a read-back outright), `search_failed` (the transport rejected a search, whether the opening one or one an arrival triggered, as in `mail.search`), `timeout` (no matching message arrived within the deadline), `aborted` (reactor shut down while waiting), `fetch_failed` (a message the tool observed to exist could not be read back; a mailbox removed while the wait holds it fires no event, so the removal goes unnoticed and the call ends in `timeout`), `internal_error` (a defect in the tool package, not a condition the call provoked).
+
+When the sidecar's inbound surface is unwired, the transport raises `SERVERBUG`, which arrives as `search_failed` — a retryable code for a permanent misconfiguration.
 
 Use this instead of polling `mail.search` in a loop. The blocking behavior is transparent to the reactor — the tool's promise simply takes longer to resolve, and the agent naturally idles until it does.
 
