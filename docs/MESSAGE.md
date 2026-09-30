@@ -402,6 +402,7 @@ Interchange-specific keywords (IMAP permits arbitrary keywords as flags):
 | `$Correlated`    | This message is a correlated response to a pending request                        |
 | `$GateBlocked`   | Message triggered a gate (approval, payment, credential) that has not yet cleared |
 | `$SystemMessage` | Message is a system-level signal, not a conversation message                      |
+| `$FetchFailed`   | A fetch of this message threw; the harness left it undelivered in the INBOX       |
 
 Keywords enable efficient search. An agent checking for unprocessed messages searches `UNKEYWORD $Processed`. An agent looking for pending operations searches `KEYWORD $Pending UNKEYWORD $Correlated`.
 
