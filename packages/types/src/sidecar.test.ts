@@ -10,7 +10,7 @@ import {
   HubFrame,
   MAX_DEPLOYMENT_ADDRESS_LENGTH,
   MAX_DEPLOYMENT_ERROR_LENGTH,
-  MAX_AGENT_ADDRESSES_FRAME,
+  MAX_SIDECAR_INCARNATIONS,
   MAX_CACHED_SENDER_ADDRESSES_FRAME,
   MAX_CREDENTIAL_REVOCATIONS_FRAME,
   MAX_MAIL_ADDRESSES_FRAME,
@@ -519,7 +519,7 @@ describe("frame array-length ceilings", () => {
     test("accepts a frame at the ceiling", () => {
       const frame = {
         ...base,
-        incarnations: incarnations(MAX_AGENT_ADDRESSES_FRAME),
+        incarnations: incarnations(MAX_SIDECAR_INCARNATIONS),
       };
       expect(HelloFrame(frame) instanceof type.errors).toBe(false);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(false);
@@ -528,7 +528,7 @@ describe("frame array-length ceilings", () => {
     test("rejects a frame past the ceiling through the union", () => {
       const frame = {
         ...base,
-        incarnations: incarnations(MAX_AGENT_ADDRESSES_FRAME + 1),
+        incarnations: incarnations(MAX_SIDECAR_INCARNATIONS + 1),
       };
       expect(HelloFrame(frame) instanceof type.errors).toBe(true);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(true);

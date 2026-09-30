@@ -7,6 +7,7 @@ import {
   test,
 } from "bun:test";
 import { eq, sql } from "drizzle-orm";
+import { MAX_SIDECAR_INCARNATIONS } from "@intx/types/sidecar";
 import {
   createSidecarAllocationReconciler,
   createSidecarPluginRegistry,
@@ -204,6 +205,102 @@ describe.skipIf(!harnessDbEnvAvailable())(
           status: "provisioning",
           sidecarId: "alloc-second-minted",
         });
+      });
+
+      test("rejects a sidecar that already hosts as many deployments as its hello can report", async () => {
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+        await store.markAllocated({
+          allocationId: "alloc-first",
+          generation: 1,
+        });
+        const others = Array.from(
+          { length: MAX_SIDECAR_INCARNATIONS - 1 },
+          (_, index) => `alloc-full-${String(index)}`,
+        );
+        for (const id of others) {
+          await seedWorkflowRun(h.db, {
+            id: `anchor-${id}`,
+            anchorRunId: `anchor-${id}`,
+            tenantId: TENANT_ID,
+            definitionId: DEFINITION_ID,
+          });
+        }
+        await h.db.insert(sidecarAllocation).values(
+          others.map((id) => ({
+            id,
+            anchorRunId: `anchor-${id}`,
+            tenantId: TENANT_ID,
+            provisionerId: "ec2-spot",
+            provisionerApiVersion: 1 as const,
+            provisionerBindingFingerprint: "ec2-spot:test",
+            sidecarId: "alloc-first-minted",
+            status: "allocated" as const,
+            generation: 1,
+          })),
+        );
+        await seedAnchor("anchor-last");
+        await bindFirstGeneration("alloc-last", "anchor-last");
+
+        await expect(
+          store.markAllocated({
+            allocationId: "alloc-last",
+            generation: 1,
+            sidecarId: "alloc-first-minted",
+          }),
+        ).rejects.toThrow(
+          `it already hosts ${String(MAX_SIDECAR_INCARNATIONS)} deployments`,
+        );
+      });
+
+      test("refuses to adopt a probe onto a sidecar that already hosts as many deployments as its hello can report", async () => {
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+        await store.markAllocated({
+          allocationId: "alloc-first",
+          generation: 1,
+        });
+        const others = Array.from(
+          { length: MAX_SIDECAR_INCARNATIONS - 1 },
+          (_, index) => `alloc-full-${String(index)}`,
+        );
+        for (const id of others) {
+          await seedWorkflowRun(h.db, {
+            id: `anchor-${id}`,
+            anchorRunId: `anchor-${id}`,
+            tenantId: TENANT_ID,
+            definitionId: DEFINITION_ID,
+          });
+        }
+        await h.db.insert(sidecarAllocation).values(
+          others.map((id) => ({
+            id,
+            anchorRunId: `anchor-${id}`,
+            tenantId: TENANT_ID,
+            provisionerId: "ec2-spot",
+            provisionerApiVersion: 1 as const,
+            provisionerBindingFingerprint: "ec2-spot:test",
+            sidecarId: "alloc-first-minted",
+            status: "allocated" as const,
+            generation: 1,
+          })),
+        );
+        await seedAnchor("anchor-adopted");
+
+        await expect(
+          store.createAdopted({
+            id: "probe-adopted",
+            anchorRunId: "anchor-adopted",
+            tenantId: TENANT_ID,
+            provisionerId: "ec2-spot",
+            provisionerApiVersion: 1,
+            provisionerBindingFingerprint: "ec2-spot:test",
+            sidecarId: "alloc-first-minted",
+            generation: 1,
+            connectDeadline: new Date(Date.now() + 60_000),
+          }),
+        ).rejects.toThrow(
+          `it already hosts ${String(MAX_SIDECAR_INCARNATIONS)} deployments`,
+        );
+        expect(await store.findById("probe-adopted")).toBeNull();
       });
 
       test("rejects a sidecar another provisioner runs", async () => {

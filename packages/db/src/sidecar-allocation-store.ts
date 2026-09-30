@@ -20,7 +20,11 @@ import {
 
 import type { DB, DBExecutor } from "./client";
 import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
-import { assertSidecarReusable, lockSidecars } from "./sidecar-reuse";
+import {
+  assertSidecarHasRoom,
+  assertSidecarReusable,
+  lockSidecars,
+} from "./sidecar-reuse";
 import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
 import { canExecuteWorkflowRun } from "./workflow-lifecycle-policy";
 import {
@@ -565,9 +569,12 @@ export function createSidecarAllocationStore(db: DBHandle) {
     tx: DBExecutor,
     args: CreateAdoptedSidecarAllocationArgs,
   ): Promise<SidecarAllocation> {
-    // Adoption completes the probe in this transaction; lock its sidecar
-    // before inserting the allocation or locking the probe.
-    await lockSidecars(tx, [args.sidecarId]);
+    // Adopting a probe places a deployment on its sidecar, so it is held to
+    // the same room check as a placement through `markAllocated`.
+    await assertSidecarHasRoom(tx, {
+      sidecarId: args.sidecarId,
+      placing: { allocationId: args.id },
+    });
     const createdAt = databaseTimestamp(args.now);
     const [inserted] = await tx
       .insert(sidecarAllocation)
@@ -866,6 +873,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
               provisionerBindingFingerprint:
                 allocation.provisionerBindingFingerprint,
             },
+            placing: { allocationId: allocation.id },
+          });
+          await assertSidecarHasRoom(tx, {
+            sidecarId: reusedSidecarId,
             placing: { allocationId: allocation.id },
           });
         }
