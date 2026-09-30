@@ -2240,6 +2240,69 @@ describe("initial handshake on connect", () => {
     }
   });
 
+  test("an outage that fills the queue drops audit copies before it refuses mail to route", async () => {
+    const frames: string[] = [];
+    const sockets: { send(data: string): void }[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onOpen(_evt, ws) {
+          sockets.push(ws);
+        },
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") frames.push(evt.data);
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const sender = "run_outage@integration.interchange";
+    const transport = createInMemoryTransport();
+    transport.register(sender, createEd25519Crypto(await generateKeyPair()));
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-outage",
+      token: "test-token",
+      transport,
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () => [
+        { address: sender, generation: 1, state: "live" },
+      ],
+    });
+    const send = (index: number) =>
+      transport.getTransportFor(sender).send({
+        to: "remote@example.test",
+        type: "conversation.message",
+        content: `mail ${String(index)}`,
+      });
+    const mailFrames = () =>
+      frames.flatMap((raw) => {
+        const frame: { type: string; delivered?: boolean } = JSON.parse(raw);
+        return frame.type === "mail.outbound" ? [frame] : [];
+      });
+
+    client.connect();
+    try {
+      // The Hub never welcomes, so every send queues a routing frame and an
+      // audit copy.
+      await waitUntil(() => frames.length > 0);
+      for (let index = 0; index < 1024; index += 1) await send(index);
+      await expect(send(1024)).rejects.toThrow(
+        "The outbound queue is full of mail waiting for the Hub",
+      );
+
+      sockets[0]!.send(JSON.stringify({ type: "welcome", routed: [] }));
+      await waitUntil(() => mailFrames().length === 1024);
+      expect(mailFrames().every((frame) => frame.delivered !== true)).toBe(
+        true,
+      );
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
   test("refuses a send that names more than one workflow deployment", async () => {
     const app = new Hono();
     app.get(

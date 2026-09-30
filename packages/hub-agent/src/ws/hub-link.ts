@@ -934,10 +934,30 @@ export function createHubLink(config: HubLinkConfig): HubLink {
   }
 
   // Reports queued while the link is not welcomed: frames the sidecar owes the
-  // Hub that nothing re-sends from durable state. Bounded; the oldest is
-  // dropped, loudly, when an outage outlasts the bound.
+  // Hub that nothing re-sends from durable state. Every deployment on the
+  // sidecar shares the bound, so an outage that outlasts it drops, loudly and
+  // oldest first, what delivers no mail: a correlation registration, which the
+  // re-emit on `welcome` sends again, then the audit copy the Hub records sent
+  // mail from. Mail still to be routed is never dropped: its send fails
+  // instead, and the sender sees the error.
   const MAX_QUEUE = 1024;
   const queue: SidecarFrame[] = [];
+
+  function isMailToRoute(frame: SidecarFrame): boolean {
+    return frame.type === "mail.outbound" && frame.delivered !== true;
+  }
+
+  // The queued frame an outage drops to make room, or -1 when all of it is
+  // mail still to be routed.
+  function droppableIndex(): number {
+    const register = queue.findIndex(
+      (queued) => queued.type === "signal.correlation.register",
+    );
+    if (register !== -1) return register;
+    return queue.findIndex(
+      (queued) => queued.type === "mail.outbound" && !isMailToRoute(queued),
+    );
+  }
 
   function welcomedSocket(): WebSocket | null {
     return ws !== null && welcomed && ws.readyState === WebSocket.OPEN
@@ -951,9 +971,19 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       socket.send(JSON.stringify(frame));
       return;
     }
-    const dropped = queue.length >= MAX_QUEUE ? queue.shift() : undefined;
-    if (dropped !== undefined) {
-      logger.warn`Outbound queue full, dropping the oldest queued ${dropped.type}`;
+    if (queue.length >= MAX_QUEUE) {
+      const index = droppableIndex();
+      if (index === -1) {
+        if (isMailToRoute(frame)) {
+          throw new Error(
+            `The outbound queue is full of mail waiting for the Hub; ${frame.type} was not queued`,
+          );
+        }
+        logger.warn`Outbound queue full of mail waiting for the Hub, dropping ${frame.type}`;
+        return;
+      }
+      const [dropped] = queue.splice(index, 1);
+      logger.warn`Outbound queue full, dropping the oldest queued ${dropped?.type ?? "frame"}`;
     }
     queue.push(frame);
   }
