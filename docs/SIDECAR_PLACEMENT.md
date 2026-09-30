@@ -97,7 +97,16 @@ itself: every workflow child runs as the sidecar's OS user over its data
 directory, so work that shares one can read each other's keys and run state,
 and any child can read the sidecar's own environment, its Hub token and
 credential encryption key included. A provisioner that declares
-`isolation:workload` does not share a sidecar.
+`isolation:workload` does not share a sidecar. A sidecar hosts at most
+128 deployments, the most its `hello` can report: the Hub treats placing
+another on a full sidecar like any placement it cannot accept, and the sidecar
+refuses a deploy past it. A sidecar that restarts with more run records than
+that, such as those of self-terminated deployments the Hub has since failed,
+restores only up to the limit and keeps the rest unspawned and unreported.
+It goes through the records in a fixed order, so a boot over the same
+records leaves out the same ones. The Hub fails a current deployment
+left out, as its sidecar no longer reports it. A later boot with room restores
+a stale one, and the Hub undeploys it then.
 
 Work placed on a sidecar a provisioner already runs gets the same 2 minutes to
 connect as a new sidecar, even while that sidecar is restarting: after that a

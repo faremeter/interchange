@@ -41,10 +41,11 @@ import { WorkflowDefinitionSource } from "./workflow-sources";
 // and routes through the existing invalid-frame drop+log path; no handler change
 // is needed.
 
-// A sidecar's reported deployment incarnations, and the ones the Hub routes
-// back. A shared sidecar hosts one per allocation placed on it, so the
-// legitimate count is small; this is a generous absurdity backstop.
-export const MAX_AGENT_ADDRESSES_FRAME = 512;
+// The most deployment incarnations one sidecar holds, which bounds those a
+// `hello` reports and a `welcome` routes back. The Hub places no deployment on
+// a sidecar that already hosts this many, and a sidecar refuses a deploy past
+// it, so every hello it sends stays within the bound.
+export const MAX_SIDECAR_INCARNATIONS = 128;
 
 export const MAX_DEPLOYMENT_ADDRESS_LENGTH = 320;
 export const MAX_DEPLOYMENT_ERROR_LENGTH = 4096;
@@ -191,7 +192,7 @@ export const HelloFrame = type({
   // A sidecar holds one incarnation of an address, so a list that names one
   // twice does not say which of them it holds.
   incarnations: HostedIncarnation.array()
-    .atMostLength(MAX_AGENT_ADDRESSES_FRAME)
+    .atMostLength(MAX_SIDECAR_INCARNATIONS)
     .narrow(
       (incarnations, ctx) =>
         new Set(incarnations.map((incarnation) => incarnation.address)).size ===
@@ -818,7 +819,7 @@ export const WelcomeFrame = type({
   type: "'welcome'",
   routed: type({ address: "string", generation: Generation })
     .array()
-    .atMostLength(MAX_AGENT_ADDRESSES_FRAME),
+    .atMostLength(MAX_SIDECAR_INCARNATIONS),
 });
 export type WelcomeFrame = typeof WelcomeFrame.infer;
 
