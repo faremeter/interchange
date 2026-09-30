@@ -828,17 +828,13 @@ describe("a message that carries no date", () => {
     expect(byRecipient.map((r) => r.uid)).toEqual([undatedUid, datedUid]);
   });
 
-  test("sorts ahead of a dated message in a thread rather than taking a date", async () => {
+  test("sorts behind a dated message in a thread rather than taking a date", async () => {
     // Threading orders by date, and an undated message supplies no key. It
-    // takes the epoch -- the same key a dummy container with no dated
-    // descendants already takes -- so it sorts first instead of being placed
-    // by a date it never carried.
+    // sorts after every dated message, so the dated message keeps the root
+    // slot instead of hanging off a message that placed itself nowhere in
+    // time. The undated message is appended first, so append order cannot be
+    // what puts it last.
     const store = createInMemoryMailboxStore();
-    const datedUid = store.append(
-      rawMessage("Shared", "first"),
-      envelopeFor({ messageId: "<dated@x>", subject: "Shared" }),
-      [],
-    );
     const undatedUid = store.append(
       rawMessage("Shared", "second"),
       envelopeFor({
@@ -848,12 +844,17 @@ describe("a message that carries no date", () => {
       }),
       [],
     );
+    const datedUid = store.append(
+      rawMessage("Shared", "first"),
+      envelopeFor({ messageId: "<dated@x>", subject: "Shared" }),
+      [],
+    );
 
     const threads = await executeThread("INBOX", store, "orderedsubject");
 
     expect(threads).toHaveLength(1);
-    expect(threads[0]?.ref.uid).toBe(undatedUid);
-    expect(threads[0]?.children.map((c) => c.ref.uid)).toEqual([datedUid]);
+    expect(threads[0]?.ref.uid).toBe(datedUid);
+    expect(threads[0]?.children.map((c) => c.ref.uid)).toEqual([undatedUid]);
   });
 });
 
