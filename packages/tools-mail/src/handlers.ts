@@ -50,29 +50,46 @@ const MessageRefShape = {
   mailbox: "string",
 } as const;
 
-// A subject, an in-reply-to and a correlation id each become a header field
-// body, which RFC 5322 § 2.2 allows no CR and no LF outside folding. Stated as
-// a pattern rather than a narrow so arktype can be asked about it:
-// definitions.test.ts pairs this shape against the schema.
+// A subject, an in-reply-to, a correlation id and a recipient each become a
+// header field body, which RFC 5322 § 2.2 allows no CR and no LF outside
+// folding. Stated as a pattern rather than a narrow so arktype can be asked
+// about it: definitions.test.ts pairs this shape against the schema.
 const HEADER_VALUE_PATTERN = "^[^\\r\\n]*$";
 
-// RFC 5322 § 3.6.4 gives In-Reply-To as `1*msg-id`; `\S` matches no CR or LF.
-const MESSAGE_ID_PATTERN = "^[^\\r\\n]*\\S[^\\r\\n]*$";
+// A header value that has to name something, which a blank one does not: RFC
+// 5322 § 3.6.4 gives In-Reply-To as `1*msg-id`, and § 3.4 gives the To field
+// body as an address list. `\S` matches no CR or LF, so the pattern excludes
+// those as well.
+const NAMING_HEADER_VALUE_PATTERN = "^[^\\r\\n]*\\S[^\\r\\n]*$";
 
 const HeaderValue = type("string").matching(HEADER_VALUE_PATTERN).configure({
   description: "a header value, so free of carriage return and line feed",
 });
 
 const MessageIdReference = type("string")
-  .matching(MESSAGE_ID_PATTERN)
+  .matching(NAMING_HEADER_VALUE_PATTERN)
   .configure({
     description:
       "a message identifier, so free of carriage return and line feed, and not blank",
   });
 
+// A recipient becomes the To field body by the same route a subject becomes
+// the Subject one, so the header layer can carry neither a CR nor an LF in it,
+// and a blank recipient names nobody. Refused here because a value no transport
+// can carry is the caller's to fix: reaching the transport with it earns
+// `send_failed`, which says the submission was rejected and the outcome is
+// unknown. Whether an address resolves is still the transport's to answer, and
+// an unresolvable one is a `send_failed` for that reason.
+const RecipientAddress = type("string")
+  .matching(NAMING_HEADER_VALUE_PATTERN)
+  .configure({
+    description:
+      "a recipient address, so free of carriage return and line feed, and not blank",
+  });
+
 const SendArgs = type({
   "+": "reject",
-  to: "string | string[]",
+  to: RecipientAddress.or(RecipientAddress.array()),
   "type?": InterchangeType,
   "content?": "string",
   "payload?": JSONObject,
@@ -545,13 +562,30 @@ export function makeMailSearchHandler(
             interchangeType: headers.interchangeType,
             messageId: headers.messageId,
           };
-        } catch {
-          return { ref };
+        } catch (cause) {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.warn`mail_search could not read the headers of ${mailbox} uid ${String(ref.uid)}: ${message}`;
+          // Carried on the summary rather than dropped: a summary whose header
+          // fields are absent is what a message carrying no headers looks like,
+          // so a discarded failure reads as ordinary mail. The other results
+          // are still answers, which is why one failure does not fail the call.
+          return { ref, headersError: message };
         }
       }),
     );
 
-    return { callId: call.id, content: { results: summaries } };
+    // `matched` and `truncated` are what tell a mailbox holding exactly `limit`
+    // matches from one holding hundreds: the slice above is the same array in
+    // both cases.
+    return {
+      callId: call.id,
+      content: {
+        results: summaries,
+        matched: refs.length,
+        truncated: refs.length > limit,
+      },
+    };
   };
 }
 

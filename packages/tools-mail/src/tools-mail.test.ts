@@ -1,4 +1,6 @@
 import { describe, test, expect } from "bun:test";
+import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
+import { createInMemoryTransport } from "@intx/mail-memory";
 import type {
   BodyStructure,
   InboundMessage,
@@ -705,6 +707,101 @@ describe("mail_send handler", () => {
       throw new Error("expected object content");
     expect(String(result.content["error"])).toContain("attachments");
     expect(transport.getSentMessages()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mail_send over a transport that assembles the message
+// ---------------------------------------------------------------------------
+
+// The mock transport above keeps every OutboundMessage it is handed, so no case
+// written against it reaches the layer that decides whether a recipient is
+// writable as an RFC 5322 field body. These cases bind the handler to
+// @intx/mail-memory, which assembles and signs the message as a transport does,
+// and they assert the recipient's mailbox as well: a refusal that still
+// delivered to the recipients it could carry would satisfy the code assertion
+// alone.
+describe("mail_send over a transport that assembles the message", () => {
+  const SENDER = "alpha@test.interchange";
+  const RECIPIENT = "beta@test.interchange";
+
+  async function boundSend() {
+    const transport = createInMemoryTransport();
+    const senderKeys = await generateKeyPair();
+    const recipientKeys = await generateKeyPair();
+    transport.register(SENDER, createEd25519Crypto(senderKeys));
+    transport.register(RECIPIENT, createEd25519Crypto(recipientKeys));
+
+    const recipientTransport = transport.getTransportFor(RECIPIENT);
+    return {
+      handler: makeMailSendHandler(transport.getTransportFor(SENDER)),
+      delivered: async () =>
+        await recipientTransport.search("INBOX", {}, signal),
+    };
+  }
+
+  test("refuses a recipient no header can carry and delivers nothing", async () => {
+    const { handler, delivered } = await boundSend();
+
+    const result = await handler(
+      {
+        id: "a1",
+        name: "mail_send",
+        arguments: {
+          to: [RECIPIENT, "x@y\r\nBcc: victim@test"],
+          content: "hi",
+        },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBe(true);
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    // Not `send_failed`: that code says the transport rejected the submission
+    // and leaves the outcome unknown, inviting a retry of a call no transport
+    // can carry.
+    expect(result.content["code"]).toBe("invalid_arguments");
+    expect(String(result.content["error"])).toContain("to");
+    expect(await delivered()).toHaveLength(0);
+  });
+
+  test("refuses a blank recipient, bare and inside a list", async () => {
+    // A blank value names nobody, which is the reason the sibling inReplyTo
+    // constraint requires a non-whitespace character as well.
+    for (const to of ["", "   ", ["  "], [RECIPIENT, ""]]) {
+      const { handler, delivered } = await boundSend();
+
+      const result = await handler(
+        { id: "a2", name: "mail_send", arguments: { to, content: "hi" } },
+        signal,
+      );
+
+      expect(result.isError).toBe(true);
+      if (typeof result.content === "string")
+        throw new Error("expected object content");
+      expect(result.content["code"]).toBe("invalid_arguments");
+      expect(String(result.content["error"])).toContain("to");
+      expect(await delivered()).toHaveLength(0);
+    }
+  });
+
+  test("delivers to a recipient the header layer can carry", async () => {
+    // The control for the two cases above: the constraint refuses the values a
+    // field body cannot hold, and leaves an ordinary address alone.
+    const { handler, delivered } = await boundSend();
+
+    const result = await handler(
+      {
+        id: "a3",
+        name: "mail_send",
+        arguments: { to: RECIPIENT, content: "hi" },
+      },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(await delivered()).toHaveLength(1);
   });
 });
 
@@ -1646,6 +1743,99 @@ describe("mail_search handler", () => {
         throw new Error("expected object content");
       expect(result.content["results"]).toHaveLength(expected);
     }
+  });
+
+  test("reports a result set the limit cut short", async () => {
+    // A slice the caller cannot measure is the whole problem: 20 results out of
+    // 20 matches and 20 out of 50 are the same array, and the caller is told
+    // both are the whole match.
+    const transport = makeMockTransport();
+    transport.search = async (mailbox) =>
+      Array.from({ length: 50 }, (_unused, index) => ({
+        uid: index + 1,
+        mailbox,
+      }));
+
+    const handler = makeMailSearchHandler(transport);
+    const result = await handler(
+      { id: "q15", name: "mail_search", arguments: { limit: 20 } },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    expect(result.content["results"]).toHaveLength(20);
+    expect(result.content["matched"]).toBe(50);
+    expect(result.content["truncated"]).toBe(true);
+  });
+
+  test("reports a complete result set as complete, at the limit and under it", async () => {
+    // A mailbox holding exactly the requested count is the case the caller
+    // cannot otherwise tell from a truncated one.
+    for (const [matches, limit] of [
+      [20, 20],
+      [3, 20],
+      [0, 20],
+    ] as const) {
+      const transport = makeMockTransport();
+      transport.search = async (mailbox) =>
+        Array.from({ length: matches }, (_unused, index) => ({
+          uid: index + 1,
+          mailbox,
+        }));
+
+      const handler = makeMailSearchHandler(transport);
+      const result = await handler(
+        {
+          id: `q16-${String(matches)}`,
+          name: "mail_search",
+          arguments: { limit },
+        },
+        signal,
+      );
+
+      expect(result.isError).toBeUndefined();
+      if (typeof result.content === "string")
+        throw new Error("expected object content");
+      expect(result.content["results"]).toHaveLength(matches);
+      expect(result.content["matched"]).toBe(matches);
+      expect(result.content["truncated"]).toBe(false);
+    }
+  });
+
+  test("names the summary whose headers could not be read", async () => {
+    // A discarded read leaves the summary with its header fields absent, which
+    // is what a message carrying no headers looks like, so a corrupt index
+    // reads as ordinary mail. The failure belongs on the summary it happened
+    // to, because the other results are still answers.
+    const transport = makeMockTransport();
+    transport.search = async (mailbox) =>
+      [1, 2].map((uid) => ({ uid, mailbox }));
+    const readable = transport.fetchHeaders.bind(transport);
+    transport.fetchHeaders = async (ref, headerSignal) => {
+      if (ref.uid === 2) throw new Error("the index entry is corrupt");
+      return await readable(ref, headerSignal);
+    };
+
+    const handler = makeMailSearchHandler(transport);
+    const result = await handler(
+      { id: "q17", name: "mail_search", arguments: {} },
+      signal,
+    );
+
+    expect(result.isError).toBeUndefined();
+    if (typeof result.content === "string")
+      throw new Error("expected object content");
+    const results = result.content["results"];
+    if (!Array.isArray(results)) throw new Error("expected results array");
+    expect(results).toHaveLength(2);
+    expect(results[0]["from"]).toBe("sender@test");
+    expect(results[0]["headersError"]).toBeUndefined();
+    expect(results[1]["from"]).toBeUndefined();
+    expect(String(results[1]["headersError"])).toContain(
+      "the index entry is corrupt",
+    );
   });
 });
 

@@ -693,11 +693,11 @@ The advertised JSON Schema does not state that pairing; the tool description car
 
 Returns on success: `{ messageId: string }`.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (the call is malformed -- an undeclared argument key, an unknown `type`, or a body that contradicts the `type`), `send_failed` (the transport rejected the submission, an unresolvable recipient included). A `send_failed` leaves the outcome unknown rather than meaning nothing was sent. No size limit is enforced on the send path, so there is no `too_large`; an oversized message reaches the transport and fails there as `send_failed` if the transport refuses it.
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (the call is malformed -- an undeclared argument key, an unknown `type`, a body that contradicts the `type`, or a value no header field body can carry), `send_failed` (the transport rejected the submission, an unresolvable recipient included). A `send_failed` leaves the outcome unknown rather than meaning nothing was sent. No size limit is enforced on the send path, so there is no `too_large`; an oversized message reaches the transport and fails there as `send_failed` if the transport refuses it.
 
 The send opens no correlation of its own, whatever `correlationId` it carries. To await a correlated response, call `mail.wait` after the send.
 
-The `correlationId`, the `subject` and the `inReplyTo` each become a header field body, which RFC 5322 § 2.2 allows no CR and no LF, so a value carrying either is rejected as `invalid_arguments` before the send. RFC 5322 § 3.6.4 gives `In-Reply-To` as `1*msg-id`, so a blank `inReplyTo` is rejected there too, and an empty `to` names no destination and is rejected the same way. The tool constrains nothing else about the correlation id: the correlation matches on the whole string.
+The `correlationId`, the `subject`, the `inReplyTo` and each address in `to` become a header field body, which RFC 5322 § 2.2 allows no CR and no LF, so a value carrying either is rejected as `invalid_arguments` before the send. RFC 5322 § 3.6.4 gives `In-Reply-To` as `1*msg-id` and § 3.4 gives the `To` field body as an address list, so a blank `inReplyTo` and a blank recipient each name nothing and are rejected there too, as is an empty `to` array, which names no destination at all. Whether a recipient address resolves is the transport's to answer, not the tool's: an unresolvable one is a `send_failed`. The tool constrains nothing else about the correlation id: the correlation matches on the whole string.
 
 **mail.reply** — Reply to a specific message. Convenience wrapper around `mail.send` that automatically sets `inReplyTo` and extends the `References` chain from the parent message.
 
@@ -731,7 +731,7 @@ The filters `SearchQuery` declares are the only ones the query accepts, at the t
 
 `limit` is a positive whole number of results. Zero, a negative number and a fraction are each rejected as `invalid_arguments`. There is no value meaning "all" and no upper bound: a `limit` larger than the mailbox holds returns all of it.
 
-Returns: array of message summaries (message ref, headers, payload type, preview text, flags, timestamp). Not full content.
+Returns on success: `{ results, matched, truncated }`. Each entry of `results` carries the message `ref` and the summary fields projected from its headers — `from`, `subject`, `date`, `interchangeType` and `messageId` — and no body. An entry whose headers could not be read carries `headersError` with the reason in place of those fields, so a corrupt index is not read as a message that carries no headers. `matched` is the number of messages the query matched before `limit` was applied, and `truncated` says whether `limit` cut the list short, which is what tells a mailbox holding exactly `limit` matches from one holding hundreds.
 
 Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `search_failed` (the transport rejected the search for a reason of its own). The query is never the cause of a `search_failed` -- it was validated before the call -- so the same call is worth retrying, where an `invalid_mailbox` needs a different `mailbox`.
 

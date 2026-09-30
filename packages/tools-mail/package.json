@@ -21,7 +21,9 @@
   },
   "dependencies": {
     "@intx/agent": "workspace:*",
+    "@intx/crypto": "workspace:*",
     "@intx/log": "workspace:*",
+    "@intx/mail-memory": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "catalog:"
   },
