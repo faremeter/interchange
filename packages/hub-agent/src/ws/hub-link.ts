@@ -45,7 +45,11 @@ import {
 } from "@intx/types/sidecar";
 import { RepoId } from "@intx/types/repo";
 import type { SignalKind } from "@intx/types";
-import { createPackReceiver, createPackSender } from "@intx/pack-transport";
+import {
+  createPackReceiver,
+  createPackSender,
+  PackRejectedError,
+} from "@intx/pack-transport";
 import { createFrameLanes } from "./frame-lanes";
 import {
   createRegisterAcker,
@@ -1878,14 +1882,16 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       try {
         await sendOnce();
       } catch (first) {
-        // A transfer refused or cancelled because the link is not welcomed is
-        // NOT the initRepo bootstrap race: the Hub has not routed this address
-        // on the current connection yet. Recovery belongs to the pushing
-        // store's re-drive on `welcome`, not to this fast-retry, so re-throw
-        // and let the caller latch the failure. Only the genuine bootstrap
-        // race -- a receiver reject against an uninitialised hub repo --
-        // retries here.
-        if (isConnectionLost(first)) {
+        // Only the genuine bootstrap race retries here: the Hub rejects the
+        // push that raced its repository's creation as `corrupt`. Anything
+        // else re-throws for the caller to latch, including a transfer refused
+        // or cancelled because the link is not welcomed (the pushing store
+        // re-drives it on `welcome`) and a push the Hub does not route, which
+        // a resend would only have rejected again. Real corruption is also
+        // `corrupt`, so it gets this one retry too.
+        if (
+          !(first instanceof PackRejectedError && first.reason === "corrupt")
+        ) {
           throw first;
         }
         // First push to a never-bootstrapped (repoId, ref) lost the
