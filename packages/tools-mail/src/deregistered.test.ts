@@ -23,10 +23,23 @@ import {
   makeMailReadHandler,
   makeMailSearchHandler,
   makeMailSendHandler,
+  makeMailWaitHandler,
+  type WaitScheduler,
 } from "./handlers";
 
 const ADDRESS = "alpha@test.interchange";
 const signal = new AbortController().signal;
+
+// mail_wait is the one tool here that declares a deadline, and it must answer
+// the refusal rather than the deadline. Capturing the callback without firing
+// it leaves the handler no deadline to reach, so a case that does not settle on
+// the refusal hangs, and the test runner's own budget charges that as a
+// failure.
+const heldDeadline: WaitScheduler = {
+  setTimeout() {
+    return () => undefined;
+  },
+};
 
 async function deregisteredTransport(): Promise<MessageTransport> {
   const transport = createInMemoryTransport();
@@ -94,6 +107,14 @@ describe("a handle the transport refuses outright", () => {
               name: "mail_read",
               arguments: { ref: { uid: 1, mailbox: "INBOX" } },
             },
+            signal,
+          ),
+      ],
+      [
+        "mail_wait",
+        () =>
+          makeMailWaitHandler(transport, heldDeadline)(
+            { id: "d6", name: "mail_wait", arguments: {} },
             signal,
           ),
       ],

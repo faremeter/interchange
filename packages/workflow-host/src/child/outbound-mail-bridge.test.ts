@@ -6,6 +6,7 @@ import { base64Decode, deriveWorkflowRunId } from "@intx/types";
 import { createInMemoryMailboxStore } from "@intx/mailbox";
 import type { StoredEnvelope } from "@intx/mailbox";
 import type { MailboxEvent, MessageHeaders } from "@intx/types/runtime";
+import { isMessageTransportError } from "@intx/types/runtime";
 
 import { createChildOutboundMailBridge } from "./outbound-mail-bridge";
 import {
@@ -151,6 +152,36 @@ function makeBridge() {
   return createChildOutboundMailBridge({
     upstreamSender: createCapturingSender(),
   });
+}
+
+// The RFC 5530 condition a refusal named. A refusal naming no condition is a
+// different failure from the one under test, so it throws rather than folding
+// into the comparison the two wrappers below feed.
+function refusalCondition(cause: unknown): string {
+  if (!isMessageTransportError(cause)) {
+    throw new Error(`expected a condition, got ${String(cause)}`, { cause });
+  }
+  return cause.condition;
+}
+
+async function rejectedCondition(
+  run: () => Promise<unknown>,
+): Promise<string | undefined> {
+  try {
+    await run();
+    return undefined;
+  } catch (cause) {
+    return refusalCondition(cause);
+  }
+}
+
+function thrownCondition(run: () => void): string | undefined {
+  try {
+    run();
+    return undefined;
+  } catch (cause) {
+    return refusalCondition(cause);
+  }
 }
 
 /**
@@ -388,6 +419,59 @@ describe("createSupervisorBackedTransport", () => {
         /* never reached */
       }),
     ).toThrow(/is not wired for unified-host step agent/);
+  });
+
+  // `watch` refuses exactly when `search` refuses. Both guard with the same
+  // requireInbound + requireInbox pair, and the inbound surface is a captured
+  // constructor argument, so a watch installed after a search that answered
+  // cannot refuse. That is what keeps a transport condition out of the one
+  // place a mail tool reports a rejection without classifying it: mail_wait
+  // installs its watch after its opening search, and a refusal there arrives
+  // outside the search's own error handling. Should someone give `watch` a
+  // guard `search` does not share, this pair stops holding.
+  test("watch refuses exactly when search refuses", async () => {
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+      makeInbound(),
+    );
+
+    const refusals = new Map<string, string | undefined>();
+    for (const mailbox of ["INBOX", "Drafts", "inbox", "", "INBOX/Sub"]) {
+      const searchRefusal = await rejectedCondition(() =>
+        transport.search(mailbox, {}),
+      );
+      const watchRefusal = thrownCondition(() => {
+        transport.watch(mailbox, () => undefined)();
+      });
+      // Labelled so a failure names the mailbox that broke the pair.
+      expect(`${mailbox}: ${String(watchRefusal)}`).toBe(
+        `${mailbox}: ${String(searchRefusal)}`,
+      );
+      refusals.set(mailbox, searchRefusal);
+    }
+
+    // The sweep only says something if it saw both answers: the pair holds
+    // vacuously over names that all refuse, and over names none of which do.
+    expect(refusals.get("INBOX")).toBeUndefined();
+    expect(refusals.get("Drafts")).toBe("NONEXISTENT");
+  });
+
+  test("an unwired inbound surface refuses both with the same condition", async () => {
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "agent@example.com",
+    );
+
+    const searchRefusal = await rejectedCondition(() =>
+      transport.search("INBOX", {}),
+    );
+    const watchRefusal = thrownCondition(() => {
+      transport.watch("INBOX", () => undefined);
+    });
+
+    expect(searchRefusal).toBe("SERVERBUG");
+    expect(watchRefusal).toBe(searchRefusal);
   });
 
   test("search resolves against the seeded INBOX", async () => {
