@@ -377,10 +377,11 @@ export function makeMailSendHandler(transport: MessageTransport): ToolHandler {
     try {
       receipt = await transport.send(outbound, signal);
     } catch (cause) {
-      return errorResult(
+      return transportFailureResult(
         call.id,
-        `send_failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        cause,
         "send_failed",
+        (message) => `send_failed: ${message}`,
       );
     }
 
@@ -500,10 +501,11 @@ export function makeMailReplyHandler(transport: MessageTransport): ToolHandler {
     try {
       receipt = await transport.send(outbound, signal);
     } catch (cause) {
-      return errorResult(
+      return transportFailureResult(
         call.id,
-        `send_failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        cause,
         "send_failed",
+        (message) => `send_failed: ${message}`,
       );
     }
 

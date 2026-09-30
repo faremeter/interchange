@@ -22,6 +22,7 @@ import {
   makeMailFlagHandler,
   makeMailReadHandler,
   makeMailSearchHandler,
+  makeMailSendHandler,
 } from "./handlers";
 
 const ADDRESS = "alpha@test.interchange";
@@ -68,6 +69,18 @@ describe("a handle the transport refuses outright", () => {
                 ref: { uid: 1, mailbox: "INBOX" },
                 set: ["\\Seen"],
               },
+            },
+            signal,
+          ),
+      ],
+      [
+        "mail_send",
+        () =>
+          makeMailSendHandler(transport)(
+            {
+              id: "d5",
+              name: "mail_send",
+              arguments: { to: "beta@test.interchange", content: "hi" },
             },
             signal,
           ),
