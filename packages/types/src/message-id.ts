@@ -18,7 +18,10 @@
 
 import { hexEncode } from "./hex";
 
-const BARE_LINE_BREAK = /\r(?!\n)|(?<!\r)\n/g;
+const BARE_LINE_BREAK = /\r(?!\n)|(?<!\r)\n/;
+// Two line breaks back to back, of any flavour. The single-CR branch excludes a
+// CR that an LF follows, or backtracking would let one CRLF satisfy both halves.
+const BLANK_LINE = /(?:\r\n|\r(?!\n)|\n)(?:\r\n|\r(?!\n)|\n)/;
 
 /**
  * Derive the canonical Message-ID for a raw message. Returns the parsed
@@ -42,25 +45,27 @@ export async function deriveMessageId(rawMessage: Uint8Array): Promise<string> {
  * Parse the `Message-ID` header value from a raw message, or `null` when
  * the message carries no such header or carries a blank one.
  *
- * The parser walks the message until the `CRLF CRLF` separator. CRLF is the
- * sole line terminator (RFC 5321 §2.3.8, §4.1.1.4), matching `@intx/mime`'s
- * decoder: a bare CR or LF folds to a space rather than ending a field, so an
- * LF-terminated message names no id here and takes the digest below instead of
- * yielding one read out of unterminated text. Header-field unfolding follows
- * RFC 2822 §2.2.3: a continuation line begins with whitespace and appends to
- * the prior line. Header-name comparison is case-insensitive per RFC 2822
- * §1.2.2.
+ * The header section ends at the first blank line, whichever line-break flavour
+ * wrote it, and the whole message is the section when it carries no blank line.
+ * CRLF is the sole line terminator (RFC 5321 §2.3.8, §4.1.1.4), matching
+ * `@intx/mime`'s decoder, which refuses a section any other break wrote -- an
+ * `LF LF` separator included. Such a message names no id here and takes the
+ * digest in `deriveMessageId` instead, because reading one out of text that
+ * parser refuses would fold the fields after the break, and the head of the
+ * body, into this identifier. Header-field unfolding follows RFC 2822 §2.2.3: a
+ * continuation line begins with whitespace and appends to the prior line.
+ * Header-name comparison is case-insensitive per RFC 2822 §1.2.2.
  */
 export function parseMessageIdHeader(rawMessage: Uint8Array): string | null {
   const raw = new TextDecoder("utf-8", { fatal: false }).decode(rawMessage);
-  const crlfBoundary = raw.indexOf("\r\n\r\n");
-  // A bare CR or LF terminates no field, so it folds to a space; splitting on
-  // one would resolve an id from text a sender smuggled inside a field body.
-  const text = raw.replace(BARE_LINE_BREAK, " ");
-  // An unterminated section must break its lines with CRLF; `@intx/mime`
-  // refuses such a message, so name no id rather than read one out of it.
-  if (crlfBoundary < 0 && text !== raw) return null;
-  const headerSection = crlfBoundary >= 0 ? text.slice(0, crlfBoundary) : text;
+  // Locating the blank line before checking the breaks is what keeps a `CRLF
+  // CRLF` the sender left in the body from becoming the separator: the section
+  // would then be read from that later offset, absorbing every field before it.
+  const boundary = BLANK_LINE.exec(raw);
+  const throughBoundary =
+    boundary === null ? raw.length : boundary.index + boundary[0].length;
+  if (BARE_LINE_BREAK.test(raw.slice(0, throughBoundary))) return null;
+  const headerSection = boundary === null ? raw : raw.slice(0, boundary.index);
   // Unfold continuation lines (a line starting with WSP belongs to
   // the prior header field).
   const lines = headerSection.split("\r\n");
