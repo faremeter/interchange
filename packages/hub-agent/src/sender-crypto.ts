@@ -46,6 +46,12 @@ export function createPublicKeyCrypto(publicKey: Uint8Array): CryptoProvider {
  * signature matches the mailbox verify seam's `getCrypto`, so the resolver is a
  * drop-in source of the sender's verification key. `undefined` is the seam's
  * defined "no key for this address" sentinel, not a swallowed failure.
+ *
+ * A cache read that THROWS -- the address's on-disk entry failed to load -- is
+ * left to propagate, because that is a fault about material the cache was given
+ * and cannot serve, not the absence `undefined` reports. The inbound-verify
+ * caller turns it into its refusing verdict; flattening it to `undefined` here
+ * would hand the caller a sender condition instead.
  */
 export function createSenderCryptoResolver(
   cache: SenderKeyCache,
