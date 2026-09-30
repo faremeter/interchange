@@ -70,8 +70,19 @@ export interface HubTransport {
  */
 export class InMemoryTransport implements MessageTransport, HubTransport {
   readonly #entries = new Map<string, AddressEntry>();
+  readonly #relayOnly: boolean;
   #remoteSendHandler: RemoteSendHandler | undefined;
   readonly #messageSentHandlers = new Set<MessageSentHandler>();
+
+  /**
+   * `relayOnly` sends every recipient through the remote send handler,
+   * including addresses registered here, and keeps no local copy. A host
+   * that registers addresses only to sign their mail uses it, so mail
+   * between two of them takes the same route as mail to anyone else.
+   */
+  constructor(relayOnly: boolean) {
+    this.#relayOnly = relayOnly;
+  }
 
   /**
    * Set a handler for delivering messages to recipients not registered on
@@ -321,6 +332,11 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
    * Throws if the address is not registered.
    */
   deliver(address: string, message: Uint8Array): void {
+    if (this.#relayOnly) {
+      throw new Error(
+        `Cannot deliver mail to "${address}": this transport relays all mail and keeps no mailboxes`,
+      );
+    }
     const entry = this.#entries.get(address);
     if (entry === undefined) {
       throw new Error(
@@ -399,6 +415,7 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     return new ScopedMessageTransport(
       address,
       this.#entries,
+      this.#relayOnly,
       () => this.#remoteSendHandler,
       () => this.#messageSentHandlers,
     );
@@ -412,17 +429,20 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
 class ScopedMessageTransport implements MessageTransport {
   readonly #address: string;
   readonly #entries: Map<string, AddressEntry>;
+  readonly #relayOnly: boolean;
   readonly #getRemoteSendHandler: () => RemoteSendHandler | undefined;
   readonly #getMessageSentHandlers: () => Set<MessageSentHandler>;
 
   constructor(
     address: string,
     entries: Map<string, AddressEntry>,
+    relayOnly: boolean,
     getRemoteSendHandler: () => RemoteSendHandler | undefined,
     getMessageSentHandlers: () => Set<MessageSentHandler>,
   ) {
     this.#address = address;
     this.#entries = entries;
+    this.#relayOnly = relayOnly;
     this.#getRemoteSendHandler = getRemoteSendHandler;
     this.#getMessageSentHandlers = getMessageSentHandlers;
   }
@@ -475,6 +495,7 @@ class ScopedMessageTransport implements MessageTransport {
       this.#address,
       message,
       this.#entries,
+      this.#relayOnly,
       this.#getRemoteSendHandler(),
       aggregatedHandler,
     );
