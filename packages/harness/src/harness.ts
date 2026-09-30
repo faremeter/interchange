@@ -40,6 +40,23 @@ import { driveConnectorReplies } from "./reply-drain";
 const logger = getLogger(["interchange", "harness"]);
 
 /**
+ * Interchange keyword flag the INBOX watch puts on a message whose
+ * `transport.fetchFull` threw. The message stays in the INBOX rather than being
+ * consumed, because part of what makes a fetch throw is an envelope the sender
+ * chose and the rest is local (a uid a concurrent expunge removed, a faulting
+ * read), so deleting on it would put a peer in charge of whether its own mail
+ * survives.
+ *
+ * The keyword is what keeps the watch from attempting the same uid again in the
+ * run that flagged it, on the premise that a transport delivers a second
+ * arrival event for a uid already resident in the mailbox -- which no transport
+ * here does. Nothing in this package re-attempts a flagged message either, so
+ * the flag preserves the mail and surfaces it to a search for
+ * `hasFlags: [MAIL_FETCH_FAILED_FLAG]`, but gives it no path back to delivery.
+ */
+export const MAIL_FETCH_FAILED_FLAG = "$FetchFailed";
+
+/**
  * Env extension the composition layer requires beyond `BaseEnv`. Tools
  * shipped by this package declare the matching `requires` so
  * `validateEnv` can blame either at the env entry point.
@@ -341,6 +358,30 @@ export async function createHarness<EnvReq extends MailEnv>(
       }
     }
 
+    // Whether an earlier attempt on this uid already failed its fetch and
+    // said so on the message. The transport is asked rather than an
+    // in-process uid set because that is where the record lives: on the
+    // message, which outlives the process that wrote it. That record is
+    // what a search on `MAIL_FETCH_FAILED_FLAG` surfaces to an operator.
+    async function fetchAlreadyFailed(ref: MessageRef): Promise<boolean> {
+      const flagged = await transport.search("INBOX", {
+        hasFlags: [MAIL_FETCH_FAILED_FLAG],
+      });
+      return flagged.some((candidate) => candidate.uid === ref.uid);
+    }
+
+    // A flag write that fails leaves the message unflagged, so a later
+    // arrival event for the same uid attempts the fetch again. That is the
+    // safe direction to fail in: the message is still in the INBOX, and the
+    // attempt that comes after a transient fault may well deliver it.
+    async function markFetchFailed(ref: MessageRef): Promise<void> {
+      try {
+        await transport.setFlags(ref, [MAIL_FETCH_FAILED_FLAG]);
+      } catch (cause) {
+        logger.warn`Failed to flag unfetchable message uid=${ref.uid} in INBOX: ${cause}`;
+      }
+    }
+
     // INBOX watch loop. Subscribe before the agent's reactor is fully
     // settled so no message is missed in the window between subscription
     // and the first watch callback.
@@ -353,18 +394,33 @@ export async function createHarness<EnvReq extends MailEnv>(
 
       void (async () => {
         try {
+          if (await fetchAlreadyFailed(ref)) {
+            // An earlier attempt on this uid failed and said so on the
+            // message. Part of what makes a fetch fail is permanent, and the
+            // watch cannot tell that part from the rest, so it leaves the
+            // message flagged in the INBOX and delivers nothing.
+            logger.debug`Skipping message uid=${event.uid}: an earlier fetch failed and flagged it ${MAIL_FETCH_FAILED_FLAG}`;
+            return;
+          }
+          if (stopped) return;
+
           let message: InboundMessage;
           try {
             message = await transport.fetchFull(ref);
           } catch (cause) {
-            // A body the transport cannot decode is delivered without content
-            // rather than failing the fetch, so what reaches here is a message
-            // it could not assemble at all. Inventing the flags and signature
-            // status it never read would vouch for a message the transport did
-            // not; consume it so it does not sit in the INBOX re-failing.
-            logger.error`Failed to fetch message uid=${event.uid}; consuming it undelivered: ${cause}`;
+            // What reaches here is not only a message the transport could not
+            // assemble. The same throw covers a uid a concurrent expunge
+            // already removed, where there is nothing left to consume, and a
+            // faulting read of sound bytes, where a later attempt could still
+            // succeed. Only the assembly case is input a peer chooses, and
+            // consuming on it would let a peer delete its own mail out of the
+            // INBOX by malforming one header -- so the message is flagged and
+            // left where it is. Inventing the flags and signature status the
+            // transport never read would vouch for a message it did not, so
+            // the message is not delivered either.
+            logger.error`Failed to fetch message uid=${event.uid}; flagging it ${MAIL_FETCH_FAILED_FLAG} and leaving it in the INBOX: ${cause}`;
             if (stopped) return;
-            await consumeFromInbox(ref);
+            await markFetchFailed(ref);
             return;
           }
 

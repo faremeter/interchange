@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
   assembleMessage,
@@ -854,5 +854,165 @@ describe("a message that carries no date", () => {
     expect(threads).toHaveLength(1);
     expect(threads[0]?.ref.uid).toBe(undatedUid);
     expect(threads[0]?.children.map((c) => c.ref.uid)).toEqual([datedUid]);
+  });
+});
+
+describe("an envelope whose declared structure is not there", () => {
+  // A sender chooses its own `Content-Type`, so it chooses whether the part
+  // `fetchFull` reads can be found at all. These three shapes are the ones
+  // that leave the projection with no content part, and it refuses the
+  // message rather than inventing one. Refusing is not deleting: the caller
+  // that reads the refusal owns what happens to the mail, and the INBOX watch
+  // in `@intx/harness` keeps it.
+
+  /** A `multipart/*` message whose declared boundary appears nowhere. */
+  function boundaryDeclaredButAbsent(): Uint8Array {
+    return encoder.encode(
+      [
+        "From: alice@x",
+        "To: bob@y",
+        "Subject: Encoded",
+        "Message-ID: <1@x>",
+        "Date: Thu, 01 Jan 2026 00:00:00 +0000",
+        "Interchange-Type: conversation.message",
+        'Content-Type: multipart/signed; protocol="application/pgp-signature"; ' +
+          'micalg=pgp-sha512; boundary="outer"',
+        "",
+        "nothing here delimits a part",
+        "",
+      ].join("\r\n"),
+    );
+  }
+
+  /** A `multipart/*` message that declares no `boundary` parameter. */
+  function noBoundaryDeclared(): Uint8Array {
+    return encoder.encode(
+      [
+        "From: alice@x",
+        "To: bob@y",
+        "Subject: Encoded",
+        "Message-ID: <1@x>",
+        "Date: Thu, 01 Jan 2026 00:00:00 +0000",
+        "Interchange-Type: conversation.message",
+        "Content-Type: multipart/signed",
+        "",
+        "body",
+        "",
+      ].join("\r\n"),
+    );
+  }
+
+  /** A signed content part that declares `multipart/mixed` with no boundary. */
+  function signedPartWithoutBoundary(): Uint8Array {
+    return handBuiltSigned(["Content-Type: multipart/mixed", "", "orphan"]);
+  }
+
+  const malformed: { name: string; raw: () => Uint8Array }[] = [
+    {
+      name: "a declared boundary that appears nowhere",
+      raw: boundaryDeclaredButAbsent,
+    },
+    { name: "a multipart type declaring no boundary", raw: noBoundaryDeclared },
+    {
+      name: "a signed content part that is multipart with no boundary",
+      raw: signedPartWithoutBoundary,
+    },
+  ];
+
+  for (const shape of malformed) {
+    test(`fetchFull refuses ${shape.name}`, async () => {
+      const store = createInMemoryMailboxStore();
+      const uid = store.append(shape.raw(), envelopeFor(), []);
+
+      await expect(
+        fetchFull({ uid, mailbox: "INBOX" }, store, () => undefined),
+      ).rejects.toThrow();
+
+      // The refusal leaves the mailbox as it found it: the projections are
+      // pure reads, so the bytes a caller may still want are all there.
+      expect(store.find(uid)).toBeDefined();
+      expect(await store.readRaw(uid)).toEqual(shape.raw());
+    });
+  }
+});
+
+describe("a body that will not decode reports itself", () => {
+  // The default sink routes `warning` and above to `console.warn`, so spying
+  // on it asserts what an operator actually sees rather than an internal
+  // logger call. The development formatter colours every interpolated value,
+  // so the escape sequences come off before anything is matched.
+  const ansiEscape = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
+  /* eslint-disable no-console -- intentional spy on console.warn */
+  const warned: string[] = [];
+  let originalWarn: typeof console.warn;
+
+  beforeEach(() => {
+    warned.length = 0;
+    originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warned.push(
+        args
+          .map((a) => String(a))
+          .join(" ")
+          .replace(ansiEscape, ""),
+      );
+    };
+  });
+
+  afterEach(() => {
+    console.warn = originalWarn;
+  });
+  /* eslint-enable no-console */
+
+  test("fetchFull records the decode failure it delivers the message without", async () => {
+    // Absent `content` is the whole of what the caller learns, and "not text"
+    // and "would not decode" reach it as the same value. Without a record the
+    // second is indistinguishable from the first and nobody learns the peer is
+    // sending bodies its own declared encoding does not describe.
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      signedConversationWithEncoding("base64", "!!! not base64 !!!"),
+      envelopeFor(),
+      [],
+    );
+
+    const full = await fetchFull(
+      { uid, mailbox: "INBOX" },
+      store,
+      () => undefined,
+    );
+    expect(full.content).toBeUndefined();
+
+    // The record has to name the message and the encoding that failed, so an
+    // operator can read the octets back through `fetchPart` and can tell which
+    // peer to ask about.
+    const record = warned.find((line) => line.includes("body did not decode"));
+    expect(record).toBeDefined();
+    expect(record).toContain(`uid=${String(uid)}`);
+    expect(record).toContain("INBOX");
+    expect(record).toContain("base64");
+  });
+
+  test("an unrecognized encoding is not reported as a decode failure", async () => {
+    // The RFC 2045 section 6.4 relabel is the declared handling of an encoding
+    // this transport does not implement, not a fault. Reporting it would cry
+    // wolf on every opaque part a peer legitimately sends.
+    const store = createInMemoryMailboxStore();
+    const uid = store.append(
+      signedConversationWithEncoding("x-uuencode", "begin 644 x"),
+      envelopeFor(),
+      [],
+    );
+
+    const full = await fetchFull(
+      { uid, mailbox: "INBOX" },
+      store,
+      () => undefined,
+    );
+    expect(full.content).toBeUndefined();
+    expect(
+      warned.filter((line) => line.includes("body did not decode")),
+    ).toEqual([]);
   });
 });

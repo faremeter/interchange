@@ -38,6 +38,7 @@ import type {
   ReactorCapabilities,
   ReactorInboundEvent,
   ReactorState,
+  SearchQuery,
 } from "@intx/types/runtime";
 
 import { createConnectorRouter } from "./connector-router";
@@ -45,6 +46,7 @@ import {
   createHarness,
   createWrappedStorageOverrides,
   defineMailTools,
+  MAIL_FETCH_FAILED_FLAG,
   type MailEnv,
 } from "./harness";
 import { waitForReactorDone } from "@intx/agent/testing";
@@ -67,7 +69,8 @@ interface MockTransportShape {
   enqueueUnfetchable(uid: number): void;
   watchCount(): number;
   unsubscribeCount(): number;
-  getDeletedRefs(): MessageRef[];
+  getFlags(uid: number): string[];
+  isPresent(uid: number): boolean;
   getFetchedUids(): number[];
   getSent(): unknown[];
 }
@@ -101,18 +104,31 @@ function makeMockTransport(): {
     headers?: unknown;
   }) => void;
   const callbacks: WatchCallback[] = [];
-  const deletedRefs: MessageRef[] = [];
   const fetchedUids: number[] = [];
   const sent: unknown[] = [];
   const messages = new Map<number, InboundMessage>();
   const unfetchable = new Set<number>();
+  // The uids the mailbox holds, and the flags each carries. A uid leaves
+  // `present` only through an expunge, so a test can tell "the harness left
+  // the message alone" from "the harness consumed it".
+  const present = new Set<number>();
+  const flagsByUid = new Map<number, Set<string>>();
   let unsubscribes = 0;
 
+  function flagsOf(uid: number): Set<string> {
+    let flags = flagsByUid.get(uid);
+    if (flags === undefined) {
+      flags = new Set();
+      flagsByUid.set(uid, flags);
+    }
+    return flags;
+  }
+
   // The harness reads `transport.watch`, `transport.fetchFull`,
-  // `transport.setFlags`, `transport.expunge`, and `transport.send`.
-  // The mock provides those; the rest of the `MessageTransport`
-  // surface is satisfied via the double-cast pattern, which the
-  // project conventions sanction for library-type test stubs.
+  // `transport.search`, `transport.setFlags`, `transport.expunge`, and
+  // `transport.send`. The mock provides those; the rest of the
+  // `MessageTransport` surface is satisfied via the double-cast pattern,
+  // which the project conventions sanction for library-type test stubs.
   const stub = {
     watch(_mailbox: unknown, callback: WatchCallback): () => void {
       callbacks.push(callback);
@@ -131,12 +147,34 @@ function makeMockTransport(): {
       }
       return message;
     },
-    async setFlags(ref: MessageRef): Promise<void> {
-      deletedRefs.push(ref);
+    async search(_mailbox: string, query: SearchQuery): Promise<MessageRef[]> {
+      // The harness only ever queries by keyword. Any other query shape is a
+      // change the mock has not been taught, so it says so rather than
+      // answering with an empty result the caller would read as "no match".
+      const wanted = query.hasFlags;
+      if (wanted === undefined || Object.keys(query).length !== 1) {
+        throw new Error(
+          `the mock implements only a hasFlags search; got ${JSON.stringify(query)}`,
+        );
+      }
+      return [...present]
+        .filter((uid) => wanted.every((flag) => flagsOf(uid).has(flag)))
+        .map((uid) => ({ uid, mailbox: "INBOX" }));
+    },
+    async setFlags(ref: MessageRef, flags: string[]): Promise<void> {
+      for (const flag of flags) flagsOf(ref.uid).add(flag);
     },
     async expunge(): Promise<{ expungedUids: number[] }> {
-      // No-op for the mock; the test asserts via deletedRefs.
-      return { expungedUids: [] };
+      const expungedUids = [...present].filter((uid) =>
+        flagsOf(uid).has("\\Deleted"),
+      );
+      for (const uid of expungedUids) {
+        present.delete(uid);
+        flagsByUid.delete(uid);
+        messages.delete(uid);
+        unfetchable.delete(uid);
+      }
+      return { expungedUids };
     },
     async send(message: unknown): Promise<{ messageId: string }> {
       sent.push(message);
@@ -160,11 +198,14 @@ function makeMockTransport(): {
       },
       enqueue(uid: number, message: InboundMessage) {
         messages.set(uid, message);
+        present.add(uid);
       },
-      // A body `fetchFull` cannot decode: the transport throws rather than
+      // An envelope `fetchFull` cannot assemble, a uid a concurrent expunge
+      // removed, or a faulting read: the transport throws rather than
       // returning a message with its content omitted.
       enqueueUnfetchable(uid: number) {
         unfetchable.add(uid);
+        present.add(uid);
       },
       watchCount(): number {
         return callbacks.length;
@@ -172,8 +213,11 @@ function makeMockTransport(): {
       unsubscribeCount(): number {
         return unsubscribes;
       },
-      getDeletedRefs(): MessageRef[] {
-        return deletedRefs;
+      getFlags(uid: number): string[] {
+        return [...flagsOf(uid)];
+      },
+      isPresent(uid: number): boolean {
+        return present.has(uid);
       },
       getFetchedUids(): number[] {
         return fetchedUids;
@@ -702,7 +746,11 @@ describe("createHarness message delivery", () => {
     }
   });
 
-  test("a message that cannot be fetched is consumed instead of left in the INBOX", async () => {
+  test("a message that cannot be fetched is flagged and left in the INBOX", async () => {
+    // A fetch throws on an envelope the sender chose, and also on a uid a
+    // concurrent expunge removed and on a faulting read. Consuming the message
+    // here would hand a peer the power to delete its own mail out of the INBOX
+    // by malforming a header, so the message stays and carries the reason.
     const { transport, control } = makeMockTransport();
     const storage = await createIsogitStore(workDir);
     const received = { count: 0 };
@@ -717,8 +765,14 @@ describe("createHarness message delivery", () => {
       control.fireExists(13);
 
       await waitUntil(() =>
-        control.getDeletedRefs().some((ref) => ref.uid === 13),
+        control.getFlags(13).includes(MAIL_FETCH_FAILED_FLAG),
       );
+
+      // The flag write is the last act of the failure path, so once it lands
+      // the decision about the message is made: it was not marked `\Deleted`
+      // and it is still in the mailbox.
+      expect(control.getFlags(13)).not.toContain("\\Deleted");
+      expect(control.isPresent(13)).toBe(true);
 
       // The delivery of a message the harness can handle is the fence for
       // the negative: `agent.deliver` runs before `consumeFromInbox` on the
@@ -735,6 +789,50 @@ describe("createHarness message delivery", () => {
 
       await waitUntil(() => received.count >= 1);
       expect(received.count).toBe(1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("a flagged message is not fetched again when its arrival replays", async () => {
+    // Preserving the message cannot mean retrying it forever. A transport that
+    // replays `exists` -- on reconnect, or on a fresh watch over a mailbox that
+    // still holds the message -- would otherwise drive the same failing fetch
+    // for as long as the message sits there.
+    const { transport, control } = makeMockTransport();
+    const storage = await createIsogitStore(workDir);
+    const received = { count: 0 };
+    const env: MailEnv = {
+      ...mailEnv({ workdir: workDir, storage, transport }),
+      directors: recordingDirectorRegistry(received),
+    };
+    const harness = await createHarness(recordingDef(), env);
+
+    try {
+      control.enqueueUnfetchable(21);
+      control.fireExists(21);
+      await waitUntil(() =>
+        control.getFlags(21).includes(MAIL_FETCH_FAILED_FLAG),
+      );
+
+      const message = createInboundMessage({
+        from: "alice@example.com",
+        to: AGENT_ADDRESS,
+        content: "Hello",
+        interchangeType: "conversation.message",
+      });
+      control.enqueue(22, { ...message, ref: { uid: 22, mailbox: "INBOX" } });
+
+      // The mock invokes its callbacks in order and each arrival consults the
+      // keyword before anything else, so uid 21's replay has finished its
+      // flag query by the time uid 22's fetch is recorded. Uid 21 appearing
+      // once in the record is therefore the skip.
+      control.fireExists(21);
+      control.fireExists(22);
+
+      await waitUntil(() => control.getFetchedUids().includes(22));
+      expect(control.getFetchedUids()).toEqual([21, 22]);
+      expect(control.isPresent(21)).toBe(true);
     } finally {
       await harness.close();
     }

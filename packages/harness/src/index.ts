@@ -1,6 +1,7 @@
 export {
   createHarness,
   defineMailTools,
+  MAIL_FETCH_FAILED_FLAG,
   type Harness,
   type MailEnv,
   type MailToolWrapper,

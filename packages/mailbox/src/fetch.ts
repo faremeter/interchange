@@ -1,4 +1,5 @@
 import { type } from "arktype";
+import { getLogger } from "@intx/log";
 import type {
   MessageHeaders,
   BodyStructure,
@@ -27,6 +28,8 @@ import {
 } from "@intx/mime";
 import type { ParsedMimePart } from "@intx/mime";
 import { verifyMimeSignature } from "./verify-signature";
+
+const logger = getLogger(["interchange", "mailbox", "fetch"]);
 
 const MessagePayload = type({
   type: InterchangeType,
@@ -94,14 +97,23 @@ export async function fetchPart(
  * decode. The octets stay reachable through `fetchPart`, which reports them
  * under the §6.4 relabel.
  */
-function decodePartText(part: ParsedMimePart): string | undefined {
+function decodePartText(
+  part: ParsedMimePart,
+  ref: MessageRef,
+): string | undefined {
   if (!isRecognizedTransferEncoding(transferEncodingMechanism(part.headers))) {
     return undefined;
   }
   let decoded: Uint8Array;
   try {
     decoded = decodePartBytes(part.body, part.headers);
-  } catch {
+  } catch (cause) {
+    // Absent text is the answer, but it is not a self-explaining one: a caller
+    // reading `undefined` cannot tell "not text" from "would not decode", and
+    // an operator would otherwise never learn that a peer sends bodies its own
+    // declared encoding does not describe. The record names the message so the
+    // octets can be read back through `fetchPart`.
+    logger.warn`Message uid=${ref.uid} in mailbox ${ref.mailbox} carries a ${part.contentType} part whose ${transferEncodingMechanism(part.headers)} body did not decode; delivering it without text: ${cause instanceof Error ? cause.message : String(cause)}`;
     return undefined;
   }
   return new TextDecoder("utf-8", { fatal: false }).decode(decoded);
@@ -168,7 +180,10 @@ export async function fetchFull(
 
   // A body that did not decode is not text, and both destinations here are
   // text; the message is delivered without one rather than refused.
-  const text = decodePartText(resolveContentPart(raw, headers, bodyOffset));
+  const text = decodePartText(
+    resolveContentPart(raw, headers, bodyOffset),
+    ref,
+  );
   if (text !== undefined) {
     if (isConversation) {
       result.content = text;
