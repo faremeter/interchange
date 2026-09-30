@@ -126,7 +126,21 @@ export type CreateRepoStoreConfig = {
   gc?: GCPolicy & { kinds: readonly RepoKind[] };
 };
 
-export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
+/**
+ * A `RepoStore` that owns its repositories on local disk and can remove one.
+ */
+export type LocalRepoStore = RepoStore & {
+  /**
+   * Delete a repository and forget everything the store keeps in memory about
+   * it, under its lock, so a repository created again at the same id starts
+   * from nothing. A missing repository is not an error. `last` names an entry
+   * of the repository's directory removed only after every other one, so a
+   * crash partway through leaves it in place.
+   */
+  removeRepo(repoId: RepoId, opts?: { readonly last?: string }): Promise<void>;
+};
+
+export function createRepoStore(config: CreateRepoStoreConfig): LocalRepoStore {
   const { dataDir, signingKey, handlers, authorize, signingCallback, gc } =
     config;
 
@@ -207,8 +221,9 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return `${repoId.kind}/${repoId.id}`;
   }
 
-  // Per-commit reachable-object cache. createPack for a workflow-run
-  // ref walks the first-parent chain and unions every commit's
+  // Per-commit reachable-object cache, keyed by repository and commit so
+  // removing a repository can drop its entries. createPack for a
+  // workflow-run ref walks the first-parent chain and unions every commit's
   // reachable objects so the receiver gets the full history needed to
   // validate per-commit transitions. Without this cache the walk
   // recomputes the reachable set for every ancestor on every push, so
@@ -1836,7 +1851,12 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
       const commitSha = await git.resolveRef({ fs, dir, ref });
       const tipKey = lastPackedTipKey(repoId, ref);
       const stopAt = lastPackedTip.get(tipKey) ?? null;
-      const oids = await collectChainReachableObjects(dir, commitSha, stopAt);
+      const oids = await collectChainReachableObjects(
+        repoId,
+        dir,
+        commitSha,
+        stopAt,
+      );
       const result = await git.packObjects({
         fs,
         dir,
@@ -1889,6 +1909,7 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
   // store — that commit is by definition not part of the local
   // supervisor's history and so cannot be a relevant ancestor.
   async function collectChainReachableObjects(
+    repoId: RepoId,
     dir: string,
     tipSha: string,
     stopAt: string | null,
@@ -1897,10 +1918,11 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     let current: string | null = tipSha;
     while (current !== null) {
       if (current === stopAt) break;
-      let perCommit = chainReachabilityCache.get(current);
+      const cacheKey = `${indexCacheKey(repoId)}/${current}`;
+      let perCommit = chainReachabilityCache.get(cacheKey);
       if (perCommit === undefined) {
         perCommit = await collectReachableObjects(dir, current);
-        chainReachabilityCache.set(current, perCommit);
+        chainReachabilityCache.set(cacheKey, perCommit);
       }
       for (const o of perCommit) seen.add(o);
       let parsed: Awaited<ReturnType<typeof git.readCommit>>;
@@ -2167,6 +2189,52 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     return iterator;
   }
 
+  async function removeRepo(
+    repoId: RepoId,
+    { last }: { readonly last?: string } = {},
+  ): Promise<void> {
+    const dir = repoDir(repoId);
+    await withRepoLock(repoId, async () => {
+      if (last !== undefined) {
+        let entries: string[];
+        try {
+          entries = await fs.promises.readdir(dir);
+        } catch (cause) {
+          if (
+            !(cause instanceof Error && "code" in cause) ||
+            cause.code !== "ENOENT"
+          )
+            throw cause;
+          entries = [];
+        }
+        for (const entry of entries) {
+          if (entry === last) continue;
+          await fs.promises.rm(path.join(dir, entry), {
+            recursive: true,
+            force: true,
+          });
+        }
+        await fs.promises.rm(path.join(dir, last), {
+          recursive: true,
+          force: true,
+        });
+      }
+      await fs.promises.rm(dir, { recursive: true, force: true });
+      invalidateGitCache(dir);
+      existingCommitsCache.delete(indexCacheKey(repoId));
+      const refPrefix = `${indexCacheKey(repoId)}/`;
+      for (const key of [...seqCache.keys()]) {
+        if (key.startsWith(refPrefix)) seqCache.delete(key);
+      }
+      for (const key of [...lastPackedTip.keys()]) {
+        if (key.startsWith(refPrefix)) lastPackedTip.delete(key);
+      }
+      for (const key of [...chainReachabilityCache.keys()]) {
+        if (key.startsWith(refPrefix)) chainReachabilityCache.delete(key);
+      }
+    });
+  }
+
   return {
     initRepo,
     writeTree,
@@ -2182,5 +2250,6 @@ export function createRepoStore(config: CreateRepoStoreConfig): RepoStore {
     openCommittedReads,
     openCommittedReadsAtCommit,
     subscribe,
+    removeRepo,
   };
 }

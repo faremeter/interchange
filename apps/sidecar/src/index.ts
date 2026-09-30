@@ -64,6 +64,7 @@ import {
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
   createWorkflowRunPackRestorer,
+  WORKFLOW_RUN_RECORD_FILENAME,
   removeFileAtomicDurable,
   writeFileAtomicDurable,
   type SidecarDeployRouter,
@@ -630,6 +631,15 @@ const orchestrator = createSidecarOrchestrator({
       },
       reportDeploymentRefTips: (incarnation) =>
         wrappedRepoStore.reportWorkflowRunRefTips(incarnation),
+      // The run record lives in the repository and goes last, so a crash
+      // partway through leaves it for the next boot to report.
+      removeRunRepository: (runId) =>
+        agentRepoStore.repoStore.removeRepo(
+          { kind: "workflow-run", id: runId },
+          { last: WORKFLOW_RUN_RECORD_FILENAME },
+        ),
+      removeAgentStateRepository: (id) =>
+        agentRepoStore.repoStore.removeRepo({ kind: "agent-state", id }),
       multistepMailRouter,
       inboundMailPolicyRegistry,
       multistepSignalRouter,

@@ -26,3 +26,4 @@ export {
   removeFileAtomicDurable,
   writeFileAtomicDurable,
 } from "./atomic-write";
+export { WORKFLOW_RUN_RECORD_FILENAME } from "./workflow-run-record";

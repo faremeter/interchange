@@ -194,6 +194,8 @@ describe("deploy-failure registry leak", () => {
       registerDeployment: ({ runId, agentAddress, generation }) => {
         registry.record(runId, { agentAddress, generation });
       },
+      removeRunRepository: async () => undefined,
+      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
@@ -279,6 +281,8 @@ describe("deploy-failure registry leak", () => {
       registerDeployment: ({ runId, agentAddress, generation }) => {
         registry.record(runId, { agentAddress, generation });
       },
+      removeRunRepository: async () => undefined,
+      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
@@ -433,6 +437,8 @@ describe("deploy-failure registry leak", () => {
       registerDeployment: ({ runId, agentAddress, generation }) => {
         registry.record(runId, { agentAddress, generation });
       },
+      removeRunRepository: async () => undefined,
+      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
@@ -539,6 +545,8 @@ describe("deploy-failure registry leak", () => {
       registerDeployment: ({ runId, agentAddress, generation }) => {
         registry.record(runId, { agentAddress, generation });
       },
+      removeRunRepository: async () => undefined,
+      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
