@@ -11,6 +11,7 @@ import {
 } from "@intx/mime";
 import { createInMemoryTransport } from "./index";
 import type {
+  CryptoProvider,
   MailboxEvent,
   MessageRef,
   MessageAttachment,
@@ -802,6 +803,51 @@ describe("registration lifecycle", () => {
       }
       expect(cause.condition).toBe("CANNOT");
     }
+  });
+
+  test("a recipient unregistered while the message is signed fails the send before any recipient receives it", async () => {
+    const transport = createInMemoryTransport();
+    const real = createEd25519Crypto(await generateKeyPair());
+    const signing = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const slow: CryptoProvider = {
+      async sign(content) {
+        signing.resolve(undefined);
+        await release.promise;
+        return real.sign(content);
+      },
+      signSSH: (payload) => real.signSSH(payload),
+      verify: (content, signature, publicKey) =>
+        real.verify(content, signature, publicKey),
+      getPublicKey: () => real.getPublicKey(),
+    };
+    transport.register("alpha@test.interchange", slow);
+    transport.register(
+      "beta@test.interchange",
+      createEd25519Crypto(await generateKeyPair()),
+    );
+    transport.register(
+      "gamma@test.interchange",
+      createEd25519Crypto(await generateKeyPair()),
+    );
+
+    const sent = transport.getTransportFor("alpha@test.interchange").send({
+      to: ["beta@test.interchange", "gamma@test.interchange"],
+      type: "conversation.message",
+      content: "hello",
+    });
+    await signing.promise;
+    transport.unregister("gamma@test.interchange");
+    release.resolve(undefined);
+
+    await expect(sent).rejects.toThrow(
+      /was unregistered while the message was being signed/,
+    );
+    expect(
+      await transport
+        .getTransportFor("beta@test.interchange")
+        .search("INBOX", {}),
+    ).toHaveLength(0);
   });
 
   test("fetchFull returns signatureStatus 'unknown' after sender is unregistered", async () => {
