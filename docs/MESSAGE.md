@@ -331,7 +331,7 @@ Two ways an ID leaves the agent that holds it:
 - `to` accepts an array, so every recipient of a multi-recipient message learns the ID that message carries.
 - `mail_read` returns the whole header set for `parts: "headers"` and `parts: "full"`, `Interchange-Correlation-ID` included. The default `parts: "payload"` does not expose it.
 
-The hub and sidecar stack is not exposed: the workflow host's projection from decoded mail to the step agent drops the header, so no inbound mail reaches correlation resolution there. A composition that feeds `fetchFull` output straight into `agent.deliver` — `@intx/harness` is the one in this tree — has no such gap.
+The hub and sidecar stack is not exposed: the workflow host's projection from decoded mail to the step agent drops the header, so no inbound mail reaches correlation resolution there. `@intx/harness` is exposed. It is the one composition in this tree that feeds `fetchFull` output straight into `agent.deliver`, with no projection between them, so a mail-supplied correlation ID reaches correlation resolution on the header alone. Closing that needs either a correlation validator on the reactor or a delivery-side projection that drops the header, as the workflow host's does.
 
 ## Cryptographic Signing
 
@@ -510,9 +510,11 @@ The interface splits into three concerns: outbound delivery, inbox management, a
 
 ### Failures
 
-A transport rejects with `MessageTransportError` when the condition it failed under is one a caller has to tell apart from the others. The condition is a code from RFC 5530 § 3: `NONEXISTENT` for a mailbox that is not there, `CANNOT` for an operation that can never succeed against this transport, `SERVERBUG` for a transport that violated one of its own invariants. Branch on the condition with `isMessageTransportError`, never on the text of the message — each transport words its message differently.
+A transport rejects with `MessageTransportError` when the condition it failed under is one a caller has to tell apart from the others. The condition is a code from RFC 5530 § 3: `NONEXISTENT` for a mailbox that is not there, `CANNOT` for an operation the transport refuses outright, which reissuing the same call does not address, `SERVERBUG` for a transport that violated one of its own invariants. Branch on the condition with `isMessageTransportError`, never on the text of the message — each transport words its message differently.
 
-Every tool path that names a mailbox maps `NONEXISTENT` to `invalid_mailbox`, whether the name arrived as a `mailbox` argument, inside a `ref`, or as the `INBOX` that `mail.expunge` sweeps without being told to. The condition is raised before the operation, so such a result means nothing was read and nothing was written. Every other condition carries the code the tool answers for its own operation instead — `search_failed` for `mail.search` and for the opening search of `mail.wait`, `not_found` for `mail.reply` and for a `mail.read` of the headers, `fetch_failed` for a `mail.read` of the whole message and for a `mail.wait` read-back, `invalid_part` for a part path, `flag_failed` for `mail.flag`, `expunge_failed` for `mail.expunge`. A rejection that names no condition carries the operation's code as well, except in `mail.read`.
+Every tool path that names a mailbox maps `NONEXISTENT` to `invalid_mailbox`, whether the name arrived as a `mailbox` argument, inside a `ref`, or as the `INBOX` that `mail.expunge` sweeps without being told to. The condition is raised before the operation, so such a result means nothing was read and nothing was written. `CANNOT` maps to `not_available` on every one of those paths, because an operation the transport refused outright is not addressed by reissuing the same call and so must not arrive under a code that invites one. `SERVERBUG`, and a rejection naming no condition, carry the code the tool answers for its own operation instead — `search_failed` for `mail.search` and for the opening search of `mail.wait`, `not_found` for `mail.reply` and for a `mail.read` of the headers, `fetch_failed` for a `mail.read` of the whole message and for a `mail.wait` read-back, `invalid_part` for a part path, `flag_failed` for `mail.flag`, `expunge_failed` for `mail.expunge`. Those codes leave the outcome unknown. A rejection that names no condition is reported the same way, except in `mail.read`.
+
+`mail.send` is outside this mapping: it reports every transport rejection as `send_failed` regardless of the condition named, so a `CANNOT` on the send path does not surface as `not_available`.
 
 A rejection naming no condition tells `mail.read` nothing about whether the message is there, so it re-reads the headers before it answers: a reference the headers still answer for names a message that exists, and the failure is reported as `fetch_failed` for a whole-message read or `invalid_part` for a part path. A reference the headers do not answer for is `not_found`, whichever of the four `parts` modes the call named.
 
@@ -682,7 +684,7 @@ Parameters:
 - `subject`: conversation topic (optional, carried forward in replies)
 - `content`: text content of the message (for `conversation.message` type)
 - `payload`: structured payload object (optional — for non-conversation types, replaces `content` with the full `body` object for the given `type`)
-- `inReplyTo`: Message-ID being replied to (optional — sets In-Reply-To and extends References chain by fetching the parent's References header)
+- `inReplyTo`: Message-ID being replied to (optional — sets In-Reply-To, and the References chain names that one parent alone)
 - `correlationId`: links this message to a pending request (optional)
 - `type`: Interchange payload type (default: `conversation.message`)
 - `attachments`: array of `{ name, contentType, data }` (optional)
@@ -713,7 +715,7 @@ The reply body obeys the same rule as `mail.send`: exactly one of `content` and 
 
 Returns on success: same as `mail.send`.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (as for `mail.send`, including a body that contradicts the `type`), `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the message being replied to could not be fetched), `no_reply_address` (the parent carries no From header, so it names nobody to reply to -- send to an explicit recipient with `mail.send` instead), `send_failed` (as for `mail.send` -- the reply goes through the same send path, so an error leaves the outcome unknown there too).
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (as for `mail.send`, including a body that contradicts the `type`), `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the message being replied to could not be fetched), `not_available` (the transport refused the fetch of the parent outright), `no_reply_address` (the parent carries no From header, so it names nobody to reply to -- send to an explicit recipient with `mail.send` instead), `send_failed` (as for `mail.send` -- the reply goes through the same send path, so an error leaves the outcome unknown there too, and a refused send arrives under this code rather than `not_available`).
 
 A reply carries the parent's `Interchange-Correlation-ID` forward when the parent has one. The value is read from the parent rather than taken as an argument, so the reply cannot stamp a correlation the parent does not carry. Which correlation the reply answers is the responder's choice, made by choosing the parent: any correlated message in the mailbox is a usable `ref`. See Correlation Security above for what that means — a correlation resolves on the header alone.
 
@@ -733,7 +735,7 @@ The filters `SearchQuery` declares are the only ones the query accepts, at the t
 
 Returns on success: `{ results, matched, truncated }`. Each entry of `results` carries the message `ref` and the summary fields projected from its headers — `from`, `subject`, `date`, `interchangeType` and `messageId` — and no body. An entry whose headers could not be read carries `headersError` with the reason in place of those fields, so a corrupt index is not read as a message that carries no headers. `matched` is the number of messages the query matched before `limit` was applied, and `truncated` says whether `limit` cut the list short, which is what tells a mailbox holding exactly `limit` matches from one holding hundreds.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `search_failed` (the transport rejected the search for a reason of its own). The query is never the cause of a `search_failed` -- it was validated before the call -- so the same call is worth retrying, where an `invalid_mailbox` needs a different `mailbox`.
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `not_available` (the transport refused the search outright), `search_failed` (the transport rejected the search for a reason of its own, leaving the outcome unknown). The query is never the cause of a `search_failed` -- it was validated before the call -- so the same call is worth retrying. An `invalid_mailbox` needs a different `mailbox`, and a `not_available` is answered by neither: the search was refused rather than attempted, and reissuing it unchanged does not make it available.
 
 **mail.read** — Read a specific message.
 
@@ -744,7 +746,7 @@ Parameters:
 
 Returns: the requested content. For `"headers"`, returns the whole parsed header set, with no projection over its fields. For `"payload"`, returns the parsed `application/vnd.interchange+json` object. For `"full"`, returns the complete parsed message including signature status.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the reference names no message), `fetch_failed` (the message is there but could not be read back -- a structured payload that is not valid JSON, say), `invalid_part` (the message is there but the requested MIME part could not be fetched).
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the reference names no message), `not_available` (the transport refused the read outright), `fetch_failed` (the message is there but could not be read back -- a structured payload that is not valid JSON, say), `invalid_part` (the message is there but the requested MIME part could not be fetched).
 
 **mail.threads** — Get conversation threads.
 
@@ -770,7 +772,7 @@ Provide exactly one of `set` or `clear` — one direction per call. A single cal
 
 Returns: `{ ok: true }`
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (neither `set` nor `clear`, or both), `invalid_mailbox` (the mailbox named in `ref` does not exist), `flag_failed` (the transport rejected the flag mutation). A `flag_failed` leaves the outcome unknown rather than meaning the mailbox is unchanged; re-read the message to learn whether the flag stuck. An `invalid_mailbox` leaves the mailbox unchanged, and `ref` is what has to change.
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (neither `set` nor `clear`, or both), `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_available` (the transport refused the mutation outright), `flag_failed` (the transport rejected the flag mutation). A `flag_failed` leaves the outcome unknown rather than meaning the mailbox is unchanged; re-read the message to learn whether the flag stuck. An `invalid_mailbox` leaves the mailbox unchanged, and `ref` is what has to change. A `not_available` leaves the mailbox unchanged too, and `ref` is not what has to change: the mutation was refused before it was attempted, and no retry of the same call makes it available.
 
 **mail.expunge** (`mail_expunge`) — Permanently remove every `\Deleted` message from the INBOX.
 
@@ -778,7 +780,7 @@ Takes no parameters. Flag a message `\Deleted` with `mail.flag` first, then call
 
 Returns: `{ ok: true, expungedUids: number[] }` — the uids removed.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (the INBOX does not exist), `expunge_failed` (every other transport rejection). An `expunge_failed` leaves the outcome unknown rather than meaning nothing was removed; an `invalid_mailbox` means the sweep was refused before it began, so nothing was removed. The call names no mailbox, so neither result is fixed by changing an argument.
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (the INBOX does not exist), `not_available` (the transport refused the sweep outright), `expunge_failed` (every other transport rejection). An `expunge_failed` leaves the outcome unknown rather than meaning nothing was removed; an `invalid_mailbox` and a `not_available` each mean the sweep was refused before it began, so nothing was removed. The call names no mailbox, so none of the three is fixed by changing an argument.
 
 The expunged message bytes are removed from the live mailbox but retained in the workflow run's git history, so the audit trail is preserved.
 
@@ -811,7 +813,7 @@ Checks for existing matches first via `search`. If none found, subscribes to the
 
 Returns on success: `{ ref, from, subject, content }` — the matched message's reference, sender, subject, and text content.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `search_failed` (the transport rejected the opening search, as in `mail.search`), `timeout` (no matching message arrived within the deadline), `aborted` (reactor shut down while waiting), `fetch_failed` (a message the tool observed to exist could not be read back; a mailbox that went while the wait held it is `invalid_mailbox` instead), `internal_error` (a defect in the tool package, not a condition the call provoked).
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (mailbox does not exist), `invalid_query` (malformed search criteria), `not_available` (the transport refused the opening search or the read-back outright), `search_failed` (the transport rejected the opening search, as in `mail.search`), `timeout` (no matching message arrived within the deadline), `aborted` (reactor shut down while waiting), `fetch_failed` (a message the tool observed to exist could not be read back; a mailbox that went while the wait held it is `invalid_mailbox` instead), `internal_error` (a defect in the tool package, not a condition the call provoked).
 
 Use this instead of polling `mail.search` in a loop. The blocking behavior is transparent to the reactor — the tool's promise simply takes longer to resolve, and the agent naturally idles until it does.
 

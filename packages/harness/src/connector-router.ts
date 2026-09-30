@@ -80,6 +80,10 @@ export interface ConnectorRouter {
    * Throws when it is present but is not a parseable bare addr-spec.
    * Callers should treat the throw as passthrough — deliver the message
    * but do not advance router state or consume it from the INBOX.
+   *
+   * Does not read `Interchange-Type`. A structured payload that names a
+   * `From` starts or continues the thread exactly as a conversation
+   * message does.
    */
   route(message: InboundMessage): RouteDecision;
 
