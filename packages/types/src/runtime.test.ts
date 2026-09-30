@@ -7,6 +7,7 @@ import {
   ContentBlock,
   formatSafetyRatingText,
   InferenceEvent,
+  InterchangeType,
   MediaSource,
   TransformRecord,
   type ContextTransform,
@@ -17,6 +18,7 @@ import {
   type BlobReader,
   type BlobSource,
   createBlobReader,
+  isConversationType,
   isMessageTransportError,
   MessageTransportError,
   parseToolOutputURI,
@@ -1315,5 +1317,120 @@ describe("isMessageTransportError", () => {
     ).toBe(false);
     expect(isMessageTransportError({ condition: "NONEXISTENT" })).toBe(false);
     expect(isMessageTransportError(undefined)).toBe(false);
+  });
+});
+
+// isConversationType answers from a set of members written out by hand, and
+// nothing in InterchangeType forces an entry there: a member added to the union
+// is not a conversation type until someone lists it in that set, which is what
+// the predicate's own docstring says. The consequence of the missing edit is
+// silent -- a conversational message would route as structured mail -- so the
+// classification below is held to the union at runtime.
+//
+// The members come from the validator rather than from a second list written
+// here: `type.enumerated` compiles to unit nodes, and `select("unit")` yields
+// them. A member added to the union therefore reaches this comparison with no
+// entry and is reported, and answering the report is the same decision the
+// enumerated set exists to force. Deriving membership from the `conversation.`
+// name prefix here would make that decision instead of asking for it.
+
+type ConversationMembership = ReadonlyMap<InterchangeType, boolean>;
+
+/**
+ * Whether each member of InterchangeType is a conversation type. The set behind
+ * isConversationType is not exported, so this is a second description of the
+ * same fact rather than a copy of it, and the predicate is the only handle the
+ * comparison below has on the first one.
+ */
+const CONVERSATION_MEMBERSHIP: ConversationMembership = new Map([
+  ["conversation.message", true],
+  ["conversation.join", true],
+  ["conversation.leave", true],
+  ["offering.request", false],
+  ["offering.response", false],
+  ["offering.error", false],
+  ["offering.discover", false],
+  ["offering.catalog", false],
+  ["payment.required", false],
+  ["payment.receipt", false],
+  ["payment.verified", false],
+  ["approval.request", false],
+  ["approval.granted", false],
+  ["approval.denied", false],
+  ["system.health", false],
+  ["system.register", false],
+  ["system.deregister", false],
+  ["system.credential.refresh", false],
+]);
+
+// The members InterchangeType enumerates. Each unit is put back through the
+// validator, which narrows it from the `unknown` a node carries and reports the
+// case where the introspected members and the validated ones disagree.
+function enumeratedTypes(): InterchangeType[] {
+  return InterchangeType.select("unit").map((unit) => {
+    const member = InterchangeType(unit.unit);
+    if (member instanceof type.errors) {
+      throw new Error(
+        `InterchangeType enumerates ${String(unit.unit)} and then refuses it: ${member.summary}`,
+      );
+    }
+    return member;
+  });
+}
+
+// Every disagreement between a classification and the union: a member the
+// classification does not name, a member it names with an answer
+// isConversationType does not give, and a name the union does not enumerate.
+// Reported as one line per member, so a failure names the member.
+function membershipDrift(membership: ConversationMembership): string[] {
+  const enumerated = enumeratedTypes();
+  const findings: string[] = [];
+
+  for (const member of enumerated) {
+    const expected = membership.get(member);
+    if (expected === undefined) {
+      findings.push(`${member} is not classified`);
+      continue;
+    }
+    const answered = isConversationType(member);
+    if (answered !== expected) {
+      findings.push(
+        `${member} is classified as ${expected ? "" : "not "}conversational and isConversationType answers ${String(answered)}`,
+      );
+    }
+  }
+
+  const known = new Set(enumerated);
+  for (const member of membership.keys()) {
+    if (!known.has(member)) {
+      findings.push(`${member} is classified and InterchangeType omits it`);
+    }
+  }
+
+  return findings;
+}
+
+describe("the conversation-type subset of InterchangeType", () => {
+  test("names every member of the union, and isConversationType agrees", () => {
+    expect(membershipDrift(CONVERSATION_MEMBERSHIP)).toEqual([]);
+  });
+
+  test("the comparison reports a member left out and a member answered wrongly", () => {
+    // The check is worth its line only if it fails when the two descriptions
+    // part, and the classification is the half a test can perturb without
+    // touching the union or the set. This one is local to the test: the dropped
+    // entry stands for a member added to the union and not classified, and the
+    // flipped entry for a member the two descriptions disagree about.
+    const perturbed = new Map(CONVERSATION_MEMBERSHIP);
+    perturbed.delete("conversation.leave");
+    perturbed.set("system.health", true);
+
+    const drift = membershipDrift(perturbed);
+
+    expect(drift).toHaveLength(2);
+    expect(drift).toContain("conversation.leave is not classified");
+    expect(drift).toContain(
+      "system.health is classified as conversational and isConversationType answers false",
+    );
   });
 });
