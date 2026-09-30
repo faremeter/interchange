@@ -2255,6 +2255,152 @@ describe("initial handshake on connect", () => {
     }
   });
 
+  test("an outage that fills the queue drops audit copies before it refuses mail to route", async () => {
+    const frames: string[] = [];
+    const sockets: { send(data: string): void }[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onOpen(_evt, ws) {
+          sockets.push(ws);
+        },
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") frames.push(evt.data);
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const sender = "run_outage@integration.interchange";
+    const transport = createInMemoryTransport();
+    transport.register(sender, createEd25519Crypto(await generateKeyPair()));
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-outage",
+      token: "test-token",
+      transport,
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () => [
+        { address: sender, generation: 1, state: "live" },
+      ],
+    });
+    const send = (index: number) =>
+      transport.getTransportFor(sender).send({
+        to: "remote@example.test",
+        type: "conversation.message",
+        content: `mail ${String(index)}`,
+      });
+    const mailFrames = () =>
+      frames.flatMap((raw) => {
+        const frame: { type: string; delivered?: boolean } = JSON.parse(raw);
+        return frame.type === "mail.outbound" ? [frame] : [];
+      });
+
+    client.connect();
+    try {
+      // The Hub never welcomes, so every send queues a routing frame and an
+      // audit copy.
+      await waitUntil(() => frames.length > 0);
+      for (let index = 0; index < 1024; index += 1) await send(index);
+      await expect(send(1024)).rejects.toThrow(
+        "The outbound queue is full of mail waiting for the Hub",
+      );
+
+      sockets[0]!.send(JSON.stringify({ type: "welcome", routed: [] }));
+      await waitUntil(() => mailFrames().length === 1024);
+      expect(mailFrames().every((frame) => frame.delivered !== true)).toBe(
+        true,
+      );
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
+  test("an outage that fills the queue drops an arriving correlation registration before an audit copy", async () => {
+    const frames: string[] = [];
+    const sockets: { send(data: string): void }[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onOpen(_evt, ws) {
+          sockets.push(ws);
+        },
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") frames.push(evt.data);
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const sender = "run_outage_register@integration.interchange";
+    const transport = createInMemoryTransport();
+    transport.register(sender, createEd25519Crypto(await generateKeyPair()));
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-outage-register",
+      token: "test-token",
+      transport,
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () => [
+        { address: sender, generation: 1, state: "live" },
+      ],
+      // The acker would resend the dropped registration once welcomed, so only
+      // the queue may decide whether it reaches the Hub.
+      registerAckMaxAttempts: 1,
+    });
+    const sent = (type: string) =>
+      frames.flatMap((raw) => {
+        const frame: { type: string; delivered?: boolean } = JSON.parse(raw);
+        return frame.type === type ? [frame] : [];
+      });
+
+    client.connect();
+    try {
+      // 512 sends queue 512 frames to route and 512 audit copies, which fills
+      // the queue exactly while the Hub has not welcomed the connection.
+      await waitUntil(() => frames.length > 0);
+      for (let index = 0; index < 512; index += 1) {
+        await transport.getTransportFor(sender).send({
+          to: "remote@example.test",
+          type: "conversation.message",
+          content: `mail ${String(index)}`,
+        });
+      }
+      client.sendSignalCorrelationRegister({
+        correlationId: "corr-during-outage",
+        runId: "run-1",
+        anchorRunId: "anchor-1",
+        agentAddress: sender,
+        generation: 1,
+        kind: "approval",
+        approvalSnapshot: {
+          name: "tool",
+          description: "a tool",
+          inputSchema: {},
+          arguments: {},
+        },
+      });
+
+      sockets[0]!.send(JSON.stringify({ type: "welcome", routed: [] }));
+      await waitUntil(
+        () =>
+          sent("mail.outbound").length +
+            sent("signal.correlation.register").length >=
+          1024,
+      );
+      expect(sent("signal.correlation.register")).toHaveLength(0);
+      expect(
+        sent("mail.outbound").filter((frame) => frame.delivered === true),
+      ).toHaveLength(512);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
   test("refuses a send that names more than one workflow deployment", async () => {
     const app = new Hono();
     app.get(
