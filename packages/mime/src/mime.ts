@@ -614,18 +614,18 @@ export function assembleSignedContent(
 // MIME parsing (for fetchHeaders, fetchStructure, fetchPart, fetchFull)
 // ---------------------------------------------------------------------------
 
-const CRLF_CRLF = new Uint8Array([0x0d, 0x0a, 0x0d, 0x0a]);
 const CR = 0x0d;
 const LF = 0x0a;
 
 /**
- * Refuse an unterminated header section that breaks a line with anything but
- * CRLF (RFC 5321 §2.3.8, §4.1.1.4). Folding such a break instead collapses the
- * whole message into one field whose value swallows every later field and the
- * body, and a non-conforming peer is owed an error rather than that parse.
+ * Refuse a header section that breaks a line with anything but CRLF (RFC 5321
+ * §2.3.8, §4.1.1.4). The caller passes the section together with the blank line
+ * that ends it, so neither an LF-only section nor an `LF LF` separator survives.
  *
- * A terminated section is CRLF-broken by construction, so a bare break there
- * is a field-body violation instead, and `foldBareLineBreaks` owns it.
+ * Neither reading of a bare break is safe. Splitting on it resolves a field
+ * from a value the sender smuggled inside one it controls; folding it collapses
+ * every field after it into the value of the field that carries it, suppressing
+ * each one. A non-conforming peer is owed an error rather than either parse.
  */
 function assertNoBareLineBreaks(section: Uint8Array): void {
   for (let i = 0; i < section.length; i++) {
@@ -636,28 +636,59 @@ function assertNoBareLineBreaks(section: Uint8Array): void {
     }
     if (byte === CR || byte === LF) {
       throw new Error(
-        "parseHeaderSection: an unterminated header section must break its lines with CRLF",
+        "parseHeaderSection: a header section must break its lines with CRLF",
       );
     }
   }
 }
 
-function findByteSequence(haystack: Uint8Array, needle: Uint8Array): number {
-  if (needle.length === 0) return 0;
-  const limit = haystack.length - needle.length;
-  outer: for (let i = 0; i <= limit; i++) {
-    for (let j = 0; j < needle.length; j++) {
-      if (haystack[i + j] !== needle[j]) continue outer;
+/** The length of the line break starting at `at`, or 0 when none starts there. */
+function lineBreakLength(raw: Uint8Array, at: number): number {
+  const byte = raw[at];
+  if (byte === CR) return raw[at + 1] === LF ? 2 : 1;
+  if (byte === LF) return 1;
+  return 0;
+}
+
+/**
+ * Locate the blank line that ends the header section: the first line break
+ * immediately followed by another, whichever flavour either uses. Returns null
+ * for a message carrying no blank line.
+ *
+ * Searching for `CRLF CRLF` alone walks past a blank line written with bare
+ * breaks and takes the section from a later offset, so every field before that
+ * offset reads as one field body. Admitting the bare blank line as a separator
+ * is the mirror of that: a sender who controls one field body ends the section
+ * early and strips the fields after it. This search locates the boundary and
+ * `assertNoBareLineBreaks` then refuses the section unless CRLF wrote it,
+ * including the blank line itself.
+ */
+function findHeaderBoundary(
+  raw: Uint8Array,
+): { headerEnd: number; bodyOffset: number } | null {
+  let i = 0;
+  while (i < raw.length) {
+    const first = lineBreakLength(raw, i);
+    if (first === 0) {
+      i += 1;
+      continue;
     }
-    return i;
+    const second = lineBreakLength(raw, i + first);
+    if (second !== 0) {
+      return { headerEnd: i, bodyOffset: i + first + second };
+    }
+    i += first;
   }
-  return -1;
+  return null;
 }
 
 /**
  * Parse the header section of a raw RFC 2822 message.
  * Returns a map of lowercase header names to their values, and the
  * byte offset where the body starts.
+ *
+ * Throws for a header section that CRLF did not write, the blank line ending it
+ * included. A message with no blank line at all is all header section.
  */
 export function parseHeaderSection(raw: Uint8Array): {
   headers: Map<string, string>;
@@ -666,23 +697,13 @@ export function parseHeaderSection(raw: Uint8Array): {
 } {
   const headers = new Map<string, string>();
 
-  // Search for the blank line separator in byte space so the returned
-  // offset is valid for Uint8Array.slice() even when headers contain
-  // multi-byte UTF-8 characters.
-  //
-  // LF LF is deliberately not a separator: it would let a sender who controls
-  // one field body end the header section early and strip the fields after it.
-  const crlfIdx = findByteSequence(raw, CRLF_CRLF);
+  // The boundary is located in byte space so the returned offset is valid for
+  // Uint8Array.slice() even when headers contain multi-byte UTF-8 characters.
+  const boundary = findHeaderBoundary(raw);
+  const headerEnd = boundary === null ? raw.length : boundary.headerEnd;
+  const bodyOffset = boundary === null ? raw.length : boundary.bodyOffset;
 
-  let bodyOffset = raw.length;
-  let headerEnd = raw.length;
-
-  if (crlfIdx !== -1) {
-    headerEnd = crlfIdx;
-    bodyOffset = crlfIdx + 4;
-  } else {
-    assertNoBareLineBreaks(raw);
-  }
+  assertNoBareLineBreaks(raw.subarray(0, bodyOffset));
 
   const headerText = new TextDecoder("utf-8", { fatal: false }).decode(
     raw.subarray(0, headerEnd),
@@ -695,6 +716,10 @@ export function parseHeaderSection(raw: Uint8Array): {
 /**
  * Fold a bare CR or LF -- one not part of a CRLF -- to a space. Splitting on it
  * would let a sender who controls a field body append a field of its own.
+ *
+ * Both callers read a region `parseHeaderSection` has already refused a bare
+ * break in, so nothing reaches this today. It stays because folding is the safe
+ * outcome for a region that refusal ever stops covering, and splitting is not.
  */
 function foldBareLineBreaks(text: string): string {
   return text.replace(/\r(?!\n)|(?<!\r)\n/g, " ");
@@ -1381,8 +1406,17 @@ export function buildMessageHeaders(
 
   // A blank header below is recorded as an absence, not an empty value: RFC
   // 5322 admits no empty `Date`, `Message-ID`, `In-Reply-To` or `From` body.
+  //
+  // A `Date` that does not parse is an absence too, which the parse check below
+  // covers along with the blank one. A consumer builds a `Date` from this string
+  // and compares it to a window's bounds; every comparison against an Invalid
+  // Date is false, so a value kept here places the message inside every date
+  // window, including two that exclude each other. An absence falls outside all
+  // of them.
   const date = headers.get("date");
-  if (date !== undefined && date.trim().length > 0) result.date = date;
+  if (date !== undefined && !Number.isNaN(new Date(date).getTime())) {
+    result.date = date;
+  }
 
   const messageId = headers.get("message-id");
   if (messageId !== undefined && messageId.trim().length > 0) {

@@ -46,6 +46,43 @@ describe("deriveMessageId", () => {
     expect(parseMessageIdHeader(raw)).toBeNull();
   });
 
+  test("names no id for an LF-only header section, whatever ends it", async () => {
+    // A whole-message search for the `CRLF CRLF` separator finds the one a
+    // sender left in the body and reads the header section from there, so the id
+    // absorbs the fields after the first and the head of the body. This id is
+    // the claim-check dedup key, a stored filename and a database join value, so
+    // no body bytes may reach it.
+    const bodyTerminated = encoder.encode(
+      "Message-ID: <a@b>\nSubject: Hi\n\nbody\r\n\r\ntail\n",
+    );
+    expect(parseMessageIdHeader(bodyTerminated)).toBeNull();
+    expect(await deriveMessageId(bodyTerminated)).toMatch(/^[0-9a-f]{64}$/);
+
+    const crlfTerminated = encoder.encode(
+      "Message-ID: <a@b>\nSubject: Hi\r\n\r\nbody",
+    );
+    expect(parseMessageIdHeader(crlfTerminated)).toBeNull();
+    expect(await deriveMessageId(crlfTerminated)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("names no id when an LF LF ends the header section", () => {
+    // The blank line is a pair of line breaks of its own. Honouring a bare pair
+    // lets a sender who controls one field body end the section early and strip
+    // the `Message-ID` after it.
+    const raw = encoder.encode(
+      "From: a@example.com\r\nSubject: Hi\n\n" +
+        "Message-ID: <stripped@example.com>\r\n\r\nbody",
+    );
+    expect(parseMessageIdHeader(raw)).toBeNull();
+  });
+
+  test("reads the id at the first blank line when the body carries another", () => {
+    const raw = encoder.encode(
+      "Message-ID: <first@example.com>\r\n\r\nbody\r\n\r\ntail\r\n",
+    );
+    expect(parseMessageIdHeader(raw)).toBe("<first@example.com>");
+  });
+
   test("falls back to a sha256 hex digest with no Message-ID header", async () => {
     const raw = encoder.encode("From: a@example.com\r\n\r\nbody");
     const derived = await deriveMessageId(raw);

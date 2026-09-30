@@ -404,53 +404,26 @@ describe("decodeMail", () => {
     expect(mail.headers.from).toBe("alice@example.com");
   });
 
-  test("folds a bare carriage return in both readings of the header section", () => {
-    // `decodeMail` reads one header section twice -- once into the typed
-    // subset, once into the raw map a workflow walks. A fold applied to only
-    // one of them would leave the control character reachable through the
-    // other, and the two would disagree about the same field.
-    const mail = decodeMail(
-      rawBytes(
-        "From: alice@example.com\r\n" +
-          "To: bob@example.com\r\n" +
-          "Subject: hello\rBcc: attacker@evil.test\r\n" +
-          "Interchange-Correlation-ID: corr-1\rBcc: attacker@evil.test\r\n" +
-          "\r\nbody",
-      ),
-    );
-    expect(mail.headers.subject).toBe("hello Bcc: attacker@evil.test");
-    expect(mail.rawHeaders["subject"]).toEqual([
-      "hello Bcc: attacker@evil.test",
-    ]);
-    expect(mail.headers.interchangeCorrelationId).toBe(
-      "corr-1 Bcc: attacker@evil.test",
-    );
-    expect(mail.rawHeaders["bcc"]).toBeUndefined();
-  });
-
-  test("folds a bare line feed in both readings of the header section", () => {
+  test("refuses a bare carriage return or line feed before either reading", () => {
     // RFC 5322 section 2.3 requires CR and LF to occur only together as CRLF,
-    // and RFC 5321 section 4.1.1.4 refuses the lone-LF line ending by name, so
-    // a bare LF terminates no field. Reading it as a terminator would resolve
-    // `Bcc` from text the sender smuggled inside a field it controls, and the
-    // two readings of one header section must not disagree about which fields
-    // the message carries.
-    const mail = decodeMail(
-      rawBytes(
-        "From: alice@example.com\r\n" +
-          "To: bob@example.com\r\n" +
-          "Subject: benign\nBcc: attacker@evil.test\r\n" +
-          "\r\nbody",
-      ),
-    );
-    expect(mail.headers.subject).toBe("benign Bcc: attacker@evil.test");
-    expect(mail.rawHeaders["subject"]).toEqual([
-      "benign Bcc: attacker@evil.test",
-    ]);
-    expect(mail.rawHeaders["bcc"]).toBeUndefined();
-    // The fields either side of the smuggled one still parse in both readings.
-    expect(mail.headers.to).toEqual(["bob@example.com"]);
-    expect(mail.rawHeaders["from"]).toEqual(["alice@example.com"]);
+    // and RFC 5321 section 4.1.1.4 refuses the lone-LF line ending by name, so a
+    // bare break terminates no field. `decodeMail` reads one header section
+    // twice -- once into the typed subset, once into the raw map a workflow
+    // walks -- and refusing the section ahead of both is what keeps the two from
+    // disagreeing about which fields the message carries.
+    for (const brk of ["\r", "\n"]) {
+      expect(() =>
+        decodeMail(
+          rawBytes(
+            "From: alice@example.com\r\n" +
+              "To: bob@example.com\r\n" +
+              `Subject: hello${brk}Bcc: attacker@evil.test\r\n` +
+              `Interchange-Correlation-ID: corr-1${brk}Bcc: attacker@evil.test\r\n` +
+              "\r\nbody",
+          ),
+        ),
+      ).toThrow(/must break its lines with CRLF/);
+    }
   });
 
   test("records a blank or absent From as no originator, not an empty one", () => {
@@ -496,6 +469,93 @@ describe("decodeMail", () => {
     expect(() => decodeMail(raw)).toThrow(/must break its lines with CRLF/);
     expect(parseMessageIdHeader(raw)).toBeNull();
     expect(await deriveMessageId(raw)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("names no id in either parser for an LF-only header section", async () => {
+    // A whole-message search for the `CRLF CRLF` separator finds the one in the
+    // body and reads the header section from there: every field after the first
+    // is folded into it, so `Subject` goes missing, the body is truncated to
+    // what followed the separator, and the id absorbs sender-controlled body
+    // bytes. That id is the claim-check dedup key, a stored filename and a
+    // database join value, so nothing from the body may reach it.
+    const bodyTerminated = rawBytes(
+      "Message-ID: <a@b>\nSubject: Hi\n\nbody\r\n\r\ntail\n",
+    );
+    expect(() => decodeMail(bodyTerminated)).toThrow(
+      /must break its lines with CRLF/,
+    );
+    expect(parseMessageIdHeader(bodyTerminated)).toBeNull();
+    expect(await deriveMessageId(bodyTerminated)).toMatch(/^[0-9a-f]{64}$/);
+
+    // The same LF-only section, ended by a `CRLF CRLF` of its own rather than
+    // by one the sender left in the body.
+    const crlfTerminated = rawBytes(
+      "Message-ID: <a@b>\nSubject: Hi\r\n\r\nbody",
+    );
+    expect(() => decodeMail(crlfTerminated)).toThrow(
+      /must break its lines with CRLF/,
+    );
+    expect(parseMessageIdHeader(crlfTerminated)).toBeNull();
+    expect(await deriveMessageId(crlfTerminated)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("refuses an LF LF separator in either parser", async () => {
+    // The blank line is a pair of line breaks of its own. Honouring a bare pair
+    // lets a sender who controls one field body end the header section early and
+    // strip the fields after it, `Message-ID` included.
+    const raw = rawBytes(
+      "From: alice@example.com\r\nSubject: Hi\n\n" +
+        "Message-ID: <stripped@example.com>\r\n\r\nbody",
+    );
+    expect(() => decodeMail(raw)).toThrow(/must break its lines with CRLF/);
+    expect(parseMessageIdHeader(raw)).toBeNull();
+    expect(await deriveMessageId(raw)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("takes the first blank line when the body carries another", () => {
+    const raw = rawBytes(
+      "From: alice@example.com\r\nSubject: Hi\r\n\r\nbody\r\n\r\ntail\r\n",
+    );
+    const mail = decodeMail(raw);
+    expect(mail.headers.from).toBe("alice@example.com");
+    expect(mail.headers.subject).toBe("Hi");
+    expect(mail.parts).toHaveLength(1);
+    expect(new TextDecoder().decode(mail.parts[0]?.content)).toBe(
+      "body\r\n\r\ntail\r\n",
+    );
+  });
+
+  test("treats a Date that does not parse the same as an absent one", () => {
+    // A consumer builds a `Date` from this value and compares it to a search
+    // window's bounds. Every comparison against an Invalid Date is false, so a
+    // kept value places the message inside `before: 1990` and `after: 2999` at
+    // once. The absence reported instead falls outside every window, which is
+    // already how an absent header reads.
+    const absent = decodeMail(rawBytes("From: a@example.com\r\n\r\nbody"));
+    const garbage = decodeMail(
+      rawBytes("From: a@example.com\r\nDate: not a date\r\n\r\nbody"),
+    );
+    expect("date" in absent.headers).toBe(false);
+    expect("date" in garbage.headers).toBe(false);
+  });
+
+  test("never reports a Date a consumer cannot parse", () => {
+    for (const value of ["not a date", "Mon, 32 Foo 2026", "   ", ""]) {
+      const mail = decodeMail(
+        rawBytes(`From: a@example.com\r\nDate: ${value}\r\n\r\nbody`),
+      );
+      expect(mail.headers.date).toBeUndefined();
+    }
+
+    const good = decodeMail(
+      rawBytes(
+        "From: a@example.com\r\nDate: Mon, 21 Apr 2026 12:00:00 +0000\r\n\r\nbody",
+      ),
+    );
+    const { date } = good.headers;
+    if (date === undefined) throw new Error("expected a Date header");
+    expect(date).toBe("Mon, 21 Apr 2026 12:00:00 +0000");
+    expect(Number.isNaN(new Date(date).getTime())).toBe(false);
   });
 
   test("resolves a leading-WSP line to no field in either parser", async () => {

@@ -521,12 +521,51 @@ describe("parseHeaderSection", () => {
     );
   });
 
-  test("keeps folding a bare break in a CRLF-terminated section", () => {
-    const raw = enc.encode("Subject: a\nBcc: attacker@evil.test\r\n\r\nBody");
+  test("refuses an LF-only header section that a CRLF CRLF terminates", () => {
+    // The section's own line breaks decide whether it conforms, not the flavour
+    // of the blank line that ends it. Folding these instead leaves one field
+    // whose value swallows `Interchange-Type` and `Subject`, so a sender
+    // suppresses both fields by writing the section with bare LFs.
+    const raw = enc.encode(
+      "From: alice@x\nInterchange-Type: conversation.message\n" +
+        "Subject: Hi\r\n\r\nBody",
+    );
+    expect(() => parseHeaderSection(raw)).toThrow(
+      /must break its lines with CRLF/,
+    );
+  });
+
+  test("refuses an LF-only header section when the body carries a CRLF CRLF", () => {
+    // Searching the whole message for the separator finds the one in the body
+    // and reads the header section from there, which both suppresses every
+    // field after the first and truncates the body to what followed it.
+    const raw = enc.encode(
+      "From: alice@x\nInterchange-Type: conversation.message\n" +
+        "Subject: Hi\n\nBody\r\n\r\ntail\n",
+    );
+    expect(() => parseHeaderSection(raw)).toThrow(
+      /must break its lines with CRLF/,
+    );
+  });
+
+  test("refuses an LF LF separator after a CRLF-only section", () => {
+    // The blank line is a pair of line breaks of its own, so honouring a bare
+    // pair lets a sender who controls one field body end the section early and
+    // strip the fields after it.
+    const raw = enc.encode(
+      "From: alice@x\r\nSubject: Hi\n\n" +
+        "Interchange-Type: conversation.message\r\n\r\nBody",
+    );
+    expect(() => parseHeaderSection(raw)).toThrow(
+      /must break its lines with CRLF/,
+    );
+  });
+
+  test("takes the first blank line when the body carries another", () => {
+    const raw = enc.encode("Subject: Hi\r\n\r\nBody\r\n\r\nmore");
     const { headers, bodyOffset } = parseHeaderSection(raw);
-    expect(headers.get("subject")).toBe("a Bcc: attacker@evil.test");
-    expect(headers.has("bcc")).toBe(false);
-    expect(dec.decode(raw.slice(bodyOffset))).toBe("Body");
+    expect(headers.get("subject")).toBe("Hi");
+    expect(dec.decode(raw.slice(bodyOffset))).toBe("Body\r\n\r\nmore");
   });
 
   test("unfolds continuation lines", () => {
@@ -590,76 +629,29 @@ describe("parseHeaderSection", () => {
 
   // A bare CR and a bare LF are external input that no field body may carry:
   // RFC 5322 section 2.2 admits neither inside a field body, and section 2.3
-  // requires the two to occur only together as CRLF. A sender controls every
-  // one of these fields. Each row hides the same injected field behind one bare
-  // character, so the assertions below read the same way for every row: the
-  // character becomes a space, the field keeps the whole value, and no field is
-  // manufactured from it.
+  // requires the two to occur only together as CRLF. A sender controls every one
+  // of these fields, and each row hides the same second field behind one bare
+  // character. Neither reading of that character is safe -- as a terminator it
+  // resolves a field from a value the sender smuggled inside one it controls,
+  // and folded to a space it suppresses whatever field followed it -- so the
+  // section is refused for every row.
   const bareBreaks = ["\r", "\n"];
-  const bareBreakFields: { field: string; header: string; folded: string }[] =
-    bareBreaks.flatMap((brk) => [
-      {
-        field: "subject",
-        header: `Subject: hello${brk}Bcc: attacker@evil.test`,
-        folded: "hello Bcc: attacker@evil.test",
-      },
-      {
-        field: "from",
-        header: `From: alice@example.com${brk}Bcc: attacker@evil.test`,
-        folded: "alice@example.com Bcc: attacker@evil.test",
-      },
-      {
-        field: "message-id",
-        header: `Message-ID: <p@example.com>${brk}Bcc: attacker@evil.test`,
-        folded: "<p@example.com> Bcc: attacker@evil.test",
-      },
-      {
-        field: "interchange-correlation-id",
-        header: `Interchange-Correlation-ID: corr-1${brk}Bcc: attacker@evil.test`,
-        folded: "corr-1 Bcc: attacker@evil.test",
-      },
-      {
-        field: "references",
-        header: `References: <a@example.com>${brk}Bcc: attacker@evil.test`,
-        folded: "<a@example.com> Bcc: attacker@evil.test",
-      },
-    ]);
+  const bareBreakHeaders: string[] = bareBreaks.flatMap((brk) => [
+    `Subject: hello${brk}Bcc: attacker@evil.test`,
+    `From: alice@example.com${brk}Bcc: attacker@evil.test`,
+    `Message-ID: <p@example.com>${brk}Bcc: attacker@evil.test`,
+    `Interchange-Correlation-ID: corr-1${brk}Bcc: attacker@evil.test`,
+    `References: <a@example.com>${brk}Bcc: attacker@evil.test`,
+    `Subject: benign${brk}Interchange-Agent-Id: victim`,
+  ]);
 
-  test("folds a bare carriage return or line feed in a field body to a space", () => {
-    // Leaving the character in the value strands a control character in
-    // external input that every message built from these headers carries
-    // forward, and the emit guard then refuses the whole message rather than
-    // the field.
-    for (const c of bareBreakFields) {
-      const { headers } = parseHeaderSection(
-        enc.encode(`${c.header}\r\nTo: bob@example.com\r\n\r\nbody`),
-      );
-      expect(headers.get(c.field)).toBe(c.folded);
-      expect(/[\r\n]/.test(defined(headers.get(c.field)))).toBe(false);
-    }
-  });
-
-  test("does not let a bare carriage return or line feed manufacture a field", () => {
-    // The other wrong reading: treating the character as a field terminator
-    // would resolve `Bcc` -- and `Interchange-Agent-Id`, and every other field
-    // this parser reads -- from a value the sender smuggled inside one it
-    // controls.
-    for (const c of bareBreakFields) {
-      const { headers } = parseHeaderSection(
-        enc.encode(`${c.header}\r\nTo: bob@example.com\r\n\r\nbody`),
-      );
-      expect(headers.has("bcc")).toBe(false);
-    }
-
-    for (const brk of bareBreaks) {
-      const { headers } = parseHeaderSection(
-        enc.encode(
-          `Subject: benign${brk}Interchange-Agent-Id: victim\r\n` +
-            "To: bob@example.com\r\n\r\nbody",
+  test("refuses a bare carriage return or line feed in a field body", () => {
+    for (const header of bareBreakHeaders) {
+      expect(() =>
+        parseHeaderSection(
+          enc.encode(`${header}\r\nTo: bob@example.com\r\n\r\nbody`),
         ),
-      );
-      expect(headers.has("interchange-agent-id")).toBe(false);
-      expect(headers.get("to")).toBe("bob@example.com");
+      ).toThrow(/must break its lines with CRLF/);
     }
   });
 
