@@ -137,7 +137,7 @@ describe("SenderKeyCache", () => {
     expect(restarted.get("rotator@example.com")).toEqual(makeKey(8));
   });
 
-  test("skips a corrupt file on load without dropping the other keys", async () => {
+  test("refuses reads for a corrupt file's address without dropping the other keys", async () => {
     const dataDir = await tempDir();
     const good = await createSenderKeyCache({
       dataDir,
@@ -159,10 +159,66 @@ describe("SenderKeyCache", () => {
       removeFileDurable,
     });
     expect(restarted.get("good@example.com")).toEqual(makeKey(6));
-    expect(restarted.get("corrupt@example")).toBeUndefined();
+    // Returning undefined here would be indistinguishable from a sender the
+    // cache was never given a key for, and the inbound gate reads that as an
+    // author-relaxable condition rather than a fault.
+    expect(() => restarted.get("corrupt@example")).toThrow(/failed to load/);
+    // The unattributable temp file faults no address: it carries none, and one
+    // must not deny the sidecar the keys it can read.
+    expect([...restarted.rotatableAddresses()].sort()).toEqual([
+      "corrupt@example",
+      "good@example.com",
+    ]);
   });
 
-  test("skips a file whose envelope address does not match its filename", async () => {
+  test("faults no address for a corrupt file whose name is not an address", async () => {
+    const dataDir = await tempDir();
+    const dir = senderKeysDir(dataDir);
+    await fs.mkdir(dir, { recursive: true });
+    // Valid hex, so the filename decodes, but it names no `<local>@<domain>`
+    // sender. There is nothing for the hub to re-resolve and nothing a reader
+    // would ask for, so this stays a logged skip rather than a recorded fault.
+    const notAnAddress = hexEncode(new TextEncoder().encode("notanaddress"));
+    await fs.writeFile(path.join(dir, notAnAddress), "{ not json");
+
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    expect(cache.rotatableAddresses()).toEqual([]);
+    expect(cache.get("notanaddress")).toBeUndefined();
+  });
+
+  test("refuses reads for an address whose file carries truncated key material", async () => {
+    // The partial-write shape: the envelope parses and its address agrees with
+    // the filename, but the key is short, so nothing can verify against it.
+    const dataDir = await tempDir();
+    await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    const dir = senderKeysDir(dataDir);
+    await fs.mkdir(dir, { recursive: true });
+    const name = hexEncode(new TextEncoder().encode("short@example.com"));
+    await fs.writeFile(
+      path.join(dir, name),
+      JSON.stringify({
+        address: "short@example.com",
+        publicKey: hexEncode(makeKey(2).slice(0, 31)),
+      }),
+    );
+
+    const restarted = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    expect(() => restarted.get("short@example.com")).toThrow(/failed to load/);
+  });
+
+  test("refuses reads for a file whose envelope address does not match its filename", async () => {
     const dataDir = await tempDir();
     await createSenderKeyCache({
       dataDir,
@@ -187,8 +243,124 @@ describe("SenderKeyCache", () => {
       writeFileDurable,
       removeFileDurable,
     });
-    expect(restarted.get("a@example.com")).toBeUndefined();
+    // The fault is attributed to the filename, which is the address a reader
+    // would ask for. B's own entry lives under its own filename, so B is simply
+    // not cached rather than faulted.
+    expect(() => restarted.get("a@example.com")).toThrow(/failed to load/);
     expect(restarted.get("b@example.com")).toBeUndefined();
+  });
+
+  test("a load fault does not count as an address the cache holds a key for", async () => {
+    const dataDir = await tempDir();
+    const dir = senderKeysDir(dataDir);
+    await fs.mkdir(dir, { recursive: true });
+    const name = hexEncode(new TextEncoder().encode("corrupt@example.com"));
+    await fs.writeFile(path.join(dir, name), "{ not json");
+
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    // `addresses()` answers "which senders can this cache verify"; a faulted
+    // address cannot. `rotatableAddresses()` answers a different question --
+    // which senders the hub should re-resolve -- and a faulted one needs it
+    // most, because re-pushing its key is what repairs the file.
+    expect(cache.addresses()).toEqual([]);
+    expect(cache.rotatableAddresses()).toEqual(["corrupt@example.com"]);
+  });
+
+  test("a run sender's load fault is not reported for the reconnect re-resolve", async () => {
+    const dataDir = await tempDir();
+    const dir = senderKeysDir(dataDir);
+    await fs.mkdir(dir, { recursive: true });
+    const name = hexEncode(new TextEncoder().encode("run_job1@tenant.example"));
+    await fs.writeFile(path.join(dir, name), "{ not json");
+
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    // The hub skips a reported run address whatever the sidecar sends, so
+    // reporting one would be inert. A run sender's key is re-pushed on its next
+    // grants barrier instead, and that write clears the fault.
+    expect(cache.rotatableAddresses()).toEqual([]);
+    expect(() => cache.get("run_job1@tenant.example")).toThrow(
+      /failed to load/,
+    );
+  });
+
+  test("writing a key clears the address's load fault", async () => {
+    const dataDir = await tempDir();
+    const dir = senderKeysDir(dataDir);
+    await fs.mkdir(dir, { recursive: true });
+    const name = hexEncode(new TextEncoder().encode("corrupt@example.com"));
+    await fs.writeFile(path.join(dir, name), "{ not json");
+
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    expect(() => cache.get("corrupt@example.com")).toThrow(/failed to load/);
+
+    // The repair the reconnect re-resolve drives: the hub re-pushes the key and
+    // the write replaces the corrupt file, so reads resume.
+    await cache.put("corrupt@example.com", makeKey(11));
+
+    expect(cache.get("corrupt@example.com")).toEqual(makeKey(11));
+    expect(cache.rotatableAddresses()).toEqual(["corrupt@example.com"]);
+    const restarted = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    expect(restarted.get("corrupt@example.com")).toEqual(makeKey(11));
+  });
+
+  test("evicting a faulted address clears the fault and removes its file", async () => {
+    const dataDir = await tempDir();
+    const dir = senderKeysDir(dataDir);
+    await fs.mkdir(dir, { recursive: true });
+    const name = hexEncode(new TextEncoder().encode("corrupt@example.com"));
+    await fs.writeFile(path.join(dir, name), "{ not json");
+
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable,
+    });
+    // The other repair the hub can drive: the sender's principal was deleted, so
+    // there is no key to re-push and the corrupt file must simply go.
+    await cache.evict("corrupt@example.com");
+
+    expect(cache.get("corrupt@example.com")).toBeUndefined();
+    expect(cache.rotatableAddresses()).toEqual([]);
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  test("a failed durable removal keeps a load fault in place", async () => {
+    const dataDir = await tempDir();
+    const dir = senderKeysDir(dataDir);
+    await fs.mkdir(dir, { recursive: true });
+    const name = hexEncode(new TextEncoder().encode("corrupt@example.com"));
+    await fs.writeFile(path.join(dir, name), "{ not json");
+
+    const cache = await createSenderKeyCache({
+      dataDir,
+      writeFileDurable,
+      removeFileDurable: async () => {
+        throw new Error("unlink failed");
+      },
+    });
+    // Symmetric with a held key: the fault is cleared only after the removal
+    // lands, so a failed removal leaves the corrupt file on disk AND the refusal
+    // in memory rather than resurrecting the fault on the next restart.
+    await expect(cache.evict("corrupt@example.com")).rejects.toThrow(
+      "unlink failed",
+    );
+    expect(() => cache.get("corrupt@example.com")).toThrow(/failed to load/);
   });
 
   test("rejects a wrong-length key at put", async () => {

@@ -1,12 +1,18 @@
-// The inbound-mail gate's diagnosis line for an unusable cached sender key.
+// The inbound-mail gate's diagnosis lines for a sender key it cannot verify
+// against.
 //
-// The outcome this fault produces, and the fact that no policy admits it, are
+// The outcome each fault produces, and the fact that no policy admits it, are
 // asserted beside the decision tables in `inbound-signature.test.ts`. What is
-// asserted here is the other half: that an operator can tell WHY. Unusable key
-// material is an operator condition -- truncated in transit, a hub-side
-// resolution bug, a corrupt cache entry -- and it is invisible in the mail flow
-// itself, which shows only mail being rejected. Without the line this file
-// pins, nothing points at the keyring.
+// asserted here is the other half: that an operator can tell WHY. A keyring
+// fault is an operator condition -- a truncated write, a hub-side resolution
+// bug, a corrupt cache entry -- and it is invisible in the mail flow itself,
+// which shows only mail being rejected. Without the lines this file pins,
+// nothing points at the keyring.
+//
+// The second suite below drives the PRODUCTION construction path: a real cache
+// over a real directory holding a corrupt entry, read through the real resolver.
+// An injected stub proves only that the gate refuses bad material it is handed;
+// it says nothing about whether a corrupt keyring ever produces any.
 //
 // The capture is a process-global logging configuration, which is why this
 // suite is its own file rather than a case inside the decision tables.
@@ -18,8 +24,13 @@ import {
   beforeAll,
   afterAll,
   beforeEach,
+  afterEach,
 } from "bun:test";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { configureSync, getConfig } from "@intx/log";
+import { hexEncode } from "@intx/types";
 import { generateKeyPair, createEd25519Crypto } from "@intx/crypto";
 import {
   assembleSignedContent,
@@ -29,8 +40,16 @@ import {
   type MessageHeaders,
 } from "@intx/mime";
 
-import { verifyInboundSignature } from "./inbound-signature";
-import { createPublicKeyCrypto } from "../sender-crypto";
+import {
+  verifyInboundSignature,
+  decideInboundAdmission,
+  resolveInboundMailPolicy,
+} from "./inbound-signature";
+import {
+  createPublicKeyCrypto,
+  createSenderCryptoResolver,
+} from "../sender-crypto";
+import { createSenderKeyCache } from "../sender-key-cache";
 
 const AGENT_ADDRESS = "run_anchor@tenant.example";
 const SENDER = "alpha@test.interchange";
@@ -186,5 +205,131 @@ describe("unusable cached sender key logging", () => {
 
     expect(verdict.signature).toBe("invalid");
     expect(keyFaultLines()).toEqual([]);
+  });
+});
+
+/** The captured ERROR lines the gate emits when the verify itself faulted. */
+function verifyFaultLines(): CapturedLog[] {
+  return capturedLogs.filter((r) => {
+    if (r.level !== "error") return false;
+    const text = r.message
+      .filter((piece) => typeof piece === "string")
+      .join("");
+    return text.includes("verify FAULTED");
+  });
+}
+
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  const dirs = tempDirs.splice(0);
+  await Promise.all(
+    dirs.map((d) => fsp.rm(d, { recursive: true, force: true })),
+  );
+});
+
+// A plain durable write is enough here; the atomicity and fsync of the
+// production primitive are orthogonal to what these tests assert.
+async function cacheOverDir(entries: { filename: string; contents: string }[]) {
+  const dataDir = await fsp.mkdtemp(
+    path.join(os.tmpdir(), "inbound-key-fault-"),
+  );
+  tempDirs.push(dataDir);
+  const dir = path.join(dataDir, "sender-keys");
+  await fsp.mkdir(dir, { recursive: true });
+  for (const entry of entries) {
+    await fsp.writeFile(path.join(dir, entry.filename), entry.contents, "utf8");
+  }
+  return createSenderKeyCache({
+    dataDir,
+    writeFileDurable: async (filePath, contents) => {
+      await fsp.writeFile(filePath, contents, "utf8");
+    },
+    removeFileDurable: async (filePath) => {
+      await fsp.rm(filePath, { force: true });
+    },
+  });
+}
+
+function senderKeyFile(publicKey: Uint8Array, keep: number) {
+  return {
+    filename: hexEncode(new TextEncoder().encode(SENDER)),
+    contents: JSON.stringify({
+      address: SENDER,
+      publicKey: hexEncode(publicKey.slice(0, keep)),
+    }),
+  };
+}
+
+describe("a corrupt on-disk sender key driven through the production resolver", () => {
+  test("faults rather than reporting the sender as one with no cached key", async () => {
+    const { raw, publicKey } = await signedMessage();
+    // Truncated key material: what a partial write to the keyring leaves.
+    const cache = await cacheOverDir([senderKeyFile(publicKey, 31)]);
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: SENDER,
+        messageId: "mid-corrupt-entry",
+        agentAddress: AGENT_ADDRESS,
+      },
+      createSenderCryptoResolver(cache),
+    );
+
+    expect(verdict.signature).toBe("error");
+    expect(verdict.fromMatch).toBe("notEvaluated");
+    const lines = verifyFaultLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.properties.authenticatedSender).toBe(SENDER);
+    expect(String(lines[0]?.properties.cause)).toContain("failed to load");
+  });
+
+  test("a policy relaxing the uncached-sender outcome does not admit it", async () => {
+    const { raw, publicKey } = await signedMessage();
+    const cache = await cacheOverDir([senderKeyFile(publicKey, 31)]);
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: SENDER,
+        messageId: "mid-corrupt-entry-policy",
+        agentAddress: AGENT_ADDRESS,
+      },
+      createSenderCryptoResolver(cache),
+    );
+
+    // The document's own worked example. An operator's corrupt file must not be
+    // relaxable by a workflow author who never knew about it.
+    const decision = decideInboundAdmission(
+      verdict,
+      resolveInboundMailPolicy({ unknown: "admit" }),
+    );
+
+    expect(decision.findings).toEqual([]);
+    expect(decision.rejectedBy).toBe("error");
+  });
+
+  test("an intact entry over the same path verifies clean", async () => {
+    // The control: the harness builds a cache whose reads work, so the refusal
+    // above is the corrupt entry and not the construction.
+    const { raw, publicKey } = await signedMessage();
+    const cache = await cacheOverDir([
+      senderKeyFile(publicKey, publicKey.length),
+    ]);
+
+    const verdict = await verifyInboundSignature(
+      {
+        raw,
+        authenticatedSender: SENDER,
+        messageId: "mid-intact-entry",
+        agentAddress: AGENT_ADDRESS,
+      },
+      createSenderCryptoResolver(cache),
+    );
+
+    expect(verdict.signature).toBe("valid");
+    expect(verdict.fromMatch).toBe("match");
+    expect(verifyFaultLines()).toEqual([]);
   });
 });

@@ -43,14 +43,14 @@ every key is `reject`. A key outside the six, or a value outside
 `"reject" | "admit"`, is refused twice: by TypeScript where the workflow is
 authored, and by the wire schema when the deployment reaches the sidecar.
 
-| Key              | The condition it names                                                                                                                                                                                                         | What relaxing it accepts                                                                                                                                                                                             |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `unknown`        | No key was available to verify against: the local cache holds no key for the sender the hub stamped. The signature is never examined on this path, so an unsigned message from an uncached sender is `unknown`, not `missing`. | A message whose originator identity is not cryptographically established at all. A sender who can get the hub to stamp an address of their choosing, and who puts that same address in the `From`, is admitted here. |
-| `missing`        | The message carried no signature: it is not `multipart/signed`, it declares no `boundary=` parameter, or it carries no `application/pgp-signature` part.                                                                       | Mail from a correspondent who does not sign at all — the usual key for correspondents outside Interchange. The originator identity is unverified, as with `unknown`.                                                 |
-| `invalid`        | The signature check failed: tampering, the wrong key, or a message that claims to be signed and cannot be parsed as one.                                                                                                       | The one author-controllable outcome with no benign reading. Relax it only with a stated reason.                                                                                                                      |
-| `untrustedFrom`  | The visible `From` is present and cannot be reduced to one address.                                                                                                                                                            | A message the gate could make no originator claim about at all.                                                                                                                                                      |
-| `mismatchedFrom` | The visible `From` names a different address from the sender the hub stamped, so the message contradicts itself about who sent it. Raised under every non-error signature status.                                              | A message delivered as though it came from an address its own transport does not agree with. Under a verified signature this is an identity forgery — a legitimate key signing under a borrowed display identity.    |
-| `absentFrom`     | The message carries no usable `From`, so the gate resolved no originator. Raised under every non-error signature status.                                                                                                       | Mail that names no originator. The gate holds the hub's stamp, but nothing downstream reads it.                                                                                                                      |
+| Key              | The condition it names                                                                                                                                                                                                                                                                                                            | What relaxing it accepts                                                                                                                                                                                             |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unknown`        | No key was available to verify against: the local cache was never given a key for the sender the hub stamped. The signature is never examined on this path, so an unsigned message from an uncached sender is `unknown`, not `missing`. A sender the cache does hold an entry for, but whose entry could not be read, is `error`. | A message whose originator identity is not cryptographically established at all. A sender who can get the hub to stamp an address of their choosing, and who puts that same address in the `From`, is admitted here. |
+| `missing`        | The message carried no signature: it is not `multipart/signed`, it declares no `boundary=` parameter, or it carries no `application/pgp-signature` part.                                                                                                                                                                          | Mail from a correspondent who does not sign at all — the usual key for correspondents outside Interchange. The originator identity is unverified, as with `unknown`.                                                 |
+| `invalid`        | The signature check failed: tampering, the wrong key, or a message that claims to be signed and cannot be parsed as one.                                                                                                                                                                                                          | The one author-controllable outcome with no benign reading. Relax it only with a stated reason.                                                                                                                      |
+| `untrustedFrom`  | The visible `From` is present and cannot be reduced to one address.                                                                                                                                                                                                                                                               | A message the gate could make no originator claim about at all.                                                                                                                                                      |
+| `mismatchedFrom` | The visible `From` names a different address from the sender the hub stamped, so the message contradicts itself about who sent it. Raised under every non-error signature status.                                                                                                                                                 | A message delivered as though it came from an address its own transport does not agree with. Under a verified signature this is an identity forgery — a legitimate key signing under a borrowed display identity.    |
+| `absentFrom`     | The message carries no usable `From`, so the gate resolved no originator. Raised under every non-error signature status.                                                                                                                                                                                                          | Mail that names no originator. The gate holds the hub's stamp, but nothing downstream reads it.                                                                                                                      |
 
 ## Two outcomes are not keys
 
@@ -59,16 +59,31 @@ authored, and by the wire schema when the deployment reaches the sidecar.
   sender the hub stamped. A live deployment admits it whatever its author
   declared. An address with no live deployment is the exception; see below.
 - `error` is pinned to `reject`. A fault stopped the check from running at all,
-  so there is no trust claim to make: the hub's sender stamp was unreadable, the
-  key lookup threw, or the material it returned is not a usable key. `error` is
-  not a key in `InboundMailPolicy`, and the decision short-circuits before it
-  reads the policy, so nothing an author writes can wave it past. A key that is
-  usable but is not the signer's is not a fault — the check ran and failed,
-  which is the author-controllable `invalid`.
+  so there is no trust claim to make: the hub's sender stamp was unreadable, or
+  the local key cache refused to answer for the sender because that sender's
+  cached entry failed to load. `error` is not a key in `InboundMailPolicy`, and
+  the decision short-circuits before it reads the policy, so nothing an author
+  writes can wave it past. A key that is usable but is not the signer's is not a
+  fault — the check ran and failed, which is the author-controllable `invalid`.
 
-Unusable key material is an operator condition, never a sender one. The gate
-logs it at ERROR, naming the sender and the byte count, beside the verdict line.
-A workflow author has nothing to do about it.
+A cached entry that failed to load is an operator condition, never a sender one,
+and the gate keeps it one. A truncated write, a corrupt file, or an envelope
+whose address disagrees with its filename makes the cache refuse that address
+rather than report it as a sender it holds no key for, so the outcome is `error`
+and not the author-controllable `unknown`. A workflow author therefore has
+nothing to do about it: relaxing `unknown` does not admit the mail.
+
+Two ERROR lines name the condition. The cache logs the file, the sender, and the
+reason when it loads the keyring at start-up. The gate then logs the fault,
+naming the sender and the reason, in place of the usual verdict line, each time
+mail from that sender arrives. The repair is driven from the hub: the sidecar
+reports the affected sender on its next reconnect, and the hub re-resolves it —
+re-pushing the current key, which replaces the unreadable file, or evicting the
+sender if its principal is gone, which deletes the file. A hub-side resolve that
+itself faults changes nothing, so the entry stays unreadable until a later
+reconnect. A run sender is repaired by the next grants barrier that co-delivers
+its key instead, because the hub never re-resolves a run sender on reconnect: a
+run's key is immutable.
 
 ## Admission weighs every finding, not one
 
@@ -109,6 +124,8 @@ receives `clean` mail.
   authoritative statement of the behaviour.
 - The signature check itself: `verifyMimeSignature`,
   `packages/mailbox/src/verify-signature.ts`
+- The keyring the check verifies against, and its load-fault handling:
+  `createSenderKeyCache`, `packages/hub-agent/src/sender-key-cache.ts`
 - The fully-closed default: `FULLY_CLOSED_INBOUND_MAIL_POLICY` and
   `createInboundMailPolicyLookup`,
   `packages/hub-agent/src/ws/inbound-mail-policy-registry.ts`

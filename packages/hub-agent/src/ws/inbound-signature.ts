@@ -196,8 +196,11 @@ export async function verifyInboundSignature(
       signature = "unknown";
     } else {
       const publicKey = crypto.getPublicKey();
-      // The resolver is an injected seam, so the production cache's validation
-      // of its entries is not this call's to assume.
+      // The cache-backed resolver cannot reach this: that cache refuses a
+      // wrong-length key at write and THROWS for an entry that failed to load,
+      // so an address it answers for carries a usable key. The resolver is an
+      // injected seam, and a composition supplying its own is not covered by
+      // that, so the check stays.
       requireUsableSenderKey(authenticatedSender, publicKey);
       signature = await verifyMimeSignature(raw, publicKey);
     }
