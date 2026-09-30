@@ -1,6 +1,10 @@
 import { describe, test, expect } from "bun:test";
 
-import { createPackSender, type PackSendFrame } from "./sender";
+import {
+  createPackSender,
+  PackRejectedError,
+  type PackSendFrame,
+} from "./sender";
 
 const REPO_ID = { kind: "workflow-run" as const, id: "deployment-1" };
 
@@ -84,7 +88,9 @@ describe("createPackSender", () => {
       reason: "corrupt",
     });
     expect(matched).toBe(true);
-    await expect(promise).rejects.toThrow(/corrupt/);
+    const rejection: unknown = await promise.catch((error: unknown) => error);
+    expect(rejection).toBeInstanceOf(PackRejectedError);
+    expect(rejection).toMatchObject({ reason: "corrupt" });
   });
 
   test("cancelAll rejects every pending transfer", async () => {
