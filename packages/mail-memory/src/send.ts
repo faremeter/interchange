@@ -77,12 +77,20 @@ export async function executeSend(
   }
   const senderCrypto = senderEntry.crypto;
 
+  // Local recipients are classified before signing yields, so one
+  // unregistered meanwhile fails the send instead of being routed as remote.
+  const registeredBeforeSigning = new Set(entries.keys());
   const composed = await composeOutbound(senderAddress, message, senderCrypto);
   const { messageId, rawBytes, envelope } = composed;
   const recipients = composed.to;
   const ccAddressList = composed.cc;
   const allAddressees = composed.recipients;
-  const remoteRecipients = allAddressees.filter((addr) => !entries.has(addr));
+  const localRecipients = allAddressees.filter((addr) =>
+    registeredBeforeSigning.has(addr),
+  );
+  const remoteRecipients = allAddressees.filter(
+    (addr) => !registeredBeforeSigning.has(addr),
+  );
 
   if (remoteRecipients.length > 0 && onRemoteSend === undefined) {
     throw new Error(
@@ -90,20 +98,28 @@ export async function executeSend(
     );
   }
 
-  // Deliver to each local recipient's INBOX.
-  const deliveredUids: { address: string; uid: number }[] = [];
-  for (const recipient of allAddressees) {
+  // Every recipient's INBOX is resolved before any is appended to, so a
+  // recipient unregistered while the message was being signed fails the send
+  // before the others receive it.
+  const inboxes = localRecipients.map((recipient) => {
     const entry = entries.get(recipient);
-    if (entry === undefined) continue;
+    if (entry === undefined) {
+      throw new Error(
+        `Recipient "${recipient}" was unregistered while the message was being signed`,
+      );
+    }
     const inbox = entry.mailboxes.get("INBOX");
     if (inbox === undefined) {
       throw new Error(
         `Mailbox "INBOX" does not exist for recipient "${recipient}"`,
       );
     }
-    const uid = inbox.append(rawBytes, envelope, []);
-    deliveredUids.push({ address: recipient, uid });
-  }
+    return { address: recipient, inbox };
+  });
+  const deliveredUids = inboxes.map(({ address, inbox }) => ({
+    address,
+    uid: inbox.append(rawBytes, envelope, []),
+  }));
 
   // Append copy to sender's Sent mailbox.
   const sentStore = senderEntry.mailboxes.get("Sent");
