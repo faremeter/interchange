@@ -70,6 +70,7 @@ import {
   type SendReceipt,
 } from "@intx/types/runtime";
 import {
+  MAX_SIDECAR_INCARNATIONS,
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
   WorkflowProjectionDefinition,
   type AgentDeployFrame,
@@ -1375,6 +1376,12 @@ export function createSidecarDeployRouter(deps: {
    * deploy/restore source-ref path without a live registry.
    */
   applyFrozenWorkflowClosure?: typeof applyFrozenWorkflowClosure;
+  /**
+   * The most incarnations the router holds; a deploy of another address
+   * past it is refused. Defaults to `MAX_SIDECAR_INCARNATIONS`, the most a
+   * `hello` can report; production never overrides it.
+   */
+  maxIncarnations?: number;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -1423,6 +1430,7 @@ export function createSidecarDeployRouter(deps: {
     deps.writeWorkflowRunRecord ?? writeWorkflowRunRecord;
   const applyClosure =
     deps.applyFrozenWorkflowClosure ?? applyFrozenWorkflowClosure;
+  const maxIncarnations = deps.maxIncarnations ?? MAX_SIDECAR_INCARNATIONS;
   const multistepSpawner =
     deps.multistepSubprocessSpawner ?? defaultSubprocessSpawner;
   const multistepDeriveStepAddress: DeriveStepAddress =
@@ -2368,6 +2376,11 @@ export function createSidecarDeployRouter(deps: {
         `sidecar deploy router: ${frame.agentAddress} generation ${String(held.generation)} is ${held.state} here; generation ${String(frame.generation)} cannot deploy over it`,
       );
     }
+    if (deployments.size >= maxIncarnations) {
+      throw new Error(
+        `sidecar deploy router: this sidecar already holds as many deployments as its hello can report; ${frame.agentAddress} cannot deploy here`,
+      );
+    }
 
     const runId = deriveDeploymentId(frame.agentAddress);
 
@@ -2847,6 +2860,17 @@ export function createSidecarDeployRouter(deps: {
           if (derived !== runId) {
             logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${runId}`;
             continue;
+          }
+          // Past the limit a hello can report, a restored deployment would fail
+          // every handshake. The record is kept unspawned, so nothing reports
+          // it. Which records are left out is arbitrary: the Hub fails a
+          // current one left out, as its sidecar no longer reports it. A later
+          // boot with room restores and reports a stale one, and the Hub
+          // undeploys it then.
+          if (deployments.size >= maxIncarnations) {
+            throw new Error(
+              `this sidecar already holds as many deployments as its hello can report; ${record.agentAddress} is left unrestored`,
+            );
           }
 
           // Reconstruct this deployment's runnable definition. Source-ref is

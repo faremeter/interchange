@@ -764,6 +764,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
      * rotation's persist window; omitted, the router uses the real writer.
      */
     writeWorkflowRunRecord?: typeof writeWorkflowRunRecord;
+    maxIncarnations?: number;
     /**
      * Injectable closure materializer. A source-ref deploy/restore test passes
      * a stub so the path runs without a live registry; omitted, the router
@@ -875,6 +876,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       multistepSubprocessSpawner: opts.spawner,
       ...(opts.multistepBinaryPath !== undefined
         ? { multistepBinaryPath: opts.multistepBinaryPath }
+        : {}),
+      ...(opts.maxIncarnations !== undefined
+        ? { maxIncarnations: opts.maxIncarnations }
         : {}),
       multistepSubstrateEnv: mergedSubstrateEnv,
       ...(opts.publishWorkflowInferenceEvent !== undefined
@@ -2989,6 +2993,59 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(spawner.spawnCount()).toBe(1);
     expect(await recordExists(dataDir, anchorRunId)).toBe(true);
     expect(isRegistered(transport, head)).toBe(true);
+  });
+
+  test("refuses a deploy of another address once it holds as many as a hello can report", async () => {
+    const dataDir = await createTempBaseDir("sidecar-incarnation-cap-");
+    const spawner = makeReadyDrivingSpawner(9790);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      maxIncarnations: 1,
+    });
+    const held = "run_cap_held@example.com";
+    const deployed = router.deploy(singleStepFrame(held, "wf-cap"));
+    await spawner.driveReadyFor(0);
+    await deployed;
+
+    await expect(
+      router.deploy(singleStepFrame("run_cap_other@example.com", "wf-cap")),
+    ).rejects.toThrow(
+      "this sidecar already holds as many deployments as its hello can report",
+    );
+    expect(heldAddresses(router)).toEqual([held]);
+  });
+
+  test("restore leaves records past the incarnation limit unspawned and keeps them", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-cap-");
+    const heads = ["run_cap_a@example.com", "run_cap_b@example.com"];
+    const first = makeReadyDrivingSpawner(9800);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    for (const [index, head] of heads.entries()) {
+      const deployed = routerA.deploy(singleStepFrame(head, "wf-cap"));
+      await first.driveReadyFor(index);
+      await deployed;
+    }
+
+    const second = makeReadyDrivingSpawner(9810);
+    const { router: routerB } = await buildMultistepFixture({
+      spawner: second.spawner,
+      transport: createInMemoryTransport(),
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      maxIncarnations: 1,
+    });
+    const restored = routerB.restoreWorkflowRuns();
+    await second.driveReadyFor(0);
+    await restored;
+
+    expect(second.spawnCount()).toBe(1);
+    expect(routerB.incarnations()).toHaveLength(1);
+    for (const head of heads) {
+      expect(await recordExists(dataDir, deriveDeploymentId(head))).toBe(true);
+    }
   });
 
   test("a self-terminated deployment is reclaimed so its address redeploys without a manual undeploy", async () => {

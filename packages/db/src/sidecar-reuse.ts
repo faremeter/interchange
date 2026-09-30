@@ -1,4 +1,6 @@
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, count, eq, inArray, ne } from "drizzle-orm";
+
+import { MAX_SIDECAR_INCARNATIONS } from "@intx/types/sidecar";
 
 import type { DBExecutor } from "./client";
 import { sidecar, sidecarAllocation, workflowProbe } from "./schema";
@@ -96,4 +98,53 @@ export async function assertSidecarReusable(
     args.sidecarId,
     `it hosts no current probe or allocation of provisioner ${args.binding.provisionerId}`,
   );
+}
+
+/**
+ * Asserts that `sidecarId` has room for one more deployment. A sidecar holds
+ * at most `MAX_SIDECAR_INCARNATIONS`, the most its `hello` can report, and it
+ * still holds the deployments of work being released. Locks the
+ * sidecar row so concurrent placements on it serialize.
+ */
+export async function assertSidecarHasRoom(
+  tx: DBExecutor,
+  args: {
+    readonly sidecarId: string;
+    readonly placing: { readonly allocationId: string };
+  },
+): Promise<void> {
+  const [locked] = await tx
+    .select({ id: sidecar.id })
+    .from(sidecar)
+    .where(eq(sidecar.id, args.sidecarId))
+    .for("update");
+  if (locked === undefined) {
+    throw new SidecarReuseRejectedError(args.sidecarId, "it does not exist");
+  }
+  const [row] = await tx
+    .select({ hosted: count() })
+    .from(sidecarAllocation)
+    .where(
+      and(
+        eq(sidecarAllocation.sidecarId, args.sidecarId),
+        ne(sidecarAllocation.id, args.placing.allocationId),
+        inArray(sidecarAllocation.status, [
+          "provisioning",
+          "allocated",
+          "replacing",
+          "releasing",
+        ]),
+      ),
+    );
+  if (row === undefined) {
+    throw new Error(
+      `counting the deployments on ${args.sidecarId} returned no row`,
+    );
+  }
+  if (row.hosted >= MAX_SIDECAR_INCARNATIONS) {
+    throw new SidecarReuseRejectedError(
+      args.sidecarId,
+      `it already hosts ${String(row.hosted)} deployments, as many as one sidecar can report`,
+    );
+  }
 }

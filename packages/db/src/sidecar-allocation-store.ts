@@ -19,7 +19,7 @@ import {
 
 import type { DB, DBExecutor } from "./client";
 import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
-import { assertSidecarReusable } from "./sidecar-reuse";
+import { assertSidecarHasRoom, assertSidecarReusable } from "./sidecar-reuse";
 import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
 import { canExecuteWorkflowRun } from "./workflow-lifecycle-policy";
 import {
@@ -535,6 +535,47 @@ export function createSidecarAllocationStore(db: DBHandle) {
     return updated === undefined ? null : parseSidecarAllocationRow(updated);
   }
 
+  async function insertAdopted(
+    tx: DBExecutor,
+    args: CreateAdoptedSidecarAllocationArgs,
+  ): Promise<SidecarAllocation> {
+    // Adopting a probe places a deployment on its sidecar, so it is held to
+    // the same room check as a placement through `markAllocated`.
+    await assertSidecarHasRoom(tx, {
+      sidecarId: args.sidecarId,
+      placing: { allocationId: args.id },
+    });
+    const createdAt = databaseTimestamp(args.now);
+    const [inserted] = await tx
+      .insert(sidecarAllocation)
+      .values({
+        id: args.id,
+        anchorRunId: args.anchorRunId,
+        tenantId: args.tenantId,
+        provisionerId: args.provisionerId,
+        provisionerApiVersion: args.provisionerApiVersion,
+        provisionerBindingFingerprint: args.provisionerBindingFingerprint,
+        sidecarId: args.sidecarId,
+        status: "allocated",
+        generation: args.generation,
+        ensureAcceptedGeneration: args.generation,
+        ...(args.externalRef !== undefined
+          ? { externalRef: args.externalRef }
+          : {}),
+        connectDeadline: args.connectDeadline,
+        nextAttemptAt: createdAt,
+        createdAt,
+        updatedAt: createdAt,
+      })
+      .returning();
+    if (inserted === undefined) {
+      throw new Error(
+        `sidecarAllocationStore.createAdopted: insert returned no row for ${args.id}`,
+      );
+    }
+    return parseSidecarAllocationRow(inserted);
+  }
+
   return {
     beginInitialization(args: InitializationArgs) {
       return writeInitialization(args);
@@ -646,35 +687,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args: CreateAdoptedSidecarAllocationArgs,
       tx?: DBExecutor,
     ): Promise<SidecarAllocation> {
-      const createdAt = databaseTimestamp(args.now);
-      const [inserted] = await (tx ?? db)
-        .insert(sidecarAllocation)
-        .values({
-          id: args.id,
-          anchorRunId: args.anchorRunId,
-          tenantId: args.tenantId,
-          provisionerId: args.provisionerId,
-          provisionerApiVersion: args.provisionerApiVersion,
-          provisionerBindingFingerprint: args.provisionerBindingFingerprint,
-          sidecarId: args.sidecarId,
-          status: "allocated",
-          generation: args.generation,
-          ensureAcceptedGeneration: args.generation,
-          ...(args.externalRef !== undefined
-            ? { externalRef: args.externalRef }
-            : {}),
-          connectDeadline: args.connectDeadline,
-          nextAttemptAt: createdAt,
-          createdAt,
-          updatedAt: createdAt,
-        })
-        .returning();
-      if (inserted === undefined) {
-        throw new Error(
-          `sidecarAllocationStore.createAdopted: insert returned no row for ${args.id}`,
-        );
-      }
-      return parseSidecarAllocationRow(inserted);
+      return tx === undefined
+        ? db.transaction((inner) => insertAdopted(inner, args))
+        : insertAdopted(tx, args);
     },
 
     async bindInitialSidecar(
@@ -838,6 +853,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
               provisionerBindingFingerprint:
                 allocation.provisionerBindingFingerprint,
             },
+            placing: { allocationId: allocation.id },
+          });
+          await assertSidecarHasRoom(tx, {
+            sidecarId: reusedSidecarId,
             placing: { allocationId: allocation.id },
           });
         }
