@@ -242,7 +242,9 @@ export async function scanWorkflowRunRecords(
   }
 
   const scanned: ScannedWorkflowRun[] = [];
-  for (const entry of entries) {
+  for (const entry of entries.sort((a, b) =>
+    a.name.localeCompare(b.name, "en"),
+  )) {
     if (!entry.isDirectory()) continue;
     const runId = entry.name;
     const path = recordPath(dataDir, runId);
