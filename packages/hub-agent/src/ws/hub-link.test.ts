@@ -10,7 +10,11 @@ import {
   type WsHandle,
 } from "@intx/hub-sessions";
 import { createInMemoryTransport } from "@intx/mail-memory";
-import { generateKeyPair, verifySSHSignature } from "@intx/crypto";
+import {
+  createEd25519Crypto,
+  generateKeyPair,
+  verifySSHSignature,
+} from "@intx/crypto";
 import { base64Encode, hexEncode } from "@intx/types";
 import type { HarnessConfig } from "@intx/types/runtime";
 
@@ -1902,6 +1906,49 @@ describe("sidecar↔hub integration", () => {
 });
 
 describe("initial handshake on connect", () => {
+  test("refuses a send that names more than one workflow deployment", async () => {
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({})),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const sender = "run_multi@integration.interchange";
+    // Relay-only, as the sidecar's is, so the sender's own copy is relayed.
+    const transport = createInMemoryTransport({ relayOnly: true });
+    transport.register(sender, createEd25519Crypto(await generateKeyPair()));
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-multi",
+      token: "test-token",
+      transport,
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+    });
+    const scoped = transport.getTransportFor(sender);
+    try {
+      await expect(
+        scoped.send({
+          to: "run_other@integration.interchange",
+          cc: sender,
+          type: "conversation.message",
+          content: "reply that copies its sender",
+        }),
+      ).rejects.toThrow("a mail may name only one");
+      await expect(
+        scoped.send({
+          to: "run_other@integration.interchange",
+          cc: "person@example.test",
+          type: "conversation.message",
+          content: "one deployment",
+        }),
+      ).resolves.toMatchObject({ status: "queued" });
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
   test("sends a reconnect before flushing queued frames", async () => {
     const frames: string[] = [];
     const app = new Hono();

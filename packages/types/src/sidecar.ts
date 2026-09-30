@@ -200,7 +200,7 @@ export type AgentDeployErrorFrame = typeof AgentDeployErrorFrame.infer;
 /**
  * A message from a local agent. When `delivered` is absent or false the hub
  * should route the message to its recipients. When `delivered` is true the
- * message was already delivered locally and is forwarded for audit/projection
+ * message already went out and this copy is forwarded for audit/projection
  * only — the hub must not re-route it.
  *
  * Structured metadata (senderAddress, messageId, to, cc) is available for
