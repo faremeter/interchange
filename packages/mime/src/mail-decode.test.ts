@@ -940,6 +940,20 @@ describe("isMail", () => {
     expect(isMail(validMail())).toBe(true);
   });
 
+  test("rejects rawHeaders that is not a record of string arrays", () => {
+    expect(isMail({ ...validMail(), rawHeaders: { subject: ["hi"] } })).toBe(
+      true,
+    );
+    expect(isMail({ ...validMail(), rawHeaders: { subject: "hi" } })).toBe(
+      false,
+    );
+    expect(isMail({ ...validMail(), rawHeaders: { subject: [1] } })).toBe(
+      false,
+    );
+    expect(isMail({ ...validMail(), rawHeaders: "subject" })).toBe(false);
+    expect(isMail({ ...validMail(), rawHeaders: null })).toBe(false);
+  });
+
   test("rejects a MessagePart-shaped part (bytes, no ref)", () => {
     // decodeMail returns MessagePart[] (content bytes); only the committed
     // MailPart[] (ref) is a Mail, so the in-memory decode is NOT a Mail.

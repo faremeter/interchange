@@ -427,7 +427,9 @@ const MailShape = type({
     "from?": "string",
     to: "string[]",
   },
-  rawHeaders: "object",
+  rawHeaders: {
+    "[string]": "string[]",
+  },
   parts: type({
     contentType: "string",
     ref: "string",
