@@ -1969,6 +1969,98 @@ describe("sidecar↔hub integration", () => {
       await wfrServer.stop(true);
     }
   });
+
+  test("a push the Hub rejects for any reason but corrupt is not resent", async () => {
+    const doneFrames: string[] = [];
+    const rejectingRouter = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
+      ...acceptAnySidecar,
+      validateSidecarIdentity: async () => true,
+      requestTimeoutMs: 5000,
+      hubPublicKey: "a".repeat(64),
+      lookups: {
+        async receiveWorkflowRunPack() {
+          return { accepted: false, reason: "path_violation" };
+        },
+      },
+    });
+    const rejectingApp = new Hono();
+    rejectingApp.get(
+      "/ws",
+      upgradeWebSocket((_c) => {
+        let handle: WsHandle;
+        return {
+          onOpen(_evt, ws) {
+            handle = {
+              send(data: string) {
+                ws.send(data);
+              },
+              close() {
+                ws.close();
+              },
+            };
+            rejectingRouter.handleOpen(handle);
+          },
+          onMessage(evt, _ws) {
+            if (typeof evt.data !== "string") return;
+            if (evt.data.includes('"repo.pack.done"'))
+              doneFrames.push(evt.data);
+            prepareAllocationFrame(rejectingRouter, evt.data);
+            rejectingRouter.handleMessage(handle, evt.data);
+          },
+          onClose(_evt, _ws) {
+            rejectingRouter.handleClose(handle);
+          },
+        };
+      }),
+    );
+    const rejectingServer = Bun.serve({
+      fetch: rejectingApp.fetch,
+      websocket,
+      port: 0,
+    });
+    const welcomed = Promise.withResolvers<boolean>();
+    const client = createHubLink({
+      hubURL: `ws://localhost:${rejectingServer.port}/ws`,
+      sidecarId: "sc-wfr-no-retry",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      onWorkflowAddressesRoutable: () => {
+        welcomed.resolve(true);
+      },
+    });
+
+    client.connect();
+    try {
+      await welcomed.promise;
+      const agentAddress = "no-retry-agent@test.interchange";
+      await sendAgentDeploy(rejectingRouter, agentAddress, TEST_CONFIG);
+      await waitUntil(() =>
+        rejectingRouter.getRoutableAddresses().includes(agentAddress),
+      );
+
+      const pushed = client.pushWorkflowRunPack({
+        agentAddress,
+        generation: 1,
+        repoId: { kind: "workflow-run", id: "no-retry-agent-test-interchange" },
+        pack: new Uint8Array([1, 2, 3]),
+        ref: "refs/heads/events",
+        commitSha: "b".repeat(40),
+      });
+
+      await expect(pushed).rejects.toThrow(/reason=path_violation/);
+      expect(doneFrames).toHaveLength(1);
+    } finally {
+      client.close();
+      await waitUntil(
+        () =>
+          !rejectingRouter.getConnectedSidecars().includes("sc-wfr-no-retry"),
+      );
+      await rejectingServer.stop(true);
+    }
+  });
 });
 
 describe("initial handshake on connect", () => {

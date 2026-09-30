@@ -71,6 +71,19 @@ export type PackSenderDeps = {
   sendFrame: (frame: PackSendFrame) => void;
 };
 
+/** A transfer the receiver answered with `repo.pack.reject`. */
+export class PackRejectedError extends Error {
+  readonly reason: string;
+
+  constructor(transferId: string, reason: string) {
+    super(
+      `pack rejected by receiver (transferId=${transferId} reason=${reason})`,
+    );
+    this.name = "PackRejectedError";
+    this.reason = reason;
+  }
+}
+
 type PendingTransfer = {
   resolve: () => void;
   reject: (err: Error) => void;
@@ -145,11 +158,7 @@ export function createPackSender(deps: PackSenderDeps): PackSender {
     const entry = pending.get(frame.transferId);
     if (entry === undefined) return false;
     pending.delete(frame.transferId);
-    entry.reject(
-      new Error(
-        `pack rejected by receiver (transferId=${frame.transferId} reason=${frame.reason})`,
-      ),
-    );
+    entry.reject(new PackRejectedError(frame.transferId, frame.reason));
     return true;
   }
 
