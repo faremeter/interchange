@@ -133,6 +133,15 @@ function createMinimalStubRepoStore(): RepoStore {
   });
 }
 
+// The production hook removes the run repository, and the run record inside it.
+function removeRunDirectory(dataDir: string) {
+  return (runId: string) =>
+    fs.rm(path.join(dataDir, "workflow-runs", runId), {
+      recursive: true,
+      force: true,
+    });
+}
+
 describe("createSidecarWorkflowSupervisor", () => {
   test("constructs the supervisor with the sidecar's bindings and signs CancelRequested via the host's signing key", async () => {
     const transport = createInMemoryTransport();
@@ -324,6 +333,8 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
       registerDeployment: () => undefined,
+      removeRunRepository: async () => undefined,
+      removeAgentStateRepository: async () => undefined,
       unregisterDeployment: () => undefined,
       reportDeploymentRefTips: async () => ({}),
     });
@@ -802,6 +813,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
      */
     writeWorkflowRunRecord?: typeof writeWorkflowRunRecord;
     maxIncarnations?: number;
+    removeRunRepository?: (runId: string) => Promise<void>;
     /**
      * Injectable closure materializer. A source-ref deploy/restore test passes
      * a stub so the path runs without a live registry; omitted, the router
@@ -898,6 +910,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: opts.assertSourceBuildable ?? (() => undefined),
       registerDeployment: opts.registerDeployment ?? (() => undefined),
+      removeRunRepository:
+        opts.removeRunRepository ??
+        removeRunDirectory(mergedSubstrateEnv["SIDECAR_DATA_DIR"] ?? tempBase),
+      removeAgentStateRepository: (id) =>
+        fs.rm(repoStore.getRepoDir({ kind: "agent-state", id }), {
+          recursive: true,
+          force: true,
+        }),
       unregisterDeployment:
         opts.unregisterDeployment ??
         (() => {
@@ -2642,6 +2662,59 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(caches[0]).toBe(caches[1]);
   });
 
+  test("undeploy removes the run repository and its record after the rest of the local state", async () => {
+    const dataDir = await createTempBaseDir("sidecar-undeploy-repository-");
+    const agentAddress = "run_undeploy_repo@example.com";
+    const runId = deriveWorkflowRunRepoId(agentAddress);
+    const copy = conversationStateRoot(dataDir, runId);
+    const record = path.join(
+      dataDir,
+      "workflow-runs",
+      runId,
+      "deployment.json",
+    );
+    await fs.mkdir(copy, { recursive: true });
+    await fs.mkdir(path.dirname(record), { recursive: true });
+    await fs.writeFile(record, "{}");
+    const exists = (target: string) =>
+      fs.access(target).then(
+        () => true,
+        () => false,
+      );
+    const removals: {
+      runId: string;
+      copyLeft: boolean;
+      recordLeft: boolean;
+    }[] = [];
+    const { router } = await buildMultistepFixture({
+      spawner: makeReadyDrivingSpawner(9650).spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+      removeRunRepository: async (id) => {
+        removals.push({
+          runId: id,
+          copyLeft: await exists(copy),
+          recordLeft: await exists(record),
+        });
+        await removeRunDirectory(dataDir)(id);
+      },
+    });
+    const undeploy = router.undeploy;
+    if (undeploy === undefined) {
+      throw new Error("router.undeploy is undefined");
+    }
+
+    await undeploy({
+      type: "agent.undeploy",
+      requestId: "undeploy-repository",
+      agentAddress,
+      generation: 1,
+      reason: "test",
+    });
+
+    expect(removals).toEqual([{ runId, copyLeft: false, recordLeft: true }]);
+    expect(await exists(record)).toBe(false);
+  });
+
   test("undeploy reclaims the deployment's local conversation copy", async () => {
     const dataDir = await createTempBaseDir("sidecar-conversation-undeploy-");
     const agentAddress = "conversation-undeploy@example.com";
@@ -2737,6 +2810,39 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       }),
     ).rejects.toThrow(/a step cannot be provisioned over it/);
     expect(heldAddresses(router)).toEqual([head]);
+  });
+
+  test("an undeploy removes a single-step deployment's grants repository", async () => {
+    const head = "run_undeploy_grants@example.com";
+    const spawner = makeReadyDrivingSpawner(9680);
+    const { router, tempBase } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+    });
+    const deployPromise = router.deploy(singleStepFrame(head, "wf-grants"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+    const grants = path.join(tempBase, "agent-state", "run_undeploy_grants");
+    const exists = () =>
+      fs.access(grants).then(
+        () => true,
+        () => false,
+      );
+    expect(await exists()).toBe(true);
+    const undeploy = router.undeploy;
+    if (undeploy === undefined) {
+      throw new Error("router.undeploy is undefined");
+    }
+
+    await undeploy({
+      type: "agent.undeploy",
+      requestId: "undeploy-grants",
+      agentAddress: head,
+      generation: 1,
+      reason: "test",
+    });
+
+    expect(await exists()).toBe(false);
+    expect(heldAddresses(router)).toEqual([]);
   });
 
   test("restore re-materializes a source-ref deployment's closure and re-spawns it as source-ref", async () => {

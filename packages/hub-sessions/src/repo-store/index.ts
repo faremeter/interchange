@@ -23,7 +23,11 @@ export {
   authorizeUserPrincipal,
   type AuthorizeUserPrincipalArgs,
 } from "./user-principal-gate";
-export { createRepoStore, type CreateRepoStoreConfig } from "./store";
+export {
+  createRepoStore,
+  type CreateRepoStoreConfig,
+  type LocalRepoStore,
+} from "./store";
 export {
   subscribeKind,
   type SubscribeKindOpts,
