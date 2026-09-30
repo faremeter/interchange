@@ -373,9 +373,11 @@ This table shows how Interchange authorization concepts map to materialized gran
 
 ## Personal Tenant
 
+> **Planned / Not Yet Implemented.** Nothing creates a personal tenant on registration. `createAuth` in `@intx/hub-api` registers no post-signup hook, and the only code that creates the tenant, principal, and owner-role trio is the tenant-creation route, which an authenticated user calls with a slug it supplies. The sequence below records the intended design.
+
 On user registration:
 
-1. Create a tenant with a slug derived from the username.
+1. Create a tenant whose slug is derived from the user's email address and reduced to a single DNS label. The address itself is not a legal slug, because `TenantSlug` and `tenant_slug_dns_label_check` both reject `@` and `.` (see Tenant Schema).
 2. Create a principal for the user in that tenant (`kind = 'user'`).
 3. Assign the system `owner` role.
 4. The owner role includes a broad default grant: `resource = "*", action = "*", effect = "allow"`.
