@@ -92,8 +92,8 @@ agent a managed principal instead of a loose script:
   mailbox and agent state is committed locally. When provisioned capacity
   restarts, its sidecar credential binds it to the deployment generations
   it hosts; it restores those deployments from persisted state and resumes
-  durable deliveries. Nothing is lost to a restart when the provisioner
-  preserves the required storage.
+  durable deliveries when the provisioner preserves the required storage.
+  A deployment it cannot restore is failed rather than silently lost.
 - **Model-agnostic inference with failover.** A definition declares the
   models it needs; the hub resolves an ordered provider list at launch.
   Inference fails over per call across providers _and_ protocols

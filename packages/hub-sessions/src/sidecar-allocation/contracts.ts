@@ -61,7 +61,10 @@ export type SidecarOperationFailure = typeof SidecarOperationFailure.infer;
  * now also hosts this generation; omit it when the request's own identity is
  * used. The Hub accepts only a sidecar that still hosts another probe or
  * allocation of the same provisioner binding, including one whose release or
- * replacement has not yet destroyed it.
+ * replacement has not yet destroyed it. A deployment also needs the sidecar to
+ * host fewer than `MAX_SIDECAR_INCARNATIONS` deployments, which is checked
+ * when an allocation is placed and when a deployment adopts its probe's
+ * sidecar, not when the probe is placed.
  * Rejection means no infrastructure exists for this generation (ensure-only;
  * destroy rejections below carry no such guarantee); a provisioner must throw
  * when it cannot determine whether the request took effect.
