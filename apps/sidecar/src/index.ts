@@ -338,7 +338,12 @@ const multistepSourcesRouter = createMultistepSourcesRouter();
 // unrouted.
 const multistepCredentialsRouter = createMultistepCredentialsRouter();
 
-const transport = createInMemoryTransport();
+// Deployments register here only to sign their mail; inbound mail reaches
+// them from the Hub through their supervisors. Relaying every recipient
+// sends mail between two deployments on this sidecar, or to the sender
+// itself, through the Hub like any other mail instead of into a local
+// inbox nothing reads.
+const transport = createInMemoryTransport({ relayOnly: true });
 
 // The pack-push client closes over the substrate (for `createPack`)
 // and a lazy hub-link binding (for `pushWorkflowRunPack`). The link

@@ -17,9 +17,14 @@ export type {
  *
  *   const alphaTransport = transport.getTransportFor("alpha@local.interchange");
  *   await alphaTransport.send({ to: "beta@local.interchange", ... });
+ *
+ * With `relayOnly`, registered addresses only sign: every recipient goes
+ * through the remote send handler and nothing is delivered locally.
  */
 import { InMemoryTransport } from "./transport";
 
-export function createInMemoryTransport(): InMemoryTransport {
-  return new InMemoryTransport();
+export function createInMemoryTransport(
+  opts: { relayOnly?: boolean } = {},
+): InMemoryTransport {
+  return new InMemoryTransport(opts.relayOnly ?? false);
 }

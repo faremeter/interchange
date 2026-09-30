@@ -52,7 +52,7 @@ import {
   outcomeForVerdict,
   type ResolvedInboundMailPolicy,
 } from "./inbound-signature";
-import { base64Decode, base64Encode } from "@intx/types";
+import { base64Decode, base64Encode, isRunAddress } from "@intx/types";
 import type {
   ApprovalSnapshot,
   CryptoProvider,
@@ -926,6 +926,15 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       if (bodyBytes > MAX_MAIL_OUTBOUND_BODY_BYTES) {
         throw new Error(
           `refusing to send mail.outbound from ${senderAddress}: rawMessage of ${String(bodyBytes)} bytes exceeds the ${String(MAX_MAIL_OUTBOUND_BODY_BYTES)}-byte cap`,
+        );
+      }
+      // The Hub refuses a mail naming more than one workflow deployment and
+      // stays the authority on that; refusing here gives the sender the error
+      // the Hub can only log.
+      const deployments = recipients.filter(isRunAddress);
+      if (deployments.length > 1) {
+        throw new Error(
+          `refusing to send mail.outbound from ${senderAddress}: it names ${String(deployments.length)} workflow deployments (${deployments.join(", ")}), and a mail may name only one`,
         );
       }
       const encoded = base64Encode(rawMessage);
