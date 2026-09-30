@@ -138,8 +138,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             { type: "string" },
             { type: "array", items: { type: "string" } },
           ],
+          // JSON Schema applies 'pattern' to a string instance only, so the
+          // per-address rule of the array form is stated in the description.
+          pattern: "^[^\\r\\n]*\\S[^\\r\\n]*$",
           description:
-            "Recipient address (e.g. agent@local.interchange), or an array of addresses to send to several recipients. An empty array names no destination and is rejected",
+            "Recipient address (e.g. agent@local.interchange), or an array of addresses to send to several recipients. Each address becomes part of a header value, so a line break in one is rejected, and a blank address names nobody. An empty array names no destination and is rejected",
         },
         content: {
           type: "string",
@@ -211,7 +214,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "mail_search",
     description:
-      "Search mail in a mailbox. Returns mail summaries. Put every filter inside 'query': an argument other than 'mailbox', 'query' and 'limit' is rejected rather than ignored.",
+      "Search mail in a mailbox. Returns mail summaries in 'results', the number of matches in 'matched', and whether 'limit' cut the list short in 'truncated'. A summary whose headers could not be read carries 'headersError' instead of its header fields. Put every filter inside 'query': an argument other than 'mailbox', 'query' and 'limit' is rejected rather than ignored.",
     inputSchema: {
       type: "object",
       properties: {
@@ -225,7 +228,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: "integer",
           minimum: 1,
           description:
-            "Maximum results to return: a positive whole number. Zero, a negative number and a fraction are rejected. The tool returns the first 'limit' matches, so there is no value that means 'all' and no negative index that means 'the last one'; to read the whole mailbox, pass a number larger than it holds",
+            "Maximum results to return: a positive whole number. Zero, a negative number and a fraction are rejected. The tool returns the first 'limit' matches, so there is no value that means 'all' and no negative index that means 'the last one'. The result reports the match count and whether it was cut short, so raise this to read the matches left behind",
           default: 20,
         },
       },
