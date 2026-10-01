@@ -107,10 +107,10 @@ async function materializeRestoredRefs(
 }
 
 /**
- * Build the sidecar boundary that installs Hub-authoritative workflow-run
- * history before a replacement supervisor starts. Packs land on the
- * unwrapped substrate so applying restored history cannot echo it back to the
- * Hub as a new sidecar-authored update.
+ * Build the sidecar boundary that installs the Hub's copy of a deployment's
+ * workflow-run history before its first supervisor starts. Packs land on the
+ * unwrapped substrate so applying that history cannot echo it back to the Hub
+ * as a new sidecar-authored update.
  */
 export function createWorkflowRunPackRestorer(args: {
   substrate: RepoStore;

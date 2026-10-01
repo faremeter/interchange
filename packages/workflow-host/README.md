@@ -178,10 +178,10 @@ escalates to a signed `CancelRequested{origin: "supervisor-drain"}`.
 
 `recycle(opts)` tears the current child down and stands a fresh one up
 against the SAME deploy tree (same materialized source closure, same
-per-step credential repos). It is strictly orthogonal to redeploy,
-which mints a new deploy tree. Operator, supervisor-policy (max-uptime
-/ max-rss / grants-staleness), and workflow-process-self-initiated
-origins all funnel through the same path.
+per-step credential repos). A deployment keeps its deploy tree for its
+life; a different tree means a new deployment. Operator,
+supervisor-policy (max-uptime / max-rss / grants-staleness), and
+workflow-process-self-initiated origins all funnel through the same path.
 
 ### Respawn policy
 

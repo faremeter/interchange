@@ -1050,9 +1050,9 @@ export function createWorkflowSupervisor(
    * Cached per-spawn context the recycle path needs to respawn the
    * child against the same deploy tree. Populated on `spawn(opts)`;
    * cleared on `shutdown`. The recycle path never mutates the
-   * `stepOrder` or `definitionHash` -- the orthogonality with redeploy
-   * lives at this field: a deploy-tree change would land via a
-   * different code path that minted a new supervisor.
+   * `stepOrder` or `definitionHash`: a deployment keeps them for its
+   * life, and a different deploy tree means a new deployment with its
+   * own supervisor.
    */
   let spawnContext: SpawnContext | null = null;
   let recyclePolicy: RecyclePolicy | null = null;
@@ -3181,8 +3181,8 @@ export function createWorkflowSupervisor(
 
       // Cache the spawn context for the recycle path. The recycle path
       // reuses the same stepOrder/definitionHash/onInferenceEvent on
-      // every respawn -- those are the strict-orthogonality anchors
-      // with redeploy, and the supervisor never mutates them.
+      // every respawn -- a deployment keeps them for its life, and the
+      // supervisor never mutates them.
       const now = bindings.recyclePolicyNow ?? defaultNow;
       spawnContext = {
         stepOrder: opts.stepOrder,
