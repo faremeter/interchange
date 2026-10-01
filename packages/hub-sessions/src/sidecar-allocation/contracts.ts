@@ -9,6 +9,11 @@ export type EnsureSidecarRequest = {
   readonly generation: number;
   readonly tenantId: string;
   readonly anchorRunId: string;
+  /**
+   * A new sidecar identity minted for this generation. Capacity the
+   * provisioner starts authenticates with it; a provisioner that places the
+   * work on a sidecar it already runs returns that sidecar's id instead.
+   */
   readonly sidecarId: string;
   readonly token: string;
   readonly hubWebSocketUrl: string;
@@ -19,6 +24,17 @@ export type DestroySidecarRequest = {
   readonly signal?: AbortSignal;
   readonly allocationId: string;
   readonly generation: number;
+  /**
+   * The sidecar the Hub last recorded for this generation. When the Hub never
+   * learned an ensure's outcome, this is the identity that ensure was offered
+   * even if the provisioner placed the work on an existing sidecar, so a
+   * provisioner that reuses sidecars must be able to release by allocationId.
+   * A destroy releases the allocation's hold at `generation` or any older one:
+   * release and replacement advance the generation before destroying. The
+   * Hub never re-announces holds, so such a provisioner stores them durably;
+   * held only in memory, they are lost on its restart, leaking sidecars or
+   * stopping one that other work still uses.
+   */
   readonly sidecarId: string;
   /**
    * Optional provider handle recorded after ensure returns. A Hub crash can
@@ -41,6 +57,11 @@ export type SidecarOperationFailure = typeof SidecarOperationFailure.infer;
 
 /**
  * Acceptance means the requested infrastructure exists, not that it is ready.
+ * `sidecarId` names a sidecar this provisioner started for earlier work that
+ * now also hosts this generation; omit it when the request's own identity is
+ * used. The Hub accepts only a sidecar that still hosts another probe or
+ * allocation of the same provisioner binding, including one whose release or
+ * replacement has not yet destroyed it.
  * Rejection means no infrastructure exists for this generation (ensure-only;
  * destroy rejections below carry no such guarantee); a provisioner must throw
  * when it cannot determine whether the request took effect.
@@ -48,12 +69,17 @@ export type SidecarOperationFailure = typeof SidecarOperationFailure.infer;
 export const EnsureSidecarResult = type({
   kind: "'accepted'",
   "externalRef?": "string",
+  "sidecarId?": "string",
 }).or(SidecarOperationFailure);
 export type EnsureSidecarResult = typeof EnsureSidecarResult.infer;
 
 /**
- * Destruction confirms the capacity is gone and older ensure calls are fenced.
- * A non-retryable rejection stops automatic cleanup; capacity may still exist.
+ * Destruction confirms the allocation no longer holds its capacity and older
+ * ensure calls are fenced. Whether a sidecar that hosts other work stays up is
+ * the provisioner's decision; the Hub has already stopped routing the
+ * allocation and undeploys it from a sidecar that is, or next becomes,
+ * connected. A non-retryable rejection stops automatic cleanup; capacity may
+ * still exist.
  */
 export const DestroySidecarResult = type({
   kind: "'destroyed'",
@@ -106,7 +132,28 @@ export type SidecarCredentials = {
   readonly bindings: readonly SidecarCredentialIdentity[];
 };
 
-export type SidecarIdentityUse = "registration" | "readiness" | "routing";
+/**
+ * `reclaim` also requires the deployment's first deploy to have completed: its
+ * anchor's key is committed and no initialization is in flight. A copy whose
+ * deploy is still uncertain is undeployed instead, since releasing it on a
+ * sidecar that hosts other work does not stop the sidecar. It further requires
+ * the anchor run not to be terminal: a copy of a run that has ended is not
+ * routed, even when its own history never recorded the end.
+ *
+ * `retention` holds for such a copy instead when the run ended through its own
+ * history: it requires what `reclaim` does, except that the anchor run has
+ * ended without the Hub cancelling it. The copy then stays unrouted, its local
+ * state kept until the Hub releases the deployment, so a reconnect does not
+ * cut short the retention the deployment's policy sets. A copy of a run the
+ * Hub cancelled is undeployed, since a restart that finds its run record still
+ * on disk may be running that run again.
+ */
+export type SidecarIdentityUse =
+  | "registration"
+  | "readiness"
+  | "routing"
+  | "reclaim"
+  | "retention";
 
 export interface SidecarCredentialResolver {
   /** Resolves a bearer token, or null when it hosts nothing current. */

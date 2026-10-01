@@ -34,6 +34,8 @@ type MockDBOpts = {
   } | null;
   anchorAddress?: string | null;
   anchorPublicKey?: string | null;
+  anchorStatus?: string;
+  anchorCancellationRequestedAt?: Date;
   onFindFirst?: (args: { where: unknown }) => void;
 };
 
@@ -84,6 +86,10 @@ function createMockDB(opts: MockDBOpts): DB["db"] {
             : {
                 address: opts.anchorAddress,
                 publicKey: opts.anchorPublicKey ?? null,
+                status: opts.anchorStatus ?? "running",
+                expiresAt: null,
+                cancellationRequestedAt:
+                  opts.anchorCancellationRequestedAt ?? null,
               },
         findMany: async () =>
           opts.allocation === null ||
@@ -212,6 +218,125 @@ describe("createSidecarTokenAuthenticator", () => {
     expect(await resolver.isCurrent(binding, "routing")).toBe(true);
   });
 
+  test("reclaims only a deployment whose first deploy completed", async () => {
+    const binding = {
+      kind: "allocated",
+      sidecarId: "sc-allocated",
+      allocationId: "alloc-1",
+      tenantId: "tenant-1",
+      anchorRunId: "run-anchor",
+      workflowRunAddress: "workflow@exclusive",
+      generation: 2,
+    } as const;
+    const resolverWith = (
+      initializationLeaseId: string | null,
+      anchorPublicKey: string | null,
+      anchorStatus = "running",
+    ) =>
+      createSidecarCredentialResolver({
+        db: createMockDB({
+          allocation: {
+            id: "alloc-1",
+            sidecarId: "sc-allocated",
+            tenantId: "tenant-1",
+            anchorRunId: "run-anchor",
+            status: "allocated",
+            generation: 2,
+            ensureAcceptedGeneration: 2,
+            initializationLeaseId,
+          },
+          anchorAddress: "workflow@exclusive",
+          anchorPublicKey,
+          anchorStatus,
+        }),
+      });
+
+    expect(
+      await resolverWith(null, "public-key").isCurrent(binding, "reclaim"),
+    ).toBe(true);
+    expect(
+      await resolverWith("lease-1", "public-key").isCurrent(binding, "reclaim"),
+    ).toBe(false);
+    expect(await resolverWith(null, null).isCurrent(binding, "reclaim")).toBe(
+      false,
+    );
+    expect(await resolverWith(null, null).isCurrent(binding, "routing")).toBe(
+      true,
+    );
+    expect(
+      await resolverWith(null, "public-key", "failed").isCurrent(
+        binding,
+        "reclaim",
+      ),
+    ).toBe(false);
+  });
+
+  test("retains instead of reclaiming only a completed deployment whose run ended on its own", async () => {
+    const binding = {
+      kind: "allocated",
+      sidecarId: "sc-allocated",
+      allocationId: "alloc-1",
+      tenantId: "tenant-1",
+      anchorRunId: "run-anchor",
+      workflowRunAddress: "workflow@exclusive",
+      generation: 2,
+    } as const;
+    const resolverWith = (
+      initializationLeaseId: string | null,
+      anchorPublicKey: string | null,
+      anchorStatus: string,
+      endedByHub: { cancelled?: boolean } = {},
+    ) =>
+      createSidecarCredentialResolver({
+        db: createMockDB({
+          allocation: {
+            id: "alloc-1",
+            sidecarId: "sc-allocated",
+            tenantId: "tenant-1",
+            anchorRunId: "run-anchor",
+            status: "allocated",
+            generation: 2,
+            ensureAcceptedGeneration: 2,
+            initializationLeaseId,
+          },
+          anchorAddress: "workflow@exclusive",
+          anchorPublicKey,
+          anchorStatus,
+          ...(endedByHub.cancelled === true
+            ? { anchorCancellationRequestedAt: new Date() }
+            : {}),
+        }),
+      });
+
+    expect(
+      await resolverWith(null, "public-key", "failed").isCurrent(
+        binding,
+        "retention",
+      ),
+    ).toBe(true);
+    // A copy of a run the Hub ended may have been respawned running it.
+    expect(
+      await resolverWith(null, "public-key", "cancelled", {
+        cancelled: true,
+      }).isCurrent(binding, "retention"),
+    ).toBe(false);
+    expect(
+      await resolverWith(null, "public-key", "running").isCurrent(
+        binding,
+        "retention",
+      ),
+    ).toBe(false);
+    expect(
+      await resolverWith("lease-1", "public-key", "failed").isCurrent(
+        binding,
+        "retention",
+      ),
+    ).toBe(false);
+    expect(
+      await resolverWith(null, null, "failed").isCurrent(binding, "retention"),
+    ).toBe(false);
+  });
+
   test("rejects an allocated credential without a current allocation", async () => {
     const token = "stale-allocated-secret";
     const resolver = createSidecarCredentialResolver({
@@ -256,6 +381,8 @@ describe("createSidecarTokenAuthenticator", () => {
     } as const;
     expect(credentials).toEqual({ sidecarId: "sc-probe", bindings: [binding] });
     expect(await resolver.isCurrent(binding, "routing")).toBe(true);
+    expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
+    expect(await resolver.isCurrent(binding, "retention")).toBe(false);
   });
 
   test("resolves every probe and allocation a sidecar hosts", async () => {

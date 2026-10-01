@@ -708,6 +708,13 @@
       "when": 1791488793986,
       "tag": "0101_burly_virginia_dare",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1791488793987,
+      "tag": "0102_sidecar_reuse",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { sha256 } from "@intx/crypto";
-import type { SidecarAllocation, SidecarAllocationStore } from "@intx/db";
+import {
+  SidecarReuseRejectedError,
+  type SidecarAllocation,
+  type SidecarAllocationStore,
+} from "@intx/db";
 import { hexEncode } from "@intx/types";
 
 import { SessionLaunchError } from "../session-service";
@@ -241,6 +245,101 @@ describe("createSidecarAllocationReconciler", () => {
     expect(hexEncode(storedHash ?? new Uint8Array())).toBe(
       hexEncode(await sha256("token-new")),
     );
+  });
+
+  test("records the existing sidecar a provisioner placed the generation on", async () => {
+    const pending = allocation();
+    const provisioning = allocation({
+      status: "provisioning",
+      generation: 1,
+      sidecarId: "sc-new",
+      connectDeadline: new Date(NOW.getTime() + 120_000),
+      reconciliationLeaseId: "lease-1",
+    });
+    const allocated = allocation({
+      ...provisioning,
+      status: "allocated",
+      sidecarId: "sc-shared",
+      ensureAcceptedGeneration: 1,
+    });
+    let claimed = false;
+    const placements: (string | undefined)[] = [];
+    const synced: string[] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return pending;
+      },
+      bindInitialSidecar: async () => provisioning,
+      markAllocated: async (args) => {
+        placements.push(args.sidecarId);
+        return allocated;
+      },
+      markConnectionReady: async () => allocated,
+    });
+    const provisioner = testProvisioner({
+      async ensure() {
+        return { kind: "accepted", sidecarId: "sc-shared" };
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({ store, provisioner, synced, readyOnlyAfterSync: true }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(placements).toEqual(["sc-shared"]);
+    expect(synced).toContain("sc-shared");
+  });
+
+  test("replaces a generation placed on a sidecar the Hub cannot reuse", async () => {
+    const pending = allocation();
+    const provisioning = allocation({
+      status: "provisioning",
+      generation: 1,
+      sidecarId: "sc-new",
+      connectDeadline: new Date(NOW.getTime() + 120_000),
+      reconciliationLeaseId: "lease-1",
+    });
+    let claimed = false;
+    const replacements: string[] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return pending;
+      },
+      bindInitialSidecar: async () => provisioning,
+      markAllocated: async () => {
+        throw new SidecarReuseRejectedError(
+          "sc-foreign",
+          "it hosts no current probe or allocation of provisioner test",
+        );
+      },
+      beginReplacement: async (args) => {
+        replacements.push(args.failureCode);
+        return allocation({
+          ...provisioning,
+          status: "replacing",
+          generation: 2,
+        });
+      },
+    });
+    const provisioner = testProvisioner({
+      async ensure() {
+        return { kind: "accepted", sidecarId: "sc-foreign" };
+      },
+    });
+    const fences: [string, number][] = [];
+    const reconciler = createSidecarAllocationReconciler(
+      deps({ store, provisioner, fences }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(replacements).toEqual(["sidecar_reuse_rejected"]);
+    expect(fences.at(-1)).toEqual(["alloc-1", 2]);
   });
 
   test("parks an accepted provision without waiting for its websocket", async () => {

@@ -117,6 +117,14 @@ received is destroyed with the worker, so the recorded outcome then reflects onl
 accepted history, even if the worker had committed a different one. Enforcement resumes
 after a Hub outage; the deadline does not promise an exact destruction time.
 
+On a sidecar that also hosts other work, release removes only this deployment's
+hold on the sidecar. A connected sidecar is told to undeploy the deployment,
+which stops its child at once. An unreachable one keeps running it until it
+reconnects and the Hub undeploys it, or until its other deployments miss their
+reconnect deadline too and the provisioner stops the emptied sidecar. Destroying
+dedicated capacity guarantees the stop; on a shared sidecar the stop only takes
+effect once the sidecar hears from the Hub.
+
 `capacityRetention` starts when the top-level run becomes terminal. Here, failure
 retains the environment for 15 minutes; success and cancellation request
 immediate release. A child run finishing does not release the deployment's
@@ -238,10 +246,11 @@ provisioner decides whether to destroy the backing resources or prepare them for
 reuse. This fits the work on provisioning pre-existing capacity: another
 deployment could claim it when the provisioner binding, capabilities, and
 placement requirements match. The previous assignment, credentials, and local
-state must be retired or reset before it becomes available. Capacity retained
-for inspecting a failed run is still reserved to that run. Retention is a cleanup
-deadline, not a minimum preservation guarantee: manual release or infrastructure
-failure can end it earlier.
+state must be retired or reset before dedicated capacity becomes available
+again; a shared sidecar drops a released deployment when the Hub undeploys it.
+Capacity retained for inspecting a failed run is still reserved to that run.
+Retention is a cleanup deadline, not a minimum preservation guarantee: manual
+release or infrastructure failure can end it earlier.
 
 The provisioner owns how long unused backing capacity stays available before
 being destroyed. The Hub's allocation reconciler performs cleanup by calling
