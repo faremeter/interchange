@@ -13,6 +13,8 @@ import {
   createMultistepCredentialsRouter,
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
+  type WorkflowRunPackClient,
+  type WorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
 
 function deriveWorkflowRunRepoId(agentAddress: string): string {
@@ -181,6 +183,76 @@ describe("createWorkflowRunPackClient", () => {
     expect(packedTipCommits).toHaveLength(0);
   });
 
+  test("forgetting a repository drops its acknowledged tips", async () => {
+    const { store } = createRecordingUnderlyingRepoStore({
+      "refs/heads/main": "stub-pack-sha",
+    });
+    let sent = 0;
+    const client = createWorkflowRunPackClient({
+      substrate: store,
+      hubLink: {
+        pushWorkflowRunPack: () => {
+          sent += 1;
+          return Promise.resolve();
+        },
+      },
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "agent-example-com" };
+    const push = () =>
+      client.push({
+        agentAddress: "agent@example.com",
+        repoId,
+        ref: "refs/heads/main",
+      });
+
+    await push();
+    // The tip is the one just acknowledged, so nothing is left to ship.
+    await push();
+    expect(sent).toBe(1);
+
+    client.forget(repoId);
+    await push();
+    expect(sent).toBe(2);
+  });
+
+  test("a push acknowledged after its repository was forgotten writes nothing back", async () => {
+    const { store } = createRecordingUnderlyingRepoStore({
+      "refs/heads/main": "stub-pack-sha",
+    });
+    let sent = 0;
+    const pushed = Promise.withResolvers<undefined>();
+    let ack = Promise.withResolvers<undefined>();
+    const client = createWorkflowRunPackClient({
+      substrate: store,
+      hubLink: {
+        pushWorkflowRunPack: async () => {
+          sent += 1;
+          pushed.resolve(undefined);
+          await ack.promise;
+        },
+      },
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "agent-example-com" };
+    const push = () =>
+      client.push({
+        agentAddress: "agent@example.com",
+        repoId,
+        ref: "refs/heads/main",
+      });
+
+    const inFlight = push();
+    await pushed.promise;
+    client.forget(repoId);
+    ack.resolve(undefined);
+    await inFlight;
+
+    // The forgotten repository ships its tip again.
+    ack = Promise.withResolvers<undefined>();
+    ack.resolve(undefined);
+    await push();
+    expect(sent).toBe(2);
+  });
+
   test("push rejects when given a non-workflow-run repoId", async () => {
     const { store } = createRecordingUnderlyingRepoStore();
     const client = createWorkflowRunPackClient({
@@ -209,6 +281,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         async push(opts) {
           pushed.push(opts);
         },
@@ -259,6 +332,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         async push() {
           pushOrder.push("enter");
           await gate;
@@ -313,6 +387,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         async push() {
           const idx = pushCount;
           pushCount += 1;
@@ -364,6 +439,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         async push() {
           pushCount += 1;
           if (pushCount === 1) {
@@ -404,13 +480,124 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     ).rejects.toThrow(/non_fast_forward/);
   });
 
+  function forgettableFacade(
+    push: WorkflowRunPackClient["push"],
+  ): WorkflowRunPackPushingRepoStore {
+    const { store } = createRecordingUnderlyingRepoStore();
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-forgotten", "agent-forgotten@example.com");
+    return createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
+      underlying: store,
+      packClient: {
+        forget: () => undefined,
+        push,
+      },
+      registry,
+    });
+  }
+
+  const forgettableRepoId: RepoId = {
+    kind: "workflow-run",
+    id: "dep-forgotten",
+  };
+
+  function writeEvent(
+    facade: WorkflowRunPackPushingRepoStore,
+    message: string,
+  ): Promise<unknown> {
+    return facade.writeTreePreservingPrefix(
+      { kind: "supervisor" },
+      forgettableRepoId,
+      "refs/heads/main",
+      {
+        preservePrefix: "runs/r/events/",
+        merge: async () => ({ [`runs/r/events/${message}.json`]: "{}" }),
+        message,
+      },
+    );
+  }
+
+  test("a forgotten deployment starts no further push after the one in flight", async () => {
+    const pushes: PromiseWithResolvers<boolean>[] = [];
+    const facade = forgettableFacade(async () => {
+      const push = Promise.withResolvers<boolean>();
+      pushes.push(push);
+      if (!(await push.promise)) {
+        throw new Error("pack rejected by receiver (reason=path_violation)");
+      }
+    });
+    await writeEvent(facade, "first");
+    await waitUntil(() => pushes.length === 1);
+    await writeEvent(facade, "second");
+
+    facade.forgetDeployment("dep-forgotten", "agent-forgotten@example.com");
+    pushes[0]?.resolve(false);
+    await drainPushSettle();
+
+    expect(pushes).toHaveLength(1);
+  });
+
+  test("flush names the teardown when the deployment is forgotten with a push still due", async () => {
+    const { store } = createRecordingUnderlyingRepoStore();
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-forgotten", "agent-forgotten@example.com");
+    const firstPush = Promise.withResolvers<undefined>();
+    let pushCount = 0;
+    const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
+      underlying: store,
+      packClient: {
+        forget: () => undefined,
+        async push() {
+          pushCount += 1;
+          if (pushCount === 1) await firstPush.promise;
+        },
+      },
+      registry,
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-forgotten" };
+    const write = (message: string) =>
+      facade.writeTreePreservingPrefix(
+        { kind: "supervisor" },
+        repoId,
+        "refs/heads/main",
+        {
+          preservePrefix: "runs/r/events/",
+          merge: async () => ({ "runs/r/events/0.json": message }),
+          message,
+        },
+      );
+    await write("first");
+    await write("second");
+    const flushed = facade
+      .flushWorkflowRunPushes(repoId, "refs/heads/main")
+      .then(
+        () => "drained",
+        (error: unknown) => error,
+      );
+
+    facade.forgetDeployment("dep-forgotten", "agent-forgotten@example.com");
+    firstPush.resolve(undefined);
+
+    expect(await flushed).toMatchObject({
+      message: expect.stringContaining(
+        "agent-forgotten@example.com was undeployed first",
+      ),
+    });
+    expect(pushCount).toBe(1);
+  });
+
   test("flushWorkflowRunPushes resolves immediately when no pushes are pending", async () => {
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     const facade = createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
       underlying: store,
-      packClient: { push: () => Promise.resolve() },
+      packClient: {
+        forget: () => undefined,
+        push: () => Promise.resolve(),
+      },
       registry,
     });
     await facade.flushWorkflowRunPushes(
@@ -427,6 +614,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         async push(opts) {
           pushed.push(opts);
         },
@@ -455,6 +643,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         push: () => Promise.resolve(),
       },
       registry,
@@ -488,6 +677,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         async push() {
           pushCount += 1;
         },
@@ -531,6 +721,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         async push() {
           pushCount += 1;
           if (pushCount === 1) {
@@ -576,6 +767,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         async push(opts) {
           pushed.push(opts);
         },
@@ -606,6 +798,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         async push(opts) {
           pushed.push(opts);
         },
@@ -640,6 +833,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
+        forget: () => undefined,
         async push() {
           pushCount += 1;
         },

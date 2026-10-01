@@ -53,6 +53,8 @@ export type WorkflowRunPackClient = {
    * the restored tip; the next real local commit remains incremental from it.
    */
   markRestored(repoId: RepoId, ref: string, commitSha: string): void;
+  /** Forget the acknowledged tips of a repository its deployment left. */
+  forget(repoId: RepoId): void;
 };
 
 export type CreateWorkflowRunPackClientOpts = {
@@ -89,6 +91,17 @@ export function createWorkflowRunPackClient(
   function ackKey(repoId: RepoId, ref: string): string {
     return `${repoId.id}/${ref}`;
   }
+  // A repository's pushes share a token that `forget` retires, so a push whose
+  // ack lands after the repository was forgotten writes nothing back.
+  const pushTokens = new Map<string, symbol>();
+  function pushToken(repoId: RepoId): symbol {
+    let token = pushTokens.get(repoId.id);
+    if (token === undefined) {
+      token = Symbol(repoId.id);
+      pushTokens.set(repoId.id, token);
+    }
+    return token;
+  }
 
   return {
     markRestored(repoId, ref, commitSha) {
@@ -100,12 +113,20 @@ export function createWorkflowRunPackClient(
       substrate.commitPackedTip(repoId, ref, commitSha);
       lastAckedSha.set(ackKey(repoId, ref), commitSha);
     },
+    forget(repoId) {
+      const prefix = `${repoId.id}/`;
+      for (const key of [...lastAckedSha.keys()]) {
+        if (key.startsWith(prefix)) lastAckedSha.delete(key);
+      }
+      pushTokens.delete(repoId.id);
+    },
     async push({ agentAddress, repoId, ref }) {
       if (repoId.kind !== "workflow-run") {
         throw new Error(
           `workflow-run pack client: repoId.kind must be "workflow-run", got ${JSON.stringify(repoId.kind)}`,
         );
       }
+      const token = pushToken(repoId);
       const principal: WorkflowRunSupervisorPrincipal = {
         kind: "supervisor",
         anchorRunId: repoId.id,
@@ -137,6 +158,7 @@ export function createWorkflowRunPackClient(
       // lets a cancelled transfer be re-shipped: a rejected push throws
       // before this line, so the cursor stays put and the next
       // `createPack` re-includes the un-acked commits.
+      if (pushTokens.get(repoId.id) !== token) return;
       substrate.commitPackedTip(repoId, ref, commitSha);
       lastAckedSha.set(ackKey(repoId, ref), commitSha);
     },
@@ -629,7 +651,7 @@ export function createMultistepCredentialsRouter(): MultistepCredentialsRouter {
  */
 export type WorkflowRunPackPushingRepoStoreOpts = {
   underlying: RepoStore;
-  packClient: Pick<WorkflowRunPackClient, "push">;
+  packClient: Pick<WorkflowRunPackClient, "push" | "forget">;
   registry: DeploymentAddressRegistry;
   deriveWorkflowRunRepoId: (agentAddress: string) => string;
 };
@@ -687,6 +709,12 @@ export type WorkflowRunPackPushingRepoStore = RepoStore & {
   reportWorkflowRunRefTips: (
     agentAddress: string,
   ) => Promise<WorkflowRunRefTips>;
+  /**
+   * Drop the push state of a deployment the sidecar no longer hosts. A
+   * sidecar shared by many deployments runs long, and nothing else removes
+   * it. A push still in flight settles against the dropped state.
+   */
+  forgetDeployment: (deploymentId: string, agentAddress: string) => void;
 };
 
 export function createWorkflowRunPackPushingRepoStore(
@@ -737,6 +765,9 @@ export function createWorkflowRunPackPushingRepoStore(
         // pause the loop rather than push into a severed link. Leave `dirty`
         // set so the post-reconnect resume re-ships.
         if (blockedAddresses.has(slot.agentAddress)) break;
+        // A forgotten deployment ships nothing more: the Hub no longer routes
+        // it.
+        if (slots.get(slotKey(repoId, ref)) !== slot) break;
         slot.dirty = false;
         try {
           await packClient.push({
@@ -829,6 +860,14 @@ export function createWorkflowRunPackPushingRepoStore(
     }
   }
 
+  function forgetDeployment(deploymentId: string, agentAddress: string): void {
+    for (const [key, slot] of slots) {
+      if (slot.repoId.id === deploymentId) slots.delete(key);
+    }
+    blockedAddresses.delete(agentAddress);
+    packClient.forget({ kind: "workflow-run", id: deploymentId });
+  }
+
   async function flushWorkflowRunPushes(
     repoId: RepoId,
     ref: string,
@@ -850,6 +889,11 @@ export function createWorkflowRunPackPushingRepoStore(
       const err = slot.lastError;
       slot.lastError = null;
       throw err;
+    }
+    if (slot.dirty && slots.get(slotKey(repoId, ref)) !== slot) {
+      throw new Error(
+        `workflow-run pushes for ${repoId.id} ${ref} did not drain: ${slot.agentAddress} was undeployed first`,
+      );
     }
   }
 
@@ -892,6 +936,7 @@ export function createWorkflowRunPackPushingRepoStore(
     notifyAddressRoutable,
     markAddressUnroutable,
     reportWorkflowRunRefTips,
+    forgetDeployment,
     async writeTreePreservingPrefix(principal, repoId, ref, args) {
       if (repoId.kind === "workflow-run") {
         const latched = takeLatchedError(repoId, ref);
