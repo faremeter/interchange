@@ -186,7 +186,7 @@ The worker sends nothing the Hub must receive before `welcome`. It queues the re
 
 ## Self-Restoration
 
-At boot, before opening the WebSocket connection, the in-tree sidecar scans its data directory for deployment records. Each record is validated and restored through the same supervised workflow-child spawn path used by a fresh deploy. A record marked stopped or tearing down is held as it is, unspawned. A deployment whose restore fails is held as stopped, with the failure as its error, and its record is marked so, until the Hub undeploys it. A provisioner may preserve or discard that storage according to the isolation and recovery guarantees it advertises.
+At boot, before opening the WebSocket connection, the in-tree sidecar scans its data directory for deployment records. Each record is validated and restored through the same supervised workflow-child spawn path used by a fresh deploy, up to 8 at once: the sidecar connects only once every deployment is restored, so a full sidecar whose every child takes its whole 30-second ready timeout spends about 8 minutes on those timeouts alone before it connects. A record marked stopped or tearing down is held as it is, unspawned. A deployment whose restore fails is held as stopped, with the failure as its error, and its record is marked so, until the Hub undeploys it. A provisioner may preserve or discard that storage according to the isolation and recovery guarantees it advertises.
 
 ## Authority Model
 
