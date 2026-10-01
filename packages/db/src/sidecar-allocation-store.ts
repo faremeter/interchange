@@ -5,6 +5,7 @@ import {
   eq,
   gt,
   inArray,
+  isNotNull,
   isNull,
   lte,
   notInArray,
@@ -465,7 +466,19 @@ export function createSidecarAllocationStore(db: DBHandle) {
     tx: DBExecutor,
     anchorRunId: string,
     now: Date | ReturnType<typeof sql>,
+    failure: { readonly code: string; readonly message: string },
   ): Promise<void> {
+    // The first failure of a live deployment is the one its runs failed for.
+    await tx
+      .update(workflowRun)
+      .set({ failureCode: failure.code, failureMessage: failure.message })
+      .where(
+        and(
+          eq(workflowRun.id, anchorRunId),
+          isNull(workflowRun.failureCode),
+          inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
+        ),
+      );
     // A pending projection means accepted history may already hold some of
     // these runs' outcomes. Every caller has taken the allocation out of
     // service, so no further history can land; record when capacity was lost
@@ -482,26 +495,75 @@ export function createSidecarAllocationStore(db: DBHandle) {
         );
       return;
     }
-    await failLiveRuns(tx, anchorRunId, now);
+    const failed = await failLiveRuns(tx, anchorRunId, now, failure);
+    // A failure deferred earlier has nothing left to fail, and applying it
+    // later would drop the reason these runs failed for.
+    await settleDeferredFailure(tx, anchorRunId, failed);
+  }
+
+  // History reconciled meanwhile may have settled the anchor, and then the
+  // deferred failure is not why it ended.
+  async function settleDeferredFailure(
+    tx: DBExecutor,
+    anchorRunId: string,
+    failed: readonly string[],
+  ): Promise<void> {
+    await tx
+      .update(workflowRun)
+      .set({
+        infrastructureFailedAt: null,
+        ...(failed.includes(anchorRunId)
+          ? {}
+          : { failureCode: null, failureMessage: null }),
+      })
+      .where(
+        and(
+          eq(workflowRun.id, anchorRunId),
+          isNotNull(workflowRun.infrastructureFailedAt),
+        ),
+      );
   }
 
   async function failLiveRuns(
     tx: DBExecutor,
     anchorRunId: string,
     now: Date | ReturnType<typeof sql>,
-  ): Promise<void> {
+    failure?: { readonly code: string; readonly message: string },
+  ): Promise<string[]> {
+    // Every run failed here carries the deployment's reason: the one its anchor
+    // holds, which a deferred failure kept there, or else the one given.
+    const [anchor] = await tx
+      .select({
+        code: workflowRun.failureCode,
+        message: workflowRun.failureMessage,
+      })
+      .from(workflowRun)
+      .where(eq(workflowRun.id, anchorRunId));
+    const reason =
+      anchor?.code != null
+        ? { code: anchor.code, message: anchor.message }
+        : failure;
     // Fail every live run anchored here -- both "running" runs and a "deployed"
     // anchor torn down before its first trigger -- so a release settles them.
     const failedRuns = await tx
       .update(workflowRun)
-      .set({ status: "failed", endedAt: now })
+      .set({
+        status: "failed",
+        endedAt: now,
+        ...(reason !== undefined
+          ? {
+              failureCode: sql`coalesce(${workflowRun.failureCode}, ${reason.code})`,
+              failureMessage: sql`coalesce(${workflowRun.failureMessage}, ${reason.message})`,
+            }
+          : {}),
+      })
       .where(
         and(
           eq(workflowRun.anchorRunId, anchorRunId),
           inArray(workflowRun.status, [...liveWorkflowRunStatuses]),
         ),
       )
-      .returning({ principalId: workflowRun.principalId });
+      .returning({ id: workflowRun.id, principalId: workflowRun.principalId });
     const principalIds = failedRuns.flatMap(({ principalId }) =>
       principalId === null ? [] : [principalId],
     );
@@ -511,6 +573,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
         .set({ status: "deactivated", updatedAt: now })
         .where(inArray(principal.id, principalIds));
     }
+    return failedRuns.map(({ id }) => id);
   }
 
   async function beginRelease(
@@ -1030,7 +1093,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
         );
         if (releasing === null) return null;
 
-        await failRunningRuns(tx, releasing.anchorRunId, now);
+        await failRunningRuns(tx, releasing.anchorRunId, now, {
+          code: args.failureCode,
+          message: args.failureMessage,
+        });
         await workflowRunDispatchStore.abandonUnsettled(
           releasing.anchorRunId,
           args.failureCode,
@@ -1111,7 +1177,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .returning();
         if (updated === undefined) return null;
 
-        await failRunningRuns(tx, updated.anchorRunId, now);
+        await failRunningRuns(tx, updated.anchorRunId, now, {
+          code: args.code,
+          message: args.message,
+        });
         await workflowRunDispatchStore.abandonUnsettled(
           updated.anchorRunId,
           args.code,
@@ -1157,7 +1226,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
           .returning();
         if (updated === undefined) return null;
 
-        await failRunningRuns(executor, updated.anchorRunId, now);
+        await failRunningRuns(executor, updated.anchorRunId, now, {
+          code: args.code,
+          message: args.message,
+        });
         await workflowRunDispatchStore.abandonUnsettled(
           updated.anchorRunId,
           args.code,
@@ -1185,11 +1257,8 @@ export function createSidecarAllocationStore(db: DBHandle) {
         .where(eq(workflowRun.id, anchorRunId));
       if (anchor?.failedAt == null) return true;
       if (await pendingProjections.hasAny(anchorRunId, tx)) return false;
-      await failLiveRuns(tx, anchorRunId, anchor.failedAt);
-      await tx
-        .update(workflowRun)
-        .set({ infrastructureFailedAt: null })
-        .where(eq(workflowRun.id, anchorRunId));
+      const failed = await failLiveRuns(tx, anchorRunId, anchor.failedAt);
+      await settleDeferredFailure(tx, anchorRunId, failed);
       return true;
     },
 
