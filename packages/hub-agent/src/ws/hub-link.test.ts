@@ -2519,6 +2519,14 @@ describe("classifyAssetPackRejectReason", () => {
       "signature_invalid",
     );
   });
+
+  test("classifies a seed that would move existing history as conflict", () => {
+    expect(
+      classifyAssetPackRejectReason(
+        "workflow_run_restore_conflict: refs/heads/main of run@example.com is already at abc here",
+      ),
+    ).toBe("conflict");
+  });
 });
 
 describe("cleartextTransportWarning", () => {

@@ -162,3 +162,124 @@ test("a first deploy keeps its seeded refs and the next sidecar commit fast-forw
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+async function seededDeployment(root: string) {
+  const hub = createAgentRepoStore({
+    dataDir: path.join(root, "hub"),
+    signingKey: await generateKeyPair(),
+  });
+  const sidecar = createAgentRepoStore({
+    dataDir: path.join(root, "sidecar"),
+    signingKey: await generateKeyPair(),
+  });
+  const agentAddress = "run_restore@workflow.test";
+  const repoId: RepoId = {
+    kind: "workflow-run",
+    id: deriveWorkflowRunRepoId(agentAddress),
+  };
+  const hubPrincipal: Principal = { kind: "hub" };
+  await hub.repoStore.writeTree(hubPrincipal, repoId, "refs/heads/main", {
+    files: { [WORKFLOW_RUN_GITIGNORE_PATH]: "" },
+    message: "Initialize workflow run",
+  });
+  const pack = await hub.repoStore.createPack(
+    hubPrincipal,
+    repoId,
+    "refs/heads/main",
+  );
+  const restored: string[] = [];
+  const restore = createWorkflowRunPackRestorer({
+    deriveWorkflowRunRepoId,
+    substrate: sidecar.repoStore,
+    markRestored: (_repoId, _ref, commitSha) => restored.push(commitSha),
+  });
+  const sidecarMain = () =>
+    sidecar.repoStore.resolveRef(hubPrincipal, repoId, "refs/heads/main");
+  return {
+    sidecar,
+    agentAddress,
+    repoId,
+    pack,
+    restore,
+    restored,
+    sidecarMain,
+  };
+}
+
+test("a retried first deploy takes the same seed again", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wfr-restore-"));
+  try {
+    const { agentAddress, repoId, pack, restore, restored, sidecarMain } =
+      await seededDeployment(root);
+
+    await restore({ agentAddress, repoId, ...pack });
+    await restore({ agentAddress, repoId, ...pack });
+
+    expect(restored).toEqual([pack.commitSha, pack.commitSha]);
+    expect(await sidecarMain()).toBe(pack.commitSha);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a retried first deploy takes the seed over the genesis an earlier attempt left", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wfr-restore-"));
+  try {
+    const {
+      sidecar,
+      agentAddress,
+      repoId,
+      pack,
+      restore,
+      restored,
+      sidecarMain,
+    } = await seededDeployment(root);
+    // An attempt that failed after creating the repository left only the
+    // store's genesis on main.
+    await sidecar.repoStore.initRepo(repoId);
+    const genesis = await sidecarMain();
+    expect(genesis).not.toBeNull();
+    expect(genesis).not.toBe(pack.commitSha);
+
+    await restore({ agentAddress, repoId, ...pack });
+
+    expect(restored).toEqual([pack.commitSha]);
+    expect(await sidecarMain()).toBe(pack.commitSha);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a seed never moves a branch the sidecar already has", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "wfr-restore-"));
+  try {
+    const {
+      sidecar,
+      agentAddress,
+      repoId,
+      pack,
+      restore,
+      restored,
+      sidecarMain,
+    } = await seededDeployment(root);
+    await sidecar.repoStore.writeTree(
+      { kind: "hub" },
+      repoId,
+      "refs/heads/main",
+      {
+        files: { "runs/left-behind/grants.json": JSON.stringify({}) },
+        message: "History of an earlier copy",
+      },
+    );
+    const leftBehind = await sidecarMain();
+
+    await expect(restore({ agentAddress, repoId, ...pack })).rejects.toThrow(
+      "workflow_run_restore_conflict",
+    );
+
+    expect(await sidecarMain()).toBe(leftBehind);
+    expect(restored).toEqual([]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
