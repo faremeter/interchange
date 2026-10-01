@@ -4,8 +4,8 @@
 // `restoreWorkflowRuns()` driver takes to bring a batch of persisted
 // deployments back to ready -- as a function of the number of restored
 // deployments. Restore runs once at boot, before `hubLink.connect()`, and
-// spawns each deployment's supervisor SERIALLY; this bench quantifies the
-// per-deployment restore cost that serial spawn imposes.
+// spawns up to 8 deployments' supervisors at once; this bench quantifies the
+// per-deployment restore cost that remains.
 //
 // The measured operation is `SidecarDeployRouter.restoreWorkflowRuns()`
 // in `apps/sidecar/src/workflow-host-wiring.ts`. For each batch size N the
@@ -19,9 +19,9 @@
 //      empty registration table -- the sidecar-restart model) over the SAME
 //      data dir, then brackets `restoreWorkflowRuns()` with
 //      `performance.now()`. The child handshakes are driven concurrently (the
-//      driver blocks on each `supervisor.spawn` until its child signals
-//      `ready`), so the measured interval is the real serial restore-to-ready
-//      path: scan -> per-record re-validate -> spawn -> ready, N times.
+//      driver waits on each `supervisor.spawn` until its child signals
+//      `ready`), so the measured interval is the real restore-to-ready path:
+//      scan -> per-record re-validate -> spawn -> ready, for N records.
 //   3. READINESS: confirms all N restored addresses are live via
 //      `incarnations()` before recording the sample.
 //
@@ -406,8 +406,8 @@ async function measureRestore(n: number): Promise<number> {
 
   // RESTORE: a fresh transport (empty registration table -- the restart model)
   // and fresh router state over the SAME data dir. Drive all N child
-  // handshakes concurrently with the serial restore driver, which blocks on
-  // each spawn until ready.
+  // handshakes concurrently with the restore driver, which waits on each
+  // spawn until ready.
   const restoreTransport = createInMemoryTransport();
   const restore = makeReadyDrivingSpawner(30000);
   const routerB = await buildRouter({

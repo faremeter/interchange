@@ -3366,6 +3366,42 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(tipReads).toBe(0);
   });
 
+  test("restore spawns several deployments at once", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-parallel-");
+    const heads = ["run_parallel_a@example.com", "run_parallel_b@example.com"];
+    const first = makeReadyDrivingSpawner(12500);
+    const { router: routerA } = await buildMultistepFixture({
+      spawner: first.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    for (const [index, head] of heads.entries()) {
+      const deployed = routerA.deploy(singleStepFrame(head, "wf-parallel"));
+      await first.driveReadyFor(index);
+      await deployed;
+    }
+
+    const second = makeReadyDrivingSpawner(12600);
+    const { router: routerB } = await buildMultistepFixture({
+      spawner: second.spawner,
+      transport: createInMemoryTransport(),
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const restored = routerB.restoreWorkflowRuns();
+    // Neither child is ready yet, so a restore one at a time would never
+    // spawn the second.
+    await waitUntil(() => second.spawnCount() === 2);
+    await second.driveReadyFor(0);
+    await second.driveReadyFor(1);
+    await restored;
+
+    expect(
+      routerB
+        .incarnations()
+        .map((incarnation) => incarnation.state)
+        .sort(),
+    ).toEqual(["live", "live"]);
+  });
+
   test("restore leaves records past the incarnation limit unspawned and keeps them", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-cap-");
     const heads = ["run_cap_a@example.com", "run_cap_b@example.com"];
