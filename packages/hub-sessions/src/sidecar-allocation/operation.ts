@@ -26,6 +26,32 @@ export class SidecarDeploymentMissingError extends Error {
   }
 }
 
+/**
+ * The current connection of a deployment's sidecar reported the deployment
+ * stopped though the Hub did not stop it: its workflow child ended itself, or
+ * the sidecar could not restore it. The message is the sidecar's error.
+ */
+export class SidecarDeploymentStoppedError extends Error {
+  constructor(error: string) {
+    super(error);
+    this.name = "SidecarDeploymentStoppedError";
+  }
+}
+
+/**
+ * A deployment its sidecar reported stopped committed history the Hub does
+ * not hold yet; the Hub looks again at `retryAt` while it still waits.
+ */
+export class SidecarDeploymentHistoryPendingError extends Error {
+  readonly retryAt: Date;
+
+  constructor(unreceived: string, retryAt: Date) {
+    super(`Waiting for history a stopped deployment committed: ${unreceived}`);
+    this.name = "SidecarDeploymentHistoryPendingError";
+    this.retryAt = retryAt;
+  }
+}
+
 /** Stops waiting on cancellation or an optional deadline, even if work ignores the signal. */
 export async function runSidecarOperation<T>(
   operation: string,

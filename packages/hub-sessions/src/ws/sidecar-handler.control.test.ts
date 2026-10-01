@@ -21,6 +21,7 @@ import {
 import {
   connectAllocated,
   createAllocatedRouter,
+  createManualRetries,
   deployReply,
   parsedFrames,
   TEST_CONFIG,
@@ -701,6 +702,167 @@ describe("SidecarRouter allocation control protocols", () => {
     await expect(pending).rejects.toBeInstanceOf(
       SidecarIdentityValidationError,
     );
+  });
+
+  function reportStop(
+    router: ReturnType<typeof createAllocatedRouter>,
+    ws: Awaited<ReturnType<typeof connectAllocated>>,
+    refTips: WorkflowRunRefTips | undefined,
+    generation = TEST_IDENTITY.generation,
+  ) {
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "deployment.stopped",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation,
+        error: "Its workflow child ended itself",
+        ...(refTips !== undefined ? { refTips } : {}),
+      }),
+    );
+  }
+
+  test("holds a reported stop until the Hub has the history the stopped copy reported", async () => {
+    let hubRefTips: WorkflowRunRefTips = {
+      ...TEST_REF_TIPS,
+      "refs/heads/main": "b".repeat(40),
+    };
+    const router = createAllocatedRouter({
+      lookups: { readWorkflowRunRefTips: async () => hubRefTips },
+    });
+    const reported: unknown[] = [];
+    router.events.on("deployment.stopped", (event) => {
+      reported.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    reportStop(router, ws, TEST_REF_TIPS);
+    await tick();
+
+    expect(reported).toEqual([TEST_TARGET]);
+    expect(router.reportedDeploymentFailure(TEST_TARGET)).toBe(
+      "Its workflow child ended itself",
+    );
+    expect(router.getRoutableAddresses()).not.toContain(
+      TEST_IDENTITY.workflowRunAddress,
+    );
+    const pending = await router.stoppedDeploymentHistory(TEST_TARGET);
+    expect(pending?.unreceived).toContain("refs/heads/main");
+
+    hubRefTips = TEST_REF_TIPS;
+    reportStop(router, ws, TEST_REF_TIPS);
+    await tick();
+    const received = await router.stoppedDeploymentHistory(TEST_TARGET);
+    expect(received?.unreceived).toBeNull();
+    // The wait counts from the first report.
+    expect(received?.reportedAt).toEqual(pending?.reportedAt);
+  });
+
+  test("keeps the tips an earlier report gave when a later one could not read them", async () => {
+    const router = createAllocatedRouter({
+      lookups: { readWorkflowRunRefTips: async () => TEST_REF_TIPS },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    reportStop(router, ws, undefined);
+    await tick();
+    const unknown = await router.stoppedDeploymentHistory(TEST_TARGET);
+    expect(unknown?.unreceived).toBe("the worker did not report its ref tips");
+
+    reportStop(router, ws, TEST_REF_TIPS);
+    reportStop(router, ws, undefined);
+    await tick();
+    const known = await router.stoppedDeploymentHistory(TEST_TARGET);
+    expect(known?.unreceived).toBeNull();
+  });
+
+  test("treats the history of a stop the Hub confirmed as final", async () => {
+    const router = createAllocatedRouter();
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    await acknowledgeStop(router, ws, TEST_REF_TIPS);
+
+    reportStop(router, ws, {
+      ...TEST_REF_TIPS,
+      "refs/heads/main": "d".repeat(40),
+    });
+    await tick();
+
+    const history = await router.stoppedDeploymentHistory(TEST_TARGET);
+    expect(history?.unreceived).toBeNull();
+  });
+
+  test("undeploys a reported stop of an incarnation it does not keep", async () => {
+    const router = createAllocatedRouter();
+    const reported: unknown[] = [];
+    router.events.on("deployment.stopped", (event) => {
+      reported.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    reportStop(router, ws, TEST_REF_TIPS, TEST_IDENTITY.generation + 1);
+    await tick();
+
+    expect(reported).toEqual([]);
+    expect(router.reportedDeploymentFailure(TEST_TARGET)).toBeUndefined();
+    expect(framesOfType(ws, "agent.undeploy")).toMatchObject([
+      {
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_IDENTITY.generation + 1,
+      },
+    ]);
+  });
+
+  test("gives up mail pending for a deployment that stops while its retry waits for admission", async () => {
+    const retries = createManualRetries(20);
+    let holdAdmission = false;
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 20,
+      mailHoldTTLMs: 20,
+      scheduleTimeout: retries.scheduleTimeout,
+      withExecutableWorkflowRun: async (_target, send) => {
+        if (holdAdmission) {
+          entered.resolve(undefined);
+          await release.promise;
+        }
+        return send();
+      },
+    });
+    const undelivered = Promise.withResolvers<unknown>();
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.resolve(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    expect(
+      await router.routeMail(
+        TEST_IDENTITY.workflowRunAddress,
+        "c3RvcHBlZA==",
+        "sender@example.test",
+        "mid-stopped",
+      ),
+    ).toBe(true);
+
+    holdAdmission = true;
+    retries.fireNext();
+    await entered.promise;
+    reportStop(router, ws, TEST_REF_TIPS);
+    await tick();
+    release.resolve(undefined);
+
+    expect(await undelivered.promise).toMatchObject({
+      rawMessage: "c3RvcHBlZA==",
+    });
   });
 
   test("acknowledges a signal correlation only after its durable co-write", async () => {

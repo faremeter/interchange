@@ -20,7 +20,7 @@
 // grants live in its agent-state repo, so neither is duplicated here.
 
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
-import { dirname, join as pathJoin } from "node:path";
+import { dirname, join as pathJoin, resolve } from "node:path";
 
 import { type } from "arktype";
 
@@ -85,6 +85,12 @@ const workflowRunRecordBase = {
   "credentials?": CredentialDelivery,
   "sessionId?": "string > 0",
   "hubPublicKey?": "string > 0",
+  // A deployment that no longer runs keeps its record until the Hub undeploys
+  // it, marked so a restart reports it instead of spawning it: `stopped`, with
+  // the error that ended it unless the Hub stopped it, or `tearing-down` when
+  // its undeploy did not finish.
+  "state?": "'stopped' | 'tearing-down'",
+  "error?": "string > 0",
 } as const;
 
 /**
@@ -127,6 +133,36 @@ function recordPath(dataDir: string, runId: string): string {
   );
 }
 
+// Source updates, lifecycle marks and deletion share the record's read/write
+// boundary. Atomic rename alone cannot protect a read-modify-write from a
+// concurrent writer. Different deployments keep independent queues.
+const recordOperations = new Map<string, Promise<void>>();
+
+/**
+ * Serialize an operation with this process's mutations of a deployment record.
+ * The callback receives the record's absolute path and must not acquire the
+ * same record queue again.
+ */
+export async function withWorkflowRunRecord<T>(
+  dataDir: string,
+  runId: string,
+  operation: (path: string) => Promise<T>,
+): Promise<T> {
+  const path = resolve(recordPath(dataDir, runId));
+  const previous = recordOperations.get(path) ?? Promise.resolve();
+  const result = previous.then(() => operation(path));
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  recordOperations.set(path, tail);
+  try {
+    return await result;
+  } finally {
+    if (recordOperations.get(path) === tail) recordOperations.delete(path);
+  }
+}
+
 // The AAD column binding a credential's sealed secret to its id, so a ciphertext
 // cannot be swapped between credentials (or between runs) and still decrypt.
 function credentialSecretColumn(credentialId: string): string {
@@ -160,8 +196,8 @@ async function transformDeliveryMaterials(
 }
 
 /**
- * Persist a run record. Written after the run's slug is claimed and before
- * the child is spawned, so a crash mid-spawn leaves a record the boot scan
+ * Persist the initial run record after its slug is claimed and before the
+ * child is spawned, so a crash mid-spawn leaves a record the boot scan
  * re-drives. Idempotent: it overwrites any existing record for the same run.
  *
  * Every credential secret in the run's `credentials` cell -- inference and tool
@@ -175,30 +211,117 @@ export async function writeWorkflowRunRecord(
   record: WorkflowRunRecord,
   cipher: CredentialCipher,
 ): Promise<void> {
-  const path = recordPath(dataDir, runId);
-  await mkdir(dirname(path), { recursive: true });
-  const sealed: WorkflowRunRecord = {
-    ...record,
-    version: 2,
-    ...(record.credentials !== undefined
-      ? {
-          credentials: await transformDeliveryMaterials(
-            record.credentials,
-            runId,
-            (secret, aad) => cipher.encrypt(secret, aad),
-          ),
-        }
-      : {}),
-  };
-  // Atomic + durable: this is the sole restore source for the run's credential
-  // material, and a rotation overwrites the existing record in place, so an
-  // interrupted write must never expose a torn record the boot scan would then
-  // skip. Owner-only (0o600): the sealed secrets are ciphertext, but the record
-  // still names each source's provider/baseURL and the deployment's identity, so
-  // it stays off a shared host's world-readable set, matching the private-key
-  // writes elsewhere on the sidecar.
-  await writeFileAtomicDurable(path, JSON.stringify(sealed, null, 2), {
-    mode: 0o600,
+  return withWorkflowRunRecord(dataDir, runId, async (path) => {
+    await mkdir(dirname(path), { recursive: true });
+    const sealed: WorkflowRunRecord = {
+      ...record,
+      version: 2,
+      ...(record.credentials !== undefined
+        ? {
+            credentials: await transformDeliveryMaterials(
+              record.credentials,
+              runId,
+              (secret, aad) => cipher.encrypt(secret, aad),
+            ),
+          }
+        : {}),
+    };
+    // Atomic + durable: this is the sole restore source for the run's credential
+    // material, so an interrupted write must never expose a torn record the
+    // boot scan would then skip. Owner-only (0o600): the sealed secrets are
+    // ciphertext, but the record still names each source's provider/baseURL and
+    // the deployment's identity, so it stays off a shared host's world-readable
+    // set, matching the private-key writes elsewhere on the sidecar.
+    await writeFileAtomicDurable(path, JSON.stringify(sealed, null, 2), {
+      mode: 0o600,
+    });
+  });
+}
+
+async function readWorkflowRunRecord(
+  path: string,
+  runId: string,
+): Promise<WorkflowRunRecord | null> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (cause) {
+    if (isENOENT(cause)) return null;
+    throw cause;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    logger.warn`not updating workflow-runs/${runId}: ${WORKFLOW_RUN_RECORD_FILENAME} is not valid JSON: ${reason}`;
+    return null;
+  }
+  const checked = WorkflowRunRecord(parsed);
+  if (checked instanceof type.errors) {
+    logger.warn`not updating workflow-runs/${runId}: ${WORKFLOW_RUN_RECORD_FILENAME} failed validation: ${checked.summary}`;
+    return null;
+  }
+  return checked;
+}
+
+/** Update sources without replacing lifecycle fields or resealing credentials. */
+export async function updateWorkflowRunRecordSources(
+  dataDir: string,
+  runId: string,
+  generation: number,
+  sources: WorkflowRunRecord["sources"],
+): Promise<void> {
+  return withWorkflowRunRecord(dataDir, runId, async (path) => {
+    const record = await readWorkflowRunRecord(path, runId);
+    if (record === null) {
+      throw new Error(
+        `Cannot update sources for ${runId}: its deployment record is missing or invalid`,
+      );
+    }
+    if (record.generation !== generation) {
+      throw new Error(
+        `Cannot update sources for ${runId}: its deployment generation changed`,
+      );
+    }
+    await writeFileAtomicDurable(
+      path,
+      JSON.stringify({ ...record, sources }, null, 2),
+      { mode: 0o600 },
+    );
+  });
+}
+
+/**
+ * Mark a run's record with what became of its deployment, keeping the rest of
+ * the record as it is, so a restart reports the deployment instead of spawning
+ * it. Returns false when the run has no record the boot scan would accept: a
+ * restart neither spawns nor reports such a record, so there is nothing to
+ * mark, and refusing it would fail the undeploy that removes it.
+ */
+export async function markWorkflowRunRecord(
+  dataDir: string,
+  runId: string,
+  mark: { readonly state: "stopped" | "tearing-down"; readonly error?: string },
+): Promise<boolean> {
+  return withWorkflowRunRecord(dataDir, runId, async (path) => {
+    const checked = await readWorkflowRunRecord(path, runId);
+    if (checked === null) return false;
+    const { error: _replaced, ...record } = checked;
+    await writeFileAtomicDurable(
+      path,
+      JSON.stringify(
+        {
+          ...record,
+          state: mark.state,
+          ...(mark.error !== undefined ? { error: mark.error } : {}),
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    );
+    return true;
   });
 }
 
@@ -211,7 +334,9 @@ export async function deleteWorkflowRunRecord(
   dataDir: string,
   runId: string,
 ): Promise<void> {
-  await rm(recordPath(dataDir, runId), { force: true });
+  return withWorkflowRunRecord(dataDir, runId, async (path) => {
+    await rm(path, { force: true });
+  });
 }
 
 /** A restorable run: its directory-derived id plus the validated record. */

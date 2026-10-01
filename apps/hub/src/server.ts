@@ -518,6 +518,11 @@ export async function createHubServer({
   sidecarRouter.events.on("sidecar.allocated.connected", (allocated) =>
     sidecarAllocationReconciler.handleConnected(allocated),
   );
+  // A stop the sidecar reports is acted on like a reconnect: the next
+  // reconciliation reads what the sidecar reported.
+  sidecarRouter.events.on("deployment.stopped", (allocated) =>
+    sidecarAllocationReconciler.handleConnected(allocated),
+  );
   sidecarRouter.events.on(
     "mail.inbound.acknowledged",
     ({ messageId, allocated }) => {

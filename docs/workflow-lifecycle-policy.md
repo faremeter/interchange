@@ -103,14 +103,15 @@ not reset the clock. This also covers deployments that
 never receive their first trigger. If still live at expiry, the Hub stops the
 deployment as `cancelled`, allowing a 30-second cancellation grace period before stopping the process.
 Forced stop preempts a pending cooperative cancellation. The sidecar acknowledges
-stop only after the child exits and its restart record is removed; inspection
-state remains until allocation cleanup. The acknowledgement reports the tip of
+stop only after the child exits and its restart record is marked stopped, so a
+sidecar restart reports the deployment instead of reviving it; the record and
+inspection state remain until allocation cleanup undeploys it. The acknowledgement reports the tip of
 each workflow-history ref, and the sidecar pushes any commit the Hub has not
 acknowledged. The Hub confirms the stop only once it holds those tips; until
 then the stop is retried until 60 seconds past the cancellation deadline, or
 past Hub startup if that is later.
-Cancellation also removes the restart record before acknowledgement when no
-supervisor remains, preventing a later sidecar restart from reviving the run.
+Cancellation also marks the restart record stopped before acknowledgement when
+no supervisor remains, preventing a later sidecar restart from reviving the run.
 If the worker cannot confirm its stop, the Hub releases its allocation and waits
 for confirmed destruction before recording cancellation. History the Hub never
 received is destroyed with the worker, so the recorded outcome then reflects only
@@ -127,7 +128,9 @@ effect once the sidecar hears from the Hub.
 
 `capacityRetention` starts when the top-level run becomes terminal. Here, failure
 retains the environment for 15 minutes; success and cancellation request
-immediate release. A child run finishing does not release the deployment's
+immediate release. A deployment its sidecar reports stopped on its own, because
+its workflow child ended itself or could not be restored, fails and is retained
+as a failure, so its stopped copy can be inspected. A child run finishing does not release the deployment's
 allocation. Top-level scratch survives termination for inspection until
 allocation cleanup. Retained Hub history has a separate lifetime.
 

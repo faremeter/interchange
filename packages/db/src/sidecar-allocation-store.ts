@@ -55,6 +55,10 @@ const activeStatuses = [
   "releasing",
 ] as const;
 
+// Why the Hub fails a deployment whose sidecar reported it stopped.
+export const SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE =
+  "sidecar_deployment_stopped";
+
 export type SidecarAllocation = {
   readonly id: string;
   readonly anchorRunId: string;
@@ -186,6 +190,15 @@ export type BeginSidecarReleaseArgs = {
   readonly failureMessage?: string;
   readonly expectedLeaseId?: string;
   readonly expectedInitializationLeaseId?: string;
+  readonly now?: Date;
+};
+
+export type FailStoppedSidecarDeploymentArgs = {
+  readonly allocationId: string;
+  readonly expectedGeneration: number;
+  readonly expectedLeaseId: string;
+  readonly failureCode: string;
+  readonly failureMessage: string;
   readonly now?: Date;
 };
 
@@ -480,9 +493,8 @@ export function createSidecarAllocationStore(db: DBHandle) {
         ),
       );
     // A pending projection means accepted history may already hold some of
-    // these runs' outcomes. Every caller has taken the allocation out of
-    // service, so no further history can land; record when capacity was lost
-    // and fail the runs once that history is reconciled.
+    // these runs' outcomes. Record when the deployment was lost and fail the
+    // runs once that history is reconciled.
     if (await pendingProjections.hasAny(anchorRunId, tx)) {
       await tx
         .update(workflowRun)
@@ -1074,6 +1086,75 @@ export function createSidecarAllocationStore(db: DBHandle) {
 
     beginRelease,
 
+    /**
+     * Fail the live runs of a deployment its sidecar reported stopped, and
+     * keep the capacity: the stopped copy's files stay for inspection until
+     * the retention for failed runs releases them. The allocation then rests
+     * on its connection as a ready one does, keeping the reason it failed.
+     */
+    async failStoppedDeployment(
+      args: FailStoppedSidecarDeploymentArgs,
+    ): Promise<boolean> {
+      const now = databaseTimestamp(args.now);
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            failureCode: args.failureCode,
+            failureMessage: args.failureMessage,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, "allocated"),
+              eq(sidecarAllocation.generation, args.expectedGeneration),
+              ...leaseCondition(args.expectedLeaseId),
+            ),
+          )
+          .returning({ anchorRunId: sidecarAllocation.anchorRunId });
+        if (updated === undefined) return false;
+        await failRunningRuns(tx, updated.anchorRunId, now, {
+          code: args.failureCode,
+          message: args.failureMessage,
+        });
+        await workflowRunDispatchStore.abandonUnsettled(
+          updated.anchorRunId,
+          args.failureCode,
+          args.failureMessage,
+          now,
+          tx,
+        );
+        // Settles it as `markConnectionReady` does, under the same conditions.
+        // An allocation whose ensure is not accepted or whose initialization is
+        // still in flight keeps its schedule and lease, so the work that owns
+        // it settles it.
+        await tx
+          .update(sidecarAllocation)
+          .set({
+            connectDeadline: null,
+            nextAttemptAt: null,
+            reconciliationLeaseId: null,
+            reconciliationLeaseExpiresAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(sidecarAllocation.id, args.allocationId),
+              eq(sidecarAllocation.status, "allocated"),
+              eq(sidecarAllocation.generation, args.expectedGeneration),
+              eq(
+                sidecarAllocation.ensureAcceptedGeneration,
+                args.expectedGeneration,
+              ),
+              isNull(sidecarAllocation.initializationLeaseId),
+              ...leaseCondition(args.expectedLeaseId),
+            ),
+          );
+        return true;
+      });
+    },
+
     async beginUnrecoverableRelease(
       args: BeginUnrecoverableSidecarReleaseArgs,
     ): Promise<SidecarAllocation | null> {
@@ -1384,6 +1465,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
     async markConnectionReady(
       args: MarkSidecarConnectionReadyArgs,
     ): Promise<SidecarAllocation | null> {
+      // A stopped deployment the Hub failed stays connected until retention
+      // releases it, and a later ready pass must not erase why it failed.
+      const keepsReason = sql`${sidecarAllocation.failureCode} = ${SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE}`;
       const [updated] = await db
         .update(sidecarAllocation)
         .set({
@@ -1391,8 +1475,8 @@ export function createSidecarAllocationStore(db: DBHandle) {
           nextAttemptAt: null,
           reconciliationLeaseId: null,
           reconciliationLeaseExpiresAt: null,
-          failureCode: null,
-          failureMessage: null,
+          failureCode: sql`case when ${keepsReason} then ${sidecarAllocation.failureCode} end`,
+          failureMessage: sql`case when ${keepsReason} then ${sidecarAllocation.failureMessage} end`,
           updatedAt: databaseTimestamp(args.now),
         })
         .where(
