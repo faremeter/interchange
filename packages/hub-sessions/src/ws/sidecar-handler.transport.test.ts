@@ -10,6 +10,7 @@ import {
   createMockWs,
   deployReply,
   lastRequest,
+  parsedFrames,
   sidecarAuth,
   TEST_CONFIG,
   TEST_IDENTITY,
@@ -751,6 +752,172 @@ describe("SidecarRouter allocation pack transport", () => {
       transferId: "transfer-reject",
       reason: "path_violation",
     });
+  });
+
+  test("rejects a workflow-run pack whose receive fails", async () => {
+    const router = createAllocatedRouter({
+      lookups: {
+        async receiveWorkflowRunPack() {
+          throw new Error("database unavailable");
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(TEST_IDENTITY.workflowRunAddress),
+    };
+    for (const chunk of chunkPack(new Uint8Array([7]))) {
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.push",
+          agentAddress: TEST_IDENTITY.workflowRunAddress,
+          repoId,
+          transferId: "transfer-failed",
+          seq: chunk.seq,
+          data: chunk.data,
+        }),
+      );
+    }
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "repo.pack.done",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        repoId,
+        transferId: "transfer-failed",
+        ref: "refs/heads/events",
+        commitSha: "e".repeat(40),
+      }),
+    );
+    await tick();
+
+    expect(lastFrame(ws)).toMatchObject({
+      type: "repo.pack.reject",
+      transferId: "transfer-failed",
+      reason: "corrupt",
+    });
+    expect(ws.closed).toBe(false);
+  });
+
+  test("rejects a workflow-run pack whose done frame is malformed", async () => {
+    let received = false;
+    const router = createAllocatedRouter({
+      lookups: {
+        async receiveWorkflowRunPack() {
+          received = true;
+          return { accepted: true };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(TEST_IDENTITY.workflowRunAddress),
+    };
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "repo.pack.done",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        repoId,
+        transferId: "transfer-malformed",
+        ref: "refs/heads/events",
+        commitSha: 42,
+      }),
+    );
+    await tick();
+
+    expect(received).toBe(false);
+    expect(lastFrame(ws)).toMatchObject({
+      type: "repo.pack.reject",
+      transferId: "transfer-malformed",
+      reason: "corrupt",
+    });
+    expect(ws.closed).toBe(false);
+  });
+
+  test("answers a malformed done behind its transfer's chunks, so the deployment's next push still lands", async () => {
+    const held = Promise.withResolvers<{ accepted: true }>();
+    let receives = 0;
+    const router = createAllocatedRouter({
+      lookups: {
+        async receiveWorkflowRunPack() {
+          receives += 1;
+          // The first ingest is slow, so the frames behind it queue on the
+          // connection.
+          if (receives === 1) return held.promise;
+          return { accepted: true };
+        },
+      },
+    });
+    const address = TEST_IDENTITY.workflowRunAddress;
+    const ws = await connectAllocated(router, [address]);
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(address),
+    };
+    const push = (transferId: string, byte: number) => {
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.push",
+          agentAddress: address,
+          repoId,
+          transferId,
+          seq: 0,
+          data: Buffer.from([byte]).toString("base64"),
+        }),
+      );
+    };
+    const done = (transferId: string, commitSha: unknown) => {
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.done",
+          agentAddress: address,
+          repoId,
+          transferId,
+          ref: "refs/heads/events",
+          commitSha,
+        }),
+      );
+    };
+    const answers = (transferId: string) =>
+      parsedFrames(ws).filter(
+        (frame) =>
+          typeof frame === "object" &&
+          frame !== null &&
+          "transferId" in frame &&
+          frame.transferId === transferId,
+      );
+
+    push("transfer-a", 1);
+    done("transfer-a", "a".repeat(40));
+    await tick();
+    push("transfer-b", 2);
+    done("transfer-b", 42);
+    await tick();
+    held.resolve({ accepted: true });
+    await tick();
+    await tick();
+    push("transfer-c", 3);
+    done("transfer-c", "c".repeat(40));
+    await tick();
+    await tick();
+
+    expect(answers("transfer-b")).toEqual([
+      expect.objectContaining({ type: "repo.pack.reject", reason: "corrupt" }),
+    ]);
+    expect(answers("transfer-c")).toEqual([
+      expect.objectContaining({ type: "repo.pack.ack" }),
+    ]);
+    expect(receives).toBe(2);
   });
 
   test("rejects a workflow-run pack outside the allocation repository", async () => {
