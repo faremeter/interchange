@@ -55,6 +55,7 @@ type AllocationStore = Pick<
   | "markDestroyFailed"
   | "markReleased"
   | "parkReconciliation"
+  | "scheduleReconnectAfterHubStart"
   | "scheduleReconnectIfUnscheduled"
   | "scheduleRetry"
   | "wakeReconciliation"
@@ -114,7 +115,10 @@ export type SidecarAllocationReconcilerDeps = {
 export type SidecarAllocationReconciler = {
   /** Rebuild all trust fences before accepting allocated connections. */
   initialize(): Promise<void>;
-  /** Starts a durable reconnect grace period for the exact lost generation. */
+  /**
+   * Gives the exact lost generation as long as its allocation allows to
+   * reconnect before it is failed.
+   */
   handleDisconnect(target: AllocatedSidecarTarget): Promise<void>;
   /** Wakes recovery as soon as the exact generation reconnects. */
   handleConnected(target: AllocatedSidecarTarget): Promise<void>;
@@ -1016,16 +1020,17 @@ export function createSidecarAllocationReconciler({
   }
 
   async function initialize(): Promise<void> {
+    const startedAt = now();
     for (const allocation of await allocationStore.listActive()) {
       router.fenceAllocation(allocation.id, allocation.generation);
       if (allocation.status === "allocated") {
-        await allocationStore.markConnectionLost({
+        await allocationStore.scheduleReconnectAfterHubStart({
           allocationId: allocation.id,
           generation: allocation.generation,
-          connectDeadline:
-            allocation.connectDeadline ??
-            new Date(now().getTime() + connectTimeoutMs),
-          now: now(),
+          now: startedAt,
+          firstConnectDeadline: new Date(
+            startedAt.getTime() + connectTimeoutMs,
+          ),
         });
       } else if (allocation.nextAttemptAt === undefined) {
         // Scheduled retries are durable state. Only repair an unscheduled
@@ -1114,11 +1119,12 @@ export function createSidecarAllocationReconciler({
   function handleDisconnect(target: AllocatedSidecarTarget): Promise<void> {
     noteDisconnect(target);
     return queueConnectionEvent(target, async () => {
+      const lostAt = now();
       const disconnected = await allocationStore.markConnectionLost({
         allocationId: target.allocationId,
         generation: target.generation,
-        connectDeadline: new Date(now().getTime() + connectTimeoutMs),
-        now: now(),
+        now: lostAt,
+        firstConnectDeadline: new Date(lostAt.getTime() + connectTimeoutMs),
       });
       noteDisconnect(target, disconnected !== null);
     });
@@ -1160,12 +1166,13 @@ export function createSidecarAllocationReconciler({
       }
       try {
         if (!ready) {
+          const repairedAt = now();
           await allocationStore.scheduleReconnectIfUnscheduled({
             ...target,
-            connectDeadline:
-              allocation.connectDeadline ??
-              new Date(now().getTime() + connectTimeoutMs),
-            now: now(),
+            now: repairedAt,
+            firstConnectDeadline: new Date(
+              repairedAt.getTime() + connectTimeoutMs,
+            ),
           });
         } else if (
           router.reportedDeploymentFailure(target) !== undefined &&

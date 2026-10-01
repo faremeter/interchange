@@ -95,6 +95,7 @@ export {
   type MarkSidecarReleasedArgs,
   type ParkSidecarReconciliationPolicy,
   type ScheduleSidecarAllocationRetryArgs,
+  type ScheduleSidecarReconnectAfterHubStartArgs,
   type SidecarAllocation,
   type SidecarAllocationStore,
 } from "./sidecar-allocation-store";

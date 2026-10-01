@@ -95,6 +95,7 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
       sidecarId,
       status,
       generation: 1,
+      maxDisconnectedMs: 900_000,
       ...BINDING,
     });
   }
@@ -309,6 +310,7 @@ describe.skipIf(!harnessDbEnvAvailable())("sidecar ownership locking", () => {
               tenantId: TENANT_ID,
               sidecarId: SHARED_SIDECAR_ID,
               generation: 1,
+              maxDisconnectedMs: 900_000,
               connectDeadline: new Date(Date.now() + 60_000),
               ...BINDING,
             },

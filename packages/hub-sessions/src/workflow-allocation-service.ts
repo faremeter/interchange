@@ -19,6 +19,7 @@ import { generateId } from "@intx/hub-common";
 import {
   hexEncode,
   lifecycleDeadline,
+  lifecycleDurationMs,
   SidecarCapabilityRule,
   type ResolvedWorkflowLifecyclePolicy,
   type CredentialCipher,
@@ -430,6 +431,7 @@ export function createWorkflowAllocationService({
         expiresAt: lifecycleDeadline(createdAt, lifecycle.maxLifetime),
         createdAt,
       });
+      const maxDisconnectedMs = lifecycleDurationMs(lifecycle.maxDisconnected);
       await tx.insert(grant).values({
         id: generateId("grant"),
         tenantId: request.tenantId,
@@ -476,6 +478,7 @@ export function createWorkflowAllocationService({
               ? { externalRef: probe.externalRef }
               : {}),
             connectDeadline: new Date(createdAt.getTime() + connectTimeoutMs),
+            maxDisconnectedMs,
             now: createdAt,
           },
           tx,
@@ -498,6 +501,7 @@ export function createWorkflowAllocationService({
             provisionerId: provisioner.id,
             provisionerApiVersion: provisioner.apiVersion,
             provisionerBindingFingerprint: provisioner.bindingFingerprint,
+            maxDisconnectedMs,
             now: createdAt,
           },
           tx,

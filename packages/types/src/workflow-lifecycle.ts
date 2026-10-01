@@ -53,11 +53,14 @@ export function lifecycleDeadline(
   return deadline;
 }
 
+const PositiveLifecycleDuration = LifecycleDuration.narrow(
+  (value, ctx) =>
+    lifecycleDurationMs(value) > 0 || ctx.mustBe("greater than zero"),
+);
+
 export const WorkflowLifecyclePolicy = type({
-  "maxLifetime?": LifecycleDuration.narrow(
-    (value, ctx) =>
-      lifecycleDurationMs(value) > 0 || ctx.mustBe("greater than zero"),
-  ),
+  "maxLifetime?": PositiveLifecycleDuration,
+  "maxDisconnected?": PositiveLifecycleDuration,
   "capacityRetention?": type({
     "completed?": LifecycleDuration,
     "failed?": LifecycleDuration,
@@ -69,6 +72,7 @@ export type WorkflowLifecyclePolicy = typeof WorkflowLifecyclePolicy.infer;
 /** A policy with every field set, as a deployment's effective policy is. */
 export type ResolvedWorkflowLifecyclePolicy = {
   maxLifetime: LifecycleDuration;
+  maxDisconnected: LifecycleDuration;
   capacityRetention: Required<
     NonNullable<WorkflowLifecyclePolicy["capacityRetention"]>
   >;
@@ -106,21 +110,18 @@ function foldWorkflowLifecyclePolicies(
   const effective: WorkflowLifecyclePolicy = {};
   let conflict: LifecycleLimitConflict | undefined;
   for (const policy of policies) {
-    if (policy.maxLifetime !== undefined) {
-      const limit = effective.maxLifetime;
+    for (const field of ["maxLifetime", "maxDisconnected"] as const) {
+      const requested = policy[field];
+      if (requested === undefined) continue;
+      const limit = effective[field];
       if (
         limit !== undefined &&
-        lifecycleDurationMs(policy.maxLifetime) > lifecycleDurationMs(limit)
+        lifecycleDurationMs(requested) > lifecycleDurationMs(limit)
       ) {
-        conflict ??= {
-          ok: false,
-          field: "maxLifetime",
-          requested: policy.maxLifetime,
-          limit,
-        };
-      } else {
-        effective.maxLifetime = policy.maxLifetime;
+        conflict ??= { ok: false, field, requested, limit };
+        continue;
       }
+      effective[field] = requested;
     }
     for (const status of ["completed", "failed", "cancelled"] as const) {
       const requested = policy.capacityRetention?.[status];

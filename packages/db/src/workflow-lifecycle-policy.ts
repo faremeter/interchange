@@ -190,6 +190,7 @@ export async function resolveDeploymentLifecyclePolicy(
   const policy = clampWorkflowLifecyclePolicy(policies);
   return {
     maxLifetime: policy.maxLifetime ?? defaults.maxLifetime,
+    maxDisconnected: policy.maxDisconnected ?? defaults.maxDisconnected,
     capacityRetention: {
       ...defaults.capacityRetention,
       ...policy.capacityRetention,
