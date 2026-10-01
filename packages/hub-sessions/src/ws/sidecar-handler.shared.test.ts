@@ -393,10 +393,10 @@ describe("SidecarRouter shared sidecars", () => {
     expect(ws.closed).toBe(false);
   });
 
-  test("reconnect undeploys an announced deployment that is not routable", async () => {
+  test("reconnect undeploys a deployment whose first deploy never completed", async () => {
     const { router } = createSharedRouter([first, second], {
       validateSidecarIdentity: async (identity, use) =>
-        use !== "routing" || identity.allocationId !== second.allocationId,
+        use !== "reclaim" || identity.allocationId !== second.allocationId,
     });
 
     const ws = await reconnect(router, [
@@ -404,7 +404,6 @@ describe("SidecarRouter shared sidecars", () => {
       second.workflowRunAddress,
     ]);
 
-    expect(ws.closed).toBe(false);
     expect(router.getRoutableAddresses()).toEqual([first.workflowRunAddress]);
     expect(framesOfType(ws, "agent.undeploy")).toEqual([
       {
@@ -414,6 +413,8 @@ describe("SidecarRouter shared sidecars", () => {
         reason: "The deployment is not current on this sidecar",
       },
     ]);
+    expect(await router.isAllocatedSidecarReady(target(second))).toBe(true);
+    expect(await router.isAllocatedWorkflowActive(target(second))).toBe(false);
   });
 
   test("a sidecar reconnecting on a new socket takes every allocation along", async () => {

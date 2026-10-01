@@ -694,6 +694,13 @@
       "when": 1790358709307,
       "tag": "0099_workflow_infrastructure_failure",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1790849930915,
+      "tag": "0100_sidecar_reuse",
+      "breakpoints": true
     }
   ]
 }

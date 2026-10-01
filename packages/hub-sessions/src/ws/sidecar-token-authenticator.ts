@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { sha256 } from "@intx/crypto";
-import type { DB } from "@intx/db";
+import { workflowRunExecutability, type DB } from "@intx/db";
 import {
   sidecar,
   sidecarAllocation,
@@ -114,6 +114,7 @@ export function createSidecarCredentialResolver({
     use: SidecarIdentityUse,
   ): Promise<boolean> {
     if (identity.kind === "probe") {
+      if (use === "reclaim") return false;
       const statuses =
         use === "registration"
           ? (["provisioning", "probing"] as const)
@@ -150,11 +151,27 @@ export function createSidecarCredentialResolver({
     if (allocation.ensureAcceptedGeneration !== identity.generation) {
       return false;
     }
+    if (use === "reclaim" && allocation.initializationLeaseId !== null) {
+      return false;
+    }
     const anchor = await db.query.workflowRun.findFirst({
-      columns: { address: true },
+      columns: {
+        address: true,
+        publicKey: true,
+        status: true,
+        expiresAt: true,
+        cancellationRequestedAt: true,
+      },
       where: eq(workflowRun.id, identity.anchorRunId),
     });
-    return anchor?.address === identity.workflowRunAddress;
+    if (anchor?.address !== identity.workflowRunAddress) return false;
+    if (use !== "reclaim") return true;
+    // The Hub may have ended the run without the worker recording it, so the
+    // run row, not the copy that reconnects, decides whether it is over.
+    return (
+      anchor.publicKey !== null &&
+      workflowRunExecutability(anchor) !== "terminal"
+    );
   }
 
   return { resolve, resolveBindings, isCurrent };

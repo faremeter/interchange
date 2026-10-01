@@ -222,7 +222,7 @@ Workflow definitions declare the runtime capabilities they require without namin
 
 Before creating a deployment, the Hub records a `workflow_probe` and matches tenant and Hub probe policy against a separately configured probe-provisioner list. Every match is passed to the probe chooser, which selects the capacity that runs the probe; probing never runs on the Hub or an ambient sidecar. After freezing the result, the Hub folds requirements from the top-level definition and its inline loops, trigger bodies, and child workflows, matches the separately configured deployment-provisioner list, and passes those matches to the deployment chooser. It adopts the probe capacity when both choosers selected the same provisioner binding; otherwise it destroys that capacity and creates a normal pending allocation through the selected deployment provisioner. No match fails closed. The default chooser selects the first match in registration order, while operator compositions may inject another asynchronous policy.
 
-Every deployment is anchored to a durable sidecar allocation and routed through its authenticated generation. Provisioners decide internally whether backing capacity is created, isolated, shared, or reused; the Hub relies only on their declared guarantees. The Hub has no shared or non-provisioner sidecar identity, and every probe, deployment, trigger, signal, and workflow-state write revalidates the allocation generation.
+Every deployment is anchored to a durable sidecar allocation and routed through its authenticated generation. Provisioners decide whether each probe or deployment generation gets new capacity or joins a sidecar they already run, and whether that capacity is isolated or shared; the Hub relies only on their declared guarantees. Every sidecar identity is minted by the Hub for a provisioner, and every probe, deployment, trigger, signal, and workflow-state write revalidates the allocation generation.
 
 A deployment owns one addressable top-level run. Its stable run id is the deployment mail address. The first inbound trigger fires it; later trigger occurrences can resume a live `onTrigger` section through the run's current correlation, but they do not create another top-level run. Terminal event history is immutable and a terminal deployment cannot be fired again. Internal section/body children have distinct synthetic run ids and are not directly addressable from the Hub API. The run's authorization snapshot is reserved once and reused for every trigger occurrence in that run.
 
@@ -230,7 +230,7 @@ Placement can only be strengthened. Each ancestor policy is enforced independent
 
 A provisioned deployment never moves to new capacity. When its worker is lost, the Hub fails the deployment's live runs and releases its allocation: Hub-owned state does not include arbitrary files created in the sidecar or its isolation containers, and a worker that is only cut off from the Hub may still be running the deployment. A deployment its reconnected worker no longer holds is failed the same way rather than deployed again.
 
-Tenant and installed-workflow lifecycle policies set deployment lifetime and capacity retention. The Hub saves the effective policy at deployment creation, enforces deadlines, and releases terminal allocations through the provisioner. Provisioners own backing-capacity reuse policy. See [Workflow lifetime and capacity retention](./workflow-lifecycle-policy.md) for inheritance, cancellation, and release semantics.
+Tenant and installed-workflow lifecycle policies set deployment lifetime and capacity retention. The Hub saves the effective policy at deployment creation, enforces deadlines, and releases terminal allocations through the provisioner. Provisioners own sidecar reuse policy. See [Workflow lifetime and capacity retention](./workflow-lifecycle-policy.md) for inheritance, cancellation, and release semantics.
 
 ### Trust Boundary
 
@@ -267,7 +267,7 @@ The authority model for agent continuity is:
 - **Harness local storage is authoritative** for agent inference context — conversation history, pending operations, and token usage. This is the source of truth for what the agent knows.
 - **Control plane is a delivery queue** for user messages. Messages sent while the harness is disconnected are queued and flushed to the harness on successful reconnect. The harness incorporates delivered messages into the agent's context through the normal message handling path.
 
-The reconnection protocol resolves the provisioner-issued bearer token to its sidecar and the current generation of every allocation that sidecar hosts. The Hub accepts only those allocations' anchor addresses while their generations remain current, so a worker cannot claim another deployment's route.
+The reconnection protocol resolves the Hub-minted bearer token to its sidecar and the current generation of every allocation that sidecar hosts. The Hub restores the route of an announced address only when it is one of those allocations' anchor addresses and that deployment's first deploy has completed, so a worker cannot claim another deployment's route or one whose deploy is still uncertain.
 
 Signatures are attached to:
 

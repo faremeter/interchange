@@ -1,7 +1,8 @@
-// An allocation-authenticated reconnect does not depend on the deployment
-// public-key projection. The provisioner token already binds the worker to the
-// anchor and generation, so a reconnect remains routable even if that derived
-// projection is temporarily absent.
+// A deployment whose sidecar loses its Hub link is routed again when the
+// sidecar reconnects with its credential, and a mail trigger then runs to
+// completion on the recovered link. The harness stubs the Hub's identity
+// check, so the reclaim rule itself (first deploy completed, run not ended)
+// is covered by the sidecar token authenticator tests, not here.
 //
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, a real workflow-process child, and a test inference provider.
@@ -112,7 +113,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(env.hub.router.getConnectedSidecars()).toContain(SIDECAR_ID);
     });
 
-    test("a reconnect remains authorized while the public-key projection is absent", async () => {
+    test("a deployment is routed again after its sidecar reconnects", async () => {
       expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
       // ---- deploy a single-step workflow ----
@@ -176,15 +177,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
         { diagnostics: env.sidecarDiagnostics },
       );
 
-      // Remove the derived public-key projection before dropping the link. It
-      // is not reconnect authority and must not prevent route restoration.
-      const ackedKey = env.hub.deployAcks.get(deploymentMailAddress);
-      if (ackedKey === undefined) {
-        throw new Error(
-          `expected an acked key for ${deploymentMailAddress} after deploy`,
-        );
-      }
-      env.hub.deployAcks.delete(deploymentMailAddress);
       dropHubLink(env);
       await waitFor(
         () =>
@@ -195,7 +187,6 @@ describe.skipIf(!harnessDbEnvAvailable())(
       );
 
       await waitForReconnect(env, deploymentMailAddress);
-      env.hub.deployAcks.set(deploymentMailAddress, ackedKey);
       expect(env.hub.router.getRoutableAddresses()).toContain(
         deploymentMailAddress,
       );

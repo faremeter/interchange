@@ -19,6 +19,7 @@ import {
 
 import type { DB, DBExecutor } from "./client";
 import { createWorkflowPendingProjectionStore } from "./workflow-pending-projection-store";
+import { assertSidecarReusable } from "./sidecar-reuse";
 import { createWorkflowRunDispatchStore } from "./workflow-run-dispatch-store";
 import { canExecuteWorkflowRun } from "./workflow-lifecycle-policy";
 import {
@@ -131,6 +132,11 @@ export type BindReplacementSidecarArgs = {
 export type MarkSidecarAllocatedArgs = {
   readonly allocationId: string;
   readonly generation: number;
+  /**
+   * An existing sidecar the provisioner placed this generation on instead of
+   * starting the one bound to it. The unused bound identity is deleted.
+   */
+  readonly sidecarId?: string;
   readonly externalRef?: string;
   readonly expectedLeaseId?: string;
   readonly now?: Date;
@@ -795,31 +801,73 @@ export function createSidecarAllocationStore(db: DBHandle) {
       });
     },
 
+    /**
+     * Records the provisioner's acceptance of a generation. Throws
+     * `SidecarReuseRejectedError` when it placed the generation on a sidecar
+     * it cannot reuse, leaving the allocation unchanged.
+     */
     async markAllocated(
       args: MarkSidecarAllocatedArgs,
     ): Promise<SidecarAllocation | null> {
-      const [updated] = await db
-        .update(sidecarAllocation)
-        .set({
-          status: "allocated",
-          ensureAcceptedGeneration: args.generation,
-          externalRef: args.externalRef ?? null,
-          nextAttemptAt: sidecarAllocation.connectDeadline,
-          ensureAttempts: sql`${sidecarAllocation.ensureAttempts} + 1`,
-          failureCode: null,
-          failureMessage: null,
-          updatedAt: databaseTimestamp(args.now),
-        })
-        .where(
-          and(
-            eq(sidecarAllocation.id, args.allocationId),
-            eq(sidecarAllocation.status, "provisioning"),
-            eq(sidecarAllocation.generation, args.generation),
-            ...leaseCondition(args.expectedLeaseId),
-          ),
-        )
-        .returning();
-      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+      return db.transaction(async (tx) => {
+        const condition = and(
+          eq(sidecarAllocation.id, args.allocationId),
+          eq(sidecarAllocation.status, "provisioning"),
+          eq(sidecarAllocation.generation, args.generation),
+          ...leaseCondition(args.expectedLeaseId),
+        );
+        const [allocation] = await tx
+          .select()
+          .from(sidecarAllocation)
+          .where(condition)
+          .for("update");
+        if (allocation === undefined) return null;
+        const boundSidecarId = allocation.sidecarId;
+        const reusedSidecarId =
+          args.sidecarId !== undefined && args.sidecarId !== boundSidecarId
+            ? args.sidecarId
+            : undefined;
+        if (reusedSidecarId !== undefined) {
+          await assertSidecarReusable(tx, {
+            sidecarId: reusedSidecarId,
+            binding: {
+              provisionerId: allocation.provisionerId,
+              provisionerApiVersion: SidecarProvisionerApiVersion.assert(
+                allocation.provisionerApiVersion,
+              ),
+              provisionerBindingFingerprint:
+                allocation.provisionerBindingFingerprint,
+            },
+            placing: { allocationId: allocation.id },
+          });
+        }
+        const [updated] = await tx
+          .update(sidecarAllocation)
+          .set({
+            status: "allocated",
+            ...(reusedSidecarId !== undefined
+              ? { sidecarId: reusedSidecarId }
+              : {}),
+            ensureAcceptedGeneration: args.generation,
+            externalRef: args.externalRef ?? null,
+            nextAttemptAt: sidecarAllocation.connectDeadline,
+            ensureAttempts: sql`${sidecarAllocation.ensureAttempts} + 1`,
+            failureCode: null,
+            failureMessage: null,
+            updatedAt: databaseTimestamp(args.now),
+          })
+          .where(condition)
+          .returning();
+        if (updated === undefined) {
+          throw new Error(
+            `sidecarAllocationStore.markAllocated: locked allocation ${args.allocationId} changed before update`,
+          );
+        }
+        if (reusedSidecarId !== undefined && boundSidecarId !== null) {
+          await tx.delete(sidecar).where(eq(sidecar.id, boundSidecarId));
+        }
+        return parseSidecarAllocationRow(updated);
+      });
     },
 
     async scheduleRetry(

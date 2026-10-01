@@ -8,7 +8,12 @@ import {
 } from "bun:test";
 
 import { sha256 } from "@intx/crypto";
-import { sidecar, sidecarAllocation, workflowProbe } from "@intx/db/schema";
+import {
+  sidecar,
+  sidecarAllocation,
+  workflowProbe,
+  workflowRun,
+} from "@intx/db/schema";
 import {
   createSidecarCredentialResolver,
   createSidecarTokenAuthenticator,
@@ -240,6 +245,45 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       expect(await resolver.resolve(token)).toBeNull();
       expect(await resolver.resolveBindings("sc-released")).toEqual([]);
+    });
+
+    test("reclaims only a deployment whose first deploy completed", async () => {
+      const binding = await seedSidecar({ id: "sc-reclaim", token: "t" });
+      const resolver = createSidecarCredentialResolver({ db: h.db });
+
+      expect(await resolver.isCurrent(binding, "routing")).toBe(true);
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
+
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "public-key" })
+        .where(eq(workflowRun.id, binding.anchorRunId));
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(true);
+
+      await h.db
+        .update(sidecarAllocation)
+        .set({ initializationLeaseId: "uncertain-attempt" })
+        .where(eq(sidecarAllocation.sidecarId, "sc-reclaim"));
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
+    });
+
+    test("reclaims no copy of a run the Hub already ended", async () => {
+      const binding = await seedSidecar({ id: "sc-ended", token: "t" });
+      const resolver = createSidecarCredentialResolver({ db: h.db });
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "public-key", cancellationRequestedAt: new Date() })
+        .where(eq(workflowRun.id, binding.anchorRunId));
+      // A run still cancelling keeps its copy, which records the cancel.
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(true);
+
+      await h.db
+        .update(workflowRun)
+        .set({ status: "failed", endedAt: new Date() })
+        .where(eq(workflowRun.id, binding.anchorRunId));
+      expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
+      // The Hub can still reach it to stop or undeploy it.
+      expect(await resolver.isCurrent(binding, "routing")).toBe(true);
     });
   },
 );

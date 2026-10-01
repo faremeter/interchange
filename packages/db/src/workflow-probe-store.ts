@@ -5,6 +5,7 @@ import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import type { DB, DBExecutor } from "./client";
 import { sidecar, workflowProbe, type WorkflowProbeStatus } from "./schema";
+import { assertSidecarReusable } from "./sidecar-reuse";
 
 type DBHandle = DB["db"];
 type WorkflowProbeResult = Omit<WorkflowProbeResultFrame, "type" | "requestId">;
@@ -107,28 +108,71 @@ export function createWorkflowProbeStore(db: DBHandle) {
       return tx === undefined ? db.transaction(bind) : bind(tx);
     },
 
+    /**
+     * Records the provisioner's acceptance of a probe. `sidecarId` names an
+     * existing sidecar the provisioner placed the probe on instead of starting
+     * the one bound to it; the unused bound identity is deleted. Throws
+     * `SidecarReuseRejectedError` when that sidecar cannot be reused, leaving
+     * the probe unchanged.
+     */
     async markProbing(args: {
       probeId: string;
+      sidecarId?: string;
       externalRef?: string;
       now?: Date;
     }): Promise<WorkflowProbe | null> {
-      const [updated] = await db
-        .update(workflowProbe)
-        .set({
-          status: "probing",
-          ...(args.externalRef !== undefined
-            ? { externalRef: args.externalRef }
-            : {}),
-          updatedAt: timestamp(args.now),
-        })
-        .where(
-          and(
-            eq(workflowProbe.id, args.probeId),
-            eq(workflowProbe.status, "provisioning"),
-          ),
-        )
-        .returning();
-      return updated ?? null;
+      return db.transaction(async (tx) => {
+        const condition = and(
+          eq(workflowProbe.id, args.probeId),
+          eq(workflowProbe.status, "provisioning"),
+        );
+        const [probe] = await tx
+          .select()
+          .from(workflowProbe)
+          .where(condition)
+          .for("update");
+        if (probe === undefined) return null;
+        const boundSidecarId = probe.sidecarId;
+        const reusedSidecarId =
+          args.sidecarId !== undefined && args.sidecarId !== boundSidecarId
+            ? args.sidecarId
+            : undefined;
+        if (reusedSidecarId !== undefined) {
+          await assertSidecarReusable(tx, {
+            sidecarId: reusedSidecarId,
+            binding: {
+              provisionerId: probe.provisionerId,
+              provisionerApiVersion: probe.provisionerApiVersion,
+              provisionerBindingFingerprint:
+                probe.provisionerBindingFingerprint,
+            },
+            placing: { allocationId: probe.id },
+          });
+        }
+        const [updated] = await tx
+          .update(workflowProbe)
+          .set({
+            status: "probing",
+            ...(reusedSidecarId !== undefined
+              ? { sidecarId: reusedSidecarId }
+              : {}),
+            ...(args.externalRef !== undefined
+              ? { externalRef: args.externalRef }
+              : {}),
+            updatedAt: timestamp(args.now),
+          })
+          .where(condition)
+          .returning();
+        if (updated === undefined) {
+          throw new Error(
+            `Workflow probe ${args.probeId} changed before it was marked probing`,
+          );
+        }
+        if (reusedSidecarId !== undefined && boundSidecarId !== null) {
+          await tx.delete(sidecar).where(eq(sidecar.id, boundSidecarId));
+        }
+        return updated;
+      });
     },
 
     async recordResult(

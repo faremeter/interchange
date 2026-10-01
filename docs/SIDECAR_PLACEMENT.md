@@ -82,6 +82,19 @@ type SidecarCapabilityDeclaration = {
 
 An omitted capability is unknown. It does not mean blocked. Provisioners decide
 internally whether to create, isolate, share, or reuse their backing capacity.
+To place a probe or deployment on a sidecar it already runs, a provisioner
+answers `ensure` with that sidecar's id instead of starting capacity for the
+identity the request carries. It counts its holds on a sidecar, one per
+allocation id it answered with that sidecar, releases one per `destroy`, and
+stops the sidecar once none remain; it keeps them durably, since the Hub never
+re-announces them after a restart. Its declared guarantees, such as
+`isolation:workload`, must still hold for work that shares a sidecar. The
+stock sidecar does not isolate the work it hosts from each other or from
+itself: every workflow child runs as the sidecar's OS user over its data
+directory, so work that shares one can read each other's keys and run state,
+and any child can read the sidecar's own environment, its Hub token and
+credential encryption key included. A provisioner that declares
+`isolation:workload` does not share a sidecar.
 
 ## Tenant policy
 

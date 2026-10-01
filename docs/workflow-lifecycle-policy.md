@@ -117,6 +117,14 @@ received is destroyed with the worker, so the recorded outcome then reflects onl
 accepted history, even if the worker had committed a different one. Enforcement resumes
 after a Hub outage; the deadline does not promise an exact destruction time.
 
+On a sidecar that also hosts other work, release removes only this deployment's
+hold on the sidecar. A connected sidecar is told to undeploy the deployment,
+which stops its child at once. An unreachable one keeps running it until it
+reconnects and the Hub undeploys it, or until its other deployments miss their
+reconnect deadline too and the provisioner stops the emptied sidecar. Destroying
+dedicated capacity guarantees the stop; on a shared sidecar the stop only takes
+effect once the sidecar hears from the Hub.
+
 `capacityRetention` starts when the top-level run becomes terminal. Here, failure
 retains the environment for 15 minutes; success and cancellation request
 immediate release. A child run finishing does not release the deployment's

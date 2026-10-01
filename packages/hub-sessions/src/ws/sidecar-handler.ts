@@ -1957,9 +1957,10 @@ export function createSidecarRouter(
     }
 
     // An announced address reclaims its route only for a deployment this
-    // sidecar currently hosts that is ready to route. Anything else is local
-    // state the Hub no longer authorizes here, such as a deployment that left
-    // this sidecar while it was disconnected.
+    // sidecar currently hosts whose first deploy has completed. Anything else
+    // is local state the Hub no longer authorizes here: a deployment that left
+    // this sidecar while it was disconnected, or one whose deploy is still
+    // uncertain.
     const reclaimed = new Map<
       string,
       Extract<SidecarAuthIdentity, { kind: "allocated" }>
@@ -1983,7 +1984,7 @@ export function createSidecarRouter(
       let reclaimable: boolean;
       try {
         reclaimable =
-          alreadyRouted || (await validateSidecarIdentity(binding, "routing"));
+          alreadyRouted || (await validateSidecarIdentity(binding, "reclaim"));
       } catch (err) {
         logger.error`Rejected registration from sidecar ${sidecarId}: cannot validate announced ${address}: ${err instanceof Error ? err.message : String(err)}`;
         handleClose(ws);

@@ -56,11 +56,6 @@ export const sidecarAllocation = pgTable(
   },
   (t) => [
     uniqueIndex("sidecar_allocation_anchor_run_idx").on(t.anchorRunId),
-    uniqueIndex("sidecar_allocation_active_sidecar_idx")
-      .on(t.sidecarId)
-      .where(
-        sql`${t.status} in ('provisioning', 'allocated', 'replacing', 'releasing', 'destroy_failed')`,
-      ),
     index("sidecar_allocation_sidecar_idx").on(t.sidecarId),
     index("sidecar_allocation_reconciliation_idx")
       .on(t.nextAttemptAt, t.createdAt)

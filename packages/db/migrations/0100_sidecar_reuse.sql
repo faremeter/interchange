@@ -1,0 +1,1 @@
+DROP INDEX "sidecar_allocation_active_sidecar_idx";

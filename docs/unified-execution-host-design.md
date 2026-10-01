@@ -494,12 +494,12 @@ lifecycle is the riskiest sub-item, and it is what the sandbox boundary
 > concrete `os-namespace` / `oci-container` implementations are not built yet.
 > The seam is slated
 > to be renamed to the boundary-neutral `ChildSpawner` / `ChildHandle` as part
-> of capability-based placement (see §3f). Whole-sidecar isolation has shipped
-> along a separate axis: an exclusive-placement deployment runs on a dedicated
-> sidecar the hub provisions through a pluggable provisioner (`ensure` /
-> `destroy`) contract with a reconciled allocation lifecycle — currently
-> fail-closed, since the in-tree build registers no concrete provisioner
-> backend.
+> of capability-based placement (see §3f). Sidecar placement has shipped
+> along a separate axis: every deployment runs on a sidecar the hub provisions
+> through a pluggable provisioner (`ensure` / `destroy`) contract with a
+> reconciled allocation lifecycle, and the provisioner decides whether that
+> sidecar is dedicated or shared — currently fail-closed, since the in-tree
+> build registers no concrete provisioner backend.
 
 The child is the isolation unit (§3d). The _mechanism_ that draws that
 boundary must be **pluggable**, not pinned to host subprocesses, because the
@@ -1138,7 +1138,7 @@ re-serviced.
 > (`WorkflowDefinition.isolation`, per-node `isolation`, the `SandboxBoundary`
 > strategy, and the isolation-domain multiplex key) is not built yet. See
 > §3d-bis and §3f for the refined capability-based-placement direction and the
-> shipped whole-sidecar exclusive-allocation substrate.
+> shipped provisioned sidecar-allocation substrate.
 
 - `WorkflowDefinition.isolation` (workflow-level) **and per-node `isolation`** on
   `StepPrimitive` / `ChildWorkflowPrimitive` / `MapPrimitive` and their

@@ -128,6 +128,7 @@ export type WorkflowAllocationServiceDeps = {
     | "isAllocatedWorkflowActive"
     | "retireAllocation"
     | "sendProbeToAllocation"
+    | "syncSidecar"
     | "waitForAllocatedSidecar"
   >;
   readonly hubWebSocketUrl: string;
@@ -608,6 +609,9 @@ export function createWorkflowAllocationService({
       }
       const probing = await probeStore.markProbing({
         probeId,
+        ...(ensured.sidecarId !== undefined
+          ? { sidecarId: ensured.sidecarId }
+          : {}),
         ...(ensured.externalRef !== undefined
           ? { externalRef: ensured.externalRef }
           : {}),
@@ -617,6 +621,11 @@ export function createWorkflowAllocationService({
         throw new Error(`Workflow probe ${probeId} changed after provisioning`);
       }
       probe = probing;
+      if (probing.sidecarId !== null) {
+        // A reused sidecar is already connected, so the probe joins its
+        // connection here rather than at registration.
+        await allocationRouter.syncSidecar(probing.sidecarId);
+      }
       await allocationRouter.waitForAllocatedSidecar(
         allocationTarget,
         connectTimeoutMs,
