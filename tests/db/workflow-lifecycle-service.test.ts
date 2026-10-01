@@ -1834,7 +1834,18 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await h.db.query.workflowRun.findFirst({
           where: eq(workflowRun.id, runId),
         }),
-      ).toMatchObject({ endedAt: failedAt, infrastructureFailedAt: null });
+      ).toMatchObject({
+        endedAt: failedAt,
+        infrastructureFailedAt: null,
+        failureCode: "sidecar_lost",
+        failureMessage: "The worker is gone",
+      });
+      // A run that ended on its own carries no reason from the Hub.
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, "run_child_done"),
+        }),
+      ).toMatchObject({ failureCode: null, failureMessage: null });
       expect(await pendingIds()).toEqual([]);
     });
 
@@ -1848,12 +1859,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await service().reconcileNext();
       expect(await runStates()).toEqual({ [runId]: "completed" });
       expect(
-        (
-          await h.db.query.workflowRun.findFirst({
-            where: eq(workflowRun.id, runId),
-          })
-        )?.infrastructureFailedAt,
-      ).toBeNull();
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, runId),
+        }),
+      ).toMatchObject({
+        infrastructureFailedAt: null,
+        failureCode: null,
+        failureMessage: null,
+      });
       expect(await pendingIds()).toEqual([]);
     });
 
@@ -1864,13 +1877,46 @@ describe.skipIf(!harnessDbEnvAvailable())(
         [runId]: "failed",
         run_child_live: "failed",
       });
-      expect(
-        (
+      for (const id of [runId, "run_child_live"]) {
+        expect(
           await h.db.query.workflowRun.findFirst({
-            where: eq(workflowRun.id, runId),
-          })
-        )?.infrastructureFailedAt,
-      ).toBeNull();
+            where: eq(workflowRun.id, id),
+          }),
+        ).toMatchObject({
+          infrastructureFailedAt: null,
+          failureCode: "sidecar_lost",
+          failureMessage: "The worker is gone",
+        });
+      }
+    });
+
+    test("a deferred capacity failure keeps its reason when the runs fail before it is applied", async () => {
+      await leavePending();
+      await loseCapacity(current);
+      const lifecycle = service();
+      expect(await lifecycle.releaseCapacity(tenantId, runId)).toBe("live");
+      expect(
+        await createSidecarAllocationStore(h.db).markDestroyFailed({
+          allocationId,
+          expectedGeneration: 2,
+          code: "destroy_failed",
+          message: "The worker could not be destroyed",
+          now: current,
+        }),
+      ).not.toBeNull();
+      expect(await runStates()).toEqual({ [runId]: "failed" });
+
+      current = new Date(current.getTime() + 1_000);
+      await lifecycle.reconcileNext();
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: eq(workflowRun.id, runId),
+        }),
+      ).toMatchObject({
+        infrastructureFailedAt: null,
+        failureCode: "sidecar_lost",
+        failureMessage: "The worker is gone",
+      });
     });
 
     test("a deferred capacity failure is applied after an explicit request reconciles history", async () => {

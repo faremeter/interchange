@@ -714,6 +714,9 @@ export interface RoutableRecord {
   readonly principalId: string | null;
   readonly kernelId: string | null;
   readonly sidecarId: string | null;
+  /** Why the Hub failed the deployment when it lost its capacity. */
+  readonly failureCode: string | null;
+  readonly failureMessage: string | null;
 }
 
 /**
@@ -735,6 +738,8 @@ export function runRowToRoutableRecord(
     principalId: string | null;
     kernelId: string | null;
     sidecarId: string | null;
+    failureCode: string | null;
+    failureMessage: string | null;
   },
   address: string,
 ): RoutableRecord {
@@ -751,6 +756,11 @@ export function runRowToRoutableRecord(
     principalId: run.principalId,
     kernelId: run.kernelId,
     sidecarId: run.sidecarId,
+    // A failure the Hub decided waits on history still being reconciled, and
+    // is dropped if that history ends the run first, so only a failed run
+    // reports it.
+    failureCode: run.status === "failed" ? run.failureCode : null,
+    failureMessage: run.status === "failed" ? run.failureMessage : null,
   };
 }
 
@@ -793,6 +803,8 @@ export async function findRoutableById(
       kernelId: workflowRun.kernelId,
       sidecarId: workflowRun.sidecarId,
       definitionId: workflowRun.definitionId,
+      failureCode: workflowRun.failureCode,
+      failureMessage: workflowRun.failureMessage,
     })
     .from(workflowRun)
     .where(and(eq(workflowRun.id, id), eq(workflowRun.tenantId, tenantId)))
