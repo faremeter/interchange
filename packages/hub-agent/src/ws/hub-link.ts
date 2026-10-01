@@ -154,14 +154,16 @@ const PACK_REJECT_REQUEST_TYPES: ReadonlySet<string> = new Set([
  * Classify an `applyAssetPack` failure message into a `repo.pack.reject` reason.
  * A structural rejection -- a symlink or submodule the checkout cannot reproduce
  * faithfully, or a mountPath that escapes -- is a `path_violation`, distinct from
- * `corrupt` (bad or incomplete bytes). The match is on the messages
- * `writeTreeToDisk` and the mountPath guard raise; a wording drift only reverts
- * the reason to `corrupt`, never misclassifies bytes as a path issue. The raw
- * message rides on the frame's `detail` regardless, so the operator always sees
- * the specific cause.
+ * `corrupt` (bad or incomplete bytes), and a workflow-run seed that would move
+ * history the sidecar already has is a `conflict`. The match is on the messages
+ * `writeTreeToDisk`, the mountPath guard and the seed guard raise; a wording
+ * drift only reverts the reason to `corrupt`, never misclassifies bytes as a
+ * path issue. The raw message rides on the frame's `detail` regardless, so the
+ * operator always sees the specific cause.
  */
 export function classifyAssetPackRejectReason(msg: string): PackRejectReason {
   if (msg.startsWith("sha_mismatch")) return "sha_mismatch";
+  if (msg.startsWith("workflow_run_restore_conflict")) return "conflict";
   if (
     msg.startsWith("signature_invalid") ||
     msg.startsWith("signature_unsigned")

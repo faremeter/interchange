@@ -1391,7 +1391,7 @@ If the sidecar disconnects before sending the ack, the hub removes the agent fro
 
 ### Partial Transfer Recovery
 
-If the WebSocket disconnects mid-transfer, no git state is corrupted: the receiver buffers chunks in memory and only unpacks on `repo.pack.done`. Allocation reconciliation retries initialization when a Hub-to-sidecar transfer is interrupted. For sidecar-to-Hub workflow-run packs, the sender re-drives unacknowledged commits after authenticated reconnect restores the route.
+If the WebSocket disconnects mid-transfer, no git state is corrupted: the receiver buffers chunks in memory and only unpacks on `repo.pack.done`. Allocation reconciliation retries initialization when a Hub-to-sidecar transfer is interrupted. The sidecar takes a workflow-run seed only for a branch it does not have yet or one already at the sent commit, so a retried first deploy applies it again, while a seed that would move a branch the sidecar already has is rejected rather than mixed with what an earlier copy left there. For sidecar-to-Hub workflow-run packs, the sender re-drives unacknowledged commits after authenticated reconnect restores the route.
 
 ### Reconnect Sequencing
 
