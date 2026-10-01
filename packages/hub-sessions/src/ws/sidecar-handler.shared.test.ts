@@ -479,10 +479,11 @@ describe("SidecarRouter shared sidecars", () => {
     expect(ws.closed).toBe(false);
   });
 
-  test("reconnect undeploys an announced deployment that is not routable", async () => {
+  test("reconnect undeploys a deployment whose first deploy never completed", async () => {
     const { router } = createSharedRouter([first, second], {
       validateSidecarIdentity: async (identity, use) =>
-        use !== "routing" || identity.allocationId !== second.allocationId,
+        (use !== "reclaim" && use !== "retention") ||
+        identity.allocationId !== second.allocationId,
     });
 
     const ws = await reconnect(router, [
@@ -490,7 +491,6 @@ describe("SidecarRouter shared sidecars", () => {
       second.workflowRunAddress,
     ]);
 
-    expect(ws.closed).toBe(false);
     expect(router.getRoutableAddresses()).toEqual([first.workflowRunAddress]);
     expect(framesOfType(ws, "agent.undeploy")).toEqual([
       {
@@ -500,6 +500,65 @@ describe("SidecarRouter shared sidecars", () => {
         reason: "The deployment is not current on this sidecar",
       },
     ]);
+    expect(await router.isAllocatedSidecarReady(target(second))).toBe(true);
+    expect(await router.isAllocatedWorkflowActive(target(second))).toBe(false);
+  });
+
+  test("keeps a retained copy unrouted until its allocation leaves", async () => {
+    const { router } = createSharedRouter([first, second], {
+      validateSidecarIdentity: async (identity, use) =>
+        use !== "reclaim" || identity.allocationId !== first.allocationId,
+    });
+
+    const ws = await reconnect(router, [
+      first.workflowRunAddress,
+      second.workflowRunAddress,
+    ]);
+
+    // Its local state is kept for the deployment's retention.
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+    expect(router.getRoutableAddresses()).toEqual([second.workflowRunAddress]);
+
+    router.fenceAllocation(first.allocationId, 2);
+
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([
+      {
+        type: "agent.undeploy",
+        requestId: expect.any(String),
+        agentAddress: first.workflowRunAddress,
+        reason: "Generation 2 superseded it",
+      },
+    ]);
+  });
+
+  test("undeploys a retained copy whose allocation leaves while the sidecar registers", async () => {
+    let release = (): void => undefined;
+    const { router } = createSharedRouter([first, second], {
+      validateSidecarIdentity: async (identity, use) => {
+        if (identity.allocationId !== first.allocationId) return true;
+        if (use === "reclaim") return false;
+        if (use === "retention") release();
+        return true;
+      },
+    });
+    release = () => {
+      router.fenceAllocation(first.allocationId, 2);
+    };
+
+    const ws = await reconnect(router, [
+      first.workflowRunAddress,
+      second.workflowRunAddress,
+    ]);
+
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([
+      {
+        type: "agent.undeploy",
+        requestId: expect.any(String),
+        agentAddress: first.workflowRunAddress,
+        reason: "The deployment is not current on this sidecar",
+      },
+    ]);
+    expect(router.getRoutableAddresses()).toEqual([second.workflowRunAddress]);
   });
 
   test("a sidecar reconnecting on a new socket takes every allocation along", async () => {
@@ -652,6 +711,102 @@ describe("SidecarRouter shared sidecars", () => {
 });
 
 describe("SidecarRouter work placed while a shared sidecar connects", () => {
+  test.each(["queued", "reading"])(
+    "a cancelled %s sync cannot attach a late probe binding",
+    async (phase) => {
+      const entered = Promise.withResolvers<undefined>();
+      const release = Promise.withResolvers<undefined>();
+      let holding = false;
+      let reads = 0;
+      const { router, hosted } = createSharedRouter([first], {
+        async resolveSidecarBindings() {
+          reads += 1;
+          const snapshot = hosted.bindings;
+          if (holding) {
+            entered.resolve(undefined);
+            await release.promise;
+          }
+          return [...snapshot];
+        },
+      });
+      const ws = await reconnect(router, [first.workflowRunAddress]);
+      const controller = new AbortController();
+      const cancelled = new Error("Probe connection expired");
+      holding = true;
+      const preceding =
+        phase === "queued" ? router.syncSidecar(SIDECAR) : undefined;
+      if (preceding !== undefined) await entered.promise;
+      hosted.bindings = [first, probe];
+      router.fenceAllocation(probe.allocationId, probe.generation);
+      const syncing = router
+        .syncSidecar(SIDECAR, controller.signal)
+        .catch((error: unknown) => error);
+      try {
+        await entered.promise;
+        controller.abort(cancelled);
+        release.resolve(undefined);
+        await preceding;
+        expect(await syncing).toBe(cancelled);
+        expect(reads).toBe(2);
+        expect(await router.isAllocatedSidecarReady(target(probe))).toBe(false);
+        expect(await router.isAllocatedSidecarReady(target(first))).toBe(true);
+        expect(router.getRoutableAddresses()).toEqual([
+          first.workflowRunAddress,
+        ]);
+        expect(ws.closed).toBe(false);
+      } finally {
+        release.resolve(undefined);
+        await Promise.allSettled([syncing, preceding]);
+        router.handleClose(ws);
+      }
+    },
+  );
+
+  test("cancels a readiness waiter while its notification validation is pending", async () => {
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<boolean>();
+    const { router, hosted } = createSharedRouter([first], {
+      async validateSidecarIdentity(identity, use) {
+        if (
+          identity.allocationId === probe.allocationId &&
+          use === "readiness"
+        ) {
+          entered.resolve(undefined);
+          return release.promise;
+        }
+        return true;
+      },
+    });
+    const ws = await reconnect(router, [first.workflowRunAddress]);
+    router.fenceAllocation(probe.allocationId, probe.generation);
+    const controller = new AbortController();
+    const cancelled = new Error("Probe connection expired");
+    const waiting = router
+      .waitForAllocatedSidecar(
+        target(probe),
+        60_000,
+        undefined,
+        controller.signal,
+      )
+      .catch((error: unknown) => error);
+    hosted.bindings = [first, probe];
+    const syncing = router.syncSidecar(SIDECAR);
+    try {
+      await entered.promise;
+      controller.abort(cancelled);
+      expect(await waiting).toBe(cancelled);
+      release.resolve(true);
+      await syncing;
+      expect(await router.isAllocatedSidecarReady(target(probe))).toBe(true);
+      expect(ws.closed).toBe(false);
+    } finally {
+      release.resolve(true);
+      controller.abort(cancelled);
+      await Promise.allSettled([waiting, syncing]);
+      router.handleClose(ws);
+    }
+  });
+
   test("attaches a placement committed while the handshake authenticates", async () => {
     const authenticated = Promise.withResolvers<boolean>();
     const { router, hosted } = createSharedRouter([first], {

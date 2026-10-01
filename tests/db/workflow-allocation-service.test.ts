@@ -4,6 +4,7 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 
@@ -226,6 +227,137 @@ describe.skipIf(!harnessDbEnvAvailable())(
       } as const;
     }
 
+    test.each(["synchronization", "readiness"])(
+      "releases a probe when its connection deadline expires during %s",
+      async (phase) => {
+        const probeId = `sal-connection-${phase}`;
+        const anchorRunId = `run-connection-${phase}`;
+        const entered = Promise.withResolvers<undefined>();
+        const held = Promise.withResolvers<undefined>();
+        const signals: AbortSignal[] = [];
+        const destroyCalls: unknown[] = [];
+        const retireCalls: unknown[] = [];
+        let readinessCalls = 0;
+        let installCalls = 0;
+        const provisioner = makeProvisioner({
+          id: "connection-deadline",
+          ensureCalls: [],
+          destroyCalls,
+        });
+        const connectTimeoutMs = 23_456;
+        const deadlines: (() => void)[] = [];
+        const scheduleTimeout = globalThis.setTimeout;
+        const timerSpy = spyOn(globalThis, "setTimeout").mockImplementation(
+          Object.assign(
+            <TArgs extends unknown[]>(
+              callback: (...args: TArgs) => void,
+              delay?: number,
+              ...args: TArgs
+            ) => {
+              const timer = scheduleTimeout(callback, delay, ...args);
+              if (delay === connectTimeoutMs) {
+                clearTimeout(timer);
+                deadlines.push(() => {
+                  callback(...args);
+                });
+              }
+              return timer;
+            },
+            { __promisify__: scheduleTimeout.__promisify__ },
+          ),
+        );
+        const service = createWorkflowAllocationService({
+          db: h.db,
+          ...sharedPluginPools([provisioner]),
+          preparedDeployer: {
+            installAndApproveWorkflowSource: async () => {
+              installCalls += 1;
+              throw new Error("A timed-out connection must not start probing");
+            },
+            deployPreparedCodeSourcedWorkflow: async (params) => ({
+              anchorRunId: params.anchorRunId,
+              deploymentAddress: params.agentAddress,
+              publicKey: "public-key",
+            }),
+          },
+          credentialCipher: CIPHER,
+          allocationRouter: {
+            ...createSidecarRouter({
+              authenticateSidecar: async () => null,
+              validateSidecarIdentity: async () => false,
+              resolveSidecarBindings: async () => [],
+              withExecutableWorkflowRun: async (_target, send) => send(),
+            }),
+            fenceAllocation: () => undefined,
+            retireAllocation: (target) => retireCalls.push(target),
+            syncSidecar(_sidecarId, signal) {
+              if (signal !== undefined) signals.push(signal);
+              if (phase !== "synchronization") return Promise.resolve();
+              entered.resolve(undefined);
+              return held.promise;
+            },
+            waitForAllocatedSidecar(_target, _timeout, _onValidation, signal) {
+              readinessCalls += 1;
+              if (signal !== undefined) signals.push(signal);
+              entered.resolve(undefined);
+              return held.promise;
+            },
+            sendProbeToAllocation: async () => probeResult(),
+            isAllocatedWorkflowActive: async () => false,
+            detachAllocation: () => undefined,
+          },
+          hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+          defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+          createAllocationId: () => probeId,
+          createSidecarId: () => `sc-connection-${phase}`,
+          createToken: () => "probe-token",
+          connectTimeoutMs,
+        });
+        const preparing = service
+          .prepareProvisionedDeployment(prepareArgs(anchorRunId))
+          .catch((error: unknown) => error);
+        try {
+          await Promise.race([entered.promise, preparing]);
+          // The same timer covers both phases; readiness gets no fresh budget.
+          expect(deadlines).toHaveLength(1);
+          expect(signals).toHaveLength(phase === "synchronization" ? 1 : 2);
+          expect(new Set(signals).size).toBe(1);
+          const expire = deadlines[0];
+          if (expire === undefined) throw new Error("No connection deadline");
+          expire();
+          expect(await preparing).toMatchObject({
+            name: "SidecarOperationTimeoutError",
+            message: `Probe connection timed out after ${String(connectTimeoutMs)}ms`,
+          });
+          expect(signals.every((signal) => signal.aborted)).toBe(true);
+          expect(destroyCalls).toHaveLength(1);
+          expect(retireCalls).toEqual([
+            { allocationId: probeId, generation: 0 },
+          ]);
+          expect(
+            await createWorkflowProbeStore(h.db).get(probeId),
+          ).toMatchObject({
+            status: "failed",
+            failureCode: "probe_failed",
+          });
+          expect(
+            await createSidecarAllocationStore(h.db).findByAnchorRunId(
+              anchorRunId,
+            ),
+          ).toBeNull();
+
+          held.resolve(undefined);
+          await held.promise;
+          expect(readinessCalls).toBe(phase === "synchronization" ? 0 : 1);
+          expect(installCalls).toBe(0);
+        } finally {
+          held.resolve(undefined);
+          await preparing;
+          timerSpy.mockRestore();
+        }
+      },
+    );
+
     test("persists a probe result and adopts matching provisioned capacity", async () => {
       const ensureCalls: unknown[] = [];
       const destroyCalls: unknown[] = [];
@@ -259,6 +391,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
           detachAllocation: (target) => detachCalls.push(target),
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -341,6 +474,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
           detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -398,6 +532,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             return false;
           },
           detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -563,6 +698,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
           detachAllocation: (target) => detachCalls.push(target),
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -640,6 +776,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
           detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -736,6 +873,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
           detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -817,6 +955,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
           detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -893,6 +1032,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
           detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
@@ -952,6 +1092,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             sendProbeToAllocation: async () => probeResult(),
             isAllocatedWorkflowActive: async () => false,
             detachAllocation: () => undefined,
+            syncSidecar: async () => undefined,
           },
           hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
           defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,

@@ -143,6 +143,11 @@ export const workflowRun = pgTable(
     index("workflow_run_infrastructure_failed_idx")
       .on(t.id)
       .where(sql`${t.infrastructureFailedAt} is not null`),
+    // Deleting a sidecar nulls this column in every run that names it, so
+    // without an index each delete walks every run.
+    index("workflow_run_sidecar_idx")
+      .on(t.sidecarId)
+      .where(sql`${t.sidecarId} is not null`),
   ],
 );
 

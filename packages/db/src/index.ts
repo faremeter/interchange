@@ -96,6 +96,7 @@ export {
   type SidecarAllocation,
   type SidecarAllocationStore,
 } from "./sidecar-allocation-store";
+export { SidecarReuseRejectedError } from "./sidecar-reuse";
 export {
   createWorkflowProbeStore,
   type BindWorkflowProbeSidecarArgs,
