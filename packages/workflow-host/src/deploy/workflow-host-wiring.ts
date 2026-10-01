@@ -197,8 +197,8 @@ async function isExistingDir(dir: string): Promise<boolean> {
  * each tarball's bytes at materialization. Derived purely from the pin, so the
  * deploy path and the boot-time restore path (which has only the pin, no
  * re-delivery) resolve the identical mounts. A missing mount is a broken
- * deployment the hub must re-drive, so it fails loud rather than materializing
- * against an absent store.
+ * deployment that cannot run without it, so it fails loud rather than
+ * materializing against an absent store.
  */
 export async function resolveDeploymentAssetMounts(
   dataDir: string,
@@ -220,7 +220,7 @@ export async function resolveDeploymentAssetMounts(
     const mountDir = pathJoin(assetRoot, mountPath);
     if (!(await isExistingDir(mountDir))) {
       throw new Error(
-        `resolveDeploymentAssetMounts: source asset ${JSON.stringify(assetId)} for deployment ${deploymentId} is not present in the durable store at ${mountDir}; the deployment must be re-driven from the hub`,
+        `resolveDeploymentAssetMounts: source asset ${JSON.stringify(assetId)} for deployment ${deploymentId} is not present in the durable store at ${mountDir}; the deployment cannot run without it`,
       );
     }
   }
@@ -229,7 +229,7 @@ export async function resolveDeploymentAssetMounts(
   for (const [assetId, gitDir] of gitDirs) {
     if (!(await isExistingDir(gitDir))) {
       throw new Error(
-        `resolveDeploymentAssetMounts: source asset ${JSON.stringify(assetId)} for deployment ${deploymentId} has no indexed git store at ${gitDir}; the deployment must be re-driven from the hub`,
+        `resolveDeploymentAssetMounts: source asset ${JSON.stringify(assetId)} for deployment ${deploymentId} has no indexed git store at ${gitDir}; the deployment cannot run without it`,
       );
     }
   }
@@ -2345,9 +2345,9 @@ export function createSidecarDeployRouter<THost, TRegistries>(deps: {
       // left behind. Body sources now ride sealed in the run record and reach
       // the child through the spawn env, so the `assets/workflow/<bodyRef>/`
       // staging is retired. A deployment first seen on this build never wrote
-      // one (the rm is a no-op); a redeploy across the upgrade -- or the reconnect
-      // re-push -- reaches here with its old world-readable plaintext file still
-      // on disk and removes it now that the record carries the sealed copy.
+      // one (the rm is a no-op); a redeploy across the upgrade reaches here with
+      // its old world-readable plaintext file still on disk and removes it now
+      // that the record carries the sealed copy.
       for (const referenced of projection.referencedDefinitions ?? []) {
         await sweepLegacyBodySources(dataDir, referenced.definition.id);
       }

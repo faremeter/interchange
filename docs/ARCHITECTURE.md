@@ -76,9 +76,9 @@ Each agent on a sidecar has a single git repository that contains both the deplo
 - `deploy/` — hub-managed content (skills, prompt, configuration). The hub assembles this tree from the agent's source repository and any referenced skill libraries via subtree merge, producing a single flat tree with no submodule metadata.
 - `state/` — sidecar-managed content (conversation context, audit records). The sidecar commits here during normal operation.
 
-Path disjointness is enforced: the hub only writes commits that modify `deploy/` paths, the sidecar only writes commits that modify `state/` paths. This guarantees conflict-free merges when the hub pushes new deploy versions to a running agent.
+Path disjointness is enforced: the hub only writes commits that modify `deploy/` paths, the sidecar only writes commits that modify `state/` paths, so the two never conflict.
 
-The git DAG encodes provenance. State commits on the sidecar descend from the initial repository commit, and the `refs/heads/deploy` ref tracks the latest deploy version received from the hub. On redeploy, the sidecar force-checks-out the new deploy tree — path disjointness between `deploy/` and `state/` makes merge unnecessary and the simpler operation is correct.
+The git DAG encodes provenance. State commits on the sidecar descend from the initial repository commit, and the `refs/heads/deploy` ref tracks the deploy version received from the hub. A deployment keeps that deploy tree for its life; a new deploy version means a new deployment.
 
 Repository organization on the hub is flexible — a single repository may contain definitions for multiple agents within a tenant, or agents may have dedicated repositories depending on operational needs. The assembly step normalizes any source layout into the standard `deploy/` tree structure before pushing to sidecars.
 
@@ -228,7 +228,7 @@ A deployment owns one addressable top-level run. Its stable run id is the deploy
 
 Placement can only be strengthened. Each ancestor policy is enforced independently, so a child tenant or workflow cannot override it with a narrower exception. The final provisioner binding is fixed after the workflow probe exposes its capability requirements. If no configured provisioner satisfies the effective policy, deployment fails closed and the probe allocation is released.
 
-A provisioned deployment never moves to new capacity. When its worker is lost, the Hub fails the deployment's live runs and releases its allocation: Hub-owned state does not include arbitrary files created in the sidecar or its isolation containers, and a worker that is only cut off from the Hub may still be running the deployment.
+A provisioned deployment never moves to new capacity. When its worker is lost, the Hub fails the deployment's live runs and releases its allocation: Hub-owned state does not include arbitrary files created in the sidecar or its isolation containers, and a worker that is only cut off from the Hub may still be running the deployment. A deployment its reconnected worker no longer holds is failed the same way rather than deployed again.
 
 Tenant and installed-workflow lifecycle policies set deployment lifetime and capacity retention. The Hub saves the effective policy at deployment creation, enforces deadlines, and releases terminal allocations through the provisioner. Provisioners own backing-capacity reuse policy. See [Workflow lifetime and capacity retention](./workflow-lifecycle-policy.md) for inheritance, cancellation, and release semantics.
 

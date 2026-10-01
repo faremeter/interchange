@@ -214,10 +214,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           expect(ws.sent).toEqual(before);
           expect(router.getRoutableAddresses()).toEqual([]);
           expect(
-            await allocations.clearUnsentInitialization({
-              ...initialization,
-              previousPublicKey: null,
-            }),
+            await allocations.clearUnsentInitialization(initialization),
           ).toBe(true);
         } finally {
           release.resolve(undefined);

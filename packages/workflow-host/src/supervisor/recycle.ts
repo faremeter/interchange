@@ -5,19 +5,13 @@
 // Recycle is the supervisor's "same deploy tree, fresh process" path.
 // It tears the existing workflow-process child down and stands a new
 // one up against the SAME deploy tree (same materialized source
-// closure, same per-step credential repos). It is STRICTLY ORTHOGONAL
-// TO REDEPLOY:
-//
-//   - Recycle  = same deploy tree, fresh process.
-//   - Redeploy = new deploy tree.
+// closure, same per-step credential repos). A deployment keeps its
+// deploy tree for its life; a different tree means a new deployment.
 //
 // Recycle does not refetch the deploy tree, does not consult an
-// updated workflow definition, does not re-resolve agents. If a
-// deploy-tree change is needed the host runs redeploy, which is a
-// different code path with different authorization and a different
-// rollback shape. The recycle module must never grow a "maybe also
-// refetch the deploy tree" mode -- that would erase the orthogonality
-// and let a recycle silently turn into a redeploy.
+// updated workflow definition, does not re-resolve agents. The recycle
+// module must never grow a "maybe also refetch the deploy tree" mode --
+// that would let a recycle silently change what a deployment runs.
 //
 // Six-step sequence (locked):
 //
