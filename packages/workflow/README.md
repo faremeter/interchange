@@ -118,12 +118,16 @@ A selector that names a path or a field fails the run rather than
 resolving to a hole. A `from` path throws on a missing key, an
 out-of-range index, and an in-range index a sparse array leaves
 unfilled; the one hole it admits is an own key whose value is
-`undefined`. The runtime canonicalizes a step input that is
-wholly `undefined` to `null`, and that check does not descend,
-so a hole nested inside a resolved object survives it. An agent
-step's two sinks agree because both see the JSON form, where the
-key is absent; a handler that receives the input object by
-reference sees the key present. A `project` throws when the
+`undefined`. The `step`, `action`, and `loop` runners canonicalize
+an input that is wholly `undefined` to `null`, and that check does
+not descend, so a hole nested inside a resolved object survives it.
+The `childWorkflow` runner does not canonicalize at all: it tests
+whether the input selector is present, not what the selector
+resolved to, so a hole there spawns the child with an `undefined`
+input while the parent's `StepStarted` value loses the key in
+serialization. An agent step's two sinks agree because both see the
+JSON form, where the key is absent; a handler that receives the input
+object by reference sees the key present. A `project` throws when the
 source object does not carry a listed field as an own property, and
 when the own value of a listed field is `undefined`. Neither shape
 reads an inherited member, so a path segment or a field named `toString`,
