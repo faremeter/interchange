@@ -73,6 +73,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
         sidecarId: "sidecar-ack",
         status: "allocated",
         generation,

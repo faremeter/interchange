@@ -102,6 +102,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test:1",
+        maxDisconnectedMs: 900_000,
       });
     });
 

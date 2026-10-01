@@ -74,6 +74,8 @@ export type SidecarAllocation = {
   readonly ensureAttempts: number;
   readonly destroyAttempts: number;
   readonly connectDeadline?: Date;
+  /** How long the sidecar may stay disconnected before the Hub fails it. */
+  readonly maxDisconnectedMs: number;
   readonly failureCode?: string;
   readonly failureMessage?: string;
   readonly createdAt: Date;
@@ -87,6 +89,7 @@ export type CreatePendingSidecarAllocationArgs = {
   readonly provisionerId: string;
   readonly provisionerApiVersion: 1;
   readonly provisionerBindingFingerprint: string;
+  readonly maxDisconnectedMs: number;
   readonly now?: Date;
 };
 
@@ -222,14 +225,18 @@ export type MarkSidecarConnectionReadyArgs = {
 export type MarkSidecarConnectionLostArgs = {
   readonly allocationId: string;
   readonly generation: number;
-  readonly connectDeadline: Date;
   readonly now?: Date;
 };
+
+export type ScheduleSidecarReconnectAfterHubStartArgs =
+  MarkSidecarConnectionLostArgs & {
+    /** Hub start plus the window a sidecar gets to connect the first time. */
+    readonly firstConnectDeadline: Date;
+  };
 
 export type ScheduleSidecarReconnectIfUnscheduledArgs = {
   readonly allocationId: string;
   readonly generation: number;
-  readonly connectDeadline: Date;
   readonly now?: Date;
 };
 
@@ -291,6 +298,7 @@ function parseSidecarAllocationRow(
     ...(row.connectDeadline !== null
       ? { connectDeadline: row.connectDeadline }
       : {}),
+    maxDisconnectedMs: row.maxDisconnectedMs,
     ...(row.failureCode !== null ? { failureCode: row.failureCode } : {}),
     ...(row.failureMessage !== null
       ? { failureMessage: row.failureMessage }
@@ -302,6 +310,16 @@ function parseSidecarAllocationRow(
 
 function databaseTimestamp(override?: Date) {
   return override ?? sql`now()`;
+}
+
+// When a sidecar that lost its connection at `now` has stayed away for as
+// long as its allocation allows.
+function disconnectDeadline(now?: Date) {
+  const start =
+    now === undefined
+      ? sql`now()`
+      : sql`${sql.param(now, sidecarAllocation.connectDeadline)}::timestamp`;
+  return sql`${start} + ${sidecarAllocation.maxDisconnectedMs} * interval '1 millisecond'`;
 }
 
 function leaseCondition(expectedLeaseId?: string) {
@@ -623,6 +641,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           ? { externalRef: args.externalRef }
           : {}),
         connectDeadline: args.connectDeadline,
+        maxDisconnectedMs: args.maxDisconnectedMs,
         nextAttemptAt: createdAt,
         createdAt,
         updatedAt: createdAt,
@@ -730,6 +749,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
           provisionerBindingFingerprint: args.provisionerBindingFingerprint,
           status: "pending",
           generation: 0,
+          maxDisconnectedMs: args.maxDisconnectedMs,
           nextAttemptAt: now,
           createdAt: now,
           updatedAt: now,
@@ -1434,11 +1454,43 @@ export function createSidecarAllocationStore(db: DBHandle) {
     async markConnectionLost(
       args: MarkSidecarConnectionLostArgs,
     ): Promise<SidecarAllocation | null> {
+      const connectDeadline = disconnectDeadline(args.now);
       const [updated] = await db
         .update(sidecarAllocation)
         .set({
-          connectDeadline: args.connectDeadline,
-          nextAttemptAt: args.connectDeadline,
+          connectDeadline,
+          nextAttemptAt: connectDeadline,
+          reconciliationLeaseId: null,
+          reconciliationLeaseExpiresAt: null,
+          updatedAt: databaseTimestamp(args.now),
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.status, "allocated"),
+            eq(sidecarAllocation.generation, args.generation),
+            eq(sidecarAllocation.ensureAcceptedGeneration, args.generation),
+          ),
+        )
+        .returning();
+      return updated === undefined ? null : parseSidecarAllocationRow(updated);
+    },
+
+    // No sidecar could connect while the Hub was down, so every generation gets
+    // a fresh window from Hub start: its whole disconnect limit once its first
+    // deploy completed, and the first-connect window until then, unless the
+    // deadline it already has is later.
+    async scheduleReconnectAfterHubStart(
+      args: ScheduleSidecarReconnectAfterHubStartArgs,
+    ): Promise<SidecarAllocation | null> {
+      const restarted = disconnectDeadline(args.now);
+      const firstConnect = sql`${sql.param(args.firstConnectDeadline, sidecarAllocation.connectDeadline)}::timestamp`;
+      const connectDeadline = sql`case when exists (select 1 from ${workflowRun} where ${workflowRun.id} = ${sidecarAllocation.anchorRunId} and ${workflowRun.publicKey} is not null) then ${restarted} else greatest(${sidecarAllocation.connectDeadline}, ${firstConnect}) end`;
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          connectDeadline,
+          nextAttemptAt: connectDeadline,
           reconciliationLeaseId: null,
           reconciliationLeaseExpiresAt: null,
           updatedAt: databaseTimestamp(args.now),
@@ -1458,10 +1510,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
     async scheduleReconnectIfUnscheduled(
       args: ScheduleSidecarReconnectIfUnscheduledArgs,
     ): Promise<SidecarAllocation | null> {
-      const connectDeadline = sql.param(
-        args.connectDeadline,
-        sidecarAllocation.connectDeadline,
-      );
+      const connectDeadline = disconnectDeadline(args.now);
       const [updated] = await db
         .update(sidecarAllocation)
         .set({

@@ -1,10 +1,11 @@
 # Workflow lifetime and capacity retention
 
 A lifecycle policy releases capacity when a workflow finishes, keeps a failed
-environment around for inspection, and stops deployments that have lived too
-long. Tenant and installed-workflow policy decide when those things happen.
-These settings belong to the deployment configuration, outside the workflow's
-executable definition.
+environment around for inspection, stops deployments that have lived too long,
+and fails deployments whose sidecar has been out of contact too long. Tenant
+and installed-workflow policy decide when those things happen. These settings
+belong to the deployment configuration, outside the workflow's executable
+definition.
 
 The policy shape, shown as TypeScript:
 
@@ -13,6 +14,7 @@ type LifecycleDuration = `${number}${"s" | "m" | "h" | "d"}`;
 
 type WorkflowLifecyclePolicy = {
   maxLifetime?: LifecycleDuration;
+  maxDisconnected?: LifecycleDuration;
   capacityRetention?: {
     completed?: LifecycleDuration;
     failed?: LifecycleDuration;
@@ -24,7 +26,7 @@ type WorkflowLifecyclePolicy = {
 Both tenants and installed workflows accept a `lifecycle` field with this
 shape. The API validates durations as non-negative whole numbers with a unit,
 at most `36500d` (the same limit applies in seconds, minutes, or hours);
-`maxLifetime` must be greater than zero. This fixed range leaves headroom when
+`maxLifetime` and `maxDisconnected` must be greater than zero. This fixed range leaves headroom when
 a duration is added to a deployment or terminal timestamp. Omit a field to
 inherit it, or to take the platform default when it is absent throughout the
 hierarchy.
@@ -35,6 +37,7 @@ A tenant config can contain:
 {
   "lifecycle": {
     "maxLifetime": "24h",
+    "maxDisconnected": "30m",
     "capacityRetention": {
       "completed": "0s",
       "failed": "1h",
@@ -85,11 +88,12 @@ below the tenant that sets them: a deployment's saved policy reflects them, and
 an edit that exceeds one is rejected. A field absent throughout the
 hierarchy takes the platform default. The Hub reads each default from an
 optional environment variable at startup and refuses to start if one is not a
-valid duration or the maximum lifetime is zero:
+valid duration or the maximum lifetime or disconnect limit is zero:
 
 | Field                         | Environment variable                   | Default |
 | ----------------------------- | -------------------------------------- | ------- |
 | `maxLifetime`                 | `WORKFLOW_DEFAULT_MAX_LIFETIME`        | `7d`    |
+| `maxDisconnected`             | `WORKFLOW_DEFAULT_MAX_DISCONNECTED`    | `15m`   |
 | `capacityRetention.completed` | `WORKFLOW_DEFAULT_RETENTION_COMPLETED` | `30m`   |
 | `capacityRetention.failed`    | `WORKFLOW_DEFAULT_RETENTION_FAILED`    | `24h`   |
 | `capacityRetention.cancelled` | `WORKFLOW_DEFAULT_RETENTION_CANCELLED` | `1h`    |
@@ -118,13 +122,28 @@ received is destroyed with the worker, so the recorded outcome then reflects onl
 accepted history, even if the worker had committed a different one. Enforcement resumes
 after a Hub outage; the deadline does not promise an exact destruction time.
 
+`maxDisconnected` bounds how long a deployment's sidecar may be out of contact
+with the Hub. The clock starts when its connection drops and starts again when
+the Hub starts, since no sidecar can reconnect while the Hub is down; at a Hub
+start, a deployment whose first deploy has not completed gets at least the
+Hub's first-connect window. A sidecar that reconnects in time keeps its
+deployment. Past the limit the Hub fails the deployment's live runs as an
+infrastructure loss and releases its capacity at once. A sidecar that comes
+back after that has its copy undeployed, and the history it pushes is refused
+because its allocation was released, so whatever it did while away is
+discarded. A restarting sidecar connects only after it has
+restored its deployments, 8 at a time; when every workflow child takes its
+whole 30-second ready timeout, a full one spends about 8 minutes on those
+timeouts alone, so a shorter limit can fail the deployments of a sidecar that
+is only restarting.
+
 On a sidecar that also hosts other work, release removes only this deployment's
 hold on the sidecar. A connected sidecar is told to undeploy the deployment,
 which stops its child at once. An unreachable one keeps running it until it
-reconnects and the Hub undeploys it, or until its other deployments miss their
-reconnect deadline too and the provisioner stops the emptied sidecar. Destroying
-dedicated capacity guarantees the stop; on a shared sidecar the stop only takes
-effect once the sidecar hears from the Hub.
+reconnects and the Hub undeploys it, or until its other deployments also stay
+away past their disconnect limits and the provisioner stops the emptied
+sidecar. Destroying dedicated capacity guarantees the stop; on a shared sidecar
+the stop only takes effect once the sidecar hears from the Hub.
 
 `capacityRetention` starts when the top-level run becomes terminal. Here, failure
 retains the environment for 15 minutes; success and cancellation request

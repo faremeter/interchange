@@ -732,6 +732,8 @@ const DEFAULT_MAIL_HOLD_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_PING_TIMEOUT_MS = 60_000;
 const DEFAULT_MAIL_ACK_RETRY_INTERVAL_MS = 10_000;
 const DEFAULT_MAIL_ACK_MAX_RETRIES = 5;
+// A longer `setTimeout` fires at once, and a disconnect limit can be longer.
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 const MalformedPackDone = type({
   type: "'repo.pack.done'",
@@ -3787,6 +3789,7 @@ export function createSidecarRouter(
       );
     }
 
+    const waitMs = Math.min(timeoutMs, MAX_TIMER_DELAY_MS);
     await new Promise<void>((resolve, reject) => {
       const waiter: AllocationWaiter = {
         generation: target.generation,
@@ -3811,7 +3814,7 @@ export function createSidecarRouter(
                     `Timed out waiting for allocated sidecar ${target.allocationId} generation ${String(target.generation)}`,
                   )),
           );
-        }, timeoutMs),
+        }, waitMs),
         ...(validationFailure !== undefined ? { validationFailure } : {}),
       };
       let waiters = allocationWaiters.get(target.allocationId);

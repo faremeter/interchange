@@ -53,6 +53,7 @@ import {
 
 const TEST_DEFAULT_LIFECYCLE_POLICY: ResolvedWorkflowLifecyclePolicy = {
   maxLifetime: "7d",
+  maxDisconnected: "15m",
   capacityRetention: { completed: "30m", failed: "24h", cancelled: "1h" },
 };
 
@@ -293,17 +294,23 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const allocation = await createSidecarAllocationStore(
         h.db,
       ).findByAnchorRunId("run-probe-adopted");
+      // The allocation carries the deployment's disconnect limit.
       expect(allocation).toMatchObject({
         id: "sal-probe-adopted",
         status: "allocated",
         ensureAcceptedGeneration: 0,
         sidecarId: "sc-probe-adopted",
+        maxDisconnectedMs: 900_000,
       });
       expect(
         await h.db.query.workflowRun.findFirst({
           where: eq(workflowRun.id, "run-probe-adopted"),
         }),
-      ).toMatchObject({ status: "deployed", definitionId: DEFINITION_ID });
+      ).toMatchObject({
+        status: "deployed",
+        definitionId: DEFINITION_ID,
+        lifecyclePolicy: { maxDisconnected: "15m" },
+      });
       expect(
         await createWorkflowRunLaunchSpecStore(h.db).get("run-probe-adopted"),
       ).toMatchObject({

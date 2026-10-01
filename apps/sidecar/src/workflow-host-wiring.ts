@@ -142,7 +142,7 @@ export function deriveDeploymentId(agentAddress: string): string {
 
 // How many deployments a boot restores at once. More starve each other past
 // the 30-second ready timeout on small hosts, and with this many a full sidecar
-// still connects within about 8 minutes.
+// still connects within about 8 minutes, inside the default disconnect limit.
 const RESTORE_CONCURRENCY = 8;
 
 /**

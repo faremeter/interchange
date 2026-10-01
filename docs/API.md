@@ -1577,7 +1577,7 @@ Source: packages/types/src/me.ts
 Source: packages/types/src/observability.ts
 
 ### TenantResponse
-`{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, parentId?: string | null }`
+`{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, parentId?: string | null }`
 Source: packages/types/src/tenants.ts
 
 ### TraceResponse
@@ -1645,7 +1645,7 @@ Source: packages/types/src/providers.ts
 Source: packages/types/src/roles.ts
 
 ### UpdateTenant
-`{ config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject } | null, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } | null }, name?: string }`
+`{ config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject } | null, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } | null }, name?: string }`
 Source: packages/types/src/tenants.ts
 
 ### UpdateWallet
@@ -1655,7 +1655,7 @@ Source: packages/types/src/wallets.ts
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
 
 ### UpdateWorkflowDefinitionLifecycle
-`{ lifecycle: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, + (undeclared): reject }`
+`{ lifecycle: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, + (undeclared): reject }`
 Source: packages/types/src/workflows.ts
 
 ### UserProfile
@@ -1671,7 +1671,7 @@ Source: packages/types/src/wallets.ts
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
 
 ### WorkflowDefinitionResponse
-`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, description?: string | null, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject } }`
+`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, description?: string | null, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject } }`
 Source: packages/types/src/workflows.ts
 
 **status**: Lifecycle state of the definition: `deployed` (a launchable version is active) or `stopped` (deactivated).
@@ -1683,7 +1683,7 @@ Source: packages/types/src/workflows.ts
 **status**: Deployment lifecycle status. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.
 
 ### WorkflowLifecycleResponse
-`{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
+`{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxDisconnected?: string , maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
 Source: packages/types/src/workflow-lifecycle.ts
 
 ### WorkflowRollbackRequest

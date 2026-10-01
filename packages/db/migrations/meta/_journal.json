@@ -708,6 +708,13 @@
       "when": 1790852972403,
       "tag": "0101_workflow_run_failure_reason",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1790859880941,
+      "tag": "0102_sidecar_allocation_max_disconnected",
+      "breakpoints": true
     }
   ]
 }
