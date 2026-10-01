@@ -149,6 +149,8 @@ import {
   type SendReceipt,
 } from "@intx/types/runtime";
 
+import { conversationStateRoot } from "./conversation-state-root";
+
 const logger = getLogger(["sidecar", "workflow-child", "conversation-state"]);
 
 const CHECKPOINT_FILE = "checkpoint.json";
@@ -772,9 +774,7 @@ export function createDurableConversationRegistry(
 
   function localStoreDir(key: string): string {
     return path.join(
-      opts.dataDir,
-      "agent-conversation-state",
-      opts.workflowRunRepoId.id,
+      conversationStateRoot(opts.dataDir, opts.workflowRunRepoId.id),
       encodeURIComponent(key),
     );
   }

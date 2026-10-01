@@ -87,6 +87,7 @@ import {
   applyFrozenWorkflowClosure,
   type AppliedWorkflowClosure,
 } from "./workflow-closure-apply";
+import { conversationStateRoot } from "./conversation-state-root";
 import {
   MAX_INLINE_ASSET_PAYLOAD_BYTES,
   materializeWorkflowAssets,
@@ -2679,7 +2680,6 @@ export function createSidecarDeployRouter(deps: {
       }
       // Reclaim warm and cold scratch after teardown, including scratch an
       // earlier stop retained after removing the supervisor registration.
-      // Durable conversations live under a separate root and survive undeploy.
       if (stepStateDataDir !== undefined) {
         await rm(pathJoin(stepStateDataDir, "workflow-step-state", runId), {
           recursive: true,
@@ -2688,12 +2688,14 @@ export function createSidecarDeployRouter(deps: {
       }
       // Drop the run record so a boot-time restore does not re-spawn a
       // torn-down deployment, and reclaim a source-ref deployment's
-      // materialized closure tree AND its durable source-asset store. All run
-      // on every undeploy -- not only when a supervisor was active -- so state
-      // left behind by a crash-interrupted deploy, or by a source-ref restore
-      // that materialized the closure and then failed to spawn (registry down),
-      // is reclaimed too. A registry-sourced deployment never creates the source
-      // store, so its `force` remove is a no-op there.
+      // materialized closure tree, its durable source-asset store, and its
+      // local conversation copy, which only that deployment's respawns and
+      // restarts read. All run on every undeploy -- not only when a supervisor
+      // was active -- so state left behind by a crash-interrupted deploy, or
+      // by a source-ref restore that materialized the closure and then failed
+      // to spawn (registry down), is reclaimed too. A registry-sourced
+      // deployment never creates the source store, so its `force` remove is a
+      // no-op there.
       if (stepStateDataDir !== undefined) {
         await deleteWorkflowRunRecord(stepStateDataDir, runId);
         await rm(
@@ -2705,6 +2707,10 @@ export function createSidecarDeployRouter(deps: {
           force: true,
         });
         await rm(deploymentSourceGitRoot(stepStateDataDir, runId), {
+          recursive: true,
+          force: true,
+        });
+        await rm(conversationStateRoot(stepStateDataDir, runId), {
           recursive: true,
           force: true,
         });

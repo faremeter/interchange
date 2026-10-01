@@ -104,7 +104,7 @@ Every reply echoes the `requestId` of the request it answers.
 
 When the Hub sends `agent.deploy`, the sidecar spawns a supervised **workflow-process child** to host the deployment and responds with `agent.deploy.ack`. The sidecar records the Hub key used for deploy-pack verification and returns the supervisor public key. The Hub publishes that key only after initialization completes under the current allocation lock; reconnect authority remains the sidecar credential, not the projected public key. Before the child is spawned, inputs a restart cannot otherwise recover are written to a per-deployment record.
 
-When the hub sends `agent.undeploy`, the sidecar shuts the deployment's supervisor down (killing the workflow-process child and releasing its IPC pipes and event-channel handle), unregisters the deployment address from the transport and from the mail/signal/drain routers, reclaims the deployment's per-step scratch, and deletes the `deployment.json` record so a later boot does not re-spawn a torn-down deployment. The agent's key pair and its durable agent-state / conversation repositories are left in place.
+When the hub sends `agent.undeploy`, the sidecar shuts the deployment's supervisor down (killing the workflow-process child and releasing its IPC pipes and event-channel handle), unregisters the deployment address from the transport and from the mail/signal/drain routers, reclaims the deployment's per-step scratch, and deletes the `deployment.json` record so a later boot does not re-spawn a torn-down deployment. It also deletes the deployment's agent directory, key pair included, and its local conversation copy, which carries a conversation only across child respawns and sidecar restarts of the deployment that wrote it.
 
 Credentials travel in the `agent.deploy` frame's inference **sources** — `config.sources`, and the per-step `workflow.sources` failover chains — where each `InferenceSource` carries its own API key. There is no separate credential push endpoint.
 
@@ -128,7 +128,8 @@ SIDECAR_DATA_DIR/
       deployment.json            # per-run restore record (mode 0600); see below
   workflow-step-state/
     <runId>/                     # ephemeral per-step scratch, reclaimed on undeploy
-  agent-conversation-state/      # durable per-agent conversation, survives undeploy
+  agent-conversation-state/
+    <runId>/                     # local conversation copy, reclaimed on undeploy
 ```
 
 The per-agent key directory is keyed by the sanitized run address; the workflow subtrees are keyed by the derived run id.

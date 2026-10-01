@@ -41,6 +41,7 @@ import {
   STEP_INFERENCE_SOURCES_ENV_KEY,
   validateWorkflowProjection,
 } from "./workflow-host-wiring";
+import { conversationStateRoot } from "./conversation-state-root";
 import {
   createDeploymentAddressRegistry,
   createMultistepGrantsRouter,
@@ -2726,6 +2727,39 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(caches).toHaveLength(2);
     expect(caches[0]).toBeDefined();
     expect(caches[0]).toBe(caches[1]);
+  });
+
+  test("undeploy reclaims the deployment's local conversation copy", async () => {
+    const dataDir = await createTempBaseDir("sidecar-conversation-undeploy-");
+    const agentAddress = "conversation-undeploy@example.com";
+    const copy = path.join(
+      conversationStateRoot(dataDir, deriveDeploymentId(agentAddress)),
+      "agent-key",
+    );
+    await fs.mkdir(copy, { recursive: true });
+    await fs.writeFile(path.join(copy, "turns.json"), "[]");
+    const { router } = await buildMultistepFixture({
+      spawner: makeReadyDrivingSpawner(9620).spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const undeploy = router.undeploy;
+    if (undeploy === undefined) {
+      throw new Error("router.undeploy is undefined");
+    }
+
+    await undeploy({
+      type: "agent.undeploy",
+      requestId: "undeploy-test",
+      agentAddress,
+      reason: "test",
+    });
+
+    expect(
+      await fs.access(copy).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
   });
 
   test("restore re-materializes a source-ref deployment's closure and re-spawns it as source-ref", async () => {
