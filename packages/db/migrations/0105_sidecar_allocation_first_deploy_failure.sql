@@ -1,0 +1,1 @@
+ALTER TABLE "sidecar_allocation" ADD COLUMN "first_deploy_failed_at" timestamp;

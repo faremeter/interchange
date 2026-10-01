@@ -55,6 +55,9 @@ export const sidecarAllocation = pgTable(
     maxDisconnectedMs: bigint("max_disconnected_ms", {
       mode: "number",
     }).notNull(),
+    // When the deployment's first deploy first failed before its deploy frame
+    // was sent; the Hub stops retrying it a while after.
+    firstDeployFailedAt: timestamp("first_deploy_failed_at"),
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
