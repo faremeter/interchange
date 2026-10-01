@@ -1338,13 +1338,15 @@ Pack transfers share the WebSocket with live session traffic. To prevent interfe
 
 `repo.pack.reject` carries a `reason` field distinguishing failure modes:
 
-| Reason              | Meaning                                          | Sender action                  |
-| ------------------- | ------------------------------------------------ | ------------------------------ |
-| `signature_invalid` | Commit signature verification failed             | Do not retry with same content |
-| `path_violation`    | Commit modifies paths outside sender's ownership | Do not retry                   |
-| `backpressure`      | Receiver is overwhelmed                          | Pause and retry after a delay  |
-| `conflict`          | Ref update conflicts with receiver state         | Reconcile before retrying      |
-| `corrupt`           | Packfile failed index verification               | Resend from scratch            |
+| Reason              | Meaning                                                                                        | Sender action                  |
+| ------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------ |
+| `signature_invalid` | Commit signature verification failed                                                           | Do not retry with same content |
+| `path_violation`    | Commit modifies paths outside sender's ownership, or the connection does not route the address | Do not retry                   |
+| `backpressure`      | Receiver is overwhelmed                                                                        | Pause and retry after a delay  |
+| `conflict`          | Ref update conflicts with receiver state                                                       | Reconcile before retrying      |
+| `corrupt`           | Packfile failed index verification                                                             | Resend from scratch            |
+
+The Hub answers every transfer, rejecting one for an address the connection does not route rather than dropping it, and one it failed to parse or receive with `corrupt`: the sender holds a transfer open until it is answered and queues later pushes to the same repository behind it.
 
 ### Deploy Flow
 

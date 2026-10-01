@@ -753,6 +753,95 @@ describe("SidecarRouter allocation pack transport", () => {
     });
   });
 
+  test("rejects a workflow-run pack whose receive fails", async () => {
+    const router = createAllocatedRouter({
+      lookups: {
+        async receiveWorkflowRunPack() {
+          throw new Error("database unavailable");
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(TEST_IDENTITY.workflowRunAddress),
+    };
+    for (const chunk of chunkPack(new Uint8Array([7]))) {
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.push",
+          agentAddress: TEST_IDENTITY.workflowRunAddress,
+          repoId,
+          transferId: "transfer-failed",
+          seq: chunk.seq,
+          data: chunk.data,
+        }),
+      );
+    }
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "repo.pack.done",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        repoId,
+        transferId: "transfer-failed",
+        ref: "refs/heads/events",
+        commitSha: "e".repeat(40),
+      }),
+    );
+    await tick();
+
+    expect(lastFrame(ws)).toMatchObject({
+      type: "repo.pack.reject",
+      transferId: "transfer-failed",
+      reason: "corrupt",
+    });
+    expect(ws.closed).toBe(false);
+  });
+
+  test("rejects a workflow-run pack whose done frame is malformed", async () => {
+    let received = false;
+    const router = createAllocatedRouter({
+      lookups: {
+        async receiveWorkflowRunPack() {
+          received = true;
+          return { accepted: true };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(TEST_IDENTITY.workflowRunAddress),
+    };
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "repo.pack.done",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
+        repoId,
+        transferId: "transfer-malformed",
+        ref: "refs/heads/events",
+        commitSha: 42,
+      }),
+    );
+    await tick();
+
+    expect(received).toBe(false);
+    expect(lastFrame(ws)).toMatchObject({
+      type: "repo.pack.reject",
+      transferId: "transfer-malformed",
+      reason: "corrupt",
+    });
+    expect(ws.closed).toBe(false);
+  });
+
   test("rejects a workflow-run pack outside the allocation repository", async () => {
     let received = false;
     const router = createAllocatedRouter({

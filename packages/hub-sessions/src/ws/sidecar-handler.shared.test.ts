@@ -956,3 +956,49 @@ describe("SidecarRouter deploy replies on a shared sidecar", () => {
     expect(await deploying).toEqual({ publicKey: PUBLIC_KEY });
   });
 });
+
+describe("SidecarRouter pushes on a shared sidecar", () => {
+  test("rejects a push that arrives after its allocation left the sidecar, once", async () => {
+    const { router } = createSharedRouter([first, second]);
+    const ws = await reconnect(router, [
+      first.workflowRunAddress,
+      second.workflowRunAddress,
+    ]);
+    const repoId = { kind: "workflow-run", id: first.anchorRunId } as const;
+
+    router.fenceAllocation(first.allocationId, 2);
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "repo.pack.push",
+        agentAddress: first.workflowRunAddress,
+        repoId,
+        transferId: "late-push",
+        seq: 0,
+        data: "AAAA",
+      }),
+    );
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "repo.pack.done",
+        agentAddress: first.workflowRunAddress,
+        repoId,
+        transferId: "late-push",
+        ref: "refs/heads/main",
+        commitSha: "a".repeat(40),
+      }),
+    );
+    await tick();
+
+    const rejected = {
+      type: "repo.pack.reject",
+      agentAddress: first.workflowRunAddress,
+      repoId,
+      transferId: "late-push",
+      reason: "path_violation",
+    };
+    expect(framesOfType(ws, "repo.pack.reject")).toEqual([rejected]);
+    expect(ws.closed).toBe(false);
+  });
+});

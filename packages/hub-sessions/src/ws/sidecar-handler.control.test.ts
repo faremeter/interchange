@@ -473,10 +473,6 @@ describe("SidecarRouter allocation control protocols", () => {
         transferId: "transfer-after-ack",
         reason: "path_violation",
       }),
-      expect.objectContaining({
-        transferId: "transfer-after-ack",
-        reason: "path_violation",
-      }),
     ]);
 
     router.handleClose(ws);
