@@ -223,4 +223,4 @@ Deploying encryption over a database whose rows predate it requires a one-time r
 
 ## What This Design Does Not Cover
 
-- **Harness injection protocol**: the mechanism by which the control plane transmits resolved credentials to harnesses is not specified here. It depends on the harness implementation and deployment environment. In the prototype sidecar implementation, credentials arrive in the initial `agent.deploy` frame and are persisted in the allocation-scoped deployment record for same-capacity restoration. Replacement allocation initialization re-resolves them through the Hub. See HARNESS_DESIGN.md for the wire protocol.
+- **Harness injection protocol**: the mechanism by which the control plane transmits resolved credentials to harnesses is not specified here. It depends on the harness implementation and deployment environment. In the prototype sidecar implementation, credentials arrive in the initial `agent.deploy` frame and are persisted in the allocation-scoped deployment record for same-capacity restoration. See HARNESS_DESIGN.md for the wire protocol.
