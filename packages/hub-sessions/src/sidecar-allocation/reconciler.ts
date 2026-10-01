@@ -2,6 +2,7 @@ import { type } from "arktype";
 
 import { sha256 } from "@intx/crypto";
 import {
+  SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
   SidecarReuseRejectedError,
   type SidecarAllocation,
   type SidecarAllocationStore,
@@ -25,7 +26,9 @@ import type { SidecarPluginRegistry } from "./plugin-registry";
 import {
   DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
   runSidecarOperation,
+  SidecarDeploymentHistoryPendingError,
   SidecarDeploymentMissingError,
+  SidecarDeploymentStoppedError,
   SidecarOperationTimeoutError,
   type SidecarReconciliationContext,
 } from "./operation";
@@ -37,6 +40,7 @@ type AllocationStore = Pick<
   | "beginReplacement"
   | "beginRelease"
   | "beginUnrecoverableRelease"
+  | "failStoppedDeployment"
   | "bindInitialSidecar"
   | "bindReplacementSidecar"
   | "claimNextReconcilable"
@@ -64,6 +68,7 @@ export type SidecarAllocationReconcilerDeps = {
     | "fenceAllocation"
     | "holdsAllocatedBinding"
     | "isAllocatedSidecarReady"
+    | "reportedDeploymentFailure"
     | "retireAllocation"
     | "syncSidecar"
     | "waitForAllocatedSidecar"
@@ -491,8 +496,12 @@ export function createSidecarAllocationReconciler({
       )
         throw error;
       const message = error instanceof Error ? error.message : String(error);
+      // A sidecar that reported the deployment stopped and then stayed away
+      // fails it for the reason it gave, unless a Hub restart has since
+      // dropped that report. A stopped copy is not replaced.
+      const stopped = router.reportedDeploymentFailure(target);
       let replaceParked = false;
-      if (classifyParkedRun !== undefined) {
+      if (stopped === undefined && classifyParkedRun !== undefined) {
         let classification: {
           verdict: "parked" | "not-parked" | "unknown";
           reason: string;
@@ -511,8 +520,12 @@ export function createSidecarAllocationReconciler({
       await replaceAfterFailure(
         allocation,
         leaseId,
-        "sidecar_connect_failed",
-        message,
+        stopped === undefined
+          ? "sidecar_connect_failed"
+          : SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
+        stopped === undefined
+          ? message
+          : `${stopped}; its sidecar disconnected, and history the Hub never received may be lost`,
         { replaceParked },
       );
       return;
@@ -545,6 +558,35 @@ export function createSidecarAllocationReconciler({
             leaseId,
             "sidecar_deployment_missing",
             error.message,
+          );
+          return;
+        }
+        if (error instanceof SidecarDeploymentHistoryPendingError) {
+          // A report that landed meanwhile may carry the tips the Hub holds.
+          await finishReconciliation(allocation.id, (pendingConnect) =>
+            allocationStore.scheduleRetry({
+              allocationId: allocation.id,
+              expectedStatus: "allocated",
+              expectedGeneration: allocation.generation,
+              expectedLeaseId: leaseId,
+              nextAttemptAt: pendingConnect ? now() : error.retryAt,
+              now: now(),
+            }),
+          );
+          return;
+        }
+        if (error instanceof SidecarDeploymentStoppedError) {
+          // The capacity stays: the stopped copy's files are kept for
+          // inspection until the retention for failed runs releases them.
+          await finishReconciliation(allocation.id, () =>
+            allocationStore.failStoppedDeployment({
+              allocationId: allocation.id,
+              expectedGeneration: allocation.generation,
+              expectedLeaseId: leaseId,
+              failureCode: SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
+              failureMessage: error.message,
+              now: now(),
+            }),
           );
           return;
         }
@@ -1107,8 +1149,9 @@ export function createSidecarAllocationReconciler({
         allocationId: allocation.id,
         generation: allocation.generation,
       };
+      let ready: boolean;
       try {
-        if (await router.isAllocatedSidecarReady(target)) continue;
+        ready = await router.isAllocatedSidecarReady(target);
       } catch (error) {
         // Unknown readiness is not absence. Leave the allocation for the next
         // repair sweep instead of scheduling a reconnect the worker may hold.
@@ -1116,15 +1159,33 @@ export function createSidecarAllocationReconciler({
         throw error;
       }
       try {
-        await allocationStore.scheduleReconnectIfUnscheduled({
-          ...target,
-          connectDeadline:
-            allocation.connectDeadline ??
-            new Date(now().getTime() + connectTimeoutMs),
-          now: now(),
-        });
+        if (!ready) {
+          await allocationStore.scheduleReconnectIfUnscheduled({
+            ...target,
+            connectDeadline:
+              allocation.connectDeadline ??
+              new Date(now().getTime() + connectTimeoutMs),
+            now: now(),
+          });
+        } else if (
+          router.reportedDeploymentFailure(target) !== undefined &&
+          allocation.failureCode !== SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE &&
+          (await allocationStore.hasRunnableAnchor(
+            allocation.anchorRunId,
+            now(),
+          ))
+        ) {
+          // A stop the sidecar reported is acted on by one wake. If that wake
+          // was lost, the allocation rests on its ready connection with the
+          // stop not yet recorded. Once the anchor can no longer run, a wake
+          // has nothing left to fail, so none is made.
+          await allocationStore.wakeReconciliation(
+            allocation.id,
+            allocation.generation,
+          );
+        }
       } catch (error) {
-        logger.warn`Failed to repair allocation ${allocation.id} reconnect schedule: ${error instanceof Error ? error.message : String(error)}`;
+        logger.warn`Failed to repair allocation ${allocation.id} schedule: ${error instanceof Error ? error.message : String(error)}`;
       }
     }
   }

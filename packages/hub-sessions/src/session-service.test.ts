@@ -226,6 +226,8 @@ function createMockAllocationRouter(
     isAllocatedSidecarReady: async () => true,
     holdsAllocatedBinding: () => true,
     isAllocatedWorkflowActive: async () => false,
+    reportedDeploymentFailure: () => undefined,
+    stoppedDeploymentHistory: async () => undefined,
     detachAllocation: () => undefined,
     syncSidecar: async () => undefined,
     sendProbeToAllocation: async () => {
