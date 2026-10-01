@@ -478,11 +478,14 @@ export type SidecarAllocationRouter = {
    * Throws `SidecarIdentityValidationError` when readiness cannot be
    * determined; only confirmed absence surfaces as a connection timeout.
    * `onValidation` observes notification lookups that may outlive this wait.
+   * Cancellation removes a parked waiter and discards pending validation
+   * results.
    */
   waitForAllocatedSidecar(
     target: AllocatedSidecarTarget,
     timeoutMs: number,
     onValidation?: (validation: Promise<boolean>) => void,
+    signal?: AbortSignal,
   ): Promise<void>;
   /**
    * Check exact allocated readiness without parking a reconciliation worker.
@@ -521,8 +524,9 @@ export type SidecarAllocationRouter = {
    * connected. A sidecar that is registering, or not connected, picks its
    * bindings up when its registration completes. The promise can settle
    * before a binding attaches, so callers wait for its readiness instead.
+   * Cancellation prevents queued work or a pending binding read from attaching.
    */
-  syncSidecar(sidecarId: string): Promise<void>;
+  syncSidecar(sidecarId: string, signal?: AbortSignal): Promise<void>;
   sendAgentDeployToAllocation(
     target: AllocatedSidecarTarget,
     agentAddress: string,
@@ -1936,8 +1940,9 @@ export function createSidecarRouter(
   }
 
   // What a registering sidecar hosts: the bindings current for it and, of
-  // the addresses it announced, those that reclaim their route. Null once the
-  // registration has been rejected and its socket closed.
+  // the addresses it announced, those that reclaim their route and those kept
+  // unrouted for their deployment's retention. Null once the registration has
+  // been rejected and its socket closed.
   async function readHostedWork(
     ws: WsHandle,
     sidecarId: string,
@@ -1946,6 +1951,7 @@ export function createSidecarRouter(
   ): Promise<{
     bindings: SidecarAuthIdentity[];
     reclaimed: Map<string, Extract<SidecarAuthIdentity, { kind: "allocated" }>>;
+    retained: Map<string, Extract<SidecarAuthIdentity, { kind: "allocated" }>>;
     unauthorized: string[];
   } | null> {
     let bindings: SidecarAuthIdentity[];
@@ -1971,10 +1977,17 @@ export function createSidecarRouter(
     }
 
     // An announced address reclaims its route only for a deployment this
-    // sidecar currently hosts that is ready to route. Anything else is local
-    // state the Hub no longer authorizes here, such as a deployment that left
-    // this sidecar while it was disconnected.
+    // sidecar currently hosts whose first deploy has completed and whose run
+    // has not ended. One whose run ended on its own stays unrouted, its local
+    // state kept for inspection until the Hub releases the deployment.
+    // Anything else is local state the Hub no longer authorizes here: a
+    // deployment that left this sidecar while it was disconnected, one whose
+    // deploy is still uncertain, or one of a run the Hub cancelled.
     const reclaimed = new Map<
+      string,
+      Extract<SidecarAuthIdentity, { kind: "allocated" }>
+    >();
+    const retained = new Map<
       string,
       Extract<SidecarAuthIdentity, { kind: "allocated" }>
     >();
@@ -1995,9 +2008,12 @@ export function createSidecarRouter(
           binding.generation &&
         addressIndex.get(address) === ws;
       let reclaimable: boolean;
+      let kept = false;
       try {
         reclaimable =
-          alreadyRouted || (await validateSidecarIdentity(binding, "routing"));
+          alreadyRouted || (await validateSidecarIdentity(binding, "reclaim"));
+        if (!reclaimable)
+          kept = await validateSidecarIdentity(binding, "retention");
       } catch (err) {
         logger.error`Rejected registration from sidecar ${sidecarId}: cannot validate announced ${address}: ${err instanceof Error ? err.message : String(err)}`;
         handleClose(ws);
@@ -2005,9 +2021,10 @@ export function createSidecarRouter(
         return null;
       }
       if (reclaimable) reclaimed.set(address, binding);
+      else if (kept) retained.set(address, binding);
       else unauthorized.push(address);
     }
-    return { bindings, reclaimed, unauthorized };
+    return { bindings, reclaimed, retained, unauthorized };
   }
 
   async function handleRegistration(
@@ -2061,7 +2078,7 @@ export function createSidecarRouter(
       }
       return;
     }
-    const { bindings, reclaimed, unauthorized } = hosted;
+    const { bindings, reclaimed, retained, unauthorized } = hosted;
 
     // A sidecar reconnecting on a new socket takes its bindings along. Move
     // them off the previous socket first so its close reports only the
@@ -2108,6 +2125,16 @@ export function createSidecarRouter(
       if (addressIndex.get(address) !== ws) newlyRoutedAddresses.add(address);
       conn.workflowAddresses.set(address, binding.allocationId);
       addressIndex.set(address, ws);
+    }
+    // A copy kept unrouted whose binding did not attach was released
+    // while this registration read what the sidecar hosts, and no later
+    // release reaches it.
+    for (const [address, binding] of retained) {
+      if (
+        conn.bindings.get(binding.allocationId)?.generation !==
+        binding.generation
+      )
+        unauthorized.push(address);
     }
     for (const address of unauthorized) {
       logger.warn`Sidecar ${sidecarId} announced ${address}, which it does not currently host; asking it to undeploy`;
@@ -2211,21 +2238,27 @@ export function createSidecarRouter(
     return sidecarClaims.get(sidecarId) ?? sidecarSockets.get(sidecarId);
   }
 
-  function syncSidecar(sidecarId: string): Promise<void> {
+  async function syncSidecar(
+    sidecarId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
     const ws = syncTarget(sidecarId);
-    if (ws === undefined) return Promise.resolve();
-    return enqueueOnConnection(ws, async () => {
+    if (ws === undefined) return;
+    await enqueueOnConnection(ws, async () => {
+      signal?.throwIfAborted();
       // The registration this queued behind may have been rejected, leaving
       // the sidecar on its previous socket, or superseded.
       if (syncTarget(sidecarId) !== ws) {
-        redirectSync(sidecarId);
+        redirectSync(sidecarId, signal);
         return;
       }
       const conn = connections.get(ws);
       if (conn === undefined) return;
       const bindings = await resolveSidecarBindings(sidecarId);
+      signal?.throwIfAborted();
       if (syncTarget(sidecarId) !== ws) {
-        redirectSync(sidecarId);
+        redirectSync(sidecarId, signal);
         return;
       }
       if (connections.get(ws) !== conn) return;
@@ -2242,8 +2275,9 @@ export function createSidecarRouter(
 
   // Not awaited: the socket the sync moves to may have work queued behind the
   // one that redirects it.
-  function redirectSync(sidecarId: string): void {
-    syncSidecar(sidecarId).catch((err: unknown) => {
+  function redirectSync(sidecarId: string, signal?: AbortSignal): void {
+    syncSidecar(sidecarId, signal).catch((err: unknown) => {
+      if (signal?.aborted) return;
       logger.warn`Failed to sync the bindings of sidecar ${sidecarId}: ${err instanceof Error ? err.message : String(err)}`;
     });
   }
@@ -3382,18 +3416,23 @@ export function createSidecarRouter(
     target: AllocatedSidecarTarget,
     timeoutMs: number,
     onValidation?: (validation: Promise<boolean>) => void,
+    signal?: AbortSignal,
   ): Promise<void> {
+    signal?.throwIfAborted();
     // An indeterminable worker waits out the unknown while time remains: only
     // confirmed absence may surface as a connection timeout. At expiry the
     // wait reports the validation failure rather than a missed deadline, so
     // the caller retries instead of releasing a worker that may be healthy.
     let validationFailure: SidecarIdentityValidationError | undefined;
+    let ready = false;
     try {
-      if (await isAllocatedSidecarReady(target)) return;
+      ready = await isAllocatedSidecarReady(target);
     } catch (error) {
       if (!(error instanceof SidecarIdentityValidationError)) throw error;
       validationFailure = error;
     }
+    signal?.throwIfAborted();
+    if (ready) return;
     if (allocationFences.get(target.allocationId) !== target.generation) {
       throw new Error(
         `Allocation ${target.allocationId} generation ${String(target.generation)} is not current`,
@@ -3407,19 +3446,34 @@ export function createSidecarRouter(
     }
 
     await new Promise<void>((resolve, reject) => {
+      const cleanUp = () => {
+        clearTimeout(waiter.timer);
+        signal?.removeEventListener("abort", onAbort);
+        const current = allocationWaiters.get(target.allocationId);
+        current?.delete(waiter);
+        if (current?.size === 0) allocationWaiters.delete(target.allocationId);
+      };
+      const onAbort = () => {
+        waiter.reject(
+          signal?.reason instanceof Error
+            ? signal.reason
+            : new Error("Sidecar connection wait cancelled"),
+        );
+      };
       const waiter: AllocationWaiter = {
         generation: target.generation,
         validations: new Set(),
         ...(onValidation !== undefined ? { onValidation } : {}),
-        resolve,
-        reject,
+        resolve() {
+          cleanUp();
+          resolve();
+        },
+        reject(error) {
+          cleanUp();
+          reject(error);
+        },
         timer: setTimeout(() => {
-          const current = allocationWaiters.get(target.allocationId);
-          current?.delete(waiter);
-          if (current?.size === 0) {
-            allocationWaiters.delete(target.allocationId);
-          }
-          reject(
+          waiter.reject(
             waiter.validationFailure ??
               (waiter.validations.size > 0
                 ? new SidecarIdentityValidationError(
@@ -3439,6 +3493,7 @@ export function createSidecarRouter(
         allocationWaiters.set(target.allocationId, waiters);
       }
       waiters.add(waiter);
+      signal?.addEventListener("abort", onAbort, { once: true });
       void notifyAllocationWaiters(target.allocationId);
     });
   }

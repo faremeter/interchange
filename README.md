@@ -102,7 +102,11 @@ agent a managed principal instead of a loose script:
   calls.
 - **Multi-tenant isolation.** Agents, data, credentials, and message
   buses are tenant-scoped and isolated by default, and tenants nest
-  into policy-inheriting hierarchies. Cross-tenant _federation_ —
+  into policy-inheriting hierarchies. The stock sidecar does not
+  isolate the deployments a provisioner places on it from each other,
+  whatever their tenants; tenant policy can require
+  [`isolation:workload`](./docs/SIDECAR_PLACEMENT.md) placement
+  instead. Cross-tenant _federation_ —
   discovery and invocation across trust boundaries — is designed and
   partly scaffolded, but not yet wired end-to-end (see
   [Project status](#project-status)).

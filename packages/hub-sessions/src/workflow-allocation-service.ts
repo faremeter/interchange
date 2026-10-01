@@ -128,6 +128,7 @@ export type WorkflowAllocationServiceDeps = {
     | "isAllocatedWorkflowActive"
     | "retireAllocation"
     | "sendProbeToAllocation"
+    | "syncSidecar"
     | "waitForAllocatedSidecar"
   >;
   readonly hubWebSocketUrl: string;
@@ -136,6 +137,7 @@ export type WorkflowAllocationServiceDeps = {
   readonly createAllocationId?: () => string;
   readonly createSidecarId?: () => string;
   readonly createToken?: () => string;
+  /** One deadline for binding synchronization and connection readiness. */
   readonly connectTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
   readonly now?: () => Date;
@@ -608,6 +610,9 @@ export function createWorkflowAllocationService({
       }
       const probing = await probeStore.markProbing({
         probeId,
+        ...(ensured.sidecarId !== undefined
+          ? { sidecarId: ensured.sidecarId }
+          : {}),
         ...(ensured.externalRef !== undefined
           ? { externalRef: ensured.externalRef }
           : {}),
@@ -617,9 +622,23 @@ export function createWorkflowAllocationService({
         throw new Error(`Workflow probe ${probeId} changed after provisioning`);
       }
       probe = probing;
-      await allocationRouter.waitForAllocatedSidecar(
-        allocationTarget,
+      await runSidecarOperation(
+        "Probe connection",
         connectTimeoutMs,
+        async (signal) => {
+          if (probing.sidecarId !== null) {
+            // Joining a reused connection may wait behind its existing work.
+            // That wait belongs to the same deadline as readiness.
+            await allocationRouter.syncSidecar(probing.sidecarId, signal);
+          }
+          signal.throwIfAborted();
+          await allocationRouter.waitForAllocatedSidecar(
+            allocationTarget,
+            connectTimeoutMs,
+            undefined,
+            signal,
+          );
+        },
       );
 
       let resultRecorded = false;

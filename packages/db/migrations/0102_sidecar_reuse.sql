@@ -1,0 +1,2 @@
+DROP INDEX "sidecar_allocation_active_sidecar_idx";--> statement-breakpoint
+CREATE INDEX "workflow_run_sidecar_idx" ON "workflow_run" USING btree ("sidecar_id") WHERE "workflow_run"."sidecar_id" is not null;
