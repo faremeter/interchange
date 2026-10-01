@@ -1696,8 +1696,10 @@ Source: packages/types/src/workflows.ts
 Source: packages/types/src/instances.ts
 
 ### WorkflowRunResponse
-`{ address: string, createdAt: string, definitionId: string, definitionName: string, id: string, status: "deployed" | "error" | "running" | "stopped" | "updating", tenantId: string, updatedAt: string, endedAt?: string | null, kernelId?: string | null, publicKey?: string | null, sidecarId?: string | null }`
+`{ address: string, createdAt: string, definitionId: string, definitionName: string, id: string, status: "deployed" | "error" | "running" | "stopped" | "updating", tenantId: string, updatedAt: string, endedAt?: string | null, failureCode?: string | null, failureMessage?: string | null, kernelId?: string | null, publicKey?: string | null, sidecarId?: string | null }`
 Source: packages/types/src/instances.ts
 
 **status**: Lifecycle state of this run: `deployed` (provisioned on a sidecar, not yet started), `running` (started and serving), `updating` (rolling to a new definition version), `error` (launch or runtime failure), or `stopped` (undeployed).
+**failureCode**: Why the Hub failed this run's deployment when it lost or gave up its sidecar capacity, such as `sidecar_connect_failed`; null for a run the Hub did not fail.
+**failureMessage**: The detail of `failureCode`, such as the error the sidecar reported.
 

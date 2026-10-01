@@ -19,6 +19,8 @@ function makeRecord(overrides: Partial<RoutableRecord> = {}): RoutableRecord {
     principalId: "prn_1",
     kernelId: null,
     sidecarId: null,
+    failureCode: null,
+    failureMessage: null,
     ...overrides,
   };
 }
@@ -82,6 +84,23 @@ describe("formatRunView", () => {
     );
     expect(failed.status).toBe("error");
     expect(failed.endedAt).toBe("2026-01-03T00:00:00.000Z");
+    expect(failed).toMatchObject({ failureCode: null, failureMessage: null });
+
+    // A run the Hub failed for its lost capacity carries the reason.
+    expect(
+      formatRunView(
+        makeRecord({
+          status: "failed",
+          endedAt,
+          failureCode: "sidecar_connect_failed",
+          failureMessage: "connect timeout",
+        }),
+        "My Agent",
+      ),
+    ).toMatchObject({
+      failureCode: "sidecar_connect_failed",
+      failureMessage: "connect timeout",
+    });
 
     expect(formatRunView(makeRecord({ status: "completed" }), "A").status).toBe(
       "stopped",
