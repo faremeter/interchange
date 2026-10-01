@@ -41,7 +41,7 @@ import {
   type WorkflowSourceAssetMount,
   type WorkflowProjectionDefinition,
 } from "@intx/types/sidecar";
-import type { RepoId } from "@intx/types/repo";
+import { RepoId } from "@intx/types/repo";
 import type { CredentialDelivery } from "@intx/types/credential-delivery";
 import type {
   ConnectorThreadState,
@@ -692,6 +692,13 @@ const DEFAULT_MAIL_HOLD_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_PING_TIMEOUT_MS = 60_000;
 const DEFAULT_MAIL_ACK_RETRY_INTERVAL_MS = 10_000;
 const DEFAULT_MAIL_ACK_MAX_RETRIES = 5;
+
+const MalformedPackDone = type({
+  type: "'repo.pack.done'",
+  transferId: "string > 0",
+  agentAddress: "string > 0",
+  repoId: RepoId,
+});
 
 // The hub re-resolves and re-pushes a key for each rotatable sender a sidecar
 // reports on (re)connect. A legitimate sidecar caches keys for tens, maybe low
@@ -1380,6 +1387,16 @@ export function createSidecarRouter(
     const validated = SidecarFrame(raw);
     if (validated instanceof type.errors) {
       logger.warn`Invalid sidecar frame: ${validated.summary}`;
+      const done = MalformedPackDone(raw);
+      if (!(done instanceof type.errors)) {
+        // Behind the frames the sidecar sent before it, such as the
+        // transfer's own chunks, so the rejection cannot overtake them.
+        enqueueOnConnection(ws, async () => {
+          rejectMalformedPackDone(ws, done);
+        }).catch((err: unknown) => {
+          logger.warn`Rejecting a malformed repo.pack.done failed: ${err instanceof Error ? err.message : String(err)}`;
+        });
+      }
       return;
     }
     const frame = validated;
@@ -3031,52 +3048,48 @@ export function createSidecarRouter(
     }
   }
 
-  function rejectStoppedWorkflowRunPack(
+  // The generation whose workflow stop the Hub confirmed, when the pack is
+  // for its workflow-run repository. That history is final.
+  function stoppedPackSender(
     conn: SidecarConnection,
     frame: PackPushFrame | PackDoneFrame,
-  ): boolean {
+  ): SidecarAuthIdentity | undefined {
     const binding = deploymentBinding(conn, frame.agentAddress);
-    if (
-      frame.repoId.kind !== "workflow-run" ||
-      binding === undefined ||
-      stoppedAllocations.get(binding.allocationId) !== binding.generation
-    )
-      return false;
-    logger.warn`Rejected ${frame.type} from allocation ${binding.allocationId} after its workflow stop`;
+    return frame.repoId.kind === "workflow-run" &&
+      binding !== undefined &&
+      stoppedAllocations.get(binding.allocationId) === binding.generation
+      ? binding
+      : undefined;
+  }
+
+  // The sender holds a transfer open until it is answered, so a done that
+  // fails validation is still rejected when it names its transfer.
+  function rejectMalformedPackDone(
+    ws: WsHandle,
+    done: typeof MalformedPackDone.infer,
+  ): void {
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+    pickPackReceiver(done.repoId)?.receiver.cancel(done.transferId);
     conn.send({
       type: "repo.pack.reject",
-      agentAddress: frame.agentAddress,
-      repoId: frame.repoId,
-      transferId: frame.transferId,
-      reason: "path_violation",
+      agentAddress: done.agentAddress,
+      repoId: done.repoId,
+      transferId: done.transferId,
+      reason: "corrupt",
     });
-    return true;
   }
 
   function handlePackPush(ws: WsHandle, frame: PackPushFrame): void {
     const conn = connections.get(ws);
     if (conn === undefined) return;
-    if (rejectStoppedWorkflowRunPack(conn, frame)) return;
-    const ownRepository = connCanPushRepo(
-      conn,
-      frame.agentAddress,
-      frame.repoId,
-    );
-    if (!ownRepository && !connOwnsAddress(conn, frame.agentAddress)) {
-      logger.warn`Received repo.pack.push for unrouted agent ${frame.agentAddress}`;
+    // A chunk of a transfer the connection may not make is dropped: the
+    // transfer is answered once, when its `repo.pack.done` is rejected.
+    if (
+      stoppedPackSender(conn, frame) !== undefined ||
+      !connCanPushRepo(conn, frame.agentAddress, frame.repoId)
+    )
       return;
-    }
-    if (!ownRepository) {
-      logger.warn`Rejected repo.pack.push outside sidecar ${conn.sidecarId}'s authenticated repository scope`;
-      conn.send({
-        type: "repo.pack.reject",
-        agentAddress: frame.agentAddress,
-        repoId: frame.repoId,
-        transferId: frame.transferId,
-        reason: "path_violation",
-      });
-      return;
-    }
 
     const picked = pickPackReceiver(frame.repoId);
     if (picked === null) {
@@ -3109,18 +3122,27 @@ export function createSidecarRouter(
   ): Promise<void> {
     const conn = connections.get(ws);
     if (conn === undefined) return;
-    if (rejectStoppedWorkflowRunPack(conn, frame)) return;
+    const stopped = stoppedPackSender(conn, frame);
+    if (stopped !== undefined) {
+      logger.warn`Rejected repo.pack.done from allocation ${stopped.allocationId} after its workflow stop`;
+      conn.send({
+        type: "repo.pack.reject",
+        agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
+        transferId: frame.transferId,
+        reason: "path_violation",
+      });
+      return;
+    }
     const ownRepository = connCanPushRepo(
       conn,
       frame.agentAddress,
       frame.repoId,
     );
     if (!ownRepository && !connOwnsAddress(conn, frame.agentAddress)) {
-      logger.warn`Received repo.pack.done for unrouted agent ${frame.agentAddress}`;
-      return;
-    }
-    if (!ownRepository) {
-      logger.warn`Rejected repo.pack.done outside sidecar ${conn.sidecarId}'s authenticated repository scope`;
+      // Answer rather than drop: the sender holds the transfer open until it
+      // is answered, and later pushes to the same repository wait behind it.
+      logger.warn`Rejected repo.pack.done for unrouted agent ${frame.agentAddress}`;
       conn.send({
         type: "repo.pack.reject",
         agentAddress: frame.agentAddress,
@@ -3131,7 +3153,17 @@ export function createSidecarRouter(
       return;
     }
     const identity = deploymentBinding(conn, frame.agentAddress);
-    if (identity === undefined) return;
+    if (identity === undefined || !ownRepository) {
+      logger.warn`Rejected repo.pack.done outside sidecar ${conn.sidecarId}'s authenticated repository scope`;
+      conn.send({
+        type: "repo.pack.reject",
+        agentAddress: frame.agentAddress,
+        repoId: frame.repoId,
+        transferId: frame.transferId,
+        reason: "path_violation",
+      });
+      return;
+    }
 
     const picked = pickPackReceiver(frame.repoId);
     if (picked === null) {
@@ -3169,19 +3201,28 @@ export function createSidecarRouter(
       return;
     }
 
-    const verdict = await receivePackLookup(
-      frame.repoId,
-      result.pack,
-      result.ref,
-      result.commitSha,
-      {
-        kind: "allocated",
-        agentAddress: frame.agentAddress,
-        allocationId: identity.allocationId,
-        anchorRunId: identity.anchorRunId,
-        generation: identity.generation,
-      },
-    );
+    let verdict: Awaited<ReturnType<typeof receivePackLookup>>;
+    try {
+      verdict = await receivePackLookup(
+        frame.repoId,
+        result.pack,
+        result.ref,
+        result.commitSha,
+        {
+          kind: "allocated",
+          agentAddress: frame.agentAddress,
+          allocationId: identity.allocationId,
+          anchorRunId: identity.anchorRunId,
+          generation: identity.generation,
+        },
+      );
+    } catch (err) {
+      // A lookup that throws still owes the sender its answer: the socket
+      // stays open for the sidecar's other deployments, so nothing else
+      // settles the transfer, and later pushes to the repository wait on it.
+      logger.error`Receiving the pack for ${frame.agentAddress} failed: ${err instanceof Error ? err.message : String(err)}`;
+      verdict = { accepted: false, reason: "corrupt" };
+    }
 
     // Connection may have closed during async verification.
     const currentConn = connections.get(ws);
