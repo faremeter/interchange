@@ -75,13 +75,6 @@ export type SidecarAllocationReconcilerDeps = {
     allocation: SidecarAllocation,
     reconciliation: SidecarReconciliationContext,
   ) => Promise<void>;
-  /**
-   * Replace an allocated worker after its reconnect grace expires. Disabled by
-   * default because Hub recovery does not restore arbitrary sidecar or
-   * isolation-container filesystem state, so automatic continuation could run
-   * without state the previous worker produced.
-   */
-  readonly enableAutomaticReplacementRecovery?: boolean;
   readonly leaseDurationMs?: number;
   readonly connectTimeoutMs?: number;
   readonly operationTimeoutMs?: number;
@@ -163,7 +156,6 @@ export function createSidecarAllocationReconciler({
   hubWebSocketUrl,
   onInitializationRecovery,
   onReady,
-  enableAutomaticReplacementRecovery = false,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
   connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
   operationTimeoutMs = DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
@@ -354,25 +346,22 @@ export function createSidecarAllocationReconciler({
     await queueReconciliationStep(
       { allocationId: allocation.id, generation: allocation.generation },
       async () => {
+        // An allocated worker is never replaced: it may still be running the
+        // deployment, and the Hub cannot restore its local state. Provisioning
+        // ran nothing yet, so a new generation replaces it.
         const updated =
-          allocation.status === "allocated" &&
-          !enableAutomaticReplacementRecovery
+          allocation.status === "allocated"
             ? await allocationStore.beginUnrecoverableRelease({
                 ...initializationCheck,
                 allocationId: allocation.id,
                 expectedGeneration: allocation.generation,
                 expectedLeaseId: leaseId,
                 failureCode: code,
-                failureMessage: `Automatic recovery is disabled: ${message}`,
+                failureMessage: message,
                 now: now(),
               })
             : await allocationStore.beginReplacement({
-                ...initializationCheck,
                 allocationId: allocation.id,
-                expectedStatus:
-                  allocation.status === "allocated"
-                    ? "allocated"
-                    : "provisioning",
                 expectedGeneration: allocation.generation,
                 expectedLeaseId: leaseId,
                 nextAttemptAt: retryAt(

@@ -287,7 +287,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await h.db
         .update(sidecarAllocation)
         .set({
-          status: "replacing",
+          status: "releasing",
           generation: 2,
           ensureAcceptedGeneration: null,
         })
