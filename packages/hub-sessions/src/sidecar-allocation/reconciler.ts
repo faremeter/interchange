@@ -1,7 +1,11 @@
 import { type } from "arktype";
 
 import { sha256 } from "@intx/crypto";
-import type { SidecarAllocation, SidecarAllocationStore } from "@intx/db";
+import {
+  SidecarReuseRejectedError,
+  type SidecarAllocation,
+  type SidecarAllocationStore,
+} from "@intx/db";
 import { getLogger } from "@intx/log";
 import { hexEncode } from "@intx/types";
 
@@ -668,15 +672,30 @@ export function createSidecarAllocationReconciler({
       return;
     }
 
-    const allocated = await allocationStore.markAllocated({
-      allocationId: allocation.id,
-      generation: allocation.generation,
-      ...(result.externalRef !== undefined
-        ? { externalRef: result.externalRef }
-        : {}),
-      expectedLeaseId: leaseId,
-      now: now(),
-    });
+    let allocated: SidecarAllocation | null;
+    try {
+      allocated = await allocationStore.markAllocated({
+        allocationId: allocation.id,
+        generation: allocation.generation,
+        ...(result.sidecarId !== undefined
+          ? { sidecarId: result.sidecarId }
+          : {}),
+        ...(result.externalRef !== undefined
+          ? { externalRef: result.externalRef }
+          : {}),
+        expectedLeaseId: leaseId,
+        now: now(),
+      });
+    } catch (error) {
+      if (!(error instanceof SidecarReuseRejectedError)) throw error;
+      await replaceAfterFailure(
+        allocation,
+        leaseId,
+        "sidecar_reuse_rejected",
+        error.message,
+      );
+      return;
+    }
     if (allocated !== null) {
       trackAllocation(allocated);
       if (await isSidecarReady(allocated)) {

@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { sha256 } from "@intx/crypto";
-import type { DB } from "@intx/db";
+import { workflowRunExecutability, type DB } from "@intx/db";
 import {
   sidecar,
   sidecarAllocation,
@@ -113,7 +113,9 @@ export function createSidecarCredentialResolver({
     identity: SidecarCredentialIdentity,
     use: SidecarIdentityUse,
   ): Promise<boolean> {
+    const copyCheck = use === "reclaim" || use === "retention";
     if (identity.kind === "probe") {
+      if (copyCheck) return false;
       const statuses =
         use === "registration"
           ? (["provisioning", "probing"] as const)
@@ -150,11 +152,30 @@ export function createSidecarCredentialResolver({
     if (allocation.ensureAcceptedGeneration !== identity.generation) {
       return false;
     }
+    if (copyCheck && allocation.initializationLeaseId !== null) {
+      return false;
+    }
     const anchor = await db.query.workflowRun.findFirst({
-      columns: { address: true },
+      columns: {
+        address: true,
+        publicKey: true,
+        status: true,
+        expiresAt: true,
+        cancellationRequestedAt: true,
+      },
       where: eq(workflowRun.id, identity.anchorRunId),
     });
-    return anchor?.address === identity.workflowRunAddress;
+    if (anchor?.address !== identity.workflowRunAddress) return false;
+    if (!copyCheck) return true;
+    if (anchor.publicKey === null) return false;
+    // The Hub may have ended the run without the worker recording it, so the
+    // run row, not the copy that reconnects, decides whether it is over.
+    const ended = workflowRunExecutability(anchor) === "terminal";
+    if (use === "reclaim") return !ended;
+    // Only a run that ended through its own history leaves its copy idle. A
+    // restart that finds the run record of a copy whose run the Hub cancelled
+    // or expired still on disk respawns it running that run.
+    return ended && anchor.cancellationRequestedAt === null;
   }
 
   return { resolve, resolveBindings, isCurrent };

@@ -18,6 +18,7 @@ import {
   createSidecarAllocationStore,
   createWorkflowRunDispatchStore,
   createWorkflowRunLaunchSpecStore,
+  SidecarReuseRejectedError,
 } from "@intx/db";
 import {
   sidecar,
@@ -101,6 +102,130 @@ describe.skipIf(!harnessDbEnvAvailable())(
         sourceOfferingIds: ["offering-primary"],
         defaultSourceOfferingId: "offering-primary",
         deployContent: { systemPrompt: "" },
+      });
+    });
+
+    async function seedAnchor(anchorRunId: string): Promise<void> {
+      await seedWorkflowRun(h.db, {
+        id: anchorRunId,
+        anchorRunId,
+        tenantId: TENANT_ID,
+        definitionId: DEFINITION_ID,
+      });
+      const launchSpecStore = createWorkflowRunLaunchSpecStore(h.db);
+      const launchSpec = await launchSpecStore.get(ANCHOR_RUN_ID);
+      if (launchSpec === null) throw new Error("Expected launch specification");
+      await launchSpecStore.create({
+        ...launchSpec,
+        anchorRunId,
+        sessionId: `ses-${anchorRunId}`,
+      });
+    }
+
+    // Binds a fresh identity for the allocation's first generation, as the
+    // reconciler does before calling ensure.
+    async function bindFirstGeneration(
+      allocationId: string,
+      anchorRunId: string,
+      provisionerId = "ec2-spot",
+    ) {
+      const store = createSidecarAllocationStore(h.db);
+      await store.createPending({
+        id: allocationId,
+        anchorRunId,
+        tenantId: TENANT_ID,
+        provisionerId,
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: `${provisionerId}:test`,
+      });
+      await store.bindInitialSidecar({
+        allocationId,
+        expectedGeneration: 0,
+        sidecarId: `${allocationId}-minted`,
+        tokenHashSha256: new TextEncoder().encode(allocationId),
+        connectDeadline: new Date(Date.now() + 60_000),
+      });
+      return store;
+    }
+
+    describe("placing an allocation on an existing sidecar", () => {
+      test("records the reused sidecar and deletes the unused identity", async () => {
+        await seedAnchor("anchor-second");
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+        await store.markAllocated({
+          allocationId: "alloc-first",
+          generation: 1,
+        });
+        await bindFirstGeneration("alloc-second", "anchor-second");
+
+        const placed = await store.markAllocated({
+          allocationId: "alloc-second",
+          generation: 1,
+          sidecarId: "alloc-first-minted",
+          externalRef: "pid-shared",
+        });
+
+        expect(placed).toMatchObject({
+          status: "allocated",
+          sidecarId: "alloc-first-minted",
+          ensureAcceptedGeneration: 1,
+          externalRef: "pid-shared",
+        });
+        expect(
+          await h.db.query.sidecar.findFirst({
+            where: eq(sidecar.id, "alloc-second-minted"),
+          }),
+        ).toBeUndefined();
+        expect(
+          (await store.listActive()).map((allocation) => allocation.sidecarId),
+        ).toEqual(["alloc-first-minted", "alloc-first-minted"]);
+      });
+
+      test("rejects a sidecar that hosts no current work", async () => {
+        await seedAnchor("anchor-second");
+        const store = await bindFirstGeneration("alloc-first", ANCHOR_RUN_ID);
+        await store.failWithoutInfrastructure({
+          allocationId: "alloc-first",
+          expectedStatus: "provisioning",
+          expectedGeneration: 1,
+          code: "ensure_rejected",
+          message: "No capacity",
+        });
+        await bindFirstGeneration("alloc-second", "anchor-second");
+
+        await expect(
+          store.markAllocated({
+            allocationId: "alloc-second",
+            generation: 1,
+            sidecarId: "alloc-first-minted",
+          }),
+        ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
+        expect(await store.findById("alloc-second")).toMatchObject({
+          status: "provisioning",
+          sidecarId: "alloc-second-minted",
+        });
+      });
+
+      test("rejects a sidecar another provisioner runs", async () => {
+        await seedAnchor("anchor-second");
+        const store = await bindFirstGeneration(
+          "alloc-first",
+          ANCHOR_RUN_ID,
+          "other-backend",
+        );
+        await store.markAllocated({
+          allocationId: "alloc-first",
+          generation: 1,
+        });
+        await bindFirstGeneration("alloc-second", "anchor-second");
+
+        await expect(
+          store.markAllocated({
+            allocationId: "alloc-second",
+            generation: 1,
+            sidecarId: "alloc-first-minted",
+          }),
+        ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
       });
     });
 
@@ -1860,23 +1985,40 @@ describe.skipIf(!harnessDbEnvAvailable())(
           tenantId: TENANT_ID,
           definitionId: DEFINITION_ID,
         });
-        await expect(
-          store.createAdopted({
-            id: "alloc-other",
-            anchorRunId: "anchor-other",
-            tenantId: TENANT_ID,
-            provisionerId: "ec2-spot",
-            provisionerApiVersion: 1,
-            provisionerBindingFingerprint: "ec2-spot:test",
-            sidecarId: "sidecar-destroy",
-            generation: 1,
-            connectDeadline: new Date(0),
-          }),
-        ).rejects.toMatchObject({
-          cause: expect.objectContaining({
-            constraint_name: "sidecar_allocation_active_sidecar_idx",
-          }),
+        const launchSpecStore = createWorkflowRunLaunchSpecStore(h.db);
+        const launchSpec = await launchSpecStore.get(ANCHOR_RUN_ID);
+        if (launchSpec === null) {
+          throw new Error("Expected launch specification");
+        }
+        await launchSpecStore.create({
+          ...launchSpec,
+          anchorRunId: "anchor-other",
+          sessionId: "ses-destroy-other",
         });
+        await store.createPending({
+          id: "alloc-other",
+          anchorRunId: "anchor-other",
+          tenantId: TENANT_ID,
+          provisionerId: "ec2-spot",
+          provisionerApiVersion: 1,
+          provisionerBindingFingerprint: "ec2-spot:test",
+        });
+        await store.bindInitialSidecar({
+          allocationId: "alloc-other",
+          expectedGeneration: 0,
+          sidecarId: "sidecar-other",
+          tokenHashSha256: new Uint8Array([4, 5, 7]),
+          connectDeadline: new Date(0),
+        });
+        // Capacity left for operator cleanup hosts no current work, so no
+        // provisioner can hand it to another deployment.
+        await expect(
+          store.markAllocated({
+            allocationId: "alloc-other",
+            generation: 1,
+            sidecarId: "sidecar-destroy",
+          }),
+        ).rejects.toBeInstanceOf(SidecarReuseRejectedError);
       });
     }
 

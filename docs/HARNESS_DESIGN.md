@@ -169,11 +169,11 @@ Two observable windows where the cache may be empty or stale, both of which fall
 
 ## Registration and Reconnection
 
-The Hub mints a sidecar identity for each probe or allocation generation and hands it to the provisioner, which starts capacity that authenticates with it. The bearer token resolves to that sidecar and every workflow probe and allocation generation it currently hosts; there is no ambient registration pool. A sidecar hosting only probes has no workflow address to announce.
+The Hub mints a sidecar identity for each probe or allocation generation and hands it to the provisioner, which either starts capacity that authenticates with it or places the work on a sidecar it already runs. The bearer token resolves to that sidecar and every workflow probe and allocation generation it currently hosts; there is no ambient registration pool. A sidecar hosting only probes has no workflow address to announce.
 
 Possession of the raw token is sufficient to authenticate as that sidecar, for every probe and allocation it currently hosts. Provisioners and workers must never log it. A provisioner that must persist the token for restartable capacity must use access-controlled secret storage and delete it once the sidecar hosts no current probe or allocation. Connections crossing a non-loopback or otherwise untrusted transport must use `wss://`; plaintext `ws://` is only appropriate for local loopback development.
 
-On first connection, the worker sends an empty `register` frame. After restoring live supervisors from its storage, it sends `reconnect` with the deployment addresses it restored. The Hub accepts either frame only when the token resolves to a sidecar hosting at least one current probe or allocation generation. It routes an announced address only when that address is the anchor address of a routable allocation the sidecar hosts, and sends `agent.undeploy` for any other announced address instead of closing the socket, so one stale deployment cannot disconnect the sidecar's other work.
+On first connection, the worker sends an empty `register` frame. After restoring live supervisors from its storage, it sends `reconnect` with the deployment addresses it restored. The Hub accepts either frame only when the token resolves to a sidecar hosting at least one current probe or allocation generation. It routes an announced address only when that address is the anchor address of a routable allocation the sidecar hosts whose current generation has finished initializing and whose run has not ended, keeps one whose run ended on its own unrouted, and sends `agent.undeploy` for any other announced address instead of closing the socket, so one stale deployment cannot disconnect the sidecar's other work.
 
 The Hub restores those addresses directly after validation. Frames following the reconnect are serialized behind it on the same socket, so a workflow-run pack re-driven by `onWorkflowAddressesRoutable` cannot overtake route restoration. Trigger and signal durability lives in `workflow_run_dispatch`; the Hub does not maintain an unscoped, in-memory queue for arbitrary disconnected sidecars.
 
@@ -200,7 +200,7 @@ Key rotation is not yet implemented. The architecture supports it: the sidecar w
 
 ## Failure Paths
 
-If the Hub rejects a reconnect because its token resolves to no current probe or allocation, it closes the socket and leaves that capacity unroutable. An announced address the Hub does not route is undeployed instead, and the sidecar's other work stays connected. The provisioner and allocation reconciler own recovery; the worker cannot mint a new identity or claim another address.
+If the Hub rejects a reconnect because its token resolves to no current probe or allocation, it closes the socket and leaves that capacity unroutable. An announced address the Hub neither routes nor keeps unrouted is undeployed instead, and the sidecar's other work stays connected. The provisioner and allocation reconciler own recovery; the worker cannot mint a new identity or claim another address.
 
 If the sidecar discovers agent repositories but has no key pairs for them (for example, keys were deleted), it skips those agents and logs a warning rather than generating a replacement identity that would break signed-content continuity.
 

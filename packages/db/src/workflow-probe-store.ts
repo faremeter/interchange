@@ -1,10 +1,11 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 
 import type { WorkflowProbeResultFrame } from "@intx/types/sidecar";
 import type { WorkflowDefinitionSource } from "@intx/types/workflow-sources";
 
 import type { DB, DBExecutor } from "./client";
 import { sidecar, workflowProbe, type WorkflowProbeStatus } from "./schema";
+import { assertSidecarReusable, lockSidecars } from "./sidecar-reuse";
 
 type DBHandle = DB["db"];
 type WorkflowProbeResult = Omit<WorkflowProbeResultFrame, "type" | "requestId">;
@@ -44,6 +45,36 @@ function timestamp(now?: Date) {
 }
 
 export function createWorkflowProbeStore(db: DBHandle) {
+  async function lockProbeWithSidecars(
+    tx: DBExecutor,
+    condition: SQL | undefined,
+    destinationSidecarId?: string,
+  ) {
+    const [candidate] = await tx
+      .select({ sidecarId: workflowProbe.sidecarId })
+      .from(workflowProbe)
+      .where(condition);
+    if (candidate === undefined) return undefined;
+    await lockSidecars(
+      tx,
+      [candidate.sidecarId, destinationSidecarId].filter((id) => id != null),
+    );
+    // Do not transition a probe that moved to another sidecar while we waited.
+    const [probe] = await tx
+      .select()
+      .from(workflowProbe)
+      .where(
+        and(
+          condition,
+          candidate.sidecarId === null
+            ? isNull(workflowProbe.sidecarId)
+            : eq(workflowProbe.sidecarId, candidate.sidecarId),
+        ),
+      )
+      .for("update");
+    return probe;
+  }
+
   return {
     async create(
       args: CreateWorkflowProbeArgs,
@@ -107,28 +138,71 @@ export function createWorkflowProbeStore(db: DBHandle) {
       return tx === undefined ? db.transaction(bind) : bind(tx);
     },
 
+    /**
+     * Records the provisioner's acceptance of a probe. `sidecarId` names an
+     * existing sidecar the provisioner placed the probe on instead of starting
+     * the one bound to it; the unused bound identity is deleted. Throws
+     * `SidecarReuseRejectedError` when that sidecar cannot be reused, leaving
+     * the probe unchanged.
+     */
     async markProbing(args: {
       probeId: string;
+      sidecarId?: string;
       externalRef?: string;
       now?: Date;
     }): Promise<WorkflowProbe | null> {
-      const [updated] = await db
-        .update(workflowProbe)
-        .set({
-          status: "probing",
-          ...(args.externalRef !== undefined
-            ? { externalRef: args.externalRef }
-            : {}),
-          updatedAt: timestamp(args.now),
-        })
-        .where(
-          and(
-            eq(workflowProbe.id, args.probeId),
-            eq(workflowProbe.status, "provisioning"),
-          ),
-        )
-        .returning();
-      return updated ?? null;
+      return db.transaction(async (tx) => {
+        const condition = and(
+          eq(workflowProbe.id, args.probeId),
+          eq(workflowProbe.status, "provisioning"),
+        );
+        const probe = await lockProbeWithSidecars(
+          tx,
+          condition,
+          args.sidecarId,
+        );
+        if (probe === undefined) return null;
+        const boundSidecarId = probe.sidecarId;
+        const reusedSidecarId =
+          args.sidecarId !== undefined && args.sidecarId !== boundSidecarId
+            ? args.sidecarId
+            : undefined;
+        if (reusedSidecarId !== undefined) {
+          await assertSidecarReusable(tx, {
+            sidecarId: reusedSidecarId,
+            binding: {
+              provisionerId: probe.provisionerId,
+              provisionerApiVersion: probe.provisionerApiVersion,
+              provisionerBindingFingerprint:
+                probe.provisionerBindingFingerprint,
+            },
+            placing: { allocationId: probe.id },
+          });
+        }
+        const [updated] = await tx
+          .update(workflowProbe)
+          .set({
+            status: "probing",
+            ...(reusedSidecarId !== undefined
+              ? { sidecarId: reusedSidecarId }
+              : {}),
+            ...(args.externalRef !== undefined
+              ? { externalRef: args.externalRef }
+              : {}),
+            updatedAt: timestamp(args.now),
+          })
+          .where(condition)
+          .returning();
+        if (updated === undefined) {
+          throw new Error(
+            `Workflow probe ${args.probeId} changed before it was marked probing`,
+          );
+        }
+        if (reusedSidecarId !== undefined && boundSidecarId !== null) {
+          await tx.delete(sidecar).where(eq(sidecar.id, boundSidecarId));
+        }
+        return updated;
+      });
     },
 
     async recordResult(
@@ -157,29 +231,44 @@ export function createWorkflowProbeStore(db: DBHandle) {
         failureCode?: string;
         failureMessage?: string;
         now?: Date;
+        /**
+         * For succeeded/failed, do not already hold the probe row lock unless
+         * this transaction locked its sidecar first. Acquire multiple sidecar
+         * locks in ID order before locking probe rows, including through writes.
+         */
         tx?: DBExecutor;
       },
     ): Promise<WorkflowProbe | null> {
-      const [updated] = await (opts?.tx ?? db)
-        .update(workflowProbe)
-        .set({
-          status: to,
-          ...(opts?.failureCode !== undefined
-            ? { failureCode: opts.failureCode }
-            : {}),
-          ...(opts?.failureMessage !== undefined
-            ? { failureMessage: opts.failureMessage }
-            : {}),
-          updatedAt: timestamp(opts?.now),
-        })
-        .where(
-          and(
-            eq(workflowProbe.id, probeId),
-            inArray(workflowProbe.status, [...from]),
-          ),
+      const removesHolder = to === "succeeded" || to === "failed";
+      const transition = async (tx: DBExecutor) => {
+        const condition = and(
+          eq(workflowProbe.id, probeId),
+          inArray(workflowProbe.status, [...from]),
+        );
+        if (
+          removesHolder &&
+          (await lockProbeWithSidecars(tx, condition)) === undefined
         )
-        .returning();
-      return updated ?? null;
+          return null;
+        const [updated] = await tx
+          .update(workflowProbe)
+          .set({
+            status: to,
+            ...(opts?.failureCode !== undefined
+              ? { failureCode: opts.failureCode }
+              : {}),
+            ...(opts?.failureMessage !== undefined
+              ? { failureMessage: opts.failureMessage }
+              : {}),
+            updatedAt: timestamp(opts?.now),
+          })
+          .where(condition)
+          .returning();
+        return updated ?? null;
+      };
+      return opts?.tx === undefined && removesHolder
+        ? db.transaction(transition)
+        : transition(opts?.tx ?? db);
     },
 
     async get(probeId: string): Promise<WorkflowProbe | null> {
