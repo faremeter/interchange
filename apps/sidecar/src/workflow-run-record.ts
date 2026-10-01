@@ -88,6 +88,12 @@ const workflowRunRecordBase = {
   "credentials?": CredentialDelivery,
   "sessionId?": "string > 0",
   "hubPublicKey?": "string > 0",
+  // A deployment that no longer runs keeps its record until the Hub undeploys
+  // it, marked so a restart reports it instead of spawning it: `stopped`, with
+  // the error that ended it unless the Hub stopped it, or `tearing-down` when
+  // its undeploy did not finish.
+  "state?": "'stopped' | 'tearing-down'",
+  "error?": "string > 0",
 } as const;
 
 /**
@@ -203,6 +209,49 @@ export async function writeWorkflowRunRecord(
   await writeFileAtomicDurable(path, JSON.stringify(sealed, null, 2), {
     mode: 0o600,
   });
+}
+
+/**
+ * Mark a run's record with what became of its deployment, keeping the rest of
+ * the record as it is, so a restart reports the deployment instead of spawning
+ * it. Returns false when the run has no record.
+ */
+export async function markWorkflowRunRecord(
+  dataDir: string,
+  runId: string,
+  mark: { readonly state: "stopped" | "tearing-down"; readonly error?: string },
+): Promise<boolean> {
+  const path = recordPath(dataDir, runId);
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (cause) {
+    if (isENOENT(cause)) return false;
+    throw cause;
+  }
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      `workflow-runs/${runId}/${WORKFLOW_RUN_RECORD_FILENAME} is not a record`,
+    );
+  }
+  const { error: _replaced, ...record } = Object.fromEntries(
+    Object.entries(parsed),
+  );
+  await writeFileAtomicDurable(
+    path,
+    JSON.stringify(
+      {
+        ...record,
+        state: mark.state,
+        ...(mark.error !== undefined ? { error: mark.error } : {}),
+      },
+      null,
+      2,
+    ),
+    { mode: 0o600 },
+  );
+  return true;
 }
 
 /**

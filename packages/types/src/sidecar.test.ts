@@ -552,6 +552,25 @@ describe("frame array-length ceilings", () => {
       };
       expect(HelloFrame(frame) instanceof type.errors).toBe(true);
     });
+
+    test("carries why a stopped incarnation stopped, when it says", () => {
+      const stopped = (error?: string) => ({
+        ...base,
+        incarnations: [
+          {
+            address: "wf@example.test",
+            generation: 1,
+            state: "stopped",
+            ...(error !== undefined ? { error } : {}),
+          },
+        ],
+      });
+      expect(HelloFrame(stopped()) instanceof type.errors).toBe(false);
+      expect(
+        HelloFrame(stopped("The child ended itself")) instanceof type.errors,
+      ).toBe(false);
+      expect(HelloFrame(stopped("")) instanceof type.errors).toBe(true);
+    });
   });
 
   describe("HelloFrame cachedSenderAddresses", () => {
@@ -750,6 +769,35 @@ describe("frame payload byte limits", () => {
     // payload-limit design depends on.
     expect(MAX_SIDECAR_FRAME_BYTES).toBeGreaterThan(
       MAX_MAIL_OUTBOUND_BODY_BYTES,
+    );
+  });
+});
+
+describe("DeploymentStoppedFrame", () => {
+  const frame = {
+    type: "deployment.stopped" as const,
+    agentAddress: "wf@example.test",
+    generation: 1,
+    error: "Its workflow child ended itself",
+    refTips: { "refs/heads/main": "c".repeat(40), "refs/heads/events": null },
+  };
+
+  test("the SidecarFrame union admits a stop report with its history tips", () => {
+    const out = SidecarFrame(frame);
+    if (out instanceof type.errors) {
+      throw new Error(`expected a valid SidecarFrame: ${out.summary}`);
+    }
+    expect(out).toEqual(frame);
+  });
+
+  test("admits a report whose tips could not be read", () => {
+    const { refTips: _refTips, ...withoutTips } = frame;
+    expect(SidecarFrame(withoutTips) instanceof type.errors).toBe(false);
+  });
+
+  test("refuses a report without why", () => {
+    expect(SidecarFrame({ ...frame, error: "" }) instanceof type.errors).toBe(
+      true,
     );
   });
 });

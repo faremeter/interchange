@@ -75,6 +75,7 @@ import {
   WorkflowProjectionDefinition,
   type AgentDeployFrame,
   type CredentialDelivery,
+  type DeploymentStoppedFrame,
   type HostedIncarnation,
   type IncarnationState,
   type SourceRefPin,
@@ -109,6 +110,7 @@ import type {
 } from "./workflow-run-pack-client";
 import {
   deleteWorkflowRunRecord,
+  markWorkflowRunRecord,
   scanWorkflowRunRecords,
   writeWorkflowRunRecord,
   type WorkflowRunRecord,
@@ -850,8 +852,8 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    * Self-termination sink forwarded to the supervisor's `onSelfTerminate`
    * binding. The supervisor invokes it when it drives itself to a terminal
    * phase (crash-loop latch, channel crash, recycle failure); production wiring
-   * routes it to the deploy router's address reclaim. Absent means a
-   * self-termination is not surfaced to the host.
+   * routes it to the deploy router, which holds the deployment as stopped.
+   * Absent means a self-termination is not surfaced to the host.
    */
   onSelfTerminate?: (info: {
     phase: "stopped" | "crash-looping";
@@ -1074,10 +1076,11 @@ export interface SidecarDeployRouter extends DeployRouter {
    * Re-establish every persisted workflow deployment on this sidecar's local
    * substrate. Runs once at boot, before `hubLink.connect()`, so a single-step
    * head's mailbox/transport registration is live before the hub routes to it.
-   * Soft-fails per deployment: a record that cannot be restored (unbuildable
+   * Soft-fails per deployment: one that cannot be restored (unbuildable
    * provider, a source closure that cannot be re-materialized, spawn failure)
-   * is logged and left on disk for a later boot to retry -- it is never
-   * deleted here.
+   * is held as stopped with why, and its record is marked so, so a later boot
+   * reports it instead of trying again and the Hub fails it. Its record is
+   * never deleted here.
    */
   restoreWorkflowRuns(): Promise<void>;
   /**
@@ -1088,6 +1091,14 @@ export interface SidecarDeployRouter extends DeployRouter {
    * live, so a caller re-reads it whenever it needs it.
    */
   incarnations(): HostedIncarnation[];
+  /**
+   * Report again every deployment that stopped though the Hub did not stop
+   * it: those held stopped with the error that ended them, and those a boot
+   * left unrestored because the sidecar already held as many as its hello can
+   * report. Called after every `welcome`, as a report sent while the link was
+   * down is lost.
+   */
+  reportStoppedDeployments(): void;
   /**
    * Trigger B: re-register every correlation the deployment at `address` is
    * currently parked on, by asking its live supervisor to re-emit them to the
@@ -1418,6 +1429,14 @@ export function createSidecarDeployRouter(deps: {
    * last.
    */
   removeRunRepository: (runId: string) => Promise<void>;
+  /**
+   * Send the Hub a report of a deployment that stopped though the Hub did not
+   * stop it, with the tips of its history branches. Tests that do not
+   * exercise the report omit it.
+   */
+  publishDeploymentStopped?: (
+    report: Omit<DeploymentStoppedFrame, "type">,
+  ) => void;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -1486,8 +1505,45 @@ export function createSidecarDeployRouter(deps: {
     generation: number;
     state: IncarnationState;
     wired?: SidecarWorkflowSupervisor;
+    // Why a stopped incarnation stopped when the Hub did not stop it.
+    error?: string;
   };
   const deployments = new Map<string, HostedDeployment>();
+  // Records a boot left unrestored past the hello limit, reported until the
+  // Hub undeploys them.
+  const unrestored: { agentAddress: string; generation: number }[] = [];
+
+  // Reading the tips also schedules the push of any commit the Hub has not
+  // acknowledged. The report does not wait for those pushes: the Hub waits for
+  // the history it lacks, for a bounded time. Tips that cannot be read leave
+  // the report without them rather than unsent, so the Hub still learns of
+  // the stop and records the history as possibly lost.
+  function reportStopped(stopped: {
+    agentAddress: string;
+    generation: number;
+    error: string;
+  }): void {
+    void deps
+      .reportDeploymentRefTips({
+        agentAddress: stopped.agentAddress,
+        generation: stopped.generation,
+      })
+      .catch((cause: unknown): undefined => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`Could not read the history tips of ${stopped.agentAddress}; reporting its stop without them: ${message}`;
+        return undefined;
+      })
+      .then((refTips) => {
+        deps.publishDeploymentStopped?.({
+          ...stopped,
+          ...(refTips !== undefined ? { refTips } : {}),
+        });
+      })
+      .catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`Could not report that ${stopped.agentAddress} stopped: ${message}`;
+      });
+  }
   const workflowCancellationTasks = new WeakMap<
     SidecarWorkflowSupervisor,
     Promise<void>
@@ -1550,63 +1606,76 @@ export function createSidecarDeployRouter(deps: {
     deps.multistepCredentialsRouter?.unregister(agentAddress);
   }
 
-  // Reclaim a deployment address whose supervisor drove ITSELF to a terminal
-  // phase (crash-loop latch, channel crash, recycle failure) without an
-  // operator undeploy. Drops the address's runtime/routing state so a redeploy
-  // of the same address succeeds without a manual undeploy: the `deployments`
-  // entry is the redeploy gate, and `transport.register`
-  // throws on a double-register, so both must be released here. The routers and
-  // the slug are released too so a frame racing the reclaim is rejected at the
-  // boundary rather than dispatched into the dead supervisor, and the slug is
-  // free to re-claim.
+  // Hold a deployment whose supervisor drove ITSELF to a terminal phase
+  // (crash-loop latch, channel crash, recycle failure) as stopped, with why,
+  // until the Hub undeploys it: the hello reports it, the Hub fails the
+  // deployment, and its local state stays for inspection meanwhile. Its record
+  // is marked too, so a restart reports it instead of spawning it again. The
+  // routers and the transport registration are released so a frame racing the
+  // stop is rejected at the boundary rather than dispatched into the dead
+  // supervisor.
   //
-  // Three deliberate invariants:
+  // Two deliberate invariants:
   //   - This NEVER calls back into `wired.supervisor.*`. It runs as the
   //     supervisor's own `onSelfTerminate` sink, i.e. re-entrantly during the
   //     supervisor's terminal teardown; a call back in (e.g. `shutdown()`)
   //     would re-enter that teardown. The supervisor has already terminated, so
   //     there is nothing to shut down.
-  //   - It does NOT delete the durable run record or on-disk state (unlike the
-  //     `undeploy` hook). The run record mirrors the hub's deployment intent,
-  //     and a self-termination is not a hub-initiated undeploy: the hub still
-  //     believes the address is deployed. Leaving the record lets a boot restore
-  //     re-spawn a fresh supervisor for the address, and a same-process redeploy
-  //     overwrites the record destructively. This preserves the pre-existing
-  //     boot-restore behavior exactly -- a self-terminated deployment already
-  //     left its record on disk before this reclaim existed; the reclaim only
-  //     drops in-memory routing state, never durable state.
   //   - It does NOT call `unregisterDeployment`, so the deployment address
   //     mapping (`deploymentAddressRegistry`) is RETAINED. That mapping is
   //     consulted only by the OUTBOUND workflow-run pack push
   //     (`registry.resolve`), which the supervisor itself drives; no inbound
-  //     frame consults it (a frame racing the reclaim is rejected by the
-  //     routers above, not routed through this mapping). The crash-loop latch
-  //     commits its `RunFailed` tombstone, resolving this mapping, before this
-  //     sink fires. Retaining a stale entry never blocks a redeploy: `record`
-  //     overwrites idempotently, and an operator `undeploy` or a process
-  //     restart clears it.
+  //     frame consults it (a frame racing the stop is rejected by the routers
+  //     above, not routed through this mapping). The crash-loop latch commits
+  //     its `RunFailed` tombstone, resolving this mapping, before this sink
+  //     fires. The undeploy that releases the incarnation clears it.
   //
   // Fully synchronous with no `await` between the guard and the mutations, so it
   // is idempotent and cannot interleave with a concurrent operator `undeploy` of
-  // the same address (both are "if present, drop").
-  function reclaimSelfTerminatedSupervisor(args: {
+  // the same address; the record write runs after them.
+  function stopSelfTerminatedSupervisor(args: {
     runId: string;
     agentAddress: string;
     hosted: HostedDeployment;
+    error: string;
   }): void {
-    // Only the copy that terminated: an undeploy and a redeploy of the same
-    // generation can land before a late sink fires.
+    // Only the copy that terminated, and only once: an undeploy can land
+    // before a late sink fires, and the sink can fire twice. A copy the Hub
+    // is undeploying did not stop on its own, even when its child ends during
+    // the teardown.
     if (
       deployments.get(args.agentAddress) !== args.hosted ||
-      args.hosted.wired === undefined
+      args.hosted.wired === undefined ||
+      args.hosted.state === "tearing-down"
     )
       return;
     // Drop racing frames at the router boundary first, then unwind the
     // underlying registrations -- the same ordering the undeploy hook uses.
     unregisterWorkflowRoutes(args.agentAddress);
-    deployments.delete(args.agentAddress);
+    delete args.hosted.wired;
     deps.transport.unregister(args.agentAddress);
-    releaseSlug(args.runId, args.agentAddress);
+    args.hosted.state = "stopped";
+    args.hosted.error = args.error;
+    const report = (): void => {
+      reportStopped({
+        agentAddress: args.agentAddress,
+        generation: args.hosted.generation,
+        error: args.error,
+      });
+    };
+    if (stepStateDataDir === undefined) {
+      report();
+      return;
+    }
+    void markWorkflowRunRecord(stepStateDataDir, args.runId, {
+      state: "stopped",
+      error: args.error,
+    })
+      .catch((cause: unknown) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        logger.error`Could not record that ${args.agentAddress} stopped on its own; a restart would spawn it again: ${message}`;
+      })
+      .finally(report);
   }
 
   /**
@@ -1983,15 +2052,15 @@ export function createSidecarDeployRouter(deps: {
         onSuspensionRegister: (registration) => {
           publishSuspension({ ...registration, generation: spec.generation });
         },
-        // Reclaim the deployment address when the supervisor drives itself to a
-        // terminal phase (crash-loop latch, channel crash, recycle failure) so
-        // the dead supervisor is dropped from `deployments` and the
-        // address is redeployable without a manual undeploy first.
-        onSelfTerminate: () => {
-          reclaimSelfTerminatedSupervisor({
+        // Hold the deployment as stopped when the supervisor drives itself to
+        // a terminal phase (crash-loop latch, channel crash, recycle failure),
+        // so the Hub learns why it ended.
+        onSelfTerminate: ({ phase, reason }) => {
+          stopSelfTerminatedSupervisor({
             runId,
             agentAddress: spec.agentAddress,
             hosted,
+            error: `Its workflow child ended itself (${phase}): ${reason}`,
           });
         },
         substrateEnv,
@@ -2699,7 +2768,8 @@ export function createSidecarDeployRouter(deps: {
         }
         return {};
       }
-      // Cancellation without a supervisor must still retire its restart record.
+      // Cancellation without a supervisor must still mark its restart record
+      // stopped.
       // Publish stop before its first await. It fences new commands and deploys
       // while shutdown releases the cancellation handshake and kills the child.
       const pending = Promise.resolve().then(async () => {
@@ -2724,11 +2794,16 @@ export function createSidecarDeployRouter(deps: {
           }
           if (hosted.state === "live") hosted.state = "stopped";
         }
-        // A stopped terminal deployment must not respawn on sidecar restart.
+        // A stopped deployment must not respawn on a sidecar restart, which
+        // reports it as stopped instead.
         if (stepStateDataDir !== undefined) {
-          await deleteWorkflowRunRecord(
+          await markWorkflowRunRecord(
             stepStateDataDir,
             deriveDeploymentId(frame.agentAddress),
+            {
+              state: "stopped",
+              ...(hosted?.error !== undefined ? { error: hosted.error } : {}),
+            },
           );
         }
       });
@@ -2772,11 +2847,13 @@ export function createSidecarDeployRouter(deps: {
       const wired = hosted?.wired;
       const dataDir = stepStateDataDir;
       // Every step runs even when an earlier one fails, and the failures are
-      // thrown together, so the answer names each step that failed. The run
-      // repository and the record inside it go last: after a crash
-      // mid-teardown the record restores the copy on the next boot, whose
-      // hello reports it, and the Hub undeploys it again. Without the record
-      // nothing would report what the crash left behind.
+      // thrown together, so the answer names each step that failed. The record
+      // is marked tearing down first and goes last, with the run repository:
+      // after a crash mid-teardown the next boot reports the incarnation as
+      // tearing down, and the Hub undeploys it again. Without the record
+      // nothing would report what the crash left behind. A teardown that fails
+      // stays reported for the same reason: as tearing down, or outside the
+      // hello for a record the boot left unrestored.
       const failures: Error[] = [];
       const attempt = async (
         step: string,
@@ -2792,6 +2869,13 @@ export function createSidecarDeployRouter(deps: {
       // A step below that throws still leaves the deployment without its
       // address, so nothing may keep sending as this one.
       try {
+        if (dataDir !== undefined) {
+          await attempt("marking its record", async () => {
+            await markWorkflowRunRecord(dataDir, runId, {
+              state: "tearing-down",
+            });
+          });
+        }
         if (wired !== undefined) {
           await attempt("shutting its supervisor down", async () => {
             try {
@@ -2834,11 +2918,15 @@ export function createSidecarDeployRouter(deps: {
           for (const [step, dir] of localState) {
             await attempt(step, () => removeTree(dir));
           }
-          await attempt("removing its run repository and record", () =>
-            deps.removeRunRepository(runId),
-          );
+          // A teardown that did not finish keeps them, so a restart still
+          // reports the incarnation and the next undeploy finishes it.
+          if (failures.length === 0) {
+            await attempt("removing its run repository and record", () =>
+              deps.removeRunRepository(runId),
+            );
+          }
         }
-        releaseSlug(runId, frame.agentAddress);
+        if (failures.length === 0) releaseSlug(runId, frame.agentAddress);
       } finally {
         // Drop the deployment address's transport registration installed at
         // spawn (OUTBOUND half of mailbox ownership, §3a). Both single- and
@@ -2851,11 +2939,24 @@ export function createSidecarDeployRouter(deps: {
           runId,
           agentAddress: frame.agentAddress,
         });
-        if (
-          hosted !== undefined &&
-          deployments.get(frame.agentAddress) === hosted
-        )
-          deployments.delete(frame.agentAddress);
+        const held = deployments.get(frame.agentAddress);
+        if (failures.length > 0) {
+          // A held incarnation stays held without its supervisor, so the hello
+          // keeps reporting it as tearing down and the Hub undeploys it again.
+          // A record the boot left unrestored is not held here: it stays
+          // reported outside the hello, which holding it could push past its
+          // limit.
+          if (hosted !== undefined && held === hosted) delete hosted.wired;
+        } else {
+          if (hosted !== undefined && held === hosted)
+            deployments.delete(frame.agentAddress);
+          const left = unrestored.findIndex(
+            (record) =>
+              record.agentAddress === frame.agentAddress &&
+              record.generation <= frame.generation,
+          );
+          if (left !== -1) unrestored.splice(left, 1);
+        }
       }
       if (failures.length > 0) {
         throw new AggregateError(
@@ -2884,30 +2985,56 @@ export function createSidecarDeployRouter(deps: {
       // with. Each record's failure is caught so one bad deployment cannot
       // strand the rest.
       for (const { runId, record } of scanned) {
+        // Integrity: the stored address must re-derive to its own directory
+        // name. A mismatch means a corrupt or misplaced record; skip it rather
+        // than restore a deployment under the wrong slug. (A source-ref record
+        // missing its source/closure/approvedWireHash is rejected earlier, at
+        // the scan boundary, by the record schema's discriminated union -- so
+        // no bespoke source-ref guard is needed here.)
+        const derived = deriveDeploymentId(record.agentAddress);
+        if (derived !== runId) {
+          logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${runId}`;
+          continue;
+        }
+        // Past the limit a hello can report, a restored deployment would fail
+        // every handshake. The record is kept unspawned and reported stopped
+        // after every `welcome` instead. Which records are left out is
+        // arbitrary: the Hub fails a current one and undeploys a stale one,
+        // which removes its files.
+        if (deployments.size >= maxIncarnations) {
+          logger.warn`this sidecar already holds as many deployments as its hello can report; ${record.agentAddress} is left unrestored`;
+          unrestored.push({
+            agentAddress: record.agentAddress,
+            generation: record.generation,
+          });
+          continue;
+        }
+        // An address already held keeps its slug and its hold: freeing either
+        // here would strand the running deployment's guards.
+        if (deployments.has(record.agentAddress)) {
+          logger.warn`sidecar deploy router: ${record.agentAddress} is already held; refusing to restore it again`;
+          continue;
+        }
+        // The slug is the caller's, matching `deployMultiStep`. Restore does NOT
+        // re-materialize the step grants or the onTrigger body sources -- both
+        // are already on disk from the original deploy.
+        claimSlug(runId, record.agentAddress);
+        // A deployment that no longer ran is held as it was, unspawned, until
+        // the Hub undeploys it.
+        if (record.state !== undefined) {
+          deployments.set(record.agentAddress, {
+            generation: record.generation,
+            state: record.state,
+            ...(record.error !== undefined ? { error: record.error } : {}),
+          });
+          continue;
+        }
+        const hosted: HostedDeployment = {
+          generation: record.generation,
+          state: "deploying",
+        };
+        deployments.set(record.agentAddress, hosted);
         try {
-          // Integrity: the stored address must re-derive to its own directory
-          // name. A mismatch means a corrupt or misplaced record; skip it
-          // rather than restore a deployment under the wrong slug. (A source-ref
-          // record missing its source/closure/approvedWireHash is rejected
-          // earlier, at the scan boundary, by the record schema's discriminated
-          // union -- so no bespoke source-ref guard is needed here.)
-          const derived = deriveDeploymentId(record.agentAddress);
-          if (derived !== runId) {
-            logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${runId}`;
-            continue;
-          }
-          // Past the limit a hello can report, a restored deployment would fail
-          // every handshake. The record is kept unspawned, so nothing reports
-          // it. Which records are left out is arbitrary: the Hub fails a
-          // current one left out, as its sidecar no longer reports it. A later
-          // boot with room restores and reports a stale one, and the Hub
-          // undeploys it then.
-          if (deployments.size >= maxIncarnations) {
-            throw new Error(
-              `this sidecar already holds as many deployments as its hello can report; ${record.agentAddress} is left unrestored`,
-            );
-          }
-
           // Reconstruct this deployment's runnable definition. Source-ref is
           // the only lineage: re-materialize the pinned closure and evaluate the
           // pinned code to the live definition, then project it to the inert
@@ -2922,9 +3049,8 @@ export function createSidecarDeployRouter(deps: {
           // asset-sourced entries read from the durable source store the
           // original deploy checked out (`materializeDeploymentClosure` derives
           // the mounts from the pin, so no re-delivery is needed). Both are
-          // SRI-verified. A cache/store miss soft-fails the record (kept for the
-          // next boot), matching the `assertSourceBuildable` retry-on-later-boot
-          // behavior below. The schema guarantees a source-ref record carries a
+          // SRI-verified. A cache/store miss fails the restore like any check
+          // below. The schema guarantees a source-ref record carries a
           // `sourceRef` pin, so no undefined-check is needed.
           const applied = await materializeDeploymentClosure(
             dataDir,
@@ -2935,8 +3061,9 @@ export function createSidecarDeployRouter(deps: {
             projectLiveToInert(applied.definition),
           );
           if (validatedDefinition instanceof type.errors) {
-            logger.warn`skipping workflow deployment restore for ${record.agentAddress}: workflow definition loaded from the frozen closure failed projection validation: ${validatedDefinition.summary}`;
-            continue;
+            throw new Error(
+              `workflow definition loaded from the frozen closure failed projection validation: ${validatedDefinition.summary}`,
+            );
           }
           const definition: WorkflowProjectionDefinition = validatedDefinition;
           const closurePackageDir = applied.packageDir;
@@ -2951,8 +3078,7 @@ export function createSidecarDeployRouter(deps: {
           // Re-run the source-admission gate: refuse to restore a deployment
           // whose pinned provider this sidecar can no longer build. Every
           // source in a step's failover chain must be buildable, so this
-          // iterates the whole list. The record is KEPT (not deleted) so a
-          // later boot with the provider restored retries it.
+          // iterates the whole list.
           for (const stepId of definition.stepOrder) {
             const chain = record.sources[stepId];
             if (chain !== undefined) {
@@ -2991,43 +3117,48 @@ export function createSidecarDeployRouter(deps: {
             sourceRef: record.sourceRef,
           };
 
-          // The slug is the caller's, matching `deployMultiStep`: claim before
-          // the spawn, release on failure. Unlike deploy's soft-fail, restore
-          // does NOT delete the record and does NOT re-materialize the step
-          // grants or the onTrigger body sources -- both are already on disk
-          // from the original deploy. A failed restore just warns and
-          // leaves the record for the next boot; there is deliberately no GC
-          // of a permanently-unrestorable record here (an operator reclaims it
-          // by undeploying the address).
-          //
-          // An address already held keeps its slug and its hold: freeing
-          // either here would strand the running deployment's guards.
-          if (deployments.has(record.agentAddress)) {
-            throw new Error(
-              `sidecar deploy router: ${record.agentAddress} is already held; refusing to restore it again`,
-            );
-          }
-          claimSlug(runId, record.agentAddress);
-          const hosted: HostedDeployment = {
-            generation: record.generation,
-            state: "deploying",
-          };
-          deployments.set(record.agentAddress, hosted);
-          try {
-            await spawnWorkflowRun(spec, hosted);
-            hosted.state = "live";
-            logger.info`Restored workflow deployment for ${record.agentAddress} generation ${String(record.generation)}`;
-          } catch (cause) {
-            if (deployments.get(record.agentAddress) === hosted) {
-              deployments.delete(record.agentAddress);
-            }
-            releaseSlug(runId, record.agentAddress);
-            throw cause;
-          }
+          await spawnWorkflowRun(spec, hosted);
+          hosted.state = "live";
+          logger.info`Restored workflow deployment for ${record.agentAddress} generation ${String(record.generation)}`;
         } catch (cause) {
+          // Held as stopped, with why, until the Hub fails and undeploys it,
+          // and recorded so the next boot does not try again.
           const reason = cause instanceof Error ? cause.message : String(cause);
           logger.warn`Failed to restore workflow deployment ${runId}: ${reason}`;
+          delete hosted.wired;
+          hosted.state = "stopped";
+          hosted.error = `The sidecar could not restore it: ${reason}`;
+          try {
+            await markWorkflowRunRecord(dataDir, runId, {
+              state: "stopped",
+              error: hosted.error,
+            });
+          } catch (markCause) {
+            const message =
+              markCause instanceof Error
+                ? markCause.message
+                : String(markCause);
+            logger.error`Could not record that ${record.agentAddress} failed to restore; the next boot tries it again: ${message}`;
+          }
         }
+      }
+    },
+    reportStoppedDeployments(): void {
+      for (const [agentAddress, hosted] of deployments) {
+        if (hosted.state === "stopped" && hosted.error !== undefined) {
+          reportStopped({
+            agentAddress,
+            generation: hosted.generation,
+            error: hosted.error,
+          });
+        }
+      }
+      for (const left of unrestored) {
+        reportStopped({
+          ...left,
+          error:
+            "The sidecar left it unrestored: it already held as many deployments as its hello can report",
+        });
       }
     },
     incarnations(): HostedIncarnation[] {
@@ -3035,6 +3166,7 @@ export function createSidecarDeployRouter(deps: {
         address,
         generation: hosted.generation,
         state: hosted.state,
+        ...(hosted.error !== undefined ? { error: hosted.error } : {}),
       }));
     },
     reEmitParkedCorrelations(address: string): void {

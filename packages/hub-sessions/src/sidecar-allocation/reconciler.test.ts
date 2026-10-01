@@ -22,7 +22,11 @@ import {
   tick,
 } from "../ws/sidecar-handler.test-helpers";
 import type { EnsureSidecarResult, SidecarProvisioner } from "./contracts";
-import { SidecarDeploymentMissingError } from "./operation";
+import {
+  SidecarDeploymentMissingError,
+  SidecarDeploymentHistoryPendingError,
+  SidecarDeploymentStoppedError,
+} from "./operation";
 import {
   createSidecarAllocationReconciler,
   type SidecarAllocationReconcilerDeps,
@@ -59,6 +63,7 @@ function fakeStore(overrides: Partial<AllocationStore> = {}): AllocationStore {
   };
   return {
     beginReplacement: notUsed("beginReplacement"),
+    failStoppedDeployment: notUsed("failStoppedDeployment"),
     beginRelease: notUsed("beginRelease"),
     beginUnrecoverableRelease: notUsed("beginUnrecoverableRelease"),
     bindInitialSidecar: notUsed("bindInitialSidecar"),
@@ -113,6 +118,8 @@ function deps(args: {
   checks?: string[];
   readyError?: Error;
   waitError?: Error;
+  /** Why the sidecar reported the deployment stopped on its own, if it did. */
+  reportedStop?: string;
   onReady?: (row: SidecarAllocation) => Promise<void>;
 }): SidecarAllocationReconcilerDeps {
   const provisioner = args.provisioner ?? testProvisioner();
@@ -141,6 +148,7 @@ function deps(args: {
       },
       holdsAllocatedBinding: () =>
         args.readyOnlyAfterSync === true ? syncedOnce : true,
+      reportedDeploymentFailure: () => args.reportedStop,
       syncSidecar: async (sidecarId) => {
         syncedOnce = true;
         args.synced?.push(sidecarId);
@@ -1132,6 +1140,114 @@ describe("createSidecarAllocationReconciler", () => {
     ]);
   });
 
+  test("fails a deployment its sidecar reports stopped and keeps the capacity", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-current",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+      reconciliationLeaseId: "lease-1",
+    });
+    let claimed = false;
+    const calls: unknown[] = [];
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocated;
+      },
+      failStoppedDeployment: async (args) => {
+        calls.push(["fail", args]);
+        return true;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        fences,
+        ready: true,
+        onReady: async () => {
+          throw new SidecarDeploymentStoppedError("The child ended itself");
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    // One store call fails it and settles it, keeping the reason: marking the
+    // connection ready separately would clear it.
+    expect(calls).toEqual([
+      [
+        "fail",
+        {
+          allocationId: "alloc-1",
+          expectedGeneration: 1,
+          expectedLeaseId: "lease-1",
+          failureCode: "sidecar_deployment_stopped",
+          failureMessage: "The child ended itself",
+          now: NOW,
+        },
+      ],
+    ]);
+    // The generation is not fenced: its stopped copy stays for inspection.
+    expect(fences).toEqual([["alloc-1", 1]]);
+  });
+
+  test("looks again while the Hub waits for a stopped deployment's history", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-current",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+      reconciliationLeaseId: "lease-1",
+    });
+    let claimed = false;
+    const calls: unknown[] = [];
+    const retryAt = new Date(NOW.getTime() + 1_000);
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocated;
+      },
+      scheduleRetry: async (args) => {
+        calls.push(["retry", args]);
+        return allocated;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        ready: true,
+        onReady: async () => {
+          throw new SidecarDeploymentHistoryPendingError(
+            "refs/heads/main is at b on the Hub and c on the worker",
+            retryAt,
+          );
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(calls).toEqual([
+      [
+        "retry",
+        {
+          allocationId: "alloc-1",
+          expectedStatus: "allocated",
+          expectedGeneration: 1,
+          expectedLeaseId: "lease-1",
+          nextAttemptAt: retryAt,
+          now: NOW,
+        },
+      ],
+    ]);
+  });
+
   test("does not fence a newer generation after losing the release race", async () => {
     const allocated = allocation({
       status: "allocated",
@@ -1285,6 +1401,46 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(releaseStarted).toBe(false);
     expect(parked).toBe(true);
+  });
+
+  test("fails a lost worker that reported its deployment stopped for the reason it gave", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-old",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+    });
+    let failure:
+      | Parameters<AllocationStore["beginUnrecoverableRelease"]>[0]
+      | undefined;
+    const store = fakeStore({
+      claimNextReconcilable: async () => allocated,
+      beginUnrecoverableRelease: async (args) => {
+        failure = args;
+        return allocation({
+          status: "releasing",
+          generation: 2,
+          sidecarId: "sc-old",
+        });
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        ready: false,
+        waitError: new Error("connect timeout"),
+        reportedStop: "Its workflow child ended itself (running): crash loop",
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(failure).toMatchObject({
+      failureCode: "sidecar_deployment_stopped",
+      failureMessage:
+        "Its workflow child ended itself (running): crash loop; its sidecar disconnected, and history the Hub never received may be lost",
+    });
   });
 
   test("fails a lost allocated worker", async () => {
@@ -1478,6 +1634,42 @@ describe("createSidecarAllocationReconciler", () => {
     await reconciler.repairUnscheduledConnections();
 
     expect(repairs).toEqual([]);
+  });
+
+  test("wakes a ready allocation whose reported stop the Hub has not recorded", async () => {
+    for (const { failureCode, runnable, woken } of [
+      { failureCode: undefined, runnable: true, woken: true },
+      {
+        failureCode: "sidecar_deployment_stopped",
+        runnable: true,
+        woken: false,
+      },
+      // A cancel that raced the report left nothing for a wake to fail.
+      { failureCode: undefined, runnable: false, woken: false },
+    ]) {
+      const { nextAttemptAt: _nextAttemptAt, ...unscheduled } = allocation({
+        status: "allocated",
+        generation: 1,
+        ensureAcceptedGeneration: 1,
+        ...(failureCode !== undefined ? { failureCode } : {}),
+      });
+      const wakes: [string, number][] = [];
+      const store = fakeStore({
+        listActive: async () => [unscheduled],
+        hasRunnableAnchor: async () => runnable,
+        wakeReconciliation: async (id, generation) => {
+          wakes.push([id, generation]);
+          return true;
+        },
+      });
+      const reconciler = createSidecarAllocationReconciler(
+        deps({ store, ready: true, reportedStop: "The child ended itself" }),
+      );
+
+      await reconciler.repairUnscheduledConnections();
+
+      expect(wakes).toEqual(woken ? [["alloc-1", 1]] : []);
+    }
   });
 
   test("leaves an allocation with inconclusive readiness for the next repair sweep", async () => {

@@ -99,10 +99,10 @@ credential encryption key included. A provisioner that declares
 another on a full sidecar like any placement it cannot accept, and the sidecar
 refuses a deploy past it. A sidecar that restarts with more run records than
 that, such as those of self-terminated deployments the Hub has since failed,
-restores only up to the limit and keeps the rest unspawned and unreported.
-Which records it leaves out is arbitrary. The Hub fails a current deployment
-left out, as its sidecar no longer reports it. A later boot with room restores
-a stale one, and the Hub undeploys it then.
+restores only up to the limit and keeps the rest unspawned. Which records it
+leaves out is arbitrary. It reports each of them stopped after every `welcome`,
+outside the `hello`: the Hub fails a current deployment left out and undeploys
+a stale one, which removes its files.
 
 ## Tenant policy
 

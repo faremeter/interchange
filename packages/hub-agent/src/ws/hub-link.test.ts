@@ -2117,13 +2117,21 @@ describe("initial handshake on connect", () => {
 
     client.connect();
     try {
-      // An event is best-effort and goes nowhere before the welcome; the
+      // An event is best-effort and goes nowhere before the welcome, and so
+      // does a stop report, which the sidecar sends again after it; the
       // register is owed and waits for it.
       client.sendEvent("live@integration.interchange", 3, "sess-queued", {
         type: "reactor.start",
         seq: 0,
         data: {},
       });
+      const stopped = {
+        agentAddress: "live@integration.interchange",
+        generation: 3,
+        error: "Its workflow child ended itself",
+        refTips: { "refs/heads/main": "c".repeat(40) },
+      };
+      client.sendDeploymentStopped(stopped);
       client.sendSignalCorrelationRegister({
         correlationId: "corr-queued",
         runId: "run-1",
@@ -2150,6 +2158,13 @@ describe("initial handshake on connect", () => {
       sockets[0]!.send(JSON.stringify({ type: "welcome", routed: [] }));
       await waitUntil(() => types().includes("signal.correlation.register"));
       expect(types()).toEqual(["hello", "signal.correlation.register"]);
+
+      client.sendDeploymentStopped(stopped);
+      await waitUntil(() => types().includes("deployment.stopped"));
+      expect(JSON.parse(frames.at(-1)!)).toEqual({
+        type: "deployment.stopped",
+        ...stopped,
+      });
     } finally {
       client.close();
       await server.stop(true);

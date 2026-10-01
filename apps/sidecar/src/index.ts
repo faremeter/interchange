@@ -195,7 +195,8 @@ if (consumedRetentionRaw !== undefined && consumedRetentionRaw.trim() !== "") {
 // Bound on the child's spawn-time `ready` handshake. Threaded to every
 // per-deployment supervisor; on expiry the supervisor kills the child and
 // rejects the spawn, so a child that spawns but never signals ready fails
-// the deploy (or is skipped by boot-time restore) instead of hanging it.
+// the deploy, or a boot-time restore holds it as stopped, instead of hanging
+// it.
 // Absent, the supervisor applies its 30s default.
 const readyTimeoutRaw = process.env["CHILD_READY_TIMEOUT_MS"];
 let readyTimeoutMs: number | undefined;
@@ -567,6 +568,7 @@ const orchestrator = createSidecarOrchestrator({
       //     here.
       sidecarDeployRouter.reEmitParkedCorrelations(address);
     }
+    sidecarDeployRouter.reportStoppedDeployments();
   },
   // When a connection opens or closes, block the deployment addresses'
   // workflow-run pushes until the next `welcome` routes them. Without the
@@ -582,6 +584,7 @@ const orchestrator = createSidecarOrchestrator({
     keyStore,
     publishWorkflowInferenceEvent,
     publishWorkflowSuspension,
+    publishDeploymentStopped,
   }) => {
     const router = createSidecarDeployRouter({
       sessions,
@@ -602,6 +605,7 @@ const orchestrator = createSidecarOrchestrator({
       },
       reportDeploymentRefTips: (incarnation) =>
         wrappedRepoStore.reportWorkflowRunRefTips(incarnation),
+      publishDeploymentStopped,
       // The run record lives in the repository and goes last, so a crash
       // partway through leaves it for the next boot to report.
       removeRunRepository: (runId) =>

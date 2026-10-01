@@ -19,6 +19,7 @@ import {
   type AgentUndeployErrorFrame,
   type SessionErrorFrame,
   type AgentUndeployFrame,
+  type DeploymentStoppedFrame,
   type WorkflowControlFrame,
   type WorkflowRunRefTips,
   type HostedIncarnation,
@@ -719,9 +720,10 @@ export type HubLinkConfig = {
   /**
    * Invoked on every `welcome` with the addresses of the held incarnations
    * the Hub routes on the new connection, possibly none. Everything owed to
-   * the Hub for them is re-driven from here: the workflow-run pack pusher
-   * re-ships what the Hub has not acknowledged, and parked correlations are
-   * registered again.
+   * the Hub is re-driven from here: the workflow-run pack pusher re-ships
+   * what the Hub has not acknowledged for those addresses, their parked
+   * correlations are registered again, and deployments that stopped on their
+   * own are reported again.
    */
   onWorkflowAddressesRoutable?: (addresses: string[]) => void;
   /**
@@ -794,6 +796,12 @@ export type HubLink = {
     ref: string;
     commitSha: string;
   }) => Promise<void>;
+  /**
+   * Report a deployment that stopped though the Hub did not stop it. Dropped
+   * while the link is not welcomed: the sidecar reports every such deployment
+   * again after each `welcome`.
+   */
+  sendDeploymentStopped: (report: Omit<DeploymentStoppedFrame, "type">) => void;
 };
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -2263,11 +2271,21 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       registerAcker.send(frame);
     };
 
+  const sendDeploymentStopped: HubLink["sendDeploymentStopped"] = (report) => {
+    welcomedSocket()?.send(
+      JSON.stringify({
+        type: "deployment.stopped",
+        ...report,
+      } satisfies SidecarFrame),
+    );
+  };
+
   return {
     connect,
     close,
     sendEvent,
     sendSignalCorrelationRegister,
     pushWorkflowRunPack,
+    sendDeploymentStopped,
   };
 }

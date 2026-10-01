@@ -1330,6 +1330,94 @@ describe("SidecarRouter replacing a generation on the same sidecar", () => {
     expect(ws.closed).toBe(false);
   });
 
+  test("notes why a current binding's incarnation stopped on its own until its fence moves past it", async () => {
+    const { router } = createSharedRouter([first, second]);
+
+    await reconnect(router, [
+      {
+        address: first.workflowRunAddress,
+        generation: 1,
+        state: "stopped",
+        error: "The child ended itself",
+      },
+      { address: second.workflowRunAddress, generation: 1, state: "stopped" },
+    ]);
+
+    expect(router.reportedDeploymentFailure(target(first))).toBe(
+      "The child ended itself",
+    );
+    // A stop the Hub asked for carries no error.
+    expect(router.reportedDeploymentFailure(target(second))).toBeUndefined();
+    expect(
+      router.reportedDeploymentFailure({ ...target(first), generation: 2 }),
+    ).toBeUndefined();
+
+    router.fenceAllocation(first.allocationId, 2);
+    expect(router.reportedDeploymentFailure(target(first))).toBeUndefined();
+  });
+
+  test("keeps a stop report, and when it was first heard, across reconnects", async () => {
+    let clock = new Date("2026-10-01T12:00:00.000Z");
+    const firstHeard = clock;
+    const { router } = createSharedRouter([first], { now: () => clock });
+    const stopped: HostedIncarnation = {
+      address: first.workflowRunAddress,
+      generation: 1,
+      state: "stopped",
+      error: "The child ended itself",
+    };
+
+    const ws = await reconnect(router, [stopped]);
+    router.handleClose(ws);
+    // The sidecar's reason outlives its connection.
+    expect(router.reportedDeploymentFailure(target(first))).toBe(
+      "The child ended itself",
+    );
+
+    clock = new Date(firstHeard.getTime() + 30_000);
+    await reconnect(router, [{ ...stopped, error: "A later reason" }]);
+    const history = await router.stoppedDeploymentHistory(target(first));
+    expect(history?.reportedAt).toEqual(firstHeard);
+    expect(router.reportedDeploymentFailure(target(first))).toBe(
+      "The child ended itself",
+    );
+  });
+
+  test("undeploys a live copy of a generation the sidecar reported stopped", async () => {
+    const { router } = createSharedRouter([first, second]);
+    const ws = await reconnect(router, [
+      {
+        address: first.workflowRunAddress,
+        generation: 1,
+        state: "stopped",
+        error: "The child ended itself",
+      },
+      second.workflowRunAddress,
+    ]);
+    router.handleClose(ws);
+
+    // A sidecar restart that lost the stopped mark respawned it.
+    const restarted = await reconnect(router, [
+      first.workflowRunAddress,
+      second.workflowRunAddress,
+    ]);
+
+    expect(framesOfType(restarted, "agent.undeploy")).toEqual([
+      {
+        type: "agent.undeploy",
+        requestId: expect.any(String),
+        agentAddress: first.workflowRunAddress,
+        generation: 1,
+        reason: "The Hub does not keep this incarnation on this sidecar",
+      },
+    ]);
+    expect(router.getRoutableAddresses()).toEqual([second.workflowRunAddress]);
+    expect(await router.isAllocatedWorkflowActive(target(first))).toBe(false);
+    expect(router.reportedDeploymentFailure(target(first))).toBe(
+      "The child ended itself",
+    );
+  });
+
   test("keeps a connection open for a current binding whose reported incarnation it undeploys", async () => {
     const { router } = createSharedRouter([second], {
       validateSidecarIdentity: async (_identity, use) => use !== "reclaim",

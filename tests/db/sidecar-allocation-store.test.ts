@@ -19,6 +19,7 @@ import {
   createSidecarAllocationStore,
   createWorkflowRunDispatchStore,
   createWorkflowRunLaunchSpecStore,
+  SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
   SidecarReuseRejectedError,
 } from "@intx/db";
 import {
@@ -1420,6 +1421,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           isAllocatedSidecarReady: async () => true,
           holdsAllocatedBinding: () => true,
           waitForAllocatedSidecar: async () => undefined,
+          reportedDeploymentFailure: () => undefined,
           syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "ws://localhost/unused",
@@ -2269,6 +2271,129 @@ describe.skipIf(!harnessDbEnvAvailable())(
           leaseDurationMs: 60_000,
         }),
       ).toBeNull();
+    });
+
+    test("fails a stopped deployment's runs and keeps its capacity", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "run-stopped-child",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        definitionId: DEFINITION_ID,
+      });
+      const store = createSidecarAllocationStore(h.db);
+      const dispatchStore = createWorkflowRunDispatchStore(h.db);
+      await store.createPending({
+        id: "alloc-stopped",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+      });
+      await store.bindInitialSidecar({
+        allocationId: "alloc-stopped",
+        expectedGeneration: 0,
+        sidecarId: "sidecar-stopped",
+        tokenHashSha256: new Uint8Array([1, 2, 3]),
+        connectDeadline: new Date(0),
+      });
+      await store.markAllocated({
+        allocationId: "alloc-stopped",
+        generation: 1,
+      });
+      await dispatchStore.enqueue({
+        id: "dispatch-stopped",
+        anchorRunId: ANCHOR_RUN_ID,
+        messageId: "message-stopped",
+        senderAddress: "principal-alloc@tenant.example",
+        rawMessage: new Uint8Array([1, 2, 3]),
+        stepGrants: [],
+      });
+      await store.claimNextReconcilable({
+        leaseId: "lease-stopped",
+        leaseDurationMs: 60_000,
+      });
+      const failure = {
+        allocationId: "alloc-stopped",
+        expectedGeneration: 1,
+        expectedLeaseId: "lease-stopped",
+        failureCode: "sidecar_deployment_stopped",
+        failureMessage: "The child ended itself",
+        now: new Date("2026-08-04T12:00:00.000Z"),
+      };
+
+      expect(
+        await store.failStoppedDeployment({
+          ...failure,
+          expectedLeaseId: "lease-stale",
+        }),
+      ).toBe(false);
+      expect(await store.failStoppedDeployment(failure)).toBe(true);
+
+      // It rests on its connection like a ready allocation and keeps the
+      // reason it failed.
+      const settled = await store.findById("alloc-stopped");
+      expect(settled).toMatchObject({
+        status: "allocated",
+        generation: 1,
+        failureCode: "sidecar_deployment_stopped",
+        failureMessage: "The child ended itself",
+      });
+      expect(settled?.reconciliationLeaseId).toBeUndefined();
+      expect(settled?.nextAttemptAt).toBeUndefined();
+      expect(settled?.connectDeadline).toBeUndefined();
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: (row, { eq }) => eq(row.id, ANCHOR_RUN_ID),
+        }),
+      ).toMatchObject({
+        status: "failed",
+        endedAt: failure.now,
+        failureCode: "sidecar_deployment_stopped",
+        failureMessage: "The child ended itself",
+      });
+      expect(
+        await h.db.query.workflowRun.findFirst({
+          where: (row, { eq }) => eq(row.id, "run-stopped-child"),
+          columns: { status: true },
+        }),
+      ).toEqual({ status: "failed" });
+      expect(await dispatchStore.findById("dispatch-stopped")).toMatchObject({
+        status: "abandoned",
+        failureCode: "sidecar_deployment_stopped",
+      });
+    });
+
+    test("a ready pass keeps why a stopped deployment failed", async () => {
+      const stopped = await createClaimedAllocation("alloc-ready-stopped");
+      expect(
+        await stopped.store.failStoppedDeployment({
+          allocationId: stopped.allocation.id,
+          expectedGeneration: stopped.allocation.generation,
+          expectedLeaseId: stopped.leaseId,
+          failureCode: SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
+          failureMessage: "The child ended itself",
+        }),
+      ).toBe(true);
+      // The sidecar reconnects during the failed retention, which wakes a
+      // pass that finds the anchor terminal and settles as ready.
+      await stopped.store.wakeReconciliation(
+        stopped.allocation.id,
+        stopped.allocation.generation,
+      );
+      await stopped.store.claimNextReconcilable({
+        leaseId: "lease-stopped-ready",
+        leaseDurationMs: 60_000,
+      });
+      const settled = await stopped.store.markConnectionReady({
+        allocationId: stopped.allocation.id,
+        generation: stopped.allocation.generation,
+        expectedLeaseId: "lease-stopped-ready",
+      });
+      expect(settled).toMatchObject({
+        failureCode: SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
+        failureMessage: "The child ended itself",
+      });
     });
   },
 );

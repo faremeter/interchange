@@ -1699,6 +1699,6 @@ Source: packages/types/src/instances.ts
 Source: packages/types/src/instances.ts
 
 **status**: Lifecycle state of this run: `deployed` (provisioned on a sidecar, not yet started), `running` (started and serving), `updating` (rolling to a new definition version), `error` (launch or runtime failure), or `stopped` (undeployed).
-**failureCode**: Why the Hub failed this run's deployment when it lost or gave up its sidecar capacity, such as `sidecar_connect_failed`; null for a run the Hub did not fail.
+**failureCode**: Why the Hub failed this run's deployment, such as `sidecar_connect_failed`; null for a run the Hub did not fail.
 **failureMessage**: The detail of `failureCode`, such as the error the sidecar reported.
 

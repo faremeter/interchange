@@ -150,6 +150,10 @@ export const HostedIncarnation = type({
   address: "string",
   generation: Generation,
   state: IncarnationState,
+  // Why a stopped incarnation stopped when the Hub did not stop it: its
+  // workflow child ended itself, or the sidecar could not restore it. The Hub
+  // fails such a deployment.
+  "error?": "string > 0",
 });
 export type HostedIncarnation = typeof HostedIncarnation.infer;
 
@@ -816,6 +820,23 @@ export const WorkflowControlAckFrame = type({
 export type WorkflowControlAckFrame = typeof WorkflowControlAckFrame.infer;
 
 /**
+ * Reports a deployment that stopped though the Hub did not stop it: its
+ * workflow child ended itself, or the sidecar could not restore it. Sent when
+ * it happens and again after every `welcome` while the sidecar holds it, with
+ * the tips of its history branches, so the Hub can wait for that history
+ * before it fails the deployment. The tips are left out when the sidecar
+ * could not read them.
+ */
+export const DeploymentStoppedFrame = type({
+  type: "'deployment.stopped'",
+  agentAddress: "string",
+  generation: Generation,
+  error: "string > 0",
+  "refTips?": WorkflowRunRefTips,
+});
+export type DeploymentStoppedFrame = typeof DeploymentStoppedFrame.infer;
+
+/**
  * The Hub's answer to `hello`, sent once it has reconciled the reported
  * incarnations. `routed` lists the incarnations it routes on this connection;
  * it has already asked the sidecar to undeploy every other one reported, but
@@ -1262,6 +1283,7 @@ export const SidecarFrame = type.or(
   WorkflowProbeResultFrame,
   WorkflowProbeErrorFrame,
   WorkflowControlAckFrame,
+  DeploymentStoppedFrame,
 );
 export type SidecarFrame = typeof SidecarFrame.infer;
 

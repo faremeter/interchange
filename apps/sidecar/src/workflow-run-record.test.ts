@@ -11,6 +11,7 @@ import {
   WorkflowRunRecord,
   writeWorkflowRunRecord,
   deleteWorkflowRunRecord,
+  markWorkflowRunRecord,
   scanWorkflowRunRecords,
 } from "./workflow-run-record";
 
@@ -435,6 +436,41 @@ describe("workflow run record store", () => {
 
     await deleteWorkflowRunRecord(dataDir, anchorRunId);
     expect(await fileExists(recordPath(dataDir, anchorRunId))).toBe(false);
+
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+  test("marking keeps the rest of the record, sealed secrets included, and scans back", async () => {
+    const dataDir = await makeDataDir();
+    const anchorRunId = "marked-1";
+    expect(
+      await markWorkflowRunRecord(dataDir, anchorRunId, { state: "stopped" }),
+    ).toBe(false);
+
+    await writeWorkflowRunRecord(dataDir, anchorRunId, SINGLE_STEP, CIPHER);
+    expect(
+      await markWorkflowRunRecord(dataDir, anchorRunId, {
+        state: "stopped",
+        error: "The child ended itself",
+      }),
+    ).toBe(true);
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([
+      {
+        runId: anchorRunId,
+        record: {
+          ...SINGLE_STEP,
+          state: "stopped",
+          error: "The child ended itself",
+        },
+      },
+    ]);
+
+    // A later mark replaces the state and drops an error it does not carry.
+    await markWorkflowRunRecord(dataDir, anchorRunId, {
+      state: "tearing-down",
+    });
+    expect(await scanWorkflowRunRecords(dataDir, CIPHER)).toEqual([
+      { runId: anchorRunId, record: { ...SINGLE_STEP, state: "tearing-down" } },
+    ]);
 
     await fs.rm(dataDir, { recursive: true, force: true });
   });
