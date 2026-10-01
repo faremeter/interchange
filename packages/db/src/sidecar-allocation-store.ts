@@ -325,7 +325,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
       readonly publicKey: string;
       readonly credentialRefs?: WorkflowRunCredentialRefs;
     },
-  ): Promise<{ previousPublicKey: string | null } | null> {
+  ): Promise<boolean> {
     args.signal.throwIfAborted();
     return db.transaction(async (tx) => {
       const condition = initializationConditions(
@@ -338,12 +338,16 @@ export function createSidecarAllocationStore(db: DBHandle) {
         .where(condition)
         .for("update");
       args.signal.throwIfAborted();
-      if (allocation === undefined) return null;
-      let previousPublicKey: string | null = null;
-      if (completion === undefined) {
-        const [previous] = await tx
-          .select({ publicKey: workflowRun.publicKey })
-          .from(workflowRun)
+      if (allocation === undefined) return false;
+      if (completion !== undefined) {
+        const [anchor] = await tx
+          .update(workflowRun)
+          .set({
+            publicKey: completion.publicKey,
+            ...(completion.credentialRefs !== undefined
+              ? { credentialRefs: completion.credentialRefs }
+              : {}),
+          })
           .where(
             and(
               eq(workflowRun.id, args.anchorRunId),
@@ -351,29 +355,10 @@ export function createSidecarAllocationStore(db: DBHandle) {
               eq(workflowRun.tenantId, args.tenantId),
             ),
           )
-          .for("update");
-        if (previous === undefined)
+          .returning({ id: workflowRun.id });
+        if (anchor === undefined)
           throw new Error("Initialization anchor is missing");
-        previousPublicKey = previous.publicKey;
       }
-      const [anchor] = await tx
-        .update(workflowRun)
-        .set({
-          publicKey: completion?.publicKey ?? null,
-          ...(completion?.credentialRefs !== undefined
-            ? { credentialRefs: completion.credentialRefs }
-            : {}),
-        })
-        .where(
-          and(
-            eq(workflowRun.id, args.anchorRunId),
-            eq(workflowRun.anchorRunId, args.anchorRunId),
-            eq(workflowRun.tenantId, args.tenantId),
-          ),
-        )
-        .returning({ id: workflowRun.id });
-      if (anchor === undefined)
-        throw new Error("Initialization anchor is missing");
       // Check the lease again after waiting on the anchor row. Both writes roll
       // back if ownership expired while the transaction held the allocation lock.
       const [updated] = await tx
@@ -386,7 +371,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
       args.signal.throwIfAborted();
       if (updated === undefined)
         throw new Error("Initialization lease expired");
-      return { previousPublicKey };
+      return true;
     });
   }
 
@@ -555,11 +540,11 @@ export function createSidecarAllocationStore(db: DBHandle) {
         readonly credentialRefs?: WorkflowRunCredentialRefs;
       },
     ): Promise<boolean> {
-      return (await writeInitialization(args, args)) !== null;
+      return writeInitialization(args, args);
     },
 
     async clearUnsentInitialization(
-      args: InitializationArgs & { readonly previousPublicKey: string | null },
+      args: InitializationArgs,
     ): Promise<boolean> {
       // No signal gate: the sole caller invokes this only for a proven-unsent
       // frame, which is reachable precisely when the attempt was cancelled.
@@ -567,41 +552,17 @@ export function createSidecarAllocationStore(db: DBHandle) {
       // attempt began, and generation/status equality proves the allocation
       // did not move on. The reconciliation lease is deliberately not
       // required: a disconnect nulls the lease while leaving this attempt's
-      // marker behind, and only this attempt's own clear may remove it. Restore
-      // its previous key in the same transaction so absence of the marker cannot
-      // expose a live workflow as keyless or certify a different attempt.
-      return db.transaction(async (tx) => {
-        const condition = initializationConditions(args, args.leaseId, {
-          requireCurrentLease: false,
-        });
-        const [allocation] = await tx
-          .select({ id: sidecarAllocation.id })
-          .from(sidecarAllocation)
-          .where(condition)
-          .for("update");
-        if (allocation === undefined) return false;
-        const [anchor] = await tx
-          .update(workflowRun)
-          .set({ publicKey: args.previousPublicKey })
-          .where(
-            and(
-              eq(workflowRun.id, args.anchorRunId),
-              eq(workflowRun.anchorRunId, args.anchorRunId),
-              eq(workflowRun.tenantId, args.tenantId),
-            ),
-          )
-          .returning({ id: workflowRun.id });
-        if (anchor === undefined)
-          throw new Error("Initialization anchor is missing");
-        const [updated] = await tx
-          .update(sidecarAllocation)
-          .set({ initializationLeaseId: null })
-          .where(condition)
-          .returning({ id: sidecarAllocation.id });
-        if (updated === undefined)
-          throw new Error("Initialization attempt changed before rollback");
-        return true;
-      });
+      // marker behind, and only this attempt's own clear may remove it.
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({ initializationLeaseId: null })
+        .where(
+          initializationConditions(args, args.leaseId, {
+            requireCurrentLease: false,
+          }),
+        )
+        .returning({ id: sidecarAllocation.id });
+      return updated !== undefined;
     },
 
     async createPending(
