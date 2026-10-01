@@ -69,7 +69,7 @@ export const WorkflowDeploymentResponse = type({
   tenantId: "string",
   definitionAssetId: "string",
   status: WorkflowDeploymentStatus.describe(
-    "Deployment lifecycle status. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.",
+    "Deployment lifecycle status. `recovering` means the Hub is replacing capacity whose provisioning failed before the deployment first ran. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.",
   ),
   createdAt: "string",
 });

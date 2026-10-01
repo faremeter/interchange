@@ -201,7 +201,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       }
     }
 
-    test("replacement waits until an accepted pack finishes advancing the ref", async () => {
+    test("release waits until an accepted pack finishes advancing the ref", async () => {
       const packEntered = Promise.withResolvers<boolean>();
       const releasePack = Promise.withResolvers<boolean>();
       const agentRepoStore = await createRepoStore(async () => {
@@ -213,13 +213,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const receivePromise = receivePack(agentRepoStore);
       await packEntered.promise;
 
-      const replacementStarted = Promise.withResolvers<number>();
-      const replacementPromise = h.db.transaction(async (tx) => {
-        replacementStarted.resolve(await getBackendPid(tx));
+      const releaseStarted = Promise.withResolvers<number>();
+      const releasePromise = h.db.transaction(async (tx) => {
+        releaseStarted.resolve(await getBackendPid(tx));
         const [updated] = await tx
           .update(sidecarAllocation)
           .set({
-            status: "replacing",
+            status: "releasing",
             generation: 2,
             ensureAcceptedGeneration: null,
           })
@@ -230,26 +230,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       try {
         await waitForBlockedBackend(
-          await replacementStarted.promise,
-          settleReporter(replacementPromise),
+          await releaseStarted.promise,
+          settleReporter(releasePromise),
         );
       } finally {
         releasePack.resolve(true);
       }
 
       expect(await receivePromise).toEqual({ accepted: true });
-      expect((await replacementPromise)?.generation).toBe(2);
+      expect((await releasePromise)?.generation).toBe(2);
     });
 
-    test("an old pack waits for replacement and is rejected at the new generation", async () => {
+    test("an old pack waits for release and is rejected at the new generation", async () => {
       let receiveCalls = 0;
       const agentRepoStore = await createRepoStore(async () => {
         receiveCalls += 1;
         return [];
       });
-      const replacementHolding = Promise.withResolvers<number>();
-      const releaseReplacement = Promise.withResolvers<boolean>();
-      const replacementPromise = h.db.transaction(async (tx) => {
+      const releaseHolding = Promise.withResolvers<number>();
+      const finishRelease = Promise.withResolvers<boolean>();
+      const releasePromise = h.db.transaction(async (tx) => {
         await tx
           .select({ id: sidecarAllocation.id })
           .from(sidecarAllocation)
@@ -259,27 +259,27 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await tx
           .update(sidecarAllocation)
           .set({
-            status: "replacing",
+            status: "releasing",
             generation: 2,
             ensureAcceptedGeneration: null,
           })
           .where(eq(sidecarAllocation.id, ALLOCATION_ID));
-        replacementHolding.resolve(await getBackendPid(tx));
-        await releaseReplacement.promise;
+        releaseHolding.resolve(await getBackendPid(tx));
+        await finishRelease.promise;
       });
 
-      const replacementPid = await replacementHolding.promise;
+      const releasePid = await releaseHolding.promise;
       const receivePromise = receivePack(agentRepoStore);
       try {
         await waitForBackendBlockedBy(
-          replacementPid,
+          releasePid,
           settleReporter(receivePromise),
         );
       } finally {
-        releaseReplacement.resolve(true);
+        finishRelease.resolve(true);
       }
 
-      await replacementPromise;
+      await releasePromise;
       expect(await receivePromise).toEqual({
         accepted: false,
         reason: "path_violation",

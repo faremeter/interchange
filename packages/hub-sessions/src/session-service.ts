@@ -1260,8 +1260,8 @@ export function createSessionService(
       // pack, reserve the manifest row, then send the pack. The manifest
       // reservation MUST happen before the pack send: if the sidecar acks
       // but the row is missing, the session has materialization without
-      // a recorded manifest. An allocated replacement may reuse the exact row
-      // its predecessor recorded. If reservation fails, no pack is sent.
+      // a recorded manifest. A retried first deploy may reuse the exact row an
+      // earlier attempt recorded. If reservation fails, no pack is sent.
       //
       // The fan-out materializes the package-registry assets the
       // tool-package resolver picked. They live behind tenant
@@ -1764,8 +1764,8 @@ export function createSessionService(
       sourceCommitSha,
     };
 
-    // Reserve durable recovery intent before the pack send. A replacement
-    // generation may reuse the exact row its predecessor recorded.
+    // Reserve durable recovery intent before the pack send. A retried first
+    // deploy may reuse the exact row an earlier attempt recorded.
     const inserted = await db
       .insert(sessionAssetTable)
       .values({ ...record, materializedAt: new Date() })

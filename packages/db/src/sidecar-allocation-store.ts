@@ -899,6 +899,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
       return updated === undefined ? null : parseSidecarAllocationRow(updated);
     },
 
+    // Provisioning is replaced because nothing has run. An allocated
+    // generation is replaced only when the caller names that status: a
+    // parked run, whose committed log is enough to continue.
     async beginReplacement(
       args: BeginSidecarReplacementArgs,
     ): Promise<SidecarAllocation | null> {
