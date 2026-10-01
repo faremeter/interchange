@@ -139,6 +139,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId,
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: `${provisionerId}:test`,
+        maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
         allocationId,
@@ -234,6 +235,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             provisionerId: "ec2-spot",
             provisionerApiVersion: 1 as const,
             provisionerBindingFingerprint: "ec2-spot:test",
+            maxDisconnectedMs: 900_000,
             sidecarId: "alloc-first-minted",
             status: "allocated" as const,
             generation: 1,
@@ -279,6 +281,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             provisionerId: "ec2-spot",
             provisionerApiVersion: 1 as const,
             provisionerBindingFingerprint: "ec2-spot:test",
+            maxDisconnectedMs: 900_000,
             sidecarId: "alloc-first-minted",
             status: "allocated" as const,
             generation: 1,
@@ -294,6 +297,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             provisionerId: "ec2-spot",
             provisionerApiVersion: 1,
             provisionerBindingFingerprint: "ec2-spot:test",
+            maxDisconnectedMs: 900_000,
             sidecarId: "alloc-first-minted",
             generation: 1,
             connectDeadline: new Date(Date.now() + 60_000),
@@ -336,6 +340,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       const leaseId = `${id}-lease`;
       await store.claimNextReconcilable({ leaseId, leaseDurationMs: 60_000 });
@@ -425,7 +430,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await store.markConnectionLost({
         allocationId: allocation.id,
         generation: allocation.generation,
-        connectDeadline: new Date(0),
+        now: new Date(0),
+        firstConnectDeadline: new Date(120_000),
       });
       const nextLeaseId = "new-owner";
       await store.claimNextReconcilable({
@@ -470,7 +476,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await store.markConnectionLost({
           allocationId: allocation.id,
           generation: allocation.generation,
-          connectDeadline: new Date(0),
+          now: new Date(0),
+          firstConnectDeadline: new Date(120_000),
         });
         const leaseId = "recovery-owner";
         const claimed = await store.claimNextReconcilable({
@@ -529,7 +536,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await store.markConnectionLost({
         allocationId: allocation.id,
         generation: allocation.generation,
-        connectDeadline: new Date(0),
+        now: new Date(0),
+        firstConnectDeadline: new Date(120_000),
       });
       const claimed = await store.claimNextReconcilable({
         leaseId: "next-owner",
@@ -817,6 +825,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       expect(pending.status).toBe("pending");
       expect(pending.generation).toBe(0);
@@ -911,6 +920,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
         allocationId: pending.id,
@@ -958,6 +968,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "ec2-spot",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "ec2-spot:test",
+          maxDisconnectedMs: 900_000,
         }),
       ).rejects.toThrow(/has no launch specification/);
     });
@@ -971,6 +982,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
 
       const first = await store.claimNextReconcilable({
@@ -1062,6 +1074,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "test",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "test:v1",
+          maxDisconnectedMs: 900_000,
           sidecarId: id,
           generation: 1,
           connectDeadline: new Date(Date.now() + 60_000),
@@ -1142,6 +1155,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       } as const;
       const first = await store.createPending({
         ...common,
@@ -1194,6 +1208,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       await store.claimNextReconcilable({
         leaseId: "lease-park-fallback",
@@ -1239,6 +1254,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       await store.claimNextReconcilable({
         leaseId: "lease-park-wake",
@@ -1283,6 +1299,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
         allocationId: "alloc-park-backoff",
@@ -1337,6 +1354,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       const claimed = await store.claimNextReconcilable({
         leaseId: "lease-ready",
@@ -1528,11 +1546,13 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const { store, allocation, leaseId } = await createClaimedAllocation(
         "alloc-disconnected-owner",
       );
-      const deadline = new Date(Date.now() + 60_000);
+      const lostAt = new Date();
+      const deadline = new Date(lostAt.getTime() + 120_000);
       const disconnected = await store.markConnectionLost({
         allocationId: allocation.id,
         generation: allocation.generation,
-        connectDeadline: deadline,
+        now: lostAt,
+        firstConnectDeadline: deadline,
       });
       expect(disconnected?.reconciliationLeaseId).toBeUndefined();
       expect(
@@ -1562,7 +1582,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(stored?.nextAttemptAt).toEqual(deadline);
     });
 
-    test("persists reconnect grace only for the accepted generation", async () => {
+    test("gives the accepted generation its allocation's disconnect limit", async () => {
       const store = createSidecarAllocationStore(h.db);
       await store.createPending({
         id: "alloc-reconnect",
@@ -1571,6 +1591,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 120_000,
       });
       await store.bindInitialSidecar({
         allocationId: "alloc-reconnect",
@@ -1588,25 +1609,117 @@ describe.skipIf(!harnessDbEnvAvailable())(
         generation: 1,
       });
 
-      const deadline = new Date(Date.now() + 120_000);
+      const lostAt = new Date();
+      const firstConnectDeadline = new Date(lostAt.getTime() + 30_000);
       expect(
         await store.markConnectionLost({
           allocationId: "alloc-reconnect",
           generation: 0,
-          connectDeadline: deadline,
+          now: lostAt,
+          firstConnectDeadline,
         }),
       ).toBeNull();
+
+      // Before its first deploy completes, it gets only the first-connect
+      // window.
+      const deploying = await store.markConnectionLost({
+        allocationId: "alloc-reconnect",
+        generation: 1,
+        now: lostAt,
+        firstConnectDeadline,
+      });
+      expect(deploying?.connectDeadline).toEqual(firstConnectDeadline);
+      expect(deploying?.nextAttemptAt).toEqual(firstConnectDeadline);
+
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "committed-key" })
+        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      const deadline = new Date(lostAt.getTime() + 120_000);
       const disconnected = await store.markConnectionLost({
         allocationId: "alloc-reconnect",
         generation: 1,
-        connectDeadline: deadline,
+        now: lostAt,
+        firstConnectDeadline,
       });
 
       expect(disconnected?.connectDeadline).toEqual(deadline);
       expect(disconnected?.nextAttemptAt).toEqual(deadline);
+
+      // A later loss restarts the limit.
+      const restartedAt = new Date(lostAt.getTime() + 600_000);
+      const restarted = await store.markConnectionLost({
+        allocationId: "alloc-reconnect",
+        generation: 1,
+        now: restartedAt,
+        firstConnectDeadline: new Date(restartedAt.getTime() + 30_000),
+      });
+      expect(restarted?.connectDeadline).toEqual(
+        new Date(restartedAt.getTime() + 120_000),
+      );
     });
 
-    test("repairs reconnect grace only while an allocation remains unscheduled and unleased", async () => {
+    test("at Hub start gives the first-connect window until the first deploy completes, then the disconnect limit", async () => {
+      const store = createSidecarAllocationStore(h.db);
+      await store.createPending({
+        id: "alloc-hub-start",
+        anchorRunId: ANCHOR_RUN_ID,
+        tenantId: TENANT_ID,
+        provisionerId: "ec2-spot",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 600_000,
+      });
+      const stored = new Date(Date.now() + 60_000);
+      await store.bindInitialSidecar({
+        allocationId: "alloc-hub-start",
+        expectedGeneration: 0,
+        sidecarId: "sidecar-hub-start",
+        tokenHashSha256: new Uint8Array([7, 8, 9]),
+        connectDeadline: stored,
+      });
+      await store.markAllocated({
+        allocationId: "alloc-hub-start",
+        generation: 1,
+      });
+      const startedAt = new Date();
+      const target = { allocationId: "alloc-hub-start", generation: 1 };
+
+      // Its sidecar could not connect while the Hub was down, so it gets a
+      // fresh first-connect window from Hub start.
+      const fresh = new Date(startedAt.getTime() + 120_000);
+      const waiting = await store.scheduleReconnectAfterHubStart({
+        ...target,
+        now: startedAt,
+        firstConnectDeadline: fresh,
+      });
+      expect(waiting?.connectDeadline).toEqual(fresh);
+      expect(waiting?.nextAttemptAt).toEqual(fresh);
+
+      // A later deadline it already has is kept.
+      const kept = await store.scheduleReconnectAfterHubStart({
+        ...target,
+        now: startedAt,
+        firstConnectDeadline: new Date(startedAt.getTime() + 30_000),
+      });
+      expect(kept?.connectDeadline).toEqual(fresh);
+
+      // Once its first deploy completed, it gets its whole disconnect limit.
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "committed-key" })
+        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
+      const running = await store.scheduleReconnectAfterHubStart({
+        ...target,
+        now: startedAt,
+        firstConnectDeadline: fresh,
+      });
+      const restarted = new Date(startedAt.getTime() + 600_000);
+      expect(running?.connectDeadline).toEqual(restarted);
+      expect(running?.nextAttemptAt).toEqual(restarted);
+    });
+
+    test("repairs a disconnect deadline only while an allocation remains unscheduled and unleased", async () => {
       const store = createSidecarAllocationStore(h.db);
       await store.createPending({
         id: "alloc-repair",
@@ -1615,6 +1728,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 120_000,
       });
       await store.bindInitialSidecar({
         allocationId: "alloc-repair",
@@ -1631,19 +1745,27 @@ describe.skipIf(!harnessDbEnvAvailable())(
         allocationId: "alloc-repair",
         generation: 1,
       });
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "committed-key" })
+        .where(eq(workflowRun.id, ANCHOR_RUN_ID));
 
-      const deadline = new Date(Date.now() + 120_000);
+      const repairedAt = new Date();
+      const deadline = new Date(repairedAt.getTime() + 120_000);
+      const firstConnectDeadline = new Date(repairedAt.getTime() + 30_000);
       expect(
         await store.scheduleReconnectIfUnscheduled({
           allocationId: "alloc-repair",
           generation: 0,
-          connectDeadline: deadline,
+          now: repairedAt,
+          firstConnectDeadline,
         }),
       ).toBeNull();
       const repaired = await store.scheduleReconnectIfUnscheduled({
         allocationId: "alloc-repair",
         generation: 1,
-        connectDeadline: deadline,
+        now: repairedAt,
+        firstConnectDeadline,
       });
 
       expect(repaired?.connectDeadline).toEqual(deadline);
@@ -1653,7 +1775,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await store.scheduleReconnectIfUnscheduled({
           allocationId: "alloc-repair",
           generation: 1,
-          connectDeadline: new Date(deadline.getTime() + 120_000),
+          now: new Date(deadline.getTime() + 120_000),
+          firstConnectDeadline,
         }),
       ).toBeNull();
       const scheduled = await store.findById("alloc-repair");
@@ -1671,7 +1794,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
         await store.scheduleReconnectIfUnscheduled({
           allocationId: "alloc-repair",
           generation: 1,
-          connectDeadline: new Date(deadline.getTime() + 120_000),
+          now: new Date(deadline.getTime() + 120_000),
+          firstConnectDeadline,
         }),
       ).toBeNull();
       const leased = await store.findById("alloc-repair");
@@ -1811,6 +1935,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
         allocationId: "alloc-terminal",
@@ -1908,6 +2033,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "ec2-spot",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "ec2-spot:test",
+          maxDisconnectedMs: 900_000,
         });
         await store.bindInitialSidecar({
           allocationId: "alloc-destroy",
@@ -2064,6 +2190,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "ec2-spot",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "ec2-spot:test",
+          maxDisconnectedMs: 900_000,
         });
         await store.bindInitialSidecar({
           allocationId: "alloc-other",
@@ -2102,6 +2229,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       expect(pending.status).toBe("pending");
 
@@ -2162,6 +2290,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
         allocationId: "alloc-unrecoverable",
@@ -2289,6 +2418,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "ec2-spot",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "ec2-spot:test",
+        maxDisconnectedMs: 900_000,
       });
       await store.bindInitialSidecar({
         allocationId: "alloc-stopped",

@@ -44,6 +44,7 @@ function allocation(
     provisionerId: "test",
     provisionerApiVersion: 1,
     provisionerBindingFingerprint: "test:v1",
+    maxDisconnectedMs: 900_000,
     status: "pending",
     generation: 0,
     nextAttemptAt: NOW,
@@ -80,6 +81,7 @@ function fakeStore(overrides: Partial<AllocationStore> = {}): AllocationStore {
     markDestroyFailed: notUsed("markDestroyFailed"),
     markReleased: notUsed("markReleased"),
     parkReconciliation: async () => true,
+    scheduleReconnectAfterHubStart: notUsed("scheduleReconnectAfterHubStart"),
     scheduleReconnectIfUnscheduled: notUsed("scheduleReconnectIfUnscheduled"),
     scheduleRetry: notUsed("scheduleRetry"),
     wakeReconciliation: async () => true,
@@ -1507,10 +1509,15 @@ describe("createSidecarAllocationReconciler", () => {
         nextAttemptAt: new Date(NOW.getTime() + 30_000),
       }),
       unscheduled,
-      allocation({ id: "alloc-b", status: "allocated", generation: 4 }),
+      allocation({
+        id: "alloc-b",
+        status: "allocated",
+        generation: 4,
+        connectDeadline: new Date(NOW.getTime() - 60_000),
+      }),
     ];
     const wakes: [string, number][] = [];
-    const reconnects: [string, number, Date][] = [];
+    const reconnects: unknown[] = [];
     const fences: [string, number][] = [];
     const store = fakeStore({
       listActive: async () => active,
@@ -1518,12 +1525,8 @@ describe("createSidecarAllocationReconciler", () => {
         wakes.push([id, generation]);
         return true;
       },
-      markConnectionLost: async (args) => {
-        reconnects.push([
-          args.allocationId,
-          args.generation,
-          args.connectDeadline,
-        ]);
+      scheduleReconnectAfterHubStart: async (args) => {
+        reconnects.push(args);
         return active[2] ?? null;
       },
     });
@@ -1539,17 +1542,23 @@ describe("createSidecarAllocationReconciler", () => {
       ["alloc-b", 4],
     ]);
     expect(wakes).toEqual([["alloc-unscheduled", 2]]);
+    // Both windows count from Hub start; the store picks the one that applies.
     expect(reconnects).toEqual([
-      ["alloc-b", 4, new Date(NOW.getTime() + 120_000)],
+      {
+        allocationId: "alloc-b",
+        generation: 4,
+        now: NOW,
+        firstConnectDeadline: new Date(NOW.getTime() + 120_000),
+      },
     ]);
   });
 
-  test("durably schedules reconnect grace and wakes the exact generation on reconnect", async () => {
+  test("durably starts the disconnect limit and wakes the exact generation on reconnect", async () => {
     const calls: string[] = [];
     const store = fakeStore({
       markConnectionLost: async (args) => {
         calls.push(
-          `lost:${args.allocationId}:${String(args.generation)}:${args.connectDeadline.toISOString()}`,
+          `lost:${args.allocationId}:${String(args.generation)}:${String(args.now?.toISOString())}`,
         );
         return allocation({ status: "allocated", generation: args.generation });
       },
@@ -1570,7 +1579,7 @@ describe("createSidecarAllocationReconciler", () => {
     });
 
     expect(calls).toEqual([
-      "lost:alloc-1:3:2026-08-03T12:02:00.000Z",
+      `lost:alloc-1:3:${NOW.toISOString()}`,
       "connected:alloc-1:3",
     ]);
   });
@@ -1581,18 +1590,14 @@ describe("createSidecarAllocationReconciler", () => {
       generation: 3,
       ensureAcceptedGeneration: 3,
     });
-    const repairs: [string, number, Date][] = [];
+    const repairs: [string, number, Date | undefined][] = [];
     const store = fakeStore({
       listActive: async () => [unscheduled],
       markConnectionLost: async () => {
         throw new Error("database unavailable");
       },
       scheduleReconnectIfUnscheduled: async (args) => {
-        repairs.push([
-          args.allocationId,
-          args.generation,
-          args.connectDeadline,
-        ]);
+        repairs.push([args.allocationId, args.generation, args.now]);
         return unscheduled;
       },
     });
@@ -1608,9 +1613,7 @@ describe("createSidecarAllocationReconciler", () => {
     ).rejects.toThrow("database unavailable");
     await reconciler.repairUnscheduledConnections();
 
-    expect(repairs).toEqual([
-      ["alloc-1", 3, new Date(NOW.getTime() + 120_000)],
-    ]);
+    expect(repairs).toEqual([["alloc-1", 3, NOW]]);
   });
 
   test("does not repair an allocation with a ready connection", async () => {

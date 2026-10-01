@@ -229,6 +229,10 @@ export async function createHubServer({
       "WORKFLOW_DEFAULT_MAX_LIFETIME",
       "7d",
     ),
+    maxDisconnected: readLifecycleDurationEnv(
+      "WORKFLOW_DEFAULT_MAX_DISCONNECTED",
+      "15m",
+    ),
     capacityRetention: {
       completed: readLifecycleDurationEnv(
         "WORKFLOW_DEFAULT_RETENTION_COMPLETED",
@@ -246,6 +250,11 @@ export async function createHubServer({
   };
   if (lifecycleDurationMs(defaultLifecyclePolicy.maxLifetime) === 0)
     throw new Error("WORKFLOW_DEFAULT_MAX_LIFETIME must be greater than zero");
+  if (lifecycleDurationMs(defaultLifecyclePolicy.maxDisconnected) === 0) {
+    throw new Error(
+      "WORKFLOW_DEFAULT_MAX_DISCONNECTED must be greater than zero",
+    );
+  }
 
   const agentRepoStore = createAgentRepoStore({
     dataDir: hubDataDir,

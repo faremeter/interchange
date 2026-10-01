@@ -110,8 +110,9 @@ const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 
 // How many deployments a boot restores at once. More starve each other past
 // the default 30-second ready timeout on small hosts. With this many, a full
-// sidecar whose every child takes that whole timeout spends about 8 minutes
-// on those timeouts alone before it connects.
+// sidecar whose every child takes that whole timeout spends about 8 minutes,
+// about half the default disconnect limit, on those timeouts alone before it
+// connects.
 const RESTORE_CONCURRENCY = 8;
 
 /**
