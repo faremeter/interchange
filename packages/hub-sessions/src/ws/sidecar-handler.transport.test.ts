@@ -802,7 +802,10 @@ describe("SidecarRouter readiness validation failures", () => {
       failValidation = false;
       expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(true);
       router.handleClose(socket);
-      expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(false);
+      // A sidecar that is only cut off may still hold the deployment.
+      await expect(
+        router.isAllocatedWorkflowActive(TEST_TARGET),
+      ).rejects.toThrow("not connected");
     } finally {
       router.handleClose(socket);
     }

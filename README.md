@@ -265,8 +265,8 @@ not yet in the tree.
       resume, rewind, and audit-log-as-git-history
 - [x] **Workflow execution model** — every agent runs as a supervised
       workflow-process child (the in-process runtime has been retired)
-- [x] **Sidecar orchestration** — hub-managed agents with reconnect
-      and state restoration on redeploy
+- [x] **Sidecar orchestration** — hub-managed agents that keep running
+      across a reconnect, without a redeploy
 - [x] **Inference** — Anthropic and OpenAI-compatible adapters plus
       Google Gemini, streaming, compaction, the director system, and
       per-call provider failover with live source hot-swap, backed by a

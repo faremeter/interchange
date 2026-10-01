@@ -21,6 +21,7 @@ import type { SidecarPluginRegistry } from "./plugin-registry";
 import {
   DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
   runSidecarOperation,
+  SidecarDeploymentMissingError,
   SidecarOperationTimeoutError,
   type SidecarReconciliationContext,
 } from "./operation";
@@ -70,7 +71,7 @@ export type SidecarAllocationReconcilerDeps = {
     allocation: SidecarAllocation,
     reconciliation: SidecarReconciliationContext,
   ) => Promise<void>;
-  /** Idempotently restores and deploys one connected allocation generation. */
+  /** Idempotently runs a connected allocation generation's first deploy. */
   readonly onReady?: (
     allocation: SidecarAllocation,
     reconciliation: SidecarReconciliationContext,
@@ -484,6 +485,15 @@ export function createSidecarAllocationReconciler({
         );
       } catch (error) {
         if (error instanceof ReconciliationLeaseLostError) throw error;
+        if (error instanceof SidecarDeploymentMissingError) {
+          await replaceAfterFailure(
+            allocation,
+            leaseId,
+            "sidecar_deployment_missing",
+            error.message,
+          );
+          return;
+        }
         if (error instanceof SessionLaunchError && error.leakedAgent) {
           await replaceAfterFailure(
             allocation,
@@ -517,9 +527,9 @@ export function createSidecarAllocationReconciler({
     // A connect that lands during initialization schedules an immediate
     // follow-up even on success: the new socket may be a restarted worker
     // with an empty inventory (takeover suppresses the disconnect event), in
-    // which case the follow-up redeploys and restores it. When the worker is
-    // unchanged the follow-up is a no-op: deployReadyAllocation returns early
-    // once the workflow is active and its key is recorded.
+    // which case the follow-up fails the deployment it no longer holds. When
+    // the worker is unchanged the follow-up is a no-op: deployReadyAllocation
+    // returns early once the workflow is active and its key is recorded.
     await finishReconciliation(allocation.id, (pendingConnect) =>
       pendingConnect
         ? allocationStore.scheduleRetry({

@@ -798,7 +798,7 @@ async function emitSourceRefDeployFrame(
   args: DeployCodeSourcedWorkflowArgs & {
     allocationTarget?: AllocatedSidecarTarget;
     sidecarAllocationRouter?: SidecarAllocationRouter;
-    onUnsentInitializationCleared(publicKey: string | null): void;
+    onUnsentInitializationCleared(): void;
   },
   reconciliation: SidecarReconciliationContext,
 ): Promise<{
@@ -819,20 +819,18 @@ async function emitSourceRefDeployFrame(
     leaseId,
     signal,
   };
-  let previousPublicKey: string | null | undefined;
+  let reserved = false;
   try {
     const result = await sendMultiStepDeployFrame(
       sendArgs,
       signal,
       async () => {
-        const reserved =
-          await allocationStore.beginInitialization(initialization);
-        if (reserved === null) {
+        if (!(await allocationStore.beginInitialization(initialization))) {
           throw new Error(
             "Allocation no longer permits this initialization attempt",
           );
         }
-        previousPublicKey = reserved.previousPublicKey;
+        reserved = true;
       },
     );
     return {
@@ -844,16 +842,14 @@ async function emitSourceRefDeployFrame(
     };
   } catch (cause) {
     if (!isDeployFrameFailure(cause)) throw cause;
-    // Only a confirmed reservation gives us the key to restore. An ambiguous
+    // Only a confirmed reservation can be rolled back. An ambiguous
     // reservation response leaves its durable marker for conservative cleanup.
     // A confirmed unsent attempt can roll back even after lease cancellation.
-    if (!cause.frameSent && previousPublicKey !== undefined) {
+    if (!cause.frameSent && reserved) {
       try {
-        const cleared = await allocationStore.clearUnsentInitialization({
-          ...initialization,
-          previousPublicKey,
-        });
-        if (cleared) args.onUnsentInitializationCleared(previousPublicKey);
+        const cleared =
+          await allocationStore.clearUnsentInitialization(initialization);
+        if (cleared) args.onUnsentInitializationCleared();
       } catch (error) {
         logger.warn`Could not clear unsent initialization for ${initialization.allocationId}: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -1017,10 +1013,10 @@ export async function recoverSenderDeploy(args: {
 }): Promise<void> {
   const { allocation, reconciliation } = args;
   reconciliation.signal.throwIfAborted();
-  // A proven-unsent clear may still restore the previous key after this claim.
-  // Do not fail its mail using the claim's stale marker. Cleanup rechecks under
-  // the allocation lock; an advanced fence settles failure, while a rolled-back
-  // attempt is resolved by its caller or the next claim's completed key.
+  // A proven-unsent clear may still roll the attempt back after this claim, and
+  // its caller then settles the mail. Do not settle it from the claim's stale
+  // marker. Cleanup rechecks under the allocation lock; an advanced fence
+  // settles failure, while a rolled-back attempt is resolved by its caller.
   if (allocation.initializationLeaseId !== undefined) return;
   // Claiming the lease prevents the previous attempt from publishing. Its
   // marker and key now distinguish a committed initialization from failure,
@@ -1626,8 +1622,8 @@ export function createSessionService(
       operatorApprovals: approval.approvedSurface,
     });
 
-    // Restore the Hub-authoritative run ref onto the exact allocation generation
-    // before its address is routed.
+    // Seed the deployment with the Hub's copy of its history on the exact
+    // allocation generation before its address is routed.
     await restoreWorkflowRunToAllocation({
       agentRepoStore,
       allocationRouter,
@@ -1637,10 +1633,10 @@ export function createSessionService(
     });
     signal.throwIfAborted();
 
-    let restoredPublicKey: string | null | undefined;
+    let unsentCleared = false;
     const commonEmit = {
-      onUnsentInitializationCleared(publicKey: string | null) {
-        restoredPublicKey = publicKey;
+      onUnsentInitializationCleared() {
+        unsentCleared = true;
       },
       approved: params.approved,
       sidecarAllocationRouter: allocationRouter,
@@ -1720,19 +1716,14 @@ export function createSessionService(
         publicKey: result.publicKey,
       };
     } catch (error) {
-      if (restoredPublicKey !== undefined) {
-        sidecarRouter.noteSenderDeploySettled(
-          senderAttempt,
-          restoredPublicKey === null
-            ? { failed: error instanceof Error ? error.message : String(error) }
-            : { recorded: restoredPublicKey },
-        );
-      }
       // A sent deploy or cancelled publication may have committed despite its
       // lost response, as may an unsent rollback. Without a confirmed rollback,
-      // recovery owns transport failures too. Only an uncancelled preparation
-      // failure can settle definitively here.
-      else if (!signal.aborted && !(error instanceof SessionLaunchError)) {
+      // recovery owns transport failures too. Only a confirmed rollback or an
+      // uncancelled preparation failure can settle definitively here.
+      if (
+        unsentCleared ||
+        (!signal.aborted && !(error instanceof SessionLaunchError))
+      ) {
         sidecarRouter.noteSenderDeploySettled(senderAttempt, {
           failed: error instanceof Error ? error.message : String(error),
         });

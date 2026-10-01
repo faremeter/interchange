@@ -180,7 +180,7 @@ export type SidecarOrchestratorConfig = {
    * `createHubLink`.
    */
   sourcesInboundRouter?: SourcesInboundRouter;
-  /** Apply Hub-authoritative workflow-run refs before replacement deploy. */
+  /** Apply Hub-authoritative workflow-run refs before a first deploy. */
   applyWorkflowRunPack: WorkflowRunPackApplier;
   /**
    * Optional inbound credential-delivery dispatcher the link consults on every
