@@ -108,6 +108,12 @@ import {
 
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 
+// How many deployments a boot restores at once. More starve each other past
+// the default 30-second ready timeout on small hosts. With this many, a full
+// sidecar whose every child takes that whole timeout spends about 8 minutes
+// on those timeouts alone before it connects.
+const RESTORE_CONCURRENCY = 8;
+
 /**
  * The durable per-deployment store the sidecar checks a source-ref deployment's
  * source assets out into. A SIBLING of the closure instance dir, not a child:
@@ -2867,12 +2873,14 @@ export function createSidecarDeployRouter<
         dataDir,
         deps.credentialCipher,
       );
-      // Restore serially, not in parallel: deterministic boot-log ordering,
-      // one isolable warning per failed record, and no concurrent
-      // child-spawn / transport-register storm. Restore runs before
-      // `hubLink.connect()`, so there are no concurrent deploys to contend
-      // with. Each record's failure is caught so one bad deployment cannot
-      // strand the rest.
+      // The checks and holds below run in order, so the limit and the held
+      // addresses come out the same way on every boot. The spawns, the slow
+      // part, then run several at once: the sidecar connects only once every
+      // deployment is restored, and the Hub fails the deployments of a sidecar
+      // that stays away too long. Restore runs before `hubLink.connect()`, so
+      // no deploy contends with it. Each record's failure is caught so one bad
+      // deployment cannot strand the rest.
+      const spawns: (() => Promise<void>)[] = [];
       for (const { runId, record } of scanned) {
         // Integrity: the stored address must re-derive to its own directory
         // name. A mismatch means a corrupt or misplaced record; skip it rather
@@ -2924,115 +2932,138 @@ export function createSidecarDeployRouter<
           state: "deploying",
         };
         deployments.set(record.agentAddress, hosted);
-        try {
-          // Reconstruct this deployment's runnable definition. Source-ref is
-          // the only lineage: re-materialize the pinned closure and evaluate the
-          // pinned code to the live definition, then project it to the inert
-          // wire shape -- the SAME computation the deploy path applies
-          // (`WorkflowProjectionDefinition(projectLiveToInert(...))`). The
-          // closure IS the source of truth; no on-disk definition is read. The
-          // helper reclaims the instance dir first, which is safe here because
-          // the prior process (the only reader) is dead and restore is serial
-          // before `hubLink.connect()`, so no concurrent reader holds it.
-          // Registry-sourced entries come from the content-addressed closure
-          // cache, or from their registry when the cache, which every
-          // deployment on this sidecar shares, has evicted them; asset-sourced
-          // entries read from the durable source store the original deploy
-          // checked out (`materializeDeploymentClosure` derives the mounts from
-          // the pin, so no re-delivery is needed). Both are SRI-verified. A
-          // failed registry fetch or store read fails the restore like any
-          // check below. The schema guarantees a source-ref record carries a
-          // `sourceRef` pin, so no undefined-check is needed.
-          const applied = await materializeDeploymentClosure(
-            dataDir,
-            runId,
-            record.sourceRef,
-          );
-          const validatedDefinition = WorkflowProjectionDefinition(
-            projectLiveToInert(applied.definition),
-          );
-          if (validatedDefinition instanceof type.errors) {
-            throw new Error(
-              `workflow definition loaded from the frozen closure failed projection validation: ${validatedDefinition.summary}`,
+        spawns.push(async () => {
+          try {
+            // Reconstruct this deployment's runnable definition. Source-ref is
+            // the only lineage: re-materialize the pinned closure and evaluate
+            // the pinned code to the live definition, then project it to the
+            // inert wire shape -- the SAME computation the deploy path applies
+            // (`WorkflowProjectionDefinition(projectLiveToInert(...))`). The
+            // closure IS the source of truth; no on-disk definition is read.
+            // The helper reclaims the instance dir first, which is safe here
+            // because the prior process (the only reader) is dead, each
+            // deployment has its own dir, and restore runs before
+            // `hubLink.connect()`, so no deploy reads it. Registry-sourced
+            // entries come from the content-addressed closure cache, or from
+            // their registry when the cache, which every deployment on this
+            // sidecar shares, has evicted them; asset-sourced entries read
+            // from the durable source store the original deploy checked out
+            // (`materializeDeploymentClosure` derives the mounts from the pin,
+            // so no re-delivery is needed). Both are SRI-verified. A failed
+            // registry fetch or store read fails the restore like any check
+            // below. The schema guarantees a source-ref record carries a
+            // `sourceRef` pin, so no undefined-check is needed.
+            const applied = await materializeDeploymentClosure(
+              dataDir,
+              runId,
+              record.sourceRef,
             );
-          }
-          const definition: WorkflowProjectionDefinition = validatedDefinition;
-          const closurePackageDir = applied.packageDir;
+            const validatedDefinition = WorkflowProjectionDefinition(
+              projectLiveToInert(applied.definition),
+            );
+            if (validatedDefinition instanceof type.errors) {
+              throw new Error(
+                `workflow definition loaded from the frozen closure failed projection validation: ${validatedDefinition.summary}`,
+              );
+            }
+            const definition: WorkflowProjectionDefinition =
+              validatedDefinition;
+            const closurePackageDir = applied.packageDir;
 
-          // Structural invariants the wire arktype does not cover (non-empty
-          // stepOrder, every stepOrder entry backed by a `steps` entry AND a
-          // `sources` entry). The closure eval skips the deploy frame's coverage
-          // narrow, so this is where its definition-vs-sources coverage is
-          // checked.
-          validateWorkflowProjection({ definition, sources: record.sources });
+            // Structural invariants the wire arktype does not cover (non-empty
+            // stepOrder, every stepOrder entry backed by a `steps` entry AND a
+            // `sources` entry). The closure eval skips the deploy frame's
+            // coverage narrow, so this is where its definition-vs-sources
+            // coverage is checked.
+            validateWorkflowProjection({ definition, sources: record.sources });
 
-          // Re-run the source-admission gate: refuse to restore a deployment
-          // whose pinned provider this sidecar can no longer build. Every
-          // source in a step's failover chain must be buildable, so this
-          // iterates the whole list.
-          for (const stepId of definition.stepOrder) {
-            const chain = record.sources[stepId];
-            if (chain !== undefined) {
-              for (const source of chain) deps.assertSourceBuildable(source);
+            // Re-run the source-admission gate: refuse to restore a deployment
+            // whose pinned provider this sidecar can no longer build. Every
+            // source in a step's failover chain must be buildable, so this
+            // iterates the whole list.
+            for (const stepId of definition.stepOrder) {
+              const chain = record.sources[stepId];
+              if (chain !== undefined) {
+                for (const source of chain) deps.assertSourceBuildable(source);
+              }
+            }
+
+            const spec: WorkflowDeploySpec = {
+              agentAddress: record.agentAddress,
+              generation: record.generation,
+              definition,
+              sources: record.sources,
+              // The record's unsealed body sources, re-delivered to the run
+              // child through the spawn env. `undefined` for a legacy record
+              // written before body sources were persisted here; the child then
+              // falls back to that deployment's on-disk plaintext file for the
+              // missing bodies.
+              bodySources: record.bodySources,
+              // The record's credential-material cell, unsealed by the boot
+              // scan and re-delivered to the child on the pre-trigger barrier
+              // so an offline restart restores both inference and tool
+              // credentials without the hub. `undefined` when the deployment
+              // bound none.
+              credentials: record.credentials,
+              // The hub-approved wire hash the original deploy persisted, so
+              // the restore re-spawn carries the same `DEFINITION_HASH` rather
+              // than a recompute. Always present -- the record schema requires
+              // it.
+              approvedWireHash: record.approvedWireHash,
+              sessionId: record.sessionId,
+              hubPublicKey: record.hubPublicKey,
+              // The sidecar-local dir of the just-materialized closure the
+              // spawn core threads into the child's env so it re-evaluates the
+              // pinned code.
+              closurePackageDir,
+              // Carry the source-ref pin so a post-restore source rotation --
+              // which rebuilds the record from the spec -- re-persists it;
+              // without this a rotation would silently drop it and wedge the
+              // NEXT restart.
+              sourceRef: record.sourceRef,
+            };
+
+            await spawnWorkflowRun(spec, hosted);
+            hosted.state = "live";
+            logger.info`Restored workflow deployment for ${record.agentAddress} generation ${String(record.generation)}`;
+          } catch (cause) {
+            // Held as stopped, with why, until the Hub fails and undeploys it,
+            // and recorded so the next boot does not try again.
+            const reason =
+              cause instanceof Error ? cause.message : String(cause);
+            logger.warn`Failed to restore workflow deployment ${runId}: ${reason}`;
+            delete hosted.wired;
+            hosted.state = "stopped";
+            hosted.error = `The sidecar could not restore it: ${reason}`;
+            try {
+              await markWorkflowRunRecord(dataDir, runId, {
+                state: "stopped",
+                error: hosted.error,
+              });
+            } catch (markCause) {
+              const message =
+                markCause instanceof Error
+                  ? markCause.message
+                  : String(markCause);
+              logger.error`Could not record that ${record.agentAddress} failed to restore; the next boot tries it again: ${message}`;
             }
           }
-
-          const spec: WorkflowDeploySpec = {
-            agentAddress: record.agentAddress,
-            generation: record.generation,
-            definition,
-            sources: record.sources,
-            // The record's unsealed body sources, re-delivered to the run child
-            // through the spawn env. `undefined` for a legacy record written
-            // before body sources were persisted here; the child then falls back
-            // to that deployment's on-disk plaintext file for the missing bodies.
-            bodySources: record.bodySources,
-            // The record's credential-material cell, unsealed by the boot scan
-            // and re-delivered to the child on the pre-trigger barrier so an
-            // offline restart restores both inference and tool credentials
-            // without the hub. `undefined` when the deployment bound none.
-            credentials: record.credentials,
-            // The hub-approved wire hash the original deploy persisted, so the
-            // restore re-spawn carries the same `DEFINITION_HASH` rather than a
-            // recompute. Always present -- the record schema requires it.
-            approvedWireHash: record.approvedWireHash,
-            sessionId: record.sessionId,
-            hubPublicKey: record.hubPublicKey,
-            // The sidecar-local dir of the just-materialized closure the spawn
-            // core threads into the child's env so it re-evaluates the pinned
-            // code.
-            closurePackageDir,
-            // Carry the source-ref pin so a post-restore source rotation --
-            // which rebuilds the record from the spec -- re-persists it; without
-            // this a rotation would silently drop it and wedge the NEXT restart.
-            sourceRef: record.sourceRef,
-          };
-
-          await spawnWorkflowRun(spec, hosted);
-          hosted.state = "live";
-          logger.info`Restored workflow deployment for ${record.agentAddress} generation ${String(record.generation)}`;
-        } catch (cause) {
-          // Held as stopped, with why, until the Hub fails and undeploys it,
-          // and recorded so the next boot does not try again.
-          const reason = cause instanceof Error ? cause.message : String(cause);
-          logger.warn`Failed to restore workflow deployment ${runId}: ${reason}`;
-          delete hosted.wired;
-          hosted.state = "stopped";
-          hosted.error = `The sidecar could not restore it: ${reason}`;
-          try {
-            await markWorkflowRunRecord(dataDir, runId, {
-              state: "stopped",
-              error: hosted.error,
-            });
-          } catch (markCause) {
-            const message =
-              markCause instanceof Error
-                ? markCause.message
-                : String(markCause);
-            logger.error`Could not record that ${record.agentAddress} failed to restore; the next boot tries it again: ${message}`;
-          }
-        }
+        });
       }
+      await Promise.all(
+        Array.from(
+          { length: Math.min(RESTORE_CONCURRENCY, spawns.length) },
+          async () => {
+            for (
+              let spawn = spawns.shift();
+              spawn !== undefined;
+              spawn = spawns.shift()
+            ) {
+              await spawn();
+            }
+          },
+        ),
+      );
     },
     reportStoppedDeployments(): void {
       for (const [agentAddress, hosted] of deployments) {
