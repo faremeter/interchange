@@ -21,11 +21,7 @@ import type {
   RepoStore,
   WorkflowRunSupervisorPrincipal,
 } from "@intx/hub-sessions/substrate";
-import {
-  hexEncode,
-  type CredentialCipher,
-  type SignalKind,
-} from "@intx/types";
+import { hexEncode, type CredentialCipher, type SignalKind } from "@intx/types";
 import {
   parseInferenceEvent,
   type ApprovalSnapshot,
@@ -61,6 +57,7 @@ import {
   wrapHubTransportAsMailBus,
   type HubTransportMailBusAdapter,
 } from "../mail-bus/hub-transport-adapter";
+import { conversationStateRoot } from "../conversation-state-root";
 import {
   hashGrants,
   STEP_GRANTS_PATH,
@@ -2518,7 +2515,6 @@ export function createSidecarDeployRouter<
       }
       // Reclaim warm and cold scratch after teardown, including scratch an
       // earlier stop retained after removing the supervisor registration.
-      // Durable conversations live under a separate root and survive undeploy.
       if (stepStateDataDir !== undefined) {
         await rm(pathJoin(stepStateDataDir, "workflow-step-state", runId), {
           recursive: true,
@@ -2527,12 +2523,14 @@ export function createSidecarDeployRouter<
       }
       // Drop the run record so a boot-time restore does not re-spawn a
       // torn-down deployment, and reclaim a source-ref deployment's
-      // materialized closure tree AND its durable source-asset store. All run
-      // on every undeploy -- not only when a supervisor was active -- so state
-      // left behind by a crash-interrupted deploy, or by a source-ref restore
-      // that materialized the closure and then failed to spawn (registry down),
-      // is reclaimed too. A registry-sourced deployment never creates the source
-      // store, so its `force` remove is a no-op there.
+      // materialized closure tree, its durable source-asset store, and its
+      // local conversation copy, which only that deployment's respawns and
+      // restarts read. All run on every undeploy -- not only when a supervisor
+      // was active -- so state left behind by a crash-interrupted deploy, or
+      // by a source-ref restore that materialized the closure and then failed
+      // to spawn (registry down), is reclaimed too. A registry-sourced
+      // deployment never creates the source store, so its `force` remove is a
+      // no-op there.
       if (stepStateDataDir !== undefined) {
         await deleteWorkflowRunRecord(stepStateDataDir, runId);
         await rm(
@@ -2544,6 +2542,10 @@ export function createSidecarDeployRouter<
           force: true,
         });
         await rm(deploymentSourceGitRoot(stepStateDataDir, runId), {
+          recursive: true,
+          force: true,
+        });
+        await rm(conversationStateRoot(stepStateDataDir, runId), {
           recursive: true,
           force: true,
         });
