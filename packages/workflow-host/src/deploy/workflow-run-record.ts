@@ -49,7 +49,8 @@ function isENOENT(cause: unknown): boolean {
 // material lives once in `credentials` (the delivery cell) with each material's
 // secret sealed under the sidecar cipher. A pre-unification record (inline
 // per-source secrets) does not satisfy this schema and is soft-skipped at the
-// scan boundary; the hub re-pushes its deployment on reconnect.
+// scan boundary, so the sidecar no longer reports its deployment and the Hub
+// fails it.
 const workflowRunRecordBase = {
   version: "1 | 2",
   agentAddress: "string > 0",
@@ -273,10 +274,10 @@ export async function scanWorkflowRunRecords(
     // cell; unseal them under the sidecar cipher for the restored run. A decrypt
     // failure -- a rotated/wrong key or a tampered blob -- is treated as
     // corruption: log and soft-skip the WHOLE run so one undecryptable run does
-    // not wedge the boot scan (the deployment is left unrestored, its
-    // tools/inference dead until the hub re-pushes, the same baseline as any
-    // other corrupt record). A record with no `credentials` cell (a deployment
-    // that binds none) needs no unseal.
+    // not wedge the boot scan (the deployment is left unrestored and
+    // unreported, so the Hub fails it, as it does for any other corrupt
+    // record). A record with no `credentials` cell (a deployment that binds
+    // none) needs no unseal.
     let restored = record;
     if (record.version === 2 && record.credentials !== undefined) {
       try {

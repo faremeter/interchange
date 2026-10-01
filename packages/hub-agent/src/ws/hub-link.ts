@@ -454,7 +454,7 @@ export interface CredentialsInboundRouter {
 }
 
 /**
- * Applies one Hub-authoritative workflow-run ref before a replacement
+ * Applies one Hub-authoritative workflow-run ref before a deployment's first
  * supervisor is allowed to spawn. The host owns the workflow substrate, so
  * the websocket layer validates and assembles the transfer but delegates the
  * actual ref update through this boundary.

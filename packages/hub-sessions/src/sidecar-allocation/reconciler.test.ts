@@ -17,6 +17,7 @@ import {
   tick,
 } from "../ws/sidecar-handler.test-helpers";
 import type { EnsureSidecarResult, SidecarProvisioner } from "./contracts";
+import { SidecarDeploymentMissingError } from "./operation";
 import {
   createSidecarAllocationReconciler,
   type SidecarAllocationReconcilerDeps,
@@ -958,6 +959,61 @@ describe("createSidecarAllocationReconciler", () => {
       expectedLeaseId: "lease-1",
       failureCode: "sidecar_initialization_uncertain",
       failureMessage: "deploy pack failed",
+    });
+    expect(fences).toEqual([
+      ["alloc-1", 1],
+      ["alloc-1", 2],
+    ]);
+  });
+
+  test("releases a generation whose sidecar no longer holds its deployment", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-current",
+      ensureAcceptedGeneration: 1,
+      connectDeadline: NOW,
+      reconciliationLeaseId: "lease-1",
+    });
+    let claimed = false;
+    let released:
+      | Parameters<AllocationStore["beginUnrecoverableRelease"]>[0]
+      | undefined;
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocated;
+      },
+      beginUnrecoverableRelease: async (args) => {
+        released = args;
+        return allocation({ status: "releasing", generation: 2 });
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        fences,
+        ready: true,
+        onReady: async () => {
+          throw new SidecarDeploymentMissingError("alloc-1", 1);
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    // A completed initialization is no reason to keep it: the sidecar's own
+    // report says the deployment is gone.
+    expect(released).toEqual({
+      allocationId: "alloc-1",
+      expectedGeneration: 1,
+      expectedLeaseId: "lease-1",
+      failureCode: "sidecar_deployment_missing",
+      failureMessage:
+        "The sidecar of allocation alloc-1 generation 1 no longer holds its deployment",
+      now: NOW,
     });
     expect(fences).toEqual([
       ["alloc-1", 1],
@@ -3940,8 +3996,8 @@ describe("reconciliation ownership", () => {
         await first;
       }
       // A late connect schedules an immediate follow-up however the
-      // initialization went: the follow-up redeploys a replaced worker and
-      // is a no-op when the worker is unchanged.
+      // initialization went: the follow-up fails a deployment a restarted
+      // worker no longer holds and is a no-op when the worker is unchanged.
       expect(calls).toEqual(["retry"]);
       await reconciler.reconcileNext();
       expect(calls).toEqual(["retry", "ready"]);

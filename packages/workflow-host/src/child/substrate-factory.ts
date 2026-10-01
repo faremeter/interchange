@@ -2132,8 +2132,7 @@ async function buildChildRunEnv(args: {
  * record -- reads its on-disk plaintext `sources.json`. That file predates the
  * change and is plaintext, so the fallback constructs no cipher and the child
  * stays key-free. Removable once no restorable record predates the
- * record-carried body sources (after the reconnect re-push has re-persisted
- * every live deployment).
+ * record-carried body sources.
  */
 async function resolveBodyStepSources(
   deps: SidecarRunChildDeps,

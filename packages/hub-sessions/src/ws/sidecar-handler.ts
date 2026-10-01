@@ -463,7 +463,11 @@ export type SidecarAllocationRouter = {
    * `false` means the worker is confirmed absent or stale.
    */
   isAllocatedSidecarReady(target: AllocatedSidecarTarget): Promise<boolean>;
-  /** Check for an active supervisor, throwing when identity validation fails. */
+  /**
+   * Whether the generation's current connection routes its deployment. Throws
+   * when the generation has no current connection or identity validation
+   * fails: a sidecar that is only cut off may still hold the deployment.
+   */
   isAllocatedWorkflowActive(target: AllocatedSidecarTarget): Promise<boolean>;
   /** Probe a workflow on the exact provisioned allocation generation. */
   sendProbeToAllocation(
@@ -3310,14 +3314,8 @@ export function createSidecarRouter(
   async function isAllocatedWorkflowActive(
     target: AllocatedSidecarTarget,
   ): Promise<boolean> {
-    try {
-      const { conn } = await getAllocatedConnection(target, "readiness");
-      if (conn.identity.kind !== "allocated") return false;
-      return conn.workflowAddresses.has(conn.identity.workflowRunAddress);
-    } catch (error) {
-      if (error instanceof SidecarIdentityValidationError) throw error;
-      return false;
-    }
+    const { conn } = await getAllocatedConnection(target, "readiness");
+    return conn.workflowAddresses.has(conn.identity.workflowRunAddress);
   }
 
   async function waitForAllocatedSidecar(

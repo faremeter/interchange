@@ -366,6 +366,74 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(anchorVisibleDuringDeploy).toBe(true);
     });
 
+    test("reports a deployed workflow its connected sidecar no longer holds as missing", async () => {
+      const provisioner = makeProvisioner({
+        id: "deployment-missing",
+        ensureCalls: [],
+        destroyCalls: [],
+      });
+      let deploys = 0;
+      let connected = false;
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([provisioner]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: (params) => freeze(params),
+          deployPreparedCodeSourcedWorkflow: async (params) => {
+            deploys += 1;
+            return {
+              anchorRunId: params.anchorRunId,
+              deploymentAddress: params.agentAddress,
+              publicKey: "public-key",
+            };
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => {
+            if (!connected)
+              throw new Error("Allocated sidecar is not connected");
+            return false;
+          },
+          disconnectAllocation: () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        createAllocationId: () => "sal-deployment-missing",
+        createSidecarId: () => "sc-deployment-missing",
+        createToken: () => "deployment-missing-token",
+      });
+      const prepared = await service.prepareProvisionedDeployment(
+        prepareArgs("run-deployment-missing"),
+      );
+      const allocation = await createSidecarAllocationStore(
+        h.db,
+      ).findByAnchorRunId(prepared.anchorRunId);
+      if (allocation === null) throw new Error("expected adopted allocation");
+      await h.db
+        .update(workflowRun)
+        .set({ publicKey: "committed-key" })
+        .where(eq(workflowRun.id, prepared.anchorRunId));
+      const reconciliation = {
+        signal: new AbortController().signal,
+        leaseId: "initialization-test",
+      };
+
+      // A sidecar that is only cut off may still hold the deployment.
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toThrow("not connected");
+      connected = true;
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toMatchObject({ name: "SidecarDeploymentMissingError" });
+      expect(deploys).toBe(0);
+    });
+
     test("reauthenticates adopted probe capacity as its allocation", async () => {
       const credentialResolver = createSidecarCredentialResolver({ db: h.db });
       const router = createSidecarRouter({
