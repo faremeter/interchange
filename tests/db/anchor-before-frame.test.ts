@@ -240,6 +240,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "provisioner-anchor-test",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "fp-anchor-test",
+        maxDisconnectedMs: 900_000,
         status: "allocated",
         generation: ALLOC_GENERATION,
         ensureAcceptedGeneration: ALLOC_GENERATION,

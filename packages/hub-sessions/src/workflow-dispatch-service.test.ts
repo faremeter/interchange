@@ -50,6 +50,7 @@ function allocation(
     provisionerId: "test",
     provisionerApiVersion: 1,
     provisionerBindingFingerprint: "test:v1",
+    maxDisconnectedMs: 900_000,
     sidecarId: "sidecar-1",
     status: "allocated",
     generation: 2,

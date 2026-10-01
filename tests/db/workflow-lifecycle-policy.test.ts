@@ -24,6 +24,7 @@ import type { ResolvedWorkflowLifecyclePolicy } from "@intx/types";
 
 const DEFAULTS: ResolvedWorkflowLifecyclePolicy = {
   maxLifetime: "5d",
+  maxDisconnected: "20m",
   capacityRetention: { completed: "10m", failed: "12h", cancelled: "2h" },
 };
 
@@ -49,6 +50,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           config: {
             lifecycle: {
               maxLifetime: "24h",
+              maxDisconnected: "1h",
               capacityRetention: { completed: "0s", failed: "1h" },
             },
           },
@@ -64,6 +66,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         name: "Example",
         lifecyclePolicy: {
           maxLifetime: "2h",
+          maxDisconnected: "30m",
           capacityRetention: { failed: "15m" },
         },
       });
@@ -79,6 +82,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ),
       ).toEqual({
         maxLifetime: "2h",
+        maxDisconnected: "30m",
         capacityRetention: { completed: "0s", failed: "15m", cancelled: "2h" },
       });
     });
@@ -98,6 +102,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ),
       ).toEqual({
         maxLifetime: "5d",
+        maxDisconnected: "20m",
         capacityRetention: { completed: "10m", failed: "12h", cancelled: "2h" },
       });
     });
@@ -109,6 +114,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .set({
           lifecyclePolicy: {
             maxLifetime: "30d",
+            maxDisconnected: "2h",
             capacityRetention: { completed: "2h" },
           },
         })
@@ -122,6 +128,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ),
       ).toEqual({
         maxLifetime: "30d",
+        maxDisconnected: "2h",
         capacityRetention: { completed: "2h", failed: "12h", cancelled: "2h" },
       });
     });
@@ -133,6 +140,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           config: {
             lifecycle: {
               maxLifetime: "1h",
+              maxDisconnected: "10m",
               capacityRetention: { failed: "5m" },
             },
           },
@@ -147,6 +155,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ),
       ).toEqual({
         maxLifetime: "1h",
+        maxDisconnected: "10m",
         capacityRetention: { completed: "10m", failed: "5m", cancelled: "2h" },
       });
     });
@@ -169,6 +178,24 @@ describe.skipIf(!harnessDbEnvAvailable())(
         field: "maxLifetime",
         requested: "8h",
         limit: "6h",
+      });
+    });
+
+    test("an edit cannot lengthen an inherited disconnect limit", async () => {
+      expect(
+        await validateLifecyclePolicyEdit(h.db, "child", {
+          maxDisconnected: "45m",
+        }),
+      ).toMatchObject({ ok: true, policy: { maxDisconnected: "45m" } });
+      expect(
+        await validateLifecyclePolicyEdit(h.db, "child", {
+          maxDisconnected: "2h",
+        }),
+      ).toEqual({
+        ok: false,
+        field: "maxDisconnected",
+        requested: "2h",
+        limit: "1h",
       });
     });
 

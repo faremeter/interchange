@@ -74,6 +74,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         provisionerId: "test-provisioner",
         provisionerApiVersion: 1,
         provisionerBindingFingerprint: "test-provisioner:pack-fence",
+        maxDisconnectedMs: 900_000,
         status: "allocated",
         generation: 1,
         ensureAcceptedGeneration: 1,

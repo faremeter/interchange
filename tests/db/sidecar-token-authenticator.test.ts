@@ -97,6 +97,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
           provisionerId: "test",
           provisionerApiVersion: 1,
           provisionerBindingFingerprint: "test:v1",
+          maxDisconnectedMs: 900_000,
           sidecarId: opts.id,
           status: "allocated",
           generation: 1,
