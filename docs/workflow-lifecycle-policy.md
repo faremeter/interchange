@@ -98,8 +98,8 @@ The platform default is not a ceiling: a tenant or installed workflow may set a
 longer duration. To effectively disable an action, set its field to `36500d`.
 
 `maxLifetime` measures wall-clock time from creation of the deployment's anchor
-run. Provisioning and waiting count; restarts, replacement workers, and any
-future hibernation do not reset the clock. This also covers deployments that
+run. Provisioning and waiting count; restarts and any future hibernation do
+not reset the clock. This also covers deployments that
 never receive their first trigger. If still live at expiry, the Hub stops the
 deployment as `cancelled`, allowing a 30-second cancellation grace period before stopping the process.
 Forced stop preempts a pending cooperative cancellation. The sidecar acknowledges

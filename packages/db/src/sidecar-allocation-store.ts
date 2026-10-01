@@ -152,11 +152,8 @@ export type ScheduleSidecarAllocationRetryArgs = {
 
 export type BeginSidecarReplacementArgs = {
   readonly allocationId: string;
-  readonly expectedStatus: "provisioning" | "allocated";
   readonly expectedGeneration: number;
   readonly expectedLeaseId: string;
-  readonly onlyIfInitializationIncomplete?: boolean;
-  readonly expectedInitializationLeaseId?: string;
   readonly nextAttemptAt: Date;
   readonly failureCode: string;
   readonly failureMessage: string;
@@ -395,7 +392,7 @@ export function createSidecarAllocationStore(db: DBHandle) {
 
   async function initializationCompleted(
     tx: DBExecutor,
-    args: BeginSidecarReplacementArgs | BeginUnrecoverableSidecarReleaseArgs,
+    args: BeginUnrecoverableSidecarReleaseArgs,
   ): Promise<boolean> {
     const [allocation] = await tx
       .select({
@@ -899,61 +896,37 @@ export function createSidecarAllocationStore(db: DBHandle) {
       return updated === undefined ? null : parseSidecarAllocationRow(updated);
     },
 
+    // Only provisioning is replaced: nothing has run on it, so a new
+    // generation starts the deployment from scratch.
     async beginReplacement(
       args: BeginSidecarReplacementArgs,
     ): Promise<SidecarAllocation | null> {
       const now = databaseTimestamp(args.now);
-      return db.transaction(async (tx) => {
-        if (
-          args.onlyIfInitializationIncomplete &&
-          (await initializationCompleted(tx, args))
+      const [updated] = await db
+        .update(sidecarAllocation)
+        .set({
+          status: "replacing",
+          generation: args.expectedGeneration + 1,
+          initializationLeaseId: null,
+          ensureAcceptedGeneration: null,
+          nextAttemptAt: args.nextAttemptAt,
+          reconciliationLeaseId: null,
+          reconciliationLeaseExpiresAt: null,
+          connectDeadline: null,
+          failureCode: args.failureCode,
+          failureMessage: args.failureMessage,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(sidecarAllocation.id, args.allocationId),
+            eq(sidecarAllocation.status, "provisioning"),
+            eq(sidecarAllocation.generation, args.expectedGeneration),
+            ...leaseCondition(args.expectedLeaseId),
+          ),
         )
-          return null;
-        const [updated] = await tx
-          .update(sidecarAllocation)
-          .set({
-            status: "replacing",
-            generation: args.expectedGeneration + 1,
-            initializationLeaseId: null,
-            ensureAcceptedGeneration: null,
-            nextAttemptAt: args.nextAttemptAt,
-            reconciliationLeaseId: null,
-            reconciliationLeaseExpiresAt: null,
-            connectDeadline: null,
-            failureCode: args.failureCode,
-            failureMessage: args.failureMessage,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(sidecarAllocation.id, args.allocationId),
-              eq(sidecarAllocation.status, args.expectedStatus),
-              eq(sidecarAllocation.generation, args.expectedGeneration),
-              ...leaseCondition(args.expectedLeaseId),
-              ...(args.expectedInitializationLeaseId !== undefined
-                ? [
-                    eq(
-                      sidecarAllocation.initializationLeaseId,
-                      args.expectedInitializationLeaseId,
-                    ),
-                  ]
-                : []),
-            ),
-          )
-          .returning();
-        if (updated === undefined) return null;
-
-        // The anchor public key is durable proof that this allocation
-        // generation completed restore and deployment. Clear it atomically
-        // with the generation advance so a replacement cannot mistake stale
-        // local sidecar state for a successfully restored workflow.
-        await tx
-          .update(workflowRun)
-          .set({ publicKey: null })
-          .where(eq(workflowRun.id, updated.anchorRunId));
-
-        return parseSidecarAllocationRow(updated);
-      });
+        .returning();
+      return updated === undefined ? null : parseSidecarAllocationRow(updated);
     },
 
     beginRelease,

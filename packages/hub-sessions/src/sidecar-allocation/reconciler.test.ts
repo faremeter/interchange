@@ -560,7 +560,6 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(replacement).toEqual({
       allocationId: "alloc-1",
-      expectedStatus: "provisioning",
       expectedGeneration: 1,
       expectedLeaseId: "lease-1",
       failureCode: "capacity_unavailable",
@@ -736,55 +735,6 @@ describe("createSidecarAllocationReconciler", () => {
     await reconciler.reconcileNext();
 
     expect(calls).toEqual(["destroy", "bind", "ensure"]);
-  });
-
-  test("replaces an allocated worker that misses its connection deadline", async () => {
-    const allocated = allocation({
-      status: "allocated",
-      generation: 1,
-      sidecarId: "sc-old",
-      ensureAcceptedGeneration: 1,
-      connectDeadline: NOW,
-    });
-    const replacing = allocation({
-      status: "replacing",
-      generation: 2,
-      sidecarId: "sc-old",
-    });
-    let replacement:
-      | {
-          failureCode: string;
-          expectedLeaseId: string;
-          nextAttemptAt: Date;
-        }
-      | undefined;
-    const store = fakeStore({
-      claimNextReconcilable: async () => allocated,
-      beginReplacement: async (args) => {
-        replacement = {
-          failureCode: args.failureCode,
-          expectedLeaseId: args.expectedLeaseId,
-          nextAttemptAt: args.nextAttemptAt,
-        };
-        return replacing;
-      },
-    });
-    const reconciler = createSidecarAllocationReconciler({
-      ...deps({
-        store,
-        ready: false,
-        waitError: new Error("connect timeout"),
-      }),
-      enableAutomaticReplacementRecovery: true,
-    });
-
-    await reconciler.reconcileNext();
-
-    expect(replacement).toEqual({
-      failureCode: "sidecar_connect_failed",
-      expectedLeaseId: "lease-1",
-      nextAttemptAt: new Date(NOW.getTime() + 1_000),
-    });
   });
 
   test("retries when identity validation fails inside the connection wait", async () => {
@@ -1003,7 +953,7 @@ describe("createSidecarAllocationReconciler", () => {
       expectedGeneration: 1,
       expectedLeaseId: "lease-1",
       failureCode: "sidecar_initialization_uncertain",
-      failureMessage: "Automatic recovery is disabled: deploy pack failed",
+      failureMessage: "deploy pack failed",
     });
     expect(fences).toEqual([
       ["alloc-1", 1],
@@ -1128,7 +1078,7 @@ describe("createSidecarAllocationReconciler", () => {
     expect(parked).toBe(true);
   });
 
-  test("fails a lost allocated worker instead of recovering by default", async () => {
+  test("fails a lost allocated worker", async () => {
     const allocated = allocation({
       status: "allocated",
       generation: 1,
@@ -1169,7 +1119,7 @@ describe("createSidecarAllocationReconciler", () => {
 
     expect(failure).toEqual({
       failureCode: "sidecar_connect_failed",
-      failureMessage: "Automatic recovery is disabled: connect timeout",
+      failureMessage: "connect timeout",
       expectedLeaseId: "lease-1",
     });
     expect(fences).toEqual([
@@ -1424,141 +1374,137 @@ describe("durable initialization outcomes", () => {
     ]);
   });
 
-  for (const recovery of [false, true]) {
-    for (const scenario of [
-      { interruption: "lease loss", outcome: "committed" },
-      { interruption: "renewal failure", outcome: "committed" },
-      { interruption: "lease expiry", outcome: "committed" },
-      { interruption: "operation deadline", outcome: "committed" },
-      { interruption: "operation deadline", outcome: "unchanged" },
-      { interruption: "operation deadline", outcome: "rejected" },
-    ] as const) {
-      test(`releases a cleanup slot on ${scenario.interruption} before its ${scenario.outcome} response (recovery=${String(recovery)})`, async () => {
-        const current = allocation({
-          status: "allocated",
-          generation: 1,
-          ensureAcceptedGeneration: 1,
-          initializationLeaseId: "old-initializer",
-        });
-        const other = allocation({
-          id: "alloc-2",
-          status: "allocated",
-          generation: 1,
-          ensureAcceptedGeneration: 1,
-        });
-        const transitioned = allocation({
-          status: recovery ? "replacing" : "releasing",
-          generation: 2,
-        });
-        const entered = Promise.withResolvers<boolean>();
-        const response = Promise.withResolvers<SidecarAllocation | null>();
-        const renewal = Promise.withResolvers<boolean>();
-        const exclusions: (readonly string[])[] = [];
-        const fences: [string, number][] = [];
-        const ready: string[] = [];
-        let cleanupSettled = false;
-        let cleanupCalls = 0;
-        let parked = false;
-        let finished = false;
-        const cleanup: AllocationStore["beginUnrecoverableRelease"] = async (
-          args,
-        ) => {
-          expect(args).toMatchObject({
-            expectedGeneration: 1,
-            expectedLeaseId: "lease-1",
-            onlyIfInitializationIncomplete: true,
-            expectedInitializationLeaseId: "old-initializer",
-          });
-          cleanupCalls += 1;
-          entered.resolve(true);
-          try {
-            return await response.promise;
-          } finally {
-            cleanupSettled = true;
-          }
-        };
-        const reconciler = createSidecarAllocationReconciler({
-          ...deps({
-            fences,
-            store: fakeStore({
-              claimNextReconcilable: async (args) => {
-                const excluded = args.excludedAllocationIds ?? [];
-                exclusions.push(excluded);
-                if (!cleanupSettled && !excluded.includes(current.id))
-                  return current;
-                return ready.includes(other.id) ? null : other;
-              },
-              beginUnrecoverableRelease: cleanup,
-              beginReplacement: cleanup,
-              extendReconciliationLease: async (id) => {
-                if (id !== current.id) return true;
-                switch (scenario.interruption) {
-                  case "lease loss":
-                    return false;
-                  case "renewal failure":
-                    throw new Error("Renewal connection failed");
-                  case "lease expiry":
-                    return renewal.promise;
-                  case "operation deadline":
-                    return true;
-                }
-              },
-              parkReconciliation: async () => {
-                parked = true;
-                // A fallback write would wait behind the same stalled cleanup.
-                await response.promise;
-                return true;
-              },
-              markConnectionReady: async (args) => {
-                ready.push(args.allocationId);
-                return other;
-              },
-            }),
-          }),
-          enableAutomaticReplacementRecovery: recovery,
-          leaseDurationMs:
-            scenario.interruption === "operation deadline" ? 1_000 : 60,
-          operationTimeoutMs:
-            scenario.interruption === "operation deadline" ? 30 : 1_000,
-        });
-        const work = reconciler.reconcileNext().then(() => {
-          finished = true;
-        });
-        await entered.promise;
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 150));
-          expect(finished).toBe(true);
-          expect(parked).toBe(false);
-          expect(await reconciler.reconcileNext()).toBe(true);
-          expect(exclusions[1]).toContain(current.id);
-          expect(ready).toEqual([other.id]);
-          expect(await reconciler.reconcileNext()).toBe(false);
-          expect(cleanupCalls).toBe(1);
-          expect(fences).not.toContainEqual([current.id, 2]);
-        } finally {
-          if (scenario.outcome === "rejected")
-            response.reject(new Error("Cleanup response lost"));
-          else
-            response.resolve(
-              scenario.outcome === "committed" ? transitioned : null,
-            );
-          renewal.resolve(false);
-          await work;
-        }
-        await tick();
-        const expectedFences: [string, number][] = [
-          [current.id, 1],
-          [other.id, 1],
-        ];
-        if (scenario.outcome === "committed")
-          expectedFences.push([current.id, 2]);
-        expect(fences).toEqual(expectedFences);
-        expect(await reconciler.reconcileNext()).toBe(false);
-        expect(exclusions.at(-1)).not.toContain(current.id);
-        expect(ready).toEqual([other.id]);
-        expect(parked).toBe(false);
+  for (const scenario of [
+    { interruption: "lease loss", outcome: "committed" },
+    { interruption: "renewal failure", outcome: "committed" },
+    { interruption: "lease expiry", outcome: "committed" },
+    { interruption: "operation deadline", outcome: "committed" },
+    { interruption: "operation deadline", outcome: "unchanged" },
+    { interruption: "operation deadline", outcome: "rejected" },
+  ] as const) {
+    test(`releases a cleanup slot on ${scenario.interruption} before its ${scenario.outcome} response`, async () => {
+      const current = allocation({
+        status: "allocated",
+        generation: 1,
+        ensureAcceptedGeneration: 1,
+        initializationLeaseId: "old-initializer",
       });
-    }
+      const other = allocation({
+        id: "alloc-2",
+        status: "allocated",
+        generation: 1,
+        ensureAcceptedGeneration: 1,
+      });
+      const transitioned = allocation({
+        status: "releasing",
+        generation: 2,
+      });
+      const entered = Promise.withResolvers<boolean>();
+      const response = Promise.withResolvers<SidecarAllocation | null>();
+      const renewal = Promise.withResolvers<boolean>();
+      const exclusions: (readonly string[])[] = [];
+      const fences: [string, number][] = [];
+      const ready: string[] = [];
+      let cleanupSettled = false;
+      let cleanupCalls = 0;
+      let parked = false;
+      let finished = false;
+      const cleanup: AllocationStore["beginUnrecoverableRelease"] = async (
+        args,
+      ) => {
+        expect(args).toMatchObject({
+          expectedGeneration: 1,
+          expectedLeaseId: "lease-1",
+          onlyIfInitializationIncomplete: true,
+          expectedInitializationLeaseId: "old-initializer",
+        });
+        cleanupCalls += 1;
+        entered.resolve(true);
+        try {
+          return await response.promise;
+        } finally {
+          cleanupSettled = true;
+        }
+      };
+      const reconciler = createSidecarAllocationReconciler({
+        ...deps({
+          fences,
+          store: fakeStore({
+            claimNextReconcilable: async (args) => {
+              const excluded = args.excludedAllocationIds ?? [];
+              exclusions.push(excluded);
+              if (!cleanupSettled && !excluded.includes(current.id))
+                return current;
+              return ready.includes(other.id) ? null : other;
+            },
+            beginUnrecoverableRelease: cleanup,
+            extendReconciliationLease: async (id) => {
+              if (id !== current.id) return true;
+              switch (scenario.interruption) {
+                case "lease loss":
+                  return false;
+                case "renewal failure":
+                  throw new Error("Renewal connection failed");
+                case "lease expiry":
+                  return renewal.promise;
+                case "operation deadline":
+                  return true;
+              }
+            },
+            parkReconciliation: async () => {
+              parked = true;
+              // A fallback write would wait behind the same stalled cleanup.
+              await response.promise;
+              return true;
+            },
+            markConnectionReady: async (args) => {
+              ready.push(args.allocationId);
+              return other;
+            },
+          }),
+        }),
+        leaseDurationMs:
+          scenario.interruption === "operation deadline" ? 1_000 : 60,
+        operationTimeoutMs:
+          scenario.interruption === "operation deadline" ? 30 : 1_000,
+      });
+      const work = reconciler.reconcileNext().then(() => {
+        finished = true;
+      });
+      await entered.promise;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(finished).toBe(true);
+        expect(parked).toBe(false);
+        expect(await reconciler.reconcileNext()).toBe(true);
+        expect(exclusions[1]).toContain(current.id);
+        expect(ready).toEqual([other.id]);
+        expect(await reconciler.reconcileNext()).toBe(false);
+        expect(cleanupCalls).toBe(1);
+        expect(fences).not.toContainEqual([current.id, 2]);
+      } finally {
+        if (scenario.outcome === "rejected")
+          response.reject(new Error("Cleanup response lost"));
+        else
+          response.resolve(
+            scenario.outcome === "committed" ? transitioned : null,
+          );
+        renewal.resolve(false);
+        await work;
+      }
+      await tick();
+      const expectedFences: [string, number][] = [
+        [current.id, 1],
+        [other.id, 1],
+      ];
+      if (scenario.outcome === "committed")
+        expectedFences.push([current.id, 2]);
+      expect(fences).toEqual(expectedFences);
+      expect(await reconciler.reconcileNext()).toBe(false);
+      expect(exclusions.at(-1)).not.toContain(current.id);
+      expect(ready).toEqual([other.id]);
+      expect(parked).toBe(false);
+    });
   }
 
   test("recovers deferred mail before waiting for a disconnected worker", async () => {
@@ -1597,144 +1543,136 @@ describe("durable initialization outcomes", () => {
     expect(calls).toEqual(["recover", "wait", "release"]);
   });
 
-  for (const recovery of [false, true]) {
-    test(`a cancelled deploy with a late acknowledgement is fenced before retry (recovery=${String(recovery)})`, async () => {
-      let current = allocation({
-        id: TEST_TARGET.allocationId,
-        status: "allocated",
-        generation: TEST_TARGET.generation,
-        anchorRunId: TEST_IDENTITY.anchorRunId,
-        tenantId: TEST_IDENTITY.tenantId,
-        ensureAcceptedGeneration: TEST_TARGET.generation,
-        sidecarId: TEST_IDENTITY.sidecarId,
-      });
-      const router = createAllocatedRouter({ requestTimeoutMs: 80 });
-      const ws = await connectAllocated(router);
-      const timedOut = Promise.withResolvers<boolean>();
-      let claims = 0;
-      let initialized = 0;
-      let cleanedUp = false;
-      const transition = async () => {
-        cleanedUp = true;
-        current = {
-          ...current,
-          status: recovery ? "replacing" : "releasing",
-          generation: current.generation + 1,
-        };
-        return current;
-      };
-      const store = fakeStore({
-        claimNextReconcilable: async () => (claims++ < 2 ? current : null),
-        extendReconciliationLease: async () => {
-          throw new Error("transient renewal failure");
-        },
-        beginReplacement: transition,
-        beginUnrecoverableRelease: transition,
-      });
-      const reconciler = createSidecarAllocationReconciler({
-        ...deps({ store }),
-        router,
-        leaseDurationMs: 60,
-        retryDelayMs: () => 1,
-        enableAutomaticReplacementRecovery: recovery,
-        onReady: async (_row, { signal, leaseId }) => {
-          initialized += 1;
-          try {
-            await router.sendAgentDeployToAllocation(
-              TEST_TARGET,
-              TEST_IDENTITY.workflowRunAddress,
-              TEST_CONFIG,
-              undefined,
-              signal,
-              async () => {
-                current = { ...current, initializationLeaseId: leaseId };
-              },
-            );
-          } catch (cause) {
-            if (!isDeployFrameFailure(cause)) throw cause;
-            expect(cause.frameSent).toBe(true);
-            timedOut.resolve(true);
-            throw new SessionLaunchError("start", cause, true);
-          }
-        },
-      });
-      await reconciler.reconcileNext();
-      expect(current.initializationLeaseId).toBe("lease-1");
-      await timedOut.promise;
-      router.handleMessage(
-        ws,
-        JSON.stringify({
-          type: "agent.deploy.ack",
-          agentAddress: TEST_IDENTITY.workflowRunAddress,
-          publicKey: "c".repeat(64),
-        }),
-      );
-      await tick();
-      expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(false);
-      await reconciler.reconcileNext();
-      expect(initialized).toBe(1);
-      expect(cleanedUp).toBe(true);
-      expect(ws.closed).toBe(true);
-      expect(
-        ws.sent.some((frame) => frame.includes('"type":"repo.pack.push"')),
-      ).toBe(false);
+  test(`a cancelled deploy with a late acknowledgement is fenced before retry`, async () => {
+    let current = allocation({
+      id: TEST_TARGET.allocationId,
+      status: "allocated",
+      generation: TEST_TARGET.generation,
+      anchorRunId: TEST_IDENTITY.anchorRunId,
+      tenantId: TEST_IDENTITY.tenantId,
+      ensureAcceptedGeneration: TEST_TARGET.generation,
+      sidecarId: TEST_IDENTITY.sidecarId,
     });
-  }
-
-  for (const recovery of [false, true]) {
-    test(`rechecks readiness after the observed initialization is rolled back (recovery=${String(recovery)})`, async () => {
-      const current = allocation({
-        status: "allocated",
-        generation: 1,
-        ensureAcceptedGeneration: 1,
-      });
-      const calls: string[] = [];
-      let claims = 0;
-      const cleanup: AllocationStore["beginUnrecoverableRelease"] = async (
-        args,
-      ) => {
-        expect(args).toMatchObject({
-          onlyIfInitializationIncomplete: true,
-          expectedInitializationLeaseId: "old-owner",
-        });
-        calls.push("rollback observed");
-        return null;
+    const router = createAllocatedRouter({ requestTimeoutMs: 80 });
+    const ws = await connectAllocated(router);
+    const timedOut = Promise.withResolvers<boolean>();
+    let claims = 0;
+    let initialized = 0;
+    let cleanedUp = false;
+    const transition = async () => {
+      cleanedUp = true;
+      current = {
+        ...current,
+        status: "releasing",
+        generation: current.generation + 1,
       };
-      const reconciler = createSidecarAllocationReconciler({
-        ...deps({
-          store: fakeStore({
-            claimNextReconcilable: async () =>
-              claims++ === 0
-                ? { ...current, initializationLeaseId: "old-owner" }
-                : current,
-            beginUnrecoverableRelease: cleanup,
-            beginReplacement: cleanup,
-            scheduleRetry: async () => {
-              calls.push("retry");
-              return current;
+      return current;
+    };
+    const store = fakeStore({
+      claimNextReconcilable: async () => (claims++ < 2 ? current : null),
+      extendReconciliationLease: async () => {
+        throw new Error("transient renewal failure");
+      },
+      beginUnrecoverableRelease: transition,
+    });
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({ store }),
+      router,
+      leaseDurationMs: 60,
+      retryDelayMs: () => 1,
+      onReady: async (_row, { signal, leaseId }) => {
+        initialized += 1;
+        try {
+          await router.sendAgentDeployToAllocation(
+            TEST_TARGET,
+            TEST_IDENTITY.workflowRunAddress,
+            TEST_CONFIG,
+            undefined,
+            signal,
+            async () => {
+              current = { ...current, initializationLeaseId: leaseId };
             },
-            markConnectionReady: async () => {
-              calls.push("ready");
-              return current;
-            },
-          }),
-          onReady: async () => {
-            calls.push("initialize");
+          );
+        } catch (cause) {
+          if (!isDeployFrameFailure(cause)) throw cause;
+          expect(cause.frameSent).toBe(true);
+          timedOut.resolve(true);
+          throw new SessionLaunchError("start", cause, true);
+        }
+      },
+    });
+    await reconciler.reconcileNext();
+    expect(current.initializationLeaseId).toBe("lease-1");
+    await timedOut.promise;
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "agent.deploy.ack",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        publicKey: "c".repeat(64),
+      }),
+    );
+    await tick();
+    expect(await router.isAllocatedWorkflowActive(TEST_TARGET)).toBe(false);
+    await reconciler.reconcileNext();
+    expect(initialized).toBe(1);
+    expect(cleanedUp).toBe(true);
+    expect(ws.closed).toBe(true);
+    expect(
+      ws.sent.some((frame) => frame.includes('"type":"repo.pack.push"')),
+    ).toBe(false);
+  });
+
+  test(`rechecks readiness after the observed initialization is rolled back`, async () => {
+    const current = allocation({
+      status: "allocated",
+      generation: 1,
+      ensureAcceptedGeneration: 1,
+    });
+    const calls: string[] = [];
+    let claims = 0;
+    const cleanup: AllocationStore["beginUnrecoverableRelease"] = async (
+      args,
+    ) => {
+      expect(args).toMatchObject({
+        onlyIfInitializationIncomplete: true,
+        expectedInitializationLeaseId: "old-owner",
+      });
+      calls.push("rollback observed");
+      return null;
+    };
+    const reconciler = createSidecarAllocationReconciler({
+      ...deps({
+        store: fakeStore({
+          claimNextReconcilable: async () =>
+            claims++ === 0
+              ? { ...current, initializationLeaseId: "old-owner" }
+              : current,
+          beginUnrecoverableRelease: cleanup,
+          scheduleRetry: async () => {
+            calls.push("retry");
+            return current;
+          },
+          markConnectionReady: async () => {
+            calls.push("ready");
+            return current;
           },
         }),
-        enableAutomaticReplacementRecovery: recovery,
-      });
-      await reconciler.reconcileNext();
-      expect(calls).toEqual(["rollback observed", "retry"]);
-      await reconciler.reconcileNext();
-      expect(calls).toEqual([
-        "rollback observed",
-        "retry",
-        "initialize",
-        "ready",
-      ]);
+        onReady: async () => {
+          calls.push("initialize");
+        },
+      }),
     });
-  }
+    await reconciler.reconcileNext();
+    expect(calls).toEqual(["rollback observed", "retry"]);
+    await reconciler.reconcileNext();
+    expect(calls).toEqual([
+      "rollback observed",
+      "retry",
+      "initialize",
+      "ready",
+    ]);
+  });
 
   test("an interrupted initialization is released without waiting for a socket", async () => {
     const current = allocation({
