@@ -54,6 +54,8 @@ export function formatRunView(
     createdAt: ts(record.createdAt),
     updatedAt: ts(record.updatedAt),
     endedAt: record.endedAt ? ts(record.endedAt) : null,
+    failureCode: record.failureCode,
+    failureMessage: record.failureMessage,
     ...(runtimeStatus !== undefined ? { runtimeStatus } : {}),
   };
 }
