@@ -39,6 +39,17 @@ export class SidecarDeploymentStoppedError extends Error {
 }
 
 /**
+ * A first deploy failed before its deploy frame was sent, so nothing ran on
+ * the sidecar and the deploy can be tried again.
+ */
+export class SidecarFirstDeployError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "SidecarFirstDeployError";
+  }
+}
+
+/**
  * A deployment its sidecar reported stopped committed history the Hub does
  * not hold yet; the Hub looks again at `retryAt` while it still waits.
  */

@@ -29,6 +29,7 @@ import {
   SidecarDeploymentHistoryPendingError,
   SidecarDeploymentMissingError,
   SidecarDeploymentStoppedError,
+  SidecarFirstDeployError,
   SidecarOperationTimeoutError,
   type SidecarReconciliationContext,
 } from "./operation";
@@ -133,6 +134,9 @@ class ReconciliationLeaseLostError extends Error {
 const DEFAULT_LEASE_DURATION_MS = 60_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 120_000;
 const MAX_RETRY_BACKOFF_ATTEMPT = 5;
+// How long a first deploy that keeps failing before its deploy frame is sent
+// is retried, from its first failure.
+const FIRST_DEPLOY_RETRY_LIMIT_MS = 60_000;
 
 function randomHex(bytes: number): string {
   return hexEncode(crypto.getRandomValues(new Uint8Array(bytes)));
@@ -567,6 +571,27 @@ export function createSidecarAllocationReconciler({
           );
           return;
         }
+        const message = error instanceof Error ? error.message : String(error);
+        // Only a first deploy is given up on: a failure around a deployment
+        // that already runs, such as an unreachable database, says nothing
+        // about the deployment.
+        const firstDeployFailedAt =
+          error instanceof SidecarFirstDeployError
+            ? (allocation.firstDeployFailedAt ?? now())
+            : undefined;
+        if (
+          firstDeployFailedAt !== undefined &&
+          now().getTime() - firstDeployFailedAt.getTime() >=
+            FIRST_DEPLOY_RETRY_LIMIT_MS
+        ) {
+          await replaceAfterFailure(
+            allocation,
+            leaseId,
+            "sidecar_initialization_failed",
+            `The first deploy kept failing for ${String(FIRST_DEPLOY_RETRY_LIMIT_MS / 1000)} seconds: ${message}`,
+          );
+          return;
+        }
         await finishReconciliation(allocation.id, () =>
           allocationStore.scheduleRetry({
             allocationId: allocation.id,
@@ -576,10 +601,10 @@ export function createSidecarAllocationReconciler({
             // capped delay so a persistent launch error cannot create a hot loop.
             nextAttemptAt: retryAt(MAX_RETRY_BACKOFF_ATTEMPT),
             expectedLeaseId: leaseId,
-            failure: {
-              code: "sidecar_initialization_failed",
-              message: error instanceof Error ? error.message : String(error),
-            },
+            failure: { code: "sidecar_initialization_failed", message },
+            ...(firstDeployFailedAt !== undefined
+              ? { firstDeployFailedAt }
+              : {}),
             now: now(),
           }),
         );

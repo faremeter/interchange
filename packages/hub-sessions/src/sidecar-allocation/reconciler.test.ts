@@ -26,6 +26,7 @@ import {
   SidecarDeploymentMissingError,
   SidecarDeploymentHistoryPendingError,
   SidecarDeploymentStoppedError,
+  SidecarFirstDeployError,
 } from "./operation";
 import {
   createSidecarAllocationReconciler,
@@ -1025,6 +1026,123 @@ describe("createSidecarAllocationReconciler", () => {
       },
       now: NOW,
     });
+  });
+
+  test("retries a first deploy that failed before its frame was sent, from its first failure", async () => {
+    for (const firstDeployFailedAt of [
+      undefined,
+      new Date(NOW.getTime() - 30_000),
+    ]) {
+      const allocated = allocation({
+        status: "allocated",
+        generation: 1,
+        sidecarId: "sc-current",
+        ensureAcceptedGeneration: 1,
+        reconciliationLeaseId: "lease-1",
+        ...(firstDeployFailedAt !== undefined ? { firstDeployFailedAt } : {}),
+      });
+      let claimed = false;
+      let scheduled:
+        | Parameters<AllocationStore["scheduleRetry"]>[0]
+        | undefined;
+      const store = fakeStore({
+        claimNextReconcilable: async () => {
+          if (claimed) return null;
+          claimed = true;
+          return allocated;
+        },
+        scheduleRetry: async (args) => {
+          scheduled = args;
+          return allocated;
+        },
+      });
+      const reconciler = createSidecarAllocationReconciler(
+        deps({
+          store,
+          ready: true,
+          onReady: async () => {
+            throw new SidecarFirstDeployError(
+              new Error("catalog temporarily unavailable"),
+            );
+          },
+        }),
+      );
+
+      await reconciler.reconcileNext();
+
+      expect(scheduled).toEqual({
+        allocationId: "alloc-1",
+        expectedStatus: "allocated",
+        expectedGeneration: 1,
+        nextAttemptAt: new Date(NOW.getTime() + 30_000),
+        expectedLeaseId: "lease-1",
+        failure: {
+          code: "sidecar_initialization_failed",
+          message: "catalog temporarily unavailable",
+        },
+        firstDeployFailedAt: firstDeployFailedAt ?? NOW,
+        now: NOW,
+      });
+    }
+  });
+
+  test("fails a first deploy that keeps failing for a minute", async () => {
+    const allocated = allocation({
+      status: "allocated",
+      generation: 1,
+      sidecarId: "sc-current",
+      ensureAcceptedGeneration: 1,
+      reconciliationLeaseId: "lease-1",
+      firstDeployFailedAt: new Date(NOW.getTime() - 60_000),
+    });
+    const releasing = allocation({
+      status: "releasing",
+      generation: 2,
+      sidecarId: "sc-current",
+    });
+    let claimed = false;
+    let released:
+      | Parameters<AllocationStore["beginUnrecoverableRelease"]>[0]
+      | undefined;
+    const fences: [string, number][] = [];
+    const store = fakeStore({
+      claimNextReconcilable: async () => {
+        if (claimed) return null;
+        claimed = true;
+        return allocated;
+      },
+      beginUnrecoverableRelease: async (args) => {
+        released = args;
+        return releasing;
+      },
+    });
+    const reconciler = createSidecarAllocationReconciler(
+      deps({
+        store,
+        fences,
+        ready: true,
+        onReady: async () => {
+          throw new SidecarFirstDeployError(
+            new Error("catalog temporarily unavailable"),
+          );
+        },
+      }),
+    );
+
+    await reconciler.reconcileNext();
+
+    expect(released).toMatchObject({
+      allocationId: "alloc-1",
+      expectedGeneration: 1,
+      expectedLeaseId: "lease-1",
+      failureCode: "sidecar_initialization_failed",
+      failureMessage:
+        "The first deploy kept failing for 60 seconds: catalog temporarily unavailable",
+    });
+    expect(fences).toEqual([
+      ["alloc-1", 1],
+      ["alloc-1", 2],
+    ]);
   });
 
   test("releases a generation whose initialization leaked a supervisor", async () => {
