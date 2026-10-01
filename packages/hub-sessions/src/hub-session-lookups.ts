@@ -441,7 +441,7 @@ export function createHubSessionLookups(
             } as const;
           }
 
-          // Replacement advances this same row. Keep its lock until the
+          // A release advances this same row. Keep its lock until the
           // repository ref has advanced so ownership cannot change after
           // validation but before the old worker's pack becomes authoritative.
           reachedGit = true;

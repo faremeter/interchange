@@ -1681,7 +1681,7 @@ Source: packages/types/src/workflows.ts
 `{ createdAt: string, definitionAssetId: string, id: string, status: "deployed" | "destroy_failed" | "failed" | "pending" | "recovering" | "released" | "releasing", tenantId: string }`
 Source: packages/types/src/workflows.ts
 
-**status**: Deployment lifecycle status. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.
+**status**: Deployment lifecycle status. `recovering` means the Hub is replacing capacity whose provisioning failed before the deployment first ran. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.
 
 ### WorkflowLifecycleResponse
 `{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`

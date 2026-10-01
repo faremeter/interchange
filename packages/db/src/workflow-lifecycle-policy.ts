@@ -68,7 +68,7 @@ export function canExecuteWorkflowRun(
  * through the anchor run's row lock. Pack ingestion holds only the allocation
  * row, so a long receive does not delay delivery. This relies on every path
  * that retires the allocation of a run that can still execute also writing the
- * anchor row, as replacement and unrecoverable release do.
+ * anchor row, as unrecoverable release does.
  */
 export async function withExecutableWorkflowRun(
   db: DB["db"],

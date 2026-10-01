@@ -76,13 +76,6 @@ export type SidecarAllocationReconcilerDeps = {
     reconciliation: SidecarReconciliationContext,
   ) => Promise<void>;
   /**
-   * Replace an allocated worker after its reconnect grace expires. Disabled by
-   * default because Hub recovery does not restore arbitrary sidecar or
-   * isolation-container filesystem state, so automatic continuation could run
-   * without state the previous worker produced.
-   */
-  readonly enableAutomaticReplacementRecovery?: boolean;
-  /**
    * Asked only after an allocated worker misses its connect deadline.
    * A parked verdict replaces that worker. Anything else releases it.
    * Initialization-lease and leaked-launch releases do not ask.
@@ -172,7 +165,6 @@ export function createSidecarAllocationReconciler({
   hubWebSocketUrl,
   onInitializationRecovery,
   onReady,
-  enableAutomaticReplacementRecovery = false,
   classifyParkedRun,
   leaseDurationMs = DEFAULT_LEASE_DURATION_MS,
   connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
@@ -368,17 +360,19 @@ export function createSidecarAllocationReconciler({
     await queueReconciliationStep(
       { allocationId: allocation.id, generation: allocation.generation },
       async () => {
+        // An allocated worker is released unless its committed run is parked.
+        // It may still be running, and the Hub cannot restore sidecar-local
+        // files. A parked run continues from the committed log. Provisioning
+        // ran nothing yet, so a new generation replaces it.
         const updated =
-          allocation.status === "allocated" &&
-          !enableAutomaticReplacementRecovery &&
-          !replaceParked
+          allocation.status === "allocated" && !replaceParked
             ? await allocationStore.beginUnrecoverableRelease({
                 ...initializationCheck,
                 allocationId: allocation.id,
                 expectedGeneration: allocation.generation,
                 expectedLeaseId: leaseId,
                 failureCode: code,
-                failureMessage: `Automatic recovery is disabled: ${message}`,
+                failureMessage: message,
                 now: now(),
               })
             : await allocationStore.beginReplacement({
