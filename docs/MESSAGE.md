@@ -94,7 +94,7 @@ Every message carries standard RFC 5322 headers plus Interchange-specific header
 | `Date`         | Origination timestamp (RFC 5322 date-time format)                                             |
 | `Message-ID`   | Unique identifier: `<uuid@tenant.interchange.network>`                                        |
 | `In-Reply-To`  | Message-ID of the parent message (for threading)                                              |
-| `References`   | Full ancestry chain: parent's References + parent's Message-ID                                |
+| `References`   | Ancestry chain                                                                                |
 | `Subject`      | Conversation topic or offering name                                                           |
 | `MIME-Version` | Always `1.0`                                                                                  |
 | `Content-Type` | Always `multipart/signed; ...` at the top level                                               |
@@ -278,9 +278,9 @@ The `type` field matches the `Interchange-Type` header. The `version` field matc
 
 ## Threading and Conversations
 
-Conversations are threaded using RFC 5322 `In-Reply-To` and `References` headers. Every reply carries the parent's `Message-ID` in `In-Reply-To` and the full ancestry chain in `References`.
+Conversations are threaded using RFC 5322 `In-Reply-To` and `References` headers. Every reply carries the parent's `Message-ID` in `In-Reply-To`. `mail.send` with an `inReplyTo` argument never reads the parent, so its `References` chain names that one parent alone.
 
-The `References` header is constructed per RFC 5322: the parent's `References` value (if any) followed by the parent's `Message-ID`. This creates a traversable ancestry chain. The first entry in `References` is the root of the conversation.
+The `References` header is constructed per RFC 5322: the parent's `References` value (if any) followed by the parent's `Message-ID`. This creates a traversable ancestry chain.
 
 ```
 Message A: Message-ID: <a@example>
