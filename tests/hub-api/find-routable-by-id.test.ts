@@ -94,6 +94,76 @@ describe.skipIf(!harnessDbEnvAvailable())("findRoutableById (real DB)", () => {
     expect(record?.updatedAt).toEqual(new Date("2026-01-05T00:00:00Z"));
   });
 
+  test("a run the Hub failed carries why", async () => {
+    await seedBase();
+    await h.db.insert(workflowDefinition).values({
+      id: "wfd_lost",
+      tenantId: "tnt_root",
+      name: "lost",
+    });
+    await h.db.insert(workflowRun).values({
+      id: "run_lost",
+      tenantId: "tnt_root",
+      definitionId: "wfd_lost",
+      anchorRunId: "run_lost",
+      principalId: null,
+      address: "run_lost@root.example",
+      status: "failed",
+      failureCode: "sidecar_connect_failed",
+      failureMessage: "connect timeout",
+      endedAt: new Date("2026-01-05T00:00:00Z"),
+    });
+
+    expect(await findRoutableById(h.db, "run_lost", "tnt_root")).toMatchObject({
+      status: "failed",
+      failureCode: "sidecar_connect_failed",
+      failureMessage: "connect timeout",
+    });
+
+    // A failure still waiting on history leaves a running run without one.
+    await h.db.insert(workflowRun).values({
+      id: "run_waiting",
+      tenantId: "tnt_root",
+      definitionId: "wfd_lost",
+      anchorRunId: "run_waiting",
+      principalId: null,
+      address: "run_waiting@root.example",
+      status: "running",
+      failureCode: "sidecar_connect_failed",
+      failureMessage: "connect timeout",
+    });
+    expect(
+      await findRoutableById(h.db, "run_waiting", "tnt_root"),
+    ).toMatchObject({
+      status: "running",
+      failureCode: null,
+      failureMessage: null,
+    });
+
+    // Neither does a run its own history failed while the Hub's failure still
+    // waits on that history, since settling the wait drops the reason.
+    await h.db.insert(workflowRun).values({
+      id: "run_self_failed",
+      tenantId: "tnt_root",
+      definitionId: "wfd_lost",
+      anchorRunId: "run_self_failed",
+      principalId: null,
+      address: "run_self_failed@root.example",
+      status: "failed",
+      failureCode: "sidecar_connect_failed",
+      failureMessage: "connect timeout",
+      infrastructureFailedAt: new Date("2026-01-05T00:00:00Z"),
+      endedAt: new Date("2026-01-05T00:00:01Z"),
+    });
+    expect(
+      await findRoutableById(h.db, "run_self_failed", "tnt_root"),
+    ).toMatchObject({
+      status: "failed",
+      failureCode: null,
+      failureMessage: null,
+    });
+  });
+
   test("returns undefined for a deployment-anchored native run (no address)", async () => {
     await seedBase();
     await seedWorkflowRun(h.db, {
