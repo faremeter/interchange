@@ -57,6 +57,7 @@ import type { InstallAndApproveResult } from "./workflow-probe-gate";
 import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
 import {
   DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
+  SidecarDeploymentMissingError,
   runSidecarOperation,
   type SidecarReconciliationContext,
 } from "./sidecar-allocation/operation";
@@ -755,6 +756,14 @@ export function createWorkflowAllocationService({
         true,
       );
     }
+    // The key commits only once the first deploy completed, so a connected
+    // sidecar that did not report the deployment no longer holds it.
+    if (anchor.publicKey !== null) {
+      throw new SidecarDeploymentMissingError(
+        allocation.id,
+        allocation.generation,
+      );
+    }
     if (anchor.definitionId === null) {
       throw new Error(
         `Allocation ${allocation.id} anchor run has no frozen workflow definition`,
@@ -793,7 +802,7 @@ export function createWorkflowAllocationService({
     );
     if (!resolved.ok) {
       throw new Error(
-        `Catalog offering ${resolved.offeringId} is unavailable while recovering allocation ${allocation.id}`,
+        `Catalog offering ${resolved.offeringId} is unavailable for allocation ${allocation.id}`,
       );
     }
     const defaultSource = resolved.sources.find(

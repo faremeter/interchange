@@ -227,7 +227,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       ).rejects.toThrow(/conflicts with its durable payload/);
     });
 
-    test("requeues sidecar-acknowledged messages for a replacement", async () => {
+    test("requeues sidecar-acknowledged messages when a generation becomes ready", async () => {
       await seedAllocatedSidecar(1);
       const store = createWorkflowRunDispatchStore(h.db);
       await store.enqueue({

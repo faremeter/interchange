@@ -1626,8 +1626,8 @@ export function createSessionService(
       operatorApprovals: approval.approvedSurface,
     });
 
-    // Restore the Hub-authoritative run ref onto the exact allocation generation
-    // before its address is routed.
+    // Seed the deployment with the Hub's copy of its history on the exact
+    // allocation generation before its address is routed.
     await restoreWorkflowRunToAllocation({
       agentRepoStore,
       allocationRouter,

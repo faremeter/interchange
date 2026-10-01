@@ -12,6 +12,20 @@ export class SidecarOperationTimeoutError extends Error {
   }
 }
 
+/**
+ * The current connection of a deployment's sidecar did not report the
+ * deployment, though its first deploy completed: the sidecar no longer holds
+ * it, and the Hub does not deploy an address twice.
+ */
+export class SidecarDeploymentMissingError extends Error {
+  constructor(allocationId: string, generation: number) {
+    super(
+      `The sidecar of allocation ${allocationId} generation ${String(generation)} no longer holds its deployment`,
+    );
+    this.name = "SidecarDeploymentMissingError";
+  }
+}
+
 /** Stops waiting on cancellation or an optional deadline, even if work ignores the signal. */
 export async function runSidecarOperation<T>(
   operation: string,

@@ -228,7 +228,7 @@ A deployment owns one addressable top-level run. Its stable run id is the deploy
 
 Placement can only be strengthened. Each ancestor policy is enforced independently, so a child tenant or workflow cannot override it with a narrower exception. The final provisioner binding is fixed after the workflow probe exposes its capability requirements. If no configured provisioner satisfies the effective policy, deployment fails closed and the probe allocation is released.
 
-A provisioned deployment never moves to new capacity. When its worker is lost, the Hub fails the deployment's live runs and releases its allocation: Hub-owned state does not include arbitrary files created in the sidecar or its isolation containers, and a worker that is only cut off from the Hub may still be running the deployment.
+A provisioned deployment never moves to new capacity. When its worker is lost, the Hub fails the deployment's live runs and releases its allocation: Hub-owned state does not include arbitrary files created in the sidecar or its isolation containers, and a worker that is only cut off from the Hub may still be running the deployment. A deployment its reconnected worker no longer holds is failed the same way rather than deployed again.
 
 Tenant and installed-workflow lifecycle policies set deployment lifetime and capacity retention. The Hub saves the effective policy at deployment creation, enforces deadlines, and releases terminal allocations through the provisioner. Provisioners own backing-capacity reuse policy. See [Workflow lifetime and capacity retention](./workflow-lifecycle-policy.md) for inheritance, cancellation, and release semantics.
 

@@ -17,7 +17,7 @@ import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 import { createWorkflowRunPackClient } from "./workflow-run-pack-client";
 import { createWorkflowRunPackRestorer } from "./workflow-run-pack-restore";
 
-test("restored refs survive replacement and the next sidecar commit fast-forwards the Hub", async () => {
+test("a first deploy keeps its seeded refs and the next sidecar commit fast-forwards the Hub", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wfr-restore-"));
   try {
     const sourceKey = await generateKeyPair();
@@ -27,7 +27,7 @@ test("restored refs survive replacement and the next sidecar commit fast-forward
       signingKey: sourceKey,
     });
     const target = createAgentRepoStore({
-      dataDir: path.join(root, "replacement"),
+      dataDir: path.join(root, "sidecar"),
       signingKey: targetKey,
     });
     const agentAddress = "run_restore@workflow.test";
@@ -47,7 +47,7 @@ test("restored refs survive replacement and the next sidecar commit fast-forward
     });
     await source.repoStore.writeTree(hubPrincipal, repoId, "refs/heads/main", {
       files: {
-        "runs/run-before-replacement/grants.json": JSON.stringify({
+        "runs/run-seeded/grants.json": JSON.stringify({
           grants: [],
         }),
       },
@@ -55,7 +55,7 @@ test("restored refs survive replacement and the next sidecar commit fast-forward
     });
     await enqueueInbox(source.repoStore, hubPrincipal, repoId, {
       address: agentAddress,
-      messageId: "message-before-replacement",
+      messageId: "message-seeded",
       receivedAt: 1,
       mailAuditRef: { store: "mail", path: "before" },
     });
@@ -99,10 +99,10 @@ test("restored refs survive replacement and the next sidecar commit fast-forward
       "addresses",
       encodeURIComponent(agentAddress),
       "inbox",
-      "1-message-before-replacement.json",
+      "1-message-seeded.json",
     );
     expect(JSON.parse(await fs.readFile(restoredInbox, "utf8"))).toMatchObject({
-      messageId: "message-before-replacement",
+      messageId: "message-seeded",
       address: agentAddress,
     });
     expect(
@@ -111,7 +111,7 @@ test("restored refs survive replacement and the next sidecar commit fast-forward
           path.join(
             target.repoStore.getRepoDir(repoId),
             "runs",
-            "run-before-replacement",
+            "run-seeded",
             "grants.json",
           ),
           "utf8",
@@ -130,7 +130,7 @@ test("restored refs survive replacement and the next sidecar commit fast-forward
 
     await enqueueInbox(target.repoStore, supervisorPrincipal, repoId, {
       address: agentAddress,
-      messageId: "message-after-replacement",
+      messageId: "message-after-deploy",
       receivedAt: 2,
       mailAuditRef: { store: "mail", path: "after" },
     });

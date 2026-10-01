@@ -331,7 +331,7 @@ Several lookups can fail or stall without establishing that a worker is gone. Ea
 - A readiness-query timeout schedules a retry without releasing the worker: a stalled identity lookup does not prove that the worker missed its connection deadline.
 - A failed identity lookup is likewise inconclusive: the router reports it distinctly from an absent worker, the connection wait stays patient while its deadline remains and reports the failure rather than a missed deadline at expiry, and reconciliation retries instead of releasing. This includes identity revalidation inside the router connection wait; expiry of the outer operation deadline schedules a retry, while the router still reports an actual expired connection deadline.
 - A notification lookup still pending at the connection deadline is also inconclusive; it retains admission capacity and allocation exclusion until it settles, even after the wait expires.
-- The workflow-active check propagates identity lookup failures too, so a failed check cannot start restoration or redeployment over a live supervisor.
+- The workflow-active check propagates identity lookup failures and a missing connection too, so neither can fail a deployment its sidecar may still hold or start a deploy over a live supervisor.
 
 The scheduler slot is freed, but the allocation stays excluded from new claims until the underlying lookup settles, preventing duplicate stuck database reads. A fresh claim then performs a fresh readiness check. Sender deployment recovery queries use the same exclusion until their underlying reads settle, including after timeout or cancellation. Cancelled initialization queries keep the same exclusion: the scheduler slot is freed, but the allocation stays excluded and retains admission capacity until the initializer's underlying reads settle.
 
@@ -367,7 +367,7 @@ Run statuses have a matching obligation in `workflow_pending_projection`. Pack i
 
 ### Recovery boundary
 
-Recovery covers state committed to Hub-owned Git plus Hub database state: workflow event history, claim-check mail state, grants snapshots committed by the supervisor, the secret-free launch specification, allocation state, and unsettled Hub dispatches. It does not snapshot arbitrary files in a POSIX workspace, Docker volume, `/tmp`, or an external isolation provider.
+The Hub does not recover a deployment it lost. A worker that misses its reconnect deadline, or whose current connection does not report a deployment whose first deploy completed, fails the deployment's live runs and releases its capacity, and the address is never deployed again. Hub-owned Git and database state (workflow event history, claim-check mail state, grants snapshots committed by the supervisor, the secret-free launch specification, allocation state, and unsettled Hub dispatches) does not include arbitrary files in a POSIX workspace, Docker volume, `/tmp`, or an external isolation provider, and a worker that is only cut off from the Hub may still be running the deployment. Continuing the work means a new deployment.
 
 The settlement projection currently scans the retained consumed-mail index and workflow event logs after each accepted pack. This is correct and idempotent, but it is intentionally a first implementation; a future projection cursor can avoid rescanning long histories. The lifecycle service repairs missed terminal projections from committed events and schedules allocation release from the saved retention policy. An independent loop enforces lifetime deadlines even while provisioning is blocked. Revoking an allocation lease releases the reconciler from a stalled provider call so it can process cleanup. The release API persists the same intent; the allocation reconciler calls the bound provisioner's `destroy` method. See [Workflow lifetime and capacity retention](./workflow-lifecycle-policy.md).
 
@@ -1399,7 +1399,8 @@ On reconnect a provisioned sidecar restores its workflow deployment from local d
 
 1. After local restoration, the sidecar sends exactly one initial handshake: an empty `register` when it hosts no live workflow deployment, or a `reconnect` carrying its allocation's workflow-deployment address.
 2. The Hub resolves the bearer token to the current allocation generation and accepts only the address stored on that allocation's anchor run. A stale generation or unrelated address fails closed.
-3. The deployment's in-flight run state is reconstructed sidecar-locally at restore; Hub-owned workflow-run refs are restored only during allocation initialization, before a supervisor is active.
+3. The deployment's in-flight run state is reconstructed sidecar-locally at restore; the Hub sends its copy of the workflow-run refs only to a first deploy, before a supervisor is active.
+4. An empty `register` for a generation whose first deploy completed means the sidecar no longer holds the deployment, for instance because its restore failed. The Hub fails the deployment and releases its capacity rather than deploying it again.
 
 The sidecar verifies every inbound deploy pack's commit signature against the hub key it recorded at deploy time before applying it, so pack content is never applied on an unverified signature.
 
