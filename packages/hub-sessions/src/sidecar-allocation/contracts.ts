@@ -144,11 +144,11 @@ export type SidecarCredentials = {
  *
  * `retention` holds for such a copy instead when the run ended through its own
  * history: it requires what `reclaim` does, except that the anchor run has
- * ended without the Hub cancelling it. The copy then stays unrouted, its local
- * state kept until the Hub releases the deployment, so a reconnect does not
- * cut short the retention the deployment's policy sets. A copy of a run the
- * Hub cancelled is undeployed, since a restart that finds its run record still
- * on disk may be running that run again.
+ * ended without the Hub cancelling or failing it. The copy then stays
+ * unrouted, its local state kept until the Hub releases the deployment, so a
+ * reconnect does not cut short the retention the deployment's policy sets. A
+ * copy of a run the Hub ended is undeployed, since a restart that lost its
+ * stopped mark may be running that run again.
  */
 export type SidecarIdentityUse =
   | "registration"

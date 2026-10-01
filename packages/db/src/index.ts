@@ -78,6 +78,7 @@ export {
 } from "./workflow-pending-projection-store";
 export {
   createSidecarAllocationStore,
+  SIDECAR_DEPLOYMENT_STOPPED_FAILURE_CODE,
   type BeginSidecarReleaseArgs,
   type BeginSidecarReplacementArgs,
   type BindInitialSidecarArgs,
@@ -86,6 +87,7 @@ export {
   type ClaimSidecarAllocationArgs,
   type CreatePendingSidecarAllocationArgs,
   type FailSidecarAllocationArgs,
+  type FailStoppedSidecarDeploymentArgs,
   type MarkSidecarAllocatedArgs,
   type MarkSidecarConnectionLostArgs,
   type MarkSidecarConnectionReadyArgs,

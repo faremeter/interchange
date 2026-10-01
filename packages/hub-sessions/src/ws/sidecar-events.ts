@@ -102,6 +102,15 @@ export type SidecarEventMap = {
     generation: number;
   };
 
+  /**
+   * Notification after the sidecar reports that the current generation's
+   * deployment stopped though the Hub did not stop it.
+   */
+  "deployment.stopped": {
+    allocationId: string;
+    generation: number;
+  };
+
   /** Notification. Emitted for mail the Hub gives up on: recipients no
    * connection routes, un-acked mail it stops redelivering that no
    * dispatch row stands behind, and mail held for a sender key that never
@@ -184,6 +193,7 @@ export function createSidecarEmitter(): SidecarEventEmitter {
     "agent.event": new Set(),
     "sidecar.disconnect": new Set(),
     "sidecar.allocated.connected": new Set(),
+    "deployment.stopped": new Set(),
     "mail.outbound.undelivered": new Set(),
     "mail.persisted": new Set(),
     "mail.inbound.acknowledged": new Set(),

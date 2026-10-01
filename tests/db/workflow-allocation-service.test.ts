@@ -390,6 +390,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
           detachAllocation: (target) => detachCalls.push(target),
           syncSidecar: async () => undefined,
         },
@@ -473,6 +475,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
           detachAllocation: () => undefined,
           syncSidecar: async () => undefined,
         },
@@ -506,6 +510,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       let deploys = 0;
       let connected = false;
+      let clock = new Date();
+      const reported: {
+        error?: string;
+        history?: { unreceived: string | null; reportedAt: Date };
+      } = {};
       const service = createWorkflowAllocationService({
         db: h.db,
         ...sharedPluginPools([provisioner]),
@@ -531,11 +540,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
               throw new Error("Allocated sidecar is not connected");
             return false;
           },
+          reportedDeploymentFailure: () => reported.error,
+          stoppedDeploymentHistory: async () => reported.history,
           detachAllocation: () => undefined,
           syncSidecar: async () => undefined,
         },
         hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
         defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        now: () => clock,
         createAllocationId: () => "sal-deployment-missing",
         createSidecarId: () => "sc-deployment-missing",
         createToken: () => "deployment-missing-token",
@@ -564,6 +576,35 @@ describe.skipIf(!harnessDbEnvAvailable())(
       await expect(
         service.deployReadyAllocation(allocation, reconciliation),
       ).rejects.toMatchObject({ name: "SidecarDeploymentMissingError" });
+      // A sidecar that still holds the deployment, stopped on its own, says why.
+      const reportedAt = clock;
+      reported.error = "The child ended itself";
+      reported.history = { unreceived: null, reportedAt };
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toMatchObject({
+        name: "SidecarDeploymentStoppedError",
+        message: "The child ended itself",
+      });
+      // History the stopped copy committed is waited for, for a while.
+      reported.history = {
+        unreceived: "refs/heads/main is at b on the Hub and c on the worker",
+        reportedAt,
+      };
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toMatchObject({
+        name: "SidecarDeploymentHistoryPendingError",
+        retryAt: new Date(reportedAt.getTime() + 1_000),
+      });
+      clock = new Date(reportedAt.getTime() + 60_000);
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toMatchObject({
+        name: "SidecarDeploymentStoppedError",
+        message:
+          "The child ended itself; history it committed that the Hub never received is lost: refs/heads/main is at b on the Hub and c on the worker",
+      });
       expect(deploys).toBe(0);
     });
 
@@ -699,6 +740,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
           detachAllocation: (target) => detachCalls.push(target),
           syncSidecar: async () => undefined,
         },
@@ -777,6 +820,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
           detachAllocation: () => undefined,
           syncSidecar: async () => undefined,
         },
@@ -874,6 +919,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
           detachAllocation: () => undefined,
           syncSidecar: async () => undefined,
         },
@@ -956,6 +1003,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
           detachAllocation: () => undefined,
           syncSidecar: async () => undefined,
         },
@@ -1033,6 +1082,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
           waitForAllocatedSidecar: async () => undefined,
           sendProbeToAllocation: async () => probeResult(),
           isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
           detachAllocation: () => undefined,
           syncSidecar: async () => undefined,
         },
@@ -1093,6 +1144,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
             waitForAllocatedSidecar: async () => undefined,
             sendProbeToAllocation: async () => probeResult(),
             isAllocatedWorkflowActive: async () => false,
+            reportedDeploymentFailure: () => undefined,
+            stoppedDeploymentHistory: async () => undefined,
             detachAllocation: () => undefined,
             syncSidecar: async () => undefined,
           },

@@ -10,6 +10,8 @@ import {
   HubFrame,
   MAX_DEPLOYMENT_ADDRESS_LENGTH,
   MAX_DEPLOYMENT_ERROR_LENGTH,
+  MAX_REF_TIP_ENTRY_LENGTH,
+  MAX_REF_TIPS_FRAME,
   MAX_SIDECAR_INCARNATIONS,
   MAX_CACHED_SENDER_ADDRESSES_FRAME,
   MAX_CREDENTIAL_REVOCATIONS_FRAME,
@@ -567,6 +569,25 @@ describe("frame array-length ceilings", () => {
       };
       expect(HelloFrame(frame) instanceof type.errors).toBe(true);
     });
+
+    test("carries why a stopped incarnation stopped, when it says", () => {
+      const stopped = (error?: string) => ({
+        ...base,
+        incarnations: [
+          {
+            address: "wf@example.test",
+            generation: 1,
+            state: "stopped",
+            ...(error !== undefined ? { error } : {}),
+          },
+        ],
+      });
+      expect(HelloFrame(stopped()) instanceof type.errors).toBe(false);
+      expect(
+        HelloFrame(stopped("The child ended itself")) instanceof type.errors,
+      ).toBe(false);
+      expect(HelloFrame(stopped("")) instanceof type.errors).toBe(true);
+    });
   });
 
   describe("what a sidecar reports about a deployment", () => {
@@ -580,8 +601,22 @@ describe("frame array-length ceilings", () => {
         { address: "wf@example.test", generation: 1, state: "stopped" },
       ].map((base) => ({ ...base, ...incarnation })),
     });
+    const stopped = (fields: Record<string, unknown>) => ({
+      type: "deployment.stopped",
+      agentAddress: "wf@example.test",
+      generation: 1,
+      error: "The child ended itself",
+      ...fields,
+    });
+    const tips = (refs: number, nameLength = 20) =>
+      Object.fromEntries(
+        Array.from({ length: refs }, (_, i) => [
+          `refs/heads/${String(i)}`.padEnd(nameLength, "x"),
+          "a".repeat(40),
+        ]),
+      );
 
-    test("bounds an incarnation's address", () => {
+    test("bounds an incarnation's address and error", () => {
       const rejects = (fields: Record<string, unknown>) =>
         SidecarFrame(hello(fields)) instanceof type.errors;
       expect(rejects({ address: address(MAX_DEPLOYMENT_ADDRESS_LENGTH) })).toBe(
@@ -589,6 +624,35 @@ describe("frame array-length ceilings", () => {
       );
       expect(
         rejects({ address: address(MAX_DEPLOYMENT_ADDRESS_LENGTH + 1) }),
+      ).toBe(true);
+      expect(rejects({ error: "x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH) })).toBe(
+        false,
+      );
+      expect(
+        rejects({ error: "x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH + 1) }),
+      ).toBe(true);
+    });
+
+    test("bounds a stop report's address, error and ref tips", () => {
+      const rejects = (fields: Record<string, unknown>) =>
+        SidecarFrame(stopped(fields)) instanceof type.errors;
+      expect(rejects({ refTips: tips(MAX_REF_TIPS_FRAME) })).toBe(false);
+      expect(
+        rejects({ agentAddress: address(MAX_DEPLOYMENT_ADDRESS_LENGTH + 1) }),
+      ).toBe(true);
+      expect(
+        rejects({ error: "x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH + 1) }),
+      ).toBe(true);
+      expect(rejects({ refTips: tips(MAX_REF_TIPS_FRAME + 1) })).toBe(true);
+      expect(rejects({ refTips: tips(1, MAX_REF_TIP_ENTRY_LENGTH + 1) })).toBe(
+        true,
+      );
+      expect(
+        rejects({
+          refTips: {
+            "refs/heads/events": "a".repeat(MAX_REF_TIP_ENTRY_LENGTH + 1),
+          },
+        }),
       ).toBe(true);
     });
 
@@ -818,6 +882,35 @@ describe("frame payload byte limits", () => {
     // payload-limit design depends on.
     expect(MAX_SIDECAR_FRAME_BYTES).toBeGreaterThan(
       MAX_MAIL_OUTBOUND_BODY_BYTES,
+    );
+  });
+});
+
+describe("DeploymentStoppedFrame", () => {
+  const frame = {
+    type: "deployment.stopped" as const,
+    agentAddress: "wf@example.test",
+    generation: 1,
+    error: "Its workflow child ended itself",
+    refTips: { "refs/heads/main": "c".repeat(40), "refs/heads/events": null },
+  };
+
+  test("the SidecarFrame union admits a stop report with its history tips", () => {
+    const out = SidecarFrame(frame);
+    if (out instanceof type.errors) {
+      throw new Error(`expected a valid SidecarFrame: ${out.summary}`);
+    }
+    expect(out).toEqual(frame);
+  });
+
+  test("admits a report whose tips could not be read", () => {
+    const { refTips: _refTips, ...withoutTips } = frame;
+    expect(SidecarFrame(withoutTips) instanceof type.errors).toBe(false);
+  });
+
+  test("refuses a report without why", () => {
+    expect(SidecarFrame({ ...frame, error: "" }) instanceof type.errors).toBe(
+      true,
     );
   });
 });

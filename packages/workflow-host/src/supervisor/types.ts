@@ -321,25 +321,25 @@ export interface WorkflowSupervisorBindings {
    * while recycling, or a recycle failure (both `stopped`) -- but NOT when the
    * host drives it down through the public `shutdown()`, and NOT for a failure
    * of the initial spawn handshake (that is the deploy's to unwind). Production
-   * wires this to the sidecar so it reclaims the deployment address (drops the
-   * supervisor from its active map and releases the address's routing state)
-   * and the address becomes redeployable without a manual undeploy.
+   * wires this to the sidecar so it drops the supervisor, releases the
+   * address's routing state, and holds the deployment as stopped, reporting why
+   * it ended, until the Hub undeploys it.
    *
    * The handler MUST be idempotent. Firing is not exactly-once: two
    * self-terminating callers interleaving through teardown (e.g. a channel
    * crash while recycling plus the recycle-failure catch) can each fire. The
-   * sidecar's reclaim absorbs a repeat because it acts only while it still
-   * holds the incarnation, which makes the second run a no-op.
+   * sidecar absorbs a repeat because it acts only while the incarnation still
+   * has its supervisor, which makes the second run a no-op.
    *
    * Unlike `onSuspensionRegister`, this sink does NOT share the same
    * log-and-continue contract on the host side. A missed suspension has an
-   * independent recovery path (`reEmitParkedCorrelations`); a missed reclaim
-   * does not -- the address stays stranded until an operator undeploys. So
-   * the host's handler is engineered to be total, and a failure there is
-   * logged loudly rather than swallowed. The supervisor still invokes this
-   * best-effort (a throwing sink cannot break the terminal transition), but a
-   * host that copies `onSuspensionRegister`'s quiet-swallow semantics onto its
-   * reclaim handler reintroduces the stranding bug.
+   * independent recovery path (`reEmitParkedCorrelations`); a missed stop
+   * does not -- the deployment stays reported live with nothing running it
+   * until an operator undeploys. So the host's handler is engineered to be
+   * total, and a failure there is logged loudly rather than swallowed. The
+   * supervisor still invokes this best-effort (a throwing sink cannot break
+   * the terminal transition), but a host that copies `onSuspensionRegister`'s
+   * quiet-swallow semantics onto this handler reintroduces the stranding bug.
    */
   onSelfTerminate?: (info: {
     phase: "stopped" | "crash-looping";

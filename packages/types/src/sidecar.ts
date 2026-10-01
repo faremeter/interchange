@@ -47,8 +47,15 @@ import { WorkflowDefinitionSource } from "./workflow-sources";
 // it, so every hello it sends stays within the bound.
 export const MAX_SIDECAR_INCARNATIONS = 128;
 
+// Bounds on what a sidecar reports about a deployment it holds. The Hub keeps
+// a reported stop until it fails the deployment, and stores a deploy error on
+// each of the deployment's runs, so these, not the frame-size limit, bound
+// what one sidecar can make it hold. A deployment address is a mail address
+// of at most 320 characters, and its history has a few refs.
 export const MAX_DEPLOYMENT_ADDRESS_LENGTH = 320;
 export const MAX_DEPLOYMENT_ERROR_LENGTH = 4096;
+export const MAX_REF_TIPS_FRAME = 16;
+export const MAX_REF_TIP_ENTRY_LENGTH = 255;
 
 /**
  * Cuts an error a sidecar reports to `MAX_DEPLOYMENT_ERROR_LENGTH`, so a long
@@ -169,6 +176,10 @@ export const HostedIncarnation = type({
   address: type("string").atMostLength(MAX_DEPLOYMENT_ADDRESS_LENGTH),
   generation: Generation,
   state: IncarnationState,
+  // Why a stopped incarnation stopped when the Hub did not stop it: its
+  // workflow child ended itself, or the sidecar could not restore it. The Hub
+  // fails such a deployment.
+  "error?": type("string > 0").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
 });
 export type HostedIncarnation = typeof HostedIncarnation.infer;
 
@@ -792,7 +803,18 @@ export type WorkflowControlFrame = typeof WorkflowControlFrame.infer;
 export const WORKFLOW_CONTROL_INITIALIZING_ERROR = "workflow_initializing";
 
 /** The tip of each authoritative workflow-run ref, `null` for an absent ref. */
-export const WorkflowRunRefTips = type({ "[string]": "string | null" });
+export const WorkflowRunRefTips = type({
+  "[string]": type("string").atMostLength(MAX_REF_TIP_ENTRY_LENGTH).or("null"),
+}).narrow(
+  (tips, ctx) =>
+    (Object.keys(tips).length <= MAX_REF_TIPS_FRAME &&
+      Object.keys(tips).every(
+        (ref) => ref.length <= MAX_REF_TIP_ENTRY_LENGTH,
+      )) ||
+    ctx.mustBe(
+      `at most ${String(MAX_REF_TIPS_FRAME)} refs whose names have at most ${String(MAX_REF_TIP_ENTRY_LENGTH)} characters`,
+    ),
+);
 export type WorkflowRunRefTips = typeof WorkflowRunRefTips.infer;
 
 export const WorkflowControlAckFrame = type({
@@ -806,6 +828,23 @@ export const WorkflowControlAckFrame = type({
   "refTips?": WorkflowRunRefTips,
 });
 export type WorkflowControlAckFrame = typeof WorkflowControlAckFrame.infer;
+
+/**
+ * Reports a deployment that stopped though the Hub did not stop it: its
+ * workflow child ended itself, or the sidecar could not restore it. Sent when
+ * it happens and again after every `welcome` while the sidecar holds it, with
+ * the tips of its history branches, so the Hub can wait for that history
+ * before it fails the deployment. The tips are left out when the sidecar
+ * could not read them.
+ */
+export const DeploymentStoppedFrame = type({
+  type: "'deployment.stopped'",
+  agentAddress: type("string").atMostLength(MAX_DEPLOYMENT_ADDRESS_LENGTH),
+  generation: Generation,
+  error: type("string > 0").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
+  "refTips?": WorkflowRunRefTips,
+});
+export type DeploymentStoppedFrame = typeof DeploymentStoppedFrame.infer;
 
 /**
  * The Hub's answer to `hello`, sent once it has reconciled the reported
@@ -1214,6 +1253,7 @@ export const SidecarFrame = type.or(
   WorkflowProbeResultFrame,
   WorkflowProbeErrorFrame,
   WorkflowControlAckFrame,
+  DeploymentStoppedFrame,
 );
 export type SidecarFrame = typeof SidecarFrame.infer;
 

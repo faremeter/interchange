@@ -36,6 +36,7 @@ type MockDBOpts = {
   anchorPublicKey?: string | null;
   anchorStatus?: string;
   anchorCancellationRequestedAt?: Date;
+  anchorFailureCode?: string;
   onFindFirst?: (args: { where: unknown }) => void;
 };
 
@@ -90,6 +91,7 @@ function createMockDB(opts: MockDBOpts): DB["db"] {
                 expiresAt: null,
                 cancellationRequestedAt:
                   opts.anchorCancellationRequestedAt ?? null,
+                failureCode: opts.anchorFailureCode ?? null,
               },
         findMany: async () =>
           opts.allocation === null ||
@@ -283,7 +285,7 @@ describe("createSidecarTokenAuthenticator", () => {
       initializationLeaseId: string | null,
       anchorPublicKey: string | null,
       anchorStatus: string,
-      endedByHub: { cancelled?: boolean } = {},
+      endedByHub: { cancelled?: boolean; failureCode?: string } = {},
     ) =>
       createSidecarCredentialResolver({
         db: createMockDB({
@@ -303,6 +305,9 @@ describe("createSidecarTokenAuthenticator", () => {
           ...(endedByHub.cancelled === true
             ? { anchorCancellationRequestedAt: new Date() }
             : {}),
+          ...(endedByHub.failureCode !== undefined
+            ? { anchorFailureCode: endedByHub.failureCode }
+            : {}),
         }),
       });
 
@@ -316,6 +321,11 @@ describe("createSidecarTokenAuthenticator", () => {
     expect(
       await resolverWith(null, "public-key", "cancelled", {
         cancelled: true,
+      }).isCurrent(binding, "retention"),
+    ).toBe(false);
+    expect(
+      await resolverWith(null, "public-key", "failed", {
+        failureCode: "sidecar_deployment_stopped",
       }).isCurrent(binding, "retention"),
     ).toBe(false);
     expect(

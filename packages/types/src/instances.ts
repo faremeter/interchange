@@ -49,7 +49,7 @@ export const WorkflowRunResponse = type({
   updatedAt: "string",
   "endedAt?": "string | null",
   "failureCode?": type("string | null").describe(
-    "Why the Hub failed this run's deployment when it lost or gave up its sidecar capacity, such as `sidecar_connect_failed`; null for a run the Hub did not fail.",
+    "Why the Hub failed this run's deployment, such as `sidecar_connect_failed`; null for a run the Hub did not fail.",
   ),
   "failureMessage?": type("string | null").describe(
     "The detail of `failureCode`, such as the error the sidecar reported.",

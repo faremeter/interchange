@@ -161,6 +161,7 @@ export function createSidecarCredentialResolver({
         status: true,
         expiresAt: true,
         cancellationRequestedAt: true,
+        failureCode: true,
       },
       where: eq(workflowRun.id, identity.anchorRunId),
     });
@@ -170,11 +171,15 @@ export function createSidecarCredentialResolver({
     // The Hub may have ended the run without the worker recording it, so the
     // run row, not the copy that reconnects, decides whether it is over.
     const ended = workflowRunExecutability(anchor) === "terminal";
-    if (use === "reclaim") return !ended;
+    if (use === "reclaim") return !ended && anchor.failureCode === null;
     // Only a run that ended through its own history leaves its copy idle. A
-    // restart that finds the run record of a copy whose run the Hub cancelled
-    // or expired still on disk respawns it running that run.
-    return ended && anchor.cancellationRequestedAt === null;
+    // restart that lost the stopped mark of a copy whose run the Hub
+    // cancelled, expired or failed respawns it running that run.
+    return (
+      ended &&
+      anchor.cancellationRequestedAt === null &&
+      anchor.failureCode === null
+    );
   }
 
   return { resolve, resolveBindings, isCurrent };

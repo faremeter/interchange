@@ -14,7 +14,10 @@
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
 import type { SignalKind } from "@intx/types";
-import type { HostedIncarnation } from "@intx/types/sidecar";
+import type {
+  DeploymentStoppedFrame,
+  HostedIncarnation,
+} from "@intx/types/sidecar";
 import type {
   ApprovalSnapshot,
   CryptoProvider,
@@ -96,6 +99,14 @@ export type CreateDeployRouter = (deps: {
     kind: SignalKind;
     approvalSnapshot?: ApprovalSnapshot;
   }) => void;
+  /**
+   * Sink for a deployment that stopped though the Hub did not stop it. Wired
+   * to the hub-link's `sendDeploymentStopped`, like
+   * `publishWorkflowSuspension`.
+   */
+  publishDeploymentStopped: (
+    report: Omit<DeploymentStoppedFrame, "type">,
+  ) => void;
 }) => DeployRouter;
 
 export type SidecarOrchestratorConfig = {
@@ -317,6 +328,12 @@ export function createSidecarOrchestrator(
     /* replaced after HubLink construction */
   };
 
+  let dispatchDeploymentStopped: (
+    report: Omit<DeploymentStoppedFrame, "type">,
+  ) => void = () => {
+    /* replaced after HubLink construction */
+  };
+
   const sessions = createSessionManager({ repoStore });
 
   const deployRouter = createDeployRouter({
@@ -351,6 +368,9 @@ export function createSidecarOrchestrator(
     // closure reads it lazily so the post-construction swap is observed.
     publishWorkflowSuspension: (registration) => {
       dispatchSuspension(registration);
+    },
+    publishDeploymentStopped: (report) => {
+      dispatchDeploymentStopped(report);
     },
   });
 
@@ -393,6 +413,7 @@ export function createSidecarOrchestrator(
 
   dispatchEvent = hubLink.sendEvent;
   dispatchSuspension = hubLink.sendSignalCorrelationRegister;
+  dispatchDeploymentStopped = hubLink.sendDeploymentStopped;
 
   function start(): void {
     hubLink.connect();
