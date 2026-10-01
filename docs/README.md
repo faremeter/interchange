@@ -47,7 +47,8 @@ see [`LAYOUT.md`](../LAYOUT.md).
   currently its home in the source tree. Not yet a written guide.
 
 - [`workflow-lifecycle-policy.md`](./workflow-lifecycle-policy.md) — deployment
-  lifetime, capacity retention, and cancellation/release APIs.
+  lifetime, capacity retention, the disconnect limit, and
+  cancellation/release APIs.
 
 ## HTTP API
 
