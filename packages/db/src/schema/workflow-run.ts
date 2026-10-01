@@ -115,10 +115,9 @@ export const workflowRun = pgTable(
     // still settle some runs. Set on the anchor instead of failing its live
     // runs; they are failed at this time once that history is reconciled.
     infrastructureFailedAt: timestamp("infrastructure_failed_at"),
-    // Why the Hub failed this run when it lost or gave up its capacity. Set on
-    // the anchor when the Hub decides to fail the deployment, deferred or not,
-    // then on every live run it fails, and kept after the allocation that also
-    // records it is released.
+    // Why the Hub failed this run. Set on the anchor when the Hub decides to
+    // fail the deployment, deferred or not, then on every live run it fails,
+    // and kept after the allocation that also records it is released.
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),
     createdAt: timestamp("created_at").notNull().defaultNow(),

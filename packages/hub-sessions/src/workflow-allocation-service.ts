@@ -57,10 +57,17 @@ import type { InstallAndApproveResult } from "./workflow-probe-gate";
 import { buildReferencedWorkflowSourcePins } from "./workflow-source-pins";
 import {
   DEFAULT_SIDECAR_OPERATION_TIMEOUT_MS,
+  SidecarDeploymentHistoryPendingError,
   SidecarDeploymentMissingError,
+  SidecarDeploymentStoppedError,
   runSidecarOperation,
   type SidecarReconciliationContext,
 } from "./sidecar-allocation/operation";
+
+// How long the Hub waits for history a deployment that stopped on its own
+// committed before it fails the deployment without it, and how often it looks.
+const STOPPED_HISTORY_WAIT_MS = 60_000;
+const STOPPED_HISTORY_POLL_MS = 1_000;
 
 export class WorkflowProvisioningError extends Error {
   readonly code: string;
@@ -126,6 +133,8 @@ export type WorkflowAllocationServiceDeps = {
     | "detachAllocation"
     | "fenceAllocation"
     | "isAllocatedWorkflowActive"
+    | "reportedDeploymentFailure"
+    | "stoppedDeploymentHistory"
     | "retireAllocation"
     | "sendProbeToAllocation"
     | "syncSidecar"
@@ -767,6 +776,29 @@ export function createWorkflowAllocationService({
           `Allocation ${allocation.id} has an active workflow without a completed initialization key`,
         ),
         true,
+      );
+    }
+    const stopped =
+      allocationRouter.reportedDeploymentFailure(allocationTarget);
+    if (stopped !== undefined) {
+      // The stopped copy may still be pushing history it committed. Failing
+      // the runs first would overwrite an outcome it recorded, so the Hub
+      // waits for that history for a while, then fails without it.
+      const history =
+        await allocationRouter.stoppedDeploymentHistory(allocationTarget);
+      if (history === undefined || history.unreceived === null)
+        throw new SidecarDeploymentStoppedError(stopped);
+      const giveUpAt = history.reportedAt.getTime() + STOPPED_HISTORY_WAIT_MS;
+      if (now().getTime() < giveUpAt) {
+        throw new SidecarDeploymentHistoryPendingError(
+          history.unreceived,
+          new Date(
+            Math.min(giveUpAt, now().getTime() + STOPPED_HISTORY_POLL_MS),
+          ),
+        );
+      }
+      throw new SidecarDeploymentStoppedError(
+        `${stopped}; history it committed that the Hub never received is lost: ${history.unreceived}`,
       );
     }
     // The key commits only once the first deploy completed, so a connected

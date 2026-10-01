@@ -28,6 +28,7 @@ import {
   type AgentDeployFrame,
   type AgentUndeployAckFrame,
   type AgentUndeployErrorFrame,
+  type DeploymentStoppedFrame,
   type HostedIncarnation,
   type PackAckFrame,
   type HubFrame,
@@ -532,6 +533,21 @@ export type SidecarAllocationRouter = {
    * fails: a sidecar that is only cut off may still hold the deployment.
    */
   isAllocatedWorkflowActive(target: AllocatedSidecarTarget): Promise<boolean>;
+  /**
+   * Why the generation's sidecar reported its deployment stopped though the
+   * Hub did not stop it, or undefined when it reported no such stop. The
+   * report outlives the connection that carried it.
+   */
+  reportedDeploymentFailure(target: AllocatedSidecarTarget): string | undefined;
+  /**
+   * For a stop `reportedDeploymentFailure` reports, how much of the history
+   * the stopped copy reported the Hub holds: `unreceived` describes the first
+   * ref whose reported tip the Hub does not hold, or is null once it holds
+   * them all, and `reportedAt` is when the stop was first reported.
+   */
+  stoppedDeploymentHistory(
+    target: AllocatedSidecarTarget,
+  ): Promise<{ unreceived: string | null; reportedAt: Date } | undefined>;
   /** Probe a workflow on the exact provisioned allocation generation. */
   sendProbeToAllocation(
     target: AllocatedSidecarTarget,
@@ -696,6 +712,8 @@ export type SidecarRouterConfig = {
    * typically by flipping a flag.
    */
   scheduleTimeout?: (handler: () => void, ms: number) => () => void;
+  /** When a sidecar's stop report is first heard. Defaults to the wall clock. */
+  now?: () => Date;
   /** Maximum redelivery attempts before the hub stops retrying an un-acked
    * connected-window `mail.inbound`. Bounds the retry so a sidecar that never
    * acks does not accumulate an unbounded timer per delivery. */
@@ -761,6 +779,7 @@ export function createSidecarRouter(
       };
     },
     mailAckMaxRetries = DEFAULT_MAIL_ACK_MAX_RETRIES,
+    now = () => new Date(),
     lookups = {},
   } = config;
 
@@ -844,6 +863,19 @@ export function createSidecarRouter(
   // allocationId -> generation whose worker acknowledged a workflow stop. Its
   // later workflow-run packs are refused, including after a reconnect.
   const stoppedAllocations = new Map<string, number>();
+  // allocationId -> the stop a sidecar reported for that generation's
+  // deployment though the Hub did not stop it. It outlives the connection that
+  // carried it, until the allocation's fence moves past that generation.
+  const reportedStops = new Map<
+    string,
+    {
+      generation: number;
+      address: string;
+      error: string;
+      reportedAt: Date;
+      refTips?: WorkflowRunRefTips;
+    }
+  >();
   type AllocationWaiter = {
     generation: number;
     resolve(): void;
@@ -1602,6 +1634,7 @@ export function createSidecarRouter(
       case "mail.inbound.ack":
       case "signal.correlation.register":
       case "workflow.control.ack":
+      case "deployment.stopped":
       case "repo.pack.push":
       case "repo.pack.done":
         return false;
@@ -1800,6 +1833,9 @@ export function createSidecarRouter(
         return;
       case "workflow.probe.error":
         rejectProbe(ws, frame.requestId, frame.error);
+        return;
+      case "deployment.stopped":
+        handleDeploymentStopped(ws, frame);
         return;
       default:
         return assertNever(frame);
@@ -2191,6 +2227,10 @@ export function createSidecarRouter(
     reclaimed: Map<string, Extract<SidecarAuthIdentity, { kind: "allocated" }>>;
     retained: Map<string, Extract<SidecarAuthIdentity, { kind: "allocated" }>>;
     unkept: HostedIncarnation[];
+    failed: {
+      binding: Extract<SidecarAuthIdentity, { kind: "allocated" }>;
+      error: string;
+    }[];
   } | null> {
     let bindings: SidecarAuthIdentity[];
     try {
@@ -2237,11 +2277,14 @@ export function createSidecarRouter(
     // first deploy has completed, and its run has not ended. A stopped one of
     // a current binding, and a live one whose run ended on its own, stay
     // unrouted, their local state kept for inspection until the Hub releases
-    // the deployment. Every other one is undeployed: an earlier generation, a
-    // live one of a run the Hub cancelled, a deployment that left this sidecar
-    // while it was disconnected, one still deploying or tearing down, or one
-    // whose deploy is still uncertain. The reconciler fails a deployment whose
-    // current generation the sidecar no longer reports.
+    // the deployment; one that stopped on its own is noted, and the reconciler
+    // fails its deployment. Every other one is undeployed: an earlier
+    // generation, a live one of a generation the sidecar already reported
+    // stopped, a live one of a run the Hub cancelled or failed, a deployment
+    // that left this sidecar while it was disconnected, one still deploying or
+    // tearing down, or one whose deploy is still uncertain. The reconciler
+    // fails a deployment whose current generation the sidecar no longer
+    // reports.
     const reclaimed = new Map<
       string,
       Extract<SidecarAuthIdentity, { kind: "allocated" }>
@@ -2251,6 +2294,10 @@ export function createSidecarRouter(
       Extract<SidecarAuthIdentity, { kind: "allocated" }>
     >();
     const unkept: HostedIncarnation[] = [];
+    const failed: {
+      binding: Extract<SidecarAuthIdentity, { kind: "allocated" }>;
+      error: string;
+    }[] = [];
     async function readIncarnation(incarnation: HostedIncarnation) {
       const address = incarnation.address;
       const binding = bindings.find(
@@ -2267,6 +2314,15 @@ export function createSidecarRouter(
       }
       if (incarnation.state === "stopped") {
         return { incarnation, binding, kind: "stopped" } as const;
+      }
+      // A live copy of a generation reported stopped is one a sidecar restart
+      // respawned after losing its stopped mark. It is undeployed, never
+      // routed.
+      if (
+        reportedStops.get(binding.allocationId)?.generation ===
+        binding.generation
+      ) {
+        return { incarnation, kind: "unkept" } as const;
       }
       const alreadyRouted =
         existing?.workflowAddresses.get(address) === binding.allocationId &&
@@ -2315,6 +2371,11 @@ export function createSidecarRouter(
               break;
             case "stopped":
               retained.set(incarnation.address, result.binding);
+              if (incarnation.error !== undefined)
+                failed.push({
+                  binding: result.binding,
+                  error: incarnation.error,
+                });
               break;
             case "unkept":
               unkept.push(incarnation);
@@ -2327,7 +2388,7 @@ export function createSidecarRouter(
       ws.close();
       return null;
     }
-    return { bindings, reclaimed, retained, unkept };
+    return { bindings, reclaimed, retained, unkept, failed };
   }
 
   async function handleRegistration(
@@ -2381,7 +2442,7 @@ export function createSidecarRouter(
       }
       return;
     }
-    const { bindings, reclaimed, retained, unkept } = hosted;
+    const { bindings, reclaimed, retained, unkept, failed } = hosted;
 
     // A sidecar reconnecting on a new socket takes its bindings along. Move
     // them off the previous socket first so its close reports only the
@@ -2424,6 +2485,13 @@ export function createSidecarRouter(
       );
     }
     const { attached } = attachBindings(ws, conn, bindings);
+    for (const { binding, error } of failed) {
+      if (
+        conn.bindings.get(binding.allocationId)?.generation ===
+        binding.generation
+      )
+        noteReportedStop(binding, error);
+    }
     if (!hostsWork(conn)) {
       logger.warn`Rejected sidecar ${sidecarId}: none of its bindings is fenced as current`;
       for (const [address, binding] of [...reclaimed, ...retained]) {
@@ -3586,6 +3654,9 @@ export function createSidecarRouter(
     const stopped = stoppedAllocations.get(allocationId);
     if (stopped !== undefined && stopped < generation)
       stoppedAllocations.delete(allocationId);
+    const reportedStop = reportedStops.get(allocationId);
+    if (reportedStop !== undefined && reportedStop.generation < generation)
+      reportedStops.delete(allocationId);
 
     // A durable generation advance resolves unfinished initialization as failed.
     // This also covers a cleanup transaction whose response was lost: the next
@@ -3631,6 +3702,7 @@ export function createSidecarRouter(
     detachAllocation(target);
     allocationFences.delete(target.allocationId);
     stoppedAllocations.delete(target.allocationId);
+    reportedStops.delete(target.allocationId);
 
     // The fence is gone, so a lingering attempt can never settle normally.
     // Fail it here rather than leaving a marker that blocks the address.
@@ -3766,6 +3838,36 @@ export function createSidecarRouter(
       conn.workflowAddresses.get(binding.workflowRunAddress) ===
       binding.allocationId
     );
+  }
+
+  function reportedStop(target: AllocatedSidecarTarget) {
+    const reported = reportedStops.get(target.allocationId);
+    return reported?.generation === target.generation ? reported : undefined;
+  }
+
+  function reportedDeploymentFailure(
+    target: AllocatedSidecarTarget,
+  ): string | undefined {
+    return reportedStop(target)?.error;
+  }
+
+  async function stoppedDeploymentHistory(
+    target: AllocatedSidecarTarget,
+  ): Promise<{ unreceived: string | null; reportedAt: Date } | undefined> {
+    const reported = reportedStop(target);
+    if (reported === undefined) return undefined;
+    // A generation whose stop the Hub confirmed is fenced, so the history the
+    // Hub holds is final.
+    return {
+      unreceived:
+        stoppedAllocations.get(target.allocationId) === target.generation
+          ? null
+          : await findUnreceivedWorkflowHistory(
+              reported.address,
+              reported.refTips,
+            ),
+      reportedAt: reported.reportedAt,
+    };
   }
 
   async function waitForAllocatedSidecar(
@@ -4691,6 +4793,59 @@ export function createSidecarRouter(
     }
   }
 
+  // A stop keeps its first error and when it was first reported, whichever
+  // connection or frame carries it later, so a reconnect cannot restart the
+  // wait for its history. The tips are the latest the sidecar reported.
+  function noteReportedStop(
+    binding: Extract<SidecarAuthIdentity, { kind: "allocated" }>,
+    error: string,
+    refTips?: WorkflowRunRefTips,
+  ): void {
+    const previous = reportedStops.get(binding.allocationId);
+    const first =
+      previous?.generation === binding.generation ? previous : undefined;
+    const tips = refTips ?? first?.refTips;
+    reportedStops.set(binding.allocationId, {
+      generation: binding.generation,
+      address: binding.workflowRunAddress,
+      error: first?.error ?? error,
+      reportedAt: first?.reportedAt ?? now(),
+      ...(tips !== undefined ? { refTips: tips } : {}),
+    });
+  }
+
+  // A deployment stopped though the Hub did not stop it. A current
+  // generation's stays unrouted, as a stopped one a hello reports does, and
+  // the reconciler fails it once the Hub holds the history the stopped copy
+  // reported, or once it stops waiting for it. Any other stopped incarnation
+  // is not the Hub's to keep, so it is undeployed.
+  function handleDeploymentStopped(
+    ws: WsHandle,
+    frame: DeploymentStoppedFrame,
+  ): void {
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+    const binding = deploymentBinding(conn, frame.agentAddress);
+    if (
+      binding?.generation !== frame.generation ||
+      !isFencedAsCurrent(binding)
+    ) {
+      sendUndeploy(
+        conn,
+        { address: frame.agentAddress, generation: frame.generation },
+        "The Hub does not keep this incarnation on this sidecar",
+        { waitable: binding !== undefined },
+      );
+      return;
+    }
+    removeRoute(ws, frame.agentAddress);
+    noteReportedStop(binding, frame.error, frame.refTips);
+    events.emit("deployment.stopped", {
+      allocationId: binding.allocationId,
+      generation: binding.generation,
+    });
+  }
+
   // Describes the first ref whose reported tip the Hub does not hold, or
   // returns null when the Hub holds the worker's whole history.
   async function findUnreceivedWorkflowHistory(
@@ -5041,6 +5196,8 @@ export function createSidecarRouter(
     isAllocatedSidecarReady,
     holdsAllocatedBinding,
     isAllocatedWorkflowActive,
+    reportedDeploymentFailure,
+    stoppedDeploymentHistory,
     sendAgentDeployToAllocation,
     bindAllocatedStepRoute,
     unbindAllocatedStepRoute,

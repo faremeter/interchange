@@ -294,6 +294,26 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .where(eq(workflowRun.id, binding.anchorRunId));
       expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
       expect(await resolver.isCurrent(binding, "retention")).toBe(false);
+
+      const failed = await seedSidecar({ id: "sc-failed", token: "t2" });
+      await h.db
+        .update(workflowRun)
+        .set({
+          publicKey: "public-key",
+          failureCode: "sidecar_deployment_stopped",
+          infrastructureFailedAt: new Date(),
+        })
+        .where(eq(workflowRun.id, failed.anchorRunId));
+      // A deferred failure leaves the run live while accepted history is projected.
+      expect(await resolver.isCurrent(failed, "reclaim")).toBe(false);
+      expect(await resolver.isCurrent(failed, "retention")).toBe(false);
+
+      await h.db
+        .update(workflowRun)
+        .set({ status: "failed", endedAt: new Date() })
+        .where(eq(workflowRun.id, failed.anchorRunId));
+      expect(await resolver.isCurrent(failed, "reclaim")).toBe(false);
+      expect(await resolver.isCurrent(failed, "retention")).toBe(false);
     });
   },
 );
