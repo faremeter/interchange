@@ -24,6 +24,7 @@ import {
   createSidecarPluginRegistry,
   createSidecarRouter,
   createWorkflowAllocationService,
+  SessionLaunchError,
   type InstallAndApproveWorkflowSourceParams,
   type SidecarProvisioner,
 } from "@intx/hub-sessions";
@@ -375,6 +376,68 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       expect(anchorVisibleDuringDeploy).toBe(true);
+    });
+
+    test("tells a first deploy that failed before its frame was sent from an uncertain one", async () => {
+      const provisioner = makeProvisioner({
+        id: "first-deploy-failure",
+        ensureCalls: [],
+        destroyCalls: [],
+      });
+      let failure: Error = new Error("catalog temporarily unavailable");
+      const service = createWorkflowAllocationService({
+        db: h.db,
+        ...sharedPluginPools([provisioner]),
+        preparedDeployer: {
+          installAndApproveWorkflowSource: (params) => freeze(params),
+          deployPreparedCodeSourcedWorkflow: async () => {
+            throw failure;
+          },
+        },
+        credentialCipher: CIPHER,
+        allocationRouter: {
+          fenceAllocation: () => undefined,
+          retireAllocation: () => undefined,
+          waitForAllocatedSidecar: async () => undefined,
+          sendProbeToAllocation: async () => probeResult(),
+          isAllocatedWorkflowActive: async () => false,
+          reportedDeploymentFailure: () => undefined,
+          stoppedDeploymentHistory: async () => undefined,
+          detachAllocation: () => undefined,
+          syncSidecar: async () => undefined,
+        },
+        hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+        defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
+        createAllocationId: () => "sal-first-deploy-failure",
+        createSidecarId: () => "sc-first-deploy-failure",
+        createToken: () => "first-deploy-failure-token",
+      });
+      const prepared = await service.prepareProvisionedDeployment(
+        prepareArgs("run-first-deploy-failure"),
+      );
+      const allocation = await createSidecarAllocationStore(
+        h.db,
+      ).findByAnchorRunId(prepared.anchorRunId);
+      if (allocation === null) throw new Error("expected adopted allocation");
+      const reconciliation = {
+        signal: new AbortController().signal,
+        leaseId: "initialization-test",
+      };
+
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toMatchObject({
+        name: "SidecarFirstDeployError",
+        message: "catalog temporarily unavailable",
+      });
+      failure = new SessionLaunchError(
+        "start",
+        new Error("deploy acknowledgement timed out"),
+        true,
+      );
+      await expect(
+        service.deployReadyAllocation(allocation, reconciliation),
+      ).rejects.toBe(failure);
     });
 
     test("fails a deployed workflow its connected sidecar no longer holds", async () => {

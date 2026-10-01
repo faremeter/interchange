@@ -715,6 +715,13 @@
       "when": 1790859880941,
       "tag": "0102_sidecar_allocation_max_disconnected",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1790860991079,
+      "tag": "0103_sidecar_allocation_first_deploy_failure",
+      "breakpoints": true
     }
   ]
 }

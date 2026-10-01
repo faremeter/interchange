@@ -76,6 +76,8 @@ export type SidecarAllocation = {
   readonly connectDeadline?: Date;
   /** How long the sidecar may stay disconnected before the Hub fails it. */
   readonly maxDisconnectedMs: number;
+  /** When the first deploy first failed before its deploy frame was sent. */
+  readonly firstDeployFailedAt?: Date;
   readonly failureCode?: string;
   readonly failureMessage?: string;
   readonly createdAt: Date;
@@ -161,6 +163,7 @@ export type ScheduleSidecarAllocationRetryArgs = {
     readonly code: string;
     readonly message: string;
   };
+  readonly firstDeployFailedAt?: Date;
   readonly now?: Date;
 };
 
@@ -299,6 +302,9 @@ function parseSidecarAllocationRow(
       ? { connectDeadline: row.connectDeadline }
       : {}),
     maxDisconnectedMs: row.maxDisconnectedMs,
+    ...(row.firstDeployFailedAt !== null
+      ? { firstDeployFailedAt: row.firstDeployFailedAt }
+      : {}),
     ...(row.failureCode !== null ? { failureCode: row.failureCode } : {}),
     ...(row.failureMessage !== null
       ? { failureMessage: row.failureMessage }
@@ -989,6 +995,9 @@ export function createSidecarAllocationStore(db: DBHandle) {
                 failureCode: args.failure.code,
                 failureMessage: args.failure.message,
               }
+            : {}),
+          ...(args.firstDeployFailedAt !== undefined
+            ? { firstDeployFailedAt: args.firstDeployFailedAt }
             : {}),
           updatedAt: databaseTimestamp(args.now),
         })

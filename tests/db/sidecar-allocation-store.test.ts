@@ -1539,6 +1539,76 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(claimed?.reconciliationLeaseId).toBe("replacement-owner");
     });
 
+    test("keeps when a first deploy first failed across its retries", async () => {
+      const { store, allocation, leaseId } = await createClaimedAllocation(
+        "alloc-first-deploy-failure",
+      );
+      const firstFailure = new Date(Date.now() - 60_000);
+      const retried = await store.scheduleRetry({
+        allocationId: allocation.id,
+        expectedStatus: "allocated",
+        expectedGeneration: allocation.generation,
+        expectedLeaseId: leaseId,
+        nextAttemptAt: new Date(Date.now() + 30_000),
+        failure: {
+          code: "sidecar_initialization_failed",
+          message: "catalog temporarily unavailable",
+        },
+        firstDeployFailedAt: firstFailure,
+      });
+      expect(retried?.firstDeployFailedAt).toEqual(firstFailure);
+      expect(retried?.failureMessage).toBe("catalog temporarily unavailable");
+
+      // Later claims, retries that do not name it, and a lost connection all
+      // leave it in place: the limit counts from the first failure.
+      await store.wakeReconciliation(allocation.id, allocation.generation);
+      const reclaimed = await store.claimNextReconcilable({
+        leaseId: "lease-retry",
+        leaseDurationMs: 60_000,
+      });
+      expect(reclaimed?.firstDeployFailedAt).toEqual(firstFailure);
+      await store.scheduleRetry({
+        allocationId: allocation.id,
+        expectedStatus: "allocated",
+        expectedGeneration: allocation.generation,
+        expectedLeaseId: "lease-retry",
+        nextAttemptAt: new Date(Date.now() + 30_000),
+      });
+      await store.markConnectionLost({
+        allocationId: allocation.id,
+        generation: allocation.generation,
+      });
+      expect(
+        (await store.findById(allocation.id))?.firstDeployFailedAt,
+      ).toEqual(firstFailure);
+    });
+
+    test("a ready pass clears a first-deploy retry's reason", async () => {
+      const retrying = await createClaimedAllocation("alloc-ready-retry");
+      await retrying.store.scheduleRetry({
+        allocationId: retrying.allocation.id,
+        expectedStatus: "allocated",
+        expectedGeneration: retrying.allocation.generation,
+        expectedLeaseId: retrying.leaseId,
+        nextAttemptAt: new Date(0),
+        failure: {
+          code: "sidecar_initialization_failed",
+          message: "catalog temporarily unavailable",
+        },
+      });
+      await retrying.store.claimNextReconcilable({
+        leaseId: "lease-retry-ready",
+        leaseDurationMs: 60_000,
+      });
+      const recovered = await retrying.store.markConnectionReady({
+        allocationId: retrying.allocation.id,
+        generation: retrying.allocation.generation,
+        expectedLeaseId: "lease-retry-ready",
+      });
+      expect(recovered?.failureCode).toBeUndefined();
+      expect(recovered?.failureMessage).toBeUndefined();
+    });
+
     test("disconnect invalidates the lease before an old initializer can finish", async () => {
       const { store, allocation, leaseId } = await createClaimedAllocation(
         "alloc-disconnected-owner",

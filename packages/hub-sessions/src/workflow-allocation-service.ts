@@ -61,6 +61,7 @@ import {
   SidecarDeploymentHistoryPendingError,
   SidecarDeploymentMissingError,
   SidecarDeploymentStoppedError,
+  SidecarFirstDeployError,
   runSidecarOperation,
   type SidecarReconciliationContext,
 } from "./sidecar-allocation/operation";
@@ -803,78 +804,90 @@ export function createWorkflowAllocationService({
         allocation.generation,
       );
     }
-    if (anchor.definitionId === null) {
-      throw new Error(
-        `Allocation ${allocation.id} anchor run has no frozen workflow definition`,
-      );
-    }
-    const spec = await launchSpecStore.get(allocation.anchorRunId);
-    if (spec === null) {
-      throw new Error(
-        `Allocation ${allocation.id} has no workflow launch specification`,
-      );
-    }
-    // The frozen bundle deploys verbatim -- no re-probe. Rehydrate the approval
-    // hand-off from it: the persisted flat item list is partitioned back into
-    // the gate's `ApprovalSet`, and the frozen definition id is the anchor's own
-    // (set at prepare time from this freeze).
-    const bundle = spec.frozenApprovalBundle;
-    const approved: InstallAndApproveResult = {
-      approval: {
-        ok: true,
-        definitionId: anchor.definitionId,
-        approvedWireHash: bundle.approvedWireHash,
-        approvedSurface: approvalSetFromItems(bundle.approvedGrants),
+    try {
+      if (anchor.definitionId === null) {
+        throw new Error(
+          `Allocation ${allocation.id} anchor run has no frozen workflow definition`,
+        );
+      }
+      const spec = await launchSpecStore.get(allocation.anchorRunId);
+      if (spec === null) {
+        throw new Error(
+          `Allocation ${allocation.id} has no workflow launch specification`,
+        );
+      }
+      // The frozen bundle deploys verbatim -- no re-probe. Rehydrate the
+      // approval hand-off from it: the persisted flat item list is partitioned
+      // back into the gate's `ApprovalSet`, and the frozen definition id is the
+      // anchor's own (set at prepare time from this freeze).
+      const bundle = spec.frozenApprovalBundle;
+      const approved: InstallAndApproveResult = {
+        approval: {
+          ok: true,
+          definitionId: anchor.definitionId,
+          approvedWireHash: bundle.approvedWireHash,
+          approvedSurface: approvalSetFromItems(bundle.approvedGrants),
+          projection: bundle.projection,
+        },
         projection: bundle.projection,
-      },
-      projection: bundle.projection,
-      closure: bundle.closure,
-    };
-    // Re-resolve the inference chain from the catalog at launch time -- the
-    // launch spec stores offering ids, never resolved sources, so a rotated
-    // credential is picked up here and no secret was ever persisted.
-    const resolved = await resolveSourcesByOfferingIds(
-      db,
-      allocation.tenantId,
-      spec.sourceOfferingIds,
-      credentialCipher,
-    );
-    if (!resolved.ok) {
-      throw new Error(
-        `Catalog offering ${resolved.offeringId} is unavailable for allocation ${allocation.id}`,
+        closure: bundle.closure,
+      };
+      // Re-resolve the inference chain from the catalog at launch time -- the
+      // launch spec stores offering ids, never resolved sources, so a rotated
+      // credential is picked up here and no secret was ever persisted.
+      const resolved = await resolveSourcesByOfferingIds(
+        db,
+        allocation.tenantId,
+        spec.sourceOfferingIds,
+        credentialCipher,
       );
-    }
-    const defaultSource = resolved.sources.find(
-      (source) => source.id === spec.defaultSourceOfferingId,
-    );
-    if (defaultSource === undefined) {
-      throw new Error(
-        `Default offering ${spec.defaultSourceOfferingId} was not resolved for allocation ${allocation.id}`,
+      if (!resolved.ok) {
+        throw new Error(
+          `Catalog offering ${resolved.offeringId} is unavailable for allocation ${allocation.id}`,
+        );
+      }
+      const defaultSource = resolved.sources.find(
+        (source) => source.id === spec.defaultSourceOfferingId,
       );
-    }
-    const config = createProvisionedHarnessConfig({
-      tenantId: allocation.tenantId,
-      anchorRunId: allocation.anchorRunId,
-      deploymentDomain: spec.deploymentDomain,
-      sessionId: spec.sessionId,
-      sourceAuthorityPrincipalId: spec.sourceAuthorityPrincipalId,
-      sources: resolved.sources,
-      defaultSource: defaultSource.id,
-    });
+      if (defaultSource === undefined) {
+        throw new Error(
+          `Default offering ${spec.defaultSourceOfferingId} was not resolved for allocation ${allocation.id}`,
+        );
+      }
+      const config = createProvisionedHarnessConfig({
+        tenantId: allocation.tenantId,
+        anchorRunId: allocation.anchorRunId,
+        deploymentDomain: spec.deploymentDomain,
+        sessionId: spec.sessionId,
+        sourceAuthorityPrincipalId: spec.sourceAuthorityPrincipalId,
+        sources: resolved.sources,
+        defaultSource: defaultSource.id,
+      });
 
-    reconciliation.signal.throwIfAborted();
-    return preparedDeployer.deployPreparedCodeSourcedWorkflow({
-      reconciliation,
-      tenantId: allocation.tenantId,
-      anchorRunId: allocation.anchorRunId,
-      deploymentDomain: spec.deploymentDomain,
-      agentAddress: config.agentAddress,
-      source: bundle.source,
-      approved,
-      config,
-      allocationTarget,
-      credentialCipher,
-    });
+      reconciliation.signal.throwIfAborted();
+      return await preparedDeployer.deployPreparedCodeSourcedWorkflow({
+        reconciliation,
+        tenantId: allocation.tenantId,
+        anchorRunId: allocation.anchorRunId,
+        deploymentDomain: spec.deploymentDomain,
+        agentAddress: config.agentAddress,
+        source: bundle.source,
+        approved,
+        config,
+        allocationTarget,
+        credentialCipher,
+      });
+    } catch (error) {
+      // A deploy frame the sidecar may have received leaves the deploy
+      // uncertain, and a lost lease ends this attempt; the reconciler handles
+      // both. Anything else failed before the sidecar ran the deployment.
+      if (
+        (error instanceof SessionLaunchError && error.leakedAgent) ||
+        reconciliation.signal.aborted
+      )
+        throw error;
+      throw new SidecarFirstDeployError(error);
+    }
   }
 
   function cleanupFinalStatus(probe: WorkflowProbe): "succeeded" | "failed" {
