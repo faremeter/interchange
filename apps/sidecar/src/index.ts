@@ -620,8 +620,9 @@ const orchestrator = createSidecarOrchestrator({
       registerDeployment: ({ runId, agentAddress }) => {
         deploymentAddressRegistry.record(runId, agentAddress);
       },
-      unregisterDeployment: ({ runId }) => {
+      unregisterDeployment: ({ runId, agentAddress }) => {
         deploymentAddressRegistry.unregister(runId);
+        wrappedRepoStore.forgetDeployment(runId, agentAddress);
       },
       reportDeploymentRefTips: (agentAddress) =>
         wrappedRepoStore.reportWorkflowRunRefTips(agentAddress),
