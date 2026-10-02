@@ -87,15 +87,26 @@ export function createMockWs(): WsHandle & {
   };
 }
 
+/** The ref tips a stopped test worker reports, which the test Hub holds. */
+export const TEST_REF_TIPS = {
+  "refs/heads/main": "c".repeat(40),
+  "refs/heads/events": null,
+};
+
 export function createAllocatedRouter(
   config: Partial<SidecarRouterConfig> = {},
 ) {
   const router = createSidecarRouter({
+    withExecutableWorkflowRun: async (_target, send) => send(),
     authenticateSidecar: async () => TEST_IDENTITY,
     validateSidecarIdentity: async () => true,
     hubPublicKey: "a".repeat(64),
     requestTimeoutMs: 500,
     ...config,
+    lookups: {
+      readWorkflowRunRefTips: async () => TEST_REF_TIPS,
+      ...config.lookups,
+    },
   });
   router.fenceAllocation(TEST_TARGET.allocationId, TEST_TARGET.generation);
   return router;
@@ -130,4 +141,42 @@ export function parsedFrames(ws: { sent: string[] }): unknown[] {
 
 export function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * The redelivery retry timer, driven by the test.
+ *
+ * The retry interval was already injectable, but arming was not, so a test
+ * wanting N redeliveries had to shorten the interval and sleep long enough
+ * for N of them to fit -- making the assertion a bet on how much the machine
+ * got through. Firing the retries explicitly makes the count exact.
+ */
+export function createManualRetries(retryIntervalMs: number): {
+  scheduleTimeout: (handler: () => void, ms: number) => () => void;
+  fireNext: () => void;
+  armedCount: () => number;
+} {
+  const armed: { ms: number; fire: () => void; cancelled: boolean }[] = [];
+  return {
+    // The router arms its connection-liveness deadline through this same
+    // seam, so the delay is what tells the two apart. Firing indiscriminately
+    // closes the socket instead of redelivering.
+    scheduleTimeout(handler, ms) {
+      const entry = { ms, fire: handler, cancelled: false };
+      armed.push(entry);
+      return () => {
+        entry.cancelled = true;
+      };
+    },
+    fireNext() {
+      const next = armed.find((e) => !e.cancelled && e.ms === retryIntervalMs);
+      if (next === undefined) {
+        throw new Error("no armed redelivery retry to fire");
+      }
+      next.cancelled = true;
+      next.fire();
+    },
+    armedCount: () =>
+      armed.filter((e) => !e.cancelled && e.ms === retryIntervalMs).length,
+  };
 }

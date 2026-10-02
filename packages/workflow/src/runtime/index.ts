@@ -12,6 +12,7 @@ export type {
   ReadParkedApprovalOps,
   RepoStore,
   RunResult,
+  RuntimeWorkflowRun,
   Scheduler,
   SignalChannel,
   SpawnChildWorkflow,
@@ -32,6 +33,7 @@ export {
 } from "./effect-context";
 
 export { runtimeRun, type RuntimeRunOptions } from "./run";
+export { withRunCommitBarrier } from "./commit-chain";
 
 export { createSuspendableChildHandle } from "./suspendable-child-handle";
 

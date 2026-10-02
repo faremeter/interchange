@@ -1,4 +1,17 @@
 export {
+  createWorkflowLifecycleService,
+  type WorkflowLifecycleService,
+  type WorkflowLifecycleServiceDeps,
+} from "./workflow-lifecycle-service";
+export {
+  createWorkflowHistoryReceiveTracker,
+  type WorkflowHistoryReceiveTracker,
+} from "./workflow-history-receives";
+export {
+  createWorkflowDispatchProjection,
+  DEFAULT_WORKFLOW_PROJECTION_CONCURRENCY,
+} from "./workflow-dispatch-projection";
+export {
   createAgentRepoStore,
   type AgentRepoStore,
   type DeployContent,
@@ -43,6 +56,12 @@ export {
   type AllocatedSidecarTarget,
   type SidecarAllocationRouter,
   SidecarIdentityValidationError,
+  WorkflowControlHistoryPendingError,
+  WorkflowControlInitializingError,
+  WorkflowControlRejectedError,
+  WorkflowControlTimeoutError,
+  WorkflowControlUnconfirmedError,
+  WorkflowControlUnreachableError,
   createSidecarCredentialResolver,
   createSidecarTokenAuthenticator,
   type CreateSidecarTokenAuthenticatorDeps,
@@ -173,6 +192,8 @@ export {
   scanRunsForBoot,
   readCommittedWorkflowRunLifecycle,
   readWorkflowRunLifecycle,
+  workflowRunRepoIdForAddress,
+  WORKFLOW_RUN_REF,
   replayProcessingToInbox,
   WORKFLOW_RUN_GITIGNORE_PATH,
   WORKFLOW_RUN_RUNS_PREFIX,
@@ -206,6 +227,7 @@ export {
   type WorkflowRunSupervisorPrincipal,
 } from "./workflow-run-kind";
 export {
+  readWorkflowRunRefTips,
   restoreWorkflowRunToAllocation,
   WORKFLOW_RUN_RESTORE_REFS,
 } from "./workflow-run-restore";

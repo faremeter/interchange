@@ -34,6 +34,8 @@ import {
   createChangeNotifier,
   createMemoryFrameStream,
   createMemoryNdjsonStream,
+  readPayloadsOfType,
+  waitForUpstreamPayload,
 } from "@intx/workflow-host/testing";
 
 import {
@@ -84,308 +86,406 @@ function createSpawnTestRepoStore(tempBase: string): RepoStore {
 }
 
 describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor down", () => {
-  test("undeploy invokes the spawned child's kill and awaits exited", async () => {
-    // Per-spawn tracking.
-    type Spawn = {
-      handle: SubprocessHandle;
-      childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
-      supervisorToChild: ReturnType<typeof createMemoryNdjsonStream>;
-      eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
-      env: Record<string, string>;
-      killed: boolean;
-      exitedResolved: boolean;
-      resolveExited: (code: number) => void;
-    };
-    const spawns: Spawn[] = [];
-    const spawnsChanges = createChangeNotifier();
-
-    const spawner: SubprocessSpawner = ({ env }) => {
-      const supervisorToChild = createMemoryNdjsonStream();
-      const childToSupervisor = createMemoryNdjsonStream();
-      const eventChildToSupervisor = createMemoryFrameStream();
-      let resolveExit: ((code: number) => void) | undefined;
-      const exited = new Promise<number>((resolve) => {
-        resolveExit = resolve;
-      });
-      const entry: Spawn = {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- assigned below
-        handle: undefined as unknown as SubprocessHandle,
-        supervisorToChild,
-        childToSupervisor,
-        eventChildToSupervisor,
-        env,
-        killed: false,
-        exitedResolved: false,
-        resolveExited: (code) => {
-          entry.exitedResolved = true;
-          resolveExit?.(code);
-        },
+  test.each([
+    "undeploy",
+    "stop then undeploy",
+    "repeated cancel then undeploy",
+  ] as const)(
+    "%s invokes the spawned child's kill and awaits exited",
+    async (operation) => {
+      // Per-spawn tracking.
+      type Spawn = {
+        handle: SubprocessHandle;
+        childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
+        supervisorToChild: ReturnType<typeof createMemoryNdjsonStream>;
+        eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
+        env: Record<string, string>;
+        killed: boolean;
+        exitedResolved: boolean;
+        resolveExited: (code: number) => void;
       };
-      const handle: SubprocessHandle = {
-        pid: 5100 + spawns.length,
-        controlWriter: supervisorToChild.writer,
-        controlReader: childToSupervisor.reader,
-        eventReader: eventChildToSupervisor.reader,
-        kill: () => {
-          entry.killed = true;
-          childToSupervisor.close();
-          eventChildToSupervisor.close();
-          entry.resolveExited(0);
-        },
-        exited,
+      const spawns: Spawn[] = [];
+      const spawnsChanges = createChangeNotifier();
+      const refTipReports: { agentAddress: string; childKilled: boolean }[] =
+        [];
+
+      const spawner: SubprocessSpawner = ({ env }) => {
+        const supervisorToChild = createMemoryNdjsonStream();
+        const childToSupervisor = createMemoryNdjsonStream();
+        const eventChildToSupervisor = createMemoryFrameStream();
+        let resolveExit: ((code: number) => void) | undefined;
+        const exited = new Promise<number>((resolve) => {
+          resolveExit = resolve;
+        });
+        const entry: Spawn = {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- assigned below
+          handle: undefined as unknown as SubprocessHandle,
+          supervisorToChild,
+          childToSupervisor,
+          eventChildToSupervisor,
+          env,
+          killed: false,
+          exitedResolved: false,
+          resolveExited: (code) => {
+            entry.exitedResolved = true;
+            resolveExit?.(code);
+          },
+        };
+        const handle: SubprocessHandle = {
+          pid: 5100 + spawns.length,
+          controlWriter: supervisorToChild.writer,
+          controlReader: childToSupervisor.reader,
+          eventReader: eventChildToSupervisor.reader,
+          kill: () => {
+            entry.killed = true;
+            childToSupervisor.close();
+            eventChildToSupervisor.close();
+            entry.resolveExited(0);
+          },
+          exited,
+        };
+        entry.handle = handle;
+        spawns.push(entry);
+        spawnsChanges.notify();
+        return handle;
       };
-      entry.handle = handle;
-      spawns.push(entry);
-      spawnsChanges.notify();
-      return handle;
-    };
 
-    const transport = createInMemoryTransport();
-    const keyPair = await generateKeyPair();
-    const tempBase = await fs.mkdtemp(
-      path.join(os.tmpdir(), "sidecar-undeploy-supervisor-"),
-    );
-    const dataDir = await fs.mkdtemp(
-      path.join(os.tmpdir(), "sidecar-undeploy-supervisor-data-"),
-    );
-    const repoStore = createSpawnTestRepoStore(tempBase);
+      const transport = createInMemoryTransport();
+      const keyPair = await generateKeyPair();
+      const tempBase = await fs.mkdtemp(
+        path.join(os.tmpdir(), "sidecar-undeploy-supervisor-"),
+      );
+      const dataDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "sidecar-undeploy-supervisor-data-"),
+      );
+      const repoStore = createSpawnTestRepoStore(tempBase);
 
-    const mailRouter = createMultistepMailRouter();
-    const signalRouter = createMultistepSignalRouter();
-    const drainRouter = createMultistepDrainRouter();
+      const mailRouter = createMultistepMailRouter();
+      const signalRouter = createMultistepSignalRouter();
+      const drainRouter = createMultistepDrainRouter();
 
-    const router = createSidecarDeployRouter({
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch invokes only initRepo (head deploy-tree repo); provisionAgent/persistHubPublicKey stay unused (the supervised child mints its own key and persists no hub-agent config)
-      sessions: {
-        provisionAgent: async () => {
-          throw new Error("single-step branch must not invoke provisionAgent");
+      const router = createSidecarDeployRouter({
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch invokes only initRepo (head deploy-tree repo); provisionAgent/persistHubPublicKey stay unused (the supervised child mints its own key and persists no hub-agent config)
+        sessions: {
+          provisionAgent: async () => {
+            throw new Error(
+              "single-step branch must not invoke provisionAgent",
+            );
+          },
+          persistHubPublicKey: async () => {
+            throw new Error(
+              "single-step branch must not invoke persistHubPublicKey",
+            );
+          },
+          initRepo: async () => undefined,
+        } as unknown as Parameters<
+          typeof createSidecarDeployRouter
+        >[0]["sessions"],
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch registers the agent's signing key (loadOrGenerateKey) and records the hub key (recordHubKey) at the head before spawn
+        keyStore: {
+          recordHubKey: () => undefined,
+          loadOrGenerateKey: async () => ({
+            keyPair: await generateKeyPair(),
+            isNew: false,
+          }),
+        } as unknown as Parameters<
+          typeof createSidecarDeployRouter
+        >[0]["keyStore"],
+        senderKeyCache: {
+          get: () => undefined,
+          put: async () => undefined,
+          evict: async () => undefined,
+          addresses: () => [],
+          rotatableAddresses: () => [],
         },
-        persistHubPublicKey: async () => {
-          throw new Error(
-            "single-step branch must not invoke persistHubPublicKey",
-          );
+        transport,
+        repoStore,
+        signingKeySeed: keyPair.privateKey,
+        credentialCipher: createNoopCredentialCipher(),
+        createAgentCrypto: createEd25519Crypto,
+        assertSourceBuildable: () => undefined,
+        registerDeployment: () => {
+          /* no-op */
         },
-        initRepo: async () => undefined,
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["sessions"],
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch registers the agent's signing key (loadOrGenerateKey) and records the hub key (recordHubKey) at the head before spawn
-      keyStore: {
-        recordHubKey: () => undefined,
-        loadOrGenerateKey: async () => ({
-          keyPair: await generateKeyPair(),
-          isNew: false,
-        }),
-      } as unknown as Parameters<
-        typeof createSidecarDeployRouter
-      >[0]["keyStore"],
-      senderKeyCache: {
-        get: () => undefined,
-        put: async () => undefined,
-        evict: async () => undefined,
-        addresses: () => [],
-        rotatableAddresses: () => [],
-      },
-      transport,
-      repoStore,
-      signingKeySeed: keyPair.privateKey,
-      credentialCipher: createNoopCredentialCipher(),
-      createAgentCrypto: createEd25519Crypto,
-      assertSourceBuildable: () => undefined,
-      registerDeployment: () => {
-        /* no-op */
-      },
-      unregisterDeployment: () => {
-        /* no-op */
-      },
-      multistepSubprocessSpawner: spawner,
-      multistepSubstrateEnv: {
-        SIDECAR_DATA_DIR: dataDir,
-        // Source-ref materialization reads both byte caps from the substrate env.
-        SIDECAR_CACHE_MAX_BYTES: "1000000",
-        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
-      },
-      // Source-ref is the only deploy lineage: the router derives the runnable
-      // definition by materializing the pin's closure through this dependency.
-      // The stub returns a valid single-step `step-1` live definition (its step
-      // carries an agent so it survives `projectLiveToInert`) so the deploy
-      // reaches the spawn/undeploy behavior this test exercises.
-      applyFrozenWorkflowClosure: (applyArgs) =>
-        Promise.resolve({
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
-          definition: {
-            id: "wf-undeploy-supervisor",
-            triggers: [{ type: "manual" }],
-            stepOrder: ["step-1"],
-            steps: {
-              "step-1": {
-                kind: "step",
-                id: "step-1",
-                agent: {
-                  id: "agent-step-1",
-                  systemPrompt: "sys",
-                  capabilities: [],
-                  toolFactories: [],
-                  inference: { sources: [] },
+        unregisterDeployment: () => {
+          /* no-op */
+        },
+        reportDeploymentRefTips: async (agentAddress) => {
+          refTipReports.push({
+            agentAddress,
+            childKilled: spawns.every((entry) => entry.killed),
+          });
+          return { "refs/heads/main": "main-tip" };
+        },
+        multistepSubprocessSpawner: spawner,
+        multistepSubstrateEnv: {
+          SIDECAR_DATA_DIR: dataDir,
+          // Source-ref materialization reads both byte caps from the substrate env.
+          SIDECAR_CACHE_MAX_BYTES: "1000000",
+          SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
+        },
+        // Source-ref is the only deploy lineage: the router derives the runnable
+        // definition by materializing the pin's closure through this dependency.
+        // The stub returns a valid single-step `step-1` live definition (its step
+        // carries an agent so it survives `projectLiveToInert`) so the deploy
+        // reaches the spawn/undeploy behavior this test exercises.
+        applyFrozenWorkflowClosure: (applyArgs) =>
+          Promise.resolve({
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- a hand-built live definition cannot satisfy the full WorkflowDefinition nominal type; it stands in for a real closure evaluation
+            definition: {
+              id: "wf-undeploy-supervisor",
+              triggers: [{ type: "manual" }],
+              stepOrder: ["step-1"],
+              steps: {
+                "step-1": {
+                  kind: "step",
+                  id: "step-1",
+                  agent: {
+                    id: "agent-step-1",
+                    systemPrompt: "sys",
+                    capabilities: [],
+                    toolFactories: [],
+                    inference: { sources: [] },
+                  },
                 },
               },
-            },
-          } as unknown as WorkflowDefinition,
-          packageDir: path.join(applyArgs.instanceDir, "package"),
-          deployDir: path.join(applyArgs.instanceDir, "deploy"),
-        }),
-      multistepMailRouter: mailRouter,
-      multistepSignalRouter: signalRouter,
-      multistepDrainRouter: drainRouter,
-    });
+            } as unknown as WorkflowDefinition,
+            packageDir: path.join(applyArgs.instanceDir, "package"),
+            deployDir: path.join(applyArgs.instanceDir, "deploy"),
+          }),
+        multistepMailRouter: mailRouter,
+        multistepSignalRouter: signalRouter,
+        multistepDrainRouter: drainRouter,
+      });
 
-    const frame: AgentDeployFrame = {
-      type: "agent.deploy",
-      // Single-step projection: the deploy router derives the sole
-      // step's agent-state repo from `parseAgentId(agentAddress)`, which
-      // requires the canonical `run_<id>@<domain>` instance shape.
-      agentAddress: "run_undeploy-supervisor@example.com",
-      agentId: "undeploy-supervisor-agent",
-      hubPublicKey: "hub-pk",
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
-      config: {} as AgentDeployFrame["config"],
-      workflow: {
-        // Placeholder hub-approved wire hash so the deploy path's fail-loud
-        // guard passes; production always stamps it.
-        approvedWireHash: "a".repeat(64),
-        // Source-ref is the only deploy lineage: the frame carries no inline
-        // definition, only the pin the sidecar re-materializes (the injected
-        // closure stub above evaluates it to a single-step `step-1` definition).
-        sourceRef: {
-          source: { kind: "registry", registry: "test-registry" },
-          closure: { schemaVersion: "1", topLevel: [], entries: [] },
+      const frame: AgentDeployFrame = {
+        type: "agent.deploy",
+        // Single-step projection: the deploy router derives the sole
+        // step's agent-state repo from `parseAgentId(agentAddress)`, which
+        // requires the canonical `run_<id>@<domain>` instance shape.
+        agentAddress: "run_undeploy-supervisor@example.com",
+        agentId: "undeploy-supervisor-agent",
+        hubPublicKey: "hub-pk",
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
+        config: {} as AgentDeployFrame["config"],
+        workflow: {
+          // Placeholder hub-approved wire hash so the deploy path's fail-loud
+          // guard passes; production always stamps it.
+          approvedWireHash: "a".repeat(64),
+          // Source-ref is the only deploy lineage: the frame carries no inline
+          // definition, only the pin the sidecar re-materializes (the injected
+          // closure stub above evaluates it to a single-step `step-1` definition).
+          sourceRef: {
+            source: { kind: "registry", registry: "test-registry" },
+            closure: { schemaVersion: "1", topLevel: [], entries: [] },
+          },
+          sources: {
+            "step-1": [
+              {
+                id: "step-1",
+                provider: "anthropic",
+                baseURL: "https://api.anthropic.com",
+                credentialId: "sk-step-1",
+                model: "claude-3-5",
+              },
+            ],
+          },
         },
-        sources: {
-          "step-1": [
-            {
-              id: "step-1",
-              provider: "anthropic",
-              baseURL: "https://api.anthropic.com",
-              credentialId: "sk-step-1",
-              model: "claude-3-5",
-            },
-          ],
+      };
+
+      const deployPromise = router.deploy(frame);
+
+      await spawnsChanges.until(() => spawns.length > 0);
+      const spawn = spawns[0];
+      if (spawn === undefined) throw new Error("unreachable");
+
+      const channelId = spawn.env.IPC_CHANNEL_ID;
+      if (channelId === undefined) {
+        throw new Error("IPC_CHANNEL_ID missing from spawn env");
+      }
+      const childIpcKeyPair = await generateKeyPair();
+      const childSender = createControlChannelSender({
+        privateKeySeed: childIpcKeyPair.privateKey,
+        channelId,
+        writer: {
+          write(line: string) {
+            spawn.childToSupervisor.inject(line);
+            return Promise.resolve();
+          },
         },
-      },
-    };
-
-    const deployPromise = router.deploy(frame);
-
-    await spawnsChanges.until(() => spawns.length > 0);
-    const spawn = spawns[0];
-    if (spawn === undefined) throw new Error("unreachable");
-
-    const channelId = spawn.env.IPC_CHANNEL_ID;
-    if (channelId === undefined) {
-      throw new Error("IPC_CHANNEL_ID missing from spawn env");
-    }
-    const childIpcKeyPair = await generateKeyPair();
-    const childSender = createControlChannelSender({
-      privateKeySeed: childIpcKeyPair.privateKey,
-      channelId,
-      writer: {
-        write(line: string) {
-          spawn.childToSupervisor.inject(line);
-          return Promise.resolve();
+      });
+      await childSender.send({
+        type: "ready",
+        data: {
+          childPid: spawn.handle.pid,
+          childPublicKey: hexEncode(childIpcKeyPair.publicKey),
         },
-      },
-    });
-    await childSender.send({
-      type: "ready",
-      data: {
-        childPid: spawn.handle.pid,
-        childPublicKey: hexEncode(childIpcKeyPair.publicKey),
-      },
-    });
+      });
 
-    await deployPromise;
+      await deployPromise;
 
-    expect(spawn.killed).toBe(false);
-    expect(spawn.exitedResolved).toBe(false);
+      expect(spawn.killed).toBe(false);
+      expect(spawn.exitedResolved).toBe(false);
 
-    const undeploy = router.undeploy;
-    if (undeploy === undefined) {
-      throw new Error("router.undeploy is undefined");
-    }
+      const undeploy = router.undeploy;
+      if (undeploy === undefined) {
+        throw new Error("router.undeploy is undefined");
+      }
 
-    // Pre-seed the on-disk per-step scratch the child roots under
-    // `<dataDir>/workflow-step-state/<anchorRunId>/` and the durable
-    // conversation under `<dataDir>/agent-conversation-state/<anchorRunId>/`.
-    // The warm subtree is the stable per-agent workspace (one dir, not
-    // one-per-message); a stale cold `runs/<runId>/` subtree models a
-    // multi-step leftover the per-run cleanup did not drop. An unrelated
-    // deployment's step-state subtree must survive the undeploy sweep.
-    const anchorRunId = deriveDeploymentId(frame.agentAddress);
-    const stepStateRoot = path.join(dataDir, "workflow-step-state");
-    const warmWorkspaceFile = path.join(
-      stepStateRoot,
-      anchorRunId,
-      "warm",
-      encodeURIComponent("step-1"),
-      "workspace",
-      "notes.txt",
-    );
-    const coldLeftoverFile = path.join(
-      stepStateRoot,
-      anchorRunId,
-      "runs",
-      "run-stale",
-      "steps",
-      "step-1",
-      "attempt-1",
-      "workspace",
-      "scratch.txt",
-    );
-    const otherDeploymentFile = path.join(
-      stepStateRoot,
-      "other-deployment",
-      "warm",
-      "step-1",
-      "workspace",
-      "keep.txt",
-    );
-    const durableConversationFile = path.join(
-      dataDir,
-      "agent-conversation-state",
-      anchorRunId,
-      encodeURIComponent("step-1"),
-      "checkpoint.json",
-    );
-    for (const file of [
-      warmWorkspaceFile,
-      coldLeftoverFile,
-      otherDeploymentFile,
-      durableConversationFile,
-    ]) {
-      await fs.mkdir(path.dirname(file), { recursive: true });
-      await fs.writeFile(file, "x");
-    }
+      // Pre-seed the on-disk per-step scratch the child roots under
+      // `<dataDir>/workflow-step-state/<anchorRunId>/` and the durable
+      // conversation under `<dataDir>/agent-conversation-state/<anchorRunId>/`.
+      // The warm subtree is the stable per-agent workspace (one dir, not
+      // one-per-message); a stale cold `runs/<runId>/` subtree models a
+      // multi-step leftover the per-run cleanup did not drop. An unrelated
+      // deployment's step-state subtree must survive the undeploy sweep.
+      const anchorRunId = deriveDeploymentId(frame.agentAddress);
+      const stepStateRoot = path.join(dataDir, "workflow-step-state");
+      const warmWorkspaceFile = path.join(
+        stepStateRoot,
+        anchorRunId,
+        "warm",
+        encodeURIComponent("step-1"),
+        "workspace",
+        "notes.txt",
+      );
+      const coldLeftoverFile = path.join(
+        stepStateRoot,
+        anchorRunId,
+        "runs",
+        "run-stale",
+        "steps",
+        "step-1",
+        "attempt-1",
+        "workspace",
+        "scratch.txt",
+      );
+      const otherDeploymentFile = path.join(
+        stepStateRoot,
+        "other-deployment",
+        "warm",
+        "step-1",
+        "workspace",
+        "keep.txt",
+      );
+      const durableConversationFile = path.join(
+        dataDir,
+        "agent-conversation-state",
+        anchorRunId,
+        encodeURIComponent("step-1"),
+        "checkpoint.json",
+      );
+      for (const file of [
+        warmWorkspaceFile,
+        coldLeftoverFile,
+        otherDeploymentFile,
+        durableConversationFile,
+      ]) {
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        await fs.writeFile(file, "x");
+      }
 
-    await undeploy({
-      type: "agent.undeploy",
-      agentAddress: frame.agentAddress,
-      reason: "test undeploy",
-    });
+      if (operation === "stop then undeploy") {
+        if (router.control === undefined)
+          throw new Error("router.control is undefined");
+        const command = {
+          type: "workflow.control",
+          requestId: "stop-request",
+          action: "stop",
+          runId: "run_undeploy-supervisor",
+          agentAddress: frame.agentAddress,
+          reason: "Lifetime expired",
+        } as const;
+        const cancelling = router
+          .control({ ...command, action: "cancel" })
+          .catch((cause: unknown) => cause);
+        await waitForUpstreamPayload(spawn.supervisorToChild, "cancel.prepare");
+        const retry = router
+          .control({ ...command, requestId: "cancel-retry", action: "cancel" })
+          .catch((cause: unknown) => cause);
+        const stopped = await Promise.all([
+          router.control(command),
+          router.control(command),
+        ]);
+        // Each stop reports the ref tips only after the child has exited.
+        expect(stopped).toEqual([
+          { refTips: { "refs/heads/main": "main-tip" } },
+          { refTips: { "refs/heads/main": "main-tip" } },
+        ]);
+        expect(refTipReports).toEqual([
+          { agentAddress: frame.agentAddress, childKilled: true },
+          { agentAddress: frame.agentAddress, childKilled: true },
+        ]);
+        expect(await cancelling).toBeInstanceOf(Error);
+        expect(await retry).toBeInstanceOf(Error);
+        expect(
+          readPayloadsOfType(
+            spawn.supervisorToChild.flushed(),
+            "cancel.prepare",
+          ),
+        ).toHaveLength(1);
+      } else {
+        if (operation === "repeated cancel then undeploy") {
+          if (router.control === undefined)
+            throw new Error("router.control is undefined");
+          const command = {
+            type: "workflow.control",
+            requestId: "cancel-request",
+            action: "cancel",
+            runId: "run_undeploy-supervisor",
+            agentAddress: frame.agentAddress,
+            reason: "Lifetime expired",
+          } as const;
+          const cancelling = router.control(command);
+          const prepare = await waitForUpstreamPayload(
+            spawn.supervisorToChild,
+            "cancel.prepare",
+          );
+          await childSender.send({
+            type: "cancel.prepared",
+            data: { requestId: prepare.data.requestId },
+          });
+          await cancelling;
+          // The Hub resends cancel on each sweep until the run is terminal;
+          // the resend must not sign another CancelRequested.
+          await router.control({ ...command, requestId: "cancel-resend" });
+          expect(
+            readPayloadsOfType(
+              spawn.supervisorToChild.flushed(),
+              "cancel.prepare",
+            ),
+          ).toHaveLength(1);
+        }
+        await undeploy({
+          type: "agent.undeploy",
+          agentAddress: frame.agentAddress,
+          reason: "test undeploy",
+        });
+      }
 
-    expect(spawn.killed).toBe(true);
-    expect(spawn.exitedResolved).toBe(true);
+      expect(spawn.killed).toBe(true);
+      expect(spawn.exitedResolved).toBe(true);
 
-    // The deployment's whole step-state subtree is reclaimed -- warm
-    // stable workspace AND any cold leftover -- now that its supervisor
-    // and child are torn down.
-    await expect(
-      fs.stat(path.join(stepStateRoot, anchorRunId)),
-    ).rejects.toThrow();
-    // A different deployment's scratch is untouched: the sweep is scoped
-    // to this deployment's `<anchorRunId>` subtree only.
-    expect(await fs.readFile(otherDeploymentFile, "utf8")).toBe("x");
-    // The durable conversation lives under a DIFFERENT root and must
-    // survive so a re-deploy restores the prior conversation.
-    expect(await fs.readFile(durableConversationFile, "utf8")).toBe("x");
-  });
+      if (operation === "stop then undeploy") {
+        expect(await fs.readFile(warmWorkspaceFile, "utf8")).toBe("x");
+        expect(await fs.readFile(coldLeftoverFile, "utf8")).toBe("x");
+        await undeploy({
+          type: "agent.undeploy",
+          agentAddress: frame.agentAddress,
+          reason: "Release retained scratch after stop",
+        });
+      }
+      // Undeploy reclaims warm and cold scratch even after stop has already
+      // removed the supervisor registration.
+      await expect(
+        fs.stat(path.join(stepStateRoot, anchorRunId)),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      // A different deployment's scratch is untouched: the sweep is scoped
+      // to this deployment's `<anchorRunId>` subtree only.
+      expect(await fs.readFile(otherDeploymentFile, "utf8")).toBe("x");
+      // The durable conversation lives under a DIFFERENT root and must
+      // survive so a re-deploy restores the prior conversation.
+      expect(await fs.readFile(durableConversationFile, "utf8")).toBe("x");
+    },
+  );
 });

@@ -145,9 +145,22 @@ through `signAsPrincipal("supervisor", ...)` for every origin in
 the Q3 map. The `self`-origin case carries the workflow-process's
 stated reason; the supervisor wraps it into the same supervisor-
 signed shape as the operator and drain origins.
+When a child is active, it first flushes and pauses its runtime event
+writer. The supervisor commits the signed cancellation while that writer
+is paused, then releases the child to apply cancellation. A child that
+does not respond still requires the caller's forced-stop deadline.
 
 `shutdown()` unregisters the mail address, kills the child, and
-disposes subscriptions.
+disposes subscriptions. Concurrent callers await the same teardown through
+confirmed child exit, including a replacement still awaiting readiness.
+A replacement cannot spawn once shutdown begins.
+It releases pending cancellation waits and requests the kill before waiting for
+the dispatch loops, so a child that stops reading its control pipe cannot block
+its own forced termination. The kill escalates from SIGTERM to SIGKILL after
+the kill timeout, so a child that traps SIGTERM cannot block it either.
+Already-started cancellation commits finish before the supervisor releases its
+bindings, and so does every dispatch loop still running, including the loop of
+a cohort a recycle has just replaced.
 
 `drain(opts)` sends the drain control mail and waits for in-flight
 runs to drain per each step's `drainBehavior`; on the drain-timeout it
@@ -203,7 +216,9 @@ status: on latch the supervisor (the sole writer of the workflow-run
 repo) commits a `RunFailed` for the deployment's stable run, flipping
 its `workflow_run.status` to `failed` through the same pack path every
 other terminal run uses. External automation that watches run status
-sees the crash-loop as a failed run.
+sees the crash-loop as a failed run. The commit lands before the latch's
+teardown resolves and before the host hears of the self-termination, so a
+host that reads the stopped deployment's history finds it.
 
 ### Host wiring
 

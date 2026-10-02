@@ -161,7 +161,7 @@ export async function commitCancelRequested(
     {
       preservePrefix: prefix,
       merge: async (existing) => {
-        let maxSeq = -1;
+        let maxSeq = 0;
         for (const filepath of existing.keys()) {
           const name = filepath.slice(prefix.length);
           const seq = parseEventSeq(name);

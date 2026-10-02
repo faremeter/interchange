@@ -32,6 +32,7 @@ import type {
   SidecarRouter,
   WorkflowAllocationService,
   WorkflowDispatchService,
+  WorkflowLifecycleService,
 } from "@intx/hub-sessions";
 
 import { createMeRoutes } from "./routes/me";
@@ -136,6 +137,7 @@ export type MountHubRoutesDeps = {
   sessionService: SessionService;
   workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
+  workflowLifecycleService?: WorkflowLifecycleService;
   eventCollectors: EventCollectorRegistry;
   /**
    * Encrypts credential secrets at rest on the credential/oauth write paths.
@@ -199,6 +201,7 @@ export function mountHubRoutes(
     sessionService,
     workflowAllocationService,
     workflowDispatchService,
+    workflowLifecycleService,
     eventCollectors,
     sidecarWsHandler,
     assetService,
@@ -280,7 +283,15 @@ export function mountHubRoutes(
   app.use("/api/tenants/:tenantId/*", resolveTenant);
 
   // Global tenant routes (create needs auth, detail/update handle auth inline)
-  app.route("/api/tenants", createTenantRoutes({ db, principalKeyStore }));
+  app.route(
+    "/api/tenants",
+    createTenantRoutes({
+      db,
+      principalKeyStore,
+      grantStore,
+      conditionRegistry,
+    }),
+  );
 
   // Tenant-scoped routes
   app.route(
@@ -324,6 +335,9 @@ export function mountHubRoutes(
       ...(workflowDispatchService !== undefined
         ? { workflowDispatchService }
         : {}),
+      ...(workflowLifecycleService !== undefined
+        ? { workflowLifecycleService }
+        : {}),
       grantStore,
       conditionRegistry,
       requireGrant,
@@ -339,7 +353,12 @@ export function mountHubRoutes(
   // `/:runId` patterns, so this ordering is belt-and-suspenders.
   app.route(
     "/api/tenants/:tenantId/workflows/definitions",
-    createWorkflowDefinitionRoutes({ db, requireGrant }),
+    createWorkflowDefinitionRoutes({
+      db,
+      requireGrant,
+      grantStore,
+      conditionRegistry,
+    }),
   );
 
   // The workflow deploy + signal + listing surface reads the workflow-run
@@ -531,6 +550,7 @@ export type CreateAppOpts = {
   sessionService: SessionService;
   workflowAllocationService?: WorkflowAllocationService;
   workflowDispatchService?: WorkflowDispatchService;
+  workflowLifecycleService?: WorkflowLifecycleService;
   eventCollectors: EventCollectorRegistry;
   /**
    * Encrypts credential secrets at rest on the credential/oauth write paths.
@@ -569,6 +589,7 @@ export function createApp({
   sessionService,
   workflowAllocationService,
   workflowDispatchService,
+  workflowLifecycleService,
   eventCollectors,
   credentialCipher,
   principalKeyStore,
@@ -603,6 +624,9 @@ export function createApp({
       : {}),
     ...(workflowDispatchService !== undefined
       ? { workflowDispatchService }
+      : {}),
+    ...(workflowLifecycleService !== undefined
+      ? { workflowLifecycleService }
       : {}),
     eventCollectors,
     ...(credentialCipher ? { credentialCipher } : {}),

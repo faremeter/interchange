@@ -194,6 +194,26 @@ export async function flushChain(env: CommitEnv, runId: string): Promise<void> {
   await next;
 }
 
+/** Flush and exclude runtime commits while an external writer advances the log. */
+export function withRunCommitBarrier<T>(
+  env: CommitEnv,
+  runId: string,
+  write: () => Promise<T>,
+): Promise<T> {
+  const prev = commitChains.get(runId) ?? Promise.resolve();
+  const next = (async () => {
+    await prev.catch(() => undefined);
+    await flushBuffer(env, runId);
+    return write();
+  })();
+  commitChains.set(runId, next);
+  return next.finally(() => {
+    if (commitChains.get(runId) !== next) return;
+    commitChains.delete(runId);
+    if (pendingBuffers.get(runId)?.length === 0) pendingBuffers.delete(runId);
+  });
+}
+
 export async function reloadState(
   env: CommitEnv,
   runId: string,

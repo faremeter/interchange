@@ -152,6 +152,7 @@ describe("deploy-failure registry leak", () => {
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
+      reportDeploymentRefTips: async () => ({}),
       multistepMailRouter: mailRouter,
       multistepSignalRouter: signalRouter,
       multistepDrainRouter: drainRouter,
@@ -240,6 +241,7 @@ describe("deploy-failure registry leak", () => {
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
+      reportDeploymentRefTips: async () => ({}),
       multistepMailRouter: mailRouter,
       multistepSignalRouter: signalRouter,
       multistepDrainRouter: drainRouter,
@@ -400,6 +402,7 @@ describe("deploy-failure registry leak", () => {
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
       },
+      reportDeploymentRefTips: async () => ({}),
       multistepMailRouter: mailRouter,
       multistepSignalRouter: signalRouter,
       multistepDrainRouter: drainRouter,

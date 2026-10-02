@@ -20,6 +20,16 @@ export {
   type BackfillPrincipalKeysReport,
 } from "./backfill-principal-keys";
 export { createGrantStore } from "./grant-store";
+export {
+  loadTenantLifecyclePolicies,
+  canExecuteWorkflowRun,
+  workflowRunExecutability,
+  withExecutableWorkflowRun,
+  WorkflowRunNotExecutableError,
+  type WorkflowRunExecutionTarget,
+  resolveDeploymentLifecyclePolicy,
+  validateLifecyclePolicyEdit,
+} from "./workflow-lifecycle-policy";
 export { createPrincipalStore, type PrincipalStore } from "./principal-store";
 export {
   createPrincipalKeyStore,
@@ -62,6 +72,10 @@ export {
   type RetryWorkflowRunDispatchArgs,
   type WorkflowRunDispatchStore,
 } from "./workflow-run-dispatch-store";
+export {
+  createWorkflowPendingProjectionStore,
+  type WorkflowPendingProjectionStore,
+} from "./workflow-pending-projection-store";
 export {
   createSidecarAllocationStore,
   type BeginSidecarReleaseArgs,
@@ -163,6 +177,7 @@ export {
   parseCredentialRow,
   parseProviderRow,
   parseTenantRow,
+  TenantConfigInvalidError,
   parseWalletRow,
   parseTransactionRow,
   parseOAuthClientRow,

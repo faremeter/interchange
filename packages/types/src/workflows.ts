@@ -13,6 +13,7 @@ export type WorkflowDefinitionVersionStatus =
   (typeof workflowDefinitionVersionStatuses)[number];
 
 import { type } from "arktype";
+import { WorkflowLifecyclePolicy } from "./workflow-lifecycle";
 
 const WorkflowDefinitionStatusType = type.enumerated(
   ...workflowDefinitionStatuses,
@@ -35,6 +36,7 @@ export const WorkflowDefinitionResponse = type({
   name: "string",
   "description?": "string | null",
   currentVersion: "string",
+  "lifecycle?": WorkflowLifecyclePolicy,
   status: WorkflowDefinitionStatusType.describe(
     "Lifecycle state of the definition: `deployed` (a launchable version is active) or `stopped` (deactivated).",
   ),
@@ -46,6 +48,10 @@ export const WorkflowDefinitionResponse = type({
 export const WorkflowRollbackRequest = type({
   version: "string",
 });
+
+export const UpdateWorkflowDefinitionLifecycle = type({
+  lifecycle: WorkflowLifecyclePolicy,
+}).onUndeclaredKey("reject");
 
 export const WorkflowDeploymentStatus = type.enumerated(
   "deployed",

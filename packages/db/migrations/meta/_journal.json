@@ -659,6 +659,48 @@
       "when": 1790350152048,
       "tag": "0094_dark_old_lace",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1790350212048,
+      "tag": "0095_workflow_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1790350272048,
+      "tag": "0096_workflow_pending_projection",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1790350332048,
+      "tag": "0097_workflow_cancellation_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1790350392048,
+      "tag": "0098_workflow_dispatch_abandonment",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1790358456398,
+      "tag": "0099_workflow_lifecycle_sweep_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1790358709307,
+      "tag": "0100_workflow_infrastructure_failure",
+      "breakpoints": true
     }
   ]
 }

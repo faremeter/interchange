@@ -23,6 +23,7 @@ import type {
   PackRejectReason,
   RepoId,
   RunGrantsFrame,
+  WorkflowRunRefTips,
 } from "@intx/types/sidecar";
 import type {
   ApprovalSnapshot,
@@ -360,4 +361,11 @@ export type SidecarLookups = {
   ) => Promise<
     { accepted: true } | { accepted: false; reason: PackRejectReason }
   >;
+
+  /** Reads the Hub's tip of each authoritative ref of the deployment's
+   * workflow-run repo, `null` for a ref it has not received. A stop is
+   * confirmed only once the worker reports the same tips. */
+  readWorkflowRunRefTips?: (
+    agentAddress: string,
+  ) => Promise<WorkflowRunRefTips>;
 };

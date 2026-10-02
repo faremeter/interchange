@@ -14,7 +14,7 @@
 //   4. The child's runtime env is exactly the supervisor-supplied
 //      env -- unrelated `process.env` entries do not leak in.
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, spyOn } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -217,5 +217,65 @@ process.exit(0);
 
     const code = await handle.exited;
     expect(typeof code).toBe("number");
+  });
+
+  // The grandchild inherits the control pipe, so the reader ends only once
+  // every process holding it has exited.
+  async function drainControl(
+    lines: AsyncIterableIterator<string>,
+  ): Promise<string[]> {
+    const rest: string[] = [];
+    for await (const line of lines) rest.push(line);
+    return rest;
+  }
+
+  async function writeShellChild(name: string, body: string): Promise<string> {
+    const file = path.join(tmpRoot, `${name}-${String(Date.now())}.sh`);
+    await fs.writeFile(file, `#!/bin/sh\n${body}\n`, "utf-8");
+    await fs.chmod(file, 0o755);
+    return file;
+  }
+
+  test("kill() stops processes the child started", async () => {
+    const binaryPath = await writeShellChild(
+      "shell-kill",
+      `/bin/sleep 60 &\necho '{"probe":"ready"}'\nwait`,
+    );
+    const handle = defaultSubprocessSpawner({ binaryPath, env: {} });
+    const lines = handle.controlReader.read();
+
+    const ready = await lines.next();
+    expect(ready.value).toBe('{"probe":"ready"}');
+    handle.kill("SIGTERM");
+
+    await handle.exited;
+    expect(await drainControl(lines)).toEqual([]);
+  });
+
+  test("exited settles only after processes the child left behind are stopped", async () => {
+    const binaryPath = await writeShellChild(
+      "shell-orphan",
+      "/bin/sleep 60 &\nexit 0",
+    );
+    const handle = defaultSubprocessSpawner({ binaryPath, env: {} });
+
+    expect(await handle.exited).toBe(0);
+    expect(await drainControl(handle.controlReader.read())).toEqual([]);
+  });
+
+  test("kill() after exited settles signals nothing", async () => {
+    const binaryPath = await writeShellChild("shell-exit", "exit 0");
+    const handle = defaultSubprocessSpawner({ binaryPath, env: {} });
+    await handle.exited;
+
+    const kill = spyOn(process, "kill");
+    try {
+      handle.kill("SIGTERM");
+      handle.kill("SIGKILL");
+      handle.kill();
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
   });
 });

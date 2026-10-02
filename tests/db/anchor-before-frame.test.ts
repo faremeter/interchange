@@ -43,6 +43,7 @@ import {
   workflowRun,
 } from "@intx/db/schema";
 import {
+  createWorkflowHistoryReceiveTracker,
   createAgentRepoStore,
   createHubSessionLookups,
   createSessionService,
@@ -64,6 +65,7 @@ import {
   type TestDb,
 } from "@intx/test-harness/db-harness";
 import { seedTenants, seedWorkflowRun } from "@intx/test-harness/seed";
+import type { ResolvedWorkflowLifecyclePolicy } from "@intx/types";
 import type {
   HarnessConfig,
   InferenceSource,
@@ -88,6 +90,11 @@ import {
   waitFor,
 } from "../hub-agent/lib/deploy-flow-env";
 import { createMockWs } from "./sidecar-test-helpers";
+
+const TEST_DEFAULT_LIFECYCLE_POLICY: ResolvedWorkflowLifecyclePolicy = {
+  maxLifetime: "7d",
+  capacityRetention: { completed: "30m", failed: "24h", cancelled: "1h" },
+};
 
 const TENANT_ID = "tnt_anchor_before_frame";
 const DEFINITION_ID = "def_anchor_before_frame";
@@ -223,7 +230,11 @@ describe.skipIf(!harnessDbEnvAvailable())(
         ...createAgentRepoStore({ dataDir, signingKey }),
         receiveWorkflowRunPack: async () => [],
       };
-      return createHubSessionLookups({ db: h.db, agentRepoStore });
+      return createHubSessionLookups({
+        db: h.db,
+        agentRepoStore,
+        historyReceives: createWorkflowHistoryReceiveTracker(),
+      });
     }
 
     async function probePack(
@@ -304,6 +315,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         const mailParked = Promise.withResolvers<boolean>();
         let failActivityRead = false;
         const router = createSidecarRouter({
+          withExecutableWorkflowRun: async (_target, send) => send(),
           authenticateSidecar: async () => identity,
           validateSidecarIdentity: async (candidate, use) => {
             if (failActivityRead) {
@@ -494,6 +506,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             allocationRouter: router,
             credentialCipher: createNoopCredentialCipher(),
             hubWebSocketUrl: "ws://unused",
+            defaultLifecyclePolicy: TEST_DEFAULT_LIFECYCLE_POLICY,
           });
           const reconciler = createSidecarAllocationReconciler({
             allocationStore: store,
@@ -581,6 +594,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
       const credentials = createSidecarCredentialResolver({ db: h.db });
       const mailParked = Promise.withResolvers<boolean>();
       const router = createSidecarRouter({
+        withExecutableWorkflowRun: async (_target, send) => send(),
         authenticateSidecar: async () => identity,
         validateSidecarIdentity: async (candidate, use) =>
           credentials.isCurrent(candidate, use),

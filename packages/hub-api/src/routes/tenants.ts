@@ -1,19 +1,29 @@
+import { type } from "arktype";
 import { eq, and, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { describeRoute, validator } from "hono-openapi";
+import { authorize } from "@intx/authz";
 
 import { tenant, principal, role, principalRole, grant } from "@intx/db/schema";
-import { createPrincipalStore, parseTenantRow } from "@intx/db";
+import {
+  createPrincipalStore,
+  parseTenantRow,
+  TenantConfigInvalidError,
+  validateLifecyclePolicyEdit,
+} from "@intx/db";
 import type { DB, PrincipalKeyStore } from "@intx/db";
+import type { GrantStore, ConditionRegistry } from "@intx/types/authz";
 import {
   CreateTenant,
   ErrorResponse,
+  TenantConfig,
   UpdateTenant,
   TenantResponse,
+  type TenantConfigPatch,
 } from "@intx/types";
 
 import { unauthorizedResponse, type AppEnv } from "../context";
-import { errorResponse } from "../error-response";
+import { errorResponse, tenantConfigErrorResponse } from "../error-response";
 import { first, ts } from "../format";
 import { jsonResponse } from "../openapi";
 import { generateId } from "@intx/hub-common";
@@ -34,14 +44,33 @@ function formatTenant(row: typeof tenant.$inferSelect) {
   };
 }
 
+// Separate policies share `config`, so an update must keep the keys it omits.
+function mergeTenantConfig(
+  stored: unknown,
+  patch: TenantConfigPatch,
+): Record<string, unknown> {
+  const merged = new Map<string, unknown>(
+    typeof stored === "object" && stored !== null ? Object.entries(stored) : [],
+  );
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) merged.delete(key);
+    else merged.set(key, value);
+  }
+  return Object.fromEntries(merged);
+}
+
 export type CreateTenantRoutesDeps = {
   db: DB["db"];
   principalKeyStore: PrincipalKeyStore;
+  grantStore: GrantStore;
+  conditionRegistry: ConditionRegistry;
 };
 
 export function createTenantRoutes({
   db,
   principalKeyStore,
+  grantStore,
+  conditionRegistry,
 }: CreateTenantRoutesDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const principalStore = createPrincipalStore(db, principalKeyStore);
@@ -223,6 +252,7 @@ export function createTenantRoutes({
         200: jsonResponse("Tenant details", TenantResponse),
         403: jsonResponse("Not a member of this tenant", ErrorResponse),
         404: jsonResponse("Tenant not found", ErrorResponse),
+        409: jsonResponse("Stored tenant config is invalid", ErrorResponse),
       },
     }),
     async (c) => {
@@ -251,7 +281,12 @@ export function createTenantRoutes({
         return errorResponse(c, "forbidden", "Not a member of this tenant");
       }
 
-      return c.json(formatTenant(tenantRow));
+      try {
+        return c.json(formatTenant(tenantRow));
+      } catch (err) {
+        if (!(err instanceof TenantConfigInvalidError)) throw err;
+        return errorResponse(c, "invalid_tenant_config", err.message);
+      }
     },
   );
 
@@ -260,10 +295,20 @@ export function createTenantRoutes({
     describeRoute({
       tags: ["Tenants"],
       summary: "Update tenant config",
-      description: "Requires admin or higher grant within the tenant.",
+      description:
+        "Merges `config` by top-level key: keys the request omits keep their stored values, and `null` removes a key. Requires admin or higher grant within the tenant.",
       responses: {
         200: jsonResponse("Tenant updated", TenantResponse),
+        400: jsonResponse(
+          "Invalid config or inherited limit exceeded",
+          ErrorResponse,
+        ),
         403: jsonResponse("Insufficient grants", ErrorResponse),
+        404: jsonResponse("Tenant not found", ErrorResponse),
+        409: jsonResponse(
+          "A stored config the tenant inherits is invalid",
+          ErrorResponse,
+        ),
       },
     }),
     validator("json", UpdateTenant),
@@ -281,27 +326,87 @@ export function createTenantRoutes({
           eq(principal.tenantId, tenantId),
           eq(principal.kind, "user"),
           eq(principal.refId, user.id),
+          eq(principal.status, "active"),
         ),
       });
       if (!membership) {
         return errorResponse(c, "forbidden", "Not a member of this tenant");
       }
 
-      const updates: Record<string, unknown> = { updatedAt: new Date() };
-      if (body.name !== undefined) updates["name"] = body.name;
-      if (body.config !== undefined) updates["config"] = body.config;
-
-      const [updated] = await db
-        .update(tenant)
-        .set(updates)
-        .where(eq(tenant.id, tenantId))
-        .returning();
-
-      if (!updated) {
-        return errorResponse(c, "not_found", "Tenant not found");
+      const authorization = await authorize(
+        grantStore,
+        membership.id,
+        tenantId,
+        `tenant:${tenantId}`,
+        "manage",
+        conditionRegistry,
+      );
+      if (authorization.effect !== "allow") {
+        return errorResponse(
+          c,
+          "forbidden",
+          "You do not have permission to manage this tenant",
+        );
       }
+      const result = await db.transaction(async (tx) => {
+        // A concurrent update waits here, then merges into the committed result.
+        const [current] = await tx
+          .select({ parentId: tenant.parentId, config: tenant.config })
+          .from(tenant)
+          .where(eq(tenant.id, tenantId))
+          .for("no key update");
+        if (current === undefined) return { kind: "not_found" } as const;
 
-      return c.json(formatTenant(updated));
+        const updates: Record<string, unknown> = { updatedAt: new Date() };
+        if (body.name !== undefined) updates["name"] = body.name;
+        const lifecycle = body.config?.lifecycle;
+        if (lifecycle != null) {
+          let resolved;
+          try {
+            resolved = await validateLifecyclePolicyEdit(
+              tx,
+              current.parentId,
+              lifecycle,
+            );
+          } catch (err) {
+            if (!(err instanceof TenantConfigInvalidError)) throw err;
+            return { kind: "inherited_invalid", error: err } as const;
+          }
+          if (!resolved.ok)
+            return {
+              kind: "invalid",
+              message: `${resolved.field} exceeds inherited limit`,
+            } as const;
+        }
+        // A stored key this update leaves in place can predate validation,
+        // and the response returns the whole config.
+        const config = TenantConfig(
+          mergeTenantConfig(current.config, body.config ?? {}),
+        );
+        if (config instanceof type.errors)
+          return {
+            kind: "invalid",
+            message: `Tenant config would be invalid after this update: ${config.summary}`,
+          } as const;
+        if (body.config !== undefined) updates["config"] = config;
+
+        const [updated] = await tx
+          .update(tenant)
+          .set(updates)
+          .where(eq(tenant.id, tenantId))
+          .returning();
+        return updated === undefined
+          ? ({ kind: "not_found" } as const)
+          : ({ kind: "updated", row: updated } as const);
+      });
+
+      if (result.kind === "not_found")
+        return errorResponse(c, "not_found", "Tenant not found");
+      if (result.kind === "invalid")
+        return errorResponse(c, "bad_request", result.message);
+      if (result.kind === "inherited_invalid")
+        return tenantConfigErrorResponse(c, result.error);
+      return c.json(formatTenant(result.row));
     },
   );
 

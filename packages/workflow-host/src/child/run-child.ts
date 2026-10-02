@@ -70,6 +70,7 @@ import type { AuthzCallResult } from "@intx/inference";
 import type {
   ActionHandler,
   RunResult,
+  RuntimeWorkflowRun,
   Scheduler,
   ReadParkedApprovalOps,
   StepInvokeRequest,
@@ -81,7 +82,6 @@ import type {
   WorkflowAuthorizeFn,
   WorkflowDefinition,
   WorkflowPark,
-  WorkflowRun,
   WorkflowRuntimeEnv,
 } from "@intx/workflow";
 import {
@@ -102,6 +102,7 @@ import type { InferenceSource, MailPartReader } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/sidecar";
 
 import { createWorkflowRunRepoStore } from "../adapters/repo-store";
+import { createCancellationBarrier } from "./cancellation-barrier";
 import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
 import { createMailPartReader } from "../adapters/mail-part-store";
 import type {
@@ -913,7 +914,11 @@ export async function runWorkflowChild(
   // race to settle the same residual and the loser throws an uncaught
   // TransitionError into its fire-and-forget continuation. Each site
   // removes its entry when the run reaches terminal.
-  const runsInFlight = new Map<string, WorkflowRun>();
+  const runsInFlight = new Map<string, RuntimeWorkflowRun>();
+  const cancellationBarrier = createCancellationBarrier(
+    runtimeRepoStore,
+    upstreamSender,
+  );
   for (const run of discovered) {
     const env = buildRuntimeEnv({
       runId: run.runId,
@@ -1041,6 +1046,7 @@ export async function runWorkflowChild(
           drainController,
           triggeredRunIds,
           runsInFlight,
+          cancellationBarrier,
           warmCache,
           sourcesRef,
           credentialMaterialRef,
@@ -1067,6 +1073,7 @@ export async function runWorkflowChild(
   };
 
   const cleanupControlLoop = async (): Promise<void> => {
+    cancellationBarrier.close("workflow-child control loop exited");
     // Any exit path -- clean (iterator end), dirty (thrown error),
     // shutdown (already cancelled, repeat is a no-op on an empty map)
     // -- cancels every still-pending substrate write so the runtime
@@ -1150,7 +1157,8 @@ async function handleControlPayload(
     upstreamSender: ControlChannelSender;
     drainController: DrainController;
     triggeredRunIds: string[];
-    runsInFlight: Map<string, WorkflowRun>;
+    runsInFlight: Map<string, RuntimeWorkflowRun>;
+    cancellationBarrier: ReturnType<typeof createCancellationBarrier>;
     warmCache: WarmAgentCache | undefined;
     sourcesRef: SourcesSnapshotRef;
     credentialMaterialRef: CredentialMaterialRef;
@@ -1216,7 +1224,7 @@ async function handleControlPayload(
         },
         upstreamSender: ctx.upstreamSender,
       });
-      const handle: WorkflowRun = runtimeRun(ctx.definition, env, {
+      const handle = runtimeRun(ctx.definition, env, {
         runId: payload.data.runId,
         consumedMessageId: payload.data.messageId,
         triggerPayload,
@@ -1355,6 +1363,27 @@ async function handleControlPayload(
         }
       })();
       return false;
+    }
+    case "cancel.prepare": {
+      // Preparation flushes through the same IPC stream; keep consuming replies.
+      void ctx.cancellationBarrier
+        .prepare(payload.data)
+        .then(() =>
+          ctx.runsInFlight
+            .get(payload.data.runId)
+            ?.applyCommittedCancellation(),
+        )
+        .catch((error: unknown) => {
+          logger.error`Failed to apply cancellation for ${payload.data.runId}: ${error instanceof Error ? error.message : String(error)}`;
+        });
+      return false;
+    }
+    case "cancel.committed": {
+      ctx.cancellationBarrier.complete(payload.data);
+      return false;
+    }
+    case "cancel.prepared": {
+      throw new Error("workflow-child received an upstream cancellation reply");
     }
     case "drain": {
       // The supervisor's `drain` control mail flips the controller's

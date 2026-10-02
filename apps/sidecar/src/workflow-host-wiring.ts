@@ -30,6 +30,7 @@ import {
   type InboundMailPolicyRegistry,
   type SenderKeyCache,
   type SessionManager,
+  type WorkflowControlOutcome,
 } from "@intx/hub-agent";
 import {
   createWorkflowSupervisor,
@@ -67,10 +68,13 @@ import {
   type KeyPair,
 } from "@intx/types/runtime";
 import {
+  WORKFLOW_CONTROL_INITIALIZING_ERROR,
   WorkflowProjectionDefinition,
   type AgentDeployFrame,
   type CredentialDelivery,
   type SourceRefPin,
+  type WorkflowControlFrame,
+  type WorkflowRunRefTips,
 } from "@intx/types/sidecar";
 import { STEP_ID_PATTERN, projectLiveToInert } from "@intx/workflow";
 import {
@@ -639,10 +643,25 @@ export const defaultSubprocessSpawner: SubprocessSpawner = ({
   binaryPath,
   env,
 }): SubprocessHandle => {
+  // The child leads its own process group so a stop reaches the tool
+  // subprocesses it started, not just the child's own pid.
   const proc = Bun.spawn([binaryPath], {
     stdio: ["pipe", "pipe", "inherit", "pipe"],
     env,
+    detached: true,
   });
+  // Once the final group kill has run, the group id may be reused by an
+  // unrelated process group, so later signals must not reach it.
+  let groupReleased = false;
+  function signalGroup(signal: number | NodeJS.Signals): void {
+    if (groupReleased) return;
+    try {
+      process.kill(-proc.pid, signal);
+    } catch (err) {
+      if (!(err instanceof Error && "code" in err && err.code === "ESRCH"))
+        throw err;
+    }
+  }
   const eventFd = proc.stdio[CHILD_EVENT_CHANNEL_FD];
   if (typeof eventFd !== "number") {
     throw new Error(
@@ -656,24 +675,36 @@ export const defaultSubprocessSpawner: SubprocessSpawner = ({
     eventReader: frameReaderFromFd(eventFd),
     kill(signal?: number | string): void {
       // The supervisor's `SubprocessHandle.kill` widens the signal
-      // to `number | string`; Bun's `Subprocess.kill` accepts
+      // to `number | string`; `process.kill` accepts
       // `number | NodeJS.Signals`. The supervisor's call sites pass
       // `"SIGTERM"` / `"SIGKILL"` (recycle path) or no argument
-      // (shutdown path), which Bun handles directly. Cast at the
-      // boundary so the inner call matches Bun's narrower type
-      // without coercing valid input.
+      // (shutdown path). Cast at the boundary so the inner call
+      // matches the narrower type without coercing valid input.
       if (signal === undefined) {
-        proc.kill();
+        signalGroup("SIGTERM");
         return;
       }
       if (typeof signal === "number") {
-        proc.kill(signal);
+        signalGroup(signal);
         return;
       }
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- supervisor's kill widens to `string`; Bun's runtime accepts the same `"SIG*"` strings, narrowed back at the boundary.
-      proc.kill(signal as NodeJS.Signals);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- supervisor's kill widens to `string`; the runtime accepts the same `"SIG*"` strings, narrowed back at the boundary.
+      signalGroup(signal as NodeJS.Signals);
     },
-    exited: proc.exited,
+    // Tool subprocesses outlive a child that exits or is killed, so the
+    // group is killed before `exited` settles. If the group was already
+    // empty when Bun reaped the child, its id could be reused before this
+    // kill lands; the window is brief, and closing it needs a process
+    // handle such as a pidfd, which Bun does not expose.
+    exited: proc.exited.then((code) => {
+      try {
+        signalGroup("SIGKILL");
+        groupReleased = true;
+      } catch (err) {
+        logger.error`Cannot stop processes left by workflow child ${String(proc.pid)}: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      return code;
+    }),
   };
 };
 
@@ -1103,6 +1134,15 @@ export function createSidecarDeployRouter(deps: {
     agentAddress: string;
   }) => void;
   /**
+   * Read the tips of a stopped deployment's workflow-run refs and schedule a
+   * push of any commit the hub has not acknowledged. The hub confirms the stop
+   * only once it holds these tips. Tests that do not exercise the pack push
+   * path may report no refs.
+   */
+  reportDeploymentRefTips: (
+    agentAddress: string,
+  ) => Promise<WorkflowRunRefTips>;
+  /**
    * Substrate-config env keys the multi-step branch propagates into
    * the workflow-process child's spawn-time env (see
    * `SIDECAR_SUBSTRATE_CONFIG_KEYS` in `workflow-substrate-factory.ts`).
@@ -1377,6 +1417,23 @@ export function createSidecarDeployRouter(deps: {
   // map to call `supervisor.shutdown()` so the child's lifetime ends
   // with the deployment.
   const activeSupervisors = new Map<string, SidecarWorkflowSupervisor>();
+  const workflowCancellationTasks = new WeakMap<
+    SidecarWorkflowSupervisor,
+    Promise<void>
+  >();
+  const workflowStopTasks = new Map<string, Promise<void>>();
+
+  // Read after the supervisor has shut down, so the tips cover every run
+  // event and consumption record the stopped worker committed. Inbox
+  // enqueues, grants writes, and mailbox replays can still land later; none
+  // of them records an outcome or settles a delivery.
+  async function reportControlOutcome(
+    frame: WorkflowControlFrame,
+  ): Promise<WorkflowControlOutcome> {
+    return frame.action === "stop"
+      ? { refTips: await deps.reportDeploymentRefTips(frame.agentAddress) }
+      : {};
+  }
 
   // Synchronous single-flight guard for the deploy path. The real supervisor
   // does not exist until inside `spawnWorkflowRun`, so `deployMultiStep`
@@ -1420,6 +1477,16 @@ export function createSidecarDeployRouter(deps: {
     if (existing === agentAddress) slugClaims.delete(runId);
   }
 
+  function unregisterWorkflowRoutes(agentAddress: string): void {
+    deps.multistepMailRouter?.unregister(agentAddress);
+    deps.inboundMailPolicyRegistry?.unregister(agentAddress);
+    deps.multistepSignalRouter?.unregister(agentAddress);
+    deps.multistepDrainRouter?.unregister(agentAddress);
+    deps.multistepGrantsRouter?.unregister(agentAddress);
+    deps.multistepSourcesRouter?.unregister(agentAddress);
+    deps.multistepCredentialsRouter?.unregister(agentAddress);
+  }
+
   // Reclaim a deployment address whose supervisor drove ITSELF to a terminal
   // phase (crash-loop latch, channel crash, recycle failure) without an
   // operator undeploy. Drops the address's runtime/routing state so a redeploy
@@ -1450,13 +1517,11 @@ export function createSidecarDeployRouter(deps: {
   //     consulted only by the OUTBOUND workflow-run pack push
   //     (`registry.resolve`), which the supervisor itself drives; no inbound
   //     frame consults it (a frame racing the reclaim is rejected by the
-  //     routers above, not routed through this mapping). The supervisor's own
-  //     terminal `RunFailed` commit -- the crash-loop latch writes it AFTER its
-  //     teardown fires this sink -- resolves this mapping, so dropping it here
-  //     would strand that commit ("no run address registered for deployment")
-  //     and leave the crash-loop with no durable failure tombstone. Retaining a
-  //     stale entry never blocks a redeploy: `record` overwrites idempotently,
-  //     and an operator `undeploy` or a process restart clears it.
+  //     routers above, not routed through this mapping). The crash-loop latch
+  //     commits its `RunFailed` tombstone, resolving this mapping, before this
+  //     sink fires. Retaining a stale entry never blocks a redeploy: `record`
+  //     overwrites idempotently, and an operator `undeploy` or a process
+  //     restart clears it.
   //
   // Fully synchronous with no `await` between the guard and the mutations, so it
   // is idempotent and cannot interleave with a concurrent operator `undeploy` of
@@ -1468,13 +1533,7 @@ export function createSidecarDeployRouter(deps: {
     if (!activeSupervisors.has(args.agentAddress)) return;
     // Drop racing frames at the router boundary first, then unwind the
     // underlying registrations -- the same ordering the undeploy hook uses.
-    deps.multistepMailRouter?.unregister(args.agentAddress);
-    deps.inboundMailPolicyRegistry?.unregister(args.agentAddress);
-    deps.multistepSignalRouter?.unregister(args.agentAddress);
-    deps.multistepDrainRouter?.unregister(args.agentAddress);
-    deps.multistepGrantsRouter?.unregister(args.agentAddress);
-    deps.multistepSourcesRouter?.unregister(args.agentAddress);
-    deps.multistepCredentialsRouter?.unregister(args.agentAddress);
+    unregisterWorkflowRoutes(args.agentAddress);
     activeSupervisors.delete(args.agentAddress);
     deps.transport.unregister(args.agentAddress);
     releaseSlug(args.runId, args.agentAddress);
@@ -2481,6 +2540,9 @@ export function createSidecarDeployRouter(deps: {
 
   return {
     async deploy(frame): Promise<DeployRouterResult> {
+      if (workflowStopTasks.has(frame.agentAddress)) {
+        throw new Error("Workflow deployment is still stopping");
+      }
       if (frame.provisionStep === true) {
         return await provisionStep(frame);
       }
@@ -2495,7 +2557,80 @@ export function createSidecarDeployRouter(deps: {
         `sidecar deploy router: unsupported deploy frame for ${frame.agentAddress}; a deploy must carry provisionStep or a workflow definition`,
       );
     },
+    async control(frame): Promise<WorkflowControlOutcome> {
+      if (parseAgentId(frame.agentAddress) !== frame.runId) {
+        throw new Error(
+          "Workflow control run does not match the deployment address",
+        );
+      }
+      const stopping = workflowStopTasks.get(frame.agentAddress);
+      if (stopping !== undefined) {
+        await stopping;
+        return reportControlOutcome(frame);
+      }
+      if (reservingDeployAddresses.has(frame.agentAddress)) {
+        throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR);
+      }
+      const wired = activeSupervisors.get(frame.agentAddress);
+      if (frame.action === "cancel" && wired !== undefined) {
+        const cancelling = workflowCancellationTasks.get(wired);
+        if (cancelling !== undefined) {
+          await cancelling;
+          return {};
+        }
+        const pending = wired.supervisor
+          .requestCancel({
+            runId: frame.runId,
+            origin: "supervisor-operator",
+            reason: frame.reason,
+            at: new Date().toISOString(),
+          })
+          .then(() => undefined);
+        // The Hub resends cancel on every sweep until the run is terminal.
+        // Keep a committed cancellation so a resend reuses it instead of
+        // signing another CancelRequested; only a failed one is retried.
+        workflowCancellationTasks.set(wired, pending);
+        try {
+          await pending;
+        } catch (error) {
+          workflowCancellationTasks.delete(wired);
+          throw error;
+        }
+        return {};
+      }
+      // Cancellation without a supervisor must still retire its restart record.
+      // Publish stop before its first await. It fences new commands and deploys
+      // while shutdown releases the cancellation handshake and kills the child.
+      const pending = Promise.resolve().then(async () => {
+        unregisterWorkflowRoutes(frame.agentAddress);
+        if (wired !== undefined) await wired.supervisor.shutdown();
+        if (activeSupervisors.get(frame.agentAddress) === wired) {
+          reclaimSelfTerminatedSupervisor({
+            runId: deriveDeploymentId(frame.agentAddress),
+            agentAddress: frame.agentAddress,
+          });
+        }
+        // A stopped terminal deployment must not respawn on sidecar restart.
+        // Keep its scratch and source material for the allocation's retention period.
+        if (stepStateDataDir !== undefined) {
+          await deleteWorkflowRunRecord(
+            stepStateDataDir,
+            deriveDeploymentId(frame.agentAddress),
+          );
+        }
+      });
+      workflowStopTasks.set(frame.agentAddress, pending);
+      try {
+        await pending;
+      } finally {
+        if (workflowStopTasks.get(frame.agentAddress) === pending)
+          workflowStopTasks.delete(frame.agentAddress);
+      }
+      return reportControlOutcome(frame);
+    },
     async undeploy(frame): Promise<void> {
+      const stopping = workflowStopTasks.get(frame.agentAddress);
+      if (stopping !== undefined) await stopping;
       // Symmetric teardown for `deploy`: release the per-deployment
       // routing state both branches install so a stale `signal.deliver`
       // / `drain.deliver` / `mail.inbound` aimed at the dead deployment
@@ -2509,15 +2644,7 @@ export function createSidecarDeployRouter(deps: {
       // the middle of tearing its child down. The pattern is: drop
       // racing frames first, then unwind the underlying resource.
       const runId = deriveDeploymentId(frame.agentAddress);
-      deps.multistepMailRouter?.unregister(frame.agentAddress);
-      deps.inboundMailPolicyRegistry?.unregister(frame.agentAddress);
-      deps.multistepSignalRouter?.unregister(frame.agentAddress);
-      deps.multistepDrainRouter?.unregister(frame.agentAddress);
-      deps.multistepGrantsRouter?.unregister(frame.agentAddress);
-      // Unregister unconditionally (a no-op for a multi-step address that
-      // registered no sources handler), matching the sibling routers.
-      deps.multistepSourcesRouter?.unregister(frame.agentAddress);
-      deps.multistepCredentialsRouter?.unregister(frame.agentAddress);
+      unregisterWorkflowRoutes(frame.agentAddress);
       // Shut the per-deployment supervisor down so the workflow-process
       // child, its IPC pipes, and its event-channel fd are released.
       // The supervisor's `shutdown()` is idempotent (returns early when
@@ -2536,23 +2663,15 @@ export function createSidecarDeployRouter(deps: {
         // no-op only if the spawn failed before registering, so it is safe to
         // call unconditionally for any spawned deployment.
         deps.transport.unregister(frame.agentAddress);
-        // Reclaim the deployment's per-step local-disk scratch now that
-        // its supervisor + workflow-process child are torn down. The
-        // whole `workflow-step-state/<runId>/` subtree goes: the
-        // warm single-step agent's stable workspace under `warm/` (the
-        // dir bounded keying parks per agent) AND any cold `runs/<runId>/`
-        // subtrees a multi-step deploy's per-run cleanup did not already
-        // drop. Awaiting `shutdown()` above guarantees no child still
-        // holds the scratch, so this is a safe `rm -rf`. The durable
-        // conversation under `agent-conversation-state/` is a DIFFERENT
-        // root and is deliberately NOT touched here -- a re-deploy on the
-        // same address must restore the prior conversation from it.
-        if (stepStateDataDir !== undefined) {
-          await rm(pathJoin(stepStateDataDir, "workflow-step-state", runId), {
-            recursive: true,
-            force: true,
-          });
-        }
+      }
+      // Reclaim warm and cold scratch after teardown, including scratch an
+      // earlier stop retained after removing the supervisor registration.
+      // Durable conversations live under a separate root and survive undeploy.
+      if (stepStateDataDir !== undefined) {
+        await rm(pathJoin(stepStateDataDir, "workflow-step-state", runId), {
+          recursive: true,
+          force: true,
+        });
       }
       // Drop the run record so a boot-time restore does not re-spawn a
       // torn-down deployment, and reclaim a source-ref deployment's

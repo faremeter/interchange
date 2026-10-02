@@ -43,12 +43,15 @@
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/approvals | List run approvals |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/health | Get run health |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/offerings | List run offerings |
+| GET | /api/tenants/:tenantId/workflows/runs/:runId/lifecycle | Get workflow lifecycle status |
+| POST | /api/tenants/:tenantId/workflows/runs/:runId/capacity/release | Release workflow capacity |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/events | Read a run's event log |
 | POST | /api/tenants/:tenantId/workflows/runs/:runId/mail | Send mail to a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/mail | List mail for a run |
 | GET | /api/tenants/:tenantId/workflows/runs/:runId/turns | List a run's turns |
 | GET | /api/tenants/:tenantId/workflows/definitions | List workflow definitions |
 | GET | /api/tenants/:tenantId/workflows/definitions/:definitionId/versions | List definition versions |
+| PATCH | /api/tenants/:tenantId/workflows/definitions/:definitionId/lifecycle | Update workflow lifecycle policy |
 | POST | /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback | Roll back to a previous version |
 | POST | /api/tenants/:tenantId/workflows/deployments | Deploy a workflow |
 | GET | /api/tenants/:tenantId/workflows/deployments | List workflow deployments |
@@ -246,16 +249,20 @@ Get tenant details
 200: TenantResponse -- Tenant details
 403: ErrorResponse -- Not a member of this tenant
 404: ErrorResponse -- Tenant not found
+409: ErrorResponse -- Stored tenant config is invalid
 
 ### PATCH /api/tenants/:tenantId
 Update tenant config
 
-Requires admin or higher grant within the tenant.
+Merges `config` by top-level key: keys the request omits keep their stored values, and `null` removes a key. Requires admin or higher grant within the tenant.
 
 Body: UpdateTenant
 
 200: TenantResponse -- Tenant updated
+400: ErrorResponse -- Invalid config or inherited limit exceeded
 403: ErrorResponse -- Insufficient grants
+404: ErrorResponse -- Tenant not found
+409: ErrorResponse -- A stored config the tenant inherits is invalid
 
 ### GET /api/tenants/:tenantId/federation
 List federation trust relationships
@@ -472,12 +479,12 @@ Returns workflow run state including status, public key, and sidecar assignment.
 ### DELETE /api/tenants/:tenantId/workflows/runs/:runId
 Stop a run
 
-Stops a live workflow run and releases its sidecar allocation.
+Durably requests cancellation of a live top-level run. Its saved cancellation retention policy controls subsequent capacity release. Poll the Location header for progress.
 
-204: (no content) -- Run stopped
+202: (no content) -- Cancellation requested
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run already stopped
-502: ErrorResponse -- Sidecar unavailable
+409: ErrorResponse -- Run is already terminal
+503: ErrorResponse -- Workflow lifecycle service unavailable
 
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/authorization
 Get run authorization
@@ -512,6 +519,26 @@ Returns the offerings associated with the run's workflow definition. These repre
 200: OfferingDetail[] -- List of offerings
 404: ErrorResponse -- Run not found
 
+### GET /api/tenants/:tenantId/workflows/runs/:runId/lifecycle
+Get workflow lifecycle status
+
+Returns the deployment's saved policy, deadlines, and allocation cleanup status. Policy edits apply to new deployments.
+
+200: WorkflowLifecycleResponse -- Lifecycle status
+404: ErrorResponse -- Run not found
+503: ErrorResponse -- Workflow lifecycle service unavailable
+
+### POST /api/tenants/:tenantId/workflows/runs/:runId/capacity/release
+Release workflow capacity
+
+Durably requests release of a terminal top-level run's allocation. Poll the Location header for cleanup status. Permanent cleanup failures require operator intervention and return 409. Returns 503 while accepted run history cannot yet be reconciled; retry later.
+
+202: (no content) -- Release requested
+204: (no content) -- Capacity already released or absent
+404: ErrorResponse -- Run not found
+409: ErrorResponse -- Run is live or cleanup requires operator intervention
+503: ErrorResponse -- Workflow lifecycle service or run history unavailable
+
 ### GET /api/tenants/:tenantId/workflows/runs/:runId/events
 Read a run's event log
 
@@ -531,7 +558,7 @@ Body: SendMessage
 202: unknown -- Trigger accepted for delivery
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Run not found
-409: ErrorResponse -- Run address is not routable, its allocation is no longer active, or the run is terminal
+409: ErrorResponse -- Run address is not routable, its allocation is no longer active, or the run is stopping or terminal
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Run trigger substrate unavailable
 
@@ -575,6 +602,19 @@ Query: cursor?, limit?
 200: unknown -- List of versions
 404: ErrorResponse -- Definition not found
 
+### PATCH /api/tenants/:tenantId/workflows/definitions/:definitionId/lifecycle
+Update workflow lifecycle policy
+
+Replaces the installed workflow's lifecycle overrides for future deployments. The overrides cover every revision of the definition's workflow asset, including revisions deployed later, so the caller needs manage on each existing revision. Omitted fields inherit tenant limits.
+
+Body: UpdateWorkflowDefinitionLifecycle
+
+200: WorkflowDefinitionResponse -- Policy updated
+400: ErrorResponse -- Invalid policy or inherited limit exceeded
+403: ErrorResponse -- Caller cannot manage every revision of the workflow
+404: ErrorResponse -- Definition not found
+409: ErrorResponse -- The workflow's revisions changed during the update, or a stored tenant config it inherits is invalid
+
 ### POST /api/tenants/:tenantId/workflows/definitions/:definitionId/rollback
 Roll back to a previous version
 
@@ -597,7 +637,7 @@ Body: unknown
 
 201: WorkflowDeploymentResponse -- Workflow deployment accepted for provisioning
 404: ErrorResponse -- Workflow asset not found
-409: ErrorResponse -- Workflow definition or source offering chain invalid, workflow provisioning unavailable, or provisioner selection failed
+409: ErrorResponse -- Workflow definition, source offering chain, or stored tenant config invalid, workflow provisioning unavailable, or provisioner selection failed
 500: ErrorResponse -- Deployment projection row missing after preparation
 502: ErrorResponse -- Sidecar unavailable
 
@@ -632,7 +672,7 @@ Body: SendMessage
 202: unknown -- Trigger accepted for delivery
 400: ErrorResponse -- Attachment validation error. Each variant carries a structured code (oversize_attachment, disallowed_mime_type, malformed_base64, oversize_total) with the offending index and limits. A malformed request body that fails SendMessage validation returns the generic error shape instead.
 404: ErrorResponse -- Workflow deployment not found
-409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, or its top-level run is terminal
+409: ErrorResponse -- Deployment address is not routable, its allocation is no longer active, or its top-level run is stopping or terminal
 413: ErrorResponse -- Request body exceeds the maximum allowed size
 503: ErrorResponse -- Durable workflow dispatch unavailable
 
@@ -1537,7 +1577,7 @@ Source: packages/types/src/me.ts
 Source: packages/types/src/observability.ts
 
 ### TenantResponse
-`{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, parentId?: string | null }`
+`{ createdAt: string, domain: string, id: string, name: string, slug: string, updatedAt: string, config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, parentId?: string | null }`
 Source: packages/types/src/tenants.ts
 
 ### TraceResponse
@@ -1605,7 +1645,7 @@ Source: packages/types/src/providers.ts
 Source: packages/types/src/roles.ts
 
 ### UpdateTenant
-`{ config?: { [string]: unknown, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } }, name?: string }`
+`{ config?: { [string]: unknown, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject } | null, sidecarPlacement?: { capabilities?: { capability: string >= 1, effect: "block" | "require" }[], + (undeclared): reject } | null }, name?: string }`
 Source: packages/types/src/tenants.ts
 
 ### UpdateWallet
@@ -1613,6 +1653,10 @@ Source: packages/types/src/tenants.ts
 Source: packages/types/src/wallets.ts
 
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
+
+### UpdateWorkflowDefinitionLifecycle
+`{ lifecycle: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, + (undeclared): reject }`
+Source: packages/types/src/workflows.ts
 
 ### UserProfile
 `{ createdAt: string, email: string, emailVerified: boolean, id: string, name: string, updatedAt: string, image?: string | null }`
@@ -1627,7 +1671,7 @@ Source: packages/types/src/wallets.ts
 **config**: Backend-specific configuration for the wallet (for example chain or account details for a `crypto` backend). Shape depends on `backendType`; not interpreted by the hub.
 
 ### WorkflowDefinitionResponse
-`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, description?: string | null }`
+`{ createdAt: string, currentVersion: string, id: string, name: string, status: "deployed" | "stopped", tenantId: string, updatedAt: string, description?: string | null, lifecycle?: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject } }`
 Source: packages/types/src/workflows.ts
 
 **status**: Lifecycle state of the definition: `deployed` (a launchable version is active) or `stopped` (deactivated).
@@ -1637,6 +1681,10 @@ Source: packages/types/src/workflows.ts
 Source: packages/types/src/workflows.ts
 
 **status**: Deployment lifecycle status. `failed` is a terminal failure with no infrastructure. `destroy_failed` is a permanent cleanup failure where infrastructure may remain and require operator cleanup.
+
+### WorkflowLifecycleResponse
+`{ allocation: { failureCode: string | null, failureMessage: string | null, id: string, status: "allocated" | "destroy_failed" | "failed" | "pending" | "provisioning" | "released" | "releasing" | "replacing" } | null, cancellationDeadline: string | null, cancellationReason: string | null, cancellationRequestedAt: string | null, capacityReleaseAt: string | null, expiresAt: string | null, policy: { capacityRetention?: { cancelled?: string , completed?: string , failed?: string , + (undeclared): reject }, maxLifetime?: string , + (undeclared): reject }, runId: string, status: "cancelled" | "completed" | "deployed" | "failed" | "running" }`
+Source: packages/types/src/workflow-lifecycle.ts
 
 ### WorkflowRollbackRequest
 `{ version: string }`

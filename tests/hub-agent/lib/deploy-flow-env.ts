@@ -59,6 +59,7 @@ import {
   installAndApproveWorkflowDefinition,
   DEFAULT_ASSET_REF,
   parseAgentId,
+  readWorkflowRunRefTips,
   type AgentRepoStore,
   type InstallAndApproveResult,
   type RepoId,
@@ -911,6 +912,7 @@ export async function startHub(
     generation: 1,
   };
   const router = createSidecarRouter({
+    withExecutableWorkflowRun: async (_target, send) => send(),
     requestTimeoutMs: 10_000,
     hubPublicKey: hexEncode(hubSigningKey.publicKey),
     // The spawned sidecar presents TOKEN on its handshake; verify it and
@@ -1016,6 +1018,10 @@ export async function startHub(
         outboundMail.push({ senderAddress, recipients, raw });
         return Promise.resolve([]);
       },
+      // The Hub's own history tips, so a stop is confirmed against the
+      // commits this Hub actually received, as in production.
+      readWorkflowRunRefTips: (agentAddress) =>
+        readWorkflowRunRefTips(agentRepoStore.repoStore, agentAddress),
       // Co-write the signal_correlation + approval rows when a suspending
       // agent step's `signal.correlation.register` frame arrives. Only the
       // approval capstone wires this (against a real DB); every other test
@@ -2561,7 +2567,7 @@ export async function fireMailTrigger(
   // signed-under address as the authenticated sender. This fixture reuses
   // that same address as the MIME From, so it is not a From-independence
   // check.
-  const delivered = env.hub.router.routeMail(address, base64, from);
+  const delivered = await env.hub.router.routeMail(address, base64, from);
   if (!delivered) {
     throw Object.assign(
       new Error(
@@ -2601,7 +2607,7 @@ export async function injectSignal(
 ): Promise<{ signalId: string }> {
   const handle = requireDeployment(env, anchorRunId);
   const signalId = `sig_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  env.hub.router.sendSignalDeliver({
+  await env.hub.router.sendSignalDeliver({
     agentAddress: handle.mailAddress,
     runId,
     signalName,

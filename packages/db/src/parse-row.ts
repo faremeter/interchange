@@ -13,12 +13,14 @@ import {
   principalStatuses,
   signalKinds,
   TenantConfig,
+  WorkflowLifecyclePolicy,
   workflowDefinitionStatuses,
   workflowDefinitionVersionStatuses,
 } from "@intx/types";
 import { WireGrantRule } from "@intx/types/grant-wire";
 import { FrozenApprovalBundle, RepoAction } from "@intx/types/sidecar";
 import { ToolPackagePinArray } from "@intx/types/tool-packages";
+import { workflowRunDispatchStatuses } from "./schema/workflow-run-dispatch";
 
 import type {
   approval,
@@ -74,10 +76,7 @@ const workflowRunStatuses = [
 ] as const;
 const WorkflowRunStatusValidator = type.enumerated(...workflowRunStatuses);
 const WorkflowRunDispatchStatusValidator = type.enumerated(
-  "pending",
-  "acknowledged",
-  "settled",
-  "failed",
+  ...workflowRunDispatchStatuses,
 );
 const WorkflowRunDispatchKindValidator = type.enumerated("mail", "signal");
 
@@ -132,12 +131,21 @@ const turnPartTypes = [
 ] as const;
 const TurnPartTypeValidator = type.enumerated(...turnPartTypes);
 
+export function parseWorkflowDefinitionLifecyclePolicy(
+  raw: unknown,
+): WorkflowLifecyclePolicy {
+  return raw == null ? {} : WorkflowLifecyclePolicy.assert(raw);
+}
+
 export function parseWorkflowDefinitionRow(
   row: typeof workflowDefinition.$inferSelect,
 ) {
   return {
     ...row,
     status: WorkflowDefinitionStatusValidator.assert(row.status),
+    lifecyclePolicy: parseWorkflowDefinitionLifecyclePolicy(
+      row.lifecyclePolicy,
+    ),
     grantRequirements:
       row.grantRequirements !== null
         ? GrantRequirement.array().assert(row.grantRequirements)
@@ -214,6 +222,10 @@ export function parseWorkflowRunRow(row: typeof workflowRun.$inferSelect) {
   return {
     ...row,
     status: WorkflowRunStatusValidator.assert(row.status),
+    lifecyclePolicy:
+      row.lifecyclePolicy == null
+        ? null
+        : WorkflowLifecyclePolicy.assert(row.lifecyclePolicy),
     modelPreferences:
       row.modelPreferences !== null
         ? InvokerModelPreferences.assert(row.modelPreferences)
@@ -307,10 +319,28 @@ export function parseModelOfferingRow(row: typeof modelOffering.$inferSelect) {
   };
 }
 
+export class TenantConfigInvalidError extends Error {
+  constructor(tenantId: string, summary: string) {
+    super(`Tenant ${tenantId} has invalid configuration: ${summary}`);
+    this.name = "TenantConfigInvalidError";
+  }
+}
+
+// A config saved before a key was validated can fail validation added since.
+export function parseTenantConfig(
+  tenantId: string,
+  raw: unknown,
+): TenantConfig {
+  const config = TenantConfig(raw);
+  if (config instanceof type.errors)
+    throw new TenantConfigInvalidError(tenantId, config.summary);
+  return config;
+}
+
 export function parseTenantRow(row: typeof tenant.$inferSelect) {
   return {
     ...row,
-    config: row.config !== null ? TenantConfig.assert(row.config) : null,
+    config: row.config !== null ? parseTenantConfig(row.id, row.config) : null,
   };
 }
 

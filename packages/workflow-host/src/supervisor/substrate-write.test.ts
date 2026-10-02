@@ -140,6 +140,8 @@ function createStubRepoStore(opts: {
    * Default is true (single-shot merge).
    */
   invokeMerge?: boolean;
+  /** Runs after the merge and before the write resolves, standing in for the commit. */
+  commit?: () => Promise<void>;
 }): RepoStore {
   const stub: Partial<RepoStore> = {
     getRepoDir(repoId: RepoId): string {
@@ -161,6 +163,7 @@ function createStubRepoStore(opts: {
         // produced, the way the handler's validation walk would.
         newlyTerminalRuns = deriveNewlyTerminalRuns(merged);
       }
+      await opts.commit?.();
       return { commitSha: "deadbeefcafef00d", newlyTerminalRuns };
     },
   };
@@ -350,6 +353,7 @@ type BootSupervisorOpts = {
    * map. Tests that exercise the merge round-trip set this to true.
    */
   invokeMerge?: boolean;
+  commit?: () => Promise<void>;
   onSelfTerminate?: (info: {
     phase: "stopped" | "crash-looping";
     reason: string;
@@ -419,6 +423,7 @@ async function bootSupervisorToReady(
     ...(opts.invokeMerge !== undefined
       ? { invokeMerge: opts.invokeMerge }
       : {}),
+    ...(opts.commit !== undefined ? { commit: opts.commit } : {}),
   });
 
   const bindings: WorkflowSupervisorBindings = {
@@ -695,6 +700,59 @@ describe("substrate-write cohort abort cleanup", () => {
     expect(abortResult.reason).toMatch(/cohort aborted/);
 
     await shutdownPromise;
+  });
+});
+
+describe("substrate-write shutdown ownership", () => {
+  test("shutdown waits for a write that already has its merge to commit", async () => {
+    // Shutdown rejects merges still waiting on the child, but a write past
+    // its merge commits regardless. The host reads the deployment's history
+    // once shutdown resolves, so that commit must land first.
+    const committing = Promise.withResolvers<undefined>();
+    const releaseCommit = Promise.withResolvers<undefined>();
+    let committed = false;
+    const harness = await bootSupervisor({
+      prefix: "supv-shutdown-owns-write-",
+      invokeMerge: true,
+      commit: async () => {
+        committing.resolve(undefined);
+        await releaseCommit.promise;
+        committed = true;
+      },
+    });
+
+    const requestId = "shutdown-owned-req-1";
+    await harness.childSender.send({
+      type: "substrate.write.request",
+      data: {
+        requestId,
+        repoId: { kind: "workflow-run", id: "deployment-x" },
+        ref: "refs/heads/main",
+        preservePrefix: "runs/some-run/events/",
+        message: "write that commits during shutdown",
+      },
+    });
+    await waitForUpstreamPayload(
+      harness.supervisorToChild,
+      "substrate.merge.request",
+      (m) => m.data.requestId === requestId,
+    );
+    await harness.childSender.send({
+      type: "substrate.merge.response",
+      data: { requestId, result: { ok: true, files: [] } },
+    });
+    await committing.promise;
+
+    let shutDown = false;
+    const shutdown = harness.supervisor.shutdown().then(() => {
+      shutDown = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shutDown).toBe(false);
+
+    releaseCommit.resolve(undefined);
+    await shutdown;
+    expect(committed).toBe(true);
   });
 });
 
