@@ -1,5 +1,6 @@
 import { type } from "arktype";
 import { getLogger } from "@intx/log";
+import { mimeTypeAndSubtype } from "@intx/types";
 import type {
   MessageHeaders,
   BodyStructure,
@@ -69,7 +70,10 @@ export async function fetchStructure(
 }
 
 /**
- * Fetch a single MIME part by dot-separated path. `contentType` carries the
+ * Fetch a single MIME part by dot-separated path. `content` is the
+ * CTE-decoded bytes, matching `extractAttachments` / `decodeMail`.
+ * `contentType` is the type/subtype `decodeMail` reports — parameters such
+ * as charset are spent once the bytes are decoded — and it carries the
  * RFC 2045 §6.4 relabel, since an undecodable part arrives undecoded.
  */
 export async function fetchPart(
@@ -83,7 +87,9 @@ export async function fetchPart(
   const part = parseMimePart(partBytes);
 
   const result: MessagePart = {
-    contentType: reportedContentType(part.contentType, part.headers),
+    contentType: mimeTypeAndSubtype(
+      reportedContentType(part.contentType, part.headers),
+    ),
     content: decodePartBytes(part.body, part.headers),
   };
   const mechanism = transferEncodingMechanism(part.headers);

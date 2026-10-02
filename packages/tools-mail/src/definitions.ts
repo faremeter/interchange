@@ -125,6 +125,34 @@ const SEARCH_QUERY_SCHEMA = {
   },
 };
 
+const ATTACHMENTS_SCHEMA = {
+  type: "array",
+  description:
+    "Files to attach to a conversation mail (not allowed with a structured 'type'). Each attachment's 'content' is plain text by default (e.g. for text/plain, text/csv, text/markdown, application/json) -- pass base64 in 'content' and set 'encoding' to 'base64' for anything else (images, video, audio, PDF). Never pre-encode text as base64.",
+  items: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Attachment filename" },
+      contentType: {
+        type: "string",
+        description: "MIME type (e.g. image/png, text/plain)",
+      },
+      content: {
+        type: "string",
+        description:
+          "The attachment's content: plain text unless 'encoding' is 'base64'",
+      },
+      encoding: {
+        type: "string",
+        enum: ["utf-8", "base64"],
+        description:
+          "How 'content' is encoded. Defaults to 'utf-8' for text-like types and 'base64' for everything else, which must be base64",
+      },
+    },
+    required: ["name", "contentType", "content"],
+  },
+};
+
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "mail_send",
@@ -173,6 +201,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             "Correlation ID stamped on the outgoing mail as Interchange-Correlation-ID. A responder carries it back to tie its reply to this request; this tool does not await that reply -- call mail_wait to wait for it. It becomes a header value, so a line break in it is rejected",
         },
+        attachments: ATTACHMENTS_SCHEMA,
       },
       // Exactly one of 'content' and 'payload' is mandatory, which this
       // dialect cannot state; the description says so and handlers.ts enforces
@@ -207,6 +236,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             "Structured payload object, sent instead of 'content' for a non-conversation reply type. Rejected for a conversation type, which takes 'content' instead",
         },
         type: MAIL_TYPE_SCHEMA,
+        attachments: ATTACHMENTS_SCHEMA,
       },
       required: ["ref"],
     },
@@ -236,7 +266,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: "mail_read",
-    description: "Read a specific mail by reference.",
+    description:
+      "Read a specific mail by reference. 'full' and 'payload' responses include an 'attachments' array (name, contentType, size, and a MIME 'part' path) when the mail carries any -- fetch an attachment with a follow-up mail_read using that part path, which returns 'content' as text for text-like types holding valid UTF-8 ('encoding' is 'utf-8') and as base64 otherwise ('encoding' is 'base64').",
     inputSchema: {
       type: "object",
       properties: {

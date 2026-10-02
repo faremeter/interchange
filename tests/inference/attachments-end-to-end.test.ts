@@ -162,6 +162,7 @@ describe("attachment end-to-end: assemble -> fetchFull -> turn -> adapter", () =
         name: "shot.png",
         contentType: "image/png",
         data: imageBytes,
+        part: "1.2",
       },
     ]);
   });
@@ -215,7 +216,12 @@ describe("attachment end-to-end: pdf document", () => {
 
   test("fetchFull populates the pdf bytes (real parse)", () => {
     expect(inbound.attachments).toEqual([
-      { name: "report.pdf", contentType: "application/pdf", data: pdfBytes },
+      {
+        name: "report.pdf",
+        contentType: "application/pdf",
+        data: pdfBytes,
+        part: "1.2",
+      },
     ]);
   });
 

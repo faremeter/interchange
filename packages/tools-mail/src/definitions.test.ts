@@ -18,9 +18,11 @@
 //     compares against a definition, which is how a branch is tested for
 //     emptiness.
 //   - `in` is the input side of a morph, and `select(kind)` yields the nodes of
-//     one kind a shape compiled to: `"unit"` the literal branches of an
-//     enumerated union, and `"divisor"`, `"min"`, `"max"` and `"pattern"` the
-//     constraints a bounded or matched shape carries.
+//     one kind a shape compiled to: `"divisor"`, `"min"`, `"max"` and
+//     `"pattern"` the constraints a bounded or matched shape carries.
+//     `distribute` yields a union's own branches. `select("unit")` also finds
+//     literals nested inside an object or an array element, which this
+//     comparison does not cover.
 //
 // `toJsonSchema` looks like the shorter route and is not usable here: it
 // renders the recursive query shape with a `$ref` to a `$defs` entry it never
@@ -329,11 +331,24 @@ function acceptedConstraints(value: type.Any, where: string): Constraints {
 // The literal values an enumerated key accepts, empty for every other key.
 // This is what holds the 'type' parameter's enum to the InterchangeType union
 // the handlers validate against.
+//
+// Only a unit that is itself a branch of the key counts. `select("unit")`
+// also finds literals nested inside an object or an array element, and those
+// describe a field this comparison does not cover: the header says an array's
+// element type is carried, not compared. A branch is that unit when the only
+// unit it contains is the branch itself.
 function acceptedValues(value: type.Any): string[] {
-  return value
-    .select("unit")
-    .map((unit) => String(unit.unit))
-    .sort();
+  const values: string[] = [];
+  for (const branchValues of value.distribute((branch) => {
+    const units = branch.select("unit");
+    const only = units[0];
+    if (units.length !== 1 || only === undefined) return [];
+    if (only.expression !== branch.expression) return [];
+    return [String(only.unit)];
+  })) {
+    values.push(...branchValues);
+  }
+  return values.sort();
 }
 
 // ---------------------------------------------------------------------------

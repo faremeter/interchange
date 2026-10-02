@@ -80,6 +80,11 @@ describe("AttachmentError schema", () => {
       },
       { code: "malformed_base64", message: "bad", attachmentIndex: 2 },
       {
+        code: "invalid_encoding",
+        message: "not text",
+        attachmentIndex: 2,
+      },
+      {
         code: "invalid_attachment_name",
         message: "bad name",
         attachmentIndex: 3,
@@ -89,6 +94,12 @@ describe("AttachmentError schema", () => {
         message: "too much",
         totalBytes: 99,
         limitBytes: 30,
+      },
+      {
+        code: "too_many_attachments",
+        message: "too many",
+        count: 21,
+        limit: 20,
       },
     ];
     for (const variant of variants) {

@@ -65,8 +65,10 @@ IMAP FETCH addresses MIME parts by position using dot-separated numeric paths (R
 | --------- | --------------------------------------------- |
 | `1`       | The `multipart/mixed` payload (all sub-parts) |
 | `1.1`     | The `text/plain` message body                 |
-| `1.2+`    | Attachments (if present)                      |
+| `1.2+`    | Further siblings of the mixed part            |
 | `2`       | The `application/pgp-signature`               |
+
+Writer-emitted conversation attachments start at `1.2`. Inbound mail may insert extra inline parts (for example `text/html`); the path advertised on each attachment is the parsed sibling number, not an index into the attachments array.
 
 **Structured messages:**
 
@@ -601,7 +603,7 @@ fetchFull(ref: MessageRef): Promise<InboundMessage>
 
 `fetchStructure` retrieves the MIME tree metadata (IMAP `BODYSTRUCTURE`): content types, sizes, dispositions, parameters for every part. No content transferred.
 
-`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or just an attachment (`1.2+`) without downloading the entire message. A part under a transfer encoding the decoder does not recognize reports `application/octet-stream`, per RFC 2045 section 6.4, and carries its octets undecoded.
+`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or a listed attachment by the path stamped on it, without downloading the entire message. Writer-shaped conversation attachments start at `1.2`; that is a consequence of the writer's sibling layout, not a formula for every inbound message. A part under a transfer encoding the decoder does not recognize reports `application/octet-stream`, per RFC 2045 section 6.4, and carries its octets undecoded.
 
 `fetchFull` retrieves the complete message, parses the MIME structure, verifies the PGP signature, and returns a fully parsed `InboundMessage` with structured payload, headers, and attachments. The returned `InboundMessage` includes a `signatureStatus` field: `"valid"` (signature verified against sender's public key), `"invalid"` (signature check failed — tampering or wrong key), `"unknown"` (public key not available for verification), or `"missing"` (message was not signed).
 
@@ -672,8 +674,6 @@ Every tool below returns `{ error: string, code: string }` on failure. The `Mail
 
 A call whose arguments do not match the tool's declared shape, or whose arguments contradict each other, is rejected with `invalid_arguments` before the tool does any work.
 
-`attachments`, described below for `mail.send` and `mail.reply`, is documented ahead of its implementation: neither tool declares it, so a call that carries it is refused.
-
 The lists cover the implemented tools. `mail.threads`, `mail.move`, and the offering tools are marked below as not yet implemented; the codes in those sections describe an intended design rather than anything the tree emits.
 
 ### Tool Definitions
@@ -689,7 +689,7 @@ Parameters:
 - `inReplyTo`: Message-ID being replied to (optional — sets In-Reply-To, and the References chain names that one parent alone)
 - `correlationId`: links this message to a pending request (optional)
 - `type`: Interchange payload type (default: `conversation.message`)
-- `attachments`: array of `{ name, contentType, data }` (optional)
+- `attachments`: array of `{ name, contentType, content, encoding? }` (optional, conversation types only). `content` is plain text unless `encoding` is `"base64"`; when `encoding` is omitted it defaults to `"utf-8"` for text-like content types and `"base64"` for everything else. A text file never has to be base64-encoded by the caller. Attachments are checked against the system attachment allowlist and size limits before sending; allowlist identity is type/subtype, so `text/plain; charset=utf-8` is the same as `text/plain`. A rejection returns the matching attachment error code (`too_many_attachments`, `disallowed_mime_type`, `invalid_attachment_name`, `malformed_base64`, `invalid_encoding`, `oversize_attachment`, `oversize_total`). An explicit `"utf-8"` on a content type that is not text-like is refused with `invalid_encoding`, since it would deliver a corrupt file.
 
 When `type` is a conversation type, the `content` string becomes the `text/plain` message body. For structured types, the `payload` object becomes the `body` field of the `application/vnd.interchange+json` part. Exactly one of the two must be present, and it must be the one the `type` takes: providing both, providing neither, or providing the field the `type` does not take is rejected as `invalid_arguments` before anything is sent.
 
@@ -697,7 +697,7 @@ The advertised JSON Schema does not state that pairing; the tool description car
 
 Returns on success: `{ messageId: string }`.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (the call is malformed -- an undeclared argument key, an unknown `type`, a body that contradicts the `type`, or a value no header field body can carry), `not_available` (the transport refused the send outright), `send_failed` (the transport rejected the submission for a reason of its own, an unresolvable recipient included). A `send_failed` leaves the outcome unknown rather than meaning nothing was sent; a `not_available` means the send was refused rather than attempted, and reissuing it unchanged does not make it available. No size limit is enforced on the send path, so there is no `too_large`; an oversized message reaches the transport and fails there as `send_failed` if the transport refuses it.
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (the call is malformed -- an undeclared argument key, an unknown `type`, a body that contradicts the `type`, or a value no header field body can carry), `not_available` (the transport refused the send outright), `send_failed` (the transport rejected the submission for a reason of its own, an unresolvable recipient included), and the attachment codes named on `attachments`. A `send_failed` leaves the outcome unknown rather than meaning nothing was sent; a `not_available` means the send was refused rather than attempted, and reissuing it unchanged does not make it available. No size limit is enforced on the send path, so there is no `too_large`; an oversized message reaches the transport and fails there as `send_failed` if the transport refuses it.
 
 The send opens no correlation of its own, whatever `correlationId` it carries. To await a correlated response, call `mail.wait` after the send.
 
@@ -711,13 +711,13 @@ Parameters:
 - `content`: text content (for conversation replies)
 - `payload`: structured payload object (optional, for non-conversation reply types)
 - `type`: Interchange payload type (default: `conversation.message` — use `offering.response` when replying to an offering request)
-- `attachments`: optional
+- `attachments`: same shape as `mail.send` (optional)
 
 The reply body obeys the same rule as `mail.send`: exactly one of `content` and `payload`, and it must be the one the `type` takes.
 
 Returns on success: same as `mail.send`.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (as for `mail.send`, including a body that contradicts the `type`), `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the message being replied to could not be fetched), `not_available` (the transport refused the fetch of the parent outright), `no_reply_address` (the parent carries no From header, so it names nobody to reply to -- send to an explicit recipient with `mail.send` instead), `send_failed` (as for `mail.send` -- the reply goes through the same send path, so an error whose condition is unnamed leaves the outcome unknown there too; a refused send arrives as `not_available`).
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments` (as for `mail.send`, including a body that contradicts the `type`), the attachment codes named on `mail.send`, `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the message being replied to could not be fetched), `not_available` (the transport refused the fetch of the parent outright), `no_reply_address` (the parent carries no From header, so it names nobody to reply to -- send to an explicit recipient with `mail.send` instead), `send_failed` (as for `mail.send` -- the reply goes through the same send path, so an error whose condition is unnamed leaves the outcome unknown there too; a refused send arrives as `not_available`).
 
 A reply carries the parent's `Interchange-Correlation-ID` forward when the parent has one. The value is read from the parent rather than taken as an argument, so the reply cannot stamp a correlation the parent does not carry. Which correlation the reply answers is the responder's choice, made by choosing the parent: any correlated message in the mailbox is a usable `ref`. See Correlation Security above for what that means — a correlation resolves on the header alone.
 
@@ -746,9 +746,9 @@ Parameters:
 - `ref`: message reference (from search results)
 - `parts`: which parts to fetch — `"headers"`, `"payload"`, `"full"`, or a specific MIME part path like `"1.3"` (default: `"payload"`)
 
-Returns: the requested content. For `"headers"`, returns the whole parsed header set, with no projection over its fields. For `"payload"`, returns the parsed `application/vnd.interchange+json` object. For `"full"`, returns the complete parsed message including signature status.
+Returns: the requested content. For `"headers"`, returns the whole parsed header set, with no projection over its fields. For `"payload"`, returns the parsed `application/vnd.interchange+json` object. For `"full"`, returns the complete parsed message including signature status. Both `"payload"` and `"full"` include an `attachments` array of `{ name, contentType, size, part }` when the message carries any — `part` is the parsed IMAP path of that MIME sibling (the same numbering `fetchPart` uses), which may be later than `"1.2"` when extra inline parts sit between the body and the file. A part path returns `{ contentType, encoding, content }` with the transfer encoding already undone: `contentType` is type/subtype (parameters such as charset are spent once the bytes are decoded), `content` is text and `encoding` is `"utf-8"` for text-like parts whose bytes are valid UTF-8, otherwise `content` is base64 and `encoding` is `"base64"`, so the bytes are never altered.
 
-Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the reference names no message), `not_available` (the transport refused the read outright), `fetch_failed` (the message is there but could not be read back -- a structured payload that is not valid JSON, say), `invalid_part` (the message is there but the requested MIME part could not be fetched).
+Returns on error: `{ error: string, code: string }`. Error codes: `invalid_arguments`, `invalid_mailbox` (the mailbox named in `ref` does not exist), `not_found` (the reference names no message), `not_available` (the transport refused the read outright), `fetch_failed` (the message is there but could not be read back -- a structured payload that is not valid JSON, say), `invalid_part` (the message is there but the requested MIME part could not be fetched, or the part is a composite `multipart/*`). For mail Interchange assembles itself, `1.1` is the text body and stays a fetchable leaf; mail from another producer may nest a `multipart/alternative` at `1.1`, in which case `1.1` is refused and the body sits below it. The tool does not refuse the path string `"1"` as a heuristic; `mailbox.fetchPart("1")` stays valid IMAP (`fetchFull` uses it).
 
 **mail.threads** — Get conversation threads.
 
