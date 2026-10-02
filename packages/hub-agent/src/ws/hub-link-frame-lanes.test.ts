@@ -20,6 +20,7 @@ const ReceivedFrame = type({
   "sidecarId?": "string",
   "agentAddress?": "string",
   "requestId?": "string",
+  "error?": "string",
 });
 type ReceivedFrame = typeof ReceivedFrame.infer;
 
@@ -497,6 +498,37 @@ describe("a sidecar link hosting several deployments", () => {
       slow.release();
       await otherRouted.promise;
       expect(events).toEqual([`grants ${SLOW}`, "probe", `grants ${OTHER}`]);
+    } finally {
+      link.close();
+    }
+  });
+});
+
+describe("an undeploy the sidecar cannot finish", () => {
+  test("is answered with an error naming what failed, not acknowledged", async () => {
+    const { link, hub: conn } = await connectLink("sc-undeploy-failed", {
+      deployRouter: {
+        async deploy() {
+          return { publicKey: "ab".repeat(32) };
+        },
+        async undeploy() {
+          throw new Error("removing its closure failed: EACCES");
+        },
+      },
+    });
+    try {
+      conn.send({
+        type: "agent.undeploy",
+        requestId: "undeploy-failed",
+        agentAddress: SLOW,
+        reason: "test",
+      });
+
+      const answer = await conn.frame(
+        (frame) => frame.requestId === "undeploy-failed",
+      );
+      expect(answer.type).toBe("agent.undeploy.error");
+      expect(answer.error).toContain("removing its closure failed: EACCES");
     } finally {
       link.close();
     }

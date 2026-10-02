@@ -2667,59 +2667,96 @@ export function createSidecarDeployRouter(deps: {
       // before the await so a subsequent re-deploy on the same address
       // cannot observe a stale handle even if `shutdown()` rejects.
       const wired = activeSupervisors.get(frame.agentAddress);
-      if (wired !== undefined) {
-        activeSupervisors.delete(frame.agentAddress);
-        await wired.supervisor.shutdown();
+      if (wired !== undefined) activeSupervisors.delete(frame.agentAddress);
+      const dataDir = stepStateDataDir;
+      // Every step runs even when an earlier one fails, and the failures are
+      // thrown together, so the answer names each step that failed.
+      const failures: Error[] = [];
+      const attempt = async (
+        step: string,
+        run: () => Promise<void>,
+      ): Promise<void> => {
+        try {
+          await run();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          failures.push(new Error(`${step} failed: ${msg}`, { cause: err }));
+        }
+      };
+      // A step below that throws still leaves the deployment without its
+      // address, so nothing may keep sending as this one.
+      try {
+        if (wired !== undefined) {
+          await attempt("shutting its supervisor down", () =>
+            wired.supervisor.shutdown(),
+          );
+        }
+        if (dataDir !== undefined) {
+          // Reclaim warm and cold scratch after teardown, including scratch an
+          // earlier stop retained after removing the supervisor registration.
+          await attempt("removing its step scratch", () =>
+            rm(pathJoin(dataDir, "workflow-step-state", runId), {
+              recursive: true,
+              force: true,
+            }),
+          );
+          // Drop the run record so a boot-time restore does not re-spawn a
+          // torn-down deployment, and reclaim a source-ref deployment's
+          // materialized closure tree, its durable source-asset store, and its
+          // local conversation copy, which only that deployment's respawns and
+          // restarts read. All run on every undeploy -- not only when a
+          // supervisor was active -- so state left behind by a
+          // crash-interrupted deploy, or by a source-ref restore that
+          // materialized the closure and then failed to spawn (registry down),
+          // is reclaimed too. A registry-sourced deployment never creates the
+          // source store, so its `force` remove is a no-op there.
+          await attempt("deleting its run record", () =>
+            deleteWorkflowRunRecord(dataDir, runId),
+          );
+          const localState: [string, string][] = [
+            [
+              "removing its closure",
+              pathJoin(dataDir, "workflow-definition-closures", runId),
+            ],
+            [
+              "removing its source assets",
+              deploymentSourceAssetRoot(dataDir, runId),
+            ],
+            [
+              "removing its source repository",
+              deploymentSourceGitRoot(dataDir, runId),
+            ],
+            [
+              "removing its conversation copy",
+              conversationStateRoot(dataDir, runId),
+            ],
+          ];
+          for (const [step, dir] of localState) {
+            await attempt(step, () =>
+              rm(dir, { recursive: true, force: true }),
+            );
+          }
+        }
+        releaseSlug(runId, frame.agentAddress);
+      } finally {
         // Drop the deployment address's transport registration installed at
         // spawn (OUTBOUND half of mailbox ownership, §3a). Both single- and
         // multi-step register the deployment address for outbound signing, so
         // this tears down a real registration for either; `unregister` is a
         // no-op only if the spawn failed before registering, so it is safe to
         // call unconditionally for any spawned deployment.
-        deps.transport.unregister(frame.agentAddress);
-      }
-      // Reclaim warm and cold scratch after teardown, including scratch an
-      // earlier stop retained after removing the supervisor registration.
-      if (stepStateDataDir !== undefined) {
-        await rm(pathJoin(stepStateDataDir, "workflow-step-state", runId), {
-          recursive: true,
-          force: true,
+        if (wired !== undefined) deps.transport.unregister(frame.agentAddress);
+        deps.unregisterDeployment({
+          runId,
+          agentAddress: frame.agentAddress,
         });
       }
-      // Drop the run record so a boot-time restore does not re-spawn a
-      // torn-down deployment, and reclaim a source-ref deployment's
-      // materialized closure tree, its durable source-asset store, and its
-      // local conversation copy, which only that deployment's respawns and
-      // restarts read. All run on every undeploy -- not only when a supervisor
-      // was active -- so state left behind by a crash-interrupted deploy, or
-      // by a source-ref restore that materialized the closure and then failed
-      // to spawn (registry down), is reclaimed too. A registry-sourced
-      // deployment never creates the source store, so its `force` remove is a
-      // no-op there.
-      if (stepStateDataDir !== undefined) {
-        await deleteWorkflowRunRecord(stepStateDataDir, runId);
-        await rm(
-          pathJoin(stepStateDataDir, "workflow-definition-closures", runId),
-          { recursive: true, force: true },
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures,
+          failures.map((failure) => failure.message).join("; "),
         );
-        await rm(deploymentSourceAssetRoot(stepStateDataDir, runId), {
-          recursive: true,
-          force: true,
-        });
-        await rm(deploymentSourceGitRoot(stepStateDataDir, runId), {
-          recursive: true,
-          force: true,
-        });
-        await rm(conversationStateRoot(stepStateDataDir, runId), {
-          recursive: true,
-          force: true,
-        });
       }
-      releaseSlug(runId, frame.agentAddress);
-      deps.unregisterDeployment({
-        runId,
-        agentAddress: frame.agentAddress,
-      });
     },
     async restoreWorkflowRuns(): Promise<void> {
       const dataDir = stepStateDataDir;
