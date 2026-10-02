@@ -136,7 +136,6 @@ function createMockSessionManager(): SessionManager & {
   destroyed: string[];
   aborted: { address: string; reason: string }[];
   delivered: DeliveredMessage[];
-  addresses: string[];
   provisionedAddresses: string[];
   shouldThrow: string | null;
 } {
@@ -146,14 +145,10 @@ function createMockSessionManager(): SessionManager & {
     destroyed: [] as string[],
     aborted: [] as { address: string; reason: string }[],
     delivered: [] as DeliveredMessage[],
-    addresses: [] as string[],
     provisionedAddresses: [] as string[],
     shouldThrow: null as string | null,
 
     initRepo: (_address: string) => Promise.resolve(),
-    getAddresses(): string[] {
-      return [...mock.addresses];
-    },
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
     deleteAgentDir: () => Promise.resolve(),
@@ -202,10 +197,7 @@ function ensureIdentity(sidecarId: string) {
 function startTestServer(): TestEnv {
   const router = createSidecarRouter({
     withExecutableWorkflowRun: async (_target, send) => send(),
-    authenticateSidecar: async ({ sidecarId }) => ({
-      sidecarId,
-      bindings: [ensureIdentity(sidecarId)],
-    }),
+    authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
     resolveSidecarBindings: async (sidecarId) => [ensureIdentity(sidecarId)],
     validateSidecarIdentity: async () => true,
     requestTimeoutMs: 5000,
@@ -235,17 +227,15 @@ function startTestServer(): TestEnv {
             const frame = JSON.parse(evt.data) as {
               type?: string;
               sidecarId?: string;
-              agentAddresses?: string[];
+              incarnations?: { address: string }[];
             };
-            if (
-              (frame.type === "register" || frame.type === "reconnect") &&
-              frame.sidecarId !== undefined
-            ) {
+            if (frame.type === "hello" && frame.sidecarId !== undefined) {
               router.fenceAllocation(`allocation-${frame.sidecarId}`, 1);
               const identity = ensureIdentity(frame.sidecarId);
-              if (frame.agentAddresses?.length === 1) {
+              const reported = frame.incarnations?.[0];
+              if (frame.incarnations?.length === 1 && reported !== undefined) {
                 Object.assign(identity, {
-                  workflowRunAddress: frame.agentAddresses[0],
+                  workflowRunAddress: reported.address,
                 });
               }
             }
@@ -277,8 +267,8 @@ afterAll(async () => {
 /**
  * Wire a workflow deployment for the reconnect path: mint a keypair and
  * register it in the sidecar keyStore so the deploy path picks up the
- * pinned key. The deployment address then routes once the hub
- * re-registers it on (re)connect.
+ * pinned key. The deployment address then routes once the hub's
+ * `welcome` routes it on (re)connect.
  */
 async function provisionDeploymentKey(
   keyStore: ReturnType<typeof createTestKeyStore>,
@@ -293,7 +283,6 @@ describe("hub-link mail.inbound throwing router", () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     const deploymentAddress = "run_wedge1@integration.interchange";
-    sessions.addresses.push(deploymentAddress);
 
     let calls = 0;
     const routedAfterThrow: Uint8Array[] = [];
@@ -321,7 +310,9 @@ describe("hub-link mail.inbound throwing router", () => {
       ...bindings,
       lookupInboundMailPolicy: createInboundMailPolicyLookup(policyRegistry),
       mailInboundRouter,
-      getWorkflowAddresses: () => [deploymentAddress],
+      getIncarnations: () => [
+        { address: deploymentAddress, generation: 1, state: "live" },
+      ],
     });
 
     client.connect();
@@ -362,6 +353,141 @@ describe("hub-link mail.inbound throwing router", () => {
       await waitUntil(
         () => !env.router.getConnectedSidecars().includes("sc-mail-wedge"),
       );
+    }
+  });
+});
+
+describe("hub-link mail.inbound acknowledgement across an undeploy", () => {
+  test("an acknowledgement names the incarnation the mail was delivered to", async () => {
+    const leaving = "run_ack_leaving@integration.interchange";
+    const staying = "run_ack_staying@integration.interchange";
+    const fromHub: string[] = [];
+    let hubSocket: { send(data: string): void } | undefined;
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onOpen(_evt, ws) {
+          hubSocket = ws;
+        },
+        onMessage(evt) {
+          if (typeof evt.data !== "string") return;
+          fromHub.push(evt.data);
+          const frame: { type: string } = JSON.parse(evt.data);
+          if (frame.type === "hello") {
+            hubSocket?.send(JSON.stringify({ type: "welcome", routed: [] }));
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const framesOfType = (
+      type: string,
+    ): { agentAddress?: string; generation?: number; messageId?: string }[] =>
+      fromHub
+        .map(
+          (
+            raw,
+          ): {
+            type: string;
+            agentAddress?: string;
+            generation?: number;
+            messageId?: string;
+          } => JSON.parse(raw),
+        )
+        .filter((frame) => frame.type === type);
+    const deliver = (agentAddress: string, messageId: string): void => {
+      hubSocket?.send(
+        JSON.stringify({
+          type: "mail.inbound",
+          agentAddress,
+          generation: 1,
+          rawMessage: base64Encode(VALID_MESSAGE),
+          authenticatedSender: "user@integration.interchange",
+          messageId,
+        }),
+      );
+    };
+
+    const leavingInbox = Promise.withResolvers<boolean>();
+    const mailInboundRouter = {
+      tryRoute(address: string): Promise<void> | null {
+        if (address !== leaving) return Promise.resolve();
+        return leavingInbox.promise.then(() => undefined);
+      },
+    };
+    const bindings = withTestDeployBindings();
+    await provisionDeploymentKey(bindings.keyStore, leaving);
+    await provisionDeploymentKey(bindings.keyStore, staying);
+    const policyRegistry = createInboundMailPolicyRegistry();
+    policyRegistry.register(leaving, ADMIT_ALL_INBOUND_MAIL_POLICY);
+    policyRegistry.register(staying, ADMIT_ALL_INBOUND_MAIL_POLICY);
+    const held = new Set([leaving, staying]);
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-mail-ack-undeploy",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...bindings,
+      deployRouter: {
+        ...bindings.deployRouter,
+        async undeploy(frame) {
+          held.delete(frame.agentAddress);
+        },
+      },
+      lookupInboundMailPolicy: createInboundMailPolicyLookup(policyRegistry),
+      mailInboundRouter,
+      getIncarnations: () =>
+        [...held].map((address) => ({
+          address,
+          generation: 1,
+          state: "live" as const,
+        })),
+    });
+
+    client.connect();
+    try {
+      await waitUntil(() => framesOfType("hello").length > 0);
+      deliver(leaving, "mail-to-leaving");
+      hubSocket?.send(
+        JSON.stringify({
+          type: "agent.undeploy",
+          requestId: "undeploy-leaving",
+          agentAddress: leaving,
+          generation: 1,
+          reason: "Generation 2 superseded it",
+        }),
+      );
+      await waitUntil(() => framesOfType("agent.undeploy.ack").length > 0);
+      leavingInbox.resolve(true);
+
+      // Mail for an incarnation no longer held is neither delivered nor
+      // acknowledged, so its redelivery reaches the one the Hub routes.
+      deliver(leaving, "mail-after-undeploy");
+      deliver(staying, "mail-to-staying");
+      await waitUntil(() =>
+        framesOfType("mail.inbound.ack").some(
+          (frame) => frame.agentAddress === staying,
+        ),
+      );
+      // The late ack still names the incarnation that received the mail;
+      // the Hub credits it to no later one.
+      expect(
+        framesOfType("mail.inbound.ack").map(
+          ({ agentAddress, generation, messageId }) => ({
+            agentAddress,
+            generation,
+            messageId,
+          }),
+        ),
+      ).toEqual([
+        { agentAddress: leaving, generation: 1, messageId: "mail-to-leaving" },
+        { agentAddress: staying, generation: 1, messageId: "mail-to-staying" },
+      ]);
+    } finally {
+      client.close();
+      await server.stop(true);
     }
   });
 });
@@ -492,7 +618,6 @@ describe("hub-link mail.inbound signature enforcement", () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     const deploymentAddress = `run_${label}@integration.interchange`;
-    sessions.addresses.push(deploymentAddress);
 
     const routed: Uint8Array[] = [];
     const mailInboundRouter = {
@@ -525,7 +650,9 @@ describe("hub-link mail.inbound signature enforcement", () => {
         : {}),
       lookupInboundMailPolicy: createInboundMailPolicyLookup(policyRegistry),
       mailInboundRouter,
-      getWorkflowAddresses: () => [deploymentAddress],
+      getIncarnations: () => [
+        { address: deploymentAddress, generation: 1, state: "live" },
+      ],
     });
 
     client.connect();

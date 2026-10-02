@@ -4,6 +4,8 @@ import {
   connectAllocated,
   createAllocatedRouter,
   createMockWs,
+  helloFrame,
+  liveIncarnations,
   parsedFrames,
   TEST_IDENTITY,
   TEST_TARGET,
@@ -111,15 +113,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     });
     const invalidWs = createMockWs();
     invalid.handleOpen(invalidWs);
-    invalid.handleMessage(
-      invalidWs,
-      JSON.stringify({
-        type: "register",
-        sidecarId: "claimed",
-        token: "invalid",
-        agentAddresses: [],
-      }),
-    );
+    invalid.handleMessage(invalidWs, helloFrame("claimed", [], "invalid"));
     await tick();
 
     const throwing = createSidecarRouter({
@@ -132,34 +126,56 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     });
     const throwingWs = createMockWs();
     throwing.handleOpen(throwingWs);
-    throwing.handleMessage(
-      throwingWs,
-      JSON.stringify({
-        type: "register",
-        sidecarId: "claimed",
-        token: "unknown",
-        agentAddresses: [],
-      }),
-    );
+    throwing.handleMessage(throwingWs, helloFrame("claimed", [], "unknown"));
     await tick();
 
     expect(invalidWs.closed).toBe(true);
     expect(throwingWs.closed).toBe(true);
   });
 
-  test("keys the connection by authenticated rather than claimed identity", async () => {
-    const router = createAllocatedRouter();
+  test("undeploys everything a sidecar hosting nothing current reports, then closes", async () => {
+    const router = createSidecarRouter({
+      withExecutableWorkflowRun: async (_target, send) => send(),
+      authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
+      validateSidecarIdentity: async () => true,
+      resolveSidecarBindings: async () => [],
+    });
     const ws = createMockWs();
     router.handleOpen(ws);
     router.handleMessage(
       ws,
-      JSON.stringify({
-        type: "register",
-        sidecarId: "spoofed-sidecar",
-        token: "token",
-        agentAddresses: [],
-      }),
+      helloFrame("sc-idle", [
+        { address: "run_orphan@example.test", generation: 3, state: "live" },
+        {
+          address: "run_starting@example.test",
+          generation: 1,
+          state: "deploying",
+        },
+      ]),
     );
+    await tick();
+
+    expect(ws.closed).toBe(true);
+    expect(parsedFrames(ws)).toEqual([
+      expect.objectContaining({
+        type: "agent.undeploy",
+        agentAddress: "run_orphan@example.test",
+        generation: 3,
+      }),
+      expect.objectContaining({
+        type: "agent.undeploy",
+        agentAddress: "run_starting@example.test",
+        generation: 1,
+      }),
+    ]);
+    expect(router.getConnectedSidecars()).toEqual([]);
+  });
+
+  test("keys the connection by authenticated rather than claimed identity", async () => {
+    const router = createAllocatedRouter();
+    const ws = createMockWs();
+    router.handleOpen(ws);
+    router.handleMessage(ws, helloFrame("spoofed-sidecar"));
     await tick();
 
     expect(router.getConnectedSidecars()).toEqual([TEST_IDENTITY.sidecarId]);
@@ -290,12 +306,10 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     router.handleOpen(ws);
     router.handleMessage(
       ws,
-      JSON.stringify({
-        type: "register",
-        sidecarId: TEST_IDENTITY.sidecarId,
-        token: "token",
-        agentAddresses: [TEST_IDENTITY.workflowRunAddress],
-      }),
+      helloFrame(
+        TEST_IDENTITY.sidecarId,
+        liveIncarnations([TEST_IDENTITY.workflowRunAddress]),
+      ),
     );
     router.handleMessage(
       ws,
@@ -319,15 +333,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
       TEST_IDENTITY.workflowRunAddress,
     ]);
 
-    router.handleMessage(
-      ws,
-      JSON.stringify({
-        type: "register",
-        sidecarId: TEST_IDENTITY.sidecarId,
-        token: "token",
-        agentAddresses: [],
-      }),
-    );
+    router.handleMessage(ws, helloFrame(TEST_IDENTITY.sidecarId));
     await tick();
 
     expect(router.getRoutableAddresses()).toEqual([
@@ -353,6 +359,7 @@ describe("SidecarRouter allocation connection lifecycle", () => {
     const frame = {
       type: "agent.event",
       agentAddress: TEST_IDENTITY.workflowRunAddress,
+      generation: TEST_TARGET.generation,
       sessionId: "session-1",
       event,
     };

@@ -206,6 +206,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
           throw new Error("must not invoke persistHubPublicKey");
         },
         initRepo: async () => undefined,
+        deleteAgentDir: async () => undefined,
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["sessions"],
@@ -273,6 +274,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       type: "agent.deploy",
       requestId: "deploy-test",
       agentAddress: AGENT_ADDRESS,
+      generation: 1,
       agentId: "keylifecycle-agent",
       hubPublicKey: "hub-pk",
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch does not read config
@@ -358,6 +360,7 @@ describe("agent signing-key registration lifecycle on the host transport", () =>
       type: "agent.undeploy",
       requestId: "undeploy-test",
       agentAddress: AGENT_ADDRESS,
+      generation: 1,
       reason: "key-lifecycle undeploy",
     });
 

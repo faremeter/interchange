@@ -7,7 +7,7 @@ import {
   type SendProbeArgs,
   type WsHandle,
 } from "./sidecar-handler";
-import { sidecarAuth } from "./sidecar-handler.test-helpers";
+import { helloFrame, sidecarAuth } from "./sidecar-handler.test-helpers";
 
 type TestRouter = ReturnType<typeof createSidecarRouter>;
 
@@ -61,15 +61,7 @@ async function registerBareSidecar(
   const ws = createMockWs();
   router.fenceAllocation(`allocation-${sidecarId}`, 1);
   router.handleOpen(ws);
-  router.handleMessage(
-    ws,
-    JSON.stringify({
-      type: "register",
-      sidecarId,
-      token: "tok",
-      agentAddresses: [],
-    }),
-  );
+  router.handleMessage(ws, helloFrame(sidecarId, [], "tok"));
   await tick();
   return ws;
 }
@@ -149,7 +141,7 @@ const projection = {
 };
 
 describe("SidecarRouter workflow probe", () => {
-  test("probe-scoped capacity routes no workflow address it announces", async () => {
+  test("probe-scoped capacity routes no workflow address it reports", async () => {
     const router = createSidecarRouter({
       withExecutableWorkflowRun: async (_target, send) => send(),
       ...acceptAnySidecar,
@@ -160,12 +152,11 @@ describe("SidecarRouter workflow probe", () => {
     router.handleOpen(ws);
     router.handleMessage(
       ws,
-      JSON.stringify({
-        type: "register",
-        sidecarId: "sc-1",
-        token: "tok",
-        agentAddresses: ["workflow@example.test"],
-      }),
+      helloFrame(
+        "sc-1",
+        [{ address: "workflow@example.test", generation: 1, state: "live" }],
+        "tok",
+      ),
     );
     await waitUntil(() =>
       ws.sent.some((raw) => raw.includes('"agent.undeploy"')),
@@ -177,7 +168,8 @@ describe("SidecarRouter workflow probe", () => {
       type: "agent.undeploy",
       requestId: expect.any(String),
       agentAddress: "workflow@example.test",
-      reason: "The deployment is not current on this sidecar",
+      generation: 1,
+      reason: "The Hub does not keep this incarnation on this sidecar",
     });
   });
 
@@ -201,6 +193,7 @@ describe("SidecarRouter workflow probe", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: "probe@example.test",
+        generation: 1,
         rawMessage: "From: probe@example.test\r\n\r\nnope",
         recipients: ["outside@example.test"],
         delivered: true,

@@ -132,6 +132,7 @@ function deploy(agentAddress: string) {
     type: "agent.deploy",
     requestId: `deploy-${String(deploys)}`,
     agentAddress,
+    generation: 1,
     agentId: "workflow",
     config: config(agentAddress),
     hubPublicKey: "a".repeat(64),
@@ -168,6 +169,7 @@ function runGrants(agentAddress: string) {
   return {
     type: "run.grants",
     agentAddress,
+    generation: 1,
     runId: `run-of-${agentAddress}`,
     stepGrants: [],
   };
@@ -198,7 +200,6 @@ function keyStore(): AgentKeyStore {
 function sessions(): SessionManager {
   return {
     initRepo: () => Promise.resolve(),
-    getAddresses: () => [],
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
     deleteAgentDir: () => Promise.resolve(),
@@ -364,6 +365,7 @@ describe("a sidecar link hosting several deployments", () => {
         type: "agent.undeploy",
         requestId: "undeploy-slow",
         agentAddress: SLOW,
+        generation: 1,
         reason: "test",
       });
       conn.send(probeRequest());
@@ -466,6 +468,12 @@ describe("a sidecar link hosting several deployments", () => {
     const otherRouted = Promise.withResolvers<boolean>();
     const events: string[] = [];
     const { link, hub: conn } = await connectLink("sc-lanes-grants", {
+      getIncarnations: () =>
+        [SLOW, OTHER].map((address) => ({
+          address,
+          generation: 1,
+          state: "live" as const,
+        })),
       grantsInboundRouter: {
         async tryRoute(frame) {
           events.push(`grants ${frame.agentAddress}`);
@@ -491,11 +499,19 @@ describe("a sidecar link hosting several deployments", () => {
     const slow = hold();
     const refreshed = Promise.withResolvers<boolean>();
     const routed = Promise.withResolvers<boolean>();
+    const live = new Set<string>();
     const events: string[] = [];
     const { link, hub: conn } = await connectLink("sc-lanes-grant-keys", {
+      getIncarnations: () =>
+        [...live].map((address) => ({
+          address,
+          generation: 1,
+          state: "live" as const,
+        })),
       deployRouter: {
-        async deploy() {
+        async deploy(frame) {
           await slow.released;
+          live.add(frame.agentAddress);
           return { publicKey: "ab".repeat(32) };
         },
       },
@@ -539,6 +555,9 @@ describe("a sidecar link hosting several deployments", () => {
   test("tells the grants router when a sender key its grants carry did not land", async () => {
     const routed = Promise.withResolvers<boolean>();
     const { link, hub: conn } = await connectLink("sc-lanes-grant-key-fault", {
+      getIncarnations: () => [
+        { address: OTHER, generation: 1, state: "live" as const },
+      ],
       cacheSenderKey: async () => {
         throw new Error("sender-key disk full");
       },
@@ -565,6 +584,9 @@ describe("a sidecar link hosting several deployments", () => {
     const routed = Promise.withResolvers<boolean>();
     const cached: string[] = [];
     const { link, hub: conn } = await connectLink("sc-lanes-grant-key-bad", {
+      getIncarnations: () => [
+        { address: OTHER, generation: 1, state: "live" as const },
+      ],
       cacheSenderKey: async (address) => {
         cached.push(address);
       },
@@ -597,6 +619,9 @@ describe("a sidecar link hosting several deployments", () => {
     const sentinel = Promise.withResolvers<boolean>();
     const events: string[] = [];
     const { link, hub: conn } = await connectLink("sc-lanes-mail-keys", {
+      getIncarnations: () => [
+        { address: OTHER, generation: 1, state: "live" as const },
+      ],
       cacheSenderKey: async (address) => {
         events.push(`cache ${address}`);
         await write.released;
@@ -619,6 +644,7 @@ describe("a sidecar link hosting several deployments", () => {
       conn.send({
         type: "mail.inbound",
         agentAddress: OTHER,
+        generation: 1,
         rawMessage: btoa("Subject: test\r\n\r\nbody"),
         authenticatedSender: SENDER,
       });
@@ -661,6 +687,7 @@ describe("a sidecar link hosting several deployments", () => {
       conn.send({
         type: "mail.inbound",
         agentAddress: SLOW,
+        generation: 1,
         rawMessage: "not base64!",
         authenticatedSender: SENDER,
       });
@@ -705,6 +732,7 @@ describe("a sidecar link hosting several deployments", () => {
       conn.send({
         type: "mail.inbound",
         agentAddress: SLOW,
+        generation: 1,
         rawMessage: btoa("Subject: test\r\n\r\nbody"),
         authenticatedSender: SENDER,
       });
@@ -727,6 +755,44 @@ describe("a sidecar link hosting several deployments", () => {
 });
 
 describe("an undeploy the sidecar cannot finish", () => {
+  test("does not repeat directory cleanup after the deployment owner finishes", async () => {
+    let deletions = 0;
+    const manager = {
+      ...sessions(),
+      async deleteAgentDir() {
+        deletions += 1;
+        if (deletions > 1) throw new Error("directory already removed");
+      },
+    };
+    const { link, hub: conn } = await connectLink("sc-undeploy-owner", {
+      sessions: manager,
+      deployRouter: {
+        async deploy() {
+          return { publicKey: "ab".repeat(32) };
+        },
+        async undeploy() {
+          await manager.deleteAgentDir();
+        },
+      },
+    });
+    try {
+      conn.send({
+        type: "agent.undeploy",
+        requestId: "undeploy-owner",
+        agentAddress: SLOW,
+        generation: 1,
+        reason: "test",
+      });
+      const answer = await conn.frame(
+        (frame) => frame.requestId === "undeploy-owner",
+      );
+      expect(answer.type).toBe("agent.undeploy.ack");
+      expect(deletions).toBe(1);
+    } finally {
+      link.close();
+    }
+  });
+
   test("is answered with an error naming what failed, not acknowledged", async () => {
     const { link, hub: conn } = await connectLink("sc-undeploy-failed", {
       deployRouter: {
@@ -743,6 +809,7 @@ describe("an undeploy the sidecar cannot finish", () => {
         type: "agent.undeploy",
         requestId: "undeploy-failed",
         agentAddress: SLOW,
+        generation: 1,
         reason: "test",
       });
 
@@ -778,6 +845,7 @@ describe("an undeploy the sidecar cannot finish", () => {
         type: "agent.undeploy",
         requestId: "undeploy-long",
         agentAddress: SLOW,
+        generation: 1,
         reason: "test",
       });
       const undeployAnswer = await conn.frame(

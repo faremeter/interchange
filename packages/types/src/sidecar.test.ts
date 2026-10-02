@@ -8,6 +8,7 @@ import {
   DeployApplyErrorCategory,
   FrozenApprovalBundle,
   HubFrame,
+  MAX_DEPLOYMENT_ADDRESS_LENGTH,
   MAX_DEPLOYMENT_ERROR_LENGTH,
   MAX_AGENT_ADDRESSES_FRAME,
   MAX_CACHED_SENDER_ADDRESSES_FRAME,
@@ -19,8 +20,7 @@ import {
   MailOutboundFrame,
   PackRejectFrame,
   PackRejectReason,
-  ReconnectFrame,
-  RegisterFrame,
+  HelloFrame,
   RunGrantsFrame,
   SenderKeyEvictFrame,
   SidecarFrame,
@@ -33,6 +33,7 @@ describe("MailOutboundFrame sender ownership claim", () => {
   const frame = {
     type: "mail.outbound",
     senderAddress: "run_sender@example.test",
+    generation: 1,
     rawMessage: "bWFpbA==",
     recipients: ["recipient@example.test"],
   };
@@ -149,6 +150,7 @@ describe("AgentDeployFrame", () => {
     type: "agent.deploy" as const,
     requestId: "req_1",
     agentAddress: "agt_1@example.test",
+    generation: 1,
     agentId: "agt_1",
     config: baseConfig,
     hubPublicKey: "hub_pubkey_hex",
@@ -233,6 +235,7 @@ describe("SourcesUpdateFrame", () => {
     type: "sources.update" as const,
     requestId: "req_1",
     agentAddress: "agt_1@example.test",
+    generation: 1,
     defaultSource: "src_a",
   };
 
@@ -267,6 +270,7 @@ describe("CredentialsUpdateFrame", () => {
     type: "credentials.update" as const,
     requestId: "req_1",
     agentAddress: "agt_1@example.test",
+    generation: 1,
   };
 
   test("accepts a well-formed delivery", () => {
@@ -310,6 +314,7 @@ describe("SignalCorrelationRegisterFrame snapshot requirement", () => {
     runId: "run-1",
     anchorRunId: "dep-1",
     agentAddress: "run_dep@integration.interchange",
+    generation: 1,
     kind: "approval",
   };
   const snapshot = {
@@ -368,6 +373,7 @@ describe("CredentialsUpdateFrame revoke", () => {
     type: "credentials.update",
     requestId: "req_1",
     agentAddress: "dep@integration.interchange",
+    generation: 1,
     delivery: { bindings: [], materials: [] },
     revoke: ["cred_x"],
   };
@@ -396,6 +402,7 @@ describe("CredentialsUpdateFrame revoke", () => {
       type: "credentials.update",
       requestId: "req_1",
       agentAddress: "dep@integration.interchange",
+      generation: 1,
       delivery: { bindings: [], materials: [] },
     });
     if (out instanceof type.errors) {
@@ -427,7 +434,11 @@ describe("RunGrantsFrame senderIdentities co-delivery", () => {
   test("the HubFrame union admits a run.grants frame carrying identities", () => {
     // The sidecar parses inbound frames through the HubFrame union, so the
     // co-delivered keys must reach the run.grants member and round-trip.
-    const out = HubFrame({ ...base, senderIdentities: identities });
+    const out = HubFrame({
+      ...base,
+      generation: 1,
+      senderIdentities: identities,
+    });
     if (out instanceof type.errors) {
       throw new Error(`expected a valid HubFrame: ${out.summary}`);
     }
@@ -435,6 +446,13 @@ describe("RunGrantsFrame senderIdentities co-delivery", () => {
       throw new Error(`expected a run.grants frame, got ${out.type}`);
     }
     expect(out.senderIdentities).toEqual(identities);
+  });
+
+  test("the HubFrame union requires the incarnation a run.grants names", () => {
+    // The payload schema also validates grants away from the wire, where no
+    // generation applies, so only the union requires it.
+    expect(RunGrantsFrame(base) instanceof type.errors).toBe(false);
+    expect(HubFrame(base) instanceof type.errors).toBe(true);
   });
 
   test("the HubFrame union rejects a malformed identity entry", () => {
@@ -488,29 +506,92 @@ describe("frame array-length ceilings", () => {
   const addresses = (n: number) =>
     Array.from({ length: n }, (_, i) => `addr-${String(i)}@example.test`);
 
-  describe("RegisterFrame agentAddresses", () => {
-    const base = { type: "register", sidecarId: "sc-1", token: "tok" };
+  const incarnations = (n: number) =>
+    addresses(n).map((address) => ({
+      address,
+      generation: 1,
+      state: "live",
+    }));
+
+  describe("HelloFrame incarnations", () => {
+    const base = { type: "hello", sidecarId: "sc-1", token: "tok" };
 
     test("accepts a frame at the ceiling", () => {
       const frame = {
         ...base,
-        agentAddresses: addresses(MAX_AGENT_ADDRESSES_FRAME),
+        incarnations: incarnations(MAX_AGENT_ADDRESSES_FRAME),
       };
-      expect(RegisterFrame(frame) instanceof type.errors).toBe(false);
+      expect(HelloFrame(frame) instanceof type.errors).toBe(false);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(false);
     });
 
     test("rejects a frame past the ceiling through the union", () => {
       const frame = {
         ...base,
-        agentAddresses: addresses(MAX_AGENT_ADDRESSES_FRAME + 1),
+        incarnations: incarnations(MAX_AGENT_ADDRESSES_FRAME + 1),
       };
-      expect(RegisterFrame(frame) instanceof type.errors).toBe(true);
+      expect(HelloFrame(frame) instanceof type.errors).toBe(true);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
+    });
+
+    test("rejects an incarnation without a whole, non-negative generation", () => {
+      for (const generation of [-1, 1.5, "1"]) {
+        const frame = {
+          ...base,
+          incarnations: [
+            { address: "wf@example.test", generation, state: "live" },
+          ],
+        };
+        expect(HelloFrame(frame) instanceof type.errors).toBe(true);
+      }
+    });
+
+    test("rejects a frame that names an address twice", () => {
+      const frame = {
+        ...base,
+        incarnations: [
+          { address: "wf@example.test", generation: 1, state: "live" },
+          { address: "wf@example.test", generation: 2, state: "deploying" },
+        ],
+      };
+      expect(HelloFrame(frame) instanceof type.errors).toBe(true);
+      expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
+    });
+
+    test("rejects an incarnation in an unknown state", () => {
+      const frame = {
+        ...base,
+        incarnations: [
+          { address: "wf@example.test", generation: 1, state: "paused" },
+        ],
+      };
+      expect(HelloFrame(frame) instanceof type.errors).toBe(true);
     });
   });
 
   describe("what a sidecar reports about a deployment", () => {
+    const address = (length: number) =>
+      `run_${"a".repeat(length - "run_@example.test".length)}@example.test`;
+    const hello = (incarnation: Record<string, unknown>) => ({
+      type: "hello",
+      sidecarId: "sc-1",
+      token: "tok",
+      incarnations: [
+        { address: "wf@example.test", generation: 1, state: "stopped" },
+      ].map((base) => ({ ...base, ...incarnation })),
+    });
+
+    test("bounds an incarnation's address", () => {
+      const rejects = (fields: Record<string, unknown>) =>
+        SidecarFrame(hello(fields)) instanceof type.errors;
+      expect(rejects({ address: address(MAX_DEPLOYMENT_ADDRESS_LENGTH) })).toBe(
+        false,
+      );
+      expect(
+        rejects({ address: address(MAX_DEPLOYMENT_ADDRESS_LENGTH + 1) }),
+      ).toBe(true);
+    });
+
     test.each(["agent.deploy.error", "agent.undeploy.error"])(
       "bounds an %s's error",
       (frameType) => {
@@ -519,6 +600,7 @@ describe("frame array-length ceilings", () => {
             type: frameType,
             requestId: "req-1",
             agentAddress: "wf@example.test",
+            generation: 1,
             error,
           }) instanceof type.errors;
         expect(rejects("x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH))).toBe(false);
@@ -540,21 +622,21 @@ describe("frame array-length ceilings", () => {
     });
   });
 
-  describe("RegisterFrame cachedSenderAddresses", () => {
+  describe("HelloFrame cachedSenderAddresses", () => {
     const base = {
-      type: "register",
+      type: "hello",
       sidecarId: "sc-1",
       token: "tok",
-      agentAddresses: ["wf@example.test"],
+      incarnations: incarnations(1),
     };
 
     test("accepts a count above the resync handler cap but within the ceiling", () => {
       // The ceiling sits far above the hub-sessions `MAX_RESYNC_SENDER_ADDRESSES`
       // handler cap (2048) so a report over that cap still parses and reaches the
       // handler's graceful "resync the first N, log the overflow" degrade rather
-      // than dropping the whole register frame and stalling the reconnect.
+      // than dropping the whole hello and stalling the reconnect.
       const frame = { ...base, cachedSenderAddresses: addresses(2049) };
-      expect(RegisterFrame(frame) instanceof type.errors).toBe(false);
+      expect(HelloFrame(frame) instanceof type.errors).toBe(false);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(false);
     });
 
@@ -563,7 +645,7 @@ describe("frame array-length ceilings", () => {
         ...base,
         cachedSenderAddresses: addresses(MAX_CACHED_SENDER_ADDRESSES_FRAME + 1),
       };
-      expect(RegisterFrame(frame) instanceof type.errors).toBe(true);
+      expect(HelloFrame(frame) instanceof type.errors).toBe(true);
       expect(SidecarFrame(frame) instanceof type.errors).toBe(true);
     });
   });
@@ -572,6 +654,7 @@ describe("frame array-length ceilings", () => {
     const base = {
       type: "mail.outbound",
       senderAddress: "sender@example.test",
+      generation: 1,
       rawMessage: "bWFpbA==",
     };
 
@@ -652,30 +735,16 @@ describe("frame array-length ceilings", () => {
   // regression that mechanical change risks is losing optionality (the key
   // becomes required) or gaining a lower bound (an empty array is rejected).
   describe("bounded optional fields stay optional", () => {
-    test("RegisterFrame validates with cachedSenderAddresses omitted or empty", () => {
+    test("HelloFrame validates with cachedSenderAddresses omitted or empty", () => {
       const base = {
-        type: "register",
+        type: "hello",
         sidecarId: "sc-1",
         token: "tok",
-        agentAddresses: ["wf@example.test"],
+        incarnations: [],
       };
-      expect(RegisterFrame(base) instanceof type.errors).toBe(false);
+      expect(HelloFrame(base) instanceof type.errors).toBe(false);
       expect(
-        RegisterFrame({ ...base, cachedSenderAddresses: [] }) instanceof
-          type.errors,
-      ).toBe(false);
-    });
-
-    test("ReconnectFrame validates with cachedSenderAddresses omitted or empty", () => {
-      const base = {
-        type: "reconnect",
-        sidecarId: "sc-1",
-        token: "tok",
-        agentAddresses: ["wf@example.test"],
-      };
-      expect(ReconnectFrame(base) instanceof type.errors).toBe(false);
-      expect(
-        ReconnectFrame({ ...base, cachedSenderAddresses: [] }) instanceof
+        HelloFrame({ ...base, cachedSenderAddresses: [] }) instanceof
           type.errors,
       ).toBe(false);
     });
@@ -684,6 +753,7 @@ describe("frame array-length ceilings", () => {
       const frame = {
         type: "mail.outbound",
         senderAddress: "sender@example.test",
+        generation: 1,
         rawMessage: "bWFpbA==",
         recipients: ["recipient@example.test"],
         to: [],
@@ -697,6 +767,7 @@ describe("frame array-length ceilings", () => {
         type: "credentials.update",
         requestId: "req_1",
         agentAddress: "dep@example.test",
+        generation: 1,
         delivery: { bindings: [], materials: [] },
         revoke: [],
       };
@@ -709,6 +780,7 @@ describe("frame array-length ceilings", () => {
       type: "credentials.update",
       requestId: "req_1",
       agentAddress: "dep@example.test",
+      generation: 1,
       delivery: { bindings: [], materials: [] },
     };
 

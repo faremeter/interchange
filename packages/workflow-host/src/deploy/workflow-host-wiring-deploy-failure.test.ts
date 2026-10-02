@@ -191,8 +191,8 @@ describe("deploy-failure registry leak", () => {
       credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
-      registerDeployment: ({ runId, agentAddress }) => {
-        registry.record(runId, agentAddress);
+      registerDeployment: ({ runId, agentAddress, generation }) => {
+        registry.record(runId, { agentAddress, generation });
       },
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
@@ -214,6 +214,7 @@ describe("deploy-failure registry leak", () => {
       type: "agent.deploy",
       requestId: "deploy-test",
       agentAddress: "agent-unsupported@x.example",
+      generation: 1,
       agentId: "agent-unsupported",
       hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- config is irrelevant; the frame is rejected on shape before config is read
@@ -275,8 +276,8 @@ describe("deploy-failure registry leak", () => {
       credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
-      registerDeployment: ({ runId, agentAddress }) => {
-        registry.record(runId, agentAddress);
+      registerDeployment: ({ runId, agentAddress, generation }) => {
+        registry.record(runId, { agentAddress, generation });
       },
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
@@ -305,6 +306,7 @@ describe("deploy-failure registry leak", () => {
       // address into the legacy agent-state repo id, so it must carry the
       // canonical `run_<id>@<domain>` shape.
       agentAddress: "run_mstep@x.example",
+      generation: 1,
       agentId: "mstep",
       hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- multi-step branch does not consult config before failing
@@ -428,8 +430,8 @@ describe("deploy-failure registry leak", () => {
       credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
-      registerDeployment: ({ runId, agentAddress }) => {
-        registry.record(runId, agentAddress);
+      registerDeployment: ({ runId, agentAddress, generation }) => {
+        registry.record(runId, { agentAddress, generation });
       },
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
@@ -455,6 +457,7 @@ describe("deploy-failure registry leak", () => {
       type: "agent.deploy",
       requestId: "deploy-test",
       agentAddress: "run_single@x.example",
+      generation: 1,
       agentId: "single",
       hubPublicKey: "00".repeat(32),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- single-step branch does not consult config before failing at spawn
@@ -517,8 +520,10 @@ describe("deploy-failure registry leak", () => {
     writeFileSync(dataDir, "");
     const router = createSidecarDeployRouter({
       ...deployHostBindings(),
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- undeploy never touches sessions
-      sessions: {} as Parameters<
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- undeploy only deletes the agent directory
+      sessions: {
+        deleteAgentDir: async () => undefined,
+      } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["sessions"],
       keyStore: stubKeyStore(),
@@ -531,8 +536,8 @@ describe("deploy-failure registry leak", () => {
       credentialCipher: createNoopCredentialCipher(),
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: () => undefined,
-      registerDeployment: ({ runId, agentAddress }) => {
-        registry.record(runId, agentAddress);
+      registerDeployment: ({ runId, agentAddress, generation }) => {
+        registry.record(runId, { agentAddress, generation });
       },
       unregisterDeployment: ({ runId }) => {
         registry.unregister(runId);
@@ -552,7 +557,7 @@ describe("deploy-failure registry leak", () => {
     });
     const agentAddress = "run_teardown@x.example";
     const runId = deriveWorkflowRunRepoId(agentAddress);
-    registry.record(runId, agentAddress);
+    registry.record(runId, { agentAddress: agentAddress, generation: 1 });
     const undeploy = router.undeploy;
     if (undeploy === undefined) throw new Error("router.undeploy is undefined");
 
@@ -561,7 +566,8 @@ describe("deploy-failure registry leak", () => {
         type: "agent.undeploy",
         requestId: "undeploy-test",
         agentAddress,
-        reason: "test",
+        generation: 1,
+        reason: "Generation 2 superseded it",
       }),
     ).rejects.toThrow();
 

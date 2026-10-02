@@ -14,6 +14,7 @@
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
 import type { SignalKind } from "@intx/types";
+import type { HostedIncarnation } from "@intx/types/sidecar";
 import type {
   ApprovalSnapshot,
   CryptoProvider,
@@ -65,8 +66,8 @@ export type CreateDeployRouter = (deps: {
   /**
    * Per-event sink the multi-step branch routes a spawned child's
    * verified `InferenceEvent`s through, keyed by the deployment's agent
-   * address and the deploy's session id. Wired to the same hub-link
-   * `agent.event` sink the in-process path's `onEvent` uses, so a step
+   * address, the generation of the incarnation that produced them, and the
+   * deploy's session id. Wired to the hub-link `agent.event` sink, so a step
    * agent's events reach the hub timeline keyed to the right session.
    * The `sessionId` is optional because a deploy frame need not carry
    * one (a headless deployment); the sink drops a sessionless event
@@ -74,6 +75,7 @@ export type CreateDeployRouter = (deps: {
    */
   publishWorkflowInferenceEvent: (
     agentAddress: string,
+    generation: number,
     event: InferenceEvent,
     sessionId: string | undefined,
   ) => void;
@@ -90,6 +92,7 @@ export type CreateDeployRouter = (deps: {
     runId: string;
     anchorRunId: string;
     agentAddress: string;
+    generation: number;
     kind: SignalKind;
     approvalSnapshot?: ApprovalSnapshot;
   }) => void;
@@ -199,13 +202,12 @@ export type SidecarOrchestratorConfig = {
    */
   workflowProbeExecutor?: WorkflowProbeExecutor;
   /**
-   * Returns the workflow-substrate deployment addresses this sidecar
-   * currently hosts. Forwarded to the hub link, which announces them on
-   * every (re)connect so the hub re-registers them for routing.
-   * Production wires this to the deploy router's
-   * `activeAddresses`; omitted, the link announces none.
+   * Returns every deployment incarnation this sidecar holds. Forwarded to the
+   * hub link, which reports them in every `hello` and delivers a Hub frame
+   * only to one it holds live. Production wires this to the deploy router's
+   * `incarnations`; omitted, the link holds none.
    */
-  getWorkflowAddresses?: () => string[];
+  getIncarnations?: () => HostedIncarnation[];
   /**
    * Returns the rotatable (non-run) sender addresses this sidecar holds cached
    * keys for. Forwarded to the hub link, which reports them on every
@@ -215,18 +217,17 @@ export type SidecarOrchestratorConfig = {
    */
   getCachedSenderAddresses?: () => string[];
   /**
-   * Invoked with the workflow-substrate addresses the link just announced in
-   * an authenticated reconnect. Forwarded to the hub link so the workflow-run
-   * pack pusher can re-drive a push a disconnect cancelled -- gated on the
-   * address becoming routable again.
-   * Production wires this to the boot-edge pack-pushing store's
-   * "address routable" notifier; omitted, the link fires nothing.
+   * Invoked on `welcome` with the addresses of the held incarnations the Hub
+   * routes. Forwarded to the hub link so the workflow-run pack pusher can
+   * re-drive a push a disconnect cancelled, and parked correlations are
+   * registered again. Production wires this to the boot-edge pack-pushing
+   * store's "address routable" notifier; omitted, the link fires nothing.
    */
   onWorkflowAddressesRoutable?: (addresses: string[]) => void;
   /**
-   * Invoked on WS disconnect with the workflow-substrate addresses the link
-   * hosts, so the workflow-run pack pusher blocks their pushes until the
-   * authenticated reconnect re-routes them. Paired with
+   * Invoked when a connection opens and when it closes, with the address of
+   * every incarnation the link holds, so the workflow-run pack pusher blocks
+   * their pushes until the next `welcome` routes them. Paired with
    * `onWorkflowAddressesRoutable`. Production wires this to the boot-edge
    * pack-pushing store's block notifier; omitted, the link fires nothing.
    */
@@ -271,7 +272,7 @@ export function createSidecarOrchestrator(
     credentialsInboundRouter,
     applyWorkflowRunPack,
     workflowProbeExecutor,
-    getWorkflowAddresses,
+    getIncarnations,
     getCachedSenderAddresses,
     onWorkflowAddressesRoutable,
     onWorkflowAddressesUnroutable,
@@ -293,6 +294,7 @@ export function createSidecarOrchestrator(
   // sendEvent method.
   let dispatchEvent: (
     agentAddress: string,
+    generation: number,
     sessionId: string,
     event: InferenceEvent,
   ) => void = () => {
@@ -308,6 +310,7 @@ export function createSidecarOrchestrator(
     runId: string;
     anchorRunId: string;
     agentAddress: string;
+    generation: number;
     kind: SignalKind;
     approvalSnapshot?: ApprovalSnapshot;
   }) => void = () => {
@@ -327,7 +330,12 @@ export function createSidecarOrchestrator(
     // is observed. A sessionless event is dropped rather than guessed
     // onto an arbitrary session -- the hub timeline is session-keyed and
     // a forged session id would mis-route the event.
-    publishWorkflowInferenceEvent: (agentAddress, event, sessionId) => {
+    publishWorkflowInferenceEvent: (
+      agentAddress,
+      generation,
+      event,
+      sessionId,
+    ) => {
       if (sessionId === undefined) {
         log.warn(
           "Dropping workflow inference event for {agentAddress}: deploy carried no sessionId",
@@ -335,7 +343,7 @@ export function createSidecarOrchestrator(
         );
         return;
       }
-      dispatchEvent(agentAddress, sessionId, event);
+      dispatchEvent(agentAddress, generation, sessionId, event);
     },
     // Route a supervisor's suspension registration up the hub-link so the
     // hub co-writes the parked run's routing + approval rows.
@@ -368,7 +376,7 @@ export function createSidecarOrchestrator(
       ? { credentialsInboundRouter }
       : {}),
     ...(workflowProbeExecutor !== undefined ? { workflowProbeExecutor } : {}),
-    ...(getWorkflowAddresses !== undefined ? { getWorkflowAddresses } : {}),
+    ...(getIncarnations !== undefined ? { getIncarnations } : {}),
     ...(getCachedSenderAddresses !== undefined
       ? { getCachedSenderAddresses }
       : {}),

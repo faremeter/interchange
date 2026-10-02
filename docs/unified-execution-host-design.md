@@ -741,7 +741,7 @@ recorded here as a deliberate API change rather than a one-line edit.
 
 > **Status — not yet built; direction refined into capability-based placement.**
 > The `isolation` declaration and isolation-domain multiplex described below are
-> not built yet: `activeSupervisors` still keys one child per deployment address,
+> not built yet: `deployments` still keys one child per deployment address,
 > and the workflow-definition types carry no `isolation` field yet. The
 > workflow-declares-isolation direction is refined into **capability-based
 > placement** — a workflow declares the positive runtime capabilities it needs
@@ -751,7 +751,7 @@ recorded here as a deliberate API change rather than a one-line edit.
 > the required floor, failing loudly when none fits. Per-node (spawn-rung)
 > placement and the security/isolation axis remain deferred.
 
-Today one child hosts one deployment: `activeSupervisors` keys one supervisor
+Today one child hosts one deployment: `deployments` keys one supervisor
 (thus one child) per deployment address in
 `packages/workflow-host/src/deploy/workflow-host-wiring.ts`, and the substrate factory pins one
 `WORKFLOW_RUN_REPO_ID` at spawn
@@ -878,7 +878,7 @@ binds to:
 
 - **Domain-key derivation** (in the DeployRouter,
   `packages/workflow-host/src/deploy/workflow-host-wiring.ts`, replacing the per-deployment-address
-  `activeSupervisors` key):
+  `deployments` key):
   - `granularity: "per-tenant"` => domain key = the tenant id. All per-tenant
     workflows for one tenant resolve to the **same** key and therefore the same
     child.
@@ -891,7 +891,7 @@ binds to:
     operator policy resolving the effective boundary first.
 - **DeployRouter select/reuse.** On `agent.deploy`, the router computes the
   domain key, then **looks up an existing child** for that key in the
-  (generalized) `activeSupervisors` map:
+  (generalized) `deployments` map:
   - Hit => register this deployment's workflow-run repo with the existing
     supervisor (add to its repo set / `listActiveDeployments`), push the
     deployment's credentials snapshot, and route its mail address to that child.
@@ -908,19 +908,19 @@ intent; the router computes the domain and shares or isolates accordingly.
 
 #### Child-keying in the recursive case
 
-The DeployRouter's `activeSupervisors` map keys only **top-level (rung-0)**
+The DeployRouter's `deployments` map keys only **top-level (rung-0)**
 children — the ones a `agent.deploy` frame binds to. A **per-node** isolated
-sub-child is _not_ a sibling under the sidecar's `activeSupervisors`; it is a
+sub-child is _not_ a sibling under the sidecar's `deployments`; it is a
 nested rung **under a running child**, managed by that child's own sub-child
 registry:
 
 - **Top-level (rung 0):** keyed by the workflow-level isolation domain in the
-  sidecar's `activeSupervisors` (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`), as
+  sidecar's `deployments` (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`), as
   above. This is the only map the DeployRouter touches.
 - **Nested (rung ≥ 1):** when a node's effective isolation is stricter than its
   rung, the rung's `createSidecarRunChild` `runChild` (the spawner one level
   down) spawns the sub-child and records it in a **per-child sub-child
-  registry** — the recursive analogue of `activeSupervisors`, owned by the child
+  registry** — the recursive analogue of `deployments`, owned by the child
   process, keyed by the node id + the node's run instance (for `map`, one entry
   per fan-out instance). Teardown is symmetric: the sub-child is torn down when
   its node's run reaches a terminal phase, and the registry is drained when the
@@ -932,7 +932,7 @@ registry:
   default is per-node-instance (a per-step or per-map-branch isolation is by
   nature an isolation request, so sharing is the exception, not the rule).
 
-The relationship in one line: **the sidecar's `activeSupervisors` owns the
+The relationship in one line: **the sidecar's `deployments` owns the
 forest's roots; each child owns its own subtree.** No global registry tracks
 arbitrary-depth rungs — each rung tracks only its direct children, matching the
 recursion's shape.
@@ -1180,7 +1180,7 @@ re-serviced.
   `createInMemorySpawnChild` `runChild` path gain the same boundary seam.
   Concrete `os-namespace`/`oci-container` spawners are deferred (later phase, §5).
 - The DeployRouter isolation-domain key derivation
-  (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`, generalizing `activeSupervisors`
+  (`packages/workflow-host/src/deploy/workflow-host-wiring.ts`, generalizing `deployments`
   from per-deployment-address to per-isolation-domain) **plus the per-child
   sub-child registry** (the recursive analogue, owned by each child), per
   Decision 2 + the recursive refinement.
@@ -1483,7 +1483,7 @@ for, so it instantiates, sends, and tears down per invocation (§6).
 
 - **Changes.** Generalize the substrate factory + supervisor registry from one
   workflow-run repo to a set; replace the per-deployment-address
-  `activeSupervisors` key with the **isolation-domain key computed from the
+  `deployments` key with the **isolation-domain key computed from the
   workflow-level isolation** (per-tenant => key by tenant, per-agent => key by
   deployment; `sandbox` hint participates; operator floor applied). Wire child
   select/reuse in the DeployRouter. Delete `provisionAgent` /
@@ -1491,7 +1491,7 @@ for, so it instantiates, sends, and tears down per invocation (§6).
   trivial branch + projector / `TrivialLaunch`. Rename surviving trivial-named
   symbols (§4).
 - **Verification.** (1) Two per-tenant workflows for one tenant share a child;
-  a per-agent workflow gets its own — assert the `activeSupervisors`/domain-key
+  a per-agent workflow gets its own — assert the `deployments`/domain-key
   mapping. (2) One child hosts two deployments' runs without cross-contamination
   (sub-namespacing holds). (3) Full INTR-209 fixture re-run on the unified host
   (§7). (4) The retired symbols have no remaining callers (build proves it).
@@ -1852,7 +1852,7 @@ are explicitly **not** a go-live gate for INTR-209.
   `createSubstrate` + `SIDECAR_SUBSTRATE_CONFIG_KEYS` from
   `apps/sidecar/src/workflow-child-bindings.ts`).
 - Deploy router: `packages/workflow-host/src/deploy/workflow-host-wiring.ts`
-  (`createSidecarDeployRouter`, `deployMultiStep`, `activeSupervisors`,
+  (`createSidecarDeployRouter`, `deployMultiStep`, `deployments`,
   `publishWorkflowInferenceEvent` as an injected dependency). The workflow-run
   repo id is `deriveWorkflowRunRepoId`
   (`packages/workflow-deploy/src/addresses.ts`).

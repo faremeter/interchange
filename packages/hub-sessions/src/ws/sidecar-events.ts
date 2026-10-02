@@ -100,10 +100,10 @@ export type SidecarEventMap = {
   };
 
   /** Notification. Emitted for mail the Hub gives up on: recipients no
-   * connection routes, un-acked mail whose redelivery attempts or hold
-   * ran out and that no dispatch row stands behind, and mail held for a
-   * sender key that never arrived. The host is free to relay it onto an
-   * external transport or drop it. */
+   * connection routes, un-acked mail it stops redelivering that no
+   * dispatch row stands behind, and mail held for a sender key that never
+   * arrived. The host is free to relay it onto an external transport or
+   * drop it. */
   "mail.outbound.undelivered": {
     rawMessage: string;
     recipients: string[];
@@ -282,7 +282,7 @@ export type SidecarLookups = {
   resolveSenderKey?: (address: string) => Promise<string | null>;
 
   /** Strict sibling of `resolveSenderKey` for the reconnect reconciliation. The
-   * register/reconnect handler re-resolves each reported cached sender and acts
+   * `hello` handler re-resolves each cached sender a hello reports and acts
    * on the three-way outcome the best-effort resolver collapses:
    *   - returns the hex key when the sender resolves -> push `sender.key.refresh`;
    *   - returns `null` for a CONFIRMED absence (no matching principal = a deleted

@@ -123,7 +123,7 @@ describe("createSidecarTokenAuthenticator", () => {
 
     const identity = await authenticate({ sidecarId: "sc-1", token });
 
-    expect(identity).toBeNull();
+    expect(identity).toEqual({ sidecarId: "sc-1" });
   });
 
   test("rejects an unknown token with null", async () => {
@@ -152,7 +152,7 @@ describe("createSidecarTokenAuthenticator", () => {
 
     const identity = await authenticate({ sidecarId: "sc-claimed", token });
 
-    expect(identity).toBeNull();
+    expect(identity).toEqual({ sidecarId: "sc-real" });
   });
 
   test("looks up by the token's hash, never the raw token", async () => {
@@ -200,8 +200,6 @@ describe("createSidecarTokenAuthenticator", () => {
       }),
     });
 
-    const credentials = await resolver.resolve(token);
-
     const binding = {
       kind: "allocated",
       sidecarId: "sc-allocated",
@@ -211,10 +209,10 @@ describe("createSidecarTokenAuthenticator", () => {
       workflowRunAddress: "workflow@exclusive",
       generation: 2,
     } as const;
-    expect(credentials).toEqual({
+    expect(await resolver.resolve(token)).toEqual({
       sidecarId: "sc-allocated",
-      bindings: [binding],
     });
+    expect(await resolver.resolveBindings("sc-allocated")).toEqual([binding]);
     expect(await resolver.isCurrent(binding, "routing")).toBe(true);
   });
 
@@ -337,7 +335,7 @@ describe("createSidecarTokenAuthenticator", () => {
     ).toBe(false);
   });
 
-  test("rejects an allocated credential without a current allocation", async () => {
+  test("resolves an allocated credential without a current allocation to no bindings", async () => {
     const token = "stale-allocated-secret";
     const resolver = createSidecarCredentialResolver({
       db: createMockDB({
@@ -349,7 +347,8 @@ describe("createSidecarTokenAuthenticator", () => {
       }),
     });
 
-    expect(await resolver.resolve(token)).toBeNull();
+    expect(await resolver.resolve(token)).toEqual({ sidecarId: "sc-replaced" });
+    expect(await resolver.resolveBindings("sc-replaced")).toEqual([]);
   });
 
   test("resolves and revalidates probe-scoped capacity", async () => {
@@ -370,8 +369,6 @@ describe("createSidecarTokenAuthenticator", () => {
       }),
     });
 
-    const credentials = await resolver.resolve(token);
-
     const binding = {
       kind: "probe",
       sidecarId: "sc-probe",
@@ -379,7 +376,8 @@ describe("createSidecarTokenAuthenticator", () => {
       tenantId: "tenant-1",
       generation: 0,
     } as const;
-    expect(credentials).toEqual({ sidecarId: "sc-probe", bindings: [binding] });
+    expect(await resolver.resolve(token)).toEqual({ sidecarId: "sc-probe" });
+    expect(await resolver.resolveBindings("sc-probe")).toEqual([binding]);
     expect(await resolver.isCurrent(binding, "routing")).toBe(true);
     expect(await resolver.isCurrent(binding, "reclaim")).toBe(false);
     expect(await resolver.isCurrent(binding, "retention")).toBe(false);
@@ -413,28 +411,25 @@ describe("createSidecarTokenAuthenticator", () => {
       }),
     });
 
-    expect(await resolver.resolve(token)).toEqual({
-      sidecarId: "sc-shared",
-      bindings: [
-        {
-          kind: "allocated",
-          sidecarId: "sc-shared",
-          allocationId: "alloc-1",
-          tenantId: "tenant-1",
-          anchorRunId: "run-anchor",
-          workflowRunAddress: "workflow@exclusive",
-          generation: 3,
-        },
-        {
-          kind: "probe",
-          sidecarId: "sc-shared",
-          allocationId: "probe-1",
-          tenantId: "tenant-1",
-          generation: 0,
-        },
-      ],
-    });
-    expect(await resolver.resolveBindings("sc-shared")).toHaveLength(2);
+    expect(await resolver.resolve(token)).toEqual({ sidecarId: "sc-shared" });
+    expect(await resolver.resolveBindings("sc-shared")).toEqual([
+      {
+        kind: "allocated",
+        sidecarId: "sc-shared",
+        allocationId: "alloc-1",
+        tenantId: "tenant-1",
+        anchorRunId: "run-anchor",
+        workflowRunAddress: "workflow@exclusive",
+        generation: 3,
+      },
+      {
+        kind: "probe",
+        sidecarId: "sc-shared",
+        allocationId: "probe-1",
+        tenantId: "tenant-1",
+        generation: 0,
+      },
+    ]);
   });
 });
 
