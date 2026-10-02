@@ -131,6 +131,7 @@ function deploy(agentAddress: string) {
     type: "agent.deploy",
     requestId: `deploy-${String(deploys)}`,
     agentAddress,
+    generation: 1,
     agentId: "workflow",
     config: config(agentAddress),
     hubPublicKey: "a".repeat(64),
@@ -167,6 +168,7 @@ function runGrants(agentAddress: string) {
   return {
     type: "run.grants",
     agentAddress,
+    generation: 1,
     runId: `run-of-${agentAddress}`,
     stepGrants: [],
   };
@@ -197,7 +199,6 @@ function keyStore(): AgentKeyStore {
 function sessions(): SessionManager {
   return {
     initRepo: () => Promise.resolve(),
-    getAddresses: () => [],
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
     deleteAgentDir: () => Promise.resolve(),
@@ -354,6 +355,7 @@ describe("a sidecar link hosting several deployments", () => {
         type: "agent.undeploy",
         requestId: "undeploy-slow",
         agentAddress: SLOW,
+        generation: 1,
         reason: "test",
       });
       conn.send(probeRequest());
@@ -471,6 +473,12 @@ describe("a sidecar link hosting several deployments", () => {
     const otherRouted = Promise.withResolvers<boolean>();
     const events: string[] = [];
     const { link, hub: conn } = await connectLink("sc-lanes-grants", {
+      getIncarnations: () =>
+        [SLOW, OTHER].map((address) => ({
+          address,
+          generation: 1,
+          state: "live" as const,
+        })),
       grantsInboundRouter: {
         async tryRoute(frame) {
           events.push(`grants ${frame.agentAddress}`);
@@ -521,6 +529,7 @@ describe("an undeploy the sidecar cannot finish", () => {
         type: "agent.undeploy",
         requestId: "undeploy-failed",
         agentAddress: SLOW,
+        generation: 1,
         reason: "test",
       });
 

@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
+import type { HostedIncarnation } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
 import {
   createMockWs,
   deployReply,
+  helloFrame,
   parsedFrames,
   sidecarAuth,
   TEST_CONFIG,
@@ -76,27 +78,35 @@ function createSharedRouter(
   return { router, hosted };
 }
 
+// What a hello reports: an address alone is a live incarnation at generation 1.
+type Reported = string | HostedIncarnation;
+
 function sendHandshake(
   router: TestRouter,
   ws: TestWs,
-  agentAddresses: string[] = [],
+  reported: readonly Reported[] = [],
 ): void {
   router.handleMessage(
     ws,
-    JSON.stringify({
-      type: "reconnect",
-      sidecarId: SIDECAR,
-      token: "token",
-      agentAddresses,
-    }),
+    helloFrame(
+      SIDECAR,
+      reported.map((incarnation) =>
+        typeof incarnation === "string"
+          ? { address: incarnation, generation: 1, state: "live" }
+          : incarnation,
+      ),
+    ),
   );
 }
 
 // Sends the handshake without waiting for its registration to finish.
-function openSocket(router: TestRouter, agentAddresses: string[] = []): TestWs {
+function openSocket(
+  router: TestRouter,
+  reported: readonly Reported[] = [],
+): TestWs {
   const ws = createMockWs();
   router.handleOpen(ws);
-  sendHandshake(router, ws, agentAddresses);
+  sendHandshake(router, ws, reported);
   return ws;
 }
 
@@ -154,9 +164,9 @@ function heldReadiness() {
 
 async function reconnect(
   router: TestRouter,
-  agentAddresses: string[] = [],
+  reported: readonly Reported[] = [],
 ): Promise<TestWs> {
-  const ws = openSocket(router, agentAddresses);
+  const ws = openSocket(router, reported);
   await tick();
   return ws;
 }
@@ -217,6 +227,7 @@ describe("SidecarRouter shared sidecars", () => {
         type: "agent.undeploy",
         requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
+        generation: 1,
         reason: "Generation 2 superseded it",
       },
     ]);
@@ -240,6 +251,7 @@ describe("SidecarRouter shared sidecars", () => {
         type: "agent.undeploy",
         requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
+        generation: 1,
         reason: "It was released",
       },
     ]);
@@ -301,6 +313,7 @@ describe("SidecarRouter shared sidecars", () => {
         type: "agent.undeploy",
         requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
+        generation: 1,
         reason: "Its binding is no longer current",
       },
     ]);
@@ -410,11 +423,32 @@ describe("SidecarRouter shared sidecars", () => {
         type: "agent.undeploy",
         requestId: expect.any(String),
         agentAddress: second.workflowRunAddress,
-        reason: "The deployment is not current on this sidecar",
+        generation: 1,
+        reason: "The Hub does not keep this incarnation on this sidecar",
       },
     ]);
+    // The binding is current, so it attaches, but its deployment is not
+    // routed.
     expect(await router.isAllocatedSidecarReady(target(second))).toBe(true);
     expect(await router.isAllocatedWorkflowActive(target(second))).toBe(false);
+  });
+
+  test("validates a repeated reported address once", async () => {
+    let reclaims = 0;
+    const { router } = createSharedRouter([first], {
+      validateSidecarIdentity: async (_identity, use) => {
+        if (use !== "reclaim") return true;
+        reclaims += 1;
+        return false;
+      },
+    });
+
+    await reconnect(router, [
+      first.workflowRunAddress,
+      first.workflowRunAddress,
+    ]);
+
+    expect(reclaims).toBe(1);
   });
 
   test("a sidecar reconnecting on a new socket takes every allocation along", async () => {
@@ -466,6 +500,7 @@ describe("SidecarRouter shared sidecars", () => {
         type: "agent.undeploy",
         requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
+        generation: 1,
         reason: "Generation 2 superseded it",
       },
     ]);
@@ -528,6 +563,7 @@ describe("SidecarRouter shared sidecars", () => {
       JSON.stringify({
         type: "agent.event",
         agentAddress: first.workflowRunAddress,
+        generation: 1,
         sessionId: "session-late",
         event: { type: "reactor.start", seq: 0, data: {} },
       }),
@@ -560,6 +596,7 @@ describe("SidecarRouter shared sidecars", () => {
         type: "agent.undeploy",
         requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
+        generation: 1,
         reason: "Generation 2 superseded it",
       },
     ]);
@@ -571,9 +608,8 @@ describe("SidecarRouter work placed while a shared sidecar connects", () => {
     const authenticated = Promise.withResolvers<boolean>();
     const { router, hosted } = createSharedRouter([first], {
       authenticateSidecar: async ({ sidecarId }) => {
-        const bindings = hosted.bindings;
         await authenticated.promise;
-        return { sidecarId, bindings };
+        return { sidecarId };
       },
     });
     const ws = openSocket(router);
@@ -623,9 +659,8 @@ describe("SidecarRouter work placed while a shared sidecar connects", () => {
     let holdAuthentication = false;
     const { router, hosted } = createSharedRouter([first], {
       authenticateSidecar: async ({ sidecarId }) => {
-        const bindings = hosted.bindings;
         if (holdAuthentication) await authenticated.promise;
-        return { sidecarId, bindings };
+        return { sidecarId };
       },
     });
     const disconnects = recordDisconnects(router);
@@ -727,11 +762,10 @@ describe("SidecarRouter work placed while a shared sidecar connects", () => {
   for (const stage of ["authenticating", "registering"] as const) {
     test(`a socket that closes while ${stage} is never registered`, async () => {
       const held = Promise.withResolvers<boolean>();
-      const { router, hosted } = createSharedRouter([first], {
+      const { router } = createSharedRouter([first], {
         authenticateSidecar: async ({ sidecarId }) => {
-          const bindings = hosted.bindings;
           if (stage === "authenticating") await held.promise;
-          return { sidecarId, bindings };
+          return { sidecarId };
         },
         validateSidecarIdentity: async (_identity, use) => {
           if (stage === "registering" && use === "registration")
@@ -863,7 +897,8 @@ describe("SidecarRouter work placed while a shared sidecar connects", () => {
         type: "agent.undeploy",
         requestId: expect.any(String),
         agentAddress: first.workflowRunAddress,
-        reason: "The deployment is not current on this sidecar",
+        generation: 1,
+        reason: "The Hub does not keep this incarnation on this sidecar",
       },
     ]);
   });
@@ -901,6 +936,7 @@ describe("SidecarRouter deploy replies on a shared sidecar", () => {
       expect(await superseded).toMatchObject({ frameSent: true });
       hosted.bindings = [next, second];
       await router.syncSidecar(SIDECAR);
+      router.handleMessage(ws, undeployAck(ws, first.workflowRunAddress));
       let settled = false;
       const deploying = router
         .sendAgentDeployToAllocation(
@@ -972,6 +1008,7 @@ describe("SidecarRouter pushes on a shared sidecar", () => {
       JSON.stringify({
         type: "repo.pack.push",
         agentAddress: first.workflowRunAddress,
+        generation: 1,
         repoId,
         transferId: "late-push",
         seq: 0,
@@ -983,6 +1020,7 @@ describe("SidecarRouter pushes on a shared sidecar", () => {
       JSON.stringify({
         type: "repo.pack.done",
         agentAddress: first.workflowRunAddress,
+        generation: 1,
         repoId,
         transferId: "late-push",
         ref: "refs/heads/main",
@@ -1000,5 +1038,308 @@ describe("SidecarRouter pushes on a shared sidecar", () => {
     };
     expect(framesOfType(ws, "repo.pack.reject")).toEqual([rejected]);
     expect(ws.closed).toBe(false);
+  });
+});
+
+describe("SidecarRouter replacing a generation on the same sidecar", () => {
+  test("deploys an address again only once the sidecar answers its undeploy, crediting nothing the removed copy sent", async () => {
+    const { router } = createSharedRouter([first]);
+    // The sidecar reports generation 1 still deploying from an earlier
+    // connection, so the Hub undeploys it, and a deploy of the address on the
+    // same connection waits for that undeploy's answer.
+    const ws = await reconnect(router, [
+      { address: first.workflowRunAddress, generation: 1, state: "deploying" },
+    ]);
+    const credited: unknown[] = [];
+    router.events.on("agent.event", (event) => {
+      credited.push(event);
+    });
+    const event = JSON.stringify({
+      type: "agent.event",
+      agentAddress: first.workflowRunAddress,
+      generation: 1,
+      sessionId: "session-1",
+      event: { type: "reactor.start", seq: 0, data: {} },
+    });
+
+    const deploying = router.sendAgentDeployToAllocation(
+      target(first),
+      first.workflowRunAddress,
+      configFor(first),
+    );
+    await tick();
+    expect(framesOfType(ws, "agent.deploy")).toEqual([]);
+
+    // The removed copy is still sending when its undeploy is answered.
+    router.handleMessage(ws, event);
+    router.handleMessage(ws, undeployAck(ws, first.workflowRunAddress));
+    await ws.awaitSent((sent) =>
+      sent.some((raw) => raw.includes('"agent.deploy"')),
+    );
+    router.handleMessage(
+      ws,
+      deployReply(ws, { publicKey: PUBLIC_KEY }, first.workflowRunAddress),
+    );
+    expect(await deploying).toEqual({ publicKey: PUBLIC_KEY });
+    expect(credited).toEqual([]);
+
+    router.handleMessage(ws, event);
+    await tick();
+    expect(credited).toHaveLength(1);
+  });
+
+  test("a deploy waiting on an unanswered undeploy gives up after the request timeout", async () => {
+    const { router } = createSharedRouter([first], { requestTimeoutMs: 20 });
+    await reconnect(router, [
+      { address: first.workflowRunAddress, generation: 1, state: "deploying" },
+    ]);
+
+    const unanswered = await router
+      .sendAgentDeployToAllocation(
+        target(first),
+        first.workflowRunAddress,
+        configFor(first),
+      )
+      .catch((error: unknown) => error);
+
+    expect(unanswered).toMatchObject({
+      frameSent: false,
+      message: `${first.workflowRunAddress} is still being undeployed on sidecar ${SIDECAR} after 20ms`,
+    });
+  });
+
+  for (const outcome of ["stores", "fails"] as const) {
+    test(`an ack whose listener ${outcome} after its deploy was replaced leaves the replacement's deploy to its own reply`, async () => {
+      const { router, hosted } = createSharedRouter([first, second]);
+      const ws = await reconnect(router, [second.workflowRunAddress]);
+      const storing = Promise.withResolvers<undefined>();
+      let acks = 0;
+      router.events.on("agent.deploy.ack", async () => {
+        acks += 1;
+        if (acks > 1) return;
+        await storing.promise;
+        if (outcome === "fails") throw new Error("database unavailable");
+      });
+
+      const replaced = router
+        .sendAgentDeployToAllocation(
+          target(first),
+          first.workflowRunAddress,
+          configFor(first),
+        )
+        .catch((error: unknown) => error);
+      await ws.awaitSent((sent) =>
+        sent.some((raw) => raw.includes('"agent.deploy"')),
+      );
+      router.handleMessage(
+        ws,
+        deployReply(ws, { publicKey: PUBLIC_KEY }, first.workflowRunAddress),
+      );
+      await tick();
+      expect(acks).toBe(1);
+
+      const next = allocation(first.allocationId, 2);
+      router.fenceAllocation(next.allocationId, next.generation);
+      hosted.bindings = [next, second];
+      await router.syncSidecar(SIDECAR);
+      expect(await replaced).toBeInstanceOf(Error);
+      router.handleMessage(ws, undeployAck(ws, first.workflowRunAddress));
+      let settled = false;
+      const replacing = router
+        .sendAgentDeployToAllocation(
+          target(next),
+          next.workflowRunAddress,
+          configFor(next),
+        )
+        .finally(() => {
+          settled = true;
+        });
+      await ws.awaitSent(
+        () =>
+          framesOfType(ws, "agent.deploy").filter(
+            (frame) => frame["generation"] === 2,
+          ).length === 1,
+      );
+
+      storing.resolve(undefined);
+      await tick();
+      expect(settled).toBe(false);
+
+      const replacementKey = "cd".repeat(32);
+      router.handleMessage(
+        ws,
+        deployReply(ws, { publicKey: replacementKey }, next.workflowRunAddress),
+      );
+      expect(await replacing).toEqual({ publicKey: replacementKey });
+    });
+  }
+
+  test("attaches the replacement at once and credits it nothing the replaced generation sends", async () => {
+    const { router, hosted } = createSharedRouter([first, second]);
+    const ws = await reconnect(router, [
+      first.workflowRunAddress,
+      second.workflowRunAddress,
+    ]);
+    const credited: unknown[] = [];
+    router.events.on("agent.event", (event) => {
+      credited.push(event);
+    });
+    router.events.on("mail.inbound.acknowledged", (event) => {
+      credited.push(event);
+    });
+    const next = allocation(first.allocationId, 2);
+    router.fenceAllocation(next.allocationId, next.generation);
+    hosted.bindings = [next, second];
+    await router.syncSidecar(SIDECAR);
+    expect(await router.isAllocatedSidecarReady(target(next))).toBe(true);
+
+    const deploying = router.sendAgentDeployToAllocation(
+      target(next),
+      next.workflowRunAddress,
+      configFor(next),
+    );
+    router.handleMessage(ws, undeployAck(ws, first.workflowRunAddress));
+    await ws.awaitSent((sent) =>
+      sent.some((raw) => raw.includes('"agent.deploy"')),
+    );
+    router.handleMessage(
+      ws,
+      deployReply(ws, { publicKey: PUBLIC_KEY }, next.workflowRunAddress),
+    );
+    await deploying;
+
+    // Generation 1 is still draining on the sidecar while generation 2 owns
+    // the address.
+    const event = (generation: number) =>
+      JSON.stringify({
+        type: "agent.event",
+        agentAddress: first.workflowRunAddress,
+        generation,
+        sessionId: "session-1",
+        event: { type: "reactor.start", seq: 0, data: {} },
+      });
+    router.handleMessage(ws, event(1));
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.inbound.ack",
+        agentAddress: first.workflowRunAddress,
+        generation: 1,
+        messageId: "mail-to-replaced",
+      }),
+    );
+    await tick();
+    expect(credited).toEqual([]);
+
+    router.handleMessage(ws, event(2));
+    await tick();
+    expect(credited).toHaveLength(1);
+    expect(ws.closed).toBe(false);
+  });
+
+  for (const state of ["live", "stopped", "tearing-down"] as const) {
+    test(`undeploys an earlier generation the sidecar still reports ${state} after reconnecting`, async () => {
+      const { router, hosted } = createSharedRouter([first, second]);
+      const previous = await reconnect(router, [
+        first.workflowRunAddress,
+        second.workflowRunAddress,
+      ]);
+      const next = allocation(first.allocationId, 2);
+      router.fenceAllocation(next.allocationId, next.generation);
+      // The undeploy the fence sent is lost with this connection.
+      router.handleClose(previous);
+
+      hosted.bindings = [next, second];
+      const ws = await reconnect(router, [
+        { address: first.workflowRunAddress, generation: 1, state },
+        second.workflowRunAddress,
+      ]);
+
+      expect(framesOfType(ws, "agent.undeploy")).toEqual([
+        {
+          type: "agent.undeploy",
+          requestId: expect.any(String),
+          agentAddress: first.workflowRunAddress,
+          generation: 1,
+          reason: "The Hub does not keep this incarnation on this sidecar",
+        },
+      ]);
+      expect(router.getRoutableAddresses()).toEqual([
+        second.workflowRunAddress,
+      ]);
+      expect(await router.isAllocatedSidecarReady(target(next))).toBe(true);
+      expect(framesOfType(ws, "welcome")).toEqual([
+        {
+          type: "welcome",
+          routed: [{ address: second.workflowRunAddress, generation: 1 }],
+        },
+      ]);
+      expect(ws.closed).toBe(false);
+    });
+  }
+
+  for (const state of ["deploying", "tearing-down"] as const) {
+    test(`undeploys the current generation instead of routing it when the sidecar reports it ${state}`, async () => {
+      const { router } = createSharedRouter([first, second]);
+
+      const ws = await reconnect(router, [
+        { address: first.workflowRunAddress, generation: 1, state },
+        second.workflowRunAddress,
+      ]);
+
+      expect(framesOfType(ws, "agent.undeploy")).toEqual([
+        {
+          type: "agent.undeploy",
+          requestId: expect.any(String),
+          agentAddress: first.workflowRunAddress,
+          generation: 1,
+          reason: "The Hub does not keep this incarnation on this sidecar",
+        },
+      ]);
+      expect(router.getRoutableAddresses()).toEqual([
+        second.workflowRunAddress,
+      ]);
+      expect(framesOfType(ws, "welcome")).toEqual([
+        {
+          type: "welcome",
+          routed: [{ address: second.workflowRunAddress, generation: 1 }],
+        },
+      ]);
+      expect(ws.closed).toBe(false);
+    });
+  }
+
+  test("keeps a stopped incarnation of a current binding unrouted without undeploying it", async () => {
+    const { router } = createSharedRouter([first, second]);
+
+    const ws = await reconnect(router, [
+      { address: first.workflowRunAddress, generation: 1, state: "stopped" },
+      second.workflowRunAddress,
+    ]);
+
+    // Its local state is kept for inspection until the Hub releases the
+    // deployment.
+    expect(framesOfType(ws, "agent.undeploy")).toEqual([]);
+    expect(router.getRoutableAddresses()).toEqual([second.workflowRunAddress]);
+    expect(framesOfType(ws, "welcome")).toEqual([
+      {
+        type: "welcome",
+        routed: [{ address: second.workflowRunAddress, generation: 1 }],
+      },
+    ]);
+    expect(ws.closed).toBe(false);
+  });
+
+  test("keeps a connection open for a current binding whose reported incarnation it undeploys", async () => {
+    const { router } = createSharedRouter([second], {
+      validateSidecarIdentity: async (_identity, use) => use !== "reclaim",
+    });
+
+    const ws = await reconnect(router, [second.workflowRunAddress]);
+
+    expect(ws.closed).toBe(false);
+    expect(framesOfType(ws, "agent.undeploy")).toHaveLength(1);
+    expect(await router.isAllocatedSidecarReady(target(second))).toBe(true);
+    expect(await router.isAllocatedWorkflowActive(target(second))).toBe(false);
   });
 });

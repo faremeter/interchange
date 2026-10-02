@@ -126,10 +126,9 @@ export type SidecarCredentialIdentity =
       readonly generation: number;
     };
 
-/** A verified sidecar and every probe and allocation generation it hosts. */
+/** The sidecar a bearer token verifies as. */
 export type SidecarCredentials = {
   readonly sidecarId: string;
-  readonly bindings: readonly SidecarCredentialIdentity[];
 };
 
 /**
@@ -147,7 +146,10 @@ export type SidecarIdentityUse =
   | "reclaim";
 
 export interface SidecarCredentialResolver {
-  /** Resolves a bearer token, or null when it hosts nothing current. */
+  /**
+   * Resolves a bearer token to its sidecar, or null for an unknown token. A
+   * sidecar hosting nothing current still resolves.
+   */
   resolve(token: string): Promise<SidecarCredentials | null>;
   /** The current bindings of a sidecar, empty when it hosts nothing. */
   resolveBindings(

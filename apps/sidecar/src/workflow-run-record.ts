@@ -5,9 +5,11 @@
 // teardown reclaims both and a boot scan can enumerate the active runs
 // beside the run state they resume.
 //
-// It carries the inputs that are otherwise frame/in-memory only: `sources`
-// (each step's ordered inference-source failover chain, threaded to the child
-// via the spawn env and durable nowhere else), `sessionId` (inference-event
+// It carries the inputs that are otherwise frame/in-memory only: `generation`
+// (the allocation generation of the incarnation the record restores, which
+// the sidecar reports to the Hub and stamps on what the deployment sends),
+// `sources` (each step's ordered inference-source failover chain, threaded to
+// the child via the spawn env and durable nowhere else), `sessionId` (inference-event
 // correlation), `hubPublicKey` (the head's deploy-pack / inbound verification
 // key), `approvedWireHash` (the hub-approved wire hash the deploy frame
 // carried, so a restore re-spawn feeds the child the same re-verify anchor
@@ -25,7 +27,11 @@ import { type } from "arktype";
 import { getLogger } from "@intx/log";
 import { credentialAad, type CredentialCipher } from "@intx/types";
 import { InferenceSource } from "@intx/types/runtime";
-import { CredentialDelivery, SourceRefPin } from "@intx/types/sidecar";
+import {
+  CredentialDelivery,
+  Generation,
+  SourceRefPin,
+} from "@intx/types/sidecar";
 
 import { writeFileAtomicDurable } from "./atomic-write";
 
@@ -53,6 +59,9 @@ function isENOENT(cause: unknown): boolean {
 const workflowRunRecordBase = {
   version: "1 | 2",
   agentAddress: "string > 0",
+  // A record without it cannot say which incarnation it restores, so it
+  // fails validation and is skipped rather than guessed.
+  generation: Generation,
   definitionId: "string > 0",
   // Top-level per-step inference sources. Non-secret config only: each source
   // carries a `credentialId` referencing an entry in `credentials`, no inline

@@ -12,7 +12,7 @@
 // pack-tip cursor keeps the un-acked commits shippable (the data-integrity half);
 // this test covers the liveness half -- the sidecar must re-drive the cancelled
 // push once its address is routable again, and the re-ship must wait for the
-// allocation-authenticated reconnect to re-route the address rather than racing
+// hello/welcome reconnect to re-route the address rather than racing
 // ahead of it.
 //
 // The settled-drop control is the regression guard: a drop AFTER the pack stream

@@ -85,7 +85,6 @@ const unusedSessions: SessionManager = {
   deleteAgentDir: () => {
     throw new Error("sessions not used");
   },
-  getAddresses: () => [],
   // Reached only on the within-cap audit path; returns no session id.
   getSessionId: () => undefined,
 };
@@ -111,7 +110,7 @@ const unusedDeployRouter: DeployRouter = {
   },
 };
 
-function makeLink() {
+function makeLink(hostedSenders = ["s@example.test"]) {
   const capture = createCapturingTransport();
   const link = createHubLink({
     hubURL: "ws://localhost:0/ws",
@@ -125,6 +124,12 @@ function makeLink() {
     cacheSenderKey: async () => undefined,
     evictSenderKey: async () => undefined,
     deployRouter: unusedDeployRouter,
+    getIncarnations: () =>
+      hostedSenders.map((address) => ({
+        address,
+        generation: 1,
+        state: "live" as const,
+      })),
   });
   return { capture, link };
 }
@@ -233,6 +238,37 @@ describe("hub-link mail.outbound body cap", () => {
       const errors = capErrors();
       expect(errors).toHaveLength(1);
       expect(errors[0]).toMatch(/exceeds the .* cap/);
+    } finally {
+      link.close();
+    }
+  });
+
+  test("the remote-send handler refuses a sender with no hosted incarnation", async () => {
+    const { capture, link } = makeLink([]);
+    try {
+      await expect(
+        capture.remoteSend()(smallRaw, ["r@example.test"], "s@example.test"),
+      ).rejects.toThrow(/no incarnation of it is hosted here/);
+    } finally {
+      link.close();
+    }
+  });
+
+  test("the audit handler logs and skips a sender with no hosted incarnation", async () => {
+    const { capture, link } = makeLink([]);
+    try {
+      await capture.messageSent()({
+        senderAddress: "s@example.test",
+        rawMessage: smallRaw,
+        messageId: "mid-unhosted",
+        recipients: ["r@example.test"],
+        to: ["r@example.test"],
+        cc: [],
+        localOnly: true,
+      });
+      const errors = capErrors();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatch(/no incarnation of it is hosted here/);
     } finally {
       link.close();
     }

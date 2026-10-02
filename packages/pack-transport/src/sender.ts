@@ -19,6 +19,8 @@ export type PackSendFrame = PackPushFrame | PackDoneFrame;
 
 export type PackSendOpts = {
   agentAddress: string;
+  /** The generation of the incarnation the pushed repository belongs to. */
+  generation: number;
   repoId: RepoId;
   /**
    * Caller-supplied transfer id. Must never be reused; the sender does not
@@ -56,8 +58,7 @@ export type PackSender = {
   handleReject(frame: PackRejectFrame): boolean;
   /**
    * Reject every in-flight transfer with the supplied reason. Used by
-   * hub-link's `open` handler to fail any transfers that did not
-   * complete before the connection cycle.
+   * hub-link when a connection closes, failing the transfers it carried.
    */
   cancelAll(reason: string): void;
 };
@@ -79,7 +80,15 @@ export function createPackSender(deps: PackSenderDeps): PackSender {
   const pending = new Map<string, PendingTransfer>();
 
   function send(opts: PackSendOpts): Promise<void> {
-    const { agentAddress, repoId, transferId, pack, ref, commitSha } = opts;
+    const {
+      agentAddress,
+      generation,
+      repoId,
+      transferId,
+      pack,
+      ref,
+      commitSha,
+    } = opts;
     if (pending.has(transferId)) {
       return Promise.reject(
         new Error(`pack sender: transferId ${transferId} is already in flight`),
@@ -92,6 +101,7 @@ export function createPackSender(deps: PackSenderDeps): PackSender {
           deps.sendFrame({
             type: "repo.pack.push",
             agentAddress,
+            generation,
             repoId,
             transferId,
             seq: chunk.seq,
@@ -101,6 +111,7 @@ export function createPackSender(deps: PackSenderDeps): PackSender {
         deps.sendFrame({
           type: "repo.pack.done",
           agentAddress,
+          generation,
           repoId,
           transferId,
           ref,

@@ -123,6 +123,7 @@ test("a first deploy keeps its seeded refs and the next sidecar commit fast-forw
     // Hub would reject because it contains no declared tip object.
     await packClient.push({
       agentAddress,
+      generation: 1,
       repoId,
       ref: "refs/heads/events",
     });
@@ -136,6 +137,7 @@ test("a first deploy keeps its seeded refs and the next sidecar commit fast-forw
     });
     await packClient.push({
       agentAddress,
+      generation: 1,
       repoId,
       ref: "refs/heads/events",
     });

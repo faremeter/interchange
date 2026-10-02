@@ -67,12 +67,15 @@ import {
   type InferenceEvent,
   type InferenceSource,
   type KeyPair,
+  type SendReceipt,
 } from "@intx/types/runtime";
 import {
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
   WorkflowProjectionDefinition,
   type AgentDeployFrame,
   type CredentialDelivery,
+  type HostedIncarnation,
+  type IncarnationState,
   type SourceRefPin,
   type WorkflowControlFrame,
   type WorkflowRunRefTips,
@@ -859,6 +862,13 @@ export type SidecarWorkflowSupervisor = {
     runId: string;
     anchorRunId: string;
   }): Promise<CredentialsSnapshot>;
+  /**
+   * Refuse further outbound mail and wait for the sends already started. The
+   * undeploy calls it once the supervisor has shut down, so everything the
+   * deployment sent reaches the link while its incarnation is still held, and
+   * is stamped with its generation.
+   */
+  closeOutbound(): Promise<void>;
 };
 
 /**
@@ -1040,22 +1050,19 @@ export interface SidecarDeployRouter extends DeployRouter {
    */
   restoreWorkflowRuns(): Promise<void>;
   /**
-   * The workflow-substrate deployment addresses (`run_<hex>@domain`) this router
-   * currently hosts a live supervisor for -- the set of addresses this
-   * sidecar can route mail to. The boot edge announces these to the hub on
-   * (re)connect so the hub re-registers them for routing: they are hub-minted
-   * and carry no per-address key; the allocation-authenticated announcement is
-   * what re-establishes their routes after a WS reconnect. Reflects
-   * `deploy`/`undeploy`
-   * and boot-time restore live, so a caller re-reads it per connect.
+   * Every incarnation this router holds, from the moment its deploy or
+   * restore starts until its teardown finishes, with what it is doing with
+   * each. The hub link reports them in every `hello` and delivers a Hub frame
+   * only to one held live. Reflects `deploy`/`undeploy` and boot-time restore
+   * live, so a caller re-reads it whenever it needs it.
    */
-  activeAddresses(): string[];
+  incarnations(): HostedIncarnation[];
   /**
    * Trigger B: re-register every correlation the deployment at `address` is
    * currently parked on, by asking its live supervisor to re-emit them to the
-   * hub. The boot edge calls this per address the hub link re-routes on an
-   * authenticated reconnect (`onWorkflowAddressesRoutable`), so a register frame
-   * the hub dropped from its bounded send queue during the outage is recovered.
+   * hub. The boot edge calls this per address the Hub routes in its `welcome`
+   * (`onWorkflowAddressesRoutable`), so a register frame the link dropped from
+   * its bounded report queue during an outage is recovered.
    * The address-dispatch wrapper around the supervisor's own no-arg
    * `reEmitParkedCorrelations`; fire-and-forget (the driver is best-effort and
    * watchdog-bounded inside the supervisor).
@@ -1113,14 +1120,18 @@ export function createSidecarDeployRouter(deps: {
    */
   assertSourceBuildable: (source: InferenceSource) => void;
   /**
-   * Record a `(runId -> agentAddress)` mapping the boot edge's
-   * workflow-run pack push facade consults when it must address an
-   * outbound pack frame. Fires once per inbound `agent.deploy` frame
+   * Record a `(runId -> incarnation)` mapping the boot edge's
+   * workflow-run pack push facade consults when it must address and stamp
+   * an outbound pack frame. Fires once per inbound `agent.deploy` frame
    * before the deployment's supervisor spawns, so the first pack push
    * the child triggers sees the mapping. Tests that do not exercise
    * the pack push path may pass a no-op.
    */
-  registerDeployment: (entry: { runId: string; agentAddress: string }) => void;
+  registerDeployment: (entry: {
+    runId: string;
+    agentAddress: string;
+    generation: number;
+  }) => void;
   /**
    * Symmetric removal hook for `registerDeployment`. Fires from the
    * link's `agent.undeploy` path so the boot edge's
@@ -1141,9 +1152,10 @@ export function createSidecarDeployRouter(deps: {
    * only once it holds these tips. Tests that do not exercise the pack push
    * path may report no refs.
    */
-  reportDeploymentRefTips: (
-    agentAddress: string,
-  ) => Promise<WorkflowRunRefTips>;
+  reportDeploymentRefTips: (incarnation: {
+    agentAddress: string;
+    generation: number;
+  }) => Promise<WorkflowRunRefTips>;
   /**
    * Substrate-config env keys the multi-step branch propagates into
    * the workflow-process child's spawn-time env (see
@@ -1169,9 +1181,10 @@ export function createSidecarDeployRouter(deps: {
   /**
    * Callback the supervisor invokes for every verified InferenceEvent
    * the workflow-process child publishes. The router threads the
-   * deployment's run address plus the deploy's session id through to
-   * the callback so a downstream fan-out can route each event to the
-   * hub timeline keyed to the right session. The `InferenceEvent` itself
+   * deployment's run address, its incarnation's generation, and the deploy's
+   * session id through to the callback so a downstream fan-out can route
+   * each event to the hub timeline keyed to the right session. The
+   * `InferenceEvent` itself
    * is sessionless; the session id rides alongside it, sourced from the
    * deploy frame's `HarnessConfig.sessionId` per deployment. It is
    * optional because a deploy frame need not carry a session id (a
@@ -1181,6 +1194,7 @@ export function createSidecarDeployRouter(deps: {
    */
   publishWorkflowInferenceEvent?: (
     agentAddress: string,
+    generation: number,
     event: InferenceEvent,
     sessionId: string | undefined,
   ) => void;
@@ -1189,15 +1203,16 @@ export function createSidecarDeployRouter(deps: {
    * workflow-process child reports (`park.notify`). The multi-step branch
    * threads it into the supervisor's `onSuspensionRegister` binding so a
    * parked run's correlation is registered at the hub (routing + approval
-   * rows). The supervisor stamps `runId` + `agentAddress` before
-   * invoking it. Defaults to a no-op; production wiring supplies the
-   * hub-link-backed publisher.
+   * rows). The supervisor stamps `runId` + `agentAddress` and the router
+   * stamps the incarnation's generation before invoking it. Defaults to a
+   * no-op; production wiring supplies the hub-link-backed publisher.
    */
   publishWorkflowSuspension?: (registration: {
     correlationId: string;
     runId: string;
     anchorRunId: string;
     agentAddress: string;
+    generation: number;
     kind: SignalKind;
     approvalSnapshot?: ApprovalSnapshot;
   }) => void;
@@ -1374,6 +1389,7 @@ export function createSidecarDeployRouter(deps: {
     deps.publishWorkflowInferenceEvent ??
     ((
       _address: string,
+      _generation: number,
       _event: InferenceEvent,
       _sessionId: string | undefined,
     ): void => {
@@ -1387,6 +1403,7 @@ export function createSidecarDeployRouter(deps: {
       runId: string;
       anchorRunId: string;
       agentAddress: string;
+      generation: number;
       kind: SignalKind;
       approvalSnapshot?: ApprovalSnapshot;
     }): void => {
@@ -1412,13 +1429,21 @@ export function createSidecarDeployRouter(deps: {
     deps.multistepDeriveStepAddress ??
     (({ runId, stepId }) => `${runId}-${stepId}`);
 
-  // Per-deployment supervisor tracking. The multi-step branch
-  // constructs one `SidecarWorkflowSupervisor` per `agent.deploy`
-  // frame; the supervisor owns the workflow-process child, its IPC
-  // pipes, and its event-channel fd. The undeploy hook consults this
-  // map to call `supervisor.shutdown()` so the child's lifetime ends
-  // with the deployment.
-  const activeSupervisors = new Map<string, SidecarWorkflowSupervisor>();
+  // Every incarnation this sidecar holds, by deployment address: what the
+  // link reports to the Hub and checks every Hub frame against. An entry
+  // exists from the moment a deploy or restore starts until its teardown
+  // finishes, synchronously before the first await, so a second deploy of an
+  // address cannot start while one is running and destructively overwrite the
+  // durable state the first one owns. `wired` is the supervisor that owns the
+  // workflow-process child, its IPC pipes, and its event-channel fd, once its
+  // spawn succeeded; the undeploy hook shuts it down so the child's lifetime
+  // ends with the deployment.
+  type HostedDeployment = {
+    generation: number;
+    state: IncarnationState;
+    wired?: SidecarWorkflowSupervisor;
+  };
+  const deployments = new Map<string, HostedDeployment>();
   const workflowCancellationTasks = new WeakMap<
     SidecarWorkflowSupervisor,
     Promise<void>
@@ -1433,22 +1458,14 @@ export function createSidecarDeployRouter(deps: {
     frame: WorkflowControlFrame,
   ): Promise<WorkflowControlOutcome> {
     return frame.action === "stop"
-      ? { refTips: await deps.reportDeploymentRefTips(frame.agentAddress) }
+      ? {
+          refTips: await deps.reportDeploymentRefTips({
+            agentAddress: frame.agentAddress,
+            generation: frame.generation,
+          }),
+        }
       : {};
   }
-
-  // Synchronous single-flight guard for the deploy path. The real supervisor
-  // does not exist until inside `spawnWorkflowRun`, so `deployMultiStep`
-  // cannot reserve its `activeSupervisors` slot up front; instead it records
-  // the address here synchronously, before its first await, and clears it in a
-  // finally once the deploy settles. `activeSupervisors` is populated only
-  // after `spawn` succeeds, so the has-check alone leaves a window in which two
-  // same-address frames both pass and the loser's unwind deletes the winner's
-  // live run record. This set closes that window: a second frame that
-  // arrives while the first is mid-deploy is rejected before it touches any
-  // durable state. Only the live deploy path reserves; the boot restore path
-  // is serial and relies on the `activeSupervisors` backstop instead.
-  const reservingDeployAddresses = new Set<string>();
 
   // Slug-collision tracking. `deriveDeploymentId` substitutes
   // disallowed characters with `-`, which is deterministic but lossy:
@@ -1467,7 +1484,7 @@ export function createSidecarDeployRouter(deps: {
         `deriveDeploymentId collision: run addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to runId ${JSON.stringify(runId)}`,
       );
     }
-    // A same-address re-claim is a defensive no-op: the `activeSupervisors`
+    // A same-address re-claim is a defensive no-op: the `deployments`
     // guard rejects a live re-deploy before claimSlug is re-invoked, and a
     // failed or undeployed deploy releases the slug first, so in practice
     // `existing` is only ever undefined or a different address here.
@@ -1492,8 +1509,8 @@ export function createSidecarDeployRouter(deps: {
   // Reclaim a deployment address whose supervisor drove ITSELF to a terminal
   // phase (crash-loop latch, channel crash, recycle failure) without an
   // operator undeploy. Drops the address's runtime/routing state so a redeploy
-  // of the same address succeeds without a manual undeploy: the `has`-guarded
-  // `activeSupervisors` entry is the redeploy gate, and `transport.register`
+  // of the same address succeeds without a manual undeploy: the `deployments`
+  // entry is the redeploy gate, and `transport.register`
   // throws on a double-register, so both must be released here. The routers and
   // the slug are released too so a frame racing the reclaim is rejected at the
   // boundary rather than dispatched into the dead supervisor, and the slug is
@@ -1531,12 +1548,19 @@ export function createSidecarDeployRouter(deps: {
   function reclaimSelfTerminatedSupervisor(args: {
     runId: string;
     agentAddress: string;
+    hosted: HostedDeployment;
   }): void {
-    if (!activeSupervisors.has(args.agentAddress)) return;
+    // Only the copy that terminated: an undeploy and a redeploy of the same
+    // generation can land before a late sink fires.
+    if (
+      deployments.get(args.agentAddress) !== args.hosted ||
+      args.hosted.wired === undefined
+    )
+      return;
     // Drop racing frames at the router boundary first, then unwind the
     // underlying registrations -- the same ordering the undeploy hook uses.
     unregisterWorkflowRoutes(args.agentAddress);
-    activeSupervisors.delete(args.agentAddress);
+    deployments.delete(args.agentAddress);
     deps.transport.unregister(args.agentAddress);
     releaseSlug(args.runId, args.agentAddress);
   }
@@ -1575,6 +1599,8 @@ export function createSidecarDeployRouter(deps: {
    */
   interface WorkflowDeploySpec {
     agentAddress: string;
+    /** The allocation generation of the incarnation being stood up. */
+    generation: number;
     /**
      * The runnable definition, projected to its inert wire shape. Source-ref is
      * the only deploy lineage, so this is always the closure evaluation
@@ -1659,6 +1685,7 @@ export function createSidecarDeployRouter(deps: {
     return {
       version: 2 as const,
       agentAddress: spec.agentAddress,
+      generation: spec.generation,
       definitionId: spec.definition.id,
       sources,
       ...(spec.bodySources !== undefined
@@ -1762,24 +1789,24 @@ export function createSidecarDeployRouter(deps: {
    */
   async function spawnWorkflowRun(
     spec: WorkflowDeploySpec,
+    hosted: HostedDeployment,
   ): Promise<DeployRouterResult> {
     // The run's credential material rides on `spec.credentials`: the sidecar now
     // holds a cipher and seals it into the record, so both the live deploy and
     // the boot-restore path carry it here (restore unseals it from the record),
     // and it is delivered to the child on the pre-trigger barrier.
     const credentialDelivery = spec.credentials;
-    // Fail loud if this address already has a live supervisor. Both single-
-    // and multi-step now register on the transport, so both carry the
-    // `transport.register` duplicate-throw backstop; this `has()` check is the
-    // primary early guard that gives a clean error before that lower-level
-    // throw and before the `activeSupervisors.set` below could clobber the
-    // running deployment's handle. Both the deploy path and the boot restore
-    // path route through here, so this is the single transition guard against
-    // a double-spawn -- notably a boot restore racing a legacy restore for the
-    // same address (the B-reroute follow-up relies on it).
-    if (activeSupervisors.has(spec.agentAddress)) {
+    // Fail loud unless the caller holds the address for this spawn. The deploy
+    // and boot restore paths both refuse an address already held before they
+    // get here, so this is a backstop: it fails before the lower-level
+    // `transport.register` duplicate throw and before the assignment below
+    // could clobber the running deployment's handle.
+    if (
+      deployments.get(spec.agentAddress) !== hosted ||
+      hosted.wired !== undefined
+    ) {
       throw new Error(
-        `sidecar deploy router: a supervisor is already active for ${spec.agentAddress}; refusing to spawn a second`,
+        `sidecar deploy router: ${spec.agentAddress} is not held for this spawn; refusing to spawn a second supervisor`,
       );
     }
     const runId = deriveDeploymentId(spec.agentAddress);
@@ -1810,7 +1837,7 @@ export function createSidecarDeployRouter(deps: {
 
     // Unwind every piece of spawn state if any step in this block throws,
     // so a failed spawn leaks no freshly-spawned workflow-process child,
-    // `activeSupervisors` entry, transport registration, or multistep
+    // supervisor handle, transport registration, or multistep
     // router registration. (The deployment-address registration happens
     // before spawn and is unwound by its own guard.) The ordering inside
     // the finally is the reverse of the success-path registration order.
@@ -1909,16 +1936,20 @@ export function createSidecarDeployRouter(deps: {
         // invoking this; forward the fully-stamped registration to the
         // hub-link-backed publisher so a `signal.correlation.register` frame
         // reaches the hub for the parked run.
-        onSuspensionRegister: publishSuspension,
+        onSuspensionRegister: (registration) => {
+          publishSuspension({ ...registration, generation: spec.generation });
+        },
         // Reclaim the deployment address when the supervisor drives itself to a
         // terminal phase (crash-loop latch, channel crash, recycle failure) so
-        // the dead supervisor is dropped from `activeSupervisors` and the
+        // the dead supervisor is dropped from `deployments` and the
         // address is redeployable without a manual undeploy first.
-        onSelfTerminate: () =>
+        onSelfTerminate: () => {
           reclaimSelfTerminatedSupervisor({
             runId,
             agentAddress: spec.agentAddress,
-          }),
+            hosted,
+          });
+        },
         substrateEnv,
         // Recomputed on every spawn AND recycle respawn. The rotation
         // handler below revises `currentSources` in place, so a respawn
@@ -2011,7 +2042,12 @@ export function createSidecarDeployRouter(deps: {
             logger.warn`dropping workflow inference event for ${spec.agentAddress}: ${validated.summary}`;
             return;
           }
-          publishInferenceEvent(spec.agentAddress, validated, spec.sessionId);
+          publishInferenceEvent(
+            spec.agentAddress,
+            spec.generation,
+            validated,
+            spec.sessionId,
+          );
         },
       };
 
@@ -2029,6 +2065,7 @@ export function createSidecarDeployRouter(deps: {
       deps.registerDeployment({
         runId,
         agentAddress: spec.agentAddress,
+        generation: spec.generation,
       });
       deploymentRegistered = true;
 
@@ -2039,7 +2076,7 @@ export function createSidecarDeployRouter(deps: {
       // so a spawn-time rejection leaves the registry untouched.
       await wired.supervisor.spawn(spawnOpts);
       wiredForUnwind = wired;
-      activeSupervisors.set(spec.agentAddress, wired);
+      hosted.wired = wired;
       supervisorRegistered = true;
 
       // Bind the deployment's mail address to this supervisor's
@@ -2246,7 +2283,7 @@ export function createSidecarDeployRouter(deps: {
           deps.multistepCredentialsRouter?.unregister(spec.agentAddress);
         }
         if (supervisorRegistered) {
-          activeSupervisors.delete(spec.agentAddress);
+          delete hosted.wired;
         }
         if (wiredForUnwind !== undefined) {
           await wiredForUnwind.supervisor.shutdown().catch((cause) => {
@@ -2321,25 +2358,14 @@ export function createSidecarDeployRouter(deps: {
     frame: AgentDeployFrame,
     projection: NonNullable<AgentDeployFrame["workflow"]>,
   ): Promise<DeployRouterResult> {
-    // Reject a re-deploy of an address already live OR mid-deploy in this
-    // process BEFORE touching any durable state. The durable writes below (the
-    // run record, the materialized closure, step grants) are destructive
-    // overwrites of state owned by whatever deployment currently holds the
-    // address; overwriting is only legal when this deploy owns the address.
-    // `activeSupervisors` catches an address whose deploy has completed;
-    // `reservingDeployAddresses` catches one whose deploy is still in flight.
-    // The map is populated only after `spawn` succeeds, so the has-check alone
-    // leaves a window in which two frames both pass and the loser's catch below
-    // deletes the winner's live record; the reservation set closes it. A
-    // re-deploy after `undeploy` passes: `undeploy` drops the
-    // `activeSupervisors` entry, and a failed or completed deploy has already
-    // cleared its reservation.
-    if (
-      activeSupervisors.has(frame.agentAddress) ||
-      reservingDeployAddresses.has(frame.agentAddress)
-    ) {
+    // Refuse a deploy of an address already held BEFORE touching any durable
+    // state. The durable writes below (the run record, the materialized
+    // closure, step grants) are destructive overwrites of state owned by
+    // whatever deployment holds the address, and an address is deployed once.
+    const held = deployments.get(frame.agentAddress);
+    if (held !== undefined) {
       throw new Error(
-        `sidecar deploy router: ${frame.agentAddress} is already deployed; undeploy it before redeploying`,
+        `sidecar deploy router: ${frame.agentAddress} generation ${String(held.generation)} is ${held.state} here; generation ${String(frame.generation)} cannot deploy over it`,
       );
     }
 
@@ -2363,13 +2389,15 @@ export function createSidecarDeployRouter(deps: {
     // hook releases it at teardown). The spawn core owns unwinding the
     // supervisor and registrations it stands up; the slug is the caller's.
     claimSlug(runId, frame.agentAddress);
-    // Hold the single-flight reservation across the async body below and clear
-    // it in the finally. Everything above is synchronous and throws before any
-    // durable write, so the reservation is only needed from the first await
-    // here onward; the top-of-method guard already consults this set for a
-    // concurrent frame, and claimSlug/runId derivation above cannot yield
-    // control before this point.
-    reservingDeployAddresses.add(frame.agentAddress);
+    // Hold the address from here until the deploy settles. Everything above is
+    // synchronous and throws before any durable write, so the entry is only
+    // needed from the first await here onward, and nothing above can yield
+    // control to a concurrent frame before it is set.
+    const hosted: HostedDeployment = {
+      generation: frame.generation,
+      state: "deploying",
+    };
+    deployments.set(frame.agentAddress, hosted);
     try {
       // Source-ref apply -- the only deploy lineage. Materialize EXACTLY the
       // hub's frozen dependency `closure` and evaluate the PINNED CODE to the
@@ -2401,9 +2429,9 @@ export function createSidecarDeployRouter(deps: {
           maxAssetPayloadBytes: MAX_INLINE_ASSET_PAYLOAD_BYTES,
         });
       }
-      // Safe to reclaim the instance dir inside the helper: this deploy is
-      // single-flight-guarded (the reservation above) and the child is not yet
-      // spawned, so no live reader holds it.
+      // Safe to reclaim the instance dir inside the helper: the `deploying`
+      // entry set above refuses a concurrent deploy of the address, and the
+      // child is not yet spawned, so no live reader holds it.
       const applied = await materializeDeploymentClosure(
         dataDir,
         runId,
@@ -2458,6 +2486,7 @@ export function createSidecarDeployRouter(deps: {
       // frame/in-memory-only inputs: sources, session id, single-step hub key).
       const spec: WorkflowDeploySpec = {
         agentAddress: frame.agentAddress,
+        generation: frame.generation,
         definition: effectiveDefinition,
         sources: projection.sources,
         bodySources: buildBodySourcesMap(projection.referencedDefinitions),
@@ -2525,14 +2554,20 @@ export function createSidecarDeployRouter(deps: {
       });
 
       // Hand off to the shared spawn core.
-      return await spawnWorkflowRun(spec);
+      const result = await spawnWorkflowRun(spec, hosted);
+      hosted.state = "live";
+      return result;
     } catch (cause) {
       // Soft failure (this process survived, the deploy threw): drop the
-      // record and release the slug so the failed deploy is neither restored
-      // nor leaks its slug. The record delete must not mask the real deploy
-      // error or skip releasing the slug: a rejecting delete is logged (the
-      // orphaned record is a durable-state leak the next boot scan re-drives)
-      // but `cause` is still what propagates and the slug is still released.
+      // record, the hold, and the slug so the failed deploy is neither
+      // restored nor reported, nor leaks its slug. The record delete must not
+      // mask the real deploy error or skip releasing the slug: a rejecting
+      // delete is logged (the orphaned record is a durable-state leak the next
+      // boot scan re-drives) but `cause` is still what propagates and the slug
+      // is still released.
+      if (deployments.get(frame.agentAddress) === hosted) {
+        deployments.delete(frame.agentAddress);
+      }
       try {
         await deleteWorkflowRunRecord(dataDir, runId);
       } catch (cleanupError) {
@@ -2544,11 +2579,6 @@ export function createSidecarDeployRouter(deps: {
       }
       releaseSlug(runId, frame.agentAddress);
       throw cause;
-    } finally {
-      // Release the single-flight reservation whether the deploy succeeded or
-      // threw. On success the address is now in `activeSupervisors`, which the
-      // guard also consults, so a later re-deploy is still rejected.
-      reservingDeployAddresses.delete(frame.agentAddress);
     }
   }
 
@@ -2577,15 +2607,23 @@ export function createSidecarDeployRouter(deps: {
           "Workflow control run does not match the deployment address",
         );
       }
+      // A command is for the incarnation it names: another generation held
+      // here is not its to cancel or stop.
+      const hosted = deployments.get(frame.agentAddress);
+      if (hosted !== undefined && hosted.generation !== frame.generation) {
+        throw new Error(
+          `${frame.agentAddress} generation ${String(hosted.generation)} is hosted here, not generation ${String(frame.generation)}`,
+        );
+      }
       const stopping = workflowStopTasks.get(frame.agentAddress);
       if (stopping !== undefined) {
         await stopping;
         return reportControlOutcome(frame);
       }
-      if (reservingDeployAddresses.has(frame.agentAddress)) {
+      if (hosted?.state === "deploying") {
         throw new Error(WORKFLOW_CONTROL_INITIALIZING_ERROR);
       }
-      const wired = activeSupervisors.get(frame.agentAddress);
+      const wired = hosted?.wired;
       if (frame.action === "cancel" && wired !== undefined) {
         const cancelling = workflowCancellationTasks.get(wired);
         if (cancelling !== undefined) {
@@ -2617,15 +2655,27 @@ export function createSidecarDeployRouter(deps: {
       // while shutdown releases the cancellation handshake and kills the child.
       const pending = Promise.resolve().then(async () => {
         unregisterWorkflowRoutes(frame.agentAddress);
-        if (wired !== undefined) await wired.supervisor.shutdown();
-        if (activeSupervisors.get(frame.agentAddress) === wired) {
-          reclaimSelfTerminatedSupervisor({
-            runId: deriveDeploymentId(frame.agentAddress),
-            agentAddress: frame.agentAddress,
-          });
+        if (wired !== undefined) {
+          try {
+            await wired.supervisor.shutdown();
+          } finally {
+            await wired.closeOutbound();
+          }
+        }
+        // The incarnation stays held, stopped, and keeps its scratch and
+        // source material for the allocation's retention period, until the
+        // Hub undeploys it.
+        if (
+          hosted !== undefined &&
+          deployments.get(frame.agentAddress) === hosted
+        ) {
+          if (hosted.wired !== undefined) {
+            delete hosted.wired;
+            deps.transport.unregister(frame.agentAddress);
+          }
+          if (hosted.state === "live") hosted.state = "stopped";
         }
         // A stopped terminal deployment must not respawn on sidecar restart.
-        // Keep its scratch and source material for the allocation's retention period.
         if (stepStateDataDir !== undefined) {
           await deleteWorkflowRunRecord(
             stepStateDataDir,
@@ -2645,6 +2695,9 @@ export function createSidecarDeployRouter(deps: {
     async undeploy(frame): Promise<void> {
       const stopping = workflowStopTasks.get(frame.agentAddress);
       if (stopping !== undefined) await stopping;
+      // A newer incarnation of the address is not this frame's to remove.
+      const hosted = deployments.get(frame.agentAddress);
+      if (hosted !== undefined && hosted.generation > frame.generation) return;
       // Symmetric teardown for `deploy`: release the per-deployment
       // routing state both branches install so a stale `signal.deliver`
       // / `drain.deliver` / `mail.inbound` aimed at the dead deployment
@@ -2663,14 +2716,17 @@ export function createSidecarDeployRouter(deps: {
       // child, its IPC pipes, and its event-channel fd are released.
       // The supervisor's `shutdown()` is idempotent (returns early when
       // the supervisor is already in `idle`/`stopped`) and handles the
-      // kill + `exited` await internally. The map entry is removed
-      // before the await so a subsequent re-deploy on the same address
-      // cannot observe a stale handle even if `shutdown()` rejects.
-      const wired = activeSupervisors.get(frame.agentAddress);
-      if (wired !== undefined) activeSupervisors.delete(frame.agentAddress);
+      // kill + `exited` await internally. The incarnation stays held, as
+      // tearing down, until the teardown settles: the link keeps reporting it
+      // and stamps what it still sends with its generation.
+      if (hosted !== undefined) hosted.state = "tearing-down";
+      const wired = hosted?.wired;
       const dataDir = stepStateDataDir;
       // Every step runs even when an earlier one fails, and the failures are
-      // thrown together, so the answer names each step that failed.
+      // thrown together, so the answer names each step that failed. The run
+      // record goes last: after a crash mid-teardown it restores the copy on
+      // the next boot, whose hello reports it, and the Hub undeploys it again.
+      // Without the record nothing would report what the crash left behind.
       const failures: Error[] = [];
       const attempt = async (
         step: string,
@@ -2687,33 +2743,27 @@ export function createSidecarDeployRouter(deps: {
       // address, so nothing may keep sending as this one.
       try {
         if (wired !== undefined) {
-          await attempt("shutting its supervisor down", () =>
-            wired.supervisor.shutdown(),
-          );
+          await attempt("shutting its supervisor down", async () => {
+            try {
+              await wired.supervisor.shutdown();
+            } finally {
+              await wired.closeOutbound();
+            }
+          });
         }
+        // Reclaim the deployment's local state: its per-step scratch (the warm
+        // agent's workspace and any cold run subtrees), its materialized
+        // closure, its source stores and its local conversation copy, which
+        // only that deployment's respawns and restarts read. All run on every
+        // undeploy, not only when a supervisor was live, so state an
+        // interrupted deploy or a failed restore left is reclaimed too. No
+        // child holds any of it: a live one was shut down above.
         if (dataDir !== undefined) {
-          // Reclaim warm and cold scratch after teardown, including scratch an
-          // earlier stop retained after removing the supervisor registration.
-          await attempt("removing its step scratch", () =>
-            rm(pathJoin(dataDir, "workflow-step-state", runId), {
-              recursive: true,
-              force: true,
-            }),
-          );
-          // Drop the run record so a boot-time restore does not re-spawn a
-          // torn-down deployment, and reclaim a source-ref deployment's
-          // materialized closure tree, its durable source-asset store, and its
-          // local conversation copy, which only that deployment's respawns and
-          // restarts read. All run on every undeploy -- not only when a
-          // supervisor was active -- so state left behind by a
-          // crash-interrupted deploy, or by a source-ref restore that
-          // materialized the closure and then failed to spawn (registry down),
-          // is reclaimed too. A registry-sourced deployment never creates the
-          // source store, so its `force` remove is a no-op there.
-          await attempt("deleting its run record", () =>
-            deleteWorkflowRunRecord(dataDir, runId),
-          );
           const localState: [string, string][] = [
+            [
+              "removing its step scratch",
+              pathJoin(dataDir, "workflow-step-state", runId),
+            ],
             [
               "removing its closure",
               pathJoin(dataDir, "workflow-definition-closures", runId),
@@ -2736,6 +2786,9 @@ export function createSidecarDeployRouter(deps: {
               rm(dir, { recursive: true, force: true }),
             );
           }
+          await attempt("deleting its run record", () =>
+            deleteWorkflowRunRecord(dataDir, runId),
+          );
         }
         releaseSlug(runId, frame.agentAddress);
       } finally {
@@ -2750,6 +2803,11 @@ export function createSidecarDeployRouter(deps: {
           runId,
           agentAddress: frame.agentAddress,
         });
+        if (
+          hosted !== undefined &&
+          deployments.get(frame.agentAddress) === hosted
+        )
+          deployments.delete(frame.agentAddress);
       }
       if (failures.length > 0) {
         throw new AggregateError(
@@ -2845,6 +2903,7 @@ export function createSidecarDeployRouter(deps: {
 
           const spec: WorkflowDeploySpec = {
             agentAddress: record.agentAddress,
+            generation: record.generation,
             definition,
             sources: record.sources,
             // The record's unsealed body sources, re-delivered to the run child
@@ -2882,22 +2941,28 @@ export function createSidecarDeployRouter(deps: {
           // of a permanently-unrestorable record here (an operator reclaims it
           // by undeploying the address).
           //
-          // Release only a slug THIS pass newly claimed: if the address is
-          // already live (its slug still held by the running deployment), the
-          // core's double-spawn guard throws, and freeing the slug then would
-          // strand a live deployment's collision guard. `claimSlug` is a
-          // no-op for an already-held (runId, address) pair, so the
-          // pre-claim check distinguishes the two.
-          const slugNewlyClaimed =
-            slugClaims.get(runId) !== record.agentAddress;
+          // An address already held keeps its slug and its hold: freeing
+          // either here would strand the running deployment's guards.
+          if (deployments.has(record.agentAddress)) {
+            throw new Error(
+              `sidecar deploy router: ${record.agentAddress} is already held; refusing to restore it again`,
+            );
+          }
           claimSlug(runId, record.agentAddress);
+          const hosted: HostedDeployment = {
+            generation: record.generation,
+            state: "deploying",
+          };
+          deployments.set(record.agentAddress, hosted);
           try {
-            await spawnWorkflowRun(spec);
-            logger.info`Restored workflow deployment for ${record.agentAddress}`;
+            await spawnWorkflowRun(spec, hosted);
+            hosted.state = "live";
+            logger.info`Restored workflow deployment for ${record.agentAddress} generation ${String(record.generation)}`;
           } catch (cause) {
-            if (slugNewlyClaimed) {
-              releaseSlug(runId, record.agentAddress);
+            if (deployments.get(record.agentAddress) === hosted) {
+              deployments.delete(record.agentAddress);
             }
+            releaseSlug(runId, record.agentAddress);
             throw cause;
           }
         } catch (cause) {
@@ -2906,15 +2971,15 @@ export function createSidecarDeployRouter(deps: {
         }
       }
     },
-    activeAddresses(): string[] {
-      // `activeSupervisors` is keyed by deployment run address and holds
-      // exactly the deployments with a live supervisor (deploy and restore
-      // add; undeploy and spawn-unwind remove), so its keys are the addresses
-      // this sidecar can currently route mail to.
-      return [...activeSupervisors.keys()];
+    incarnations(): HostedIncarnation[] {
+      return [...deployments].map(([address, hosted]) => ({
+        address,
+        generation: hosted.generation,
+        state: hosted.state,
+      }));
     },
     reEmitParkedCorrelations(address: string): void {
-      const wired = activeSupervisors.get(address);
+      const wired = deployments.get(address)?.wired;
       if (wired === undefined) {
         // Edge boundary: the hub reports this address routable but no live
         // supervisor owns it -- a deployment torn down, or not yet respawned.
@@ -2968,9 +3033,31 @@ export function deriveSidecarMailAuditRef(runId: string): (
 export function createSidecarWorkflowSupervisor(
   opts: CreateSidecarWorkflowSupervisorOpts,
 ): SidecarWorkflowSupervisor {
-  const mailBus: HubTransportMailBusAdapter = wrapHubTransportAsMailBus(
-    opts.transport,
-  );
+  // The link stamps outbound mail with the incarnation it holds for the
+  // sender address, so a send must not outlive its deployment's teardown:
+  // `closeOutbound` refuses new sends and waits for the ones in flight.
+  const transportBus = wrapHubTransportAsMailBus(opts.transport);
+  const sendsInFlight = new Set<Promise<SendReceipt>>();
+  let outboundClosed = false;
+  const mailBus: HubTransportMailBusAdapter = {
+    ...transportBus,
+    sendOutbound(senderAddress, message) {
+      if (outboundClosed) {
+        return Promise.reject(
+          new Error(
+            `${opts.deploymentMailAddress} is being undeployed; refusing to send mail as it`,
+          ),
+        );
+      }
+      const send = transportBus.sendOutbound(senderAddress, message);
+      sendsInFlight.add(send);
+      const settle = (): void => {
+        sendsInFlight.delete(send);
+      };
+      send.then(settle, settle);
+      return send;
+    },
+  };
   const supervisorPrincipal: WorkflowRunSupervisorPrincipal = {
     kind: "supervisor",
     anchorRunId: opts.runId,
@@ -3058,5 +3145,9 @@ export function createSidecarWorkflowSupervisor(
     },
     getCredentialsSnapshot: () => supervisor.getCredentialsSnapshot(),
     onRunStart,
+    async closeOutbound() {
+      outboundClosed = true;
+      await Promise.allSettled([...sendsInFlight]);
+    },
   };
 }

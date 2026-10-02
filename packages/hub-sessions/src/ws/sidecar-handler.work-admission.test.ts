@@ -6,6 +6,8 @@ import {
   createAllocatedRouter,
   createManualRetries,
   createMockWs,
+  helloFrame,
+  liveIncarnations,
   parsedFrames,
   TEST_IDENTITY,
   TEST_TARGET,
@@ -55,19 +57,20 @@ test("reconnect publishes readiness while replay admission is blocked", async ()
   router.handleOpen(second);
   router.handleMessage(
     second,
-    JSON.stringify({
-      type: "reconnect",
-      sidecarId: TEST_IDENTITY.sidecarId,
-      token: "token",
-      agentAddresses: [address],
-    }),
+    helloFrame(TEST_IDENTITY.sidecarId, liveIncarnations([address])),
   );
   try {
     await replayEntered.promise;
     expect(await router.isAllocatedSidecarReady(TEST_TARGET)).toBe(true);
     expect(readinessConfirmed).toBe(true);
     expect(connectionsReported).toBe(1);
-    expect(second.sent).toEqual([]);
+    // Only the welcome went out: the replay is still waiting on admission.
+    expect(second.sent).toEqual([
+      JSON.stringify({
+        type: "welcome",
+        routed: [{ address, generation: TEST_IDENTITY.generation }],
+      }),
+    ]);
   } finally {
     releaseReplay.resolve(undefined);
     // This acknowledgement queues behind reconnect, so it also drains replay.
@@ -76,6 +79,7 @@ test("reconnect publishes readiness while replay admission is blocked", async ()
       JSON.stringify({
         type: "mail.inbound.ack",
         agentAddress: address,
+        generation: TEST_IDENTITY.generation,
         messageId: "mail-1",
       }),
     );
@@ -250,6 +254,7 @@ test("reports untracked relay mail when admission fails transiently", async () =
     JSON.stringify({
       type: "mail.outbound",
       senderAddress: address,
+      generation: TEST_IDENTITY.generation,
       rawMessage: "bWFpbA==",
       recipients: [address],
     }),
@@ -292,7 +297,7 @@ test.each(["retry", "reconnect"] as const)(
     let current = ws;
     if (mode === "reconnect") {
       router.handleClose(ws);
-      current = await connectAllocated(router, [address], "reconnect");
+      current = await connectAllocated(router, [address]);
     } else {
       retries.fireNext();
     }
@@ -329,7 +334,7 @@ test("a transient admission failure during reconnect remains retryable", async (
   const ws = await connectAllocated(router, [address]);
   await router.routeMail(address, "bWFpbA==", "sender@example.test", "mail-1");
   router.handleClose(ws);
-  const reconnected = await connectAllocated(router, [address], "reconnect");
+  const reconnected = await connectAllocated(router, [address]);
   expect(attempts).toBe(2);
   expect(retries.armedCount()).toBe(1);
   retries.fireNext();
@@ -339,6 +344,7 @@ test("a transient admission failure during reconnect remains retryable", async (
     JSON.stringify({
       type: "mail.inbound.ack",
       agentAddress: address,
+      generation: TEST_IDENTITY.generation,
       messageId: "mail-1",
     }),
   );
@@ -424,6 +430,7 @@ test("an acknowledgement during admission transaction completion is not lost", a
     JSON.stringify({
       type: "mail.inbound.ack",
       agentAddress: address,
+      generation: TEST_IDENTITY.generation,
       messageId: "mail-1",
     }),
   );
@@ -431,7 +438,7 @@ test("an acknowledgement during admission transaction completion is not lost", a
   commit.resolve(undefined);
   await delivery;
   router.handleClose(ws);
-  const reconnected = await connectAllocated(router, [address], "reconnect");
+  const reconnected = await connectAllocated(router, [address]);
   expect(
     parsedFrames(reconnected).filter(
       (frame) =>

@@ -10,7 +10,7 @@
 // that survives reconnect. Drive one mail trigger through the full inter-step chain
 // (RunStarted -> step1 -> SignalAwaited -> inject signal -> step2 ->
 // RunCompleted), `settleThenDrop` the hub link, wait for the deployment
-// address to re-route through allocation-authenticated reconnect, assert every
+// address to re-route through hello/welcome reconnect, assert every
 // per-step address is once again a workflow-derived address routing under
 // the re-established deployment, then fire a SECOND mail trigger and run the
 // whole inter-step chain again. The second run only exists because the
@@ -137,7 +137,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         domain: DEPLOYMENT_DOMAIN,
       });
       // The deployment address is a run address in the workflow routing family
-      // restored by allocation-authenticated reconnect.
+      // restored by hello/welcome reconnect.
       expect(isRunAddress(deploymentMailAddress)).toBe(true);
 
       // Every per-step derived address is a run address too, so each one belongs

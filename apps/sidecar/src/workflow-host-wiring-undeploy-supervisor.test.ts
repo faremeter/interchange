@@ -210,7 +210,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         unregisterDeployment: () => {
           /* no-op */
         },
-        reportDeploymentRefTips: async (agentAddress) => {
+        reportDeploymentRefTips: async ({ agentAddress }) => {
           refTipReports.push({
             agentAddress,
             childKilled: spawns.every((entry) => entry.killed),
@@ -265,6 +265,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
         // step's agent-state repo from `parseAgentId(agentAddress)`, which
         // requires the canonical `run_<id>@<domain>` instance shape.
         agentAddress: "run_undeploy-supervisor@example.com",
+        generation: 1,
         agentId: "undeploy-supervisor-agent",
         hubPublicKey: "hub-pk",
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the multi-step branch does not read config
@@ -402,6 +403,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
           action: "stop",
           runId: "run_undeploy-supervisor",
           agentAddress: frame.agentAddress,
+          generation: 1,
           reason: "Lifetime expired",
         } as const;
         const cancelling = router
@@ -442,6 +444,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
             action: "cancel",
             runId: "run_undeploy-supervisor",
             agentAddress: frame.agentAddress,
+            generation: 1,
             reason: "Lifetime expired",
           } as const;
           const cancelling = router.control(command);
@@ -468,6 +471,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
           type: "agent.undeploy",
           requestId: "undeploy-test",
           agentAddress: frame.agentAddress,
+          generation: 1,
           reason: "test undeploy",
         });
       }
@@ -482,6 +486,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
           type: "agent.undeploy",
           requestId: "undeploy-after-stop",
           agentAddress: frame.agentAddress,
+          generation: 1,
           reason: "Release retained scratch after stop",
         });
       }

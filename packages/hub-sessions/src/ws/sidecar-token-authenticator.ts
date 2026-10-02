@@ -23,11 +23,12 @@ export type CreateSidecarTokenAuthenticatorDeps = {
  * Builds a resolver that verifies a sidecar's presented token against the
  * per-sidecar hash stored on the `sidecar` table. The token is hashed with
  * SHA-256 and looked up by its digest; a matching row yields that row's id as
- * the verified identity together with every probe and allocation generation
- * the sidecar currently hosts. An unknown token, or one whose sidecar hosts
- * nothing current, resolves to `null` so the handshake is rejected. The
- * claimed `sidecarId` on the frame is ignored: identity is derived from the
- * token alone.
+ * the verified identity, and `resolveBindings` reads what that sidecar
+ * currently hosts. An unknown token resolves to `null` so the handshake is
+ * rejected. A sidecar that hosts nothing current still resolves: the handshake
+ * turns it away too, but first undeploys what it reports, since nothing else
+ * would. The claimed `sidecarId` on the frame is ignored: identity is derived
+ * from the token alone.
  */
 export function createSidecarCredentialResolver({
   db,
@@ -104,9 +105,7 @@ export function createSidecarCredentialResolver({
       columns: { id: true },
       where: eq(sidecar.tokenHashSha256, tokenHash),
     });
-    if (row === undefined) return null;
-    const bindings = await resolveBindings(row.id);
-    return bindings.length === 0 ? null : { sidecarId: row.id, bindings };
+    return row === undefined ? null : { sidecarId: row.id };
   }
 
   async function isCurrent(

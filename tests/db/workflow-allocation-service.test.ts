@@ -475,10 +475,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
           router.handleMessage(
             probeWs,
             JSON.stringify({
-              type: "register",
+              type: "hello",
               sidecarId: request.sidecarId,
               token: request.token,
-              agentAddresses: [],
+              incarnations: [],
             }),
           );
           return { kind: "accepted" };
@@ -522,18 +522,20 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(probeWs?.closed).toBe(false);
       expect(await credentialResolver.resolve(issuedToken)).toEqual({
         sidecarId: "sc-adoption-auth",
-        bindings: [
-          {
-            kind: "allocated",
-            sidecarId: "sc-adoption-auth",
-            allocationId: prepared.allocationId,
-            tenantId: TENANT_ID,
-            anchorRunId: prepared.anchorRunId,
-            workflowRunAddress: prepared.deploymentAddress,
-            generation: 0,
-          },
-        ],
       });
+      expect(
+        await credentialResolver.resolveBindings("sc-adoption-auth"),
+      ).toEqual([
+        {
+          kind: "allocated",
+          sidecarId: "sc-adoption-auth",
+          allocationId: prepared.allocationId,
+          tenantId: TENANT_ID,
+          anchorRunId: prepared.anchorRunId,
+          workflowRunAddress: prepared.deploymentAddress,
+          generation: 0,
+        },
+      ]);
     });
 
     test("releases adopted probe capacity when deployment persistence fails", async () => {

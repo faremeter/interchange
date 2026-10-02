@@ -29,6 +29,7 @@ import type {
   AgentDeployErrorFrame,
   AgentDeployFrame,
   AgentUndeployErrorFrame,
+  HostedIncarnation,
   PackRejectFrame,
   RepoId,
   SessionErrorFrame,
@@ -72,7 +73,6 @@ function ensureTestIdentity(sidecarId: string) {
 const acceptAnySidecar = {
   authenticateSidecar: async ({ sidecarId }: { sidecarId: string }) => ({
     sidecarId,
-    bindings: [ensureTestIdentity(sidecarId)],
   }),
   resolveSidecarBindings: async (sidecarId: string) => [
     ensureTestIdentity(sidecarId),
@@ -90,21 +90,21 @@ function prepareAllocationFrame(
   const frame = JSON.parse(data) as {
     type?: string;
     sidecarId?: string;
-    agentAddresses?: string[];
+    incarnations?: { address: string }[];
   };
-  if (
-    (frame.type !== "register" && frame.type !== "reconnect") ||
-    frame.sidecarId === undefined
-  ) {
-    return;
-  }
+  if (frame.type !== "hello" || frame.sidecarId === undefined) return;
   router.fenceAllocation(`allocation-${frame.sidecarId}`, 1);
   const identity = ensureTestIdentity(frame.sidecarId);
-  if (frame.agentAddresses?.length === 1) {
-    Object.assign(identity, {
-      workflowRunAddress: frame.agentAddresses[0],
-    });
+  const reported = frame.incarnations?.[0];
+  if (frame.incarnations?.length === 1 && reported !== undefined) {
+    Object.assign(identity, { workflowRunAddress: reported.address });
   }
+}
+
+// One live incarnation of `address` at the generation the test allocation
+// holds, for `getIncarnations`.
+function liveIncarnation(address: string) {
+  return [{ address, generation: 1, state: "live" as const }];
 }
 
 function allocationTargetFor(
@@ -251,7 +251,6 @@ function createMockSessionManager(): SessionManager {
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
     deleteAgentDir: () => Promise.resolve(),
-    getAddresses: () => [],
     getSessionId: (_agentAddress: string) => undefined,
   };
 }
@@ -370,6 +369,69 @@ function startTestServer(): TestEnv {
   return { server, router, agentEvents, outboundMail, sidecarFrames };
 }
 
+// A bare hub endpoint that welcomes every hello, answers pings, and records
+// every frame the sidecar sends. `send` delivers a frame to the sidecar that
+// connected last. `silence` stops answering that connection's pings, so the
+// sidecar drops it the way it drops a Hub it can no longer reach.
+function startWelcomingHub(): {
+  server: ReturnType<typeof Bun.serve>;
+  frames: string[];
+  send(frame: object): void;
+  silence(): void;
+} {
+  const frames: string[] = [];
+  const sockets: { send(data: string): void; silenced: boolean }[] = [];
+  const app = new Hono();
+  app.get(
+    "/ws",
+    upgradeWebSocket((_c) => {
+      const socket = {
+        send(_data: string): void {
+          throw new Error("The test hub socket is not open yet");
+        },
+        silenced: false,
+      };
+      return {
+        onOpen(_evt, ws) {
+          socket.send = (data) => {
+            ws.send(data);
+          };
+          sockets.push(socket);
+        },
+        onMessage(evt, ws) {
+          if (typeof evt.data !== "string") return;
+          frames.push(evt.data);
+          const frame: { type: string } = JSON.parse(evt.data);
+          if (frame.type === "hello") {
+            ws.send(JSON.stringify({ type: "welcome", routed: [] }));
+          }
+          if (frame.type === "ping" && !socket.silenced) {
+            ws.send(JSON.stringify({ type: "pong" }));
+          }
+        },
+      };
+    }),
+  );
+  const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+  const current = () => {
+    const socket = sockets.at(-1);
+    if (socket === undefined) {
+      throw new Error("No sidecar is connected to the test hub");
+    }
+    return socket;
+  };
+  return {
+    server,
+    frames,
+    send(frame) {
+      current().send(JSON.stringify(frame));
+    },
+    silence() {
+      current().silenced = true;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -394,7 +456,7 @@ afterAll(async () => {
  * Wire a workflow deployment for the reconnect path: mint an Ed25519
  * keypair and register it in the sidecar's keyStore so the deploy path
  * picks up the pinned key. After this, the deployment address named in
- * `getWorkflowAddresses` routes once the hub re-registers it on
+ * `getIncarnations` routes once the hub's `welcome` routes it on
  * (re)connect.
  */
 async function provisionDeploymentKey(
@@ -480,6 +542,7 @@ describe("sidecar↔hub integration", () => {
         type: "workflow.control",
         runId: "run_control",
         agentAddress: "run_control@example.test",
+        generation: 1,
         reason: "Stop",
       };
       first.receive({ ...command, action: "cancel", requestId: "cancel" });
@@ -495,10 +558,10 @@ describe("sidecar↔hub integration", () => {
       await stopped.promise;
       expect(second.sent.map((raw) => JSON.parse(raw))).toEqual([
         {
-          type: "register",
+          type: "hello",
           sidecarId: "control-reconnect",
           token: "test-token",
-          agentAddresses: [],
+          incarnations: [],
         },
         {
           type: "workflow.control.ack",
@@ -664,6 +727,9 @@ describe("sidecar↔hub integration", () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     const startLength = env.agentEvents.length;
+    // Events are best-effort and go out only once the Hub has routed the
+    // incarnation, which the welcome reports.
+    const routed = Promise.withResolvers<string[]>();
     const client = createHubLink({
       hubURL: `ws://localhost:${env.server.port}/ws`,
       sidecarId: "sc-events",
@@ -672,16 +738,17 @@ describe("sidecar↔hub integration", () => {
       transport,
       sessions,
       ...withTestDeployBindings(),
-      getWorkflowAddresses: () => ["agent-1@test.interchange"],
+      getIncarnations: () => liveIncarnation("agent-1@test.interchange"),
+      onWorkflowAddressesRoutable: (addresses) => {
+        routed.resolve(addresses);
+      },
     });
 
     client.connect();
     try {
-      await waitUntil(() =>
-        env.router.getConnectedSidecars().includes("sc-events"),
-      );
+      expect(await routed.promise).toEqual(["agent-1@test.interchange"]);
 
-      client.sendEvent("agent-1@test.interchange", "sess-1", {
+      client.sendEvent("agent-1@test.interchange", 1, "sess-1", {
         type: "reactor.start",
         seq: 0,
         data: {},
@@ -722,7 +789,7 @@ describe("sidecar↔hub integration", () => {
       transport,
       sessions,
       ...withTestDeployBindings(),
-      getWorkflowAddresses: () => ["sender@test.interchange"],
+      getIncarnations: () => liveIncarnation("sender@test.interchange"),
     });
 
     client.connect();
@@ -765,13 +832,13 @@ describe("sidecar↔hub integration", () => {
       transport,
       sessions,
       ...bindings,
-      getWorkflowAddresses: () => [deploymentAddress],
+      getIncarnations: () => liveIncarnation(deploymentAddress),
     });
 
     client.connect();
-    // Routability lags the connection: it lands only after the hub
-    // re-registers the announced addresses, so wait on the routable
-    // address directly.
+    // Routability lags the connection: it lands only after the hub routes
+    // the incarnations the hello reports, so wait on the routable address
+    // directly.
     await waitUntil(() =>
       env.router.getRoutableAddresses().includes(deploymentAddress),
     );
@@ -1424,11 +1491,11 @@ describe("sidecar↔hub integration", () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
     // The deployment address is what the hub routes mail to. The
-    // sidecar puts it on the register frame's `agentAddresses` list
-    // so the hub-side router accepts it as routable. Routing a
-    // mail.inbound for it goes through the link's switch case, which
-    // must consult mailInboundRouter first and -- on a non-null return
-    // -- skip transport.deliver and sessions.commitInboundMail.
+    // sidecar reports it in its hello so the hub-side router routes
+    // it. Routing a mail.inbound for it goes through the link's switch
+    // case, which must consult mailInboundRouter first and -- on a
+    // non-null return -- skip transport.deliver and
+    // sessions.commitInboundMail.
     const deploymentAddress = "run_mail1@integration.interchange";
 
     const routed: { address: string; bytes: Uint8Array }[] = [];
@@ -1449,7 +1516,7 @@ describe("sidecar↔hub integration", () => {
       sessions,
       ...bindings,
       mailInboundRouter,
-      getWorkflowAddresses: () => [deploymentAddress],
+      getIncarnations: () => liveIncarnation(deploymentAddress),
     });
 
     client.connect();
@@ -1508,7 +1575,7 @@ describe("sidecar↔hub integration", () => {
       sessions,
       ...bindings,
       drainInboundRouter,
-      getWorkflowAddresses: () => [deploymentAddress],
+      getIncarnations: () => liveIncarnation(deploymentAddress),
     });
 
     client.connect();
@@ -1566,7 +1633,7 @@ describe("sidecar↔hub integration", () => {
       sessions,
       ...bindings,
       sourcesInboundRouter,
-      getWorkflowAddresses: () => [deploymentAddress],
+      getIncarnations: () => liveIncarnation(deploymentAddress),
     });
 
     client.connect();
@@ -1613,7 +1680,7 @@ describe("sidecar↔hub integration", () => {
       sessions,
       ...bindings,
       sourcesInboundRouter,
-      getWorkflowAddresses: () => [deploymentAddress],
+      getIncarnations: () => liveIncarnation(deploymentAddress),
     });
 
     client.connect();
@@ -1658,7 +1725,7 @@ describe("sidecar↔hub integration", () => {
       sessions,
       ...bindings,
       sourcesInboundRouter,
-      getWorkflowAddresses: () => [deploymentAddress],
+      getIncarnations: () => liveIncarnation(deploymentAddress),
     });
 
     client.connect();
@@ -1697,7 +1764,7 @@ describe("sidecar↔hub integration", () => {
       ...bindings,
       // No sourcesInboundRouter: a request/ack frame must still be answered
       // or the hub hangs on its request timeout.
-      getWorkflowAddresses: () => [deploymentAddress],
+      getIncarnations: () => liveIncarnation(deploymentAddress),
     });
 
     client.connect();
@@ -1820,6 +1887,7 @@ describe("sidecar↔hub integration", () => {
       port: 0,
     });
 
+    const welcomed = Promise.withResolvers<boolean>();
     const client = createHubLink({
       hubURL: `ws://localhost:${wfrServer.port}/ws`,
       sidecarId: "sc-wfr-bootstrap-race",
@@ -1827,13 +1895,14 @@ describe("sidecar↔hub integration", () => {
       transport,
       sessions,
       ...withTestDeployBindings(),
+      onWorkflowAddressesRoutable: () => {
+        welcomed.resolve(true);
+      },
     });
 
     client.connect();
     try {
-      await waitUntil(() =>
-        wfrRouter.getConnectedSidecars().includes("sc-wfr-bootstrap-race"),
-      );
+      await welcomed.promise;
 
       // Deploy an agent so the sender's outbound pack frames carry a
       // routable address; otherwise the hub drops the push as
@@ -1859,6 +1928,7 @@ describe("sidecar↔hub integration", () => {
       // promise.
       const pushA = client.pushWorkflowRunPack({
         agentAddress,
+        generation: 1,
         repoId,
         pack,
         ref,
@@ -1866,6 +1936,7 @@ describe("sidecar↔hub integration", () => {
       });
       const pushB = client.pushWorkflowRunPack({
         agentAddress,
+        generation: 1,
         repoId,
         pack,
         ref,
@@ -1901,6 +1972,182 @@ describe("sidecar↔hub integration", () => {
 });
 
 describe("initial handshake on connect", () => {
+  test("reports every held incarnation and holds reports until the welcome", async () => {
+    const frames: string[] = [];
+    const sockets: { send(data: string): void }[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onOpen(_evt, ws) {
+          sockets.push(ws);
+        },
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") {
+            frames.push(evt.data);
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+
+    const incarnations = [
+      {
+        address: "live@integration.interchange",
+        generation: 3,
+        state: "live" as const,
+      },
+      {
+        address: "deploying@integration.interchange",
+        generation: 1,
+        state: "deploying" as const,
+      },
+      {
+        address: "leaving@integration.interchange",
+        generation: 2,
+        state: "tearing-down" as const,
+      },
+    ];
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-hello",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () => incarnations,
+    });
+    const types = () =>
+      frames.map((raw) => {
+        const frame: { type: string } = JSON.parse(raw);
+        return frame.type;
+      });
+
+    client.connect();
+    try {
+      // An event is best-effort and goes nowhere before the welcome; the
+      // register is owed and waits for it.
+      client.sendEvent("live@integration.interchange", 3, "sess-queued", {
+        type: "reactor.start",
+        seq: 0,
+        data: {},
+      });
+      client.sendSignalCorrelationRegister({
+        correlationId: "corr-queued",
+        runId: "run-1",
+        anchorRunId: "anchor-1",
+        agentAddress: "live@integration.interchange",
+        generation: 3,
+        kind: "approval",
+        approvalSnapshot: {
+          name: "tool",
+          description: "a tool",
+          inputSchema: {},
+          arguments: {},
+        },
+      });
+
+      await waitUntil(() => types().includes("hello"));
+      expect(types()).toEqual(["hello"]);
+      const hello: { sidecarId: string; incarnations: unknown } = JSON.parse(
+        frames[0]!,
+      );
+      expect(hello.sidecarId).toBe("sc-hello");
+      expect(hello.incarnations).toEqual(incarnations);
+
+      sockets[0]!.send(JSON.stringify({ type: "welcome", routed: [] }));
+      await waitUntil(() => types().includes("signal.correlation.register"));
+      expect(types()).toEqual(["hello", "signal.correlation.register"]);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
+  test("a register waiting for the welcome is not retried into the queue", async () => {
+    const frames: string[] = [];
+    const sockets: { send(data: string): void }[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onOpen(_evt, ws) {
+          sockets.push(ws);
+        },
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") {
+            frames.push(evt.data);
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const registerAckTimeoutMs = 10;
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-register-held",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      registerAckTimeoutMs,
+      registerAckMaxAttempts: 3,
+      getIncarnations: () => [],
+    });
+    const types = () =>
+      frames.map((raw) => {
+        const frame: { type: string } = JSON.parse(raw);
+        return frame.type;
+      });
+
+    const register = (correlationId: string) => {
+      client.sendSignalCorrelationRegister({
+        correlationId,
+        runId: "run-1",
+        anchorRunId: "anchor-1",
+        agentAddress: "live@integration.interchange",
+        generation: 1,
+        kind: "approval",
+        approvalSnapshot: {
+          name: "tool",
+          description: "a tool",
+          inputSchema: {},
+          arguments: {},
+        },
+      });
+    };
+    const registersFor = (correlationId: string) =>
+      frames.filter((raw) => {
+        const frame: { type: string; correlationId?: string } = JSON.parse(raw);
+        return (
+          frame.type === "signal.correlation.register" &&
+          frame.correlationId === correlationId
+        );
+      });
+
+    client.connect();
+    try {
+      await waitUntil(() => types().includes("hello"));
+      register("corr-held");
+      await new Promise((resolve) =>
+        setTimeout(resolve, registerAckTimeoutMs * 6),
+      );
+
+      sockets[0]!.send(JSON.stringify({ type: "welcome", routed: [] }));
+      await waitUntil(() => registersFor("corr-held").length === 1);
+      // "corr-marker" is the test's clock: its watchdog is armed after any the
+      // held register could still have, with the same interval, so its first
+      // retry cannot reach the socket before a retry of the held one would.
+      register("corr-marker");
+      await waitUntil(() => registersFor("corr-marker").length >= 2);
+      expect(registersFor("corr-held")).toHaveLength(1);
+      expect(types()[0]).toBe("hello");
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
   test("refuses a send that names more than one workflow deployment", async () => {
     const app = new Hono();
     app.get(
@@ -1919,6 +2166,9 @@ describe("initial handshake on connect", () => {
       transport,
       sessions: createMockSessionManager(),
       ...withTestDeployBindings(),
+      getIncarnations: () => [
+        { address: sender, generation: 1, state: "live" },
+      ],
     });
     const scoped = transport.getTransportFor(sender);
     try {
@@ -1944,7 +2194,7 @@ describe("initial handshake on connect", () => {
     }
   });
 
-  test("sends a reconnect before flushing queued frames", async () => {
+  test("sends a hello with no incarnations when none is held", async () => {
     const frames: string[] = [];
     const app = new Hono();
     app.get(
@@ -1959,42 +2209,90 @@ describe("initial handshake on connect", () => {
     );
     const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
 
-    const transport = createInMemoryTransport();
-    const restoredAddresses = ["plain-agent@integration.interchange"];
-
     const client = createHubLink({
       hubURL: `ws://localhost:${server.port}/ws`,
-      sidecarId: "sc-register",
+      sidecarId: "sc-hello-empty",
       token: "test-token",
-      transport,
+      transport: createInMemoryTransport(),
       sessions: createMockSessionManager(),
       ...withTestDeployBindings(),
-      getWorkflowAddresses: () => restoredAddresses,
+      getIncarnations: () => [],
     });
 
     client.connect();
     try {
-      client.sendEvent(restoredAddresses[0]!, "sess-queued", {
-        type: "reactor.start",
-        seq: 0,
-        data: {},
+      await waitUntil(() => frames.length > 0);
+      const parsed = frames.map((raw) => {
+        const frame: { type: string; incarnations?: [] } = JSON.parse(raw);
+        return frame;
       });
+      expect(parsed.map((frame) => frame.type)).toEqual(["hello"]);
+      expect(parsed[0]?.incarnations).toEqual([]);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
 
-      await waitUntil(() => frames.length === 2);
+  test("blocks every held address from the moment a connection opens until its welcome routes it", async () => {
+    const frames: string[] = [];
+    const sockets: { send(data: string): void }[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onOpen(_evt, ws) {
+          sockets.push(ws);
+        },
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") {
+            frames.push(evt.data);
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const events: string[] = [];
 
-      const parsed = frames.map((s) => JSON.parse(s));
-      const registerFrames = parsed.filter(
-        (f: { type: string }) => f.type === "register",
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-blocked-at-open",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () => [
+        {
+          address: "restored@integration.interchange",
+          generation: 1,
+          state: "live",
+        },
+      ],
+      onWorkflowAddressesUnroutable: (addresses) => {
+        events.push(`unroutable ${addresses.join(",")}`);
+      },
+      onWorkflowAddressesRoutable: (addresses) => {
+        events.push(`routable ${addresses.join(",")}`);
+      },
+    });
+
+    client.connect();
+    try {
+      await waitUntil(() => frames.length > 0);
+      expect(events).toEqual(["unroutable restored@integration.interchange"]);
+
+      sockets[0]!.send(
+        JSON.stringify({
+          type: "welcome",
+          routed: [
+            { address: "restored@integration.interchange", generation: 1 },
+          ],
+        }),
       );
-      const reconnectFrames = parsed.filter(
-        (f: { type: string }) => f.type === "reconnect",
-      );
-      expect(registerFrames).toHaveLength(0);
-      expect(reconnectFrames).toHaveLength(1);
-      expect(reconnectFrames[0].agentAddresses).toEqual(restoredAddresses);
-      expect(parsed.map((frame: { type: string }) => frame.type)).toEqual([
-        "reconnect",
-        "agent.event",
+      await waitUntil(() => events.length === 2);
+      expect(events).toEqual([
+        "unroutable restored@integration.interchange",
+        "routable restored@integration.interchange",
       ]);
     } finally {
       client.close();
@@ -2002,7 +2300,7 @@ describe("initial handshake on connect", () => {
     }
   });
 
-  test("ships only an empty register when no deployment was restored", async () => {
+  test("reconnects when the Hub does not answer hello in time", async () => {
     const frames: string[] = [];
     const app = new Hono();
     app.get(
@@ -2019,29 +2317,38 @@ describe("initial handshake on connect", () => {
 
     const client = createHubLink({
       hubURL: `ws://localhost:${server.port}/ws`,
-      sidecarId: "sc-register-empty",
+      sidecarId: "sc-unanswered",
       token: "test-token",
       transport: createInMemoryTransport(),
       sessions: createMockSessionManager(),
       ...withTestDeployBindings(),
-      getWorkflowAddresses: () => [],
+      welcomeTimeoutMs: 30,
+      reconnectDelayMs: 10,
     });
 
     client.connect();
     try {
-      await waitUntil(() =>
-        frames.some((frame) => JSON.parse(frame).type === "register"),
+      client.sendSignalCorrelationRegister({
+        correlationId: "corr-held",
+        runId: "run-1",
+        anchorRunId: "anchor-1",
+        agentAddress: "live@integration.interchange",
+        generation: 1,
+        kind: "approval",
+        approvalSnapshot: {
+          name: "tool",
+          description: "a tool",
+          inputSchema: {},
+          arguments: {},
+        },
+      });
+      await waitUntil(
+        () => frames.filter((s) => JSON.parse(s).type === "hello").length >= 2,
       );
-      const parsed = frames.map((frame) => JSON.parse(frame));
-      const registerFrames = parsed.filter(
-        (frame: { type: string }) => frame.type === "register",
+      // The queued register never went out: no connection was welcomed.
+      expect(frames.map((raw) => JSON.parse(raw).type)).toEqual(
+        frames.map(() => "hello"),
       );
-      const reconnectFrames = parsed.filter(
-        (frame: { type: string }) => frame.type === "reconnect",
-      );
-      expect(registerFrames).toHaveLength(1);
-      expect(registerFrames[0].agentAddresses).toEqual([]);
-      expect(reconnectFrames).toHaveLength(0);
     } finally {
       client.close();
       await server.stop(true);
@@ -2062,7 +2369,7 @@ describe("initial handshake on connect", () => {
       transport,
       sessions,
       ...withTestDeployBindings(),
-      getWorkflowAddresses: () => [],
+      getIncarnations: () => [],
     });
 
     try {
@@ -2072,6 +2379,7 @@ describe("initial handshake on connect", () => {
           runId: "run-1",
           anchorRunId: "dep-1",
           agentAddress: "run_dep@integration.interchange",
+          generation: 1,
           kind: "approval",
         }),
       ).toThrow(/corr-throw/);
@@ -2081,19 +2389,7 @@ describe("initial handshake on connect", () => {
   });
 
   test("sendSignalCorrelationRegister ships a register frame carrying the approval snapshot", async () => {
-    const frames: string[] = [];
-    const app = new Hono();
-    app.get(
-      "/ws",
-      upgradeWebSocket((_c) => ({
-        onMessage(evt, _ws) {
-          if (typeof evt.data === "string") {
-            frames.push(evt.data);
-          }
-        },
-      })),
-    );
-    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const { server, frames } = startWelcomingHub();
 
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
@@ -2105,7 +2401,7 @@ describe("initial handshake on connect", () => {
       transport,
       sessions,
       ...withTestDeployBindings(),
-      getWorkflowAddresses: () => [],
+      getIncarnations: () => [],
     });
 
     const snapshot = {
@@ -2117,14 +2413,13 @@ describe("initial handshake on connect", () => {
 
     client.connect();
     try {
-      await waitUntil(() =>
-        frames.some((s) => JSON.parse(s).type === "register"),
-      );
+      await waitUntil(() => frames.some((s) => JSON.parse(s).type === "hello"));
       client.sendSignalCorrelationRegister({
         correlationId: "corr-1",
         runId: "run-1",
         anchorRunId: "dep-1",
         agentAddress: "run_reg2@integration.interchange",
+        generation: 4,
         kind: "approval",
         approvalSnapshot: snapshot,
       });
@@ -2139,6 +2434,7 @@ describe("initial handshake on connect", () => {
           (f: { type: string }) => f.type === "signal.correlation.register",
         );
       expect(frame.correlationId).toBe("corr-1");
+      expect(frame.generation).toBe(4);
       expect(frame.snapshot).toEqual(snapshot);
     } finally {
       client.close();
@@ -2163,6 +2459,9 @@ describe("initial handshake on connect", () => {
           const frame: { type: string; correlationId?: string } = JSON.parse(
             evt.data,
           );
+          if (frame.type === "hello") {
+            ws.send(JSON.stringify({ type: "welcome", routed: [] }));
+          }
           if (
             frame.type === "signal.correlation.register" &&
             frame.correlationId === "corr-ack"
@@ -2190,7 +2489,7 @@ describe("initial handshake on connect", () => {
       transport,
       sessions,
       ...withTestDeployBindings(),
-      getWorkflowAddresses: () => [],
+      getIncarnations: () => [],
       // The watchdog here races a real round trip: the ack has to travel the
       // socket and be handled before the acked correlation's own watchdog
       // fires, or the retry this test forbids is the correct behaviour. At
@@ -2220,13 +2519,14 @@ describe("initial handshake on connect", () => {
     client.connect();
     try {
       await waitUntil(() =>
-        allFrames.some((s) => JSON.parse(s).type === "register"),
+        allFrames.some((s) => JSON.parse(s).type === "hello"),
       );
       client.sendSignalCorrelationRegister({
         correlationId: "corr-ack",
         runId: "run-1",
         anchorRunId: "dep-1",
         agentAddress: "run_reg_ack@integration.interchange",
+        generation: 1,
         kind: "approval",
         approvalSnapshot,
       });
@@ -2235,6 +2535,7 @@ describe("initial handshake on connect", () => {
         runId: "run-2",
         anchorRunId: "dep-1",
         agentAddress: "run_reg_ack@integration.interchange",
+        generation: 1,
         kind: "approval",
         approvalSnapshot,
       });
@@ -2250,6 +2551,470 @@ describe("initial handshake on connect", () => {
     }
   });
 
+  test("a push before the welcome sends nothing and fails as a lost connection", async () => {
+    const allFrames: string[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") allFrames.push(evt.data);
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-push-unwelcomed",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () =>
+        liveIncarnation("run_early@integration.interchange"),
+    });
+
+    client.connect();
+    try {
+      await waitUntil(() =>
+        allFrames.some((s) => JSON.parse(s).type === "hello"),
+      );
+      await expect(
+        client.pushWorkflowRunPack({
+          agentAddress: "run_early@integration.interchange",
+          generation: 1,
+          repoId: {
+            kind: "workflow-run",
+            id: "run_early-integration-interchange",
+          },
+          pack: new Uint8Array([1, 2, 3]),
+          ref: "refs/heads/events",
+          commitSha: "a".repeat(40),
+        }),
+      ).rejects.toThrow("Connection lost");
+      expect(
+        allFrames.filter((s) => JSON.parse(s).type.startsWith("repo.pack.")),
+      ).toEqual([]);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
+  test("an undeploy of an older generation than the one held leaves it alone", async () => {
+    const address = "run_lifecycle@integration.interchange";
+    let held: HostedIncarnation | undefined;
+    const calls: string[] = [];
+    const hub = startWelcomingHub();
+    const client = createHubLink({
+      hubURL: `ws://localhost:${hub.server.port}/ws`,
+      sidecarId: "sc-lifecycle",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      deployRouter: {
+        async deploy(frame) {
+          calls.push(`deploy ${String(frame.generation)}`);
+          held = {
+            address: frame.agentAddress,
+            generation: frame.generation,
+            state: "live",
+          };
+          return { publicKey: "aa".repeat(32) };
+        },
+        async undeploy(frame) {
+          calls.push(`undeploy ${String(frame.generation)}`);
+          held = undefined;
+        },
+      },
+      getIncarnations: () => (held === undefined ? [] : [held]),
+    });
+    const answerTo = async (requestId: string) => {
+      const answers = () =>
+        hub.frames
+          .map((s): { requestId?: string } => JSON.parse(s))
+          .filter((frame) => frame.requestId === requestId);
+      await waitUntil(() => answers().length > 0);
+      return answers()[0];
+    };
+    const deploy = (requestId: string, generation: number) => {
+      hub.send({
+        type: "agent.deploy",
+        requestId,
+        agentAddress: address,
+        generation,
+        agentId: TEST_CONFIG.agentId,
+        config: TEST_CONFIG,
+        hubPublicKey: "a".repeat(64),
+        provisionStep: true,
+      });
+    };
+    const undeploy = (requestId: string, generation: number) => {
+      hub.send({
+        type: "agent.undeploy",
+        requestId,
+        agentAddress: address,
+        generation,
+        reason: "test",
+      });
+    };
+
+    client.connect();
+    try {
+      await waitUntil(() =>
+        hub.frames.some((s) => JSON.parse(s).type === "hello"),
+      );
+      deploy("deploy-2", 2);
+      expect(await answerTo("deploy-2")).toMatchObject({
+        type: "agent.deploy.ack",
+        generation: 2,
+      });
+
+      // Nothing of generation 1 is held here, so its undeploy does not reach
+      // the router.
+      undeploy("undeploy-1", 1);
+      expect(await answerTo("undeploy-1")).toMatchObject({
+        type: "agent.undeploy.ack",
+        generation: 1,
+      });
+      expect(calls).toEqual(["deploy 2"]);
+
+      undeploy("undeploy-2", 2);
+      expect(await answerTo("undeploy-2")).toMatchObject({
+        type: "agent.undeploy.ack",
+        generation: 2,
+      });
+      expect(calls).toEqual(["deploy 2", "undeploy 2"]);
+    } finally {
+      client.close();
+      await hub.server.stop(true);
+    }
+  });
+
+  test("an undeploy whose connection closed before its turn still runs, and only its answers are dropped", async () => {
+    const address = "run_orphan@integration.interchange";
+    const calls: string[] = [];
+    const deploying = Promise.withResolvers<boolean>();
+    const finishDeploy = Promise.withResolvers<boolean>();
+    const hub = startWelcomingHub();
+    const client = createHubLink({
+      hubURL: `ws://localhost:${hub.server.port}/ws`,
+      sidecarId: "sc-orphan",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      pingIntervalMs: 20,
+      reconnectDelayMs: 10,
+      deployRouter: {
+        async deploy() {
+          calls.push("deploy");
+          deploying.resolve(true);
+          await finishDeploy.promise;
+          return { publicKey: "aa".repeat(32) };
+        },
+        async undeploy() {
+          calls.push("undeploy");
+        },
+      },
+    });
+    const hellos = () =>
+      hub.frames.filter((s) => JSON.parse(s).type === "hello");
+
+    client.connect();
+    try {
+      await waitUntil(() => hellos().length === 1);
+      hub.send({
+        type: "agent.deploy",
+        requestId: "deploy-1",
+        agentAddress: address,
+        generation: 1,
+        agentId: TEST_CONFIG.agentId,
+        config: TEST_CONFIG,
+        hubPublicKey: "a".repeat(64),
+        provisionStep: true,
+      });
+      await deploying.promise;
+      // The undeploy waits on the address's lane behind the deploy, and the
+      // connection that carried it drops before its turn comes.
+      hub.send({
+        type: "agent.undeploy",
+        requestId: "undeploy-1",
+        agentAddress: address,
+        generation: 1,
+        reason: "released",
+      });
+      hub.silence();
+      await waitUntil(() => hellos().length === 2);
+
+      finishDeploy.resolve(true);
+      // A later undeploy of the address runs behind the orphaned one on its
+      // lane, so its answer comes after any the orphaned one could send.
+      hub.send({
+        type: "agent.undeploy",
+        requestId: "undeploy-2",
+        agentAddress: address,
+        generation: 1,
+        reason: "released",
+      });
+      const answered = () =>
+        hub.frames.flatMap((raw) => {
+          const frame: { requestId?: string } = JSON.parse(raw);
+          return frame.requestId === undefined ? [] : [frame.requestId];
+        });
+      await waitUntil(() => answered().includes("undeploy-2"));
+      expect(calls).toEqual(["deploy", "undeploy", "undeploy"]);
+      expect(answered()).toEqual(["undeploy-2"]);
+    } finally {
+      client.close();
+      await hub.server.stop(true);
+    }
+  });
+
+  test("an undeployed incarnation's queued reports and register retries never reach the Hub", async () => {
+    const frames: string[] = [];
+    const sockets: { send(data: string): void }[] = [];
+    const app = new Hono();
+    app.get(
+      "/ws",
+      upgradeWebSocket((_c) => ({
+        onOpen(_evt, ws) {
+          sockets.push(ws);
+        },
+        onMessage(evt, _ws) {
+          if (typeof evt.data === "string") {
+            frames.push(evt.data);
+          }
+        },
+      })),
+    );
+    const server = Bun.serve({ fetch: app.fetch, websocket, port: 0 });
+    const removed = "run_removed@integration.interchange";
+    const neighbour = "run_neighbour@integration.interchange";
+    const held = new Map<string, HostedIncarnation>([
+      [removed, { address: removed, generation: 1, state: "live" }],
+      [neighbour, { address: neighbour, generation: 1, state: "live" }],
+    ]);
+    const welcomed = Promise.withResolvers<undefined>();
+    const client = createHubLink({
+      hubURL: `ws://localhost:${server.port}/ws`,
+      sidecarId: "sc-forget",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      registerAckTimeoutMs: 20,
+      registerAckMaxAttempts: 3,
+      getIncarnations: () => [...held.values()],
+      onWorkflowAddressesRoutable: () => {
+        welcomed.resolve(undefined);
+      },
+      deployRouter: {
+        async deploy() {
+          throw new Error("unused");
+        },
+        async undeploy(frame) {
+          held.delete(frame.agentAddress);
+        },
+      },
+    });
+    const register = (agentAddress: string, correlationId: string) => {
+      client.sendSignalCorrelationRegister({
+        correlationId,
+        runId: "run-1",
+        anchorRunId: "anchor-1",
+        agentAddress,
+        generation: 1,
+        kind: "approval",
+        approvalSnapshot: {
+          name: "tool",
+          description: "a tool",
+          inputSchema: {},
+          arguments: {},
+        },
+      });
+    };
+    const sent = () =>
+      frames.map(
+        (raw): { type: string; requestId?: string; correlationId?: string } =>
+          JSON.parse(raw),
+      );
+
+    client.connect();
+    try {
+      await waitUntil(() => frames.length > 0);
+      register(removed, "corr-removed");
+      sockets[0]!.send(
+        JSON.stringify({
+          type: "agent.undeploy",
+          requestId: "undeploy-removed",
+          agentAddress: removed,
+          generation: 1,
+          reason: "released",
+        }),
+      );
+      await waitUntil(() =>
+        sent().some((frame) => frame.requestId === "undeploy-removed"),
+      );
+
+      sockets[0]!.send(JSON.stringify({ type: "welcome", routed: [] }));
+      await welcomed.promise;
+      // Registered once welcomed and never acknowledged, the neighbour's
+      // register retries to the cap; the removed one's were armed first and
+      // would have fired too.
+      register(neighbour, "corr-neighbour");
+      await waitUntil(
+        () =>
+          sent().filter((frame) => frame.correlationId === "corr-neighbour")
+            .length === 3,
+      );
+      expect(
+        sent().filter((frame) => frame.correlationId === "corr-removed"),
+      ).toEqual([]);
+    } finally {
+      client.close();
+      await server.stop(true);
+    }
+  });
+
+  test("a Hub frame for an incarnation not held live is refused", async () => {
+    const address = "run_refused@integration.interchange";
+    const hub = startWelcomingHub();
+    const drained: number[] = [];
+    const client = createHubLink({
+      hubURL: `ws://localhost:${hub.server.port}/ws`,
+      sidecarId: "sc-refused",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () => [{ address, generation: 2, state: "live" }],
+      drainInboundRouter: {
+        async tryRoute(frame) {
+          drained.push(frame.generation);
+          return true;
+        },
+      },
+      sourcesInboundRouter: {
+        async tryRoute() {
+          return true;
+        },
+      },
+    });
+
+    client.connect();
+    try {
+      await waitUntil(() =>
+        hub.frames.some((s) => JSON.parse(s).type === "hello"),
+      );
+      // Frames for one address are handled in arrival order, so once the
+      // current generation's drain is routed, the two before it were handled.
+      hub.send({
+        type: "drain.deliver",
+        agentAddress: address,
+        generation: 1,
+        deadlineMs: 10,
+      });
+      hub.send({
+        type: "sources.update",
+        requestId: "sources-stale",
+        agentAddress: address,
+        generation: 1,
+        sources: TEST_CONFIG.sources,
+        defaultSource: TEST_CONFIG.defaultSource,
+      });
+      hub.send({
+        type: "drain.deliver",
+        agentAddress: address,
+        generation: 2,
+        deadlineMs: 10,
+      });
+      await waitUntil(() => drained.length > 0);
+      expect(drained).toEqual([2]);
+      const answer = () =>
+        hub.frames
+          .map((s): { requestId?: string } => JSON.parse(s))
+          .find((frame) => frame.requestId === "sources-stale");
+      await waitUntil(() => answer() !== undefined);
+      expect(answer()).toMatchObject({
+        type: "session.error",
+        error: `${address} generation 2 is hosted here, not generation 1`,
+      });
+    } finally {
+      client.close();
+      await hub.server.stop(true);
+    }
+  });
+
+  test("refuses a Hub pack for an address it holds", async () => {
+    const address = "run_held@integration.interchange";
+    const repoId = {
+      kind: "workflow-run",
+      id: "run_held-integration-interchange",
+    };
+    const applied: string[] = [];
+    const hub = startWelcomingHub();
+    const client = createHubLink({
+      hubURL: `ws://localhost:${hub.server.port}/ws`,
+      sidecarId: "sc-held-pack",
+      token: "test-token",
+      transport: createInMemoryTransport(),
+      sessions: createMockSessionManager(),
+      ...withTestDeployBindings(),
+      getIncarnations: () => [{ address, generation: 2, state: "live" }],
+      applyWorkflowRunPack: async (args) => {
+        applied.push(args.commitSha);
+      },
+    });
+    const sendPackFor = (transferId: string, generation: number) => {
+      hub.send({
+        type: "repo.pack.push",
+        agentAddress: address,
+        generation,
+        repoId,
+        transferId,
+        seq: 0,
+        data: "BwgJ",
+      });
+      hub.send({
+        type: "repo.pack.done",
+        agentAddress: address,
+        generation,
+        repoId,
+        transferId,
+        ref: "refs/heads/events",
+        commitSha: "c".repeat(40),
+      });
+    };
+    const answerTo = async (transferId: string) => {
+      const answers = () =>
+        hub.frames
+          .map((raw): { transferId?: string } => JSON.parse(raw))
+          .filter((frame) => frame.transferId === transferId);
+      await waitUntil(() => answers().length > 0);
+      return answers()[0];
+    };
+
+    client.connect();
+    try {
+      await waitUntil(() =>
+        hub.frames.some((s) => JSON.parse(s).type === "hello"),
+      );
+      for (const generation of [2, 1]) {
+        sendPackFor(`seed-${String(generation)}`, generation);
+        expect(await answerTo(`seed-${String(generation)}`)).toMatchObject({
+          type: "repo.pack.reject",
+          reason: "conflict",
+        });
+      }
+      expect(applied).toEqual([]);
+    } finally {
+      client.close();
+      await hub.server.stop(true);
+    }
+  });
+
   test("an unacked register is retried on the watchdog up to the cap", async () => {
     const allFrames: string[] = [];
     const app = new Hono();
@@ -2257,8 +3022,13 @@ describe("initial handshake on connect", () => {
       "/ws",
       upgradeWebSocket((_c) => ({
         // Deliberately never ack the register, so the client's watchdog fires.
-        onMessage(evt, _ws) {
-          if (typeof evt.data === "string") allFrames.push(evt.data);
+        onMessage(evt, ws) {
+          if (typeof evt.data !== "string") return;
+          allFrames.push(evt.data);
+          const frame: { type: string } = JSON.parse(evt.data);
+          if (frame.type === "hello") {
+            ws.send(JSON.stringify({ type: "welcome", routed: [] }));
+          }
         },
       })),
     );
@@ -2267,6 +3037,7 @@ describe("initial handshake on connect", () => {
     const transport = createInMemoryTransport();
     const sessions = createMockSessionManager();
 
+    const welcomed = Promise.withResolvers<undefined>();
     const client = createHubLink({
       hubURL: `ws://localhost:${server.port}/ws`,
       sidecarId: "sc-register-retry",
@@ -2274,9 +3045,12 @@ describe("initial handshake on connect", () => {
       transport,
       sessions,
       ...withTestDeployBindings(),
-      getWorkflowAddresses: () => [],
+      getIncarnations: () => [],
       registerAckTimeoutMs: 40,
       registerAckMaxAttempts: 3,
+      onWorkflowAddressesRoutable: () => {
+        welcomed.resolve(undefined);
+      },
     });
 
     const registersFor = (correlationId: string): string[] =>
@@ -2297,14 +3071,15 @@ describe("initial handshake on connect", () => {
 
     client.connect();
     try {
-      await waitUntil(() =>
-        allFrames.some((s) => JSON.parse(s).type === "register"),
-      );
+      // A register sent before the welcome is only queued, and its watchdog
+      // gives it up if it fires before the welcome lands.
+      await welcomed.promise;
       client.sendSignalCorrelationRegister({
         correlationId: "corr-retry",
         runId: "run-1",
         anchorRunId: "dep-1",
         agentAddress: "run_reg_retry@integration.interchange",
+        generation: 1,
         kind: "approval",
         approvalSnapshot,
       });
@@ -2322,6 +3097,7 @@ describe("initial handshake on connect", () => {
         runId: "run-2",
         anchorRunId: "dep-1",
         agentAddress: "run_reg_retry@integration.interchange",
+        generation: 1,
         kind: "approval",
         approvalSnapshot,
       });
@@ -2369,13 +3145,14 @@ describe("answerMalformedRequestFrame", () => {
     });
   });
 
-  test("answers a malformed agent.deploy with agent.deploy.error naming its request", () => {
+  test("answers a malformed agent.deploy with agent.deploy.error naming its request and incarnation", () => {
     const sent: Answer[] = [];
     const answered = answerMalformedRequestFrame(
       {
         type: "agent.deploy",
         requestId: "req-deploy",
         agentAddress: "run_deploy@example.com",
+        generation: 3,
         agentId: "x",
       },
       "config must be an object",
@@ -2387,8 +3164,25 @@ describe("answerMalformedRequestFrame", () => {
       type: "agent.deploy.error",
       requestId: "req-deploy",
       agentAddress: "run_deploy@example.com",
+      generation: 3,
       error: expect.stringMatching(/malformed agent.deploy frame/),
     });
+  });
+
+  test("does not answer a malformed agent.deploy whose generation is unrecoverable", () => {
+    const sent: Answer[] = [];
+    const answered = answerMalformedRequestFrame(
+      {
+        type: "agent.deploy",
+        requestId: "req-deploy",
+        agentAddress: "run_deploy@example.com",
+        generation: "three",
+      },
+      "generation must be a number",
+      (frame) => sent.push(frame),
+    );
+    expect(answered).toBe(false);
+    expect(sent).toHaveLength(0);
   });
 
   test("drops an unhandled request-shaped frame instead of answering it", () => {
@@ -2418,6 +3212,7 @@ describe("answerMalformedRequestFrame", () => {
         type: "agent.undeploy",
         requestId: "req-undeploy",
         agentAddress: "run_undeploy@example.com",
+        generation: 2,
       },
       "reason must be a string",
       (frame) => sent.push(frame),
@@ -2427,6 +3222,7 @@ describe("answerMalformedRequestFrame", () => {
       type: "agent.undeploy.error",
       requestId: "req-undeploy",
       agentAddress: "run_undeploy@example.com",
+      generation: 2,
       error: expect.stringMatching(/malformed agent.undeploy frame/),
     });
   });
