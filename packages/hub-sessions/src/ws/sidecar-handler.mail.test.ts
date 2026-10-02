@@ -243,6 +243,87 @@ describe("SidecarRouter allocation mail durability", () => {
     ]);
   });
 
+  test("giving up on dispatched mail leaves it to its dispatch row instead of reporting it undelivered", async () => {
+    const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+    const retries = createManualRetries(10);
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 10,
+      mailAckMaxRetries: 0,
+      scheduleTimeout: retries.scheduleTimeout,
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    await connectAllocated(router, [TEST_IDENTITY.workflowRunAddress]);
+
+    await router.sendWorkflowRunDispatchToAllocation(
+      TEST_TARGET,
+      TEST_IDENTITY.workflowRunAddress,
+      TEST_IDENTITY.anchorRunId,
+      [],
+      "ZGlzcGF0Y2hlZA==",
+      TEST_SENDER,
+      "mid-dispatched",
+    );
+    await router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "cGxhaW4=",
+      TEST_SENDER,
+      "mid-plain",
+    );
+    retries.fireNext();
+    retries.fireNext();
+    await tick();
+
+    expect(retries.armedCount()).toBe(0);
+    expect(undelivered).toEqual([
+      {
+        rawMessage: "cGxhaW4=",
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      },
+    ]);
+  });
+
+  test("retained dispatched mail that expires is left to its dispatch row", async () => {
+    const undelivered: { rawMessage: string; recipients: string[] }[] = [];
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 10_000,
+      mailHoldTTLMs: 20,
+    });
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    const first = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    await router.sendWorkflowRunDispatchToAllocation(
+      TEST_TARGET,
+      TEST_IDENTITY.workflowRunAddress,
+      TEST_IDENTITY.anchorRunId,
+      [],
+      "ZGlzcGF0Y2hlZA==",
+      TEST_SENDER,
+      "mid-dispatched",
+    );
+    await router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "cGxhaW4=",
+      TEST_SENDER,
+      "mid-plain",
+    );
+    router.handleClose(first);
+
+    // One timer expires both entries, so the plain one's report says the
+    // dispatched one has been given up too.
+    await waitUntil(() => undelivered.length >= 1);
+    expect(undelivered).toEqual([
+      {
+        rawMessage: "cGxhaW4=",
+        recipients: [TEST_IDENTITY.workflowRunAddress],
+      },
+    ]);
+  });
+
   test("mail without a message id is not tracked for redelivery", async () => {
     const retries = createManualRetries(10);
     const router = createAllocatedRouter({
