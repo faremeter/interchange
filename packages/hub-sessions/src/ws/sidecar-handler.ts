@@ -640,7 +640,7 @@ export type SidecarRouterConfig = {
    * the request timeout. */
   probeTimeoutMs?: number;
   /** How long un-acknowledged mail and mail awaiting its sender's key are
-   * held for a delivery before it is surfaced as undelivered. */
+   * held for a delivery before the Hub gives up on it. */
   mailHoldTTLMs?: number;
   pingTimeoutMs?: number;
   /** Interval between redelivery attempts of a connected-window `mail.inbound`
@@ -883,6 +883,12 @@ export function createSidecarRouter(
     };
     /** Present for a durable trigger pinned to a provisioned allocation. */
     allocatedTarget?: AllocatedSidecarTarget;
+    /**
+     * Whether a durable dispatch row stands behind the mail. The row delivers
+     * it again once a generation of the deployment is next ready, so the Hub
+     * giving up on it loses nothing.
+     */
+    dispatchBacked: boolean;
   };
   const pendingMail = new Map<string, Map<string, PendingMailEntry>>();
   // agentAddress → retention TTL timer for un-acked pending mail held across a
@@ -1025,7 +1031,26 @@ export function createSidecarRouter(
       cancelRetry: scheduleMailRetry(agentAddress, messageId),
       ...(runGrants !== undefined ? { runGrants } : {}),
       ...(allocatedTarget !== undefined ? { allocatedTarget } : {}),
+      // Only a workflow dispatch pins its mail to an allocation.
+      dispatchBacked: allocatedTarget !== undefined,
     });
+  }
+
+  // A pending mail the Hub stops redelivering. Mail a dispatch row stands
+  // behind is not lost: the row delivers it again once a generation of the
+  // deployment is next ready. Any other mail is surfaced as undelivered.
+  function abandonPendingMail(entry: PendingMailEntry, reason: string): void {
+    if (entry.dispatchBacked) {
+      logger.warn`Stopped redelivering mail ${entry.messageId} to ${entry.agentAddress}, which its dispatch row delivers again: ${reason}`;
+      return;
+    }
+    if (entry.frame.type === "mail.inbound") {
+      events.emit("mail.outbound.undelivered", {
+        rawMessage: entry.frame.rawMessage,
+        recipients: [entry.agentAddress],
+      });
+    }
+    logger.warn`Dropping un-acked mail ${entry.messageId} for ${entry.agentAddress}: ${reason}`;
   }
 
   // Resolve the frame that must precede a redelivery of a trigger mail on the
@@ -1225,17 +1250,13 @@ export function createSidecarRouter(
     if (entry.attempts >= mailAckMaxRetries) {
       // The sidecar never acked within the retry budget. The ack is withheld
       // precisely because the sidecar's durable inbox write failed, so the
-      // mail was NOT delivered: surface it as undelivered so the host can relay
-      // it onto an external transport, then drop the pending entry so its timer
-      // does not leak.
-      if (entry.frame.type === "mail.inbound") {
-        events.emit("mail.outbound.undelivered", {
-          rawMessage: entry.frame.rawMessage,
-          recipients: [agentAddress],
-        });
-      }
+      // mail was NOT delivered. Drop the pending entry so its timer does not
+      // leak.
       deletePendingMail(byId, agentAddress, messageId);
-      logger.warn`Gave up redelivering mail ${messageId} to ${agentAddress} after ${String(entry.attempts)} un-acked attempt(s)`;
+      abandonPendingMail(
+        entry,
+        `no acknowledgement after ${String(entry.attempts)} redelivery attempt(s)`,
+      );
       return;
     }
 
@@ -1277,8 +1298,7 @@ export function createSidecarRouter(
   // retry timers are cleared -- retrying over the dead socket is pointless --
   // but the entries are KEPT so a verified reconnect can redeliver them. A
   // retention TTL bounds the hold so a sidecar that never reconnects does not
-  // leak; on expiry the still-un-acked entries are surfaced as
-  // `mail.outbound.undelivered` so the host can relay them, since a withheld
+  // leak; on expiry the still-un-acked entries are given up, since a withheld
   // ack means the sidecar's durable write never landed.
   function retainPendingMailForAddress(agentAddress: string): void {
     const byId = pendingMail.get(agentAddress);
@@ -1290,15 +1310,11 @@ export function createSidecarRouter(
       pendingMailRetention.delete(agentAddress);
       const expired = pendingMail.get(agentAddress);
       pendingMail.delete(agentAddress);
-      if (expired !== undefined && expired.size > 0) {
-        for (const entry of expired.values()) {
-          if (entry.frame.type !== "mail.inbound") continue;
-          events.emit("mail.outbound.undelivered", {
-            rawMessage: entry.frame.rawMessage,
-            recipients: [agentAddress],
-          });
-        }
-        logger.warn`Dropping ${String(expired.size)} un-acked message(s) for ${agentAddress}: pending-mail retention TTL expired`;
+      for (const entry of expired?.values() ?? []) {
+        abandonPendingMail(
+          entry,
+          "no reconnect redelivered it within the retention time",
+        );
       }
     }, mailHoldTTLMs);
     pendingMailRetention.set(agentAddress, timer);
