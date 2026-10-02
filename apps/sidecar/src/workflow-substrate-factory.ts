@@ -47,7 +47,6 @@ import {
 } from "@intx/inference";
 import { loadAdapterRegistry } from "@intx/inference/providers";
 import type { AnnotatedPluginFactory, DirectorRegistry } from "@intx/agent";
-import { createDefaultDirectorRegistry } from "@intx/agent";
 import {
   builtinCredentialProviders,
   createCredentialProviderRegistry,
@@ -82,6 +81,8 @@ import {
   createInMemorySpawnSuspendableChild,
   createWorkflowStepInvoker,
   hashGrants,
+  loadVerifiedWorkflowDefinitionFromClosure,
+  loadWorkflowDirectorRegistryFromClosure,
   loadWorkflowLoopFnsFromClosure,
   loadWorkflowPluginFactoriesFromClosure,
   loadWorkflowPluginToolDefinitionsFromClosure,
@@ -825,6 +826,15 @@ export interface SidecarStepBuildEnvDeps {
    * packages instead, which reads no closure.
    */
   closurePackageDir?: string;
+  /**
+   * Director registry each step env carries. Required: the source-ref lineage
+   * supplies the closure-composed registry so a step agent's `director` ref
+   * resolves against a custom director shipped by a declared direct
+   * dependency of the workflow package. Tests pass
+   * `createDefaultDirectorRegistry()` explicitly rather than inheriting a
+   * silent built-ins fallback.
+   */
+  directors: DirectorRegistry;
 }
 
 /**
@@ -1154,7 +1164,7 @@ export function createSidecarStepBuildEnv(
       // scratch dir, so the two coincide.
       toolCwd: workdir,
       audit: storage,
-      directors: createDefaultDirectorRegistry(),
+      directors: deps.directors,
       // Resolve inference adapters through the child's boot-built
       // registry (built-ins + operator custom adapters), so a
       // custom-provider step source resolves in the child the same way
@@ -1309,8 +1319,8 @@ interface SidecarRunChildDeps {
    * material.
    */
   credentialProviders: CredentialProviderRegistry;
-  /** Director registry the child runtime uses; defaults to the canonical built-ins. */
-  directors?: DirectorRegistry;
+  /** Director registry the child runtime uses. Required; tests pass `createDefaultDirectorRegistry()` explicitly. */
+  directors: DirectorRegistry;
   /**
    * Sidecar-local directory of the materialized workflow-definition closure
    * (`env.spawn.closurePackageDir`), the source-ref lineage's only closure.
@@ -1401,7 +1411,7 @@ async function writeChildRunGrants(args: {
 export function createSidecarRunChild(
   deps: SidecarRunChildDeps,
 ): RunChildWorkflow {
-  const directors = deps.directors ?? createDefaultDirectorRegistry();
+  const directors = deps.directors;
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
   // No `controlPlanePrincipal`: an in-process child tears down through the
@@ -1530,7 +1540,7 @@ export function createSidecarRunChild(
 export function createSidecarSpawnSuspendableChild(
   deps: SidecarRunChildDeps,
 ): RunSuspendableChild {
-  const directors = deps.directors ?? createDefaultDirectorRegistry();
+  const directors = deps.directors;
   const clock = deps.clock ?? defaultClock;
   const newId = deps.newId ?? defaultNewId;
   // No `controlPlanePrincipal`: an in-process body tears down through the shared
@@ -1640,7 +1650,7 @@ export function createSidecarSpawnSuspendableChild(
  */
 async function capAndPersistChildGrants(args: {
   deps: SidecarRunChildDeps;
-  directors: ReturnType<typeof createDefaultDirectorRegistry>;
+  directors: DirectorRegistry;
   definition: WorkflowDefinition;
   childRunId: string;
   parentRunId: string;
@@ -1700,7 +1710,7 @@ async function capAndPersistChildGrants(args: {
  */
 async function buildChildRunEnv(args: {
   deps: SidecarRunChildDeps;
-  directors: ReturnType<typeof createDefaultDirectorRegistry>;
+  directors: DirectorRegistry;
   clock: () => Date;
   newId: (prefix: string) => string;
   repoStore: ReturnType<typeof createWorkflowRunRepoStore>;
@@ -2299,6 +2309,24 @@ export function createSidecarSubstrateFactory(
     // for every later tool call it makes.
     const toolMarkFloorByStep = new Map<string, GrantRule[]>();
 
+    // The step env's director registry is the closure-composed one, built
+    // from the SAME frozen closure the run-child loads, so a step agent's
+    // `director` ref resolves to a custom director shipped by a declared
+    // dependency package. The loader resolves only the ids the definition
+    // references, so the verified definition is evaluated here too -- the
+    // import is ESM-cached, so the run-child's own verified load reuses the
+    // module and only re-pays the project-then-hash check. A definition
+    // whose hash no longer matches the approval therefore fails the lineage
+    // build here, before any child spawns.
+    const stepDefinition = await loadVerifiedWorkflowDefinitionFromClosure({
+      packageDir: env.spawn.closurePackageDir,
+      approvedHash: env.spawn.definitionHash,
+    });
+    const stepDirectors = await loadWorkflowDirectorRegistryFromClosure({
+      packageDir: env.spawn.closurePackageDir,
+      definition: stepDefinition,
+    });
+
     const buildStepEnv = createSidecarStepBuildEnv({
       dataDir: validated.SIDECAR_DATA_DIR,
       workflowRunRepoId,
@@ -2319,6 +2347,7 @@ export function createSidecarSubstrateFactory(
       // The materialized closure dir the source arm materializes each step
       // agent's declared plugin packages from. Always present (source-ref only).
       closurePackageDir: env.spawn.closurePackageDir,
+      directors: stepDirectors,
       // Activate the warm agent's inbound mail surface: `mail_read` /
       // `mail_search` / `mail_wait` resolve against the deployment's committed
       // substrate `INBOX` through this bundle. The spawned-child build below
@@ -2385,6 +2414,7 @@ export function createSidecarSubstrateFactory(
       },
       sourceTools: true,
       closurePackageDir: env.spawn.closurePackageDir,
+      directors: stepDirectors,
     });
     // Spawned-child step invoker (INTR-310). It runs a real agent through
     // `createWorkflowStepInvoker`, resolving inference against the child's own
@@ -2609,6 +2639,9 @@ export function createSidecarSubstrateFactory(
       // The shared closure the child re-walks to cap its inherited grants at
       // its declared capabilities. Source-ref only, so always present here.
       closurePackageDir: env.spawn.closurePackageDir,
+      // A spawned child's steps resolve `director` refs against the same
+      // closure-composed registry the parent's steps use.
+      directors: stepDirectors,
     };
     // Terminal childWorkflow executor. `run-child` builds the in-memory
     // resolver from this plus the lifted-body map it extracts after loading
@@ -2741,7 +2774,7 @@ export function createSidecarSubstrateFactory(
       }) => {
         await capAndPersistChildGrants({
           deps: childRunDeps,
-          directors: childRunDeps.directors ?? createDefaultDirectorRegistry(),
+          directors: childRunDeps.directors,
           definition,
           childRunId,
           parentRunId,

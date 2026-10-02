@@ -33,6 +33,7 @@ import type {
 } from "@intx/types/runtime";
 import type { RepoId } from "@intx/hub-sessions";
 import { createBuiltinRegistry } from "@intx/inference/providers";
+import { createDefaultDirectorRegistry } from "@intx/agent";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
   ChildOutboundMailBridge,
@@ -106,6 +107,7 @@ function buildDeps(opts: {
     adapters: createBuiltinRegistry(),
     recordToolMarkFloor: () => undefined,
     sourceTools: false,
+    directors: createDefaultDirectorRegistry(),
     ...(opts.durableConversation !== undefined
       ? { durableConversation: opts.durableConversation }
       : {}),

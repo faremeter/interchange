@@ -536,6 +536,7 @@ async function computeProbePayload(
   // resolves. Built-ins-only when the closure ships no `interchange.directors`.
   const directors = await loadWorkflowDirectorRegistryFromClosure({
     packageDir,
+    definition,
   });
   // Load the static tool `definitions` each declared plugin package
   // contributes from the SAME closure, so the walk emits `tool:<name>`

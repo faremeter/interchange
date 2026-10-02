@@ -725,7 +725,12 @@ function sse(event: string, data: unknown): string {
  */
 export async function buildSyntheticNpmPackageTarball(
   registerTempDir: (dir: string) => void,
-  opts: { packageName: string; version: string; moduleSource: string },
+  opts: {
+    packageName: string;
+    version: string;
+    moduleSource: string;
+    interchange?: Record<string, string>;
+  },
 ): Promise<Uint8Array> {
   const stagingDir = await fs.promises.mkdtemp(
     path.join(os.tmpdir(), "npm-pkg-fixture-"),
@@ -740,6 +745,9 @@ export async function buildSyntheticNpmPackageTarball(
       version: opts.version,
       type: "module",
       exports: "./index.mjs",
+      ...(opts.interchange !== undefined
+        ? { interchange: opts.interchange }
+        : {}),
     }),
   );
   await fs.promises.writeFile(
