@@ -2561,7 +2561,10 @@ export function createSidecarDeployRouter<
       const wired = hosted?.wired;
       const dataDir = stepStateDataDir;
       // Every step runs even when an earlier one fails, and the failures are
-      // thrown together, so the answer names each step that failed.
+      // thrown together, so the answer names each step that failed. The run
+      // record goes last: after a crash mid-teardown it restores the copy on
+      // the next boot, whose hello reports it, and the Hub undeploys it again.
+      // Without the record nothing would report what the crash left behind.
       const failures: Error[] = [];
       const attempt = async (
         step: string,
@@ -2597,9 +2600,6 @@ export function createSidecarDeployRouter<
         // interrupted deploy or a failed restore left is reclaimed too. No
         // child holds any of it: a live one was shut down above.
         if (dataDir !== undefined) {
-          await attempt("deleting its run record", () =>
-            deleteWorkflowRunRecord(dataDir, runId),
-          );
           const localState: [string, string][] = [
             [
               "removing its step scratch",
@@ -2627,6 +2627,9 @@ export function createSidecarDeployRouter<
               rm(dir, { recursive: true, force: true }),
             );
           }
+          await attempt("deleting its run record", () =>
+            deleteWorkflowRunRecord(dataDir, runId),
+          );
         }
         releaseSlug(runId, frame.agentAddress);
       } finally {
