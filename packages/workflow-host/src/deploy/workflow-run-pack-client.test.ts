@@ -17,6 +17,10 @@ import {
   type WorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
 
+function isConnectionLost(error: unknown): boolean {
+  return error instanceof Error && error.message === "Connection lost";
+}
+
 function deriveWorkflowRunRepoId(agentAddress: string): string {
   return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
 }
@@ -286,6 +290,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     const pushed: { agentAddress: string; repoId: RepoId; ref: string }[] = [];
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -340,6 +345,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     const pushOrder: string[] = [];
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -398,6 +404,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -453,6 +460,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -508,6 +516,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     return createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
+      isConnectionLost,
       underlying: store,
       packClient: {
         forget: () => undefined,
@@ -568,6 +577,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     const facade = createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
+      isConnectionLost,
       underlying: store,
       packClient: {
         forget: () => undefined,
@@ -587,6 +597,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -606,6 +617,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     const registry = createDeploymentAddressRegistry();
     const pushed: { agentAddress: string; repoId: RepoId; ref: string }[] = [];
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -635,6 +647,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -672,6 +685,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -707,7 +721,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
   test("notifyAddressRoutable re-drives a push a disconnect cancelled with no fresh write", async () => {
     // The liveness contract a synchronous single-step run depends on. The
     // first push rejects "Connection lost" (the disconnect cancelled the
-    // in-flight transfer) and latches its error. There is no later write to
+    // in-flight transfer) and stays due. There is no later local write to
     // re-arm the coalescing loop, so without the routable-again re-drive the
     // run would strand forever. notifyAddressRoutable re-ships the un-acked
     // commits once a `welcome` routes the address again.
@@ -719,6 +733,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -755,6 +770,91 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     expect(pushCount).toBe(2);
   });
 
+  test("flush fails rather than report a push no connection carried as drained", async () => {
+    const { store } = createRecordingUnderlyingRepoStore();
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-undrained", {
+      agentAddress: "agent-undrained@example.com",
+      generation: 1,
+    });
+    const connectionDrops = Promise.withResolvers<boolean>();
+    const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
+      isConnectionLost,
+      underlying: store,
+      packClient: {
+        forget: () => undefined,
+        async push() {
+          await connectionDrops.promise;
+          throw new Error("Connection lost");
+        },
+      },
+      registry,
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-undrained" };
+    await facade.writeTreePreservingPrefix(
+      { kind: "supervisor" },
+      repoId,
+      "refs/heads/main",
+      {
+        preservePrefix: "runs/r/events/",
+        merge: async () => ({ "runs/r/events/0.json": "{}" }),
+        message: "undrained",
+      },
+    );
+
+    const flushed = facade
+      .flushWorkflowRunPushes(repoId, "refs/heads/main")
+      .then(
+        () => "drained",
+        (error: unknown) => error,
+      );
+    connectionDrops.resolve(true);
+
+    expect(await flushed).toMatchObject({
+      message: expect.stringContaining("did not drain"),
+    });
+  });
+
+  test("flush fails at once for a push held while the Hub does not route the address", async () => {
+    const { store } = createRecordingUnderlyingRepoStore();
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-held", {
+      agentAddress: "agent-held@example.com",
+      generation: 1,
+    });
+    const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
+      isConnectionLost,
+      underlying: store,
+      packClient: {
+        forget: () => undefined,
+        async push() {
+          throw new Error("a held push must not ship");
+        },
+      },
+      registry,
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-held" };
+    facade.markAddressUnroutable("agent-held@example.com");
+    await facade.writeTreePreservingPrefix(
+      { kind: "supervisor" },
+      repoId,
+      "refs/heads/main",
+      {
+        preservePrefix: "runs/r/events/",
+        merge: async () => ({ "runs/r/events/0.json": "{}" }),
+        message: "held",
+      },
+    );
+
+    await expect(
+      facade.flushWorkflowRunPushes(repoId, "refs/heads/main"),
+    ).rejects.toThrow(
+      "did not drain: the Hub does not route agent-held@example.com on a connection yet",
+    );
+  });
+
   test("flush names the teardown when the deployment is forgotten with a push still due", async () => {
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
@@ -766,6 +866,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
+      isConnectionLost,
       underlying: store,
       packClient: {
         forget: () => undefined,
@@ -808,6 +909,53 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     expect(pushCount).toBe(1);
   });
 
+  test("a push no connection could carry does not fail the deployment's next write", async () => {
+    const { store } = createRecordingUnderlyingRepoStore();
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-unwelcomed", {
+      agentAddress: "agent-unwelcomed@example.com",
+      generation: 1,
+    });
+    let pushCount = 0;
+    const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
+      isConnectionLost,
+      underlying: store,
+      packClient: {
+        forget: () => undefined,
+        async push() {
+          pushCount += 1;
+          if (pushCount === 1) {
+            throw new Error("Connection lost");
+          }
+        },
+      },
+      registry,
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-unwelcomed" };
+    const write = (message: string) =>
+      facade.writeTreePreservingPrefix(
+        { kind: "supervisor" },
+        repoId,
+        "refs/heads/main",
+        {
+          preservePrefix: "runs/r/events/",
+          merge: async () => ({ "runs/r/events/0.json": "{}" }),
+          message,
+        },
+      );
+
+    await write("first");
+    await drainPushSettle();
+    expect(pushCount).toBe(1);
+
+    // The failed push is the link's, not the deployment's: the next write
+    // goes through, and the push it re-arms ships what the first did not.
+    await write("second");
+    await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
+    expect(pushCount).toBe(2);
+  });
+
   test("reportWorkflowRunRefTips reports every ref's tip and pushes the refs that exist", async () => {
     const { store } = createRecordingUnderlyingRepoStore({
       "refs/heads/main": "main-tip",
@@ -822,6 +970,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     // No registered deployment: a stop after a sidecar restart still ships
     // the history it finds on disk.
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -862,6 +1011,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       ref: string;
     }[] = [];
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
@@ -902,6 +1052,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
+      isConnectionLost,
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {

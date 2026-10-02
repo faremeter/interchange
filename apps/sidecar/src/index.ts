@@ -14,6 +14,7 @@ import {
   createInboundMailPolicyRegistry,
   createInboundMailPolicyLookup,
   createSidecarOrchestrator,
+  isConnectionLost,
   MAX_INLINE_ASSET_PAYLOAD_BYTES,
   materializeWorkflowAssets,
   resolveInboundMailPolicy,
@@ -406,6 +407,7 @@ const restoreWorkflowRunPack = createWorkflowRunPackRestorer({
 // (today, the agent-state deploy-applier path) flow through
 // unchanged.
 const wrappedRepoStore = createWorkflowRunPackPushingRepoStore({
+  isConnectionLost,
   underlying: agentRepoStore.repoStore,
   packClient: workflowRunPackClient,
   registry: deploymentAddressRegistry,
