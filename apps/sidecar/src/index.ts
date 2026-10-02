@@ -534,19 +534,19 @@ const orchestrator = createSidecarOrchestrator({
   // Test-only override of the hub-link reconnect backoff; unset in
   // production, where the link applies its 3s default.
   ...(reconnectDelayMs !== undefined ? { reconnectDelayMs } : {}),
-  // The hub link calls this on every (re)connect to announce the workflow
-  // deployments this sidecar hosts so the hub re-registers their routes.
-  // `createDeployRouter` runs synchronously during construction (below), so
-  // the router is captured before the link ever connects; assert rather than
-  // optional-chain so a wiring regression fails loud instead of silently
-  // announcing no deployments.
-  getWorkflowAddresses: () => {
+  // The hub link reports these in every `hello` so the Hub reconciles against
+  // what this sidecar holds, and delivers a Hub frame only to an incarnation
+  // held live. `createDeployRouter` runs synchronously during construction
+  // (below), so the router is captured before the link ever connects; assert
+  // rather than optional-chain so a wiring regression fails loud instead of
+  // silently reporting no deployments.
+  getIncarnations: () => {
     if (sidecarDeployRouter === undefined) {
       throw new Error(
-        "sidecar boot: deploy router was not constructed before the hub link requested workflow addresses",
+        "sidecar boot: deploy router was not constructed before the hub link requested its incarnations",
       );
     }
-    return sidecarDeployRouter.activeAddresses();
+    return sidecarDeployRouter.incarnations();
   },
   // Report the sidecar's cached rotatable senders on every (re)connect so the
   // hub re-resolves each current key and re-pushes it, catching a rotation that
@@ -555,22 +555,21 @@ const orchestrator = createSidecarOrchestrator({
   // workflow_run.public_key); the link stays source-opaque and reports whatever
   // this returns.
   getCachedSenderAddresses: () => senderKeyCache.rotatableAddresses(),
-  // When the hub-link re-announces a deployment address in an authenticated
-  // reconnect, re-drive any workflow-run pack the disconnect cancelled. The
-  // link fires this AFTER sending the reconnect frame, so the hub routes the
-  // address before it sees the re-shipped pack (both frame families queue on
-  // the hub's per-connection chain). This is the liveness half of
-  // reconnect recovery: without it, a synchronous single-step run whose only
-  // pack was interrupted mid-transfer never re-ships, because it has no later
-  // local write to re-arm the coalescing loop.
+  // When the Hub's `welcome` routes a held incarnation again, re-drive any
+  // workflow-run pack the disconnect cancelled. The Hub has routed the
+  // address by the time it sends `welcome`, so it accepts the re-shipped
+  // pack. This is the liveness half of reconnect recovery: without it, a
+  // synchronous single-step run whose only pack was interrupted mid-transfer
+  // never re-ships, because it has no later local write to re-arm the
+  // coalescing loop.
   onWorkflowAddressesRoutable: (addresses) => {
     // The deploy router is captured synchronously during orchestrator
     // construction, before the link ever connects, so a routable callback can
-    // only fire once it exists; assert (like `getWorkflowAddresses`) rather
+    // only fire once it exists; assert (like `getIncarnations`) rather
     // than optional-chain so a wiring regression fails loud.
     if (sidecarDeployRouter === undefined) {
       throw new Error(
-        "sidecar boot: deploy router was not constructed before a reconnect made workflow addresses routable",
+        "sidecar boot: deploy router was not constructed before a welcome made workflow addresses routable",
       );
     }
     for (const address of addresses) {
@@ -584,9 +583,8 @@ const orchestrator = createSidecarOrchestrator({
       //     at DEPLOY time and persists across the outage -- the reconnect
       //     re-routes the address in the hub's in-memory index but writes no DB
       //     status, so the lookup already resolves. (The frame also lands after
-      //     the address is wire-routable: the link fires this after the
-      //     reconnect frame, and both frames queue on the hub's per-connection
-      //     chain -- see the pack re-ship note above.)
+      //     the address is routable: the link fires this on `welcome`, which
+      //     the Hub sends once it has routed the address.)
       //   - A sidecar restart re-emits the parked set twice (child
       //     re-establishment fires Trigger A too), but the co-write dedups on
       //     the `correlationId` PK/unique constraints via `onConflictDoNothing`,
@@ -597,10 +595,10 @@ const orchestrator = createSidecarOrchestrator({
       sidecarDeployRouter.reEmitParkedCorrelations(address);
     }
   },
-  // On disconnect, block the deployment addresses' workflow-run pushes until
-  // the authenticated reconnect above re-routes them. Without the block, the
-  // coalescing pusher re-ships onto the fresh, not-yet-registered connection
-  // and the hub drops the frames as "unrouted".
+  // When a connection opens or closes, block the deployment addresses'
+  // workflow-run pushes until the next `welcome` routes them. Without the
+  // block, the coalescing pusher keeps trying to send packs the link cannot
+  // carry until then.
   onWorkflowAddressesUnroutable: (addresses) => {
     for (const address of addresses) {
       wrappedRepoStore.markAddressUnroutable(address);
@@ -621,15 +619,15 @@ const orchestrator = createSidecarOrchestrator({
       credentialCipher,
       createAgentCrypto: createEd25519Crypto,
       assertSourceBuildable: buildHarness.canBuildSource,
-      registerDeployment: ({ runId, agentAddress }) => {
-        deploymentAddressRegistry.record(runId, agentAddress);
+      registerDeployment: ({ runId, agentAddress, generation }) => {
+        deploymentAddressRegistry.record(runId, { agentAddress, generation });
       },
       unregisterDeployment: ({ runId, agentAddress }) => {
         deploymentAddressRegistry.unregister(runId);
         wrappedRepoStore.forgetDeployment(runId, agentAddress);
       },
-      reportDeploymentRefTips: (agentAddress) =>
-        wrappedRepoStore.reportWorkflowRunRefTips(agentAddress),
+      reportDeploymentRefTips: (incarnation) =>
+        wrappedRepoStore.reportWorkflowRunRefTips(incarnation),
       multistepMailRouter,
       inboundMailPolicyRegistry,
       multistepSignalRouter,

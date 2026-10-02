@@ -14,6 +14,7 @@ describe("createPackSender", () => {
 
     void sender.send({
       agentAddress: "agent@example.com",
+      generation: 1,
       repoId: REPO_ID,
       transferId: "tx-1",
       pack,
@@ -40,6 +41,7 @@ describe("createPackSender", () => {
     const sender = createPackSender({ sendFrame: () => undefined });
     const promise = sender.send({
       agentAddress: "agent@example.com",
+      generation: 1,
       repoId: REPO_ID,
       transferId: "tx-ack",
       pack: new Uint8Array([1, 2, 3]),
@@ -67,6 +69,7 @@ describe("createPackSender", () => {
     const sender = createPackSender({ sendFrame: () => undefined });
     const promise = sender.send({
       agentAddress: "agent@example.com",
+      generation: 1,
       repoId: REPO_ID,
       transferId: "tx-rej",
       pack: new Uint8Array([1, 2, 3]),
@@ -88,6 +91,7 @@ describe("createPackSender", () => {
     const sender = createPackSender({ sendFrame: () => undefined });
     const a = sender.send({
       agentAddress: "agent@example.com",
+      generation: 1,
       repoId: REPO_ID,
       transferId: "tx-a",
       pack: new Uint8Array([1]),
@@ -96,6 +100,7 @@ describe("createPackSender", () => {
     });
     const b = sender.send({
       agentAddress: "agent@example.com",
+      generation: 1,
       repoId: REPO_ID,
       transferId: "tx-b",
       pack: new Uint8Array([1]),
@@ -122,6 +127,7 @@ describe("createPackSender", () => {
     await expect(
       sender.send({
         agentAddress: "agent@example.com",
+        generation: 1,
         repoId: REPO_ID,
         transferId: "tx-throw",
         pack: new Uint8Array([1]),
@@ -133,6 +139,7 @@ describe("createPackSender", () => {
     shouldThrow = false;
     const retry = sender.send({
       agentAddress: "agent@example.com",
+      generation: 1,
       repoId: REPO_ID,
       transferId: "tx-throw",
       pack: new Uint8Array([1]),
@@ -153,6 +160,7 @@ describe("createPackSender", () => {
     const sender = createPackSender({ sendFrame: () => undefined });
     void sender.send({
       agentAddress: "agent@example.com",
+      generation: 1,
       repoId: REPO_ID,
       transferId: "tx-dup",
       pack: new Uint8Array([1]),
@@ -162,6 +170,7 @@ describe("createPackSender", () => {
     await expect(
       sender.send({
         agentAddress: "agent@example.com",
+        generation: 1,
         repoId: REPO_ID,
         transferId: "tx-dup",
         pack: new Uint8Array([1]),

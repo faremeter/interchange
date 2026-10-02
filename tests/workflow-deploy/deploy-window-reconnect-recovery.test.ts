@@ -7,7 +7,7 @@
 // Harness justification: SPAWN-REAL. A real hub server, a real sidecar
 // subprocess, a real workflow-process child, and a test inference provider.
 // The drops are genuine server-side WebSocket closes; the recovery is the
-// sidecar's real `hub-link` allocation-authenticated reconnect path.
+// sidecar's real `hub-link` hello/welcome reconnect path.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 

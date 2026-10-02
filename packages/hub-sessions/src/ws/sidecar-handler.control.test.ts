@@ -60,6 +60,7 @@ function pushPack(
       JSON.stringify({
         type: "repo.pack.push",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_IDENTITY.generation,
         repoId: workflowRunRepoId,
         transferId,
         seq: chunk.seq,
@@ -72,6 +73,7 @@ function pushPack(
     JSON.stringify({
       type: "repo.pack.done",
       agentAddress: TEST_IDENTITY.workflowRunAddress,
+      generation: TEST_IDENTITY.generation,
       repoId: workflowRunRepoId,
       transferId,
       ref: "refs/heads/main",
@@ -496,11 +498,9 @@ describe("SidecarRouter allocation control protocols", () => {
     ]);
 
     router.handleClose(ws);
-    const reconnected = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const reconnected = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
     pushPack(router, reconnected, "transfer-after-reconnect");
     await tick();
     expect(framesOfType(reconnected, "repo.pack.reject")).not.toHaveLength(0);
@@ -607,6 +607,7 @@ describe("SidecarRouter allocation control protocols", () => {
       JSON.stringify({
         type: "repo.pack.push",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_IDENTITY.generation,
         repoId: workflowRunRepoId,
         transferId: "transfer-interrupted",
         seq: chunk.seq,
@@ -723,6 +724,7 @@ describe("SidecarRouter allocation control protocols", () => {
         runId: "run-1",
         anchorRunId: TEST_IDENTITY.anchorRunId,
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         kind: "approval",
         snapshot: approvalSnapshot,
       }),
@@ -759,6 +761,7 @@ describe("SidecarRouter allocation control protocols", () => {
         runId: "run-1",
         anchorRunId: TEST_IDENTITY.anchorRunId,
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         kind: "approval",
         snapshot: approvalSnapshot,
       }),
@@ -789,6 +792,7 @@ describe("SidecarRouter allocation control protocols", () => {
         runId: "run-1",
         anchorRunId: TEST_IDENTITY.anchorRunId,
         agentAddress: "other@tenant.example",
+        generation: TEST_TARGET.generation,
         kind: "approval",
         snapshot: approvalSnapshot,
       }),
@@ -855,6 +859,7 @@ describe("SidecarRouter allocation control protocols", () => {
       {
         type: "drain.deliver",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         deadlineMs: 5_000,
       },
     ]);
@@ -883,6 +888,7 @@ describe("SidecarRouter allocated outbound mail", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         rawMessage: "bWFpbA==",
         recipients: ["external@example.test"],
       }),
@@ -935,6 +941,7 @@ describe("SidecarRouter allocated outbound mail", () => {
         type: "mail.outbound",
         delivered: true,
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         rawMessage: "cGVyc2lzdGVk",
         recipients: ["user@example.test"],
       }),
@@ -963,6 +970,32 @@ describe("SidecarRouter allocated outbound mail", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: "other@tenant.example",
+        generation: TEST_TARGET.generation,
+        rawMessage: "bWFpbA==",
+        recipients: ["external@example.test"],
+      }),
+    );
+    await tick();
+
+    expect(undelivered).toEqual([]);
+  });
+
+  test("drops mail its routed address sends as another generation", async () => {
+    const undelivered: unknown[] = [];
+    const router = createAllocatedRouter();
+    router.events.on("mail.outbound.undelivered", (event) => {
+      undelivered.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "mail.outbound",
+        senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation + 1,
         rawMessage: "bWFpbA==",
         recipients: ["external@example.test"],
       }),
@@ -992,6 +1025,7 @@ describe("SidecarRouter allocated outbound mail", () => {
         type: "mail.outbound",
         delivered: true,
         senderAddress: "other@tenant.example",
+        generation: TEST_TARGET.generation,
         rawMessage: "cGVyc2lzdGVk",
         recipients: ["user@example.test"],
       }),

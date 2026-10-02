@@ -7,7 +7,7 @@
 //
 // Shape: deploy a single-step workflow, drive one mail trigger to
 // `RunCompleted`, settle the pack-push pipeline and drop the hub link,
-// wait for the allocation-authenticated reconnect to make the deployment
+// wait for the hello/welcome reconnect to make the deployment
 // address routable again, then fire a second mail trigger and assert it
 // reaches the deployment's `consumed/` index.
 //

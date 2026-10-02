@@ -45,10 +45,7 @@ const target = {
 };
 const binding = { kind: "allocated" as const, ...target };
 const sidecarAuth = {
-  authenticateSidecar: async () => ({
-    sidecarId: target.sidecarId,
-    bindings: [binding],
-  }),
+  authenticateSidecar: async () => ({ sidecarId: target.sidecarId }),
   resolveSidecarBindings: async () => [binding],
 };
 
@@ -129,10 +126,10 @@ describe.skipIf(!harnessDbEnvAvailable())(
       router.handleMessage(
         ws,
         JSON.stringify({
-          type: "register",
+          type: "hello",
           sidecarId: target.sidecarId,
           token: "token",
-          agentAddresses: [],
+          incarnations: [],
         }),
       );
       await registered.promise;
@@ -414,6 +411,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
             type: "agent.deploy.ack",
             requestId,
             agentAddress: target.workflowRunAddress,
+            generation: target.generation,
             publicKey: "b".repeat(64),
           }),
         );
@@ -504,10 +502,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       router.handleMessage(
         ws,
         JSON.stringify({
-          type: "register",
+          type: "hello",
           sidecarId: target.sidecarId,
           token: "token",
-          agentAddresses: [target.workflowRunAddress],
+          incarnations: [
+            {
+              address: target.workflowRunAddress,
+              generation: target.generation,
+              state: "live",
+            },
+          ],
         }),
       );
       await registered.promise;

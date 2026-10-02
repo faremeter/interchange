@@ -41,11 +41,12 @@ import { WorkflowDefinitionSource } from "./workflow-sources";
 // and routes through the existing invalid-frame drop+log path; no handler change
 // is needed.
 
-// A sidecar's reported agent addresses. The register/reconnect handler already
-// gates each reported address against the allocation's single minted workflow
-// address, so the legitimate count is ~1; this is a generous absurdity backstop.
+// A sidecar's reported deployment incarnations, and the ones the Hub routes
+// back. A shared sidecar hosts one per allocation placed on it, so the
+// legitimate count is small; this is a generous absurdity backstop.
 export const MAX_AGENT_ADDRESSES_FRAME = 512;
 
+export const MAX_DEPLOYMENT_ADDRESS_LENGTH = 320;
 export const MAX_DEPLOYMENT_ERROR_LENGTH = 4096;
 
 /**
@@ -67,7 +68,7 @@ export function fitDeploymentError(error: string): string {
 // sidecar-handler): that cap drives a graceful "resync the first N, log the
 // overflow" degrade rather than dropping the frame, so a schema ceiling at or
 // below it would turn the degrade into a hard reconnect outage -- the whole
-// register frame would fail this parse and drop, and the sidecar could not
+// hello frame would fail this parse and drop, and the sidecar could not
 // reconnect. The `@intx/types` package must not import from `@intx/hub-sessions`,
 // so the coupling is a documented invariant guarded by a test in that package.
 export const MAX_CACHED_SENDER_ADDRESSES_FRAME = 65536;
@@ -124,66 +125,100 @@ export const MAX_SIDECAR_FRAME_BYTES =
   MAX_MAIL_OUTBOUND_BODY_BYTES + FRAME_OVERHEAD_BYTES;
 
 // ---------------------------------------------------------------------------
+// Deployment incarnations
+// ---------------------------------------------------------------------------
+//
+// One connection can carry several deployments, and an allocation's
+// generation advances while its sidecar may still hold or send for the earlier
+// one, as when the Hub releases a deployment its sidecar keeps running. An
+// incarnation is a deployment address plus the allocation generation that owns
+// it. Every frame
+// that concerns one deployment names its incarnation, except
+// `connector.state.changed` and replies matched to their request by an id, so
+// neither end infers it from the socket, the order of frames, or their timing,
+// and each end drops or refuses a frame for an incarnation it does not hold.
+
+/** An allocation generation. An allocation's generations only increase. */
+export const Generation = type("number.integer >= 0");
+export type Generation = typeof Generation.infer;
+
+/**
+ * The incarnation a deployment frame belongs to. `run.grants` and
+ * `signal.deliver` payloads are also validated and persisted away from the
+ * wire, where no generation applies yet, so their schemas leave it out and the
+ * frame unions below add this stamp to them.
+ */
+export const IncarnationStamp = type({ generation: Generation });
+export type IncarnationStamp = typeof IncarnationStamp.infer;
+
+/**
+ * What a sidecar is doing with an incarnation it holds. A `stopped` one no
+ * longer runs, and its local state is kept for inspection until the Hub
+ * undeploys it.
+ */
+export const IncarnationState = type.enumerated(
+  "deploying",
+  "live",
+  "stopped",
+  "tearing-down",
+);
+export type IncarnationState = typeof IncarnationState.infer;
+
+export const HostedIncarnation = type({
+  address: type("string").atMostLength(MAX_DEPLOYMENT_ADDRESS_LENGTH),
+  generation: Generation,
+  state: IncarnationState,
+});
+export type HostedIncarnation = typeof HostedIncarnation.infer;
+
+// ---------------------------------------------------------------------------
 // Sidecar → Hub
 // ---------------------------------------------------------------------------
 
 /**
- * Sent on first connect when the sidecar has no existing agents in its data
- * directory. Identifies the sidecar and declares it ready to receive
- * agent.deploy frames.
+ * The first frame on every connection. Authenticates the sidecar and reports
+ * every incarnation it holds, whether still deploying, live, stopped, or
+ * tearing down, so the Hub reconciles against what the sidecar actually runs:
+ * it routes the live incarnations it still owns, keeps unrouted the stopped
+ * ones it still owns and the live ones whose run ended on its own, and
+ * undeploys the rest, then answers `welcome`. The sidecar sends nothing that
+ * must be delivered until then.
  */
-export const RegisterFrame = type({
-  type: "'register'",
+export const HelloFrame = type({
+  type: "'hello'",
   sidecarId: "string",
   token: "string",
-  agentAddresses: type("string")
-    .array()
-    .atMostLength(MAX_AGENT_ADDRESSES_FRAME),
+  // A sidecar holds one incarnation of an address, so a list that names one
+  // twice does not say which of them it holds.
+  incarnations: HostedIncarnation.array()
+    .atMostLength(MAX_AGENT_ADDRESSES_FRAME)
+    .narrow(
+      (incarnations, ctx) =>
+        new Set(incarnations.map((incarnation) => incarnation.address)).size ===
+          incarnations.length ||
+        ctx.mustBe("a list that names each address once"),
+    ),
   // The rotatable (non-run) sender addresses this sidecar holds cached keys
   // for. The hub re-resolves each current key and re-pushes it on a
   // `sender.key.refresh`, so a user-principal rotation that landed while the
-  // sidecar was disconnected reaches its cache. Additive-optional and omitted
-  // when empty: a sidecar with no cached senders (or a pre-upgrade one) sends
-  // no field, and the hub treats absence as "nothing to refresh".
+  // sidecar was disconnected reaches its cache. Omitted when empty, and the
+  // hub treats absence as "nothing to refresh".
   "cachedSenderAddresses?": type("string")
     .array()
     .atMostLength(MAX_CACHED_SENDER_ADDRESSES_FRAME),
 });
-export type RegisterFrame = typeof RegisterFrame.infer;
-
-/**
- * Sent on connect after a provisioned sidecar restores its deployments.
- * The bearer token authenticates the sidecar; the Hub routes an announced
- * workflow address only for an allocation the sidecar currently hosts, keeps
- * one whose run ended on its own unrouted, and asks it to undeploy any other.
- */
-export const ReconnectFrame = type({
-  type: "'reconnect'",
-  sidecarId: "string",
-  token: "string",
-  agentAddresses: type("string")
-    .array()
-    .atMostLength(MAX_AGENT_ADDRESSES_FRAME),
-  // The rotatable (non-run) sender addresses this sidecar holds cached keys
-  // for; see `RegisterFrame`. Carried on both frames because the register vs
-  // reconnect choice turns on workflow-address presence, not sender-cache
-  // presence -- a sidecar that restored no workflow substrate still reports its
-  // cached senders on a register frame. Additive-optional, omitted when empty.
-  "cachedSenderAddresses?": type("string")
-    .array()
-    .atMostLength(MAX_CACHED_SENDER_ADDRESSES_FRAME),
-});
-export type ReconnectFrame = typeof ReconnectFrame.infer;
+export type HelloFrame = typeof HelloFrame.infer;
 
 /**
  * Acknowledges a successful agent deployment. Includes the agent's Ed25519
  * public key (hex-encoded) for published identity and content provenance.
- * Echoes the request id of the `agent.deploy` it answers.
+ * Echoes the request id and incarnation of the `agent.deploy` it answers.
  */
 export const AgentDeployAckFrame = type({
   type: "'agent.deploy.ack'",
   requestId: "string",
   agentAddress: "string",
+  generation: Generation,
   publicKey: "string",
 });
 export type AgentDeployAckFrame = typeof AgentDeployAckFrame.infer;
@@ -193,6 +228,7 @@ export const AgentDeployErrorFrame = type({
   type: "'agent.deploy.error'",
   requestId: "string",
   agentAddress: "string",
+  generation: Generation,
   error: type("string").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
 });
 export type AgentDeployErrorFrame = typeof AgentDeployErrorFrame.infer;
@@ -205,12 +241,14 @@ export type AgentDeployErrorFrame = typeof AgentDeployErrorFrame.infer;
  *
  * Structured metadata (senderAddress, messageId, to, cc) is available for
  * audit and projection purposes without parsing the raw MIME bytes.
+ * `generation` names the sender's incarnation.
  */
 export const MailOutboundFrame = type({
   type: "'mail.outbound'",
   rawMessage: "string",
   recipients: type("string").array().atMostLength(MAX_MAIL_ADDRESSES_FRAME),
   senderAddress: "string",
+  generation: Generation,
   "sessionId?": "string",
   "messageId?": "string",
   "to?": type("string").array().atMostLength(MAX_MAIL_ADDRESSES_FRAME),
@@ -226,6 +264,7 @@ export type MailOutboundFrame = typeof MailOutboundFrame.infer;
 export const AgentEventFrame = type({
   type: "'agent.event'",
   agentAddress: "string",
+  generation: Generation,
   sessionId: "string",
   event: InferenceEvent,
 });
@@ -277,14 +316,15 @@ export const SessionErrorFrame = type({
 export type SessionErrorFrame = typeof SessionErrorFrame.infer;
 
 /**
- * Acknowledges that an agent has been fully undeployed: the deployment's
- * workflow child stopped and its directory deleted. Echoes the request id of
- * the `agent.undeploy` it answers.
+ * Acknowledges that the sidecar no longer holds the incarnation an
+ * `agent.undeploy` named and that its teardown, if it ran one, succeeded.
+ * Echoes the request id and incarnation.
  */
 export const AgentUndeployAckFrame = type({
   type: "'agent.undeploy.ack'",
   requestId: "string",
   agentAddress: "string",
+  generation: Generation,
 });
 export type AgentUndeployAckFrame = typeof AgentUndeployAckFrame.infer;
 
@@ -293,6 +333,7 @@ export const AgentUndeployErrorFrame = type({
   type: "'agent.undeploy.error'",
   requestId: "string",
   agentAddress: "string",
+  generation: Generation,
   error: type("string").atMostLength(MAX_DEPLOYMENT_ERROR_LENGTH),
 });
 export type AgentUndeployErrorFrame = typeof AgentUndeployErrorFrame.infer;
@@ -316,6 +357,7 @@ export const SignalCorrelationRegisterFrame = type({
   runId: "string",
   anchorRunId: "string",
   agentAddress: "string",
+  generation: Generation,
   kind: SignalKind,
   // Approver-facing snapshot of the suspended tool call, size-capped at this
   // trust boundary. Required: the ask rail is the only producer of this frame
@@ -377,6 +419,7 @@ export type SignalCorrelationRegisterAckFrame =
 export const MailInboundFrame = type({
   type: "'mail.inbound'",
   agentAddress: "string",
+  generation: Generation,
   rawMessage: "string",
   authenticatedSender: "string",
   "messageId?": "string",
@@ -396,6 +439,7 @@ export type MailInboundFrame = typeof MailInboundFrame.infer;
 export const MailInboundAckFrame = type({
   type: "'mail.inbound.ack'",
   agentAddress: "string",
+  generation: Generation,
   messageId: "string",
 });
 export type MailInboundAckFrame = typeof MailInboundAckFrame.infer;
@@ -539,6 +583,7 @@ export type SenderKeyEvictFrame = typeof SenderKeyEvictFrame.infer;
 export const DrainDeliverFrame = type({
   type: "'drain.deliver'",
   agentAddress: "string",
+  generation: Generation,
   deadlineMs: "number",
 });
 export type DrainDeliverFrame = typeof DrainDeliverFrame.infer;
@@ -694,12 +739,14 @@ export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
  * fall-through. `workflow` and `provisionStep` are mutually exclusive.
  *
  * The sidecar answers with `agent.deploy.ack` or `agent.deploy.error`
- * carrying the same `requestId`.
+ * carrying the same `requestId`. A deploy of an address the sidecar already
+ * holds an incarnation of is refused.
  */
 export const AgentDeployFrame = type({
   type: "'agent.deploy'",
   requestId: "string",
   agentAddress: "string",
+  generation: Generation,
   agentId: "string",
   config: HarnessConfig,
   hubPublicKey: "string",
@@ -709,23 +756,32 @@ export const AgentDeployFrame = type({
 export type AgentDeployFrame = typeof AgentDeployFrame.infer;
 
 /**
- * Remove an agent from this sidecar. The sidecar shuts the deployment's
- * supervisor down, deletes the agent directory, and responds with
- * `agent.undeploy.ack` or `agent.undeploy.error` carrying the same
- * `requestId`.
+ * Remove a deployment incarnation from this sidecar. The sidecar shuts the
+ * deployment's supervisor down, deletes the local state its teardown covers,
+ * and responds with `agent.undeploy.ack` or `agent.undeploy.error` carrying
+ * the same `requestId`. Every incarnation of the address up to `generation`
+ * goes. For one the sidecar does not hold, it still runs that teardown, and
+ * answers with an error if that fails.
  */
 export const AgentUndeployFrame = type({
   type: "'agent.undeploy'",
   requestId: "string",
   agentAddress: "string",
+  generation: Generation,
   reason: "string",
 });
 export type AgentUndeployFrame = typeof AgentUndeployFrame.infer;
 
+/**
+ * Cancel the workflow run of the incarnation this names, or stop its process
+ * while keeping its local state for inspection. The sidecar refuses a command
+ * for a generation other than the one it holds.
+ */
 export const WorkflowControlFrame = type({
   type: "'workflow.control'",
   requestId: "string",
   agentAddress: "string",
+  generation: Generation,
   runId: "string",
   action: "'cancel' | 'stop'",
   reason: "string",
@@ -751,6 +807,22 @@ export const WorkflowControlAckFrame = type({
 export type WorkflowControlAckFrame = typeof WorkflowControlAckFrame.infer;
 
 /**
+ * The Hub's answer to `hello`, sent once it has reconciled the reported
+ * incarnations. `routed` lists the incarnations it routes on this connection;
+ * it has already asked the sidecar to undeploy every other one reported, but
+ * for the ones it keeps unrouted: stopped ones, and live ones whose run ended
+ * on its own. From here on the sidecar may send what must be delivered, and
+ * it re-drives what it owes the Hub for each routed incarnation.
+ */
+export const WelcomeFrame = type({
+  type: "'welcome'",
+  routed: type({ address: "string", generation: Generation })
+    .array()
+    .atMostLength(MAX_AGENT_ADDRESSES_FRAME),
+});
+export type WelcomeFrame = typeof WelcomeFrame.infer;
+
+/**
  * Keepalive pong sent by the hub in response to a ping frame.
  * If the sidecar stops receiving pongs, it considers the hub dead.
  */
@@ -770,6 +842,7 @@ export const SourcesUpdateFrame = type({
   type: "'sources.update'",
   requestId: "string",
   agentAddress: "string",
+  generation: Generation,
   sources: InferenceSource.array().atLeastLength(1),
   defaultSource: "string",
 });
@@ -790,6 +863,7 @@ export const CredentialsUpdateFrame = type({
   type: "'credentials.update'",
   requestId: "string",
   agentAddress: "string",
+  generation: Generation,
   delivery: CredentialDelivery,
   "revoke?": type("string")
     .array()
@@ -822,6 +896,11 @@ export type CredentialsUpdateFrame = typeof CredentialsUpdateFrame.infer;
 //     `repoId` to name a non-agent source while `agentAddress` continues
 //     to address the destination agent.
 //
+// `repo.pack.push` and `repo.pack.done` also carry the generation of the
+// incarnation the transfer belongs to. The ack and reject answer one transfer
+// on the connection that carried it, and transfer ids are never reused, so
+// they need no generation.
+//
 // Flow control: deferred. Agent deploy trees are small enough that the sender
 // can push all chunks without windowing. If this becomes a problem, a credit-
 // based mechanism can be added later.
@@ -836,6 +915,7 @@ export type CredentialsUpdateFrame = typeof CredentialsUpdateFrame.infer;
 export const PackPushFrame = type({
   type: "'repo.pack.push'",
   agentAddress: "string",
+  generation: Generation,
   repoId: RepoId,
   transferId: "string",
   seq: "number",
@@ -856,6 +936,7 @@ export type PackPushFrame = typeof PackPushFrame.infer;
 export const PackDoneFrame = type({
   type: "'repo.pack.done'",
   agentAddress: "string",
+  generation: Generation,
   repoId: RepoId,
   transferId: "string",
   ref: "string",
@@ -1112,8 +1193,7 @@ export type WorkflowProbeErrorFrame = typeof WorkflowProbeErrorFrame.infer;
 
 /** All frame types the sidecar sends to the hub. */
 export const SidecarFrame = type.or(
-  RegisterFrame,
-  ReconnectFrame,
+  HelloFrame,
   AgentDeployAckFrame,
   AgentDeployErrorFrame,
   MailOutboundFrame,
@@ -1141,6 +1221,7 @@ export const HubFrame = type.or(
   MailInboundFrame,
   AgentDeployFrame,
   AgentUndeployFrame,
+  WelcomeFrame,
   PongFrame,
   SourcesUpdateFrame,
   CredentialsUpdateFrame,
@@ -1148,8 +1229,8 @@ export const HubFrame = type.or(
   PackDoneFrame,
   PackAckFrame,
   PackRejectFrame,
-  SignalDeliverFrame,
-  RunGrantsFrame,
+  SignalDeliverFrame.and(IncarnationStamp),
+  RunGrantsFrame.and(IncarnationStamp),
   SenderKeyRefreshFrame,
   SenderKeyEvictFrame,
   SignalCorrelationRegisterAckFrame,

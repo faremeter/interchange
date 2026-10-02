@@ -262,7 +262,7 @@ The control plane maintains a key validity history per agent — a list of `(pub
 
 ### Agent Continuity
 
-Agents survive harness restarts when their provisioner preserves the required local state. On reconnect, the sidecar credential authenticates the worker for the probe and allocation generations it currently hosts; the Hub restores the route of a re-announced run address only for one of those allocations, keeps one whose run ended on its own unrouted, and asks the worker to undeploy any other. Continuity refers to a deployment surviving a restart of the worker that hosts it, not portability across unrelated allocations.
+Agents survive harness restarts when their provisioner preserves the required local state. On reconnect, the sidecar credential authenticates the worker for the probe and allocation generations it currently hosts; the Hub restores the route of a run address the worker reports in its `hello` only for one of those allocations, keeps unrouted a stopped one of those allocations and a live one whose run ended on its own, and asks the worker to undeploy any other. Continuity refers to a deployment surviving a restart of the worker that hosts it, not portability across unrelated allocations.
 
 The authority model for agent continuity is:
 
