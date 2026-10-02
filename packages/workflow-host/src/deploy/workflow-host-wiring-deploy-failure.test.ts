@@ -505,4 +505,66 @@ describe("deploy-failure registry leak", () => {
     // Registry untouched.
     expect(registry.resolve("run_single-x-example")).toBeNull();
   });
+
+  test("an undeploy whose teardown fails still gives up the deployment's address", async () => {
+    const { registry, mailRouter, signalRouter, drainRouter, transport } =
+      makeRouterDeps();
+    // A data directory that is a file: removing the run record under it throws.
+    const dataDir = pathJoin(
+      mkdtempSync(pathJoin(tmpdir(), "undeploy-teardown-failure-")),
+      "data",
+    );
+    writeFileSync(dataDir, "");
+    const router = createSidecarDeployRouter({
+      ...deployHostBindings(),
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- undeploy never touches sessions
+      sessions: {} as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["sessions"],
+      keyStore: stubKeyStore(),
+      transport,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- undeploy never touches the repo store
+      repoStore: {} as Parameters<
+        typeof createSidecarDeployRouter
+      >[0]["repoStore"],
+      signingKeySeed: new Uint8Array(32),
+      credentialCipher: createNoopCredentialCipher(),
+      createAgentCrypto: createEd25519Crypto,
+      assertSourceBuildable: () => undefined,
+      registerDeployment: ({ runId, agentAddress }) => {
+        registry.record(runId, agentAddress);
+      },
+      unregisterDeployment: ({ runId }) => {
+        registry.unregister(runId);
+      },
+      reportDeploymentRefTips: async () => ({}),
+      multistepMailRouter: mailRouter,
+      multistepSignalRouter: signalRouter,
+      multistepDrainRouter: drainRouter,
+      multistepSubstrateEnv: {
+        SIDECAR_DATA_DIR: dataDir,
+        SIDECAR_CACHE_MAX_BYTES: "1000000",
+        SIDECAR_REGISTRY_MAX_TARBALL_BYTES: "1000000",
+      },
+      multistepSubprocessSpawner: () => {
+        throw new Error("undeploy never spawns");
+      },
+    });
+    const agentAddress = "run_teardown@x.example";
+    const runId = deriveWorkflowRunRepoId(agentAddress);
+    registry.record(runId, agentAddress);
+    const undeploy = router.undeploy;
+    if (undeploy === undefined) throw new Error("router.undeploy is undefined");
+
+    await expect(
+      undeploy({
+        type: "agent.undeploy",
+        requestId: "undeploy-test",
+        agentAddress,
+        reason: "test",
+      }),
+    ).rejects.toThrow();
+
+    expect(registry.resolve(runId)).toBeNull();
+  });
 });

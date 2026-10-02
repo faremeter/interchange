@@ -5,6 +5,7 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { HarnessConfig } from "@intx/types/runtime";
+import { MAX_DEPLOYMENT_ERROR_LENGTH, SidecarFrame } from "@intx/types/sidecar";
 
 import type { AgentKeyStore } from "../agent-key-store";
 import type { SessionManager } from "../session-manager";
@@ -20,6 +21,7 @@ const ReceivedFrame = type({
   "sidecarId?": "string",
   "agentAddress?": "string",
   "requestId?": "string",
+  "error?": "string",
 });
 type ReceivedFrame = typeof ReceivedFrame.infer;
 
@@ -718,6 +720,74 @@ describe("a sidecar link hosting several deployments", () => {
 
       slow.release();
       await conn.frame(isAck(SLOW));
+    } finally {
+      link.close();
+    }
+  });
+});
+
+describe("an undeploy the sidecar cannot finish", () => {
+  test("is answered with an error naming what failed, not acknowledged", async () => {
+    const { link, hub: conn } = await connectLink("sc-undeploy-failed", {
+      deployRouter: {
+        async deploy() {
+          return { publicKey: "ab".repeat(32) };
+        },
+        async undeploy() {
+          throw new Error("removing its closure failed: EACCES");
+        },
+      },
+    });
+    try {
+      conn.send({
+        type: "agent.undeploy",
+        requestId: "undeploy-failed",
+        agentAddress: SLOW,
+        reason: "test",
+      });
+
+      const answer = await conn.frame(
+        (frame) => frame.requestId === "undeploy-failed",
+      );
+      expect(answer.type).toBe("agent.undeploy.error");
+      expect(answer.error).toContain("removing its closure failed: EACCES");
+    } finally {
+      link.close();
+    }
+  });
+
+  test("cuts a long deploy or undeploy failure to the bound the Hub accepts", async () => {
+    const long = "x".repeat(MAX_DEPLOYMENT_ERROR_LENGTH + 100);
+    const { link, hub: conn } = await connectLink("sc-long-errors", {
+      deployRouter: {
+        async deploy() {
+          throw new Error(long);
+        },
+        async undeploy() {
+          throw new Error(long);
+        },
+      },
+    });
+    try {
+      const deployFrame = deploy(SLOW);
+      conn.send(deployFrame);
+      const deployAnswer = await conn.frame(
+        (frame) => frame.requestId === deployFrame.requestId,
+      );
+      conn.send({
+        type: "agent.undeploy",
+        requestId: "undeploy-long",
+        agentAddress: SLOW,
+        reason: "test",
+      });
+      const undeployAnswer = await conn.frame(
+        (frame) => frame.requestId === "undeploy-long",
+      );
+
+      for (const answer of [deployAnswer, undeployAnswer]) {
+        expect(answer.error).toHaveLength(MAX_DEPLOYMENT_ERROR_LENGTH);
+        expect(SidecarFrame(answer) instanceof type.errors).toBe(false);
+      }
     } finally {
       link.close();
     }
