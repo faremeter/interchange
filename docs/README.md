@@ -35,6 +35,10 @@ see [`LAYOUT.md`](../LAYOUT.md).
 - [`MESSAGE.md`](./MESSAGE.md) — message transport. Mail as the
   first-class communication primitive, raw MIME storage, JMAP-style
   client views.
+- [`MAIL_SMTP_IMAP.md`](./MAIL_SMTP_IMAP.md) — a spike backing that
+  puts mail on a real SMTP relay and a real IMAP mailbox, and the
+  properties a third-party mail server imposes on the system around it.
+  Not adopted; the production path is the control socket.
 - [`INBOUND_MAIL_POLICY.md`](./INBOUND_MAIL_POLICY.md) — the
   author-declared admission policy for inbound mail. Which keys a
   workflow author may relax, what each one accepts, and why relaxing

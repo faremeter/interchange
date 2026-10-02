@@ -47,7 +47,7 @@ SMTP/IMAP naturally supports the topologies defined in the architecture:
 - **1:N** - Distribution lists or CC/BCC for broadcast
 - **M:N** - Distribution lists where multiple agents can post and receive
 
-1:1 direct messaging and 1:N broadcast via `To`/`Cc`/`Bcc` are implemented. The distribution-list machinery that backs list-driven 1:N and the M:N collaborative model is not yet implemented — the transport's `createList`/`listMembers`/`subscribe`/`unsubscribe` operations currently throw.
+1:1 direct messaging and 1:N broadcast via `To`/`Cc`/`Bcc` are implemented. The distribution-list machinery that backs list-driven 1:N and the M:N collaborative model is not implemented, and the transport declares no operations for it. List membership is control-plane state: who belongs to a list is an authorization question, so it does not sit behind a mailbox transport.
 
 ### Authentication and Trust
 
