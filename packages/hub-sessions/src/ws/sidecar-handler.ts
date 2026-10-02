@@ -1128,8 +1128,8 @@ export function createSidecarRouter(
   // A pending mail whose generation no longer holds its address. Mail a
   // dispatch row stands behind is left to the row, which delivers it to the
   // generation routed now. Any other mail follows the deployment there,
-  // restamped for that generation, or is dropped when no generation holds
-  // the address. Returns whether the entry is still pending.
+  // restamped for that generation, or is surfaced as undelivered when no
+  // generation holds the address. Returns whether the entry is still pending.
   function followRoutedGeneration(
     byId: Map<string, PendingMailEntry>,
     entry: PendingMailEntry,
@@ -1144,7 +1144,10 @@ export function createSidecarRouter(
     if (routed === undefined) {
       entry.cancelRetry();
       deletePendingMail(byId, entry.agentAddress, entry.messageId);
-      logger.warn`Dropping un-acked mail ${entry.messageId} for ${entry.agentAddress}: no live connection to redeliver over`;
+      abandonPendingMail(
+        entry,
+        "no generation of it is routed to redeliver to",
+      );
       return false;
     }
     entry.allocatedTarget = {
@@ -1366,8 +1369,7 @@ export function createSidecarRouter(
     const ws = addressIndex.get(agentAddress);
     const conn = ws !== undefined ? connections.get(ws) : undefined;
     if (conn === undefined) {
-      deletePendingMail(byId, agentAddress, messageId);
-      logger.warn`Dropping un-acked mail ${messageId} for ${agentAddress}: no live connection to redeliver over`;
+      followRoutedGeneration(byId, entry, undefined);
       return;
     }
     const allocated = allocatedConnections.get(
@@ -5088,8 +5090,10 @@ export function createSidecarRouter(
   }
 
   function removeRoute(ws: WsHandle, agentAddress: string): void {
-    if (addressIndex.get(agentAddress) === ws)
+    if (addressIndex.get(agentAddress) === ws) {
       addressIndex.delete(agentAddress);
+      retainPendingMailForAddress(agentAddress);
+    }
     connections.get(ws)?.workflowAddresses.delete(agentAddress);
   }
 
