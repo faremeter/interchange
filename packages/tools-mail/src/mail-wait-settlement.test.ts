@@ -5,19 +5,13 @@
 import { describe, expect, test } from "bun:test";
 import { type } from "arktype";
 import type {
-  BodyStructure,
   InboundMessage,
-  ListInfo,
-  Mailbox,
   MailboxEvent,
-  MailboxStatus,
   MessageHeaders,
   MessagePart,
   MessageRef,
   MessageTransport,
   SendReceipt,
-  SyncResult,
-  Thread,
   ToolResult,
   Unsubscribe,
 } from "@intx/types/runtime";
@@ -40,32 +34,11 @@ function createStubTransport(
     async send(): Promise<SendReceipt> {
       return notDriven("send");
     },
-    async append(): Promise<MessageRef> {
-      return notDriven("append");
-    },
-    async listMailboxes(): Promise<Mailbox[]> {
-      return notDriven("listMailboxes");
-    },
-    async createMailbox(): Promise<Mailbox> {
-      return notDriven("createMailbox");
-    },
-    async deleteMailbox(): Promise<void> {
-      return notDriven("deleteMailbox");
-    },
-    async getMailboxStatus(): Promise<MailboxStatus> {
-      return notDriven("getMailboxStatus");
-    },
     async search(): Promise<MessageRef[]> {
       return [];
     },
-    async thread(): Promise<Thread[]> {
-      return notDriven("thread");
-    },
     async fetchHeaders(): Promise<MessageHeaders> {
       return notDriven("fetchHeaders");
-    },
-    async fetchStructure(): Promise<BodyStructure> {
-      return notDriven("fetchStructure");
     },
     async fetchPart(): Promise<MessagePart> {
       return notDriven("fetchPart");
@@ -84,17 +57,17 @@ function createStubTransport(
         signatureStatus: "missing",
       };
     },
+
+    readRaw(): Promise<Uint8Array> {
+      throw new Error(
+        "this mock does not serve raw bytes; no case here reads them",
+      );
+    },
     async setFlags(): Promise<void> {
       return notDriven("setFlags");
     },
     async clearFlags(): Promise<void> {
       return notDriven("clearFlags");
-    },
-    async move(): Promise<void> {
-      return notDriven("move");
-    },
-    async copy(): Promise<void> {
-      return notDriven("copy");
     },
     async expunge(): Promise<{ expungedUids: number[] }> {
       return notDriven("expunge");
@@ -103,21 +76,6 @@ function createStubTransport(
       return () => {
         /* nothing to unsubscribe */
       };
-    },
-    async sync(): Promise<SyncResult> {
-      return notDriven("sync");
-    },
-    async createList(): Promise<ListInfo> {
-      return notDriven("createList");
-    },
-    async listMembers(): Promise<string[]> {
-      return notDriven("listMembers");
-    },
-    async subscribe(): Promise<void> {
-      return notDriven("subscribe");
-    },
-    async unsubscribe(): Promise<void> {
-      return notDriven("unsubscribe");
     },
   };
   return { ...base, ...overrides };

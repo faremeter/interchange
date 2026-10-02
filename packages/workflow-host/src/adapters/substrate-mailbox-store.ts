@@ -129,16 +129,6 @@ type MailboxIndexJson = typeof MailboxIndexJson.infer;
 type ExpungedRecord = { uid: number; modseq: number };
 
 /**
- * The client's last-known synchronization state, per QRESYNC (RFC 7162). A
- * mismatched `uidValidity` forces a full resync; otherwise `highestModSeq`
- * bounds the changed / vanished deltas.
- */
-export type MailboxSyncKnownState = {
-  uidValidity: number;
-  highestModSeq: number;
-};
-
-/**
  * The result of a QRESYNC `sync`. `resync: true` signals the client's
  * `uidValidity` no longer matches the mailbox, so it must discard its cache
  * and take the full `messages` snapshot. `resync: false` carries the deltas
@@ -180,8 +170,6 @@ export interface SubstrateMailboxStore extends MailboxStore {
    * no-op when no mutation is pending.
    */
   flush(): Promise<void>;
-  /** Compute the QRESYNC delta between the mailbox and a client's known state. */
-  sync(known: MailboxSyncKnownState): MailboxSyncResult;
 }
 
 export type SubstrateMailboxStoreOpts = {
@@ -450,34 +438,6 @@ export async function createSubstrateMailboxStore(
     dirty = false;
   }
 
-  function sync(known: MailboxSyncKnownState): MailboxSyncResult {
-    const highestModSeq = modseqCounter - 1;
-    if (known.uidValidity !== uidValidity) {
-      return {
-        resync: true,
-        uidValidity,
-        uidNext: uidCounter,
-        highestModSeq,
-        messages: messages.slice(),
-      };
-    }
-    const changed = messages
-      .filter((m) => m.modseq > known.highestModSeq)
-      .sort((a, b) => a.uid - b.uid);
-    const vanished = expunged
-      .filter((e) => e.modseq > known.highestModSeq)
-      .map((e) => e.uid)
-      .sort((a, b) => a - b);
-    return {
-      resync: false,
-      uidValidity,
-      uidNext: uidCounter,
-      highestModSeq,
-      changed,
-      vanished,
-    };
-  }
-
   return {
     uidValidity,
     get uidNext() {
@@ -561,6 +521,5 @@ export async function createSubstrateMailboxStore(
       dirty = true;
     },
     flush,
-    sync,
   };
 }

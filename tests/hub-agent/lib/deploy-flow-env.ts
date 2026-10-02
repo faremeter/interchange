@@ -845,6 +845,19 @@ export async function startHub(
       db: DBExecutor;
       principalKeyStore: PrincipalKeyStore;
     };
+    /**
+     * Provisions a deployment's mailbox in the deploy path and returns its
+     * credential, which the deploy frame then carries. Wired only by a suite
+     * that runs against a real mail server; every other suite leaves it absent
+     * and the deploy proceeds untouched.
+     */
+    provisionMailbox?: SidecarLookups["provisionMailbox"];
+    /**
+     * Removes the mailbox for an undeployed address. Wired alongside
+     * `provisionMailbox` by a suite that asserts the mailbox's whole life, so
+     * the undeploy end is exercised rather than assumed.
+     */
+    deprovisionMailbox?: SidecarLookups["deprovisionMailbox"];
   } = {},
 ): Promise<HubEnv> {
   const agentEvents: HubEnv["agentEvents"] = [];
@@ -863,6 +876,8 @@ export async function startHub(
   // Held in a local so the sender-key lookup closures below narrow away the
   // `undefined` case once and capture the concrete resolution channel.
   const senderKeyResolution = opts.senderKeyResolution;
+  const provisionMailbox = opts.provisionMailbox;
+  const deprovisionMailbox = opts.deprovisionMailbox;
 
   // Arm-once mid-pack interrupt state, off by default. A test flips
   // `armed = true` to make the FIRST refs/heads/main workflow-run pack drop
@@ -1044,6 +1059,8 @@ export async function startHub(
       // (`resolveFrameSenderKey`); the strict sibling for reconnect
       // reconciliation preserves the throw and unwraps to the hex key. Only
       // wired when a test supplies its db + principal key store.
+      ...(provisionMailbox !== undefined ? { provisionMailbox } : {}),
+      ...(deprovisionMailbox !== undefined ? { deprovisionMailbox } : {}),
       ...(senderKeyResolution !== undefined
         ? {
             resolveSenderKey: (address: string) =>
@@ -1546,6 +1563,10 @@ export type StartDeployFlowEnvOpts = {
    * test run on the fixture default. See `assertPinnedSidecarEnvReached`.
    */
   sidecarEnv?: Record<string, string>;
+  /** See `startHub`'s option of the same name. */
+  provisionMailbox?: SidecarLookups["provisionMailbox"];
+  /** See `startHub`'s option of the same name. */
+  deprovisionMailbox?: SidecarLookups["deprovisionMailbox"];
   /**
    * Opt-in tool-call behavior for the mock inference server. When set,
    * the first request exposing the named tool returns a `tool_use`
@@ -1646,6 +1667,12 @@ export async function startDeployFlowEnv(
       : {}),
     ...(opts.senderKeyResolution !== undefined
       ? { senderKeyResolution: opts.senderKeyResolution }
+      : {}),
+    ...(opts.deprovisionMailbox !== undefined
+      ? { deprovisionMailbox: opts.deprovisionMailbox }
+      : {}),
+    ...(opts.provisionMailbox !== undefined
+      ? { provisionMailbox: opts.provisionMailbox }
       : {}),
   });
   const inference = startMockInference({

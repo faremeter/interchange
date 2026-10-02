@@ -86,6 +86,22 @@ export type TriggerWorkflowRunDeps = {
   sidecarRouter: SidecarRouter;
   workflowDispatchService?: WorkflowDispatchService;
   repoStore: RepoStore;
+  /**
+   * When present, the assembled trigger message is SUBMITTED OVER SMTP instead
+   * of pushed to the sidecar as a `mail.inbound` frame. The recipient receives
+   * it through its own mailbox.
+   *
+   * The run's grants still go over the control socket, and still go FIRST. What
+   * changes is the guarantee: on the socket both frames share one FIFO channel,
+   * so the grants provably land before the mail. Across two transports they do
+   * not, and the ordering rests on SMTP being slower than a socket write, which
+   * is true in practice and is not a guarantee. A run whose mail overtakes its
+   * grants fails closed on its `onRunStart` barrier rather than running
+   * under-authorized, so the failure mode is a stalled run, not an unsafe one.
+   */
+  mailRelay?: {
+    submit(raw: Uint8Array, from: string, recipients: string[]): Promise<void>;
+  };
 };
 
 export type TriggerWorkflowRunArgs = {
@@ -124,6 +140,7 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
     sidecarRouter,
     workflowDispatchService,
     repoStore,
+    mailRelay,
   } = deps;
 
   async function readRunLifecycle(
@@ -586,6 +603,34 @@ export function createWorkflowRunTrigger(deps: TriggerWorkflowRunDeps) {
             message: `Deployment address ${address} is not routable`,
           },
         },
+      };
+    }
+
+    if (mailRelay !== undefined) {
+      // The mail leaves over SMTP; the recipient's own ingress picks it up.
+      // There is no routability check to make here and no acknowledgement to
+      // await: the relay reports that it accepted the message, not that a
+      // mailbox received it. A submission the relay refuses is reported as
+      // unreachable, which is the same shape the socket path reports when the
+      // deployment has no route.
+      try {
+        await mailRelay.submit(rawMessage, fromAddr, [address]);
+      } catch (cause) {
+        return {
+          ok: false,
+          status: 409,
+          body: {
+            error: {
+              code: "deployment_unreachable",
+              message: `SMTP submission for ${address} was refused: ${cause instanceof Error ? cause.message : String(cause)}`,
+            },
+          },
+        };
+      }
+      return {
+        ok: true,
+        status: 202,
+        body: { runId: anchorRunId, address, messageId },
       };
     }
 

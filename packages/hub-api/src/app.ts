@@ -17,6 +17,7 @@ import {
   createPrincipalKeyStore,
   createSignalCorrelationStore,
 } from "@intx/db";
+import type { TriggerWorkflowRunDeps } from "./workflow-run-trigger";
 import type { ConditionRegistry, GrantStore } from "@intx/types/authz";
 
 import type { AppEnv } from "./context";
@@ -154,6 +155,12 @@ export type MountHubRoutesDeps = {
   grantStore?: GrantStore;
   conditionRegistry?: ConditionRegistry;
   approvalStore?: ApprovalStore;
+  /**
+   * When supplied, a workflow trigger's assembled message is submitted over
+   * SMTP instead of pushed to the sidecar as a `mail.inbound` frame. The run's
+   * grants still go over the control socket. See `TriggerWorkflowRunDeps`.
+   */
+  mailRelay?: TriggerWorkflowRunDeps["mailRelay"];
   signalCorrelationStore?: SignalCorrelationStore;
   readRunLifecycles?: ReadRunLifecycles;
   sidecarWsHandler?: Handler<AppEnv>;
@@ -205,6 +212,7 @@ export function mountHubRoutes(
     repoStore,
     readRunLifecycles,
     maxTarballBytes,
+    mailRelay,
   } = opts;
   if ((assetService === null) !== (repoStore === null)) {
     throw new Error(
@@ -328,6 +336,7 @@ export function mountHubRoutes(
       conditionRegistry,
       requireGrant,
       approvalStore,
+      ...(mailRelay !== undefined ? { mailRelay } : {}),
     }),
   );
 
@@ -361,6 +370,7 @@ export function mountHubRoutes(
         repoStore,
         grantStore,
         requireGrant,
+        ...(mailRelay !== undefined ? { mailRelay } : {}),
       }),
     );
   }
@@ -548,6 +558,8 @@ export type CreateAppOpts = {
   principalKeyStore?: PrincipalKeyStore;
   grantStore?: GrantStore;
   approvalStore?: ApprovalStore;
+  /** Submits a workflow trigger over SMTP instead of the control socket. */
+  mailRelay?: TriggerWorkflowRunDeps["mailRelay"];
   signalCorrelationStore?: SignalCorrelationStore;
   readRunLifecycles?: ReadRunLifecycles;
   sidecarWsHandler?: Handler<AppEnv>;
@@ -574,6 +586,7 @@ export function createApp({
   principalKeyStore,
   grantStore,
   approvalStore,
+  mailRelay,
   signalCorrelationStore,
   readRunLifecycles,
   sidecarWsHandler,
@@ -612,6 +625,7 @@ export function createApp({
     maxTarballBytes,
     ...(grantStore ? { grantStore } : {}),
     ...(approvalStore ? { approvalStore } : {}),
+    ...(mailRelay ? { mailRelay } : {}),
     ...(signalCorrelationStore ? { signalCorrelationStore } : {}),
     ...(readRunLifecycles ? { readRunLifecycles } : {}),
     ...(sidecarWsHandler ? { sidecarWsHandler } : {}),

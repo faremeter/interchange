@@ -43,15 +43,19 @@ export type HubSessionLookupsDeps = {
   agentRepoStore: AgentRepoStore;
 };
 
-export function createHubSessionLookups(
-  deps: HubSessionLookupsDeps,
-): Required<
+export function createHubSessionLookups(deps: HubSessionLookupsDeps): Required<
   Omit<
     SidecarLookups,
     | "materializeMailTriggeredRunGrants"
     | "resyncCredentials"
     | "resolveSenderKey"
     | "resolveSenderKeyStrict"
+    // Supplied at the hub edge from operator configuration, not derived from
+    // the database: whether there is any mail infrastructure to provision, and
+    // how, is deployment configuration rather than a property of this hub's
+    // rows.
+    | "provisionMailbox"
+    | "deprovisionMailbox"
   >
 > {
   const { db, agentRepoStore } = deps;

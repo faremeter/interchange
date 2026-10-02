@@ -15,6 +15,10 @@ import {
   createMailTriggeredRunGrantsMaterializer,
 } from "@intx/hub-api";
 import {
+  createCommandMailboxProvisioner,
+  createSmtpRelay,
+} from "@intx/mail-imap";
+import {
   createAgentRepoStore,
   createAssetService,
   createEventCollectorRegistry,
@@ -248,8 +252,48 @@ export async function createHubServer({
   // the same authorization an externally-triggered run gets. Threaded into
   // the sidecar router as a lookup its `mail.outbound` handler invokes for
   // each workflow-deployment recipient.
+  // Mailbox provisioning for a deployment address, run just before its deploy
+  // frame. Configured as argv (no shell), with `{address}` and `{password}`
+  // substituted as whole elements, so the hub stays ignorant of which mail
+  // server it is talking to and no quoting rule governs an address.
+  //
+  // Absent unless configured: a hub with no mail infrastructure deploys exactly
+  // as before.
+  const mailProvisionArgv = process.env["HUB_MAIL_PROVISION_ARGV"];
+  // Root secret each deployment's mailbox password is DERIVED from; it never
+  // leaves the hub. A recipient is given only its own derived password, so one
+  // deployment's compromise does not read another's mail.
+  const mailPasswordRootSecret = process.env["HUB_MAIL_PASSWORD_ROOT_SECRET"];
+  const mailboxProvisioner =
+    mailProvisionArgv !== undefined && mailPasswordRootSecret !== undefined
+      ? createCommandMailboxProvisioner({
+          createArgv: mailProvisionArgv.split(/\s+/).filter((t) => t !== ""),
+          rootSecret: mailPasswordRootSecret,
+          ...(process.env["HUB_MAIL_DEPROVISION_ARGV"] !== undefined
+            ? {
+                removeArgv: process.env["HUB_MAIL_DEPROVISION_ARGV"]
+                  .split(/\s+/)
+                  .filter((t) => t !== ""),
+              }
+            : {}),
+        })
+      : undefined;
+
   const lookups: SidecarLookups = {
     ...createHubSessionLookups({ db, agentRepoStore }),
+    ...(mailboxProvisioner !== undefined
+      ? {
+          provisionMailbox: async (address) => {
+            const { user, pass } = await mailboxProvisioner.ensure(address);
+            return { user, password: pass };
+          },
+          // `remove` reports a failure rather than throwing, and it reports the
+          // absence of HUB_MAIL_DEPROVISION_ARGV the same way -- so a hub
+          // configured to create mailboxes but not to remove them says so on
+          // each undeploy instead of leaking silently.
+          deprovisionMailbox: (address) => mailboxProvisioner.remove(address),
+        }
+      : {}),
     materializeMailTriggeredRunGrants: createMailTriggeredRunGrantsMaterializer(
       {
         db,
@@ -465,6 +509,32 @@ export async function createHubServer({
   dispatchScheduler.start();
   connectionRepairScheduler.start();
 
+  // Optional SMTP relay for the trigger path. When configured, a workflow
+  // trigger's assembled message is submitted over SMTP and the recipient picks
+  // it up from its own mailbox; the run's grants still go over the control
+  // socket. Absent by default, so the socket remains the mail path unless an
+  // operator opts in.
+  const mailRelayHost = process.env["HUB_SMTP_RELAY_HOST"];
+  const mailRelayPort = process.env["HUB_SMTP_RELAY_PORT"];
+  const mailRelay =
+    mailRelayHost !== undefined && mailRelayPort !== undefined
+      ? createSmtpRelay({
+          host: mailRelayHost,
+          port: Number(mailRelayPort),
+          secure: false,
+          ignoreTLS: true,
+          ...(process.env["HUB_SMTP_RELAY_USER"] !== undefined &&
+          process.env["HUB_SMTP_RELAY_PASSWORD"] !== undefined
+            ? {
+                auth: {
+                  user: process.env["HUB_SMTP_RELAY_USER"],
+                  pass: process.env["HUB_SMTP_RELAY_PASSWORD"],
+                },
+              }
+            : {}),
+        })
+      : undefined;
+
   const app = createApp({
     getSession: async (headers) => {
       const result = await auth.api.getSession({ headers });
@@ -482,6 +552,7 @@ export async function createHubServer({
     assetService,
     repoStore: agentRepoStore.repoStore,
     maxTarballBytes: hubMaxTarballBytes,
+    ...(mailRelay !== undefined ? { mailRelay } : {}),
     sidecarWsHandler: upgradeWebSocket((_c) => {
       let handle: WsHandle;
       return {

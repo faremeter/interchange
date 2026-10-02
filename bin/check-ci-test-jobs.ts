@@ -28,8 +28,11 @@ import { ENUMERATING_TARGETS } from "./check-test-enumeration";
 const GATE_JOB_NAME = "make all";
 
 // test-load runs on its own cadence, not in the per-PR job graph, so it is
-// exempt from the "must run in CI" assertion.
-const CI_EXEMPT_TARGETS = new Set<string>(["test-load"]);
+// exempt from the "must run in CI" assertion. test-mail is exempt for a
+// different reason: it needs an externally managed Postfix + Dovecot container
+// (`bin/mail-server up`), and in CI without one it would skip itself and report
+// a vacuous pass.
+const CI_EXEMPT_TARGETS = new Set<string>(["test-load", "test-mail"]);
 
 type Step = { run?: string };
 type Job = {

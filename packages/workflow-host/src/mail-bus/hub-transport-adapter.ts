@@ -16,7 +16,7 @@
 
 import type { OutboundMessage, SendReceipt } from "@intx/types/runtime";
 
-import type { HubTransport } from "@intx/mail-memory";
+import type { HubTransport } from "@intx/types/runtime";
 
 import type { MailBusBindings } from "../supervisor/types";
 

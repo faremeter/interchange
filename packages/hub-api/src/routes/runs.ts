@@ -54,6 +54,7 @@ import { loadCommittedRunGrants } from "../run-grant-materialization";
 import { workflowRunRepoId, WORKFLOW_RUN_REF } from "../workflow-run-lifecycle";
 import {
   createWorkflowRunTrigger,
+  type TriggerWorkflowRunDeps,
   MAX_MAIL_BODY_BYTES,
   WorkflowRunTriggerResponse,
 } from "../workflow-run-trigger";
@@ -167,10 +168,13 @@ export type CreateRunRoutesDeps = {
   requireGrant: RequireGrant;
   // The run approvals-list route reads the run's approval decisions here.
   approvalStore: ApprovalStore;
+  /** Submits a trigger message over SMTP instead of the control socket. */
+  mailRelay?: TriggerWorkflowRunDeps["mailRelay"];
 };
 
 export function createRunRoutes({
   db,
+  mailRelay,
   principalKeyStore,
   sidecarRouter,
   eventCollectors,
@@ -203,6 +207,7 @@ export function createRunRoutes({
             ? { workflowDispatchService }
             : {}),
           repoStore,
+          ...(mailRelay !== undefined ? { mailRelay } : {}),
         })
       : null;
 

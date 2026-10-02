@@ -12,7 +12,7 @@
 // leaking up to the host entry point.
 
 import { getLogger } from "@intx/log";
-import type { HubTransport } from "@intx/mail-memory";
+import type { HubTransport } from "@intx/types/runtime";
 import type { SignalKind } from "@intx/types";
 import type {
   ApprovalSnapshot,

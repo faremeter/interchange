@@ -26,8 +26,6 @@ export {
   MAILBOX_INBOX_PREFIX,
   type SubstrateMailboxStore,
   type SubstrateMailboxStoreOpts,
-  type MailboxSyncKnownState,
-  type MailboxSyncResult,
 } from "./adapters/substrate-mailbox-store";
 export {
   createWorkflowStepInvoker,

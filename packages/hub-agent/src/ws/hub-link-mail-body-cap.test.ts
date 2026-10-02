@@ -24,7 +24,7 @@ import type {
   HubTransport,
   RemoteSendHandler,
   MessageSentHandler,
-} from "@intx/mail-memory";
+} from "@intx/types/runtime";
 import { configureSync, getConfig } from "@intx/log";
 
 import { createHubLink, type DeployRouter } from "./hub-link";

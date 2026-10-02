@@ -32,6 +32,7 @@
     "drizzle-orm": "catalog:",
     "eslint": "9.34.0",
     "hono": "catalog:",
+    "imapflow": "^2.2.1",
     "isomorphic-git": "catalog:",
     "jiti": "2.5.1",
     "postgres": "catalog:",

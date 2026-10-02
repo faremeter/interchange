@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": [
+    "**/*.ts",
+    "../hub-agent/lib/deploy-flow-env.ts",
+    "../hub-agent/lib/bundle-workflow-entry.ts",
+    "../workflow-deploy/fixtures/mail-tool.ts",
+    "../workflow-deploy/fixtures/single-step-mail-tool.ts",
+    "../workflow-deploy/fixtures/single-step-agent.ts"
+  ]
+}

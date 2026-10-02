@@ -4,60 +4,30 @@ import type {
   SendReceipt,
   InboundMessage,
   MessageRef,
-  Mailbox,
-  MailboxStatus,
   SearchQuery,
-  Thread,
   MessageHeaders,
-  BodyStructure,
   MessagePart,
-  SyncState,
-  SyncResult,
-  ListInfo,
   MailboxEvent,
   Unsubscribe,
   CryptoProvider,
 } from "@intx/types/runtime";
 import { MessageTransportError } from "@intx/types/runtime";
+import type {
+  HubTransport,
+  MessageSentHandler,
+  RemoteSendHandler,
+} from "@intx/types/runtime";
 import { buildMessageHeaders, parseHeaderSection } from "@intx/mime";
 import {
-  createInMemoryMailboxStore,
   executeSearch,
-  executeThread,
   fetchHeaders as doFetchHeaders,
-  fetchStructure as doFetchStructure,
   fetchPart as doFetchPart,
   fetchFull as doFetchFull,
   requireMessage,
   type StoredEnvelope,
 } from "@intx/mailbox";
 import { createAddressEntry, type AddressEntry } from "./mailbox";
-import {
-  executeSend,
-  type RemoteSendHandler,
-  type MessageSentHandler,
-} from "./send";
-
-/**
- * The hub-side surface a transport must expose to coordinate per-agent
- * registration, mail routing, and outbound-audit hooks. SessionManager
- * and HubLink in `@intx/hub-agent` depend on this interface rather
- * than on `InMemoryTransport` directly so custom hosts can supply
- * their own backend (e.g. an SMTP/IMAP relay) without touching the
- * package's seams.
- */
-export interface HubTransport {
-  register(address: string, crypto: CryptoProvider): void;
-  unregister(address: string): void;
-  getTransportFor(address: string): MessageTransport;
-  setRemoteSendHandler(handler: RemoteSendHandler): void;
-  addMessageSentHandler(handler: MessageSentHandler): void;
-  /**
-   * Drop a hub-routed RFC 2822 message directly into an address's
-   * inbox. Used by the wire layer (HubLink) for inbound mail frames.
-   */
-  deliver(address: string, message: Uint8Array): void;
-}
+import { executeSend } from "./send";
 
 /**
  * In-memory MessageTransport implementing full IMAP semantics within a
@@ -127,39 +97,9 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     );
   }
 
-  async append(
-    _mailbox: string,
-    _message: InboundMessage,
-    _flags?: string[],
-    _signal?: AbortSignal,
-  ): Promise<MessageRef> {
-    throw new Error(
-      "Use createInMemoryTransport().getTransportFor(address) to append messages",
-    );
-  }
-
   // ---------------------------------------------------------------------------
   // Mailbox management (per-address — use getTransportFor)
   // ---------------------------------------------------------------------------
-
-  async listMailboxes(_signal?: AbortSignal): Promise<Mailbox[]> {
-    throw new Error("Use getTransportFor(address) for per-address operations");
-  }
-
-  async createMailbox(_name: string, _signal?: AbortSignal): Promise<Mailbox> {
-    throw new Error("Use getTransportFor(address) for per-address operations");
-  }
-
-  async deleteMailbox(_name: string, _signal?: AbortSignal): Promise<void> {
-    throw new Error("Use getTransportFor(address) for per-address operations");
-  }
-
-  async getMailboxStatus(
-    _name: string,
-    _signal?: AbortSignal,
-  ): Promise<MailboxStatus> {
-    throw new Error("Use getTransportFor(address) for per-address operations");
-  }
 
   async search(
     _mailbox: string,
@@ -169,26 +109,10 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
-  async thread(
-    _mailbox: string,
-    _algorithm: "references" | "orderedsubject",
-    _query?: SearchQuery,
-    _signal?: AbortSignal,
-  ): Promise<Thread[]> {
-    throw new Error("Use getTransportFor(address) for per-address operations");
-  }
-
   async fetchHeaders(
     _ref: MessageRef,
     _signal?: AbortSignal,
   ): Promise<MessageHeaders> {
-    throw new Error("Use getTransportFor(address) for per-address operations");
-  }
-
-  async fetchStructure(
-    _ref: MessageRef,
-    _signal?: AbortSignal,
-  ): Promise<BodyStructure> {
     throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
@@ -204,6 +128,10 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     _ref: MessageRef,
     _signal?: AbortSignal,
   ): Promise<InboundMessage> {
+    throw new Error("Use getTransportFor(address) for per-address operations");
+  }
+
+  async readRaw(_ref: MessageRef, _signal?: AbortSignal): Promise<Uint8Array> {
     throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
@@ -223,22 +151,6 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
-  async move(
-    _ref: MessageRef,
-    _toMailbox: string,
-    _signal?: AbortSignal,
-  ): Promise<void> {
-    throw new Error("Use getTransportFor(address) for per-address operations");
-  }
-
-  async copy(
-    _ref: MessageRef,
-    _toMailbox: string,
-    _signal?: AbortSignal,
-  ): Promise<void> {
-    throw new Error("Use getTransportFor(address) for per-address operations");
-  }
-
   async expunge(
     _mailbox: string,
     _signal?: AbortSignal,
@@ -251,60 +163,6 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     _callback: (event: MailboxEvent) => void,
   ): Unsubscribe {
     throw new Error("Use getTransportFor(address) for per-address operations");
-  }
-
-  async sync(
-    _mailbox: string,
-    _knownState: SyncState,
-    _signal?: AbortSignal,
-  ): Promise<SyncResult> {
-    throw new MessageTransportError(
-      "CANNOT",
-      "sync() (QRESYNC) is not implemented",
-    );
-  }
-
-  async createList(
-    _address: string,
-    _name: string,
-    _signal?: AbortSignal,
-  ): Promise<ListInfo> {
-    throw new MessageTransportError(
-      "CANNOT",
-      "Distribution list management is not implemented",
-    );
-  }
-
-  async listMembers(
-    _address: string,
-    _signal?: AbortSignal,
-  ): Promise<string[]> {
-    throw new MessageTransportError(
-      "CANNOT",
-      "Distribution list management is not implemented",
-    );
-  }
-
-  async subscribe(
-    _listAddress: string,
-    _subscriberAddress: string,
-    _signal?: AbortSignal,
-  ): Promise<void> {
-    throw new MessageTransportError(
-      "CANNOT",
-      "Distribution list management is not implemented",
-    );
-  }
-
-  async unsubscribe(
-    _listAddress: string,
-    _subscriberAddress: string,
-    _signal?: AbortSignal,
-  ): Promise<void> {
-    throw new MessageTransportError(
-      "CANNOT",
-      "Distribution list management is not implemented",
-    );
   }
 
   // ---------------------------------------------------------------------------
@@ -480,88 +338,6 @@ class ScopedMessageTransport implements MessageTransport {
     );
   }
 
-  async append(
-    mailbox: string,
-    message: InboundMessage,
-    flags?: string[],
-    _signal?: AbortSignal,
-  ): Promise<MessageRef> {
-    const store = this.#requireMailbox(mailbox);
-    // For append, we need to convert InboundMessage back to raw bytes.
-    // Since InboundMessage may come from a prior fetchFull, we need the raw
-    // bytes. This is a design gap — append() takes InboundMessage but we
-    // need Uint8Array. We store a minimal representation.
-    //
-    // For now, serialize the InboundMessage as a minimal RFC 2822 message.
-    // The stored envelope keys the mailbox index on the id and serializes the
-    // date, so neither can be absent here. `deliver` refuses the same two on
-    // the same grounds. Checked before serializing so a message that cannot
-    // be stored is not encoded first and then discarded.
-    const { messageId, date } = message.headers;
-    if (messageId === undefined) {
-      throw new Error("Cannot append message: missing Message-ID header");
-    }
-    if (date === undefined) {
-      throw new Error("Cannot append message: missing Date header");
-    }
-    const raw = inboundMessageToRaw(message);
-    const envelope = {
-      messageId,
-      from: message.headers.from,
-      to: message.headers.to,
-      subject: message.headers.subject ?? "",
-      date: new Date(date),
-      inReplyTo: message.headers.inReplyTo,
-      references: message.headers.references ?? [],
-      interchangeType: message.headers.interchangeType,
-      interchangeCorrelationId: message.headers.interchangeCorrelationId,
-    };
-    const uid = store.append(raw, envelope, flags ?? []);
-    return { uid, mailbox };
-  }
-
-  async listMailboxes(_signal?: AbortSignal): Promise<Mailbox[]> {
-    return Array.from(this.#entry.mailboxes.keys()).map((name) => ({
-      name,
-    }));
-  }
-
-  async createMailbox(name: string, _signal?: AbortSignal): Promise<Mailbox> {
-    if (this.#entry.mailboxes.has(name)) {
-      throw new Error(
-        `Mailbox "${name}" already exists for address "${this.#address}"`,
-      );
-    }
-    this.#entry.mailboxes.set(name, createInMemoryMailboxStore());
-    return { name };
-  }
-
-  async deleteMailbox(name: string, _signal?: AbortSignal): Promise<void> {
-    if (!this.#entry.mailboxes.has(name)) {
-      throw new MessageTransportError(
-        "NONEXISTENT",
-        `Mailbox "${name}" does not exist for address "${this.#address}"`,
-      );
-    }
-    this.#entry.mailboxes.delete(name);
-  }
-
-  async getMailboxStatus(
-    name: string,
-    _signal?: AbortSignal,
-  ): Promise<MailboxStatus> {
-    const store = this.#requireMailbox(name);
-    const unseen = store.messages.filter((m) => !m.flags.has("\\Seen")).length;
-    return {
-      total: store.messages.length,
-      unseen,
-      recent: 0,
-      uidNext: store.uidNext,
-      uidValidity: store.uidValidity,
-      highestModSeq: store.highestModSeq,
-    };
-  }
-
   async search(
     mailbox: string,
     query: SearchQuery,
@@ -571,30 +347,12 @@ class ScopedMessageTransport implements MessageTransport {
     return await executeSearch(mailbox, store, query);
   }
 
-  async thread(
-    mailbox: string,
-    algorithm: "references" | "orderedsubject",
-    query?: SearchQuery,
-    _signal?: AbortSignal,
-  ): Promise<Thread[]> {
-    const store = this.#requireMailbox(mailbox);
-    return await executeThread(mailbox, store, algorithm, query);
-  }
-
   async fetchHeaders(
     ref: MessageRef,
     _signal?: AbortSignal,
   ): Promise<MessageHeaders> {
     const store = this.#requireMailbox(ref.mailbox);
     return await doFetchHeaders(ref, store);
-  }
-
-  async fetchStructure(
-    ref: MessageRef,
-    _signal?: AbortSignal,
-  ): Promise<BodyStructure> {
-    const store = this.#requireMailbox(ref.mailbox);
-    return await doFetchStructure(ref, store);
   }
 
   async fetchPart(
@@ -616,6 +374,17 @@ class ScopedMessageTransport implements MessageTransport {
       store,
       (addr) => this.#entries.get(addr)?.crypto,
     );
+  }
+
+  /**
+   * The stored bytes, exactly as they were appended. `MailboxStore.readRaw` is
+   * already the verbatim read every projection resolves through, so this is that
+   * read surfaced -- no re-serialization, which is the point.
+   */
+  async readRaw(ref: MessageRef, _signal?: AbortSignal): Promise<Uint8Array> {
+    const store = this.#requireMailbox(ref.mailbox);
+    requireMessage(store, ref.uid, ref.mailbox);
+    return await store.readRaw(ref.uid);
   }
 
   async setFlags(
@@ -643,55 +412,6 @@ class ScopedMessageTransport implements MessageTransport {
       type: "flagsChanged",
       uid: ref.uid,
       flags: Array.from(msg.flags),
-    });
-  }
-
-  async move(
-    ref: MessageRef,
-    toMailbox: string,
-    _signal?: AbortSignal,
-  ): Promise<void> {
-    const fromStore = this.#requireMailbox(ref.mailbox);
-    const toStore = this.#requireMailbox(toMailbox);
-    const msg = requireMessage(fromStore, ref.uid, ref.mailbox);
-    const raw = await fromStore.readRaw(ref.uid);
-    fromStore.remove(ref.uid);
-
-    const newUid = toStore.append(raw, msg.envelope, Array.from(msg.flags));
-
-    this.#fireWatchCallbacks(ref.mailbox, {
-      type: "expunged",
-      uid: ref.uid,
-    });
-
-    // Notify watchers of the new message in the destination mailbox.
-    const { headers: parsedHeaders } = parseHeaderSection(raw);
-    const msgHeaders = this.#buildMessageHeaders(parsedHeaders);
-    this.#fireWatchCallbacks(toMailbox, {
-      type: "exists",
-      uid: newUid,
-      headers: msgHeaders,
-    });
-  }
-
-  async copy(
-    ref: MessageRef,
-    toMailbox: string,
-    _signal?: AbortSignal,
-  ): Promise<void> {
-    const fromStore = this.#requireMailbox(ref.mailbox);
-    const toStore = this.#requireMailbox(toMailbox);
-    const msg = requireMessage(fromStore, ref.uid, ref.mailbox);
-    const raw = await fromStore.readRaw(ref.uid);
-
-    const newUid = toStore.append(raw, msg.envelope, Array.from(msg.flags));
-
-    const { headers: parsedHeaders } = parseHeaderSection(raw);
-    const msgHeaders = this.#buildMessageHeaders(parsedHeaders);
-    this.#fireWatchCallbacks(toMailbox, {
-      type: "exists",
-      uid: newUid,
-      headers: msgHeaders,
     });
   }
 
@@ -731,60 +451,6 @@ class ScopedMessageTransport implements MessageTransport {
     };
   }
 
-  async sync(
-    _mailbox: string,
-    _knownState: SyncState,
-    _signal?: AbortSignal,
-  ): Promise<SyncResult> {
-    throw new MessageTransportError(
-      "CANNOT",
-      "sync() (QRESYNC) is not implemented",
-    );
-  }
-
-  async createList(
-    _address: string,
-    _name: string,
-    _signal?: AbortSignal,
-  ): Promise<ListInfo> {
-    throw new MessageTransportError(
-      "CANNOT",
-      "Distribution list management is not implemented",
-    );
-  }
-
-  async listMembers(
-    _address: string,
-    _signal?: AbortSignal,
-  ): Promise<string[]> {
-    throw new MessageTransportError(
-      "CANNOT",
-      "Distribution list management is not implemented",
-    );
-  }
-
-  async subscribe(
-    _listAddress: string,
-    _subscriberAddress: string,
-    _signal?: AbortSignal,
-  ): Promise<void> {
-    throw new MessageTransportError(
-      "CANNOT",
-      "Distribution list management is not implemented",
-    );
-  }
-
-  async unsubscribe(
-    _listAddress: string,
-    _subscriberAddress: string,
-    _signal?: AbortSignal,
-  ): Promise<void> {
-    throw new MessageTransportError(
-      "CANNOT",
-      "Distribution list management is not implemented",
-    );
-  }
-
   #fireWatchCallbacks(mailbox: string, event: MailboxEvent): void {
     const callbacks = this.#entry.watchCallbacks.get(mailbox);
     if (callbacks === undefined || callbacks.size === 0) return;
@@ -792,55 +458,4 @@ class ScopedMessageTransport implements MessageTransport {
       queueMicrotask(() => cb(event));
     }
   }
-
-  #buildMessageHeaders(
-    headers: Map<string, string>,
-  ): import("@intx/types/runtime").MessageHeaders {
-    return buildMessageHeaders(headers);
-  }
-}
-
-function inboundMessageToRaw(message: InboundMessage): Uint8Array {
-  const enc = new TextEncoder();
-  const CRLF = "\r\n";
-  let headers = "";
-  // A message with no originator gets no From line. Interpolating the absence
-  // would write the literal `From: undefined` into the RFC 2822 bytes, which
-  // reads back as an originator named "undefined".
-  if (message.headers.from !== undefined) {
-    headers += `From: ${message.headers.from}${CRLF}`;
-  }
-  headers += `To: ${message.headers.to.join(", ")}${CRLF}`;
-  if (message.headers.cc && message.headers.cc.length > 0) {
-    headers += `Cc: ${message.headers.cc.join(", ")}${CRLF}`;
-  }
-  // Omitted for the same reason as From above: interpolating an absent value
-  // writes the literal `Date: undefined` into the RFC 2822 bytes, which reads
-  // back as a real header. An omitted line is the honest encoding of a header
-  // the message never carried.
-  if (message.headers.date !== undefined) {
-    headers += `Date: ${message.headers.date}${CRLF}`;
-  }
-  if (message.headers.messageId !== undefined) {
-    headers += `Message-ID: ${message.headers.messageId}${CRLF}`;
-  }
-  if (message.headers.subject !== undefined) {
-    headers += `Subject: ${message.headers.subject}${CRLF}`;
-  }
-  if (message.headers.inReplyTo !== undefined) {
-    headers += `In-Reply-To: ${message.headers.inReplyTo}${CRLF}`;
-  }
-  if (message.headers.references && message.headers.references.length > 0) {
-    headers += `References: ${message.headers.references.join(" ")}${CRLF}`;
-  }
-  if (message.headers.interchangeType !== undefined) {
-    headers += `Interchange-Type: ${message.headers.interchangeType}${CRLF}`;
-  }
-
-  const body =
-    message.content ??
-    (message.payload !== undefined ? JSON.stringify(message.payload) : "");
-  headers += `Content-Type: text/plain${CRLF}`;
-  headers += `${CRLF}`;
-  return enc.encode(headers + body);
 }

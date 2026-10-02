@@ -1,62 +1,13 @@
 import type {
-  OutboundMessage,
-  SendReceipt,
   MailboxEvent,
+  MessageSentHandler,
+  OutboundMessage,
+  RemoteSendHandler,
+  SendReceipt,
 } from "@intx/types/runtime";
-import type { StoredEnvelope } from "@intx/mailbox";
-import { isConversationType } from "@intx/types/runtime";
-import {
-  assembleSignedContent,
-  assembleMessage,
-  buildMessageHeaders,
-  generateMessageId,
-  isMessageId,
-  parseHeaderSection,
-  createDetachedSignatureFromProvider,
-  type MessageHeaders as MimeMessageHeaders,
-  type ConversationContent,
-  type StructuredContent,
-} from "@intx/mime";
+import { composeOutbound } from "@intx/mailbox";
+import { buildMessageHeaders, parseHeaderSection } from "@intx/mime";
 import type { AddressEntry } from "./mailbox";
-
-/**
- * Callback for delivering messages to recipients not registered on this
- * transport. The federation layer provides this to forward messages and the
- * transport-validated sender address to the hub for remote routing.
- */
-export type RemoteSendHandler = (
-  rawMessage: Uint8Array,
-  recipients: string[],
-  senderAddress: string,
-) => Promise<void>;
-
-/**
- * Context passed to MessageSentHandler callbacks after a message is fully
- * assembled and delivered.
- */
-export type MessageSentContext = {
-  senderAddress: string;
-  rawMessage: Uint8Array;
-  messageId: string;
-  /** Deduplicated union of to and cc — the full routing set. */
-  recipients: string[];
-  /** To addresses only (before merging with cc). */
-  to: string[];
-  /** CC addresses only. Empty array when no CC recipients. */
-  cc: string[];
-  /** True when all recipients were delivered locally (no remote leg). */
-  localOnly: boolean;
-};
-
-/**
- * Callback fired after a message is fully assembled and delivered. The
- * send is already complete when this fires — a handler rejection does
- * not mean the message was not delivered.
- *
- * Used by the sidecar to commit outbound wire messages to the git audit
- * trail and forward metadata to the hub.
- */
-export type MessageSentHandler = (ctx: MessageSentContext) => Promise<void>;
 
 /**
  * Execute the send() flow:
@@ -90,19 +41,11 @@ export async function executeSend(
   }
   const senderCrypto = senderEntry.crypto;
 
-  const recipients = Array.isArray(message.to) ? message.to : [message.to];
-  if (recipients.length === 0) {
-    throw new Error("OutboundMessage must have at least one recipient");
-  }
-
-  const ccAddressList =
-    message.cc !== undefined
-      ? Array.isArray(message.cc)
-        ? message.cc
-        : [message.cc]
-      : [];
-
-  const allAddressees = [...new Set([...recipients, ...ccAddressList])];
+  const composed = await composeOutbound(senderAddress, message, senderCrypto);
+  const { messageId, rawBytes, envelope } = composed;
+  const recipients = composed.to;
+  const ccAddressList = composed.cc;
+  const allAddressees = composed.recipients;
   const remoteRecipients = allAddressees.filter((addr) => !entries.has(addr));
 
   if (remoteRecipients.length > 0 && onRemoteSend === undefined) {
@@ -110,100 +53,6 @@ export async function executeSend(
       `Recipient "${remoteRecipients[0]}" is not registered with this transport`,
     );
   }
-
-  const isConversation = isConversationType(message.type);
-
-  if (isConversation && message.payload !== undefined) {
-    throw new Error(
-      "Conversation messages must not carry a structured payload",
-    );
-  }
-  if (!isConversation && message.content !== undefined) {
-    throw new Error("Structured messages must not carry a text content field");
-  }
-
-  // RFC 5322 section 3.6.4 defines `In-Reply-To` as `1*msg-id`, so a blank
-  // value names nothing rather than naming a shorter parent.
-  if (
-    message.inReplyTo !== undefined &&
-    message.inReplyTo.trim().length === 0
-  ) {
-    throw new Error(
-      "OutboundMessage inReplyTo, when provided, must name a message identifier",
-    );
-  }
-
-  const messageId = generateMessageId(senderAddress);
-  const now = new Date();
-
-  let content: ConversationContent | StructuredContent;
-  if (isConversation) {
-    content = {
-      kind: "conversation",
-      text: message.content ?? "",
-    };
-  } else {
-    const payload = message.payload ?? {};
-    const envelope = {
-      type: message.type,
-      version: "1",
-      body: payload,
-    };
-    const structured: StructuredContent = {
-      kind: "structured",
-      json: envelope,
-    };
-    if (message.summary !== undefined) structured.summary = message.summary;
-    content = structured;
-  }
-
-  const signedContentBytes = assembleSignedContent(content);
-  const signatureBytes = await createDetachedSignatureFromProvider(
-    signedContentBytes,
-    senderCrypto,
-  );
-
-  const ccAddresses = ccAddressList.length > 0 ? ccAddressList : undefined;
-
-  const refs = buildReferences(message.inReplyTo, message.references);
-
-  const mimeHeaders: MimeMessageHeaders = {
-    from: senderAddress,
-    to: recipients,
-    cc: ccAddresses,
-    date: now,
-    messageId,
-    subject: message.subject,
-    inReplyTo: message.inReplyTo,
-    references: refs,
-    mimeVersion: "1.0",
-    interchangeType: message.type,
-    interchangeCorrelationId: message.correlationId,
-    interchangeTenantId: message.tenantId,
-    interchangeAgentId: undefined,
-    interchangeSessionId: message.sessionId,
-    interchangeOfferingId: undefined,
-    interchangeSchemaVersion: undefined,
-    traceparent: undefined,
-    tracestate: undefined,
-  };
-
-  const rawBytes = assembleMessage(
-    mimeHeaders,
-    signedContentBytes,
-    signatureBytes,
-  );
-  const envelope: StoredEnvelope = {
-    messageId,
-    from: senderAddress,
-    to: recipients,
-    subject: message.subject ?? "",
-    date: now,
-    inReplyTo: message.inReplyTo,
-    references: refs ?? [],
-    interchangeType: message.type,
-    interchangeCorrelationId: message.correlationId,
-  };
 
   // Deliver to each local recipient's INBOX.
   const deliveredUids: { address: string; uid: number }[] = [];
@@ -286,32 +135,4 @@ export async function executeSend(
     messageId,
     status: remoteRecipients.length > 0 ? "queued" : "delivered",
   };
-}
-
-/**
- * Assemble the wire `References` chain for an outbound message.
- *
- * When the caller supplies a full ancestry (`existingReferences` -- the
- * parent's References plus the parent's Message-Id, built by the threaded
- * reply path), that chain is used and `inReplyTo` is appended only when it is
- * not already the tail. Otherwise the chain is derived from `inReplyTo` alone,
- * preserving the pre-existing single-element behavior.
- *
- * The caller-supplied chain is filtered to RFC 2822 message identifiers:
- * inbound mail can carry a headerless-derived (sha256) or otherwise malformed
- * Message-Id that is a valid claim-check key but not a valid `<id@host>`
- * identifier, and such a value must not leak into a `References` header. The
- * `inReplyTo` value is appended without filtering, matching the pre-existing
- * `In-Reply-To`/`References` behavior for a bare reply.
- */
-function buildReferences(
-  inReplyTo: string | undefined,
-  existingReferences: string[] | undefined,
-): string[] | undefined {
-  const refs = (existingReferences ?? []).filter(isMessageId);
-  if (inReplyTo === undefined) return refs.length > 0 ? refs : undefined;
-  if (!refs.includes(inReplyTo)) {
-    return [...refs, inReplyTo];
-  }
-  return refs;
 }

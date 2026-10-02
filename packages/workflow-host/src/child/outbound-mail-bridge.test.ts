@@ -20,11 +20,7 @@ import type {
   MailboxMutationResult,
 } from "./mailbox-mutation-bridge";
 import type { ChildMailboxReader } from "./child-mailbox-reader";
-import type {
-  MailboxSyncKnownState,
-  MailboxSyncResult,
-  SubstrateMailboxStore,
-} from "../adapters/substrate-mailbox-store";
+import type { SubstrateMailboxStore } from "../adapters/substrate-mailbox-store";
 import {
   ControlPayload,
   type ControlChannelSender,
@@ -60,12 +56,12 @@ function createSeededReader(): {
     get pendingWrites() {
       return dirty;
     },
+    readRaw(uid) {
+      return inner.readRaw(uid);
+    },
     append(raw, envelope, flags) {
       dirty = true;
       return inner.append(raw, envelope, flags);
-    },
-    readRaw(uid) {
-      return inner.readRaw(uid);
     },
     find(uid) {
       return inner.find(uid);
@@ -84,29 +80,6 @@ function createSeededReader(): {
     },
     async flush() {
       dirty = false;
-    },
-    sync(known: MailboxSyncKnownState): MailboxSyncResult {
-      const highestModSeq = inner.highestModSeq;
-      if (known.uidValidity !== inner.uidValidity) {
-        return {
-          resync: true,
-          uidValidity: inner.uidValidity,
-          uidNext: inner.uidNext,
-          highestModSeq,
-          messages: inner.messages.slice(),
-        };
-      }
-      const changed = inner.messages
-        .filter((m) => m.modseq > known.highestModSeq)
-        .sort((a, b) => a.uid - b.uid);
-      return {
-        resync: false,
-        uidValidity: inner.uidValidity,
-        uidNext: inner.uidNext,
-        highestModSeq,
-        changed,
-        vanished: [],
-      };
     },
   };
 
@@ -529,35 +502,6 @@ describe("createSupervisorBackedTransport", () => {
     expect(full.signatureStatus).toBe("unknown");
   });
 
-  test("getMailboxStatus counts the seeded INBOX", async () => {
-    const seeded = createSeededReader();
-    seedMessage(
-      seeded.store,
-      {
-        from: "alice@example.com",
-        to: "agent@example.com",
-        subject: "seen",
-        messageId: "<a-1@example.com>",
-      },
-      ["\\Seen"],
-    );
-    seedMessage(seeded.store, {
-      from: "bob@example.com",
-      to: "agent@example.com",
-      subject: "unseen",
-      messageId: "<b-1@example.com>",
-    });
-    const transport = createSupervisorBackedTransport(
-      makeBridge(),
-      "agent@example.com",
-      makeInbound({ reader: seeded.reader }),
-    );
-
-    const status = await transport.getMailboxStatus("INBOX");
-    expect(status.total).toBe(2);
-    expect(status.unseen).toBe(1);
-  });
-
   test("watch fires when the registry delivers a mailbox event", async () => {
     const watchRegistry = createMailboxWatchRegistry();
     const transport = createSupervisorBackedTransport(
@@ -610,67 +554,6 @@ describe("createSupervisorBackedTransport", () => {
     ]);
   });
 
-  test("sync splits new arrivals from flag changes against the known uidNext", async () => {
-    const seeded = createSeededReader();
-    const uid = seedMessage(seeded.store, {
-      from: "alice@example.com",
-      to: "agent@example.com",
-      subject: "hello",
-      messageId: "<a-1@example.com>",
-    });
-    const transport = createSupervisorBackedTransport(
-      makeBridge(),
-      "agent@example.com",
-      makeInbound({ reader: seeded.reader }),
-    );
-    const uidValidity = seeded.store.uidValidity;
-
-    // A client that has seen nothing (uidNext 1, modseq 0) observes the seeded
-    // message as a new arrival, not a flag change.
-    const fresh = await transport.sync("INBOX", {
-      uidValidity,
-      uidNext: 1,
-      highestModSeq: 0,
-    });
-    expect(fresh.fullResyncRequired).toBe(false);
-    expect(fresh.newMessages).toEqual([{ uid, mailbox: "INBOX" }]);
-    expect(fresh.changed).toHaveLength(0);
-
-    // A flag change on a message the client already holds (uid < known uidNext)
-    // reports as `changed`, not a new arrival.
-    seeded.store.addFlags(uid, ["\\Seen"]);
-    const afterFlag = await transport.sync("INBOX", {
-      uidValidity,
-      uidNext: seeded.store.uidNext,
-      highestModSeq: 1,
-    });
-    expect(afterFlag.newMessages).toHaveLength(0);
-    expect(afterFlag.changed).toEqual([{ uid, flags: ["\\Seen"] }]);
-  });
-
-  test("a mismatched uidValidity forces a full resync", async () => {
-    const seeded = createSeededReader();
-    const uid = seedMessage(seeded.store, {
-      from: "alice@example.com",
-      to: "agent@example.com",
-      subject: "hello",
-      messageId: "<a-1@example.com>",
-    });
-    const transport = createSupervisorBackedTransport(
-      makeBridge(),
-      "agent@example.com",
-      makeInbound({ reader: seeded.reader }),
-    );
-
-    const result = await transport.sync("INBOX", {
-      uidValidity: seeded.store.uidValidity + 1,
-      uidNext: 1,
-      highestModSeq: 0,
-    });
-    expect(result.fullResyncRequired).toBe(true);
-    expect(result.newMessages).toEqual([{ uid, mailbox: "INBOX" }]);
-  });
-
   test("rejects a mailbox other than the agent's own INBOX", async () => {
     const transport = createSupervisorBackedTransport(
       makeBridge(),
@@ -699,29 +582,5 @@ describe("createSupervisorBackedTransport", () => {
     ]);
     // The supervisor's swept uids pass through to the caller.
     expect(outcome).toEqual({ expungedUids: [9, 12] });
-  });
-
-  test("methods for mailboxes the agent does not own stay unsupported", async () => {
-    const transport = createSupervisorBackedTransport(
-      makeBridge(),
-      "agent@example.com",
-      makeInbound(),
-    );
-    await expect(
-      transport.append("INBOX", {
-        ref: { uid: 1, mailbox: "INBOX" },
-        headers: {
-          from: "a@example.com",
-          to: ["agent@example.com"],
-          date: "Mon, 01 Jan 2024 00:00:00 +0000",
-          messageId: "<x@example.com>",
-        },
-        flags: [],
-        signatureStatus: "unknown",
-      }),
-    ).rejects.toThrow(/not supported for unified-host step agent/);
-    await expect(
-      transport.move({ uid: 1, mailbox: "INBOX" }, "Archive"),
-    ).rejects.toThrow(/not supported for unified-host step agent/);
   });
 });

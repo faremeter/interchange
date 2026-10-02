@@ -2,11 +2,8 @@ import { describe, test, expect } from "bun:test";
 import { createEd25519Crypto, generateKeyPair } from "@intx/crypto";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type {
-  BodyStructure,
   InboundMessage,
-  Mailbox,
   MailboxEvent,
-  MailboxStatus,
   MessageHeaders,
   MessagePart,
   MessageRef,
@@ -14,10 +11,6 @@ import type {
   OutboundMessage,
   SearchQuery,
   SendReceipt,
-  SyncResult,
-  SyncState,
-  Thread,
-  ListInfo,
   ToolCall,
   ToolResult,
   Unsubscribe,
@@ -109,44 +102,8 @@ function makeMockTransport(): MockTransport {
       };
     },
 
-    async append(
-      mailbox: string,
-      message: InboundMessage,
-    ): Promise<MessageRef> {
-      const ref = { uid: 999, mailbox };
-      messageStore.set(refKey(ref), message);
-      return ref;
-    },
-
-    async listMailboxes(): Promise<Mailbox[]> {
-      return [{ name: "INBOX", role: "\\Inbox" }];
-    },
-
-    async createMailbox(name: string): Promise<Mailbox> {
-      return { name };
-    },
-
-    async deleteMailbox(): Promise<void> {
-      /* noop */
-    },
-
-    async getMailboxStatus(): Promise<MailboxStatus> {
-      return {
-        total: 0,
-        unseen: 0,
-        recent: 0,
-        uidNext: 1,
-        uidValidity: 1,
-        highestModSeq: 0,
-      };
-    },
-
     async search(_mailbox: string, _query: SearchQuery): Promise<MessageRef[]> {
       return searchResult;
-    },
-
-    async thread(): Promise<Thread[]> {
-      return [];
     },
 
     async fetchHeaders(ref: MessageRef): Promise<MessageHeaders> {
@@ -158,10 +115,6 @@ function makeMockTransport(): MockTransport {
         date: new Date().toISOString(),
         messageId: `<${String(ref.uid)}@test>`,
       };
-    },
-
-    async fetchStructure(): Promise<BodyStructure> {
-      return { contentType: "multipart/signed" };
     },
 
     async fetchPart(): Promise<MessagePart> {
@@ -185,6 +138,12 @@ function makeMockTransport(): MockTransport {
       };
     },
 
+    readRaw(): Promise<Uint8Array> {
+      throw new Error(
+        "this mock does not serve raw bytes; no case here reads them",
+      );
+    },
+
     async setFlags(ref: MessageRef, flags: string[]): Promise<void> {
       if (mutationError !== null) throw mutationError;
       flagCalls.push({ op: "set", ref, flags });
@@ -193,14 +152,6 @@ function makeMockTransport(): MockTransport {
     async clearFlags(ref: MessageRef, flags: string[]): Promise<void> {
       if (mutationError !== null) throw mutationError;
       flagCalls.push({ op: "clear", ref, flags });
-    },
-
-    async move(): Promise<void> {
-      /* noop */
-    },
-
-    async copy(): Promise<void> {
-      /* noop */
     },
 
     async expunge(mailbox: string): Promise<{ expungedUids: number[] }> {
@@ -215,36 +166,6 @@ function makeMockTransport(): MockTransport {
         const idx = watchCallbacks.indexOf(callback);
         if (idx !== -1) watchCallbacks.splice(idx, 1);
       };
-    },
-
-    async sync(_mailbox: string, _state: SyncState): Promise<SyncResult> {
-      return {
-        vanished: [],
-        changed: [],
-        newMessages: [],
-        fullResyncRequired: false,
-      };
-    },
-
-    async createList(address: string, name: string): Promise<ListInfo> {
-      return {
-        address,
-        name,
-        memberCount: 0,
-        createdAt: new Date().toISOString(),
-      };
-    },
-
-    async listMembers(): Promise<string[]> {
-      return [];
-    },
-
-    async subscribe(): Promise<void> {
-      /* noop */
-    },
-
-    async unsubscribe(): Promise<void> {
-      /* noop */
     },
   };
 
@@ -3021,6 +2942,12 @@ describe("inherited argument names", () => {
       fetchFull(ref, signal) {
         touched.push("fetchFull");
         return inner.fetchFull(ref, signal);
+      },
+
+      readRaw(): Promise<Uint8Array> {
+        throw new Error(
+          "this mock does not serve raw bytes; no case here reads them",
+        );
       },
       fetchPart(ref, partPath, signal) {
         touched.push("fetchPart");

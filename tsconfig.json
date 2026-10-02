@@ -20,6 +20,7 @@
     { "path": "packages/mime" },
     { "path": "packages/mailbox" },
     { "path": "packages/mail-memory" },
+    { "path": "packages/mail-imap" },
     { "path": "packages/pack-transport" },
     { "path": "packages/hub-client" },
     { "path": "packages/harness" },

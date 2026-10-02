@@ -24,7 +24,10 @@ import type {
   SearchQuery,
   ToolResult,
 } from "@intx/types/runtime";
-import { isMessageTransportError } from "@intx/types/runtime";
+import {
+  MessageTransportError,
+  isMessageTransportError,
+} from "@intx/types/runtime";
 
 import { makeMailWaitHandler, type WaitScheduler } from "./handlers";
 
@@ -57,9 +60,16 @@ async function liveHandle() {
   return { root, scoped: root.getTransportFor(ADDRESS) };
 }
 
-// Runs `afterSearch` once, after the real search has answered, so the next call
-// the handler makes -- the watch install -- is the first to see the removal.
-function withRemovalAfterFirstSearch(
+// A transport whose search answers normally and whose watch install then
+// refuses with `condition`. The sequence is what the handler sees when a mailbox
+// goes away between its opening search and its watch: the search succeeded, so
+// the refusal has to be classified from the install alone.
+//
+// The condition is injected rather than produced by removing a mailbox. There is
+// no mailbox-removal method to produce it with any more, and the transport's own
+// raising of NONEXISTENT is asserted directly in the suite above -- so splitting
+// the two leaves each assertion about one thing.
+function withActionAfterFirstSearch(
   real: MessageTransport,
   afterSearch: () => Promise<void>,
 ): MessageTransport {
@@ -76,6 +86,20 @@ function withRemovalAfterFirstSearch(
         await afterSearch();
       }
       return refs;
+    },
+  });
+}
+
+function withRefusingWatch(
+  real: MessageTransport,
+  condition: "NONEXISTENT" | "CANNOT" | "SERVERBUG",
+): MessageTransport {
+  return delegate(real, {
+    watch(): never {
+      throw new MessageTransportError(
+        condition,
+        `watch install refused with ${condition}`,
+      );
     },
   });
 }
@@ -120,12 +144,14 @@ describe("the in-memory transport's watch refuses with a condition", () => {
   // The outer assertions are only about classification if the transport really
   // does name a condition here, and `watch` is synchronous, so mail-memory's own
   // rejection sweeps do not cover it. Assert it rather than assume it.
-  test("a mailbox that is gone is NONEXISTENT", async () => {
+  test("a mailbox that is not there is NONEXISTENT", async () => {
     const { scoped } = await liveHandle();
-    await scoped.deleteMailbox("INBOX");
 
+    // A name the address never had. The transport has no method to delete a
+    // mailbox -- an agent owns exactly one -- so "not there" is expressed by
+    // naming one that was never created, which reaches the same guard.
     const condition = thrownCondition(() =>
-      scoped.watch("INBOX", () => undefined),
+      scoped.watch("NoSuchMailbox", () => undefined),
     );
 
     expect(condition).toBe("NONEXISTENT");
@@ -146,9 +172,7 @@ describe("the in-memory transport's watch refuses with a condition", () => {
 describe("mail_wait classifies a refused watch install", () => {
   test("a mailbox removed after the opening search is invalid_mailbox", async () => {
     const { scoped } = await liveHandle();
-    const transport = withRemovalAfterFirstSearch(scoped, () =>
-      scoped.deleteMailbox("INBOX"),
-    );
+    const transport = withRefusingWatch(scoped, "NONEXISTENT");
 
     const result = await makeMailWaitHandler(transport, capturedScheduler())(
       { id: "b1", name: "mail_wait", arguments: {} },
@@ -160,7 +184,7 @@ describe("mail_wait classifies a refused watch install", () => {
 
   test("a handle deregistered after the opening search is not_available", async () => {
     const { root, scoped } = await liveHandle();
-    const transport = withRemovalAfterFirstSearch(scoped, async () => {
+    const transport = withActionAfterFirstSearch(scoped, async () => {
       root.unregister(ADDRESS);
     });
 
@@ -177,12 +201,15 @@ describe("mail_wait classifies a refused watch install", () => {
   // the code a caller receives must not depend on which of the two calls saw
   // the removal first. deregistered.test.ts covers the deregistered handle
   // across the whole toolset; the vanished mailbox is covered here.
-  test("a mailbox already gone at the opening search is invalid_mailbox", async () => {
+  test("a mailbox not there at the opening search is invalid_mailbox", async () => {
     const { scoped } = await liveHandle();
-    await scoped.deleteMailbox("INBOX");
 
     const result = await makeMailWaitHandler(scoped, capturedScheduler())(
-      { id: "b3", name: "mail_wait", arguments: {} },
+      {
+        id: "b3",
+        name: "mail_wait",
+        arguments: { mailbox: "NoSuchMailbox" },
+      },
       signal,
     );
 

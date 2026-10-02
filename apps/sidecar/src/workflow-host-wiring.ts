@@ -13,7 +13,7 @@ import { type } from "arktype";
 
 import { derivePublicKeyBytes, signEd25519 } from "@intx/crypto";
 import { getLogger } from "@intx/log";
-import type { HubTransport } from "@intx/mail-memory";
+import type { HubTransport } from "@intx/types/runtime";
 import {
   parseAgentId,
   workflowSourceAssetMountPath,
@@ -88,6 +88,7 @@ import {
   sourceAssetGitDir,
 } from "./source-asset-delivery";
 import { readRegistries } from "./sidecar-materialization-config";
+import type { RunGrantsBarrier } from "./run-grants-barrier";
 
 import type {
   MultistepDrainRouter,
@@ -1182,6 +1183,29 @@ export function createSidecarDeployRouter(deps: {
    */
   multistepMailRouter?: MultistepMailRouter;
   /**
+   * Durable per-deployment mailbox credentials. The deploy path records what the
+   * `agent.deploy` frame carried BEFORE registering the address on the mail
+   * transport, because registering is what opens the connection that needs it.
+   *
+   * Optional, and absent for the in-memory backend, which authenticates against
+   * nothing.
+   */
+  mailboxCredentials?: {
+    put(
+      address: string,
+      credential: { user: string; pass: string },
+    ): Promise<void>;
+    evict(address: string): Promise<void>;
+  };
+  /**
+   * The run-grants join, signalled once a `run.grants` apply resolves.
+   *
+   * Only a deployment whose mail arrives off the control socket needs it: on the
+   * socket the grants and the mail share one FIFO channel, so nothing ever has
+   * to wait. Optional, and absent for the in-memory backend.
+   */
+  runGrantsBarrier?: RunGrantsBarrier;
+  /**
    * Per-recipient-address registry of resolved inbound-mail admission
    * policies the sidecar hub-link's `mail.inbound` seam enforces. The
    * multi-step branch resolves this deployment's authored
@@ -1514,6 +1538,16 @@ export function createSidecarDeployRouter(deps: {
    */
   interface WorkflowDeploySpec {
     agentAddress: string;
+    /**
+     * The mailbox credential this deployment's `agent.deploy` frame carried,
+     * when the hub provisioned one.
+     *
+     * Present only on the deploy path. The boot-time restore leaves it absent
+     * on purpose: there is no frame to carry it, and the credential it needs
+     * was already written durably by the deploy that created it. A restore that
+     * invented a value here would overwrite the real one with nothing.
+     */
+    mailbox?: AgentDeployFrame["mailbox"];
     /**
      * The runnable definition, projected to its inert wire shape. Source-ref is
      * the only deploy lineage, so this is always the closure evaluation
@@ -1881,6 +1915,18 @@ export function createSidecarDeployRouter(deps: {
       // `getTransportFor(senderAddress).send` throws "not registered".
       // Registration happens before `spawn()` so the address is live the
       // instant the first reply routes outbound.
+      // Record the mailbox credential the hub delivered BEFORE registering the
+      // address: registration is what opens the connection, and the connection
+      // is what needs the credential. A deploy that carried none leaves whatever
+      // the restore loaded in place, so a redeploy cannot erase a working
+      // credential by omitting it.
+      if (deps.mailboxCredentials !== undefined && spec.mailbox !== undefined) {
+        await deps.mailboxCredentials.put(spec.agentAddress, {
+          user: spec.mailbox.user,
+          pass: spec.mailbox.password,
+        });
+      }
+
       const { keyPair } = await deps.keyStore.loadOrGenerateKey(
         spec.agentAddress,
       );
@@ -2056,6 +2102,13 @@ export function createSidecarDeployRouter(deps: {
         // barrier/respawn, so a skipped push never leaves the run under a stale
         // floor for good.
         await wired.supervisor.deliverGrants(args.runId);
+        // Release anything waiting on this run's authorization. Signalled HERE,
+        // after every write above resolved, so a waiter that proceeds observes
+        // the applied state rather than the frame's arrival. A failed apply
+        // throws above and never reaches this line, so a poisoned run leaves
+        // its waiters to time out and retry instead of being released onto a
+        // grant set that did not land.
+        deps.runGrantsBarrier?.noteApplied(spec.agentAddress, args.runId);
       });
       // Register the sources-rotation handler ONLY for a single-step warm
       // deployment: it has one long-lived agent whose sources can be
@@ -2385,6 +2438,7 @@ export function createSidecarDeployRouter(deps: {
       // frame/in-memory-only inputs: sources, session id, single-step hub key).
       const spec: WorkflowDeploySpec = {
         agentAddress: frame.agentAddress,
+        ...(frame.mailbox !== undefined ? { mailbox: frame.mailbox } : {}),
         definition: effectiveDefinition,
         sources: projection.sources,
         bodySources: buildBodySourcesMap(projection.referencedDefinitions),

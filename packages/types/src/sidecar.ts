@@ -201,6 +201,38 @@ export const MailOutboundFrame = type({
 export type MailOutboundFrame = typeof MailOutboundFrame.infer;
 
 /**
+ * Asks the hub for a run's authorization grants and a sender's vouched key.
+ *
+ * The socket's own FIFO ordering is what normally makes this unnecessary: the
+ * hub sends `run.grants` and then the trigger mail on one channel, so the
+ * grants provably precede the mail. A deployment that receives its mail on a
+ * DIFFERENT transport -- a real IMAP mailbox -- has no such ordering, and the
+ * consequence is not a delayed run but a dead deployment: the supervisor's
+ * pre-trigger barrier fails a run whose grants file is absent, `RunFailed` is
+ * terminal, and a terminal run refuses every later trigger. So a recipient that
+ * cannot find the prerequisites must be able to ASK for them rather than
+ * assume they already arrived.
+ *
+ * The hub answers with an ordinary `run.grants` frame, which is why this frame
+ * carries no correlation id: that frame is already idempotent (it re-asserts the
+ * run's current committed grants) and already the thing the requester is waiting
+ * for. A duplicate request therefore costs one redundant re-assert.
+ *
+ * `senderAddress` is the sender of the message that prompted the request, taken
+ * from its visible `From`. It is a HINT, not a claim: the hub resolves whatever
+ * key it vouches for that address, or none, exactly as it does when it
+ * co-delivers a key on its own initiative. A requester cannot induce the hub to
+ * vouch for a key it does not hold.
+ */
+export const RunGrantsRequestFrame = type({
+  type: "'run.grants.request'",
+  agentAddress: "string",
+  runId: "string",
+  senderAddress: "string",
+});
+export type RunGrantsRequestFrame = typeof RunGrantsRequestFrame.infer;
+
+/**
  * An InferenceEvent from the reactor, forwarded for UI consumption. Tagged
  * with the run address so the hub can route to the correct UI client.
  */
@@ -700,6 +732,27 @@ export type AgentDeployWorkflow = typeof AgentDeployWorkflow.infer;
  * A frame carrying neither is rejected -- there is no in-process
  * fall-through. `workflow` and `provisionStep` are mutually exclusive.
  */
+/**
+ * The credential for this deployment's own mailbox, when the hub provisioned
+ * one for it.
+ *
+ * Per-deployment rather than one secret shared across every mailbox, so a
+ * compromised deployment can read its own mail and nothing else. The hub derives
+ * it from an operator root secret and the address, which is why it can be
+ * re-derived on a redeploy without being stored: a deployment's address is
+ * fixed for its whole life, so the credential is stable and a reconnect with
+ * the value already held keeps working.
+ *
+ * Absent when the hub provisions no mailboxes. The recipient must then already
+ * hold a credential for the address (persisted from an earlier deploy) or fail
+ * loudly -- there is no shared fallback to reach for.
+ */
+export const AgentDeployMailbox = type({
+  user: "string",
+  password: "string",
+});
+export type AgentDeployMailbox = typeof AgentDeployMailbox.infer;
+
 export const AgentDeployFrame = type({
   type: "'agent.deploy'",
   agentAddress: "string",
@@ -708,6 +761,7 @@ export const AgentDeployFrame = type({
   hubPublicKey: "string",
   "workflow?": AgentDeployWorkflow,
   "provisionStep?": "boolean",
+  "mailbox?": AgentDeployMailbox,
 });
 export type AgentDeployFrame = typeof AgentDeployFrame.infer;
 
@@ -1154,6 +1208,7 @@ export const SidecarFrame = type.or(
   PackAckFrame,
   PackRejectFrame,
   MailInboundAckFrame,
+  RunGrantsRequestFrame,
   WorkflowProbeResultFrame,
   WorkflowProbeErrorFrame,
 );

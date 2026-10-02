@@ -99,6 +99,15 @@ test-core: FORCE
 test-load: FORCE
 	$(BUN) test --timeout 300000 tests/workflow-deploy/fifo-mail-load.test.ts
 
+# Real SMTP + IMAP transport suite. Excluded from all/test and from the CI job
+# graph: it needs the Postfix + Dovecot container `bin/mail-server up` starts,
+# and its notification latency is bounded by the IMAP client's auto-IDLE delay
+# rather than by anything the suite controls. The files skip themselves when the
+# container is not reachable, so running the target without it is green and
+# vacuous -- check `bin/mail-server status` before trusting a pass.
+test-mail: FORCE
+	$(BUN) test --timeout 300000 tests/mail-imap/
+
 # Browser-driven admin UI end-to-end suite (Playwright). Excluded from
 # all/test; needs a running Postgres and a one-time
 # `bunx playwright install chromium`. Builds the admin UI bundle first
@@ -142,5 +151,5 @@ clean:
 
 include .env-checked
 
-.PHONY: all build build-admin-ui lint test test-unit test-workflow test-core test-load test-e2e test-e2e-run test-storage-browser verify-tool-load format docs clean builtins publish-builtins
+.PHONY: all build build-admin-ui lint test test-unit test-workflow test-core test-load test-mail test-e2e test-e2e-run test-storage-browser verify-tool-load format docs clean builtins publish-builtins
 FORCE:

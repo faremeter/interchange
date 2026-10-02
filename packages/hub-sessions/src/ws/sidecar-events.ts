@@ -263,6 +263,48 @@ export type SidecarLookups = {
     raw: Uint8Array;
   }) => Promise<SidecarMailPersistedRow[]>;
 
+  /** Ensures a mailbox exists for a deployment address, before the deploy frame
+   * that will make a sidecar connect to it is written.
+   *
+   * The ordering is the whole point: a sidecar registers the address on its
+   * mail transport as it applies the deploy, and a transport whose account does
+   * not exist yet cannot authenticate. Provisioning here -- the single place
+   * every `agent.deploy` passes through -- is what makes the mailbox older than
+   * the first attempt to open it.
+   *
+   * MUST be idempotent. A deploy is retried, and the allocation reconciler
+   * redeploys an existing deployment onto a restarted worker, so an address is
+   * provisioned more than once.
+   *
+   * It THROWS to fail the deploy. That is deliberate: a deployment with no
+   * mailbox cannot receive its trigger, so a frame sent anyway would produce a
+   * silently deaf deployment. Absent when the hub runs with no mail
+   * infrastructure to provision, in which case the deploy proceeds untouched.
+   *
+   * Returns the mailbox's credential, which the deploy frame then carries to
+   * the one recipient entitled to it. Per-deployment, so a compromised
+   * deployment reads its own mail and nothing else; the root secret it is
+   * derived from never leaves the hub. */
+  provisionMailbox?: (
+    address: string,
+  ) => Promise<{ user: string; password: string }>;
+
+  /** Removes the mailbox for an undeployed address.
+   *
+   * The counterpart to `provisionMailbox`, and the hub owns both ends because it
+   * owns the address: a deployment has one run and is never redeployed to the
+   * same address, so a mailbox outliving its undeploy is read by nothing and
+   * costs disk for the life of the server.
+   *
+   * It must NOT throw. The undeploy it follows has already torn the deployment
+   * down, so a throw here would report a failure for work that succeeded; an
+   * implementation that cannot remove the mailbox reports it and leaves it.
+   *
+   * Any mail still sitting in the mailbox is discarded with it. That is the
+   * intended outcome rather than a loss: the only reader was the deployment,
+   * which is gone, and no later deployment takes this address. */
+  deprovisionMailbox?: (address: string) => Promise<void>;
+
   /** Resolves the hub-held public key a sender address signs with, hex-encoded,
    * or `null` when the sender has no resolvable key (a run whose deploy is not
    * yet acked, an address matching no known principal). The `mail.inbound` frame

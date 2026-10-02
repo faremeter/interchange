@@ -18,12 +18,9 @@ import { createDefaultDirectorRegistry } from "@intx/agent";
 import { noopAuditStore, permissiveAuthorize } from "@intx/agent/testing";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
-  BodyStructure,
   InboundMessage,
   InferenceSource,
-  Mailbox,
   MailboxEvent,
-  MailboxStatus,
   MessageHeaders,
   MessagePart,
   MessageRef,
@@ -31,10 +28,6 @@ import type {
   OutboundMessage,
   SearchQuery,
   SendReceipt,
-  SyncResult,
-  SyncState,
-  Thread,
-  ListInfo,
   Unsubscribe,
 } from "@intx/types/runtime";
 import { createRuntimeCapabilities } from "@intx/types/runtime-capabilities";
@@ -58,35 +51,7 @@ function makeMockTransport(): MessageTransport {
     async send(_message: OutboundMessage): Promise<SendReceipt> {
       return { messageId: "<stub@test>", status: "delivered" };
     },
-    async append(
-      mailbox: string,
-      _message: InboundMessage,
-    ): Promise<MessageRef> {
-      return { uid: 1, mailbox };
-    },
-    async listMailboxes(): Promise<Mailbox[]> {
-      return [{ name: "INBOX", role: "\\Inbox" }];
-    },
-    async createMailbox(name: string): Promise<Mailbox> {
-      return { name };
-    },
-    async deleteMailbox(): Promise<void> {
-      throw new Error("mock: deleteMailbox not called in this test");
-    },
-    async getMailboxStatus(): Promise<MailboxStatus> {
-      return {
-        total: 0,
-        unseen: 0,
-        recent: 0,
-        uidNext: 1,
-        uidValidity: 1,
-        highestModSeq: 0,
-      };
-    },
     async search(_mailbox: string, _query: SearchQuery): Promise<MessageRef[]> {
-      return [];
-    },
-    async thread(): Promise<Thread[]> {
       return [];
     },
     async fetchHeaders(ref: MessageRef): Promise<MessageHeaders> {
@@ -96,9 +61,6 @@ function makeMockTransport(): MessageTransport {
         date: new Date().toISOString(),
         messageId: `<${String(ref.uid)}@test>`,
       };
-    },
-    async fetchStructure(): Promise<BodyStructure> {
-      return { contentType: "text/plain" };
     },
     async fetchPart(): Promise<MessagePart> {
       return { contentType: "text/plain", content: new Uint8Array() };
@@ -117,17 +79,17 @@ function makeMockTransport(): MessageTransport {
         signatureStatus: "missing",
       };
     },
+
+    readRaw(): Promise<Uint8Array> {
+      throw new Error(
+        "this mock does not serve raw bytes; no case here reads them",
+      );
+    },
     async setFlags(): Promise<void> {
       throw new Error("mock: setFlags not called in this test");
     },
     async clearFlags(): Promise<void> {
       throw new Error("mock: clearFlags not called in this test");
-    },
-    async move(): Promise<void> {
-      throw new Error("mock: move not called in this test");
-    },
-    async copy(): Promise<void> {
-      throw new Error("mock: copy not called in this test");
     },
     async expunge(): Promise<{ expungedUids: number[] }> {
       throw new Error("mock: expunge not called in this test");
@@ -137,31 +99,6 @@ function makeMockTransport(): MessageTransport {
       _callback: (event: MailboxEvent) => void,
     ): Unsubscribe {
       throw new Error("mock: watch not called in this test");
-    },
-    async sync(_mailbox: string, _state: SyncState): Promise<SyncResult> {
-      return {
-        vanished: [],
-        changed: [],
-        newMessages: [],
-        fullResyncRequired: false,
-      };
-    },
-    async createList(address: string, name: string): Promise<ListInfo> {
-      return {
-        address,
-        name,
-        memberCount: 0,
-        createdAt: new Date().toISOString(),
-      };
-    },
-    async listMembers(): Promise<string[]> {
-      return [];
-    },
-    async subscribe(): Promise<void> {
-      throw new Error("mock: subscribe not called in this test");
-    },
-    async unsubscribe(): Promise<void> {
-      throw new Error("mock: unsubscribe not called in this test");
     },
   };
 }

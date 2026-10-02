@@ -16,6 +16,7 @@
     "@intx/hub-api": "workspace:*",
     "@intx/hub-sessions": "workspace:*",
     "@intx/log": "workspace:*",
+    "@intx/mail-imap": "workspace:*",
     "@intx/types": "workspace:*",
     "hono": "catalog:"
   }

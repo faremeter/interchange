@@ -27,6 +27,7 @@ import {
   type PackRejectFrame,
   type RepoId,
   type RunGrantsFrame,
+  type RunGrantsRequestFrame,
   type SignalCorrelationRegisterFrame,
   type CredentialDelivery,
   type WorkflowSourceAssetMount,
@@ -1225,6 +1226,7 @@ export function createSidecarRouter(
       case "connector.state.changed":
       case "mail.inbound.ack":
       case "signal.correlation.register":
+      case "run.grants.request":
       case "repo.pack.push":
       case "repo.pack.done":
         return false;
@@ -1380,6 +1382,8 @@ export function createSidecarRouter(
       }
       case "signal.correlation.register":
         return handleSignalCorrelationRegister(ws, frame);
+      case "run.grants.request":
+        return handleRunGrantsRequest(ws, frame);
       case "session.ack":
         pendingRequests.resolve(frame.requestId);
         return;
@@ -2150,6 +2154,75 @@ export function createSidecarRouter(
         runId: result.runId,
         address: result.address,
       });
+    }
+  }
+
+  /**
+   * Answer a sidecar that could not find a run's prerequisites locally.
+   *
+   * This is the pull peer of the hub's own push: `deliverMailToRecipient`
+   * materializes a run's grants and co-delivers the sender's key ahead of the
+   * mail it routes, and that ordering is what the FIFO socket guarantees. A
+   * deployment whose mail arrived on another transport has no such guarantee, so
+   * it asks here instead of failing its run closed.
+   *
+   * The answer is an ordinary `run.grants` frame, so the requester's existing
+   * handler writes the grants and caches the key with no second code path. The
+   * materializer is the SAME one the push path drives, so a run cannot acquire
+   * through a request any authorization the push would have denied it: a
+   * `rejected` outcome sends nothing, which leaves the requester waiting and its
+   * message unconsumed rather than running under-authorized.
+   */
+  async function handleRunGrantsRequest(
+    ws: WsHandle,
+    frame: RunGrantsRequestFrame,
+  ): Promise<void> {
+    const conn = connections.get(ws);
+    if (conn === undefined) return;
+    // A sidecar may only ask about an address it actually hosts, so the request
+    // cannot be used to read another deployment's grants.
+    if (!connOwnsAddress(conn, frame.agentAddress)) {
+      logger.warn`Dropping run.grants.request for ${frame.agentAddress}: not registered to this sidecar`;
+      return;
+    }
+    const materialize = lookups.materializeMailTriggeredRunGrants;
+    if (materialize === undefined) {
+      logger.warn`Dropping run.grants.request for ${frame.agentAddress}: no run-grants materializer configured`;
+      return;
+    }
+
+    let result: Awaited<ReturnType<typeof materialize>>;
+    try {
+      result = await materialize({
+        agentAddress: frame.agentAddress,
+        runId: frame.runId,
+      });
+    } catch (err) {
+      logger.error`run.grants.request for ${frame.agentAddress} could not materialize run ${frame.runId}: ${err instanceof Error ? err.message : String(err)}`;
+      return;
+    }
+    if (result.outcome !== "materialized") {
+      // `rejected` means insufficient authority or a terminal run; `skip` means
+      // the address names no deployment this hub authorizes. Neither is answered
+      // with grants, and neither is a condition a retry resolves, so it is
+      // logged at the level that says so.
+      logger.error`Refusing run.grants.request for ${frame.agentAddress} run ${frame.runId}: materialization returned ${result.outcome}`;
+      return;
+    }
+
+    const publicKey = await reresolveRunSenderKey(frame.senderAddress);
+    if (publicKey === null) {
+      logger.warn`run.grants.request for ${frame.agentAddress} resolved no key for sender ${frame.senderAddress}; the recipient will see that sender as unknown`;
+    }
+    if (
+      !sendRunGrants(
+        frame.agentAddress,
+        frame.runId,
+        result.stepGrants,
+        senderIdentitiesFromKey(frame.senderAddress, publicKey),
+      )
+    ) {
+      logger.warn`Could not answer run.grants.request for ${frame.agentAddress}: the address is no longer routable`;
     }
   }
 
@@ -3258,6 +3331,7 @@ export function createSidecarRouter(
     agentAddress: string,
     harnessConfig: HarnessConfig,
     workflow?: AgentDeployFrame["workflow"],
+    mailbox?: AgentDeployFrame["mailbox"],
   ): Promise<{ publicKey: string }> {
     if (hubPublicKeyHex === undefined) {
       throw deployFrameFailure(
@@ -3321,6 +3395,7 @@ export function createSidecarRouter(
           config: harnessConfig,
           hubPublicKey: hubPublicKeyHex,
           ...(workflow !== undefined ? { workflow } : {}),
+          ...(mailbox !== undefined ? { mailbox } : {}),
         });
       } catch (err) {
         // A synchronous send failure means the frame never reached the wire.
@@ -3373,6 +3448,20 @@ export function createSidecarRouter(
         throw new Error(
           `Deploy already in progress for agent "${agentAddress}"`,
         );
+      // Create the mailbox BEFORE the frame. The sidecar registers this
+      // address on its mail transport while applying the deploy, so the account
+      // has to exist first; a throw here fails the deploy rather than producing
+      // a deployment that cannot read its own mail.
+      //
+      // Provisioning is not quiet: on at least one real server creating an
+      // account reloads it and drops every live IMAP session, so other
+      // deployments lose their connections at this moment. Their transports are
+      // expected to rebuild and re-sweep -- that recovery is a requirement of
+      // provisioning here, not an optional nicety.
+      const mailbox =
+        lookups.provisionMailbox !== undefined
+          ? await lookups.provisionMailbox(agentAddress)
+          : undefined;
       await beforeSend?.();
       signal?.throwIfAborted();
       if (
@@ -3390,6 +3479,7 @@ export function createSidecarRouter(
         agentAddress,
         harnessConfig,
         workflow,
+        mailbox,
       );
     } catch (cause) {
       throw deployFrameFailure(
@@ -3527,7 +3617,42 @@ export function createSidecarRouter(
     current.ws.close();
   }
 
-  function sendAgentUndeploy(
+  /**
+   * Undeploy the agent, then remove the mailbox the deploy provisioned for it.
+   *
+   * The removal runs AFTER the ack rather than alongside the frame: until the
+   * sidecar has acked, it still holds IMAP sessions on that mailbox, and
+   * removing it under a live session breaks the teardown it is in the middle of.
+   *
+   * It runs only on a successful ack. An undeploy that timed out or failed may
+   * have left the deployment running, and a mailbox taken out from under a
+   * deployment that is still reading it is worse than one left behind.
+   *
+   * Removing a mailbox reloads the mail server, exactly as creating one does, so
+   * it refuses logins and submissions for about a second afterwards. Every one
+   * of those is retried -- see `isTransientLoginFailure` and
+   * `isTransientSubmitFailure` in `@intx/mail-imap` -- so an unrelated
+   * deployment's traffic survives this.
+   */
+  async function sendAgentUndeploy(
+    agentAddress: string,
+    reason: string,
+  ): Promise<void> {
+    await undeployRoundTrip(agentAddress, reason);
+
+    if (lookups.deprovisionMailbox === undefined) return;
+    // Contract says it does not throw, and the undeploy above has already
+    // succeeded -- so a defect in an implementation that throws anyway must not
+    // turn a completed undeploy into a reported failure. Reported here rather
+    // than swallowed: a mailbox left behind is invisible otherwise.
+    try {
+      await lookups.deprovisionMailbox(agentAddress);
+    } catch (err) {
+      logger.error`Mailbox removal for "${agentAddress}" threw, which its contract forbids; the mailbox is left in place: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  function undeployRoundTrip(
     agentAddress: string,
     reason: string,
   ): Promise<void> {

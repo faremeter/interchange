@@ -1,0 +1,31 @@
+{
+  "name": "@intx/mail-imap",
+  "description": "MessageTransport over a real SMTP submission relay and IMAP mailbox",
+  "version": "0.4.0",
+  "license": "LGPL-2.1-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "intx-src": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@intx/log": "workspace:*",
+    "@intx/mailbox": "workspace:*",
+    "@intx/mime": "workspace:*",
+    "@intx/types": "workspace:*",
+    "imapflow": "^2.2.1",
+    "nodemailer": "^10.0.13"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}

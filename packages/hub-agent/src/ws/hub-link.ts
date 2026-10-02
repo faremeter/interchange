@@ -7,7 +7,7 @@
 // touches raw key bytes.
 
 import { getLogger } from "@intx/log";
-import type { HubTransport } from "@intx/mail-memory";
+import type { HubTransport } from "@intx/types/runtime";
 import { type } from "arktype";
 import {
   HubFrame,
@@ -720,6 +720,23 @@ export type HubLink = {
     ref: string;
     commitSha: string;
   }) => Promise<void>;
+  /**
+   * Ask the hub for a run's grants and a sender's vouched key, for a deployment
+   * that could not find them locally. Fire-and-forget and queued while
+   * disconnected, like `sendEvent`: the answer is an ordinary `run.grants`
+   * frame, and the caller's own deadline is what bounds the wait.
+   *
+   * Unlike `sendSignalCorrelationRegister` this is NOT retried by an acker. The
+   * request exists because a message is waiting, and that message is what
+   * carries the retry: it stays unconsumed in its mailbox until the
+   * prerequisites arrive, so a lost request is re-sent by the next attempt to
+   * ingest it rather than by a timer here.
+   */
+  sendRunGrantsRequest: (args: {
+    agentAddress: string;
+    runId: string;
+    senderAddress: string;
+  }) => void;
 };
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -1929,11 +1946,21 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       registerAcker.send(frame);
     };
 
+  const sendRunGrantsRequest: HubLink["sendRunGrantsRequest"] = (args) => {
+    send({
+      type: "run.grants.request",
+      agentAddress: args.agentAddress,
+      runId: args.runId,
+      senderAddress: args.senderAddress,
+    });
+  };
+
   return {
     connect,
     close,
     sendEvent,
     sendSignalCorrelationRegister,
     pushWorkflowRunPack,
+    sendRunGrantsRequest,
   };
 }

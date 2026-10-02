@@ -44,13 +44,9 @@
 // every transport.
 
 import type {
-  BodyStructure,
   CryptoProvider,
   InboundMessage,
-  ListInfo,
-  Mailbox,
   MailboxEvent,
-  MailboxStatus,
   MessageHeaders,
   MessagePart,
   MessageRef,
@@ -58,20 +54,15 @@ import type {
   OutboundMessage,
   SearchQuery,
   SendReceipt,
-  SyncResult,
-  SyncState,
-  Thread,
   Unsubscribe,
 } from "@intx/types/runtime";
 import { MessageTransportError } from "@intx/types/runtime";
 
 import {
   executeSearch,
-  executeThread,
   fetchFull as doFetchFull,
   fetchHeaders as doFetchHeaders,
   fetchPart as doFetchPart,
-  fetchStructure as doFetchStructure,
 } from "@intx/mailbox";
 
 import { deriveWorkflowRunId } from "@intx/types";
@@ -138,13 +129,6 @@ export function createSupervisorBackedTransport(
   address: string,
   inbound?: SupervisorBackedTransportInbound,
 ): MessageTransport {
-  function unsupported(method: string): never {
-    throw new MessageTransportError(
-      "CANNOT",
-      `supervisor-backed transport: ${method} is not supported for unified-host step agent ${address}; the supervisor owns the mailbox and the agent owns only its own ${MAILBOX_INBOX_DIR}`,
-    );
-  }
-
   // Return the wired inbound surface, or fail loud when the sidecar
   // constructed the transport without it -- an inbound read against a missing
   // surface is a wiring error, not a silently-empty result.
@@ -178,50 +162,6 @@ export function createSupervisorBackedTransport(
       return bridge.submit(address, message);
     },
 
-    async append(
-      _mailbox: string,
-      _message: InboundMessage,
-      _flags?: string[],
-      _signal?: AbortSignal,
-    ): Promise<MessageRef> {
-      // `append` writes into a mailbox the agent owns; in the unified
-      // host the agent owns none. The mail tools do not append (they
-      // `send`), so a reachable `append` is a programming error.
-      return unsupported("append");
-    },
-
-    async listMailboxes(_signal?: AbortSignal): Promise<Mailbox[]> {
-      return unsupported("listMailboxes");
-    },
-    async createMailbox(
-      _name: string,
-      _signal?: AbortSignal,
-    ): Promise<Mailbox> {
-      return unsupported("createMailbox");
-    },
-    async deleteMailbox(_name: string, _signal?: AbortSignal): Promise<void> {
-      return unsupported("deleteMailbox");
-    },
-    async getMailboxStatus(
-      name: string,
-      _signal?: AbortSignal,
-    ): Promise<MailboxStatus> {
-      const { reader } = requireInbound("getMailboxStatus");
-      requireInbox(name);
-      const store = await reader.open();
-      const unseen = store.messages.filter(
-        (m) => !m.flags.has("\\Seen"),
-      ).length;
-      return {
-        total: store.messages.length,
-        unseen,
-        recent: 0,
-        uidNext: store.uidNext,
-        uidValidity: store.uidValidity,
-        highestModSeq: store.highestModSeq,
-      };
-    },
-
     async search(
       mailbox: string,
       query: SearchQuery,
@@ -232,17 +172,6 @@ export function createSupervisorBackedTransport(
       const store = await reader.open();
       return await executeSearch(mailbox, store, query);
     },
-    async thread(
-      mailbox: string,
-      algorithm: "references" | "orderedsubject",
-      query?: SearchQuery,
-      _signal?: AbortSignal,
-    ): Promise<Thread[]> {
-      const { reader } = requireInbound("thread");
-      requireInbox(mailbox);
-      const store = await reader.open();
-      return await executeThread(mailbox, store, algorithm, query);
-    },
     async fetchHeaders(
       ref: MessageRef,
       _signal?: AbortSignal,
@@ -251,15 +180,6 @@ export function createSupervisorBackedTransport(
       requireInbox(ref.mailbox);
       const store = await reader.open();
       return await doFetchHeaders(ref, store);
-    },
-    async fetchStructure(
-      ref: MessageRef,
-      _signal?: AbortSignal,
-    ): Promise<BodyStructure> {
-      const { reader } = requireInbound("fetchStructure");
-      requireInbox(ref.mailbox);
-      const store = await reader.open();
-      return await doFetchStructure(ref, store);
     },
     async fetchPart(
       ref: MessageRef,
@@ -279,6 +199,19 @@ export function createSupervisorBackedTransport(
       requireInbox(ref.mailbox);
       const store = await reader.open();
       return await doFetchFull(ref, store, getCrypto);
+    },
+
+    /**
+     * The committed bytes of one message, verbatim. The substrate keeps each
+     * message as a write-once `<uid>.eml`, so this is a read of that blob --
+     * byte-identical to what arrived, which is what a signature check over it
+     * requires.
+     */
+    async readRaw(ref: MessageRef, _signal?: AbortSignal): Promise<Uint8Array> {
+      const { reader } = requireInbound("readRaw");
+      requireInbox(ref.mailbox);
+      const store = await reader.open();
+      return await store.readRaw(ref.uid);
     },
 
     async setFlags(
@@ -316,20 +249,6 @@ export function createSupervisorBackedTransport(
       });
     },
 
-    async move(
-      _ref: MessageRef,
-      _toMailbox: string,
-      _signal?: AbortSignal,
-    ): Promise<void> {
-      return unsupported("move");
-    },
-    async copy(
-      _ref: MessageRef,
-      _toMailbox: string,
-      _signal?: AbortSignal,
-    ): Promise<void> {
-      return unsupported("copy");
-    },
     async expunge(
       mailbox: string,
       _signal?: AbortSignal,
@@ -362,75 +281,6 @@ export function createSupervisorBackedTransport(
       // event to this callback. `mail_wait` installs the watch and unblocks on
       // the first delivery.
       return watchRegistry.watch(mailbox, callback);
-    },
-
-    async sync(
-      mailbox: string,
-      knownState: SyncState,
-      _signal?: AbortSignal,
-    ): Promise<SyncResult> {
-      const { reader } = requireInbound("sync");
-      requireInbox(mailbox);
-      const store = await reader.open();
-      const result = store.sync({
-        uidValidity: knownState.uidValidity,
-        highestModSeq: knownState.highestModSeq,
-      });
-      if (result.resync) {
-        return {
-          vanished: [],
-          changed: [],
-          newMessages: result.messages.map((m) => ({ uid: m.uid, mailbox })),
-          fullResyncRequired: true,
-        };
-      }
-      // The backing reports every message whose modseq advanced past the
-      // client's known state as `changed`. Split it against the client's known
-      // `uidNext`: a uid at or beyond it is a new arrival, one below it is a
-      // flag change on a message the client already held.
-      const newMessages: MessageRef[] = [];
-      const changed: { uid: number; flags: string[] }[] = [];
-      for (const m of result.changed) {
-        if (m.uid >= knownState.uidNext) {
-          newMessages.push({ uid: m.uid, mailbox });
-        } else {
-          changed.push({ uid: m.uid, flags: Array.from(m.flags) });
-        }
-      }
-      return {
-        vanished: [...result.vanished],
-        changed,
-        newMessages,
-        fullResyncRequired: false,
-      };
-    },
-
-    async createList(
-      _address: string,
-      _name: string,
-      _signal?: AbortSignal,
-    ): Promise<ListInfo> {
-      return unsupported("createList");
-    },
-    async listMembers(
-      _address: string,
-      _signal?: AbortSignal,
-    ): Promise<string[]> {
-      return unsupported("listMembers");
-    },
-    async subscribe(
-      _listAddress: string,
-      _subscriberAddress: string,
-      _signal?: AbortSignal,
-    ): Promise<void> {
-      return unsupported("subscribe");
-    },
-    async unsubscribe(
-      _listAddress: string,
-      _subscriberAddress: string,
-      _signal?: AbortSignal,
-    ): Promise<void> {
-      return unsupported("unsubscribe");
     },
   };
 }

@@ -2,6 +2,8 @@ import { appendFileSync } from "node:fs";
 import path from "node:path";
 import { setup } from "@intx/log";
 import { createInMemoryTransport } from "@intx/mail-memory";
+import type { HubTransport } from "@intx/types/runtime";
+import { createImapHubTransport, type ImapHubTransport } from "@intx/mail-imap";
 import {
   createEd25519Crypto,
   createEnvKeyCredentialCipher,
@@ -38,6 +40,7 @@ import type { DispatchTimingMark } from "@intx/workflow-host";
 
 import {
   createSidecarDeployRouter,
+  deriveDeploymentId,
   type SidecarDeployRouter,
 } from "./workflow-host-wiring";
 import {
@@ -61,6 +64,13 @@ import {
   removeFileAtomicDurable,
   writeFileAtomicDurable,
 } from "./atomic-write";
+import { createImapInboundSink } from "./imap-mail-ingress";
+import { createMailboxCredentialStore } from "./mailbox-credential-store";
+import { readRunGrants } from "./run-grants";
+import {
+  createRunGrantsBarrier,
+  type RunGrantsBarrier,
+} from "./run-grants-barrier";
 
 await setup();
 
@@ -261,6 +271,19 @@ const senderKeyCache = await createSenderKeyCache({
   removeFileDurable: (filePath) => removeFileAtomicDurable(filePath),
 });
 
+// Per-deployment mailbox credentials, delivered on each `agent.deploy` frame
+// and sealed at rest under the same operator key as the rest of the sidecar's
+// credential material. Loaded here at boot so a restored deployment can open
+// its mailbox without waiting for a redeploy -- the restore path sends no
+// deploy frame, so this file is the only place its credential survives.
+const mailboxCredentials = await createMailboxCredentialStore({
+  dataDir,
+  cipher: credentialCipher,
+  writeFileDurable: (filePath, contents) =>
+    writeFileAtomicDurable(filePath, contents, { mode: 0o600 }),
+  removeFileDurable: (filePath) => removeFileAtomicDurable(filePath),
+});
+
 // The read side of the same cache: the inbound signature verify resolves a
 // sender address to the crypto that verifies its mail. Built here at the edge
 // so the hub link stays source-opaque -- it resolves address -> crypto without
@@ -338,7 +361,96 @@ const multistepSourcesRouter = createMultistepSourcesRouter();
 // unrouted.
 const multistepCredentialsRouter = createMultistepCredentialsRouter();
 
-const transport = createInMemoryTransport();
+// The host mail transport. `memory` routes every message through the hub
+// control socket and keeps mailboxes in process; `imap` submits over SMTP and
+// receives over IMAP IDLE, so mail never touches the socket.
+//
+// The two are chosen at boot and not mixed: the deploy router, the hub link, and
+// the supervisor's mail bus consume the same four-method surface either way, so
+// nothing downstream of this line knows which backend it is talking to.
+const mailBackend = process.env["SIDECAR_MAIL_BACKEND"] ?? "memory";
+
+// Bound once the orchestrator is constructed below. Declared here because both
+// the pack-push client and the run-grants barrier close over it lazily: the
+// orchestrator factory builds the deploy router during its own construction, so
+// neither can be handed a link that does not exist yet.
+let resolvedHubLink: HubLink | null = null;
+
+// The join that lets a message wait for its run's authorization instead of
+// racing it. Only the IMAP backend needs one -- on the control socket the
+// grants and the mail share a FIFO channel -- so it is built inside that branch
+// and left undefined otherwise.
+let runGrantsBarrier: RunGrantsBarrier | undefined;
+
+let imapHubTransport: ImapHubTransport | undefined;
+if (mailBackend === "imap") {
+  const host = requireEnv("SIDECAR_IMAP_HOST");
+  const imapPort = Number(requireEnv("SIDECAR_IMAP_PORT"));
+  const smtpPort = Number(requireEnv("SIDECAR_SMTP_PORT"));
+  if (!Number.isInteger(imapPort) || !Number.isInteger(smtpPort)) {
+    throw new Error(
+      "sidecar boot: SIDECAR_IMAP_PORT and SIDECAR_SMTP_PORT must be whole numbers",
+    );
+  }
+  runGrantsBarrier = createRunGrantsBarrier({
+    request: (args) => {
+      if (resolvedHubLink === null) {
+        throw new Error(
+          "sidecar boot: run-grants request attempted before the hub link was constructed",
+        );
+      }
+      resolvedHubLink.sendRunGrantsRequest(args);
+    },
+    // The same file the supervisor's pre-trigger barrier reads, so a `true`
+    // here means the run can actually start rather than that this process
+    // happened to see a frame.
+    hasDurableGrants: async ({ agentAddress, runId }) =>
+      (await readRunGrants({
+        // `readRunGrants` names this parameter `anchorRunId`, but what it wants
+        // is the workflow-run REPO id -- the address slug `deriveDeploymentId`
+        // produces, not the bare run id. Passing the run id reads a repo that
+        // does not exist and reports every run as grant-less.
+        repoStore: agentRepoStore.repoStore,
+        anchorRunId: deriveDeploymentId(agentAddress),
+        runId,
+      })) !== undefined,
+    // The same resolver the admission gate verifies against.
+    hasSenderKey: (senderAddress) =>
+      resolveSenderCrypto(senderAddress) !== undefined,
+  });
+
+  imapHubTransport = createImapHubTransport({
+    imap: { host, port: imapPort, secure: false },
+    smtp: { host, port: smtpPort, secure: false, ignoreTLS: true },
+    // Each deployment's own credential, delivered by the hub on its deploy
+    // frame. There is deliberately no fallback: a missing credential means the
+    // deploy did not carry one and the restore found none, and authenticating
+    // with some shared secret instead would hand this deployment access to
+    // every other mailbox. Fail loudly instead.
+    credentialsFor: (address) => {
+      const credential = mailboxCredentials.get(address);
+      if (credential === undefined) {
+        throw new Error(
+          `sidecar: no mailbox credential held for ${address}; the hub delivers one on agent.deploy and the restore loads it from disk, so neither happened`,
+        );
+      }
+      return credential;
+    },
+    getCrypto: resolveSenderCrypto,
+    onInbound: createImapInboundSink({
+      resolveSenderCrypto,
+      lookupInboundMailPolicy,
+      mailRouter: multistepMailRouter,
+      runGrantsBarrier,
+    }),
+  });
+} else if (mailBackend !== "memory") {
+  throw new Error(
+    `sidecar boot: SIDECAR_MAIL_BACKEND must be "memory" or "imap", not ${JSON.stringify(mailBackend)}`,
+  );
+}
+
+const transport: HubTransport = imapHubTransport ?? createInMemoryTransport();
 
 // The pack-push client closes over the substrate (for `createPack`)
 // and a lazy hub-link binding (for `pushWorkflowRunPack`). The link
@@ -346,7 +458,6 @@ const transport = createInMemoryTransport();
 // closure here is consulted lazily because the
 // `createSidecarOrchestrator` factory calls `createDeployRouter`
 // during its constructor, before the orchestrator handle is bound.
-let resolvedHubLink: HubLink | null = null;
 const workflowRunPackClient = createWorkflowRunPackClient({
   substrate: agentRepoStore.repoStore,
   hubLink: {
@@ -592,6 +703,8 @@ const orchestrator = createSidecarOrchestrator({
         deploymentAddressRegistry.unregister(runId);
       },
       multistepMailRouter,
+      mailboxCredentials,
+      ...(runGrantsBarrier !== undefined ? { runGrantsBarrier } : {}),
       inboundMailPolicyRegistry,
       multistepSignalRouter,
       multistepDrainRouter,

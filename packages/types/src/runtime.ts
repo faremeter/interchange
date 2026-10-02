@@ -491,31 +491,6 @@ export type InboundMessage = {
 };
 
 /**
- * IMAP mailbox descriptor.
- *
- * (MESSAGE.md § Inbox Management)
- */
-export type Mailbox = {
-  name: string;
-  role?: string;
-  delimiter?: string;
-};
-
-/**
- * Current status of an IMAP mailbox, including QRESYNC identifiers.
- *
- * (MESSAGE.md § Inbox Management)
- */
-export type MailboxStatus = {
-  total: number;
-  unseen: number;
-  recent: number;
-  uidNext: number;
-  uidValidity: number;
-  highestModSeq: number;
-};
-
-/**
  * Structured IMAP search query. Maps the IMAP SEARCH grammar to a typed
  * object. Supports recursive boolean composition via `and`, `or`, `not`.
  *
@@ -545,51 +520,19 @@ export type SearchQuery = {
 };
 
 /**
- * A thread node returned by `thread()`. Carries a message reference and
- * child threads representing replies. Implements the RFC 5256 REFERENCES
- * threading algorithm.
+ * A thread node: a message reference plus the replies beneath it. Produced by
+ * `executeThread` in `@intx/mailbox`, which implements the RFC 5256 REFERENCES
+ * algorithm over any `MailboxStore`.
+ *
+ * No transport method returns one. Threading is a projection over stored
+ * messages rather than a transport capability, so the caller that wants a tree
+ * builds it from the store it already has.
  *
  * (MESSAGE.md § Thread Retrieval)
  */
 export type Thread = {
   ref: MessageRef;
   children: Thread[];
-};
-
-/**
- * QRESYNC state the harness provides when reconnecting to the transport.
- *
- * (MESSAGE.md § Synchronization)
- */
-export type SyncState = {
-  uidValidity: number;
-  uidNext: number;
-  highestModSeq: number;
-  knownUids?: number[];
-};
-
-/**
- * Result of a QRESYNC-style sync operation.
- *
- * (MESSAGE.md § Synchronization)
- */
-export type SyncResult = {
-  vanished: number[];
-  changed: { uid: number; flags: string[] }[];
-  newMessages: MessageRef[];
-  fullResyncRequired: boolean;
-};
-
-/**
- * Distribution list metadata returned by `createList()`.
- *
- * (MESSAGE.md § Message Topologies)
- */
-export type ListInfo = {
-  address: string;
-  name: string;
-  memberCount: number;
-  createdAt: string;
 };
 
 /**
@@ -607,9 +550,26 @@ export type MailboxEvent =
 export type Unsubscribe = () => void;
 
 /**
- * The message transport interface. Abstracts SMTP and IMAP behind a
- * TypeScript API. Implementations range from real SMTP/IMAP servers to
- * in-process stubs that route messages through memory.
+ * The message transport interface: submit a message, and read, flag, consume
+ * and watch one mailbox. Implementations range from a real SMTP relay and IMAP
+ * mailbox to an in-process store.
+ *
+ * Deliberately narrower than the protocols it abstracts. It carries what a
+ * caller in this tree actually invokes, and nothing on the strength of being
+ * available in IMAP: mailbox management, THREAD, BODYSTRUCTURE, MOVE/COPY,
+ * APPEND and QRESYNC resumption were all specified here, implemented by every
+ * transport, and called by nobody -- so each one raised the server-capability
+ * bar and the per-transport cost while providing no capability any agent or host
+ * could reach.
+ *
+ * The two that are genuinely wanted keep their machinery where it is usable
+ * without an interface method: `executeThread` and `fetchStructure` in
+ * `@intx/mailbox` still implement RFC 5256 threading and BODYSTRUCTURE over any
+ * `MailboxStore`, so the tool that needs them can call them directly, and a
+ * method comes back here when a caller does.
+ *
+ * An agent owns exactly one mailbox, which is why nothing here names a second
+ * one: there is no mailbox to list, create, or move a message into.
  *
  * All long-running operations accept an AbortSignal for cooperative
  * cancellation.
@@ -619,25 +579,10 @@ export type Unsubscribe = () => void;
 export interface MessageTransport {
   // --- Outbound ---
 
-  /** Compose, sign, and deliver a message via SMTP. */
+  /** Compose, sign, and submit a message. */
   send(message: OutboundMessage, signal?: AbortSignal): Promise<SendReceipt>;
 
-  /** Append a raw message to a mailbox (IMAP APPEND). */
-  append(
-    mailbox: string,
-    message: InboundMessage,
-    flags?: string[],
-    signal?: AbortSignal,
-  ): Promise<MessageRef>;
-
-  // --- Mailbox management ---
-
-  listMailboxes(signal?: AbortSignal): Promise<Mailbox[]>;
-  createMailbox(name: string, signal?: AbortSignal): Promise<Mailbox>;
-  deleteMailbox(name: string, signal?: AbortSignal): Promise<void>;
-  getMailboxStatus(name: string, signal?: AbortSignal): Promise<MailboxStatus>;
-
-  // --- Message search and retrieval ---
+  // --- Search and retrieval ---
 
   search(
     mailbox: string,
@@ -645,15 +590,7 @@ export interface MessageTransport {
     signal?: AbortSignal,
   ): Promise<MessageRef[]>;
 
-  thread(
-    mailbox: string,
-    algorithm: "references" | "orderedsubject",
-    query?: SearchQuery,
-    signal?: AbortSignal,
-  ): Promise<Thread[]>;
-
   fetchHeaders(ref: MessageRef, signal?: AbortSignal): Promise<MessageHeaders>;
-  fetchStructure(ref: MessageRef, signal?: AbortSignal): Promise<BodyStructure>;
   fetchPart(
     ref: MessageRef,
     partPath: string,
@@ -661,7 +598,18 @@ export interface MessageTransport {
   ): Promise<MessagePart>;
   fetchFull(ref: MessageRef, signal?: AbortSignal): Promise<InboundMessage>;
 
-  // --- Flag management ---
+  /**
+   * The verbatim RFC 2822 bytes of one message.
+   *
+   * Every other read here returns a PROJECTION -- parsed headers, a decoded
+   * part, a structured payload -- and a host that ROUTES mail needs the bytes
+   * themselves: the sidecar commits them as `<uid>.eml` and verifies the
+   * PGP/MIME signature over exactly those bytes. Re-serializing a projection
+   * does not reproduce them, so the bytes have to be obtainable directly.
+   */
+  readRaw(ref: MessageRef, signal?: AbortSignal): Promise<Uint8Array>;
+
+  // --- Flags ---
 
   setFlags(
     ref: MessageRef,
@@ -674,12 +622,6 @@ export interface MessageTransport {
     flags: string[],
     signal?: AbortSignal,
   ): Promise<void>;
-
-  // --- Message organization ---
-
-  move(ref: MessageRef, toMailbox: string, signal?: AbortSignal): Promise<void>;
-
-  copy(ref: MessageRef, toMailbox: string, signal?: AbortSignal): Promise<void>;
 
   /**
    * Permanently remove every `\Deleted` message from the mailbox. Returns the
@@ -695,37 +637,73 @@ export interface MessageTransport {
 
   /** Monitor a mailbox for new messages and flag changes (IMAP IDLE). */
   watch(mailbox: string, callback: (event: MailboxEvent) => void): Unsubscribe;
+}
 
-  // --- Synchronization ---
+/**
+ * Context handed to a {@link MessageSentHandler} after a message is assembled
+ * and submitted. The send is already complete when the handler runs.
+ */
+export type MessageSentContext = {
+  senderAddress: string;
+  rawMessage: Uint8Array;
+  messageId: string;
+  /** Deduplicated union of to and cc — the full routing set. */
+  recipients: string[];
+  /** To addresses only (before merging with cc). */
+  to: string[];
+  /** CC addresses only. Empty array when no CC recipients. */
+  cc: string[];
+  /**
+   * True when every recipient was delivered without leaving the transport.
+   *
+   * Only a transport that hosts its recipients can report `true`. One that
+   * submits to a relay reports `false` for every message, because the relay
+   * owns delivery for local and remote recipients alike.
+   */
+  localOnly: boolean;
+};
 
-  /** Efficient reconnection using QRESYNC semantics. */
-  sync(
-    mailbox: string,
-    knownState: SyncState,
-    signal?: AbortSignal,
-  ): Promise<SyncResult>;
+/**
+ * Fired after a message is assembled and submitted. A rejection does NOT mean
+ * the message was not sent -- it is an observation hook, not a delivery step.
+ *
+ * The sidecar uses it to forward outbound wire messages to the hub for audit.
+ */
+export type MessageSentHandler = (ctx: MessageSentContext) => Promise<void>;
 
-  // --- Distribution lists ---
+/**
+ * Delivers a message to recipients the transport does not host, so a host can
+ * route them elsewhere.
+ *
+ * A transport that submits to a relay never calls this: the relay routes every
+ * recipient, so there is no leg left for the host to take over.
+ */
+export type RemoteSendHandler = (
+  rawMessage: Uint8Array,
+  recipients: string[],
+  senderAddress: string,
+) => Promise<void>;
 
-  createList(
-    address: string,
-    name: string,
-    signal?: AbortSignal,
-  ): Promise<ListInfo>;
-
-  listMembers(address: string, signal?: AbortSignal): Promise<string[]>;
-
-  subscribe(
-    listAddress: string,
-    subscriberAddress: string,
-    signal?: AbortSignal,
-  ): Promise<void>;
-
-  unsubscribe(
-    listAddress: string,
-    subscriberAddress: string,
-    signal?: AbortSignal,
-  ): Promise<void>;
+/**
+ * The host-facing surface of a mail transport that serves MANY addresses.
+ *
+ * {@link MessageTransport} is scoped to one address; this is what a host --
+ * the sidecar, an alternate runtime -- holds to register addresses, obtain a
+ * per-address transport, and observe sends. It lives here beside
+ * `MessageTransport` so an implementation package depends on the contract
+ * rather than on a sibling implementation of it.
+ */
+export interface HubTransport {
+  register(address: string, crypto: CryptoProvider): void;
+  unregister(address: string): void;
+  getTransportFor(address: string): MessageTransport;
+  setRemoteSendHandler(handler: RemoteSendHandler): void;
+  addMessageSentHandler(handler: MessageSentHandler): void;
+  /**
+   * Drop a host-routed RFC 2822 message directly into an address's inbox. Used
+   * by the wire layer for inbound mail frames.
+   */
+  deliver(address: string, message: Uint8Array): void;
 }
 
 /**

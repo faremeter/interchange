@@ -20,6 +20,14 @@ export {
 export {
   resolveInboundMailPolicy,
   type ResolvedInboundMailPolicy,
+  // The gate itself, so a host that receives mail on a path other than the hub
+  // control socket (an IMAP ingress) decides admission with the SAME three
+  // functions the socket seam uses, rather than reimplementing the policy.
+  decideInboundAdmission,
+  outcomeForVerdict,
+  verifyInboundSignature,
+  type InboundAdmission,
+  type InboundSignatureVerdict,
 } from "./ws/inbound-signature";
 export {
   createInboundMailPolicyRegistry,

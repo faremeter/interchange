@@ -51,6 +51,7 @@ export const ENUMERATING_TARGETS = [
   "test-workflow",
   "test-core",
   "test-load",
+  "test-mail",
 ] as const;
 
 /**

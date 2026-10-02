@@ -369,7 +369,13 @@ The agent's IMAP inbox is not just a delivery endpoint. It is a queryable, state
 
 ### Mailbox Structure
 
-Every agent has a standard set of mailboxes:
+An agent has exactly ONE mailbox, its `INBOX`. The transport names no other,
+and a transport backed by a server rejects a request for any other name rather
+than serving `INBOX` mislabelled.
+
+The roles below are the IMAP conventions an operator's server may define. Nothing
+in this system creates or uses them: outbound mail is submitted rather than
+filed, and a message the recipient has accepted is consumed rather than archived.
 
 | Mailbox   | Role (RFC 9051) | Purpose                                   |
 | --------- | --------------- | ----------------------------------------- |
@@ -461,6 +467,9 @@ For the harness, the IMAP connection enters IDLE when the reactor is waiting for
 
 ### Modification Sequences (CONDSTORE)
 
+> The transport does not use CONDSTORE and a server backing it need not advertise
+> it. The section below describes the IMAP mechanism for context.
+
 IMAP4rev2 incorporates CONDSTORE. Every message has a modification sequence number (MODSEQ) that increments when the message's flags or metadata change. The HIGHESTMODSEQ value tracks the mailbox-level high water mark.
 
 Agents can use `CHANGEDSINCE` to efficiently detect changes since their last check:
@@ -472,6 +481,12 @@ FETCH 1:* (FLAGS) (CHANGEDSINCE 12345)
 This returns only messages whose flags changed since MODSEQ 12345, enabling efficient incremental synchronization without scanning the entire mailbox.
 
 ### Quick Resynchronization (QRESYNC)
+
+> The transport does not use QRESYNC and a server backing it need not advertise
+> it. Recovery after a disconnect is a catch-up sweep over the messages the
+> recipient has not yet accepted, which needs no client-side UIDVALIDITY or
+> MODSEQ bookkeeping. The section below describes the IMAP mechanism for
+> context.
 
 IMAP4rev2 incorporates QRESYNC. When reconnecting after a disconnect, the client provides its last known `UIDVALIDITY` and `UIDNEXT` values along with any known UIDs. The server responds with `VANISHED` (UIDs that were expunged) and `FETCH` (messages that changed), enabling the client to synchronize without re-fetching the entire mailbox.
 
@@ -489,18 +504,22 @@ SMTP naturally supports the topologies defined in the architecture:
 
 Messages sent to a list carry a `List-ID` header (RFC 2919) identifying the list. This enables agents to filter and organize list traffic via IMAP SEARCH (`HEADER List-ID <list-id>`).
 
-Distribution list management (subscribe, unsubscribe, moderation) is handled by the control plane, which configures the underlying mail infrastructure. The transport interface exposes list operations:
+Distribution list management (subscribe, unsubscribe, moderation) is handled by
+the control plane, which configures the underlying mail infrastructure.
 
-```
-createList(address: string, name: string): Promise<ListInfo>
-listMembers(address: string): Promise<string[]>
-subscribe(listAddress: string, subscriberAddress: string): Promise<void>
-unsubscribe(listAddress: string, subscriberAddress: string): Promise<void>
-```
+> **Status: not yet implemented, and not a transport concern.** The M:N
+> distribution-list model is planned. An earlier version of this document
+> specified `createList`, `listMembers`, `subscribe` and `unsubscribe` as
+> transport methods; they threw in every implementation and have been removed.
+> Membership is control-plane state -- as the paragraph above says -- so a
+> mailbox transport was the wrong place to express it, and finishing those
+> methods would have meant implementing control-plane state behind a mailbox
+> interface. When the model lands, it lands on the control plane, and the
+> transport sees only ordinary mail carrying a `List-ID`.
 
-> **Status: not yet implemented.** `createList`, `listMembers`, `subscribe`, and `unsubscribe` currently throw `Distribution list management is not implemented` in the shipped transports; the M:N distribution-list model is planned, not current behavior.
-
-`ListInfo` includes: address, name, member count, creation date. When an agent joins a conversation via `conversation.join`, the harness subscribes the agent to the corresponding list. When it leaves via `conversation.leave`, the harness unsubscribes.
+When an agent joins a conversation via `conversation.join`, the control plane
+subscribes the agent to the corresponding list. When it leaves via
+`conversation.leave`, it unsubscribes.
 
 ## Transport Interface
 
@@ -526,7 +545,8 @@ A rejection naming no condition tells `mail.read` nothing about whether the mess
 send(message: OutboundMessage): Promise<SendReceipt>
 ```
 
-Composes the MIME structure (signed multipart with structured payload), delivers via SMTP, and returns a receipt containing the assigned Message-ID and delivery status.
+Composes the MIME structure (signed multipart with structured payload), submits
+it, and returns a receipt containing the assigned Message-ID and status.
 
 The `OutboundMessage` carries:
 
@@ -537,30 +557,25 @@ The `OutboundMessage` carries:
 - Threading context (in-reply-to Message-ID, correlation ID)
 - Session and tenant context (from Interchange headers)
 
-The transport implementation handles MIME assembly, PGP signing (using the CryptoProvider), Content-Transfer-Encoding, SMTP submission, and appending a copy to the sender's `Sent` mailbox (IMAP APPEND). The harness provides the semantic content; the transport handles the wire format.
+The transport handles MIME assembly, PGP signing (using the CryptoProvider),
+Content-Transfer-Encoding, and submission. The harness provides the semantic
+content; the transport handles the wire format.
 
-**Append:**
-
-```
-append(mailbox: string, message: InboundMessage, flags?: string[]): Promise<MessageRef>
-```
-
-Appends a message to a mailbox (IMAP APPEND, RFC 9051 Section 6.3.12). Used internally by `send()` to populate the `Sent` mailbox. Also available directly for the harness to inject synthetic messages (resolution messages, system notifications) into an agent's mailbox.
+A receipt's `status` is `queued` whenever the transport submitted to a relay: a
+relay accepting a message means it took responsibility for delivering it, not
+that it delivered it. Only a transport that hosts its own recipients can report
+`delivered`.
 
 ### Inbox
 
-The inbox interface captures IMAP semantics:
+The inbox interface is deliberately narrower than IMAP. It carries the
+operations a caller in this tree actually invokes; it does not expose a capability
+on the strength of IMAP having one.
 
-**Mailbox management:**
-
-```
-listMailboxes(): Promise<Mailbox[]>
-createMailbox(name: string): Promise<Mailbox>
-deleteMailbox(name: string): Promise<void>
-getMailboxStatus(name: string): Promise<MailboxStatus>
-```
-
-`MailboxStatus` includes: total messages, unseen count, recent count, UIDNEXT, UIDVALIDITY, HIGHESTMODSEQ.
+**An agent owns exactly one mailbox.** Nothing here names a second, which is why
+there is no mailbox listing, creation, deletion, status, move or copy: there is
+no other mailbox to name. A transport backed by a server rejects a request for
+any mailbox but the agent's own rather than silently serving the wrong one.
 
 **Message search:**
 
@@ -571,45 +586,74 @@ search(mailbox: string, query: SearchQuery): Promise<MessageRef[]>
 `SearchQuery` maps the IMAP SEARCH grammar to a structured object:
 
 - Address filters: `from`, `to`, `cc`, `bcc` (substring match)
-- Header filter: `header` as `{ field: string, contains: string }` for Interchange-specific headers
-- Date filters: `before`, `after`, `on` (delivery date); `sentBefore`, `sentAfter`, `sentOn` (origination date)
+- Header filter: `header` as `{ field: string, contains: string }` for
+  Interchange-specific headers
+- Date filters: `before`, `after`, `on` (delivery date); `sentBefore`,
+  `sentAfter`, `sentOn` (origination date)
 - Flag filters: `hasFlags`, `missingFlags` (system flags and keywords)
 - Content filters: `body` (body text), `text` (headers + body)
 - Size filters: `largerThan`, `smallerThan` (octets)
 - Boolean: `and`, `or`, `not` (recursive composition)
 
-`MessageRef` is an opaque reference (UID + mailbox) that can be passed to fetch, flag, and move operations.
+There is no `subject` filter, although IMAP SEARCH has SUBJECT. Filter on the
+header instead: `header: { field: "subject", contains: "..." }`.
 
-**Thread retrieval:**
+A transport over a real server translates what IMAP SEARCH can carry and
+re-checks the rest locally, because the mapping is not one-to-one: IMAP SEARCH
+carries one custom keyword per KEYWORD key while `hasFlags` is a list, and IMAP
+date comparisons are date-granular and inclusive where `after` reads as strictly
+later. The server's answer is always a superset, so a local re-check narrows it
+and never has to widen it.
 
-```
-thread(mailbox: string, algorithm: "references" | "orderedsubject", query?: SearchQuery): Promise<Thread[]>
-```
-
-Returns conversations as tree structures. Each `Thread` node carries a `MessageRef` and an array of child `Thread` nodes. The `references` algorithm (RFC 5256) builds trees from `In-Reply-To` and `References` headers. The optional `query` parameter restricts threading to messages matching the search criteria.
+`MessageRef` is an opaque reference (UID + mailbox) that can be passed to fetch,
+flag, and expunge operations.
 
 **Message fetch:**
 
 ```
 fetchHeaders(ref: MessageRef): Promise<MessageHeaders>
-fetchStructure(ref: MessageRef): Promise<BodyStructure>
 fetchPart(ref: MessageRef, partPath: string): Promise<MessagePart>
 fetchFull(ref: MessageRef): Promise<InboundMessage>
+readRaw(ref: MessageRef): Promise<Uint8Array>
 ```
 
-`fetchHeaders` retrieves only headers (IMAP `BODY.PEEK[HEADER]`). Fast, does not mark as read.
+`fetchHeaders` retrieves only headers (IMAP `BODY.PEEK[HEADER]`). Fast, does not
+mark as read.
 
-`fetchStructure` retrieves the MIME tree metadata (IMAP `BODYSTRUCTURE`): content types, sizes, dispositions, parameters for every part. No content transferred.
+`fetchPart` retrieves a single MIME part by dot-separated path (IMAP
+`BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or just
+an attachment (`1.2+`). A part under a transfer encoding the decoder does not
+recognize reports `application/octet-stream`, per RFC 2045 section 6.4, and
+carries its octets undecoded.
 
-`fetchPart` retrieves a single MIME part by dot-separated path (IMAP `BODY.PEEK[path]`). Used to fetch just the text or JSON payload (`1.1`) or just an attachment (`1.2+`) without downloading the entire message. A part under a transfer encoding the decoder does not recognize reports `application/octet-stream`, per RFC 2045 section 6.4, and carries its octets undecoded.
+`fetchFull` retrieves the complete message, parses the MIME structure, verifies
+the PGP signature, and returns a fully parsed `InboundMessage` with structured
+payload, headers, and attachments. The returned `InboundMessage` includes a
+`signatureStatus` field: `"valid"`, `"invalid"`, `"unknown"` (public key not
+available) or `"missing"` (message was not signed).
 
-`fetchFull` retrieves the complete message, parses the MIME structure, verifies the PGP signature, and returns a fully parsed `InboundMessage` with structured payload, headers, and attachments. The returned `InboundMessage` includes a `signatureStatus` field: `"valid"` (signature verified against sender's public key), `"invalid"` (signature check failed — tampering or wrong key), `"unknown"` (public key not available for verification), or `"missing"` (message was not signed).
+`readRaw` returns the message's verbatim RFC 2822 bytes. Every other read
+returns a PROJECTION, and a host that ROUTES mail needs the bytes themselves:
+the sidecar commits them as `<uid>.eml` and verifies the PGP/MIME signature over
+exactly those bytes. Re-serializing a projection does not reproduce them.
 
-A body the decoder cannot turn into text -- an unrecognized transfer encoding, or encoded data that will not decode -- is carried as an absent `content` (or `payload`) rather than refusing the message: the rest of the `InboundMessage` is intact, and the octets stay reachable through `fetchPart`. A structured payload that decoded but is not valid JSON is a different condition and is reported as a failure.
+A body the decoder cannot turn into text -- an unrecognized transfer encoding,
+or encoded data that will not decode -- is carried as an absent `content` (or
+`payload`) rather than refusing the message: the rest of the `InboundMessage` is
+intact, and the octets stay reachable through `fetchPart` and `readRaw`. A
+structured payload that decoded but is not valid JSON is a different condition
+and is reported as a failure.
 
-> **Planned / Not Yet Implemented.** Nothing branches on the `signatureStatus` carried on a delivered message. The field is computed at fetch time and passed to the agent — `mail.read` with `parts: "full"` returns it — but no harness reads it to decide anything.
+> **Planned / Not Yet Implemented.** Nothing branches on the `signatureStatus`
+> carried on a delivered message. The field is computed at fetch time and passed
+> to the agent -- `mail.read` with `parts: "full"` returns it -- but no harness
+> reads it to decide anything.
 >
-> This is a statement about the delivered field only. A badly-signed message does not reach an agent: the recipient's sidecar verifies the signature at its delivery boundary and drops anything the admission policy does not admit, and an unsigned or unverifiable message is rejected there by default. See `decideInboundAdmission` in `packages/hub-agent/src/ws/inbound-signature.ts`, and [`INBOUND_MAIL_POLICY.md`](./INBOUND_MAIL_POLICY.md) for the `inboundMailPolicy` an author widens it with.
+> This is a statement about the delivered field only. A badly-signed message does
+> not reach an agent: the recipient's sidecar verifies the signature at its
+> delivery boundary and drops anything the admission policy does not admit. See
+> `decideInboundAdmission` in `packages/hub-agent/src/ws/inbound-signature.ts`,
+> and [`INBOUND_MAIL_POLICY.md`](./INBOUND_MAIL_POLICY.md).
 
 **Flag management:**
 
@@ -618,17 +662,17 @@ setFlags(ref: MessageRef, flags: string[]): Promise<void>
 clearFlags(ref: MessageRef, flags: string[]): Promise<void>
 ```
 
-Sets or clears system flags and custom keywords. Used by the harness to track processing state (`$Processed`, `$Pending`, `$Correlated`).
+Sets or clears system flags and custom keywords. Used to track processing state
+(`$Processed`, `$FetchFailed`).
 
-**Message organization:**
+**Consumption:**
 
 ```
-move(ref: MessageRef, toMailbox: string): Promise<void>
-copy(ref: MessageRef, toMailbox: string): Promise<void>
-expunge(mailbox: string): Promise<void>
+expunge(mailbox: string): Promise<{ expungedUids: number[] }>
 ```
 
-`move` relocates a message (IMAP MOVE, RFC 9051). `expunge` permanently removes messages flagged `\Deleted`.
+Permanently removes every message flagged `\Deleted`, and returns the uids it
+removed so a caller can report which messages it consumed.
 
 ### Real-Time Notification
 
@@ -636,33 +680,64 @@ expunge(mailbox: string): Promise<void>
 watch(mailbox: string, callback: (event: MailboxEvent) => void): Unsubscribe
 ```
 
-Provides IMAP IDLE semantics. The transport monitors the specified mailbox and invokes the callback when:
+Provides IMAP IDLE semantics. The transport monitors the specified mailbox and
+invokes the callback when:
 
 - A new message arrives (`exists` event with the new message UID and headers)
 - A message's flags change (`flagsChanged` event with the UID and new flags)
 - A message is expunged (`expunged` event with the UID)
 
-The `exists` event includes the message headers (fetched internally by the transport via `BODY.PEEK[HEADER]` on notification). This avoids a round-trip from the harness to read headers for routing decisions — the transport pays this cost once per delivery.
+The `exists` event includes the message headers. IMAP's own EXISTS response
+carries a message COUNT rather than a uid, so a transport over a real server
+fetches the uid and headers on notification and pays that round trip once per
+delivery, which is what spares every consumer from doing it.
 
-The callback receives typed events. The harness translates `exists` events into `message.received` reactor events.
+The `expunged` event is not reachable over plain IMAP: an untagged EXPUNGE names
+a sequence number, and only QRESYNC's VANISHED names uids -- so a transport
+without it cannot report the uid this event requires.
 
-Callbacks are always invoked asynchronously, even in the in-memory transport. Delivery during a `send()` call must not invoke the recipient's callback synchronously on the sender's call stack. This preserves the async delivery semantics of real IMAP IDLE and prevents re-entrant transport operations.
+Callbacks are always invoked asynchronously, even in the in-memory transport.
+Delivery during a `send()` call must not invoke the recipient's callback
+synchronously on the sender's call stack. This preserves the async delivery
+semantics of real IMAP IDLE and prevents re-entrant transport operations.
 
-**IMAP IDLE constraint:** Standard IMAP IDLE monitors only the currently selected mailbox. Watching multiple mailboxes requires multiple IMAP connections. The interface permits multiple concurrent `watch()` calls — the implementation is responsible for the underlying connection management. No transport that speaks SMTP or IMAP over a network ships today, so there is no connection pool to describe; `@intx/mail-memory` serves every `watch()` call from its in-process store and holds no connections at all.
+**Two connections, not one.** IMAP IDLE monitors only the currently selected
+mailbox and occupies the connection for as long as it runs, so a transport that
+both serves commands and watches needs a second connection for the watch. That
+split has a consequence worth stating, because it is not obvious: a message
+enters a client's view of a selected mailbox only once the server has told THAT
+connection the mailbox grew, so the watch connection learns about an arrival and
+the command connection does not. A search issued on the command connection in
+response to the notification is answered against a view that does not hold the
+message yet. Soliciting the pending update first -- what NOOP is for -- is what
+makes the following command see it.
 
-### Synchronization
+Notification latency is dominated by how long the watch connection waits before
+entering IDLE, which is a client setting rather than a server property. A
+connection that serves no commands can idle almost immediately; one that waits
+the common default of 15 seconds adds that to every arrival.
 
-```
-sync(mailbox: string, knownState: SyncState): Promise<SyncResult>
-```
+### Capabilities this interface does NOT require
 
-Efficient reconnection using QRESYNC semantics. The harness provides its last known state (UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ, known UIDs). The transport returns:
+The following were specified here, implemented by every transport, and called by
+nobody. Each one raised the server-capability bar and the per-transport cost
+while providing no capability any agent or host could reach, so none is part of
+the interface:
 
-- `vanished`: UIDs that were expunged since last sync
-- `changed`: messages whose flags changed since last sync
-- `new`: messages that arrived since last sync
+| Removed                                                                               | Why, and where the capability lives now                                                                                                                                                            |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listMailboxes`, `createMailbox`, `deleteMailbox`, `getMailboxStatus`, `move`, `copy` | An agent owns exactly one mailbox, so these name a mailbox that does not exist.                                                                                                                    |
+| `thread`                                                                              | Threading is a projection over stored messages, not a transport capability. `executeThread` in `@intx/mailbox` still implements the RFC 5256 REFERENCES algorithm over any `MailboxStore`.         |
+| `fetchStructure`                                                                      | Nothing chose what to fetch from a BODYSTRUCTURE; the agent receives decoded parts from `fetchFull`. `fetchStructure` in `@intx/mailbox` still computes the tree over any `MailboxStore`.          |
+| `sync`                                                                                | QRESYNC resumption had no caller. Recovery is a catch-up sweep over messages the recipient has not yet accepted, which needs no UIDVALIDITY or MODSEQ bookkeeping and no CONDSTORE/QRESYNC server. |
+| `append`                                                                              | An agent receives mail, it does not inject it. The host that owns a mailbox writes to it directly.                                                                                                 |
+| `createList`, `listMembers`, `subscribe`, `unsubscribe`                               | Distribution-list membership is control-plane state (see Message Topologies), so expressing it as mailbox-transport methods was a modelling error rather than an unfinished feature.               |
 
-If UIDVALIDITY has changed (mailbox was recreated), the transport signals a full resync is required.
+The practical consequence: a server backing this interface needs base IMAP4rev1
+SEARCH and FETCH, IDLE, and arbitrary keywords. It does not need THREAD,
+CONDSTORE, QRESYNC, or MOVE.
+
+A method comes back when a caller does.
 
 ## Mail Tools
 
@@ -674,7 +749,9 @@ A call whose arguments do not match the tool's declared shape, or whose argument
 
 `attachments`, described below for `mail.send` and `mail.reply`, is documented ahead of its implementation: neither tool declares it, so a call that carries it is refused.
 
-The lists cover the implemented tools. `mail.threads`, `mail.move`, and the offering tools are marked below as not yet implemented; the codes in those sections describe an intended design rather than anything the tree emits.
+The lists cover the implemented tools. `mail.threads` and the offering tools are
+marked below as not yet implemented; the codes in those sections describe an
+intended design rather than anything the tree emits. `mail.move` is withdrawn.
 
 ### Tool Definitions
 
@@ -753,6 +830,11 @@ Returns on error: `{ error: string, code: string }`. Error codes: `invalid_argum
 **mail.threads** — Get conversation threads.
 
 > **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, `mail_wait`, `mail_flag`, and `mail_expunge`. The specification below records the intended design; an agent cannot call `mail.threads` yet.
+>
+> The transport carries no `thread` method, but the capability is not blocked on
+> one: `executeThread` in `@intx/mailbox` implements the RFC 5256 REFERENCES
+> algorithm over any `MailboxStore`, so the tool builds the tree from the store
+> it already reads rather than asking the server for it.
 
 Parameters:
 
@@ -788,16 +870,9 @@ The expunged message bytes are removed from the live mailbox but retained in the
 
 **mail.move** — Move a message to a different mailbox.
 
-> **Planned / Not Yet Implemented.** This tool is not exposed by `@intx/tools-mail` today. The implemented tool set is `mail_send`, `mail_reply`, `mail_search`, `mail_read`, `mail_wait`, `mail_flag`, and `mail_expunge`. The specification below records the intended design; an agent cannot call `mail.move` yet.
-
-Parameters:
-
-- `ref`: message reference
-- `to`: destination mailbox name
-
-Returns: `{ ok: true }`
-
-Returns on error: `{ error: string, code: string }`. Error codes: `not_found`, `invalid_mailbox`.
+> **Withdrawn.** An agent owns exactly one mailbox, so there is no destination to
+> move a message to, and the transport has no `move`. This tool would need a
+> mailbox model the system does not have, not merely an implementation.
 
 **mail.wait** — Block until a message matching a query arrives.
 

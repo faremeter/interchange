@@ -61,6 +61,7 @@ import {
   createWorkflowRunTrigger,
   MAX_MAIL_BODY_BYTES,
   WorkflowRunTriggerResponse,
+  type TriggerWorkflowRunDeps,
 } from "../workflow-run-trigger";
 import { jsonResponse } from "../openapi";
 
@@ -196,6 +197,8 @@ export type CreateWorkflowRoutesDeps = {
   repoStore: RepoStore;
   grantStore: GrantStore;
   requireGrant: RequireGrant;
+  /** Submits a trigger message over SMTP instead of the control socket. */
+  mailRelay?: TriggerWorkflowRunDeps["mailRelay"];
 };
 
 export function createWorkflowRoutes({
@@ -207,6 +210,7 @@ export function createWorkflowRoutes({
   repoStore,
   grantStore,
   requireGrant,
+  mailRelay,
 }: CreateWorkflowRoutesDeps): Hono<TenantEnv> {
   const app = new Hono<TenantEnv>();
   const runReader = createWorkflowRunReader(repoStore);
@@ -219,6 +223,7 @@ export function createWorkflowRoutes({
       ? { workflowDispatchService }
       : {}),
     repoStore,
+    ...(mailRelay !== undefined ? { mailRelay } : {}),
   });
 
   async function readRunLifecycle(

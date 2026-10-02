@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Manage the Postfix + Dovecot container the `make test-mail` lane runs against.
+#
+# The container is deliberately long-lived and managed outside the test run:
+# start-up is slow enough that paying it per run would dominate the lane, and it
+# holds no per-run state that needs resetting, because each test provisions its
+# own addresses.
+#
+# Usage:
+#   bin/mail-server up        start it and provision the bootstrap account
+#   bin/mail-server down      stop and remove it
+#   bin/mail-server status    report whether it is reachable
+#   bin/mail-server logs      tail the mail log
+set -euo pipefail
+
+CONTAINER=intx-mail
+IMAGE=mailserver/docker-mailserver:latest
+DOMAIN=test.interchange
+HOSTNAME="mail.${DOMAIN}"
+PASSWORD=spikepass
+IMAP_PORT=3143
+SMTP_PORT=3587
+
+# Dovecot refuses to start with no accounts, so one is created at boot. The test
+# suite provisions its own per-run addresses on top of this.
+BOOTSTRAP="postmaster@${DOMAIN}"
+
+usage() {
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+  exit 64
+}
+
+up() {
+  if docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' | grep -q .; then
+    echo "${CONTAINER} is already running"
+    return 0
+  fi
+  docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+
+  # Every scanner and filter is off: this server exists to speak SMTP and IMAP
+  # to a test suite, and SSL_TYPE is empty so both ports accept plaintext auth.
+  docker run -d \
+    --name "${CONTAINER}" \
+    --hostname "${HOSTNAME}" \
+    -p "${SMTP_PORT}:587" \
+    -p "${IMAP_PORT}:143" \
+    -e ENABLE_SPAMASSASSIN=0 \
+    -e ENABLE_CLAMAV=0 \
+    -e ENABLE_FAIL2BAN=0 \
+    -e ENABLE_POSTGREY=0 \
+    -e ENABLE_OPENDKIM=0 \
+    -e ENABLE_OPENDMARC=0 \
+    -e ENABLE_POLICYD_SPF=0 \
+    -e ENABLE_AMAVIS=0 \
+    -e SSL_TYPE= \
+    -e PERMIT_DOCKER=connected-networks \
+    -e ONE_DIR=1 \
+    -e POSTFIX_INET_PROTOCOLS=ipv4 \
+    -e DOVECOT_INET_PROTOCOLS=ipv4 \
+    -e LOG_LEVEL=warn \
+    "${IMAGE}" >/dev/null
+
+  # The image waits for a first account before it starts Dovecot, so create one
+  # rather than wait out its shutdown timer.
+  echo "waiting for the account database..."
+  until docker exec "${CONTAINER}" test -d /tmp/docker-mailserver 2>/dev/null; do
+    sleep 1
+  done
+  docker exec "${CONTAINER}" setup email add "${BOOTSTRAP}" "${PASSWORD}"
+
+  echo "waiting for IMAP on ${IMAP_PORT} and submission on ${SMTP_PORT}..."
+  until nc -z 127.0.0.1 "${IMAP_PORT}" && nc -z 127.0.0.1 "${SMTP_PORT}"; do
+    sleep 1
+  done
+  echo "${CONTAINER} is up (imap ${IMAP_PORT}, submission ${SMTP_PORT}, domain ${DOMAIN})"
+}
+
+down() {
+  docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+  echo "${CONTAINER} removed"
+}
+
+status() {
+  if nc -z 127.0.0.1 "${IMAP_PORT}" && nc -z 127.0.0.1 "${SMTP_PORT}"; then
+    echo "reachable: imap ${IMAP_PORT}, submission ${SMTP_PORT}"
+    return 0
+  fi
+  echo "not reachable; run bin/mail-server up"
+  return 1
+}
+
+case "${1:-}" in
+up) up ;;
+down) down ;;
+status) status ;;
+logs) docker exec "${CONTAINER}" tail -f /var/log/mail/mail.log ;;
+*) usage ;;
+esac
