@@ -663,6 +663,7 @@ export type WorkflowRunPackPushingRepoStoreOpts = {
   underlying: RepoStore;
   packClient: Pick<WorkflowRunPackClient, "push" | "forget">;
   registry: DeploymentAddressRegistry;
+  isConnectionLost: (error: unknown) => boolean;
   deriveWorkflowRunRepoId: (agentAddress: string) => string;
 };
 
@@ -681,7 +682,8 @@ export type WorkflowRunPackPushingRepoStore = RepoStore & {
    * Resolves once no push is in flight and no follow-up push is
    * pending; rejects if the most recent push failed (the same
    * latched error the next `writeTreePreservingPrefix` call would
-   * surface).
+   * surface), or if the pipeline stopped with a push still due, because
+   * no connection could carry it or the deployment was undeployed first.
    */
   flushWorkflowRunPushes: (repoId: RepoId, ref: string) => Promise<void>;
   /**
@@ -791,6 +793,14 @@ export function createWorkflowRunPackPushingRepoStore(
           });
           slot.lastError = null;
         } catch (cause) {
+          // Nothing carried the push, so nothing about it failed: it stays due
+          // until a `welcome` routes the address again or a stop reports its
+          // tips. Failing the deployment's next write with it would blame the
+          // deployment for the link.
+          if (opts.isConnectionLost(cause)) {
+            slot.dirty = true;
+            break;
+          }
           const msg = cause instanceof Error ? cause.message : String(cause);
           logger.warn`workflow-run pack push failed for deployment ${repoId.id} (${slot.agentAddress}): ${msg}`;
           slot.lastError =
@@ -879,29 +889,32 @@ export function createWorkflowRunPackPushingRepoStore(
     repoId: RepoId,
     ref: string,
   ): Promise<void> {
-    const slot = slots.get(slotKey(repoId, ref));
+    const key = slotKey(repoId, ref);
+    const slot = slots.get(key);
     if (slot === undefined) return;
-    if (slot.inFlight === null && !slot.dirty) {
-      if (slot.lastError !== null) {
-        const err = slot.lastError;
-        slot.lastError = null;
-        throw err;
-      }
-      return;
+    if (slot.inFlight !== null) {
+      await new Promise<void>((resolve) => {
+        slot.settled.push(resolve);
+      });
     }
-    await new Promise<void>((resolve) => {
-      slot.settled.push(resolve);
-    });
     if (slot.lastError !== null) {
       const err = slot.lastError;
       slot.lastError = null;
       throw err;
     }
-    if (slot.dirty && slots.get(slotKey(repoId, ref)) !== slot) {
+    if (!slot.dirty) return;
+    if (slots.get(key) !== slot) {
       throw new Error(
         `workflow-run pushes for ${repoId.id} ${ref} did not drain: ${slot.agentAddress} generation ${String(slot.generation)} was undeployed first`,
       );
     }
+    // The loop stopped, or never started, with a push still due, because the
+    // Hub does not route the address on the current connection or the
+    // connection carrying the push closed. A `welcome` that routes the address,
+    // or a stop report, ships it; until then nothing drains.
+    throw new Error(
+      `workflow-run pushes for ${repoId.id} ${ref} did not drain: the Hub does not route ${slot.agentAddress} on a connection yet`,
+    );
   }
 
   async function reportWorkflowRunRefTips(
