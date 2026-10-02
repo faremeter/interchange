@@ -35,6 +35,7 @@ export {
 } from "./session-manager";
 export {
   createHubLink,
+  isConnectionLost,
   type DeployRouter,
   type DeployRouterResult,
   type HubLink,
