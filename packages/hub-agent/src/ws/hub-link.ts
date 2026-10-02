@@ -1031,7 +1031,12 @@ export function createHubLink(config: HubLinkConfig): HubLink {
     }
   }
 
-  async function handleAgentUndeploy(frame: AgentUndeployFrame): Promise<void> {
+  // Tear one deployment down: the router releases the deployment and the
+  // link drops what it keeps for the address. Every step runs even when an
+  // earlier one fails, and the failures are thrown together, so a partial
+  // teardown is reported rather than acknowledged.
+  async function tearDown(frame: AgentUndeployFrame): Promise<void> {
+    const failures: Error[] = [];
     // Release per-deployment routing state the deploy router installed
     // for this address (multi-step mail/signal/drain handlers and the
     // deployment-address mapping) before the session tears down. With
@@ -1044,8 +1049,7 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       try {
         await deployRouter.undeploy(frame);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn`Deploy router undeploy hook failed for ${frame.agentAddress}: ${msg}`;
+        failures.push(err instanceof Error ? err : new Error(String(err)));
       }
     }
 
@@ -1067,22 +1071,45 @@ export function createHubLink(config: HubLinkConfig): HubLink {
       workflowRunPackBootstrappedByAddress.delete(frame.agentAddress);
     }
 
-    // Delete the agent directory.
     try {
       await sessions.deleteAgentDir(frame.agentAddress);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn`Failed to delete agent directory for ${frame.agentAddress}: ${msg}`;
+      failures.push(
+        new Error(`deleting its agent directory failed: ${msg}`, {
+          cause: err,
+        }),
+      );
     }
 
     keyStore.forgetAgent(frame.agentAddress);
 
-    send({
-      type: "agent.undeploy.ack",
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        `Undeploying ${frame.agentAddress} failed: ${failures.map((failure) => failure.message).join("; ")}`,
+      );
+    }
+  }
+
+  async function handleAgentUndeploy(frame: AgentUndeployFrame): Promise<void> {
+    const answering = {
       requestId: frame.requestId,
       agentAddress: frame.agentAddress,
-    });
-    logger.info`Undeployed agent ${frame.agentAddress}: ${frame.reason}`;
+    };
+    try {
+      await tearDown(frame);
+      send({ type: "agent.undeploy.ack", ...answering });
+      logger.info`Undeployed agent ${frame.agentAddress}: ${frame.reason}`;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error`${message}`;
+      send({
+        type: "agent.undeploy.error",
+        ...answering,
+        error: fitDeploymentError(message),
+      });
+    }
   }
 
   function handlePackPush(frame: PackPushFrame): void {
