@@ -140,10 +140,7 @@ describe.skipIf(!harnessDbEnvAvailable())(
         grantStore,
         sidecarRouter: createSidecarRouter({
           withExecutableWorkflowRun: async (_target, send) => send(),
-          authenticateSidecar: async ({ sidecarId }) => ({
-            sidecarId,
-            bindings: [bindingFor(sidecarId)],
-          }),
+          authenticateSidecar: async ({ sidecarId }) => ({ sidecarId }),
           resolveSidecarBindings: async (sidecarId) => [bindingFor(sidecarId)],
           validateSidecarIdentity: async () => true,
         }),

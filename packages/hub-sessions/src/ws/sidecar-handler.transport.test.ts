@@ -9,6 +9,7 @@ import {
   createAllocatedRouter,
   createMockWs,
   deployReply,
+  helloFrame,
   lastRequest,
   parsedFrames,
   sidecarAuth,
@@ -420,7 +421,7 @@ describe("SidecarRouter allocation deploy transport", () => {
     expect(router.getRoutableAddresses()).toEqual([]);
   });
 
-  test("names the request on the deploy frame", async () => {
+  test("names the request and the incarnation on the deploy frame", async () => {
     const router = createAllocatedRouter();
     const ws = await connectAllocated(router);
     void router
@@ -433,39 +434,47 @@ describe("SidecarRouter allocation deploy transport", () => {
     await tick();
 
     const sent = lastRequest(ws, "agent.deploy");
+    expect(sent.generation).toBe(TEST_TARGET.generation);
     expect(sent.requestId.length).toBeGreaterThan(0);
     router.handleClose(ws);
   });
 
-  test("ignores a deploy reply naming another requestId", async () => {
-    const router = createAllocatedRouter();
-    const ws = await connectAllocated(router);
-    const deploy = router.sendAgentDeployToAllocation(
-      TEST_TARGET,
-      TEST_IDENTITY.workflowRunAddress,
-      TEST_CONFIG,
-    );
-    let settled = false;
-    void deploy
-      .finally(() => {
-        settled = true;
-      })
-      .catch(() => undefined);
-    await tick();
+  for (const mismatch of ["requestId", "generation"] as const) {
+    test(`ignores a deploy reply naming another ${mismatch}`, async () => {
+      const router = createAllocatedRouter();
+      const ws = await connectAllocated(router);
+      const deploy = router.sendAgentDeployToAllocation(
+        TEST_TARGET,
+        TEST_IDENTITY.workflowRunAddress,
+        TEST_CONFIG,
+      );
+      let settled = false;
+      void deploy
+        .finally(() => {
+          settled = true;
+        })
+        .catch(() => undefined);
+      await tick();
 
-    // A reply to an earlier deploy the Hub gave up on answers no deploy in
-    // flight, however it is ordered against the current one.
-    const reply = JSON.parse(deployReply(ws, { publicKey: "c".repeat(64) }));
-    router.handleMessage(
-      ws,
-      JSON.stringify({ ...reply, requestId: "an-earlier-request" }),
-    );
-    await tick();
-    expect(settled).toBe(false);
+      // A reply to an earlier deploy the Hub gave up on answers no deploy in
+      // flight, however it is ordered against the current one.
+      const reply = JSON.parse(deployReply(ws, { publicKey: "c".repeat(64) }));
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          ...reply,
+          ...(mismatch === "requestId"
+            ? { requestId: "an-earlier-request" }
+            : { generation: TEST_TARGET.generation + 1 }),
+        }),
+      );
+      await tick();
+      expect(settled).toBe(false);
 
-    router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
-    await expect(deploy).resolves.toEqual({ publicKey: "b".repeat(64) });
-  });
+      router.handleMessage(ws, deployReply(ws, { publicKey: "b".repeat(64) }));
+      await expect(deploy).resolves.toEqual({ publicKey: "b".repeat(64) });
+    });
+  }
 
   test("rejects a deploy when its acknowledgement subscriber fails", async () => {
     const router = createAllocatedRouter();
@@ -525,23 +534,13 @@ describe("SidecarRouter allocation deploy transport", () => {
     router.handleOpen(primaryWs);
     router.handleMessage(
       primaryWs,
-      JSON.stringify({
-        type: "register",
-        sidecarId: TEST_IDENTITY.sidecarId,
-        token: "primary",
-        agentAddresses: [],
-      }),
+      helloFrame(TEST_IDENTITY.sidecarId, [], "primary"),
     );
     const secondaryWs = createMockWs();
     router.handleOpen(secondaryWs);
     router.handleMessage(
       secondaryWs,
-      JSON.stringify({
-        type: "register",
-        sidecarId: secondary.sidecarId,
-        token: "secondary",
-        agentAddresses: [],
-      }),
+      helloFrame(secondary.sidecarId, [], "secondary"),
     );
     await tick();
 
@@ -582,6 +581,7 @@ describe("SidecarRouter allocation deploy transport", () => {
     expect(lastFrame(ws)).toMatchObject({
       type: "agent.undeploy",
       agentAddress: TEST_IDENTITY.workflowRunAddress,
+      generation: TEST_TARGET.generation,
       reason: "session-ended",
     });
     expect(router.getRoutableAddresses()).toContain(
@@ -663,6 +663,7 @@ describe("SidecarRouter allocation pack transport", () => {
         JSON.stringify({
           type: "repo.pack.push",
           agentAddress: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_TARGET.generation,
           repoId,
           transferId: "transfer-1",
           seq: chunk.seq,
@@ -675,6 +676,7 @@ describe("SidecarRouter allocation pack transport", () => {
       JSON.stringify({
         type: "repo.pack.done",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         repoId,
         transferId: "transfer-1",
         ref: "refs/heads/events",
@@ -727,6 +729,7 @@ describe("SidecarRouter allocation pack transport", () => {
         JSON.stringify({
           type: "repo.pack.push",
           agentAddress: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_TARGET.generation,
           repoId,
           transferId: "transfer-reject",
           seq: chunk.seq,
@@ -739,6 +742,7 @@ describe("SidecarRouter allocation pack transport", () => {
       JSON.stringify({
         type: "repo.pack.done",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         repoId,
         transferId: "transfer-reject",
         ref: "refs/heads/events",
@@ -775,6 +779,7 @@ describe("SidecarRouter allocation pack transport", () => {
         JSON.stringify({
           type: "repo.pack.push",
           agentAddress: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_TARGET.generation,
           repoId,
           transferId: "transfer-failed",
           seq: chunk.seq,
@@ -787,6 +792,7 @@ describe("SidecarRouter allocation pack transport", () => {
       JSON.stringify({
         type: "repo.pack.done",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         repoId,
         transferId: "transfer-failed",
         ref: "refs/heads/events",
@@ -825,6 +831,7 @@ describe("SidecarRouter allocation pack transport", () => {
       JSON.stringify({
         type: "repo.pack.done",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         repoId,
         transferId: "transfer-malformed",
         ref: "refs/heads/events",
@@ -868,6 +875,7 @@ describe("SidecarRouter allocation pack transport", () => {
         JSON.stringify({
           type: "repo.pack.push",
           agentAddress: address,
+          generation: TEST_TARGET.generation,
           repoId,
           transferId,
           seq: 0,
@@ -881,6 +889,7 @@ describe("SidecarRouter allocation pack transport", () => {
         JSON.stringify({
           type: "repo.pack.done",
           agentAddress: address,
+          generation: TEST_TARGET.generation,
           repoId,
           transferId,
           ref: "refs/heads/events",
@@ -920,6 +929,59 @@ describe("SidecarRouter allocation pack transport", () => {
     expect(receives).toBe(2);
   });
 
+  test("rejects a workflow-run pack from a generation the connection does not route", async () => {
+    let received = false;
+    const router = createAllocatedRouter({
+      lookups: {
+        async receiveWorkflowRunPack() {
+          received = true;
+          return { accepted: true };
+        },
+      },
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    const repoId: RepoId = {
+      kind: "workflow-run",
+      id: deriveWorkflowRunRepoId(TEST_IDENTITY.workflowRunAddress),
+    };
+    for (const chunk of chunkPack(new Uint8Array([9]))) {
+      router.handleMessage(
+        ws,
+        JSON.stringify({
+          type: "repo.pack.push",
+          agentAddress: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_TARGET.generation - 1,
+          repoId,
+          transferId: "transfer-stale",
+          seq: chunk.seq,
+          data: chunk.data,
+        }),
+      );
+    }
+    router.handleMessage(
+      ws,
+      JSON.stringify({
+        type: "repo.pack.done",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation - 1,
+        repoId,
+        transferId: "transfer-stale",
+        ref: "refs/heads/events",
+        commitSha: "f".repeat(40),
+      }),
+    );
+    await tick();
+
+    expect(received).toBe(false);
+    expect(lastFrame(ws)).toMatchObject({
+      type: "repo.pack.reject",
+      transferId: "transfer-stale",
+      reason: "path_violation",
+    });
+  });
+
   test("rejects a workflow-run pack outside the allocation repository", async () => {
     let received = false;
     const router = createAllocatedRouter({
@@ -941,6 +1003,7 @@ describe("SidecarRouter allocation pack transport", () => {
         JSON.stringify({
           type: "repo.pack.push",
           agentAddress: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_TARGET.generation,
           repoId,
           transferId: "transfer-rogue",
           seq: chunk.seq,
@@ -953,6 +1016,7 @@ describe("SidecarRouter allocation pack transport", () => {
       JSON.stringify({
         type: "repo.pack.done",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: TEST_TARGET.generation,
         repoId,
         transferId: "transfer-rogue",
         ref: "refs/heads/events",
@@ -1098,7 +1162,7 @@ describe("SidecarRouter readiness validation failures", () => {
     await tick();
     await connectAllocated(router);
     await tick();
-    await connectAllocated(router, [], "reconnect");
+    await connectAllocated(router, []);
 
     await expect(waiting).resolves.toBe("resolved");
   });

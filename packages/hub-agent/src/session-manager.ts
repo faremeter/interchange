@@ -52,12 +52,6 @@ export type SessionManager = {
   ): Promise<void>;
   deleteAgentDir(agentAddress: string): Promise<void>;
   /**
-   * Session addresses this manager hosts. The in-process session runtime
-   * is retired, so this is always empty; the hub-link ships it in the
-   * register frame alongside the sidecar's workflow-deployment addresses.
-   */
-  getAddresses(): string[];
-  /**
    * Session id for an address' outbound mail forwarding. Always undefined
    * now that no in-process sessions exist; the hub-link tolerates a
    * missing id and forwards the mail without one.
@@ -176,7 +170,6 @@ export function createSessionManager(
     applyDeployPack,
     applyAssetPack,
     deleteAgentDir,
-    getAddresses: () => [],
     getSessionId: () => undefined,
   };
 }

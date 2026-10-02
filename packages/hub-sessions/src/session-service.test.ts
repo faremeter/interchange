@@ -1587,6 +1587,7 @@ describe("deployCodeSourcedWorkflow", () => {
             JSON.stringify({
               type: "mail.outbound",
               senderAddress: TEST_IDENTITY.workflowRunAddress,
+              generation: TEST_TARGET.generation,
               recipients: [TEST_IDENTITY.workflowRunAddress],
               rawMessage: "aGVsbG8=",
             }),

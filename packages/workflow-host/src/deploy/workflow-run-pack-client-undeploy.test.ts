@@ -78,9 +78,15 @@ describe("multistep router lifecycle: unregister", () => {
 
   test("DeploymentAddressRegistry exposes a removal API that breaks the anchorRunId mapping", () => {
     const registry = createDeploymentAddressRegistry();
-    registry.record("dep-A", "agent-a@x.example");
+    registry.record("dep-A", {
+      agentAddress: "agent-a@x.example",
+      generation: 1,
+    });
 
-    expect(registry.resolve("dep-A")).toBe("agent-a@x.example");
+    expect(registry.resolve("dep-A")).toEqual({
+      agentAddress: "agent-a@x.example",
+      generation: 1,
+    });
     registry.unregister("dep-A");
     expect(registry.resolve("dep-A")).toBeNull();
   });

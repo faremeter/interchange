@@ -17,7 +17,6 @@ import {
 import {
   createSidecarCredentialResolver,
   createSidecarTokenAuthenticator,
-  type SidecarAuthIdentity,
 } from "@intx/hub-sessions";
 import { eq } from "drizzle-orm";
 import {
@@ -115,18 +114,14 @@ describe.skipIf(!harnessDbEnvAvailable())(
       };
     }
 
-    function hosting(binding: SidecarAuthIdentity) {
-      return { sidecarId: binding.sidecarId, bindings: [binding] };
-    }
-
     test("resolves a valid token to the seeded sidecar's identity", async () => {
       const token = "sidecar-secret";
-      const expected = await seedSidecar({ id: "sc-1", token });
+      await seedSidecar({ id: "sc-1", token });
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
       const identity = await authenticate({ sidecarId: "sc-1", token });
 
-      expect(identity).toEqual(hosting(expected));
+      expect(identity).toEqual({ sidecarId: "sc-1" });
     });
 
     test("rejects a wrong token with null", async () => {
@@ -153,28 +148,29 @@ describe.skipIf(!harnessDbEnvAvailable())(
       expect(identity).toBeNull();
     });
 
-    test("rejects an allocated token without a current allocation", async () => {
+    test("resolves an allocated token without a current allocation to no bindings", async () => {
       const token = "stale-allocated-secret";
       await seedSidecar({
         id: "sc-replaced",
         token,
         allocated: false,
       });
-      const authenticate = createSidecarTokenAuthenticator({ db: h.db });
+      const resolver = createSidecarCredentialResolver({ db: h.db });
 
-      expect(
-        await authenticate({ sidecarId: "sc-replaced", token }),
-      ).toBeNull();
+      expect(await resolver.resolve(token)).toEqual({
+        sidecarId: "sc-replaced",
+      });
+      expect(await resolver.resolveBindings("sc-replaced")).toEqual([]);
     });
 
     test("derives identity from the token, not a spoofed claimed sidecarId", async () => {
       const token = "sidecar-secret";
-      const expected = await seedSidecar({ id: "sc-real", token });
+      await seedSidecar({ id: "sc-real", token });
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
       const identity = await authenticate({ sidecarId: "sc-spoofed", token });
 
-      expect(identity).toEqual(hosting(expected));
+      expect(identity).toEqual({ sidecarId: "sc-real" });
     });
 
     test("selects the matching row by hash among several sidecars", async () => {
@@ -184,16 +180,16 @@ describe.skipIf(!harnessDbEnvAvailable())(
       // equality actually keys the lookup on the presented token's digest.
       const tokenA = "sidecar-secret-a";
       const tokenB = "sidecar-secret-b";
-      const expectedA = await seedSidecar({ id: "sc-a", token: tokenA });
-      const expectedB = await seedSidecar({ id: "sc-b", token: tokenB });
+      await seedSidecar({ id: "sc-a", token: tokenA });
+      await seedSidecar({ id: "sc-b", token: tokenB });
       const authenticate = createSidecarTokenAuthenticator({ db: h.db });
 
-      expect(await authenticate({ sidecarId: "sc-a", token: tokenA })).toEqual(
-        hosting(expectedA),
-      );
-      expect(await authenticate({ sidecarId: "sc-b", token: tokenB })).toEqual(
-        hosting(expectedB),
-      );
+      expect(await authenticate({ sidecarId: "sc-a", token: tokenA })).toEqual({
+        sidecarId: "sc-a",
+      });
+      expect(await authenticate({ sidecarId: "sc-b", token: tokenB })).toEqual({
+        sidecarId: "sc-b",
+      });
     });
 
     test("resolves a probe hosted beside an allocation", async () => {
@@ -219,19 +215,17 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
       const resolver = createSidecarCredentialResolver({ db: h.db });
 
-      expect(await resolver.resolve(token)).toEqual({
-        sidecarId: "sc-shared",
-        bindings: [
-          allocated,
-          {
-            kind: "probe",
-            sidecarId: "sc-shared",
-            allocationId: "probe-shared",
-            tenantId: TENANT_ID,
-            generation: 0,
-          },
-        ],
-      });
+      expect(await resolver.resolve(token)).toEqual({ sidecarId: "sc-shared" });
+      expect(await resolver.resolveBindings("sc-shared")).toEqual([
+        allocated,
+        {
+          kind: "probe",
+          sidecarId: "sc-shared",
+          allocationId: "probe-shared",
+          tenantId: TENANT_ID,
+          generation: 0,
+        },
+      ]);
     });
 
     test("leaves out an allocation that is no longer active", async () => {
@@ -243,7 +237,9 @@ describe.skipIf(!harnessDbEnvAvailable())(
         .where(eq(sidecarAllocation.sidecarId, "sc-released"));
       const resolver = createSidecarCredentialResolver({ db: h.db });
 
-      expect(await resolver.resolve(token)).toBeNull();
+      expect(await resolver.resolve(token)).toEqual({
+        sidecarId: "sc-released",
+      });
       expect(await resolver.resolveBindings("sc-released")).toEqual([]);
     });
 

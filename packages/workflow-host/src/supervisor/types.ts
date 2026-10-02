@@ -328,8 +328,8 @@ export interface WorkflowSupervisorBindings {
    * The handler MUST be idempotent. Firing is not exactly-once: two
    * self-terminating callers interleaving through teardown (e.g. a channel
    * crash while recycling plus the recycle-failure catch) can each fire. The
-   * sidecar's reclaim absorbs a repeat because its `activeSupervisors.has`
-   * guard makes the second run a no-op.
+   * sidecar's reclaim absorbs a repeat because it acts only while it still
+   * holds the incarnation, which makes the second run a no-op.
    *
    * Unlike `onSuspensionRegister`, this sink does NOT share the same
    * log-and-continue contract on the host side. A missed suspension has an

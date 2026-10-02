@@ -5,6 +5,8 @@ import {
   createAllocatedRouter,
   createManualRetries,
   createMockWs,
+  helloFrame,
+  liveIncarnations,
   parsedFrames,
   sidecarAuth,
   TEST_IDENTITY,
@@ -117,6 +119,7 @@ describe("SidecarRouter allocation mail durability", () => {
       JSON.stringify({
         type: "mail.inbound.ack",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         messageId: "mid-acked",
       }),
     );
@@ -153,23 +156,21 @@ describe("SidecarRouter allocation mail durability", () => {
     router.handleOpen(owner);
     router.handleMessage(
       owner,
-      JSON.stringify({
-        type: "register",
-        sidecarId: TEST_IDENTITY.sidecarId,
-        token: "owner",
-        agentAddresses: [TEST_IDENTITY.workflowRunAddress],
-      }),
+      helloFrame(
+        TEST_IDENTITY.sidecarId,
+        liveIncarnations([TEST_IDENTITY.workflowRunAddress]),
+        "owner",
+      ),
     );
     const rogue = createMockWs();
     router.handleOpen(rogue);
     router.handleMessage(
       rogue,
-      JSON.stringify({
-        type: "register",
-        sidecarId: secondary.sidecarId,
-        token: "rogue",
-        agentAddresses: [secondary.workflowRunAddress],
-      }),
+      helloFrame(
+        secondary.sidecarId,
+        liveIncarnations([secondary.workflowRunAddress]),
+        "rogue",
+      ),
     );
     await tick();
 
@@ -184,6 +185,7 @@ describe("SidecarRouter allocation mail durability", () => {
       JSON.stringify({
         type: "mail.inbound.ack",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         messageId: "mid-owned",
       }),
     );
@@ -195,9 +197,51 @@ describe("SidecarRouter allocation mail durability", () => {
       JSON.stringify({
         type: "mail.inbound.ack",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         messageId: "mid-owned",
       }),
     );
+  });
+
+  test("an acknowledgement naming another generation does not clear pending mail", async () => {
+    const retries = createManualRetries(10);
+    const router = createAllocatedRouter({
+      mailAckRetryIntervalMs: 10,
+      mailAckMaxRetries: 5,
+      scheduleTimeout: retries.scheduleTimeout,
+    });
+    const acknowledged: unknown[] = [];
+    router.events.on("mail.inbound.acknowledged", (event) => {
+      acknowledged.push(event);
+    });
+    const ws = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
+    await router.routeMail(
+      TEST_IDENTITY.workflowRunAddress,
+      "c3RhbGU=",
+      TEST_SENDER,
+      "mid-generation",
+    );
+
+    // The mail went to the routed generation; an ack naming any other one is
+    // for an inbox the routed deployment does not have.
+    const ack = (generation: number) =>
+      JSON.stringify({
+        type: "mail.inbound.ack",
+        agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation,
+        messageId: "mid-generation",
+      });
+    router.handleMessage(ws, ack(TEST_TARGET.generation + 1));
+    await tick();
+    retries.fireNext();
+    await ws.awaitSent(() => inboundCount(ws, "mid-generation") === 2);
+    expect(retries.armedCount()).toBe(1);
+
+    router.handleMessage(ws, ack(TEST_TARGET.generation));
+    await waitUntil(() => retries.armedCount() === 0);
+    expect(acknowledged).toHaveLength(1);
   });
 
   test("retry exhaustion surfaces the mail as undelivered", async () => {
@@ -364,11 +408,9 @@ describe("SidecarRouter allocation mail durability", () => {
     );
     router.handleClose(first);
 
-    const second = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
 
     expect(inboundCount(second, "mid-retained")).toBe(1);
     expect(framesOfType(second, "mail.inbound")[0]?.["rawMessage"]).toBe(
@@ -405,12 +447,114 @@ describe("SidecarRouter allocation mail durability", () => {
     router.handleClose(first);
     await expired;
 
-    const second = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
     expect(inboundCount(second, "mid-expired")).toBe(0);
+  });
+
+  describe("when a replacement generation takes the address", () => {
+    const address = TEST_IDENTITY.workflowRunAddress;
+
+    // A sidecar connected at generation 1 that reconnects at generation 2.
+    function replacedRouter() {
+      let current: SidecarAuthIdentity = TEST_IDENTITY;
+      const router = createSidecarRouter({
+        withExecutableWorkflowRun: async (_target, send) => send(),
+        ...sidecarAuth(() => [current]),
+        validateSidecarIdentity: async () => true,
+        hubPublicKey: "a".repeat(64),
+        requestTimeoutMs: 500,
+        mailAckRetryIntervalMs: 10_000,
+        mailHoldTTLMs: 60_000,
+      });
+      router.fenceAllocation(TEST_IDENTITY.allocationId, 1);
+      const connectAt = async (generation: number) => {
+        const ws = createMockWs();
+        router.handleOpen(ws);
+        router.handleMessage(
+          ws,
+          helloFrame(
+            TEST_IDENTITY.sidecarId,
+            liveIncarnations([address], generation),
+          ),
+        );
+        await tick();
+        return ws;
+      };
+      const replace = async (first: ReturnType<typeof createMockWs>) => {
+        router.handleClose(first);
+        current = { ...TEST_IDENTITY, generation: 2 };
+        router.fenceAllocation(TEST_IDENTITY.allocationId, 2);
+        return connectAt(2);
+      };
+      return { router, connectAt, replace };
+    }
+
+    test("routed mail follows it, restamped, with its run grants ahead of it", async () => {
+      const { router, connectAt, replace } = replacedRouter();
+      const first = await connectAt(1);
+      expect(
+        await router.routeMail(address, "Zm9sbG93", TEST_SENDER, "mid-follow", {
+          runId: "run-follow",
+          stepGrants: [],
+        }),
+      ).toBe(true);
+
+      const second = await replace(first);
+
+      const relevant = parsedFrames(second).filter(
+        (frame): frame is Record<string, unknown> =>
+          typeof frame === "object" &&
+          frame !== null &&
+          "type" in frame &&
+          (frame.type === "run.grants" || frame.type === "mail.inbound"),
+      );
+      expect(relevant).toEqual([
+        expect.objectContaining({
+          type: "run.grants",
+          runId: "run-follow",
+          generation: 2,
+        }),
+        expect.objectContaining({
+          type: "mail.inbound",
+          messageId: "mid-follow",
+          generation: 2,
+        }),
+      ]);
+
+      // Only the generation it now follows may acknowledge it.
+      router.handleMessage(
+        second,
+        JSON.stringify({
+          type: "mail.inbound.ack",
+          agentAddress: address,
+          generation: 2,
+          messageId: "mid-follow",
+        }),
+      );
+      await tick();
+      const third = await replace(second);
+      expect(inboundCount(third, "mid-follow")).toBe(0);
+    });
+
+    test("dispatched mail is left to its dispatch row", async () => {
+      const { router, connectAt, replace } = replacedRouter();
+      const first = await connectAt(1);
+      await router.sendWorkflowRunDispatchToAllocation(
+        TEST_TARGET,
+        address,
+        TEST_IDENTITY.anchorRunId,
+        [],
+        "ZGlzcGF0Y2g=",
+        TEST_SENDER,
+        "mid-dispatch",
+      );
+
+      const second = await replace(first);
+
+      expect(inboundCount(second, "mid-dispatch")).toBe(0);
+    });
   });
 
   test("replays run grants before retained trigger mail", async () => {
@@ -432,11 +576,9 @@ describe("SidecarRouter allocation mail durability", () => {
     );
     router.handleClose(first);
 
-    const second = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
     const relevant = parsedFrames(second).filter(
       (frame): frame is Record<string, unknown> =>
         typeof frame === "object" &&
@@ -509,11 +651,9 @@ describe("SidecarRouter allocation mail durability", () => {
     );
     router.handleClose(first);
 
-    const second = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
     const grants = framesOfType(second, "run.grants");
     expect(grants).toHaveLength(1);
     expect(grants[0]?.["senderIdentities"]).toEqual([
@@ -550,11 +690,9 @@ describe("SidecarRouter allocation mail durability", () => {
     );
     router.handleClose(first);
 
-    const second = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
 
     const grants = framesOfType(second, "run.grants");
     expect(grants).toHaveLength(1);
@@ -602,11 +740,9 @@ describe("SidecarRouter allocation mail durability", () => {
     );
     router.handleClose(first);
 
-    const second = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
 
     const grants = framesOfType(second, "run.grants");
     expect(grants).toHaveLength(1);
@@ -646,11 +782,9 @@ describe("SidecarRouter allocation mail durability", () => {
     );
     router.handleClose(first);
 
-    const second = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
 
     const grants = framesOfType(second, "run.grants");
     expect(grants).toHaveLength(1);
@@ -685,11 +819,9 @@ describe("SidecarRouter allocation mail durability", () => {
     );
     router.handleClose(first);
 
-    const second = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
 
     const relevant = parsedFrames(second).filter(
       (frame): frame is Record<string, unknown> =>
@@ -767,6 +899,7 @@ describe("SidecarRouter allocation mail durability", () => {
       JSON.stringify({
         type: "mail.inbound.ack",
         agentAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         messageId: "mid-ack-race",
       }),
     );
@@ -814,6 +947,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -860,6 +994,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -899,6 +1034,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -906,11 +1042,9 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
     await tick();
     router.handleClose(first);
 
-    const second = await connectAllocated(
-      router,
-      [TEST_IDENTITY.workflowRunAddress],
-      "reconnect",
-    );
+    const second = await connectAllocated(router, [
+      TEST_IDENTITY.workflowRunAddress,
+    ]);
     const grants = framesOfType(second, "run.grants");
     expect(grants).toHaveLength(1);
     expect(grants[0]?.["senderIdentities"]).toEqual([
@@ -961,6 +1095,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
         JSON.stringify({
           type: "mail.outbound",
           senderAddress: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_IDENTITY.generation,
           rawMessage,
           recipients: [TEST_IDENTITY.workflowRunAddress],
         }),
@@ -971,11 +1106,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       router.handleClose(first);
       const second =
         reconnectOrder === "before"
-          ? await connectAllocated(
-              router,
-              [TEST_IDENTITY.workflowRunAddress],
-              "reconnect",
-            )
+          ? await connectAllocated(router, [TEST_IDENTITY.workflowRunAddress])
           : undefined;
       releaseAdmission.resolve(undefined);
       await retryArmed.promise;
@@ -985,11 +1116,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       }
       const recipient =
         second ??
-        (await connectAllocated(
-          router,
-          [TEST_IDENTITY.workflowRunAddress],
-          "reconnect",
-        ));
+        (await connectAllocated(router, [TEST_IDENTITY.workflowRunAddress]));
       await recipient.awaitSent((sent) =>
         sent.some((line) => line.includes('"type":"mail.inbound"')),
       );
@@ -1016,6 +1143,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
         JSON.stringify({
           type: "mail.inbound.ack",
           agentAddress: TEST_IDENTITY.workflowRunAddress,
+          generation: TEST_IDENTITY.generation,
           messageId,
         }),
       );
@@ -1057,6 +1185,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -1095,6 +1224,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         rawMessage: "aGVsbG8=",
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -1828,6 +1958,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -1854,6 +1985,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -1888,6 +2020,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -1918,6 +2051,7 @@ describe("SidecarRouter workflow-trigger mail gating", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: "not-owned@tenant.example",
+        generation: 1,
         rawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -1978,6 +2112,7 @@ describe("SidecarRouter mail.outbound body cap", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         rawMessage: smallRawMessage,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),
@@ -2004,6 +2139,7 @@ describe("SidecarRouter mail.outbound body cap", () => {
       JSON.stringify({
         type: "mail.outbound",
         senderAddress: TEST_IDENTITY.workflowRunAddress,
+        generation: 1,
         rawMessage: oversized,
         recipients: [TEST_IDENTITY.workflowRunAddress],
       }),

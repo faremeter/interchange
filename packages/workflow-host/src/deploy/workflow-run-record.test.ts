@@ -72,6 +72,7 @@ function deliveryOf(materials: Record<string, string>): CredentialDelivery {
 const SINGLE_STEP: WorkflowRunRecord = {
   version: 2,
   agentAddress: "run_abc123@tenant.example",
+  generation: 1,
   definitionId: "wf_abc123",
   sources: {
     "step-1": [
@@ -106,6 +107,7 @@ const SINGLE_STEP: WorkflowRunRecord = {
 const MULTI_STEP: WorkflowRunRecord = {
   version: 2,
   agentAddress: "run_xyz@tenant.example",
+  generation: 1,
   definitionId: "wf_xyz",
   sources: {
     plan: [
@@ -146,6 +148,7 @@ const MULTI_STEP: WorkflowRunRecord = {
 const SOURCE_REF: WorkflowRunRecord = {
   version: 2,
   agentAddress: "ins_dep_src@tenant.example",
+  generation: 1,
   definitionId: "wf_src",
   sources: {
     "step-1": [
@@ -180,6 +183,7 @@ const SOURCE_REF: WorkflowRunRecord = {
 const WITH_BODIES: WorkflowRunRecord = {
   version: 2,
   agentAddress: "ins_dep_bodies@tenant.example",
+  generation: 1,
   definitionId: "wf_bodies",
   sources: {
     "step-1": [
@@ -372,6 +376,7 @@ describe("workflow run record store", () => {
     const base = {
       version: 2,
       agentAddress: "ins_dep_bad@tenant.example",
+      generation: 1,
       definitionId: "wf_bad",
       sources: SOURCE_REF.sources,
       lineage: "source-ref",

@@ -38,6 +38,7 @@ import {
   createSidecarWorkflowSupervisor,
   STEP_INFERENCE_SOURCES_ENV_KEY,
   validateWorkflowProjection,
+  type SidecarDeployRouter,
 } from "./workflow-host-wiring";
 import { conversationStateRoot } from "../conversation-state-root";
 import {
@@ -333,6 +334,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
       type: "agent.deploy",
       requestId: "deploy-test",
       agentAddress: STEP_ADDR,
+      generation: 1,
       agentId: "run_abc-step1",
       hubPublicKey: HUB_KEY,
       provisionStep: true,
@@ -355,7 +357,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
 
     // Nothing spawned: no supervisor, so no active address.
-    expect(router.activeAddresses()).toEqual([]);
+    expect(heldAddresses(router)).toEqual([]);
   });
 });
 
@@ -379,6 +381,11 @@ const liveChildStreams: {
   childToSupervisor: ReturnType<typeof createMemoryNdjsonStream>;
   eventChildToSupervisor: ReturnType<typeof createMemoryFrameStream>;
 }[] = [];
+
+// The addresses of every incarnation the router holds, whatever its state.
+function heldAddresses(router: SidecarDeployRouter): string[] {
+  return router.incarnations().map((incarnation) => incarnation.address);
+}
 
 function createChildStreams() {
   const supervisorToChild = createMemoryNdjsonStream();
@@ -618,6 +625,7 @@ function makeMultistepFrame(args: MultistepDeployArgs): AgentDeployFrame {
     type: "agent.deploy",
     requestId: "deploy-test",
     agentAddress,
+    generation: 1,
     agentId: "multi-agent",
     hubPublicKey: "hub-pk",
     // The wire-side HarnessConfig has many required fields. On the
@@ -735,6 +743,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     spawner: SubprocessSpawner;
     publishWorkflowInferenceEvent?: (
       address: string,
+      generation: number,
       event: EventPayload,
       sessionId: string | undefined,
     ) => void;
@@ -746,6 +755,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     registerDeployment?: (args: {
       runId: string;
       agentAddress: string;
+      generation: number;
     }) => void;
     /**
      * Injectable deployment-address unregister hook. Defaults to a no-op.
@@ -862,6 +872,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
           );
         },
         initRepo: async () => undefined,
+        deleteAgentDir: async () => undefined,
       } as unknown as Parameters<
         typeof createSidecarDeployRouter
       >[0]["sessions"],
@@ -1126,14 +1137,14 @@ describe("createSidecarDeployRouter multi-step branch", () => {
   });
 
   test("a second same-address deploy is rejected mid-spawn and never deletes the live run record", async () => {
-    // Pins the synchronous single-flight reservation guard. The first
-    // deploy runs its durable writes and then suspends inside
-    // supervisor.spawn awaiting the child's `ready` handshake -- the window
-    // in which its reservation is held but `activeSupervisors` is not yet
-    // populated. A second same-address frame arriving in that window must be
-    // rejected at the reservation guard (its own message, distinct from the
-    // spawn-core backstop) before it touches durable state, so it cannot
-    // delete the first deploy's live record via the soft-fail catch.
+    // Pins the synchronous hold on the address. The first deploy runs its
+    // durable writes and then suspends inside supervisor.spawn awaiting the
+    // child's `ready` handshake -- the window in which its incarnation is
+    // held as deploying but has no supervisor yet. A second same-address
+    // frame arriving in that window must be rejected at the hold (its own
+    // message, distinct from the spawn-core backstop) before it touches
+    // durable state, so it cannot delete the first deploy's live record via
+    // the soft-fail catch.
     const childIpcKeyPair = await generateKeyPair();
     const {
       supervisorToChild,
@@ -1210,16 +1221,17 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         type: "workflow.control",
         requestId: "stop-during-deploy",
         agentAddress: frame.agentAddress,
+        generation: frame.generation,
         runId: "run_concurrent",
         action: "stop",
         reason: "Lifetime expired",
       }),
     ).rejects.toThrow(WORKFLOW_CONTROL_INITIALIZING_ERROR);
 
-    // The loser is rejected at the reservation guard, not the spawn-core
-    // backstop -- the guard's message is the one asserted here.
+    // The loser is rejected at the hold, not the spawn-core backstop -- the
+    // hold's message is the one asserted here.
     await expect(router.deploy(frame)).rejects.toThrow(
-      /is already deployed; undeploy it before redeploying/,
+      /generation 1 is deploying here/,
     );
     // It never reached the spawner and never deleted the live record.
     expect(spawnCount).toBe(1);
@@ -1253,7 +1265,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const result = await firstDeploy;
     expect(result.publicKey).toMatch(/^[0-9a-f]{64}$/);
     expect(registered).toEqual([frame.agentAddress]);
-    expect(router.activeAddresses()).toEqual([frame.agentAddress]);
+    expect(heldAddresses(router)).toEqual([frame.agentAddress]);
   });
 
   test("a stop reports the deployment's ref tips and a cancellation reports none", async () => {
@@ -1263,7 +1275,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       spawner: () => {
         throw new Error("control must not spawn");
       },
-      reportDeploymentRefTips: async (address) => {
+      reportDeploymentRefTips: async ({ agentAddress: address }) => {
         reported.push(address);
         return { "refs/heads/main": "main-tip", "refs/heads/events": null };
       },
@@ -1274,6 +1286,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       type: "workflow.control",
       requestId: "stop-tips",
       agentAddress,
+      generation: 1,
       runId: "run_stoptips",
       action: "stop",
       reason: "Lifetime expired",
@@ -2479,6 +2492,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
+      generation: 1,
       definitionId: "wf-missing-step",
       sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
@@ -2646,6 +2660,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       type: "agent.undeploy",
       requestId: "undeploy-test",
       agentAddress,
+      generation: 1,
       reason: "test",
     });
 
@@ -2687,6 +2702,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       type: "agent.undeploy",
       requestId: "undeploy-failures",
       agentAddress: head,
+      generation: 1,
       reason: "test",
     });
 
@@ -2694,8 +2710,29 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       /^removing its step scratch failed: .*; removing its closure failed: /,
     );
     expect(await recordExists(dataDir, runId)).toBe(false);
-    expect(router.activeAddresses()).toEqual([]);
+    expect(heldAddresses(router)).toEqual([]);
     expect(isRegistered(transport, head)).toBe(false);
+  });
+
+  test("refuses to provision a step over an address it holds", async () => {
+    const dataDir = await createTempBaseDir("sidecar-provision-held-");
+    const head = "run_provision_held@example.com";
+    const spawner = makeReadyDrivingSpawner(9670);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployed = router.deploy(singleStepFrame(head, "wf-provision-held"));
+    await spawner.driveReadyFor(0);
+    await deployed;
+
+    await expect(
+      router.deploy({
+        ...singleStepFrame(head, "wf-provision-held"),
+        provisionStep: true,
+      }),
+    ).rejects.toThrow(/a step cannot be provisioned over it/);
+    expect(heldAddresses(router)).toEqual([head]);
   });
 
   test("restore re-materializes a source-ref deployment's closure and re-spawns it as source-ref", async () => {
@@ -2709,6 +2746,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
+      generation: 1,
       definitionId: "wf-srcref",
       sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
@@ -2843,30 +2881,28 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(isRegistered(transport, head)).toBe(true);
   });
 
-  test("a second deploy for a live address is rejected without orphaning its restore record", async () => {
-    const dataDir = await createTempBaseDir("sidecar-restore-dup-data-");
-    const head = "run_dup@example.com";
+  test("a deploy of an address held here is refused without orphaning its restore record", async () => {
+    const dataDir = await createTempBaseDir("sidecar-restore-conflict-data-");
+    const head = "run_conflict@example.com";
     const anchorRunId = deriveWorkflowRunRepoId(head);
 
-    const spawner = makeReadyDrivingSpawner(9700);
+    const spawner = makeReadyDrivingSpawner(9720);
     const { router, transport } = await buildMultistepFixture({
       spawner: spawner.spawner,
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
     });
 
-    const deployPromise = router.deploy(singleStepFrame(head, "wf-dup"));
+    const deployPromise = router.deploy(singleStepFrame(head, "wf-conflict"));
     await spawner.driveReadyFor(0);
     await deployPromise;
-    expect(await recordExists(dataDir, anchorRunId)).toBe(true);
 
-    // A second deploy for the already-live address must be rejected WITHOUT
-    // touching the running deployment's durable state. The reject fires
-    // before any overwrite; without it, deployMultiStep's catch would delete
-    // the live deployment's record and release its slug, silently breaking
-    // the next restart for a still-running agent.
+    // The refusal fires before any overwrite; without it, deployMultiStep's
+    // catch would delete the live deployment's record and release its slug,
+    // silently breaking the next restart for a still-running agent. An
+    // identical repeat is refused too: an address is deployed once.
     await expect(
-      router.deploy(singleStepFrame(head, "wf-dup")),
-    ).rejects.toThrow(/already deployed/);
+      router.deploy(singleStepFrame(head, "wf-conflict")),
+    ).rejects.toThrow(/generation 1 is live here/);
     expect(spawner.spawnCount()).toBe(1);
     expect(await recordExists(dataDir, anchorRunId)).toBe(true);
     expect(isRegistered(transport, head)).toBe(true);
@@ -2887,7 +2923,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const deployPromise = router.deploy(singleStepFrame(head, "wf-selfterm"));
     await spawner.driveReadyFor(0);
     await deployPromise;
-    expect(router.activeAddresses()).toEqual([head]);
+    expect(heldAddresses(router)).toEqual([head]);
     expect(isRegistered(transport, head)).toBe(true);
 
     // Drive a self-termination: a child-initiated recycle whose respawn spawn
@@ -2908,8 +2944,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // So this stays a poll, but it carries no deadline of its own: a reclaim
     // that never lands is caught by the lane timeout, per "Synchronizing on
     // State, Not Time" in CONVENTIONS.md.
-    await waitUntil(() => !router.activeAddresses().includes(head));
-    expect(router.activeAddresses()).toEqual([]);
+    await waitUntil(() => !heldAddresses(router).includes(head));
+    expect(heldAddresses(router)).toEqual([]);
     expect(isRegistered(transport, head)).toBe(false);
 
     // The redeploy succeeds with no prior undeploy: the map slot is free and
@@ -2921,7 +2957,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const redeployPromise = router.deploy(singleStepFrame(head, "wf-selfterm"));
     await spawner.driveReadyFor(1);
     await redeployPromise;
-    expect(router.activeAddresses()).toEqual([head]);
+    expect(heldAddresses(router)).toEqual([head]);
     expect(isRegistered(transport, head)).toBe(true);
     expect(spawner.spawnCount()).toBe(2);
   });
@@ -2943,7 +2979,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await spawner.recycleRequestFor(0);
     // The reclaim exposes no completion signal; use the existing deadline-free
     // wait for its active-address transition, as the neighboring tests do.
-    await waitUntil(() => !router.activeAddresses().includes(head));
+    await waitUntil(() => !heldAddresses(router).includes(head));
     expect(await recordExists(dataDir, deploymentId)).toBe(true);
 
     const scratch = path.join(
@@ -2962,6 +2998,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       action: "cancel",
       runId: "run_selfterm_cancel",
       agentAddress: head,
+      generation: 1,
       reason: "Operator cancellation after failed recycle",
     } as const;
     await Promise.all([
@@ -2979,7 +3016,47 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
     await restarted.restoreWorkflowRuns();
     expect(restartedSpawner.spawnCount()).toBe(0);
-    expect(restarted.activeAddresses()).toEqual([]);
+    expect(heldAddresses(restarted)).toEqual([]);
+  });
+
+  test("a stopped deployment stays held as stopped and refuses commands for another generation", async () => {
+    const dataDir = await createTempBaseDir("sidecar-stop-held-data-");
+    const head = "run_stop_held@example.com";
+    const spawner = makeReadyDrivingSpawner(9800);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deploying = router.deploy(singleStepFrame(head, "wf-stop-held"));
+    await spawner.driveReadyFor(0);
+    await deploying;
+    const control = router.control;
+    if (control === undefined) throw new Error("router.control is undefined");
+    const command = {
+      type: "workflow.control",
+      requestId: "stop-request",
+      action: "stop",
+      runId: "run_stop_held",
+      agentAddress: head,
+      generation: 1,
+      reason: "Lifetime expired",
+    } as const;
+
+    await expect(
+      control({ ...command, requestId: "stop-other", generation: 2 }),
+    ).rejects.toThrow("generation 1 is hosted here, not generation 2");
+    await control(command);
+    expect(router.incarnations()).toEqual([
+      { address: head, generation: 1, state: "stopped" },
+    ]);
+    // A repeated stop is answered. The run record is gone, so a restart does
+    // not bring the deployment back, while the incarnation stays held until
+    // the Hub undeploys it.
+    await control({ ...command, requestId: "stop-retry" });
+    expect(await recordExists(dataDir, deriveWorkflowRunRepoId(head))).toBe(
+      false,
+    );
+    expect(heldAddresses(router)).toEqual([head]);
   });
 
   test("a reclaimed self-terminated address survives a following operator undeploy", async () => {
@@ -3009,8 +3086,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // So this stays a poll, but it carries no deadline of its own: a reclaim
     // that never lands is caught by the lane timeout, per "Synchronizing on
     // State, Not Time" in CONVENTIONS.md.
-    await waitUntil(() => !router.activeAddresses().includes(head));
-    expect(router.activeAddresses()).toEqual([]);
+    await waitUntil(() => !heldAddresses(router).includes(head));
+    expect(heldAddresses(router)).toEqual([]);
 
     // An operator undeploy following the reclaim is a clean no-op: the reclaim
     // already dropped the supervisor and the transport registration, so
@@ -3026,10 +3103,11 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         type: "agent.undeploy",
         requestId: "undeploy-test",
         agentAddress: head,
+        generation: 1,
         reason: "operator undeploy after self-termination",
       }),
     ).resolves.toBeUndefined();
-    expect(router.activeAddresses()).toEqual([]);
+    expect(heldAddresses(router)).toEqual([]);
     expect(isRegistered(transport, head)).toBe(false);
   });
 
@@ -3053,8 +3131,8 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const { router } = await buildMultistepFixture({
       spawner: spawner.spawner,
       multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
-      registerDeployment: ({ runId: id, agentAddress }) => {
-        registry.record(id, agentAddress);
+      registerDeployment: ({ runId: id, agentAddress, generation }) => {
+        registry.record(id, { agentAddress, generation });
       },
       unregisterDeployment: ({ runId: id }) => {
         registry.unregister(id);
@@ -3066,7 +3144,10 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await deployPromise;
     // The deploy recorded the mapping before spawn (the replay's pack push
     // resolves it), so it is resolvable while the supervisor is live.
-    expect(registry.resolve(runId)).toBe(head);
+    expect(registry.resolve(runId)).toEqual({
+      agentAddress: head,
+      generation: 1,
+    });
 
     // Drive the supervisor to a self-termination via the recycle-failure path.
     spawner.failNextSpawn();
@@ -3080,14 +3161,17 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     // So this stays a poll, but it carries no deadline of its own: a reclaim
     // that never lands is caught by the lane timeout, per "Synchronizing on
     // State, Not Time" in CONVENTIONS.md.
-    await waitUntil(() => !router.activeAddresses().includes(head));
-    expect(router.activeAddresses()).toEqual([]);
+    await waitUntil(() => !heldAddresses(router).includes(head));
+    expect(heldAddresses(router)).toEqual([]);
 
     // The reclaim dropped the redeploy gate but RETAINED the address mapping:
     // the supervisor's own terminal `RunFailed` commit is the sole remaining
     // consumer and must still resolve the address. A reclaim that unregistered
     // the mapping would fail this assertion (and strand that commit).
-    expect(registry.resolve(runId)).toBe(head);
+    expect(registry.resolve(runId)).toEqual({
+      agentAddress: head,
+      generation: 1,
+    });
   });
 
   test("restore skips a record whose address does not derive its directory name", async () => {
@@ -3103,6 +3187,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     const record: WorkflowRunRecord = {
       version: 1,
       agentAddress: head,
+      generation: 1,
       definitionId: "wf-mismatch",
       sources: { "step-1": [makeInferenceSource("step-1")] },
       hubPublicKey: "hub-pk",
@@ -3766,7 +3851,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
 
   test("reEmitParkedCorrelations reaches the live supervisor and sends a parked-correlations.request downstream", async () => {
     // Trigger B: the hub-reconnect fan-out. After a deploy populates
-    // `activeSupervisors` for the deployment address, the router's
+    // `deployments` for the deployment address, the router's
     // address-dispatch wrapper must reach the live supervisor's own no-arg
     // `reEmitParkedCorrelations`, which the supervisor implements by sending a
     // `parked-correlations.request` control frame down to the child. The mock
@@ -3843,9 +3928,9 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     });
     await deployPromise;
 
-    // `activeSupervisors` is keyed by the frame's run address; the router
+    // `deployments` is keyed by the frame's run address; the router
     // routes the re-emit through that same key.
-    expect(router.activeAddresses()).toEqual([frame.agentAddress]);
+    expect(heldAddresses(router)).toEqual([frame.agentAddress]);
 
     // Each downstream line is a signed envelope `{ envelope: { seq, channelId,
     // payload }, sig }`; read `envelope.payload.type` without verifying the
@@ -3955,7 +4040,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     await deployPromise;
 
     const missAddress = "run_nonexistent@wf.example";
-    expect(router.activeAddresses()).not.toContain(missAddress);
+    expect(heldAddresses(router)).not.toContain(missAddress);
 
     // The deployed supervisor emits its own `parked-correlations.request` on
     // spawn; the miss-address re-emit must add nothing on top of that

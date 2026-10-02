@@ -23,7 +23,7 @@
 //      `ready`), so the measured interval is the real serial restore-to-ready
 //      path: scan -> per-record re-validate -> spawn -> ready, N times.
 //   3. READINESS: confirms all N restored addresses are live via
-//      `activeAddresses()` before recording the sample.
+//      `incarnations()` before recording the sample.
 //
 // The subprocess spawner is a deterministic in-memory ready-driver (no real
 // `Bun.spawn`), so the sample isolates the restore driver's own per-deployment
@@ -38,7 +38,7 @@
 // methods the deploy/restore-to-ready path exercises), so its
 // `replayProcessingToInbox` / dispatch iteration logs a WRN/ERR for the
 // unimplemented `writeTreeDelta`. Those lines are post-measurement background
-// noise, not a restore failure: readiness is asserted via `activeAddresses()`
+// noise, not a restore failure: readiness is asserted via `incarnations()`
 // before the sample is recorded.
 //
 // Run:
@@ -375,6 +375,7 @@ function singleStepFrame(
     type: "agent.deploy",
     requestId: `deploy-${agentAddress}`,
     agentAddress,
+    generation: 1,
     agentId: "boot-restore-agent",
     hubPublicKey: "hub-pk",
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path reads only config.sessionId/config.grants, which tolerate undefined
@@ -462,11 +463,17 @@ async function measureRestore(n: number): Promise<number> {
 
   await Promise.all(readyDrivers);
 
-  const active = new Set(routerB.activeAddresses());
+  const live = new Set(
+    routerB
+      .incarnations()
+      .flatMap((incarnation) =>
+        incarnation.state === "live" ? [incarnation.address] : [],
+      ),
+  );
   for (const address of addresses) {
-    if (!active.has(address)) {
+    if (!live.has(address)) {
       throw new Error(
-        `restore left ${address} inactive: activeAddresses did not include it after restoreWorkflowRuns resolved`,
+        `restore left ${address} inactive: incarnations did not report it live after restoreWorkflowRuns resolved`,
       );
     }
   }

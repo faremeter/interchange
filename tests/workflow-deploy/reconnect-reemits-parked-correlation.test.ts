@@ -628,8 +628,8 @@ describe.skipIf(!harnessDbEnvAvailable())(
 
       // ---- reconnect: Trigger B re-emits the parked correlation ----
       //
-      // The sidecar reconnects and re-announces the deployment address. Sending
-      // the allocation-authenticated reconnect frame fires the hub-link's
+      // The sidecar reconnects and re-announces the deployment address. The
+      // Hub's `welcome` fires the hub-link's
       // `onWorkflowAddressesRoutable`, which calls `reEmitParkedCorrelations`:
       // the supervisor re-queries the child's still-parked approval correlation
       // and re-emits its register, which now reaches the routed hub and co-writes
