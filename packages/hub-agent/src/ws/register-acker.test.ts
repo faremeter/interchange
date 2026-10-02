@@ -12,6 +12,7 @@ function frameFor(correlationId: string): SignalCorrelationRegisterFrame {
     runId: "run-1",
     anchorRunId: "dep-1",
     agentAddress: "addr-1",
+    generation: 1,
     kind: "approval",
     snapshot: {
       name: "charge_card",
@@ -117,6 +118,24 @@ describe("register acker", () => {
     expect(sends).toEqual(["c1", "c2"]);
     expect(acker.handleAck("c1")).toBe(false);
     expect(acker.handleAck("c2")).toBe(false);
+  });
+
+  test("cancelWhere drops only the matching pending retries", async () => {
+    const sends: string[] = [];
+    const acker = createRegisterAcker({
+      sendFrame: (f) => sends.push(f.correlationId),
+      isOpen: () => true,
+      timeoutMs: 10,
+      maxAttempts: 5,
+    });
+
+    acker.send(frameFor("c1"));
+    acker.send({ ...frameFor("c2"), agentAddress: "addr-2" });
+    acker.cancelWhere((frame) => frame.agentAddress === "addr-1");
+
+    expect(acker.handleAck("c1")).toBe(false);
+    expect(acker.handleAck("c2")).toBe(true);
+    expect(sends).toEqual(["c1", "c2"]);
   });
 
   test("a second send for a pending correlationId collapses to one entry", async () => {

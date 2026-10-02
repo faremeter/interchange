@@ -1,9 +1,9 @@
 // Exercises both halves of the sender-key refresh feature's hub-link surface:
 //
 //   1. REPORT (on connect): the link announces the sidecar's cached rotatable
-//      senders on its register/reconnect frame, read from the
-//      `getCachedSenderAddresses` callback. Reported on BOTH frame types and
-//      omitted when empty.
+//      senders in its hello, read from the `getCachedSenderAddresses`
+//      callback, whether or not it holds any incarnation, and omits them when
+//      empty.
 //   2. RECEIVE (`sender.key.refresh` arm in `handleMessage`): a hub-pushed
 //      key-only refresh drives the source-opaque `cacheSenderKey` write peer
 //      and touches nothing else. A cache-write fault (transient disk fault or
@@ -33,7 +33,7 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 import { type } from "arktype";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import { hexDecode, hexEncode } from "@intx/types";
-import { RegisterFrame, ReconnectFrame } from "@intx/types/sidecar";
+import { HelloFrame, type HostedIncarnation } from "@intx/types/sidecar";
 import { configureSync, getConfig } from "@intx/log";
 import { waitUntil } from "@intx/types/testing";
 
@@ -73,7 +73,6 @@ function createStubSessionManager(): SessionManager {
     applyDeployPack: () => Promise.resolve(),
     applyAssetPack: () => Promise.resolve(),
     deleteAgentDir: () => Promise.resolve(),
-    getAddresses: () => [],
     getSessionId: () => undefined,
   };
 }
@@ -113,17 +112,14 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 type ServerSend = (frame: unknown) => void;
-type HandshakeFrame = RegisterFrame | ReconnectFrame;
+type HandshakeFrame = HelloFrame;
 
-// The sidecar sends a register or reconnect frame at handshake (plus pings and
-// pack frames later). Validate each inbound frame against the real
-// register/reconnect schemas; anything else is ignored.
+// The sidecar sends a hello at handshake (plus pings and pack frames later).
+// Validate each inbound frame against the real hello schema; anything else is
+// ignored.
 function parseHandshake(raw: unknown): HandshakeFrame | null {
-  const register = RegisterFrame(raw);
-  if (!(register instanceof type.errors)) return register;
-  const reconnect = ReconnectFrame(raw);
-  if (!(reconnect instanceof type.errors)) return reconnect;
-  return null;
+  const hello = HelloFrame(raw);
+  return hello instanceof type.errors ? null : hello;
 }
 
 type Connection = { frame: HandshakeFrame; send: ServerSend };
@@ -275,7 +271,7 @@ function createTestLink(
   cacheSenderKey: (address: string, publicKey: string) => Promise<void>,
   sidecarId: string,
   report?: {
-    getWorkflowAddresses?: () => string[];
+    getIncarnations?: () => HostedIncarnation[];
     getCachedSenderAddresses?: () => string[];
   },
   evictSenderKey: (address: string) => Promise<void> = async () => undefined,
@@ -292,8 +288,8 @@ function createTestLink(
     cacheSenderKey,
     evictSenderKey,
     deployRouter: createStubDeployRouter(),
-    ...(report?.getWorkflowAddresses !== undefined
-      ? { getWorkflowAddresses: report.getWorkflowAddresses }
+    ...(report?.getIncarnations !== undefined
+      ? { getIncarnations: report.getIncarnations }
       : {}),
     ...(report?.getCachedSenderAddresses !== undefined
       ? { getCachedSenderAddresses: report.getCachedSenderAddresses }
@@ -484,37 +480,39 @@ describe("hub-link sender.key.evict", () => {
 });
 
 describe("hub-link cached-sender report on connect", () => {
-  test("a register frame carries the reported cached senders", async () => {
+  test("a hello from a sidecar holding nothing carries the reported cached senders", async () => {
     const reported = ["usr_alice@tenant.example", "usr_bob@tenant.example"];
-    const client = createTestLink(noopCacheSenderKey, "sc-report-register", {
-      // No workflow addresses -> the link sends a register frame.
-      getWorkflowAddresses: () => [],
+    const client = createTestLink(noopCacheSenderKey, "sc-report-empty-host", {
+      getIncarnations: () => [],
       getCachedSenderAddresses: () => reported,
     });
 
     client.connect();
     try {
-      const { frame } = await env.awaitConnection("sc-report-register");
-      expect(frame.type).toBe("register");
+      const { frame } = await env.awaitConnection("sc-report-empty-host");
+      expect(frame.incarnations).toEqual([]);
       expect(frame.cachedSenderAddresses).toEqual(reported);
     } finally {
       client.close();
     }
   });
 
-  test("a reconnect frame carries the reported cached senders", async () => {
+  test("a hello reporting an incarnation carries the reported cached senders", async () => {
     const reported = ["usr_carol@tenant.example"];
-    const client = createTestLink(noopCacheSenderKey, "sc-report-reconnect", {
-      // A restored workflow address -> the link sends a reconnect frame; the
-      // cached-sender report must ride it too, not only the register path.
-      getWorkflowAddresses: () => ["run_deployment@tenant.example"],
+    const incarnation = {
+      address: "run_deployment@tenant.example",
+      generation: 1,
+      state: "live" as const,
+    };
+    const client = createTestLink(noopCacheSenderKey, "sc-report-hosting", {
+      getIncarnations: () => [incarnation],
       getCachedSenderAddresses: () => reported,
     });
 
     client.connect();
     try {
-      const { frame } = await env.awaitConnection("sc-report-reconnect");
-      expect(frame.type).toBe("reconnect");
+      const { frame } = await env.awaitConnection("sc-report-hosting");
+      expect(frame.incarnations).toEqual([incarnation]);
       expect(frame.cachedSenderAddresses).toEqual(reported);
     } finally {
       client.close();
@@ -523,14 +521,14 @@ describe("hub-link cached-sender report on connect", () => {
 
   test("an empty report omits the field from the frame", async () => {
     const client = createTestLink(noopCacheSenderKey, "sc-report-empty", {
-      getWorkflowAddresses: () => [],
+      getIncarnations: () => [],
       getCachedSenderAddresses: () => [],
     });
 
     client.connect();
     try {
       const { frame } = await env.awaitConnection("sc-report-empty");
-      expect(frame.type).toBe("register");
+      expect(frame.type).toBe("hello");
       expect(frame.cachedSenderAddresses).toBeUndefined();
     } finally {
       client.close();

@@ -141,6 +141,7 @@ describe("createWorkflowRunPackClient", () => {
 
     await client.push({
       agentAddress: "agent@example.com",
+      generation: 1,
       repoId: { kind: "workflow-run", id: "agent-example-com" },
       ref: "refs/heads/main",
     });
@@ -173,6 +174,7 @@ describe("createWorkflowRunPackClient", () => {
     await expect(
       client.push({
         agentAddress: "agent@example.com",
+        generation: 1,
         repoId: { kind: "workflow-run", id: "agent-example-com" },
         ref: "refs/heads/main",
       }),
@@ -201,6 +203,7 @@ describe("createWorkflowRunPackClient", () => {
     const push = () =>
       client.push({
         agentAddress: "agent@example.com",
+        generation: 1,
         repoId,
         ref: "refs/heads/main",
       });
@@ -236,6 +239,7 @@ describe("createWorkflowRunPackClient", () => {
     const push = () =>
       client.push({
         agentAddress: "agent@example.com",
+        generation: 1,
         repoId,
         ref: "refs/heads/main",
       });
@@ -264,6 +268,7 @@ describe("createWorkflowRunPackClient", () => {
     await expect(
       client.push({
         agentAddress: "a@example.com",
+        generation: 1,
         repoId: { kind: "agent-state", id: "a@example.com" },
         ref: "refs/heads/deploy",
       }),
@@ -275,7 +280,10 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
   test("writeTreePreservingPrefix against a workflow-run repo fires the push hook", async () => {
     const { store, preserveCalls } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
-    registry.record("dep-1", "agent-1@example.com");
+    registry.record("dep-1", {
+      agentAddress: "agent-1@example.com",
+      generation: 1,
+    });
     const pushed: { agentAddress: string; repoId: RepoId; ref: string }[] = [];
     const facade = createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
@@ -320,7 +328,10 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     // under sustained pressure.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
-    registry.record("dep-pipeline", "agent-pipeline@example.com");
+    registry.record("dep-pipeline", {
+      agentAddress: "agent-pipeline@example.com",
+      generation: 1,
+    });
     let resolvePush: () => void = () => {
       throw new Error("test: gate resolver was not captured before use");
     };
@@ -375,7 +386,10 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     // throughput win for the fifo-mail load test.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
-    registry.record("dep-burst", "agent-burst@example.com");
+    registry.record("dep-burst", {
+      agentAddress: "agent-burst@example.com",
+      generation: 1,
+    });
     let resolveFirst: () => void = () => {
       throw new Error("test: first gate not captured");
     };
@@ -433,7 +447,10 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     // is how they surface from a pipelined writer.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
-    registry.record("dep-fail", "agent-fail@example.com");
+    registry.record("dep-fail", {
+      agentAddress: "agent-fail@example.com",
+      generation: 1,
+    });
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
@@ -485,7 +502,10 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
   ): WorkflowRunPackPushingRepoStore {
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
-    registry.record("dep-forgotten", "agent-forgotten@example.com");
+    registry.record("dep-forgotten", {
+      agentAddress: "agent-forgotten@example.com",
+      generation: 1,
+    });
     return createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
       underlying: store,
@@ -538,54 +558,29 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     expect(pushes).toHaveLength(1);
   });
 
-  test("flush names the teardown when the deployment is forgotten with a push still due", async () => {
+  test("a push names the generation of the incarnation whose commits it ships", async () => {
+    const generations: number[] = [];
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
-    registry.record("dep-forgotten", "agent-forgotten@example.com");
-    const firstPush = Promise.withResolvers<undefined>();
-    let pushCount = 0;
+    registry.record("dep-forgotten", {
+      agentAddress: "agent-forgotten@example.com",
+      generation: 3,
+    });
     const facade = createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         forget: () => undefined,
-        async push() {
-          pushCount += 1;
-          if (pushCount === 1) await firstPush.promise;
+        push: async ({ generation }) => {
+          generations.push(generation);
         },
       },
       registry,
     });
-    const repoId: RepoId = { kind: "workflow-run", id: "dep-forgotten" };
-    const write = (message: string) =>
-      facade.writeTreePreservingPrefix(
-        { kind: "supervisor" },
-        repoId,
-        "refs/heads/main",
-        {
-          preservePrefix: "runs/r/events/",
-          merge: async () => ({ "runs/r/events/0.json": message }),
-          message,
-        },
-      );
-    await write("first");
-    await write("second");
-    const flushed = facade
-      .flushWorkflowRunPushes(repoId, "refs/heads/main")
-      .then(
-        () => "drained",
-        (error: unknown) => error,
-      );
+    await writeEvent(facade, "first");
+    await facade.flushWorkflowRunPushes(forgettableRepoId, "refs/heads/main");
 
-    facade.forgetDeployment("dep-forgotten", "agent-forgotten@example.com");
-    firstPush.resolve(undefined);
-
-    expect(await flushed).toMatchObject({
-      message: expect.stringContaining(
-        "agent-forgotten@example.com was undeployed first",
-      ),
-    });
-    expect(pushCount).toBe(1);
+    expect(generations).toEqual([3]);
   });
 
   test("flushWorkflowRunPushes resolves immediately when no pushes are pending", async () => {
@@ -664,14 +659,17 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
   });
 
   test("markAddressUnroutable holds a push until notifyAddressRoutable resumes it", async () => {
-    // The reconnect ordering contract. A WS disconnect blocks the address:
-    // a write that lands while blocked schedules no wire push, because a
-    // push shipped on the fresh, not-yet-registered connection is dropped by
-    // the hub as "unrouted". The reconnect route announcement lifts the block,
-    // and the held push ships after the hub has re-routed the address.
+    // The reconnect ordering contract. A connection opening or closing blocks
+    // the address: a write that lands while blocked schedules no wire push,
+    // because a push shipped before the Hub's `welcome` routes the address is
+    // dropped by the hub as "unrouted". The `welcome` lifts the block, and the
+    // held push ships after the hub has routed the address again.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
-    registry.record("dep-blocked", "agent-blocked@example.com");
+    registry.record("dep-blocked", {
+      agentAddress: "agent-blocked@example.com",
+      generation: 1,
+    });
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
@@ -709,13 +707,16 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
   test("notifyAddressRoutable re-drives a push a disconnect cancelled with no fresh write", async () => {
     // The liveness contract a synchronous single-step run depends on. The
     // first push rejects "Connection lost" (the disconnect cancelled the
-    // in-flight transfer) and latches its error. There is no later local
-    // write to re-arm the coalescing loop, so without the routable-again
-    // re-drive the run would strand forever. notifyAddressRoutable re-ships
-    // the un-acked commits once reconnect registration re-routes the address.
+    // in-flight transfer) and latches its error. There is no later write to
+    // re-arm the coalescing loop, so without the routable-again re-drive the
+    // run would strand forever. notifyAddressRoutable re-ships the un-acked
+    // commits once a `welcome` routes the address again.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
-    registry.record("dep-cancelled", "agent-cancelled@example.com");
+    registry.record("dep-cancelled", {
+      agentAddress: "agent-cancelled@example.com",
+      generation: 1,
+    });
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
@@ -725,7 +726,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
         async push() {
           pushCount += 1;
           if (pushCount === 1) {
-            throw new Error("transfer cancelled: Connection lost");
+            throw new Error("Connection lost");
           }
         },
       },
@@ -743,16 +744,68 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
         message: "single batch",
       },
     );
-    // Let the first push settle and latch "Connection lost" without a
-    // second write to re-arm the loop.
+    // Let the first push settle without a second write to re-arm the loop.
     await drainPushSettle();
     expect(pushCount).toBe(1);
 
     facade.notifyAddressRoutable("agent-cancelled@example.com");
     await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
-    // The re-drive re-shipped the un-acked commits; the second attempt
-    // succeeds, so the latched error clears and flush resolves cleanly.
+    // The re-drive re-shipped the un-acked commits, and flush resolves
+    // cleanly.
     expect(pushCount).toBe(2);
+  });
+
+  test("flush names the teardown when the deployment is forgotten with a push still due", async () => {
+    const { store } = createRecordingUnderlyingRepoStore();
+    const registry = createDeploymentAddressRegistry();
+    registry.record("dep-forgotten", {
+      agentAddress: "agent-forgotten@example.com",
+      generation: 1,
+    });
+    const firstPush = Promise.withResolvers<undefined>();
+    let pushCount = 0;
+    const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
+      underlying: store,
+      packClient: {
+        forget: () => undefined,
+        async push() {
+          pushCount += 1;
+          if (pushCount === 1) await firstPush.promise;
+        },
+      },
+      registry,
+    });
+    const repoId: RepoId = { kind: "workflow-run", id: "dep-forgotten" };
+    const write = (message: string) =>
+      facade.writeTreePreservingPrefix(
+        { kind: "supervisor" },
+        repoId,
+        "refs/heads/main",
+        {
+          preservePrefix: "runs/r/events/",
+          merge: async () => ({ "runs/r/events/0.json": message }),
+          message,
+        },
+      );
+    await write("first");
+    await write("second");
+    const flushed = facade
+      .flushWorkflowRunPushes(repoId, "refs/heads/main")
+      .then(
+        () => "drained",
+        (error: unknown) => error,
+      );
+
+    facade.forgetDeployment("dep-forgotten", "agent-forgotten@example.com");
+    firstPush.resolve(undefined);
+
+    expect(await flushed).toMatchObject({
+      message: expect.stringContaining(
+        "agent-forgotten@example.com generation 1 was undeployed first",
+      ),
+    });
+    expect(pushCount).toBe(1);
   });
 
   test("reportWorkflowRunRefTips reports every ref's tip and pushes the refs that exist", async () => {
@@ -760,7 +813,12 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       "refs/heads/main": "main-tip",
       "refs/heads/events": null,
     });
-    const pushed: { agentAddress: string; repoId: RepoId; ref: string }[] = [];
+    const pushed: {
+      agentAddress: string;
+      generation: number;
+      repoId: RepoId;
+      ref: string;
+    }[] = [];
     // No registered deployment: a stop after a sidecar restart still ships
     // the history it finds on disk.
     const facade = createWorkflowRunPackPushingRepoStore({
@@ -780,12 +838,16 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       id: deriveWorkflowRunRepoId(agentAddress),
     };
 
-    expect(await facade.reportWorkflowRunRefTips(agentAddress)).toEqual({
+    expect(
+      await facade.reportWorkflowRunRefTips({ agentAddress, generation: 1 }),
+    ).toEqual({
       "refs/heads/main": "main-tip",
       "refs/heads/events": null,
     });
     await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
-    expect(pushed).toEqual([{ agentAddress, repoId, ref: "refs/heads/main" }]);
+    expect(pushed).toEqual([
+      { agentAddress, generation: 1, repoId, ref: "refs/heads/main" },
+    ]);
   });
 
   test("reportWorkflowRunRefTips ships a stopped deployment's history after a disconnect blocked it", async () => {
@@ -793,7 +855,12 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       "refs/heads/main": "main-tip",
       "refs/heads/events": null,
     });
-    const pushed: { agentAddress: string; repoId: RepoId; ref: string }[] = [];
+    const pushed: {
+      agentAddress: string;
+      generation: number;
+      repoId: RepoId;
+      ref: string;
+    }[] = [];
     const facade = createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,
       underlying: store,
@@ -811,12 +878,14 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
       id: deriveWorkflowRunRepoId(agentAddress),
     };
 
-    // The link dropped while the deployment was stopping. The reconnect will
-    // not announce the stopped address, so nothing else lifts this block.
+    // The link dropped while the deployment was stopping. No `welcome` routes
+    // the stopped address, so nothing else lifts this block.
     facade.markAddressUnroutable(agentAddress);
-    await facade.reportWorkflowRunRefTips(agentAddress);
+    await facade.reportWorkflowRunRefTips({ agentAddress, generation: 1 });
     await facade.flushWorkflowRunPushes(repoId, "refs/heads/main");
-    expect(pushed).toEqual([{ agentAddress, repoId, ref: "refs/heads/main" }]);
+    expect(pushed).toEqual([
+      { agentAddress, generation: 1, repoId, ref: "refs/heads/main" },
+    ]);
   });
 
   test("notifyAddressRoutable is a no-op for a slot with nothing un-shipped", async () => {
@@ -827,7 +896,10 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     // failure re-drive.
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
-    registry.record("dep-clean", "agent-clean@example.com");
+    registry.record("dep-clean", {
+      agentAddress: "agent-clean@example.com",
+      generation: 1,
+    });
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
       deriveWorkflowRunRepoId,

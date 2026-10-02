@@ -8,6 +8,7 @@ function makePush(overrides: Partial<PackPushFrame> = {}): PackPushFrame {
   return {
     type: "repo.pack.push",
     agentAddress,
+    generation: 1,
     repoId: { kind: "agent-state", id: agentAddress },
     transferId: "t1",
     seq: 0,
@@ -21,6 +22,7 @@ function makeDone(overrides: Partial<PackDoneFrame> = {}): PackDoneFrame {
   return {
     type: "repo.pack.done",
     agentAddress,
+    generation: 1,
     repoId: { kind: "agent-state", id: agentAddress },
     transferId: "t1",
     ref: "refs/heads/deploy",

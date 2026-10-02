@@ -21,7 +21,7 @@ export const DEFAULT_REGISTER_ACK_MAX_ATTEMPTS = 3;
 type PendingRegister = {
   frame: SignalCorrelationRegisterFrame;
   attempts: number;
-  timer: ReturnType<typeof setTimeout>;
+  cancelRetry: () => void;
 };
 
 export type RegisterAckerConfig = {
@@ -32,14 +32,15 @@ export type RegisterAckerConfig = {
    */
   sendFrame: (frame: SignalCorrelationRegisterFrame) => void;
   /**
-   * True only when the link is OPEN. The acker abandons a pending retry the
-   * moment the link is not open: re-sending onto a fresh, not-yet-registered
-   * socket would land "unrouted", and the reconnect re-emit re-registers the
-   * whole parked set anyway.
+   * True only when the link is open and welcomed. The acker abandons a pending
+   * retry the moment it is not: before a `welcome` a resend would only queue a
+   * duplicate of the registrations re-sent on `welcome`.
    */
   isOpen: () => boolean;
   timeoutMs?: number;
   maxAttempts?: number;
+  /** Arms a retry and returns its canceller; tests drive it instead of time. */
+  scheduleRetry?: (callback: () => void, delayMs: number) => () => void;
 };
 
 /**
@@ -65,12 +66,19 @@ export interface RegisterAcker {
   /** Settle the pending retry for this correlationId; false if none was pending. */
   handleAck(correlationId: string): boolean;
   /**
-   * Abandon every pending retry without re-sending or re-acking. Called on link
-   * close and on the reconnect open edge, symmetric with the ping timer and the
-   * pack sender's `cancelAll`, so no timer leaks and no retry fires onto a dead
-   * or not-yet-registered socket.
+   * Abandon every pending retry without re-sending or re-acking. Called when
+   * the socket closes and on link close, symmetric with the ping timer and the
+   * pack sender's `cancelAll`, so no timer leaks and no retry fires onto a
+   * dead socket.
    */
   cancelAll(): void;
+  /**
+   * Abandon the pending retries whose frame `matches`, as `cancelAll` does for
+   * all of them. Called when the incarnation a register belongs to is gone.
+   */
+  cancelWhere(
+    matches: (frame: SignalCorrelationRegisterFrame) => boolean,
+  ): void;
 }
 
 export function createRegisterAcker(
@@ -78,10 +86,20 @@ export function createRegisterAcker(
 ): RegisterAcker {
   const timeoutMs = config.timeoutMs ?? DEFAULT_REGISTER_ACK_TIMEOUT_MS;
   const maxAttempts = config.maxAttempts ?? DEFAULT_REGISTER_ACK_MAX_ATTEMPTS;
+  const scheduleRetry =
+    config.scheduleRetry ??
+    ((callback: () => void, delayMs: number) => {
+      const timer = setTimeout(callback, delayMs);
+      return () => {
+        clearTimeout(timer);
+      };
+    });
   const pending = new Map<string, PendingRegister>();
 
-  function schedule(correlationId: string): ReturnType<typeof setTimeout> {
-    return setTimeout(() => onTimeout(correlationId), timeoutMs);
+  function schedule(correlationId: string): () => void {
+    return scheduleRetry(() => {
+      onTimeout(correlationId);
+    }, timeoutMs);
   }
 
   function onTimeout(correlationId: string): void {
@@ -100,36 +118,46 @@ export function createRegisterAcker(
     }
     entry.attempts += 1;
     config.sendFrame(entry.frame);
-    entry.timer = schedule(correlationId);
+    entry.cancelRetry = schedule(correlationId);
   }
 
   function send(frame: SignalCorrelationRegisterFrame): void {
     const existing = pending.get(frame.correlationId);
     if (existing !== undefined) {
-      clearTimeout(existing.timer);
+      existing.cancelRetry();
     }
     config.sendFrame(frame);
     pending.set(frame.correlationId, {
       frame,
       attempts: 1,
-      timer: schedule(frame.correlationId),
+      cancelRetry: schedule(frame.correlationId),
     });
   }
 
   function handleAck(correlationId: string): boolean {
     const entry = pending.get(correlationId);
     if (entry === undefined) return false;
-    clearTimeout(entry.timer);
+    entry.cancelRetry();
     pending.delete(correlationId);
     return true;
   }
 
   function cancelAll(): void {
     for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
+      entry.cancelRetry();
     }
     pending.clear();
   }
 
-  return { send, handleAck, cancelAll };
+  function cancelWhere(
+    matches: (frame: SignalCorrelationRegisterFrame) => boolean,
+  ): void {
+    for (const [correlationId, entry] of pending) {
+      if (!matches(entry.frame)) continue;
+      entry.cancelRetry();
+      pending.delete(correlationId);
+    }
+  }
+
+  return { send, handleAck, cancelAll, cancelWhere };
 }
