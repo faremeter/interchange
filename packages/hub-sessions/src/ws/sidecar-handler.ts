@@ -868,6 +868,13 @@ export function createSidecarRouter(
      * its spent canceller is still on it.
      */
     cancelRetry: () => void;
+    /**
+     * The retry loop that owns the entry's redelivery, replaced when a
+     * redelivery rearms the retry. Cancelling a timer cannot stop a retry
+     * already awaiting its replay, so a retry whose loop was replaced neither
+     * sends nor rearms.
+     */
+    retryLoop: symbol;
     // When this mail triggers a workflow run, the run's already-materialized
     // grants ride alongside it. Redelivery replays this snapshot as a
     // `run.grants` frame AHEAD of the mail so the redelivered trigger lands on
@@ -993,11 +1000,14 @@ export function createSidecarRouter(
   function scheduleMailRetry(
     agentAddress: string,
     messageId: string,
+    retryLoop: symbol,
   ): () => void {
     return scheduleTimeout(() => {
-      void retryPendingMail(agentAddress, messageId).catch((err: unknown) => {
-        logger.warn`Redelivery retry for mail ${messageId} to ${agentAddress} failed: ${err instanceof Error ? err.message : String(err)}`;
-      });
+      void retryPendingMail(agentAddress, messageId, retryLoop).catch(
+        (err: unknown) => {
+          logger.warn`Redelivery retry for mail ${messageId} to ${agentAddress} failed: ${err instanceof Error ? err.message : String(err)}`;
+        },
+      );
     }, mailAckRetryIntervalMs);
   }
 
@@ -1023,12 +1033,14 @@ export function createSidecarRouter(
     }
     const existing = byId.get(messageId);
     if (existing !== undefined) existing.cancelRetry();
+    const retryLoop = Symbol("mail-retry");
     byId.set(messageId, {
       agentAddress,
       messageId,
       frame,
       attempts: 0,
-      cancelRetry: scheduleMailRetry(agentAddress, messageId),
+      cancelRetry: scheduleMailRetry(agentAddress, messageId, retryLoop),
+      retryLoop,
       ...(runGrants !== undefined ? { runGrants } : {}),
       ...(allocatedTarget !== undefined ? { allocatedTarget } : {}),
       // Only a workflow dispatch pins its mail to an allocation.
@@ -1145,11 +1157,13 @@ export function createSidecarRouter(
   // sends the lead frame and the mail back-to-back with NO await between them,
   // so the co-delivered key always precedes the mail on the FIFO socket.
   // Returns whether the mail was sent and arms its retry inside admission,
-  // before an acknowledgement can remove the pending entry.
+  // before an acknowledgement can remove the pending entry. A retry passes its
+  // loop, and sends nothing once a redelivery has replaced that loop; a
+  // redelivery passes none and starts the entry's one retry loop afresh.
   async function replaySendPendingMail(
     conn: SidecarConnection,
     entry: PendingMailEntry,
-    reconnecting: boolean,
+    retryLoop: symbol | undefined,
   ): Promise<boolean> {
     const lead = await resolveReplayLeadFrame(entry);
     // The resolve above may have awaited real I/O; during that gap a queued
@@ -1167,32 +1181,41 @@ export function createSidecarRouter(
     if (pendingMail.get(entry.agentAddress)?.get(entry.messageId) !== entry) {
       return false;
     }
+    if (retryLoop !== undefined && entry.retryLoop !== retryLoop) return false;
     // The same gap can span a disconnect or a takeover that moves the address
     // off `conn`. Sending on the stale conn would write to a dead socket and
     // re-arm a retry that later drops a still-retained entry. Skip so the entry
     // survives for the reconnect redelivery.
     const ws = addressIndex.get(entry.agentAddress);
     if (ws === undefined || connections.get(ws) !== conn) return false;
+    const stillOwned = (): boolean =>
+      pendingMail.get(entry.agentAddress)?.get(entry.messageId) === entry &&
+      (retryLoop === undefined || entry.retryLoop === retryLoop);
+    // Mail tracked since the address was routed here still has its retry
+    // armed, and a retry of it may still be awaiting its replay; one retry
+    // loop per entry, so a redelivery replaces the loop.
+    const rearm = (attempts: number): void => {
+      entry.cancelRetry();
+      entry.attempts = attempts;
+      if (retryLoop === undefined) entry.retryLoop = Symbol("mail-retry");
+      entry.cancelRetry = scheduleMailRetry(
+        entry.agentAddress,
+        entry.messageId,
+        entry.retryLoop,
+      );
+    };
     try {
       return await withWorkflowWorkAdmission(
         ws,
         conn,
         entry.agentAddress,
         () => {
-          if (
-            pendingMail.get(entry.agentAddress)?.get(entry.messageId) !== entry
-          )
-            return false;
+          if (!stillOwned()) return false;
           if (lead !== undefined) conn.send(lead);
           conn.send(entry.frame);
           // Arm before releasing the database locks: an ack may arrive while
           // the transaction finishes and must be able to cancel this timer.
-          entry.attempts = reconnecting ? 0 : entry.attempts + 1;
-          entry.cancelRetry();
-          entry.cancelRetry = scheduleMailRetry(
-            entry.agentAddress,
-            entry.messageId,
-          );
+          rearm(retryLoop === undefined ? 0 : entry.attempts + 1);
           return true;
         },
       );
@@ -1203,16 +1226,8 @@ export function createSidecarRouter(
       } else {
         // A transient database or socket failure must leave replay retryable,
         // including during the registration handler's reconnect replay.
-        if (
-          pendingMail.get(entry.agentAddress)?.get(entry.messageId) === entry &&
-          addressIndex.has(entry.agentAddress)
-        ) {
-          entry.attempts += 1;
-          entry.cancelRetry();
-          entry.cancelRetry = scheduleMailRetry(
-            entry.agentAddress,
-            entry.messageId,
-          );
+        if (stillOwned() && addressIndex.has(entry.agentAddress)) {
+          rearm(entry.attempts + 1);
         }
         logger.warn`Mail replay failed for ${entry.agentAddress}: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -1241,11 +1256,12 @@ export function createSidecarRouter(
   async function retryPendingMail(
     agentAddress: string,
     messageId: string,
+    retryLoop: symbol,
   ): Promise<void> {
     const byId = pendingMail.get(agentAddress);
     if (byId === undefined) return;
     const entry = byId.get(messageId);
-    if (entry === undefined) return;
+    if (entry?.retryLoop !== retryLoop) return;
 
     if (entry.attempts >= mailAckMaxRetries) {
       // The sidecar never acked within the retry budget. The ack is withheld
@@ -1282,7 +1298,7 @@ export function createSidecarRouter(
       return;
     }
 
-    await replaySendPendingMail(conn, entry, false);
+    await replaySendPendingMail(conn, entry, retryLoop);
   }
 
   function resolvePendingMail(agentAddress: string, messageId: string): void {
@@ -1350,7 +1366,7 @@ export function createSidecarRouter(
         deletePendingMail(byId, agentAddress, entry.messageId);
         continue;
       }
-      await replaySendPendingMail(conn, entry, true);
+      await replaySendPendingMail(conn, entry, undefined);
     }
     if (byId.size > 0) {
       logger.info`Redelivered ${String(byId.size)} un-acked message(s) to ${agentAddress} on reconnect`;
