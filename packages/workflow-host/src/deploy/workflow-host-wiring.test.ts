@@ -2657,6 +2657,47 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     ).toBe(false);
   });
 
+  test("an undeploy that cannot reclaim some local state still releases the deployment and names each failure", async () => {
+    const dataDir = await createTempBaseDir("sidecar-undeploy-failures-");
+    const head = "run_undeploy_failures@example.com";
+    const runId = deriveWorkflowRunRepoId(head);
+    const spawner = makeReadyDrivingSpawner(9640);
+    const { router, transport } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployPromise = router.deploy(singleStepFrame(head, "wf-failures"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+    // A file where a directory is expected fails its removal with ENOTDIR,
+    // which `force` does not swallow.
+    for (const parent of [
+      "workflow-step-state",
+      "workflow-definition-closures",
+    ]) {
+      await fs.rm(path.join(dataDir, parent), { recursive: true, force: true });
+      await fs.writeFile(path.join(dataDir, parent), "");
+    }
+    const undeploy = router.undeploy;
+    if (undeploy === undefined) {
+      throw new Error("router.undeploy is undefined");
+    }
+
+    const undeployed = undeploy({
+      type: "agent.undeploy",
+      requestId: "undeploy-failures",
+      agentAddress: head,
+      reason: "test",
+    });
+
+    await expect(undeployed).rejects.toThrow(
+      /^removing its step scratch failed: .*; removing its closure failed: /,
+    );
+    expect(await recordExists(dataDir, runId)).toBe(false);
+    expect(router.activeAddresses()).toEqual([]);
+    expect(isRegistered(transport, head)).toBe(false);
+  });
+
   test("restore re-materializes a source-ref deployment's closure and re-spawns it as source-ref", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-srcref-ok-");
     const head = "run_srcref_ok@example.com";
