@@ -64,7 +64,7 @@ export function createAgentRepoStore(config: {
   }
 
   async function remove(address: string): Promise<void> {
-    await fsp.rm(getAgentDir(address), { recursive: true });
+    await fsp.rm(getAgentDir(address), { recursive: true, force: true });
     logger.info`Deleted agent directory for ${address}`;
   }
 
