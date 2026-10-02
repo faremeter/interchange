@@ -104,8 +104,9 @@ export type SidecarEventMap = {
 
   /** Notification. Emitted for mail the Hub gives up on: recipients no
    * connection routes, un-acked mail whose redelivery attempts or hold
-   * ran out, and mail held for a sender key that never arrived. The host
-   * is free to relay it onto an external transport or drop it. */
+   * ran out and that no dispatch row stands behind, and mail held for a
+   * sender key that never arrived. The host is free to relay it onto an
+   * external transport or drop it. */
   "mail.outbound.undelivered": {
     rawMessage: string;
     recipients: string[];
