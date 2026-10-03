@@ -7,7 +7,7 @@
 // delivery, registry and platform resolution, repo-id derivation, and the
 // child spawner and binary.
 
-import { rm, stat } from "node:fs/promises";
+import { chmod, lstat, readdir, rm, stat } from "node:fs/promises";
 import { join as pathJoin } from "node:path";
 
 import { type } from "arktype";
@@ -188,6 +188,36 @@ async function isExistingDir(dir: string): Promise<boolean> {
       return false;
     }
     throw err;
+  }
+}
+
+// A tool can leave a directory without write permission, and removing a tree
+// that holds one fails every time. Children run as the sidecar's OS user, so
+// the sidecar can make such a directory writable again.
+async function removeTree(dir: string): Promise<void> {
+  try {
+    await rm(dir, { recursive: true, force: true });
+  } catch (err) {
+    if (
+      !(
+        err instanceof Error &&
+        "code" in err &&
+        (err.code === "EACCES" || err.code === "EPERM")
+      )
+    ) {
+      throw err;
+    }
+    if ((await lstat(dir)).isDirectory()) await makeDirectoriesWritable(dir);
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function makeDirectoriesWritable(dir: string): Promise<void> {
+  await chmod(dir, 0o700);
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      await makeDirectoriesWritable(pathJoin(dir, entry.name));
+    }
   }
 }
 
@@ -2654,9 +2684,7 @@ export function createSidecarDeployRouter<
             ],
           ];
           for (const [step, dir] of localState) {
-            await attempt(step, () =>
-              rm(dir, { recursive: true, force: true }),
-            );
+            await attempt(step, () => removeTree(dir));
           }
           // A single-step deployment's grants live in the agent-state
           // repository of its own run address.
