@@ -2889,6 +2889,52 @@ describe("createSidecarDeployRouter multi-step branch", () => {
     expect(isRegistered(transport, head)).toBe(false);
   });
 
+  test("an undeploy reclaims a step scratch a tool left without write permission", async () => {
+    const dataDir = await createTempBaseDir("sidecar-undeploy-read-only-");
+    const head = "run_undeploy_read_only@example.com";
+    const runId = deriveDeploymentId(head);
+    const spawner = makeReadyDrivingSpawner(9660);
+    const { router } = await buildMultistepFixture({
+      spawner: spawner.spawner,
+      multistepSubstrateEnv: { SIDECAR_DATA_DIR: dataDir },
+    });
+    const deployPromise = router.deploy(singleStepFrame(head, "wf-read-only"));
+    await spawner.driveReadyFor(0);
+    await deployPromise;
+    const scratch = path.join(dataDir, "workflow-step-state", runId);
+    const modules = path.join(scratch, "workspace", "pkg", "mod");
+    await fs.mkdir(modules, { recursive: true });
+    await fs.writeFile(path.join(modules, "go.mod"), "module example\n");
+    const readOnly = [path.dirname(modules), modules];
+    for (const dir of readOnly) await fs.chmod(dir, 0o555);
+    const undeploy = router.undeploy;
+    if (undeploy === undefined) {
+      throw new Error("router.undeploy is undefined");
+    }
+
+    try {
+      await undeploy({
+        type: "agent.undeploy",
+        requestId: "undeploy-read-only",
+        agentAddress: head,
+        generation: 1,
+        reason: "test",
+      });
+
+      expect(
+        await fs.access(scratch).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(false);
+      expect(heldAddresses(router)).toEqual([]);
+    } finally {
+      for (const dir of readOnly) {
+        await fs.chmod(dir, 0o755).catch(() => undefined);
+      }
+    }
+  });
+
   test("restore re-materializes a source-ref deployment's closure and re-spawns it as source-ref", async () => {
     const dataDir = await createTempBaseDir("sidecar-restore-srcref-ok-");
     const head = "run_srcref_ok@example.com";
