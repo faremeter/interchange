@@ -14,6 +14,7 @@ import {
   createWorkflowRunLaunchSpecStore,
 } from "@intx/db";
 import {
+  modelOffering,
   workflowDefinition,
   workflowProbe,
   workflowRun,
@@ -353,6 +354,107 @@ describe.skipIf(!harnessDbEnvAvailable())(
       });
 
       expect(anchorVisibleDuringDeploy).toBe(true);
+    });
+
+    describe("recovering a ready allocation after a catalog change", () => {
+      const FALLBACK_OFFERING_ID = "mof-workflow-probe-fallback";
+
+      async function prepareWithFallback(anchorRunId: string) {
+        await seedModelProvider(h.db, {
+          id: "mpv-workflow-probe-fallback",
+          tenantId: TENANT_ID,
+          name: "relay",
+          credentialId: CREDENTIAL_ID,
+        });
+        await seedModelOffering(h.db, {
+          id: FALLBACK_OFFERING_ID,
+          tenantId: TENANT_ID,
+          modelId: "mdl-workflow-probe",
+          providerId: "mpv-workflow-probe-fallback",
+          priority: 1,
+        });
+        const deployedSourceIds: string[][] = [];
+        const service = createWorkflowAllocationService({
+          db: h.db,
+          ...sharedPluginPools([
+            makeProvisioner({
+              id: anchorRunId,
+              ensureCalls: [],
+              destroyCalls: [],
+            }),
+          ]),
+          preparedDeployer: {
+            installAndApproveWorkflowSource: (params) => freeze(params),
+            deployPreparedCodeSourcedWorkflow: async (params) => {
+              deployedSourceIds.push(
+                params.config.sources.map((source) => source.id),
+              );
+              return {
+                anchorRunId: params.anchorRunId,
+                deploymentAddress: params.agentAddress,
+                publicKey: "public-key",
+              };
+            },
+          },
+          credentialCipher: CIPHER,
+          allocationRouter: {
+            fenceAllocation: () => undefined,
+            retireAllocation: () => undefined,
+            waitForAllocatedSidecar: async () => undefined,
+            sendProbeToAllocation: async () => probeResult(),
+            isAllocatedWorkflowActive: async () => false,
+            disconnectAllocation: () => undefined,
+          },
+          hubWebSocketUrl: "wss://hub.example.test/api/sidecars/ws",
+          createAllocationId: () => `sal-${anchorRunId}`,
+          createSidecarId: () => `sc-${anchorRunId}`,
+          createToken: () => `${anchorRunId}-token`,
+        });
+        const prepared = await service.prepareProvisionedDeployment({
+          ...prepareArgs(anchorRunId),
+          sourceOfferingIds: [OFFERING_ID, FALLBACK_OFFERING_ID],
+        });
+        const allocation = await createSidecarAllocationStore(
+          h.db,
+        ).findByAnchorRunId(prepared.anchorRunId);
+        if (allocation === null) throw new Error("expected an allocation");
+        const recover = () =>
+          service.deployReadyAllocation(allocation, {
+            signal: new AbortController().signal,
+            leaseId: "recovery-test",
+          });
+        return { recover, deployedSourceIds };
+      }
+
+      async function disable(offeringId: string): Promise<void> {
+        await h.db
+          .update(modelOffering)
+          .set({ disabled: true })
+          .where(eq(modelOffering.id, offeringId));
+      }
+
+      test("drops a disabled fallback offering from the chain", async () => {
+        const { recover, deployedSourceIds } = await prepareWithFallback(
+          "run-fallback-disabled",
+        );
+        await disable(FALLBACK_OFFERING_ID);
+
+        await recover();
+
+        expect(deployedSourceIds).toEqual([[OFFERING_ID]]);
+      });
+
+      test("fails when the default offering is disabled", async () => {
+        const { recover, deployedSourceIds } = await prepareWithFallback(
+          "run-default-disabled",
+        );
+        await disable(OFFERING_ID);
+
+        await expect(recover()).rejects.toThrow(
+          `Default offering ${OFFERING_ID} was not resolved`,
+        );
+        expect(deployedSourceIds).toEqual([]);
+      });
     });
 
     test("reauthenticates adopted probe capacity as its allocation", async () => {

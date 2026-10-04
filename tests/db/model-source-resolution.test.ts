@@ -7,13 +7,16 @@ import {
   test,
 } from "bun:test";
 
+import { eq } from "drizzle-orm";
+
 import { createNoopCredentialCipher } from "@intx/crypto";
 import {
   resolveInferencePreferences,
   resolveInstanceModelSources,
   resolveModelSources,
+  resolveSourcesByOfferingIds,
 } from "@intx/db";
-import { workflowDefinition } from "@intx/db/schema";
+import { modelOffering, workflowDefinition } from "@intx/db/schema";
 import { credentialAad, type ModelRequirement } from "@intx/types";
 import {
   createTestDb,
@@ -580,6 +583,114 @@ describe.skipIf(!harnessDbEnvAvailable())(
             noopCipher,
           ),
         ).rejects.toThrow();
+      });
+    });
+
+    describe("resolveSourcesByOfferingIds", () => {
+      async function disable(offeringId: string): Promise<void> {
+        await h.db
+          .update(modelOffering)
+          .set({ disabled: true })
+          .where(eq(modelOffering.id, offeringId));
+      }
+
+      test("fails the chain on an unavailable offering by default", async () => {
+        await seedBase();
+        await addRelay(1);
+        await disable("mof_relay");
+
+        const result = await resolveSourcesByOfferingIds(
+          h.db,
+          "tnt_root",
+          ["mof_a", "mof_relay"],
+          noopCipher,
+        );
+
+        expect(result).toEqual({
+          ok: false,
+          reason: "offering_unavailable",
+          offeringId: "mof_relay",
+        });
+      });
+
+      test("drops an unavailable offering with skipUnavailable", async () => {
+        await seedBase();
+        await addRelay(1);
+        await disable("mof_relay");
+
+        const result = await resolveSourcesByOfferingIds(
+          h.db,
+          "tnt_root",
+          ["mof_a", "mof_relay"],
+          noopCipher,
+          { skipUnavailable: true },
+        );
+
+        if (!result.ok) throw new Error("expected the chain to resolve");
+        expect(result.sources.map((source) => source.id)).toEqual(["mof_a"]);
+      });
+
+      test("fails with skipUnavailable when nothing resolves", async () => {
+        await seedBase();
+        await addRelay(1);
+        await disable("mof_a");
+        await disable("mof_relay");
+
+        const result = await resolveSourcesByOfferingIds(
+          h.db,
+          "tnt_root",
+          ["mof_a", "mof_relay"],
+          noopCipher,
+          { skipUnavailable: true },
+        );
+
+        expect(result).toEqual({
+          ok: false,
+          reason: "offering_unavailable",
+          offeringId: "mof_a",
+        });
+      });
+
+      test("skips an offering whose provider cannot build a source", async () => {
+        await seedBase();
+        await seedWallet(h.db, { id: "wal_1", tenantId: "tnt_root" });
+        await seedModelProvider(h.db, {
+          id: "mpv_wallet",
+          tenantId: "tnt_root",
+          name: "wallet",
+          walletId: "wal_1",
+        });
+        await seedModelOffering(h.db, {
+          id: "mof_wallet",
+          tenantId: "tnt_root",
+          modelId: "mdl_opus",
+          providerId: "mpv_wallet",
+          priority: 1,
+        });
+
+        const skipped = await resolveSourcesByOfferingIds(
+          h.db,
+          "tnt_root",
+          ["mof_a", "mof_wallet"],
+          noopCipher,
+          { skipUnavailable: true },
+        );
+        if (!skipped.ok) throw new Error("expected the chain to resolve");
+        expect(skipped.sources.map((source) => source.id)).toEqual(["mof_a"]);
+
+        const alone = await resolveSourcesByOfferingIds(
+          h.db,
+          "tnt_root",
+          ["mof_wallet"],
+          noopCipher,
+          { skipUnavailable: true },
+        );
+        expect(alone).toMatchObject({
+          ok: false,
+          reason: "offering_unavailable",
+          offeringId: "mof_wallet",
+          skip: { reason: "wallet_backed" },
+        });
       });
     });
   },
