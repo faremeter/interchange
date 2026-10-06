@@ -2,12 +2,12 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-// Boot-graph guard for the spawned workflow-child.
+// Boot-graph guard for the spawned workflow-child and the probe child.
 //
-// The workflow-child evaluates its whole module graph on every cold start. It
-// must never pull the control-plane database layer (`@intx/db` / `drizzle`) or
-// the sidecar orchestrator (`@intx/hub-agent`) into that graph: the child
-// never executes either, the database dependency is a layering violation, and
+// Each child evaluates its whole module graph on every cold start. It must
+// never pull the control-plane database layer (`@intx/db` / `drizzle`) or the
+// sidecar orchestrator (`@intx/hub-agent`) into that graph: the child never
+// executes either, the database dependency is a layering violation, and
 // importing the orchestrator that spawns the child is a backwards dependency.
 // The db-free substrate is reachable via `@intx/hub-sessions/substrate` and
 // the path helpers via `@intx/hub-agent/paths`; the package barrels are not.
@@ -24,17 +24,23 @@ import { dirname, join } from "node:path";
 
 const repoRoot = process.cwd();
 
-// The binary the sidecar spawns as the workflow-child. The graph walk derives
-// its entrypoints from this file's actual imports, so anything the binary
-// loads -- in any import form -- is part of the checked graph.
+// The binaries the sidecar spawns. The graph walk derives its entrypoints
+// from each file's actual imports, so anything the binary loads -- in any
+// import form -- is part of the checked graph.
 const CHILD_BINARY = "apps/sidecar/bin/workflow-child";
+const PROBE_BINARY = "apps/sidecar/bin/workflow-probe-child";
 
-// The roots the binary is expected to import. The drift guard asserts the
+// The roots each binary is expected to import. The drift guard asserts the
 // binary imports exactly these; a new root trips it so a human confirms the
-// addition (and the walk covers the new root regardless).
+// addition (and the walk covers the new root regardless). The probe's roots
+// are its own list.
 const EXPECTED_CHILD_ROOTS = [
-  "../src/workflow-substrate-factory",
+  "../src/workflow-child-bindings",
   "@intx/workflow-host",
+];
+const EXPECTED_PROBE_ROOTS = [
+  "@intx/workflow-deploy",
+  "@intx/workflow-host/probe",
 ];
 
 // The module specifiers the binary VALUE-imports, in every runtime form
@@ -43,8 +49,8 @@ const EXPECTED_CHILD_ROOTS = [
 // strings, and member expressions like `Array.from(...)`, and -- crucially --
 // erases `import type` / type-only specifiers, keeping this list aligned with
 // the runtime value graph the walk below captures.
-function binaryImportSpecifiers(): string[] {
-  const raw = readFileSync(join(repoRoot, CHILD_BINARY), "utf8");
+function binaryImportSpecifiers(binary: string): string[] {
+  const raw = readFileSync(join(repoRoot, binary), "utf8");
   // The transpiler does not accept the binary's
   // `#!/usr/bin/env -S bun --conditions=intx-src` shebang.
   const source = raw.replace(/^#![^\n]*\n/, "");
@@ -56,9 +62,11 @@ function binaryImportSpecifiers(): string[] {
 // Resolve the binary's imports to real entrypoint files. A root that cannot
 // resolve throws here and fails the test loudly rather than yielding a graph
 // built from an incomplete root set.
-function binaryEntrypoints(): string[] {
-  const binDir = dirname(join(repoRoot, CHILD_BINARY));
-  return binaryImportSpecifiers().map((spec) => Bun.resolveSync(spec, binDir));
+function binaryEntrypoints(binary: string): string[] {
+  const binDir = dirname(join(repoRoot, binary));
+  return binaryImportSpecifiers(binary).map((spec) =>
+    Bun.resolveSync(spec, binDir),
+  );
 }
 
 /**
@@ -134,47 +142,64 @@ async function childValueImportGraph(entrypoints: string[]): Promise<{
   return { importers, resolveFailures, success: result.success };
 }
 
+async function expectCleanBootGraph(binary: string): Promise<void> {
+  const { importers, resolveFailures, success } = await childValueImportGraph(
+    binaryEntrypoints(binary),
+  );
+
+  expect(success).toBe(true);
+  // A workspace specifier that fails to resolve would drop its subtree from
+  // the walk while the build still succeeds; surface it rather than silently
+  // un-guarding that subtree.
+  expect(resolveFailures).toEqual([]);
+
+  const reached = new Set(importers.keys());
+  // Anti-vacuity: a workflow-child necessarily evaluates the workflow
+  // runtime, so a graph that did not reach it never walked the real child
+  // (e.g. empty entrypoints) and the forbidden check would pass over nothing.
+  expect(reached).toContain("@intx/workflow");
+
+  const violations = [...reached]
+    .map((spec) => ({ spec, reason: forbiddenReason(spec) }))
+    .filter((v): v is { spec: string; reason: string } => v.reason !== null);
+
+  if (violations.length > 0) {
+    const detail = violations
+      .map((v) => {
+        const from = [...(importers.get(v.spec) ?? new Set())].join("\n      ");
+        return `  ${v.spec} -- ${v.reason}\n    imported by:\n      ${from}`;
+      })
+      .join("\n");
+    throw new Error(
+      `The workflow-child boot graph reached forbidden modules:\n${detail}\n\n` +
+        "The spawned child must not evaluate the control-plane database or the " +
+        "sidecar orchestrator at boot. Use @intx/hub-sessions/substrate for the " +
+        "db-free repo/substrate symbols and @intx/hub-agent/paths for the deploy-tree " +
+        "and address helpers.",
+    );
+  }
+}
+
 describe("workflow-child boot graph", () => {
   test("the child binary imports only the two known roots", () => {
-    expect(binaryImportSpecifiers()).toEqual([...EXPECTED_CHILD_ROOTS].sort());
+    expect(binaryImportSpecifiers(CHILD_BINARY)).toEqual(
+      [...EXPECTED_CHILD_ROOTS].sort(),
+    );
   });
 
   test("never value-imports the control-plane database or the orchestrator", async () => {
-    const { importers, resolveFailures, success } =
-      await childValueImportGraph(binaryEntrypoints());
+    await expectCleanBootGraph(CHILD_BINARY);
+  });
+});
 
-    expect(success).toBe(true);
-    // A workspace specifier that fails to resolve would drop its subtree from
-    // the walk while the build still succeeds; surface it rather than silently
-    // un-guarding that subtree.
-    expect(resolveFailures).toEqual([]);
+describe("workflow-probe-child boot graph", () => {
+  test("the probe binary imports only the probe entry and the capability walk", () => {
+    expect(binaryImportSpecifiers(PROBE_BINARY)).toEqual(
+      [...EXPECTED_PROBE_ROOTS].sort(),
+    );
+  });
 
-    const reached = new Set(importers.keys());
-    // Anti-vacuity: a workflow-child necessarily evaluates the workflow
-    // runtime, so a graph that did not reach it never walked the real child
-    // (e.g. empty entrypoints) and the forbidden check would pass over nothing.
-    expect(reached).toContain("@intx/workflow");
-
-    const violations = [...reached]
-      .map((spec) => ({ spec, reason: forbiddenReason(spec) }))
-      .filter((v): v is { spec: string; reason: string } => v.reason !== null);
-
-    if (violations.length > 0) {
-      const detail = violations
-        .map((v) => {
-          const from = [...(importers.get(v.spec) ?? new Set())].join(
-            "\n      ",
-          );
-          return `  ${v.spec} -- ${v.reason}\n    imported by:\n      ${from}`;
-        })
-        .join("\n");
-      throw new Error(
-        `The workflow-child boot graph reached forbidden modules:\n${detail}\n\n` +
-          "The spawned child must not evaluate the control-plane database or the " +
-          "sidecar orchestrator at boot. Use @intx/hub-sessions/substrate for the " +
-          "db-free repo/substrate symbols and @intx/hub-agent/paths for the deploy-tree " +
-          "and address helpers.",
-      );
-    }
+  test("never value-imports the control-plane database or the orchestrator", async () => {
+    await expectCleanBootGraph(PROBE_BINARY);
   });
 });

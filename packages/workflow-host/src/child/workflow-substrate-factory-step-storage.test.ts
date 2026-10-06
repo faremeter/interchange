@@ -46,7 +46,7 @@ import {
   createSidecarStepBuildEnv,
   stepStorageRoot,
   type SidecarStepBuildEnvDeps,
-} from "./workflow-substrate-factory";
+} from "./substrate-factory";
 
 const STEP_ID = "step-1";
 const WORKFLOW_RUN_REPO_ID: RepoId = {
@@ -106,6 +106,8 @@ function buildDeps(opts: {
     adapters: createBuiltinRegistry(),
     recordToolMarkFloor: () => undefined,
     sourceTools: false,
+    materializeStepTools: () =>
+      Promise.resolve({ factories: [], pluginFactories: [] }),
     ...(opts.durableConversation !== undefined
       ? { durableConversation: opts.durableConversation }
       : {}),

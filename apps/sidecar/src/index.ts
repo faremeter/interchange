@@ -67,17 +67,21 @@ import {
   writeFileAtomicDurable,
   type SidecarDeployRouter,
 } from "@intx/workflow-host/deploy";
+import { createWorkflowProbeExecutor } from "@intx/workflow-host/probe";
 
 import {
   readRegistries,
   resolveHostPlatform,
 } from "./sidecar-materialization-config";
-import { createWorkflowProbeExecutor } from "./workflow-probe-handler";
 import { loadOrMintSidecarKeypair } from "./signing-keypair";
 import {
   defaultSubprocessSpawner,
   SIDECAR_WORKFLOW_CHILD_BINARY,
 } from "./workflow-child-spawner";
+import {
+  defaultProbeChildSpawner,
+  SIDECAR_WORKFLOW_PROBE_CHILD_BINARY,
+} from "./workflow-probe-spawner";
 
 await setup();
 
@@ -468,6 +472,8 @@ const buildHarness = createDefaultHarnessBuilder({ adapters });
 // inline-payload cap is the signal to move the probe's asset delivery to the
 // streamed transfer the deploy path uses.
 const workflowProbeExecutor = createWorkflowProbeExecutor({
+  binaryPath: SIDECAR_WORKFLOW_PROBE_CHILD_BINARY,
+  spawnProbeChild: defaultProbeChildSpawner,
   materialize: createWorkflowClosureMaterializer({
     cacheRoot,
     cacheMaxBytes,

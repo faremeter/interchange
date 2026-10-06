@@ -3,7 +3,7 @@ import type { LastCycleSource } from "@intx/types/runtime";
 import type { AdapterFactory, ProviderAdapter } from "@intx/inference";
 import { loadAdapterRegistry } from "@intx/inference/providers";
 
-import { parseAdapterManifest } from "./workflow-substrate-factory";
+import { parseAdapterManifest } from "./substrate-factory";
 
 // Failure-isolation hedge for the cross-process custom-adapter path:
 // proves the child-side load path (parse the serialized manifest, then

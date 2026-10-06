@@ -10,10 +10,11 @@
 // as an `ok: false` frame (handled inside the runner), so a throw reaching
 // here is a pre-evaluation defect (bad env, unwritable stdout) that exits
 // non-zero -- the host then reaps and answers `workflow.probe.error`.
-import { runWorkflowProbeChildFromProcessEnv } from "../src/workflow-probe-handler";
+import { walkCapabilities } from "@intx/workflow-deploy";
+import { runWorkflowProbeChildFromProcessEnv } from "@intx/workflow-host/probe";
 
 try {
-  await runWorkflowProbeChildFromProcessEnv();
+  await runWorkflowProbeChildFromProcessEnv(walkCapabilities);
   process.exit(0);
 } catch (err) {
   process.stderr.write(

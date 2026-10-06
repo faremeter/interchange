@@ -1,19 +1,11 @@
-// A spawned child inherits the grants of the run that spawned it, CAPPED at
-// what the child body itself declares.
+// A spawned child persists the grant array the injected filter returns.
 //
 // `createSidecarRunChild` reads the parent run's
-// `runs/<parentRunId>/grants.json` as the ceiling, re-walks the child body to
-// learn what it declares, and binds the child's `env.authorize` to the
-// intersection: a parent grant the child body declares survives, a parent-only
-// grant the child never declares is dropped. It persists that same capped set
-// under the child's own `runs/<childRunId>/grants.json`, so a grandchild's
-// ceiling is the capped set -- not the raw parent set. A child whose parent has
-// no grants file fails closed at spawn.
-//
-// The substrate here is a real on-disk workflow-run repo. The child's injected
-// `invokeStep` calls the credentials-backed `authorize` the runtime env
-// carries, so a declared resource resolves `allow` and an undeclared one
-// resolves fail-closed -- exercising the cap end to end.
+// `runs/<parentRunId>/grants.json`, calls `collectDeclaredResources` with the
+// pre-rewrite body, and writes the filter's array to the child's own
+// `runs/<childRunId>/grants.json`. An existing child file is read back and
+// the collectors are not called again. A child whose parent has no grants
+// file fails closed at spawn. The cap itself lives with the capability walk.
 
 import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import fs from "node:fs";
@@ -52,7 +44,7 @@ import { readRunGrants, runGrantsPath } from "@intx/workflow-host";
 import {
   createSidecarRunChild,
   type SidecarChildStepInvoker,
-} from "./workflow-substrate-factory";
+} from "./substrate-factory";
 
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-child-grants";
@@ -110,7 +102,6 @@ beforeAll(async () => {
   signingKey = await generateKeyPair();
   childSourcesDataDir = await makeTempDir("child-grants-assets-");
   await stageChildSources("child-wf");
-  await stageChildSources("grandchild-wf");
 });
 
 afterAll(async () => {
@@ -238,6 +229,14 @@ function recordingInvoker(
 function makeRunChild(
   substrate: ReturnType<typeof createRepoStore>,
   invokeStep: SidecarChildStepInvoker,
+  grantCap: {
+    collectDeclaredResources: (
+      definition: WorkflowDefinition,
+    ) => ReadonlySet<string>;
+    filterGrantsToDeclaredResources: (
+      parentGrants: readonly unknown[],
+    ) => readonly unknown[];
+  },
 ): ReturnType<typeof createSidecarRunChild> {
   return createSidecarRunChild({
     substrate,
@@ -255,31 +254,37 @@ function makeRunChild(
     credentialProviders: createCredentialProviderRegistry(
       builtinCredentialProviders(),
     ),
+    collectDeclaredResources: grantCap.collectDeclaredResources,
+    filterGrantsToDeclaredResources: grantCap.filterGrantsToDeclaredResources,
   });
 }
 
 describe("createSidecarRunChild grant capping", () => {
-  test("a child's inherited grants are capped at what its body declares", async () => {
-    const substrate = await makeSubstrate("child-grants-cap-");
+  const complete: SidecarChildStepInvoker = async () => ({ output: null });
+
+  test("calls collectDeclaredResources with the pre-rewrite body and persists the filter's array", async () => {
+    const substrate = await makeSubstrate("child-grants-persist-");
     const parentRunId = "run-parent";
-    // Parent holds a grant the child body declares and one it does not.
     await seedRunGrants(substrate, parentRunId, [
       grant(DECLARED_RESOURCE, "invoke"),
       grant(UNDECLARED_RESOURCE, "invoke"),
     ]);
 
-    const record = {
-      decisions: [] as { resource: string; effect: string | null }[],
-    };
-    const runChild = makeRunChild(
-      substrate,
-      recordingInvoker(record, [DECLARED_RESOURCE, UNDECLARED_RESOURCE]),
-    );
+    const definition = childDefinition("child-wf");
+    const seen: WorkflowDefinition[] = [];
+    const persisted = [grant("tool:from-the-stub", "invoke")];
+    const runChild = makeRunChild(substrate, complete, {
+      collectDeclaredResources: (body) => {
+        seen.push(body);
+        return new Set<string>();
+      },
+      filterGrantsToDeclaredResources: () => persisted,
+    });
 
     const childRunId = "run-child";
     const result = await runChild(
       {
-        definition: childDefinition("child-wf"),
+        definition,
         definitionRef: REF,
         childRunId,
         input: null,
@@ -293,107 +298,22 @@ describe("createSidecarRunChild grant capping", () => {
     );
 
     expect(result.terminalStatus).toBe("completed");
-    // The declared resource resolves `allow`; the undeclared one was dropped
-    // from the child's inherited set and resolves fail-closed `null`. The
-    // positive control (declared -> allow) proves the null is a genuine cap,
-    // not an empty grant view that would deny everything.
-    expect(record.decisions).toEqual([
-      { resource: DECLARED_RESOURCE, effect: "allow" },
-      { resource: UNDECLARED_RESOURCE, effect: null },
-    ]);
-    // The child persisted ONLY the declared grant as its own file, so a
-    // grandchild inherits the capped set rather than the raw parent set.
+    expect(seen).toEqual([definition]);
     const childGrants = await readRunGrants({
       repoStore: substrate,
       anchorRunId: DEPLOYMENT_ID,
       runId: childRunId,
     });
-    expect(childGrants).toEqual([grant(DECLARED_RESOURCE, "invoke")]);
-  });
-
-  test("the grandchild ceiling is the capped set, not the raw parent set", async () => {
-    const substrate = await makeSubstrate("child-grants-multihop-");
-    const parentRunId = "run-parent";
-    await seedRunGrants(substrate, parentRunId, [
-      grant(DECLARED_RESOURCE, "invoke"),
-      grant(UNDECLARED_RESOURCE, "invoke"),
-    ]);
-
-    const record = {
-      decisions: [] as { resource: string; effect: string | null }[],
-    };
-    const runChild = makeRunChild(
-      substrate,
-      recordingInvoker(record, [DECLARED_RESOURCE, UNDECLARED_RESOURCE]),
-    );
-
-    // Hop 1: parent -> child. Writes runs/run-child/grants.json (capped).
-    const childRunId = "run-child";
-    await runChild(
-      {
-        definition: childDefinition("child-wf"),
-        definitionRef: REF,
-        childRunId,
-        input: null,
-        parentRunId,
-        parentStepId: "s",
-        signal: new AbortController().signal,
-        depth: 1,
-        maxChildSpawnDepth: 32,
-      },
-      noopOnEvent,
-    );
-
-    // Hop 2: child -> grandchild. The grandchild's parent is the child, so it
-    // reads the child's capped grants file as its ceiling.
-    const grandchildRunId = "run-grandchild";
-    const grandResult = await runChild(
-      {
-        definition: childDefinition("grandchild-wf"),
-        definitionRef: REF,
-        childRunId: grandchildRunId,
-        input: null,
-        parentRunId: childRunId,
-        parentStepId: "s",
-        signal: new AbortController().signal,
-        depth: 1,
-        maxChildSpawnDepth: 32,
-      },
-      noopOnEvent,
-    );
-
-    expect(grandResult.terminalStatus).toBe("completed");
-    // Both hops authorize the declared resource `allow`; the undeclared one is
-    // absent at BOTH hops -- dropped at hop 1 and never reachable at hop 2,
-    // because the grandchild's ceiling is the child's capped file.
-    expect(record.decisions).toEqual([
-      { resource: DECLARED_RESOURCE, effect: "allow" },
-      { resource: UNDECLARED_RESOURCE, effect: null },
-      { resource: DECLARED_RESOURCE, effect: "allow" },
-      { resource: UNDECLARED_RESOURCE, effect: null },
-    ]);
-    const grandchildGrants = await readRunGrants({
-      repoStore: substrate,
-      anchorRunId: DEPLOYMENT_ID,
-      runId: grandchildRunId,
-    });
-    expect(grandchildGrants).toEqual([grant(DECLARED_RESOURCE, "invoke")]);
+    expect(childGrants).toEqual(persisted);
   });
 
   test("an existing child grants file is read back, not recomputed (write-once)", async () => {
     const substrate = await makeSubstrate("child-grants-write-once-");
     const parentRunId = "run-parent";
-    // The parent holds the grant the child body declares, so a RECOMPUTE would
-    // cap to and persist `[DECLARED_RESOURCE]`.
     await seedRunGrants(substrate, parentRunId, [
       grant(DECLARED_RESOURCE, "invoke"),
     ]);
 
-    // Pre-seed the CHILD's own grants file with a sentinel the cap would never
-    // produce (the child body declares `anthropic:m`, not this). A run's
-    // authorization ceiling is fixed at birth, so a re-spawn against the same
-    // childRunId must READ THIS BACK rather than recompute -- the property that
-    // keeps a resume re-drive from racing/clobbering the run's event subtree.
     const childRunId = "run-child";
     const sentinel = grant("inference.source:sentinel:preseeded", "invoke");
     await seedRunGrants(substrate, childRunId, [sentinel]);
@@ -401,9 +321,19 @@ describe("createSidecarRunChild grant capping", () => {
     const record = {
       decisions: [] as { resource: string; effect: string | null }[],
     };
+    let collected = 0;
     const runChild = makeRunChild(
       substrate,
       recordingInvoker(record, [DECLARED_RESOURCE]),
+      {
+        collectDeclaredResources: () => {
+          collected += 1;
+          return new Set<string>();
+        },
+        filterGrantsToDeclaredResources: () => {
+          throw new Error("filter must not run when the child file exists");
+        },
+      },
     );
 
     const result = await runChild(
@@ -422,16 +352,13 @@ describe("createSidecarRunChild grant capping", () => {
     );
 
     expect(result.terminalStatus).toBe("completed");
-    // The persisted file is untouched -- the sentinel, not a recomputed
-    // `[DECLARED_RESOURCE]`.
+    expect(collected).toBe(0);
     const childGrants = await readRunGrants({
       repoStore: substrate,
       anchorRunId: DEPLOYMENT_ID,
       runId: childRunId,
     });
     expect(childGrants).toEqual([sentinel]);
-    // The child authorized against the read-back sentinel, so the body's
-    // declared resource -- which the sentinel does NOT cover -- fails closed.
     expect(record.decisions).toEqual([
       { resource: DECLARED_RESOURCE, effect: null },
     ]);
@@ -439,15 +366,26 @@ describe("createSidecarRunChild grant capping", () => {
 
   test("a child whose parent has no grants file fails closed at spawn", async () => {
     const substrate = await makeSubstrate("child-grants-absent-");
-    // No grants file seeded for the parent run.
     const parentRunId = "run-parent-ungranted";
 
     const record = {
       decisions: [] as { resource: string; effect: string | null }[],
     };
+    let collected = 0;
     const runChild = makeRunChild(
       substrate,
       recordingInvoker(record, [DECLARED_RESOURCE]),
+      {
+        collectDeclaredResources: () => {
+          collected += 1;
+          return new Set<string>();
+        },
+        filterGrantsToDeclaredResources: () => {
+          throw new Error(
+            "filter must not run when the parent file is missing",
+          );
+        },
+      },
     );
 
     await expect(
@@ -466,7 +404,7 @@ describe("createSidecarRunChild grant capping", () => {
         noopOnEvent,
       ),
     ).rejects.toThrow(/has no grants file/);
-    // The child never ran a step, so no authorize decision was recorded.
+    expect(collected).toBe(0);
     expect(record.decisions).toEqual([]);
   });
 });

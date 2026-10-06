@@ -13,13 +13,12 @@ import {
 
 import {
   createWorkflowProbeExecutor,
-  defaultProbeChildSpawner,
   enrichProbeError,
   type MaterializeWorkflowClosure,
   type MaterializedWorkflowClosure,
   type ProbeChildHandle,
   type ProbeChildSpawner,
-} from "./workflow-probe-handler";
+} from "./index";
 
 describe("enrichProbeError", () => {
   test("adds a dependencies/devDependencies hint to a module-not-found", () => {
@@ -47,16 +46,41 @@ describe("enrichProbeError", () => {
 // `@intx/workflow/definition` from. The fixture lays this out under the
 // package's `node_modules/` the way a materialized closure would, so the
 // entry's bare-specifier import resolves inside the spawned child.
-const WORKFLOW_PACKAGE_DIR = path.resolve(
-  import.meta.dir,
-  "../../../packages/workflow",
-);
+const WORKFLOW_PACKAGE_DIR = path.resolve(import.meta.dir, "../../../workflow");
 // The agent package a fixture entry imports `defineAgent`/director refs from,
 // laid out under the fixture's node_modules the same way as @intx/workflow.
-const AGENT_PACKAGE_DIR = path.resolve(
+const AGENT_PACKAGE_DIR = path.resolve(import.meta.dir, "../../../agent");
+const PROBE_CHILD_BINARY = path.resolve(
   import.meta.dir,
-  "../../../packages/agent",
+  "../../../../apps/sidecar/bin/workflow-probe-child",
 );
+
+function localProbeChildSpawner(args: {
+  binaryPath: string;
+  env: Record<string, string>;
+}): ProbeChildHandle {
+  const proc = Bun.spawn([args.binaryPath], {
+    stdio: ["ignore", "pipe", "inherit"],
+    env: args.env,
+  });
+  return {
+    pid: proc.pid,
+    stdout: proc.stdout,
+    kill(signal?: number | string): void {
+      if (signal === undefined) {
+        proc.kill();
+        return;
+      }
+      if (typeof signal === "number") {
+        proc.kill(signal);
+        return;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the probe reaper passes "SIGTERM"/"SIGKILL"; Bun's runtime accepts the same "SIG*" strings, narrowed back at the boundary.
+      proc.kill(signal as NodeJS.Signals);
+    },
+    exited: proc.exited,
+  };
+}
 
 const SPAWN_TEST_TIMEOUT_MS = 30_000;
 
@@ -156,7 +180,7 @@ function fixtureMaterializer(entrySource: string): MaterializeWorkflowClosure {
 // assert the child was reaped once the probe settles.
 function recordingSpawner(pids: number[]): ProbeChildSpawner {
   return (args): ProbeChildHandle => {
-    const handle = defaultProbeChildSpawner(args);
+    const handle = localProbeChildSpawner(args);
     pids.push(handle.pid);
     return handle;
   };
@@ -198,6 +222,7 @@ describe("createWorkflowProbeExecutor", () => {
     async () => {
       const pids: number[] = [];
       const executor = createWorkflowProbeExecutor({
+        binaryPath: PROBE_CHILD_BINARY,
         materialize: fixtureMaterializer(MAIL_TRIGGER_ENTRY),
         spawnProbeChild: recordingSpawner(pids),
       });
@@ -296,6 +321,7 @@ describe("createWorkflowProbeExecutor", () => {
       });
 
     const executor = createWorkflowProbeExecutor({
+      binaryPath: PROBE_CHILD_BINARY,
       materialize,
       spawnProbeChild: raceSpawner,
     });
@@ -315,6 +341,7 @@ describe("createWorkflowProbeExecutor", () => {
     async () => {
       const pids: number[] = [];
       const executor = createWorkflowProbeExecutor({
+        binaryPath: PROBE_CHILD_BINARY,
         materialize: fixtureMaterializer(THROWING_ENTRY),
         spawnProbeChild: recordingSpawner(pids),
       });
@@ -335,6 +362,7 @@ describe("createWorkflowProbeExecutor", () => {
     "fails closed when the workflow references a director the closure does not ship",
     async () => {
       const executor = createWorkflowProbeExecutor({
+        binaryPath: PROBE_CHILD_BINARY,
         materialize: fixtureMaterializer(UNRESOLVABLE_DIRECTOR_ENTRY),
         spawnProbeChild: recordingSpawner([]),
       });
@@ -367,6 +395,7 @@ describe("createWorkflowProbeExecutor", () => {
       };
 
       const executor = createWorkflowProbeExecutor({
+        binaryPath: PROBE_CHILD_BINARY,
         materialize,
         spawnProbeChild: recordingSpawner([]),
       });
