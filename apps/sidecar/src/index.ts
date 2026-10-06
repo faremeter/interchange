@@ -15,11 +15,15 @@ import {
   createInboundMailPolicyLookup,
   createSidecarOrchestrator,
   MAX_INLINE_ASSET_PAYLOAD_BYTES,
+  materializeWorkflowAssets,
   type HubLink,
 } from "@intx/hub-agent";
 import { hexDecode, hexEncode } from "@intx/types";
 import { createAgentRepoStore } from "@intx/hub-sessions";
-import { createTarballCache } from "@intx/tool-packaging";
+import {
+  createTarballCache,
+  createWorkflowClosureMaterializer,
+} from "@intx/tool-packaging";
 
 import { loadAdapterRegistry } from "@intx/inference/providers";
 
@@ -53,8 +57,10 @@ import {
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
 import { createWorkflowRunPackRestorer } from "./workflow-run-pack-restore";
-import { readRegistries } from "./sidecar-materialization-config";
-import { createWorkflowClosureMaterializer } from "./workflow-closure-materialization";
+import {
+  readRegistries,
+  resolveHostPlatform,
+} from "./sidecar-materialization-config";
 import { createWorkflowProbeExecutor } from "./workflow-probe-handler";
 import { loadOrMintSidecarKeypair } from "./signing-keypair";
 import {
@@ -456,6 +462,8 @@ const workflowProbeExecutor = createWorkflowProbeExecutor({
     maxAssetPayloadBytes: MAX_INLINE_ASSET_PAYLOAD_BYTES,
     registries: readRegistries(),
     scratchRoot: path.join(dataDir, "workflow-probe", "closures"),
+    host: resolveHostPlatform(),
+    materializeAssets: materializeWorkflowAssets,
   }),
 });
 

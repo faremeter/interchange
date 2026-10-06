@@ -3,10 +3,13 @@ import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
-import type { RegistryConfig, TarballFetcher } from "@intx/tool-packaging";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
+import type { TarballFetcher } from "./loader";
+import { hostPlatform } from "./materialization-config";
+import type { RegistryConfig } from "./resolver";
 import { applyFrozenWorkflowClosure } from "./workflow-closure-apply";
 
 const REGISTRY_NAME = "test-registry";
@@ -91,6 +94,59 @@ function registries(): ReadonlyMap<string, RegistryConfig> {
   return new Map([[REGISTRY_NAME, { url: "https://registry.invalid" }]]);
 }
 
+const host = hostPlatform("linux", "x64");
+
+/**
+ * The test's `loadDefinition`. Reads the packed `interchange.workflow`
+ * entry and returns its default export. This package's tests do not
+ * import `@intx/workflow-host`.
+ */
+async function loadFixtureDefinition(args: {
+  readonly packageDir: string;
+  readonly importCacheKey?: string;
+}): Promise<{ readonly id: string }> {
+  const raw = await fs.readFile(
+    path.join(args.packageDir, "package.json"),
+    "utf8",
+  );
+  const parsed: unknown = JSON.parse(raw);
+  if (parsed === null || typeof parsed !== "object") {
+    throw new Error("fixture package.json is not an object");
+  }
+  const interchange = "interchange" in parsed ? parsed.interchange : undefined;
+  const workflow =
+    interchange !== null &&
+    typeof interchange === "object" &&
+    "workflow" in interchange &&
+    typeof interchange.workflow === "string"
+      ? interchange.workflow
+      : undefined;
+  if (workflow === undefined) {
+    throw new Error(
+      `fixture package at ${args.packageDir} declares no interchange.workflow`,
+    );
+  }
+  const entryAbs = path.join(args.packageDir, workflow);
+  const href =
+    args.importCacheKey === undefined
+      ? pathToFileURL(entryAbs).href
+      : `${pathToFileURL(entryAbs).href}?importCacheKey=${encodeURIComponent(args.importCacheKey)}`;
+  const mod: unknown = await import(href);
+  if (mod === null || typeof mod !== "object" || !("default" in mod)) {
+    throw new Error("fixture entry has no default export");
+  }
+  const definition: unknown = mod.default;
+  if (
+    definition === null ||
+    typeof definition !== "object" ||
+    !("id" in definition) ||
+    typeof definition.id !== "string"
+  ) {
+    throw new Error("fixture entry default export has no string id");
+  }
+  return { id: definition.id };
+}
+
 describe("applyFrozenWorkflowClosure", () => {
   test("materializes the pinned closure and loads the pinned code", async () => {
     const fixture = await packWorkflowFixture();
@@ -128,6 +184,8 @@ describe("applyFrozenWorkflowClosure", () => {
       cacheMaxBytes: 10_000_000,
       registryMaxTarballBytes: 10_000_000,
       registries: registries(),
+      host,
+      loadDefinition: loadFixtureDefinition,
       fetchTarball,
     });
 
@@ -180,6 +238,8 @@ describe("applyFrozenWorkflowClosure", () => {
         cacheMaxBytes: 10_000_000,
         registryMaxTarballBytes: 10_000_000,
         registries: registries(),
+        host,
+        loadDefinition: loadFixtureDefinition,
         fetchTarball,
       }),
     ).rejects.toThrow(/integrity\.mismatch/);
@@ -200,6 +260,8 @@ describe("applyFrozenWorkflowClosure", () => {
         cacheMaxBytes: 10_000_000,
         registryMaxTarballBytes: 10_000_000,
         registries: registries(),
+        host,
+        loadDefinition: loadFixtureDefinition,
       }),
     ).rejects.toThrow(/exactly one top-level pin/);
   });
@@ -231,6 +293,8 @@ describe("applyFrozenWorkflowClosure", () => {
         cacheMaxBytes: 10_000_000,
         registryMaxTarballBytes: 10_000_000,
         registries: registries(),
+        host,
+        loadDefinition: loadFixtureDefinition,
       }),
     ).rejects.toThrow(/is not in the sidecar registry config/);
   });
@@ -279,6 +343,8 @@ describe("applyFrozenWorkflowClosure", () => {
       cacheMaxBytes: 10_000_000,
       registryMaxTarballBytes: 10_000_000,
       registries: registries(),
+      host,
+      loadDefinition: loadFixtureDefinition,
       assetRoot,
       assetMounts: new Map([[assetId, mountPath]]),
       gitDirs: new Map(),

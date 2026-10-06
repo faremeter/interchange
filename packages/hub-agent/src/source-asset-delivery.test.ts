@@ -5,19 +5,21 @@ import os from "node:os";
 import path from "node:path";
 import git from "isomorphic-git";
 
+import { base64Encode } from "@intx/types";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 import { collectReachableObjects } from "@intx/storage-isogit/node";
 
 import {
   assetReferenceFormats,
   indexAssetPackIntoGitDir,
+  materializeWorkflowAssets,
   sourceAssetGitDir,
 } from "./source-asset-delivery";
 
-// The subtree-checkout path (`materializeWorkflowAssets`) is exercised
-// end-to-end by the source-workflow e2e; these cover the pure classification and
-// path helpers, plus `indexAssetPackIntoGitDir`'s atomic-publish semantics, in
-// isolation.
+// The subtree checkout inside `materializeWorkflowAssets` is exercised
+// end-to-end by the source-workflow e2e. These cover the pure classification
+// and path helpers, `indexAssetPackIntoGitDir`'s atomic-publish semantics,
+// and the payload-cap and duplicate-delivery guards, in isolation.
 
 function manifest(
   entries: ToolPackageManifest["entries"],
@@ -208,5 +210,100 @@ describe("indexAssetPackIntoGitDir", () => {
     ).rejects.toThrow(/not found in the pack/);
 
     expect(fs.existsSync(gitDir)).toBe(false);
+  });
+});
+
+describe("materializeWorkflowAssets", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    const dirs = tempDirs.splice(0);
+    await Promise.all(
+      dirs.map((d) => fsp.rm(d, { recursive: true, force: true })),
+    );
+  });
+
+  async function tempDir(): Promise<string> {
+    const d = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "source-delivery-test-"),
+    );
+    tempDirs.push(d);
+    return d;
+  }
+
+  async function buildPack(): Promise<{ commitSha: string; pack: Uint8Array }> {
+    const dir = await tempDir();
+    await git.init({ fs, dir, defaultBranch: "main" });
+    await fsp.writeFile(path.join(dir, "package.json"), '{"name":"x"}\n');
+    await git.add({ fs, dir, filepath: "package.json" });
+    const commitSha = await git.commit({
+      fs,
+      dir,
+      message: "t",
+      author: { name: "t", email: "t@t.dev" },
+    });
+    const oids = await collectReachableObjects(dir, commitSha);
+    const { packfile } = await git.packObjects({ fs, dir, oids });
+    if (packfile === undefined) {
+      throw new Error("source-delivery test: packObjects returned no packfile");
+    }
+    return { commitSha, pack: packfile };
+  }
+
+  test("rejects an inline payload over the cap before decoding it", async () => {
+    await expect(
+      materializeWorkflowAssets({
+        assets: [
+          {
+            assetId: "asset_a",
+            mountPath: "m/",
+            pack: "x".repeat(17),
+            ref: "refs/heads/main",
+            commitSha: "c",
+          },
+        ],
+        closure: manifest([]),
+        assetRoot: "/unused",
+        gitDirRoot: "/unused",
+        maxAssetPayloadBytes: 16,
+      }),
+    ).rejects.toThrow(/inline asset payload exceeds the 16-byte cap/);
+  });
+
+  test("rejects a second delivery of the same assetId", async () => {
+    const root = await tempDir();
+    const { commitSha, pack } = await buildPack();
+    const encoded = base64Encode(pack);
+    const asset = {
+      assetId: "asset_src",
+      mountPath: "m/",
+      pack: encoded,
+      ref: "refs/heads/main",
+      commitSha,
+    };
+    await expect(
+      materializeWorkflowAssets({
+        assets: [asset, { ...asset, mountPath: "n/" }],
+        closure: manifest([
+          {
+            name: "@x/a",
+            version: "1.0.0",
+            source: {
+              kind: "asset",
+              assetId: "asset_src",
+              package: {
+                format: "source",
+                commitSha,
+                packageDir: ".",
+                treeOid: "t1",
+              },
+            },
+          },
+        ]),
+        assetRoot: path.join(root, "workspace"),
+        gitDirRoot: path.join(root, "gitdirs"),
+        maxAssetPayloadBytes: 50_000_000,
+      }),
+    ).rejects.toThrow(/asset "asset_src" is delivered more than once/);
   });
 });
