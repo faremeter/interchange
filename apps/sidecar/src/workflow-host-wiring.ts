@@ -24,6 +24,9 @@ import {
 } from "@intx/hub-sessions";
 import {
   resolveInboundMailPolicy,
+  MAX_INLINE_ASSET_PAYLOAD_BYTES,
+  materializeWorkflowAssets,
+  sourceAssetGitDir,
   type AgentKeyStore,
   type DeployRouter,
   type DeployRouterResult,
@@ -86,11 +89,6 @@ import {
   applyFrozenWorkflowClosure,
   type AppliedWorkflowClosure,
 } from "./workflow-closure-apply";
-import {
-  MAX_INLINE_ASSET_PAYLOAD_BYTES,
-  materializeWorkflowAssets,
-  sourceAssetGitDir,
-} from "./source-asset-delivery";
 import { readRegistries } from "./sidecar-materialization-config";
 
 import type {

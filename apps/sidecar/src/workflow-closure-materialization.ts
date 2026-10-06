@@ -37,6 +37,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { type } from "arktype";
+import { materializeWorkflowAssets } from "@intx/hub-agent";
 import { getLogger } from "@intx/log";
 import {
   type RegistryConfig,
@@ -49,7 +50,6 @@ import { PackageJSON } from "@intx/types/package-json";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
-import { materializeWorkflowAssets } from "./source-asset-delivery";
 import { resolveHostPlatform } from "./sidecar-materialization-config";
 import type {
   MaterializedWorkflowClosure,
