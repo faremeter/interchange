@@ -61,9 +61,8 @@ export interface ConnectorReplyDrainOpts {
    * located (the very first reply on a fresh thread, or a malformed id); the
    * drain then omits `references` and the transport derives `[inReplyTo]`.
    *
-   * Optional: a caller with no mailbox to consult (`createHarness`) omits it,
-   * leaving the pre-existing single-element threading unchanged. The warm
-   * workflow-host wiring supplies it from the deployment's committed mailbox.
+   * Optional. When it is omitted, the drain leaves `references` unset.
+   * `createHarness` omits it, and the transport then derives `[inReplyTo]`.
    */
   resolveReferences?: (inReplyTo: string) => Promise<string[] | undefined>;
   /**

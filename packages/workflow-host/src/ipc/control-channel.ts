@@ -808,11 +808,18 @@ export const ControlPayload = type.or(
     // failure). The message is carried as a JSON-projected
     // `OutboundMessage`; attachment bytes ride base64-encoded so the
     // NDJSON wire stays text-safe.
+    //
+    // `completeReferences` is set only by a connector reply. The
+    // supervisor then fills References from the committed mailbox when
+    // `inReplyTo` is set and `references` is absent. A send without the
+    // flag is left alone: `mail_send` is the same shape, and completing
+    // it would replace its one-parent chain with the full ancestry.
     type: "'outbound.message'",
     data: {
       requestId: "string > 0",
       senderAddress: "string > 0",
       "mailbox?": "string",
+      "completeReferences?": "boolean",
       message: OutboundMessagePayload,
     },
   },

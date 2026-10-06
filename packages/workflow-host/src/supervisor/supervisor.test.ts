@@ -13,7 +13,7 @@ import {
   hexEncode,
   signalName,
 } from "@intx/types";
-import type { InferenceSource } from "@intx/types/runtime";
+import type { InferenceSource, OutboundMessage } from "@intx/types/runtime";
 import { isMail } from "@intx/types/runtime";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import { StaleInboxEnqueueError } from "@intx/hub-sessions";
@@ -222,6 +222,7 @@ function buildInboundMail(opts: {
   subject: string;
   messageId: string;
   body: string;
+  references?: readonly string[];
 }): Uint8Array {
   const lines = [
     `From: ${opts.from}`,
@@ -229,6 +230,9 @@ function buildInboundMail(opts: {
     `Subject: ${opts.subject}`,
     `Message-ID: ${opts.messageId}`,
     "Date: Tue, 01 Jan 2030 00:00:00 +0000",
+    ...(opts.references !== undefined
+      ? [`References: ${opts.references.join(" ")}`]
+      : []),
     "Content-Type: text/plain; charset=utf-8",
     "",
     opts.body,
@@ -2244,6 +2248,141 @@ describe("createWorkflowSupervisor", () => {
     expect(headers.value.messageId).toBe("<good-date@example.com>");
 
     await wired.supervisor.shutdown();
+  });
+
+  const PARENT_ID = "<parent@example.com>";
+  const PARENT_REFERENCES = [
+    "<root@example.com>",
+    "not-an-id",
+    "<mid@example.com>",
+  ];
+
+  async function recordOutbound(opts: {
+    label: string;
+    sends: readonly {
+      inReplyTo?: string;
+      references?: readonly string[];
+      completeReferences?: boolean;
+    }[];
+  }): Promise<OutboundMessage[]> {
+    const baseDir = await makeTempDir(opts.label);
+    const sent: OutboundMessage[] = [];
+    const mailBus = createMockMailBus();
+    mailBus.sendOutbound = (_sender, message) => {
+      sent.push(message);
+      return Promise.resolve({
+        messageId: "<outbound@example.com>",
+        status: "delivered",
+      });
+    };
+    const wired = await spawnWithRunStart({
+      baseDir,
+      statefulWrites: true,
+      mailBus,
+    });
+    wired.mailBus.deliver(
+      MAILBOX_ADDRESS,
+      buildInboundMail({
+        from: "sender@example.com",
+        to: MAILBOX_ADDRESS,
+        subject: "parent",
+        messageId: PARENT_ID,
+        body: "parent body",
+        references: PARENT_REFERENCES,
+      }),
+    );
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
+    for (const [index, send] of opts.sends.entries()) {
+      const requestId = `om-refs-${String(index)}`;
+      await wired.childSender.send({
+        type: "outbound.message",
+        data: {
+          requestId,
+          senderAddress: MAILBOX_ADDRESS,
+          ...(send.completeReferences === true
+            ? { completeReferences: true }
+            : {}),
+          message: {
+            to: "recipient@example.com",
+            type: "conversation.message",
+            content: "reply",
+            ...(send.inReplyTo !== undefined
+              ? { inReplyTo: send.inReplyTo }
+              : {}),
+            ...(send.references !== undefined
+              ? { references: [...send.references] }
+              : {}),
+          },
+        },
+      });
+      const result = await waitForUpstreamPayload(
+        wired.supervisorToChild,
+        "outbound.result",
+        (payload) => payload.data.requestId === requestId,
+      );
+      if (!result.data.result.ok) {
+        throw new Error(`outbound send failed: ${result.data.result.reason}`);
+      }
+    }
+    await wired.supervisor.shutdown();
+    return sent;
+  }
+
+  test("a connector reply takes its References chain from the committed parent", async () => {
+    const sent = await recordOutbound({
+      label: "supervisor-reply-references-",
+      sends: [
+        {
+          inReplyTo: PARENT_ID,
+          completeReferences: true,
+        },
+      ],
+    });
+    expect(sent[0]?.references).toEqual([...PARENT_REFERENCES, PARENT_ID]);
+    expect(sent[0]?.inReplyTo).toBe(PARENT_ID);
+  });
+
+  test("a connector reply whose parent is absent keeps references unset", async () => {
+    const sent = await recordOutbound({
+      label: "supervisor-reply-references-miss-",
+      sends: [
+        {
+          inReplyTo: "<missing@example.com>",
+          completeReferences: true,
+        },
+      ],
+    });
+    expect(sent[0]?.inReplyTo).toBe("<missing@example.com>");
+    expect(sent[0]?.references).toBeUndefined();
+  });
+
+  test("a connector reply that already names references keeps that chain", async () => {
+    const sent = await recordOutbound({
+      label: "supervisor-reply-references-kept-",
+      sends: [
+        {
+          inReplyTo: PARENT_ID,
+          references: [],
+          completeReferences: true,
+        },
+        {
+          inReplyTo: PARENT_ID,
+          references: ["<kept@example.com>"],
+          completeReferences: true,
+        },
+      ],
+    });
+    expect(sent[0]?.references).toEqual([]);
+    expect(sent[1]?.references).toEqual(["<kept@example.com>"]);
+  });
+
+  test("a send without completeReferences leaves a bare inReplyTo alone", async () => {
+    const sent = await recordOutbound({
+      label: "supervisor-reply-references-unmarked-",
+      sends: [{ inReplyTo: PARENT_ID }],
+    });
+    expect(sent[0]?.inReplyTo).toBe(PARENT_ID);
+    expect(sent[0]?.references).toBeUndefined();
   });
 
   test("dispatch pushes a per-run grants-updated before the run's trigger.fire", async () => {
