@@ -13,6 +13,7 @@ export {
   parseMailToEmail,
   extractAttachments,
   buildMessageHeaders,
+  decodeHeaderText,
   decodeMail,
   decodePartBytes,
   isRecognizedTransferEncoding,

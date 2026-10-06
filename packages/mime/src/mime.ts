@@ -340,9 +340,311 @@ function generateBoundary(): string {
 
 const CRLF = "\r\n";
 
+/**
+ * RFC 5322 section 2.1.1 recommends no more than 78 characters per line and
+ * REQUIRES no more than 998. Folding targets the recommendation: a generator
+ * that aims at 998 produces lines no human and few mail clients display well,
+ * and leaves nothing in hand for a relay that prepends to a header.
+ */
+const FOLD_TARGET_OCTETS = 78;
+
+/**
+ * Insert folding whitespace so a line stays near `FOLD_TARGET_OCTETS`.
+ *
+ * Folds at a space that is already in the value, which is the only place RFC
+ * 5322 section 2.2.3 permits. The continuation carries exactly one leading
+ * space, and that space is one space from the value. `parseHeaders` replaces
+ * a fold plus every whitespace character after it with a single space, so a
+ * second leading space would not survive.
+ *
+ * Any earlier space in the same run stays on the line being folded, even when
+ * that carries the line past the target. A token with no space in it is
+ * emitted whole. There is no legal fold point inside a `msg-id` or an `atom`,
+ * so breaking one would corrupt it.
+ *
+ * A run that ends in a tab is not a fold point: the continuation can carry
+ * only one leading space, so the tab would be deleted or turned into a
+ * space. An earlier space that ends its own run is still a fold. Skipping
+ * it to keep the tab on this line can push the line past 998.
+ */
+function foldHeaderLine(name: string, value: string): string {
+  if (value.length === 0) return `${name}:${CRLF}`;
+
+  const head = `${name}: `;
+  let out = head;
+  let column = head.length;
+  let index = 0;
+
+  // Last index of the whitespace run that contains `wsIndex`.
+  const runLast = (wsIndex: number): number => {
+    let last = wsIndex;
+    while (
+      last + 1 < value.length &&
+      (value[last + 1] === " " || value[last + 1] === "\t")
+    ) {
+      last += 1;
+    }
+    return last;
+  };
+
+  // `wsIndex` is whitespace in `value`. The continuation can carry only one
+  // leading space, so the fold has to be a space that ends the run. A tab
+  // after that space would be swallowed with the leading whitespace, and a
+  // tab used as the fold itself would come back as a space. When the run
+  // ends in a tab and no earlier fold remains, the whole run stays here.
+  const foldOnRun = (wsIndex: number): void => {
+    const last = runLast(wsIndex);
+    if (value[last] !== " ") {
+      out += value.slice(index, last + 1);
+      column += last + 1 - index;
+      index = last + 1;
+      return;
+    }
+    out += value.slice(index, last);
+    column += last - index;
+    index = last + 1;
+    out += `${CRLF} `;
+    column = 1;
+  };
+
+  while (index < value.length) {
+    const room = FOLD_TARGET_OCTETS - column;
+    if (room > 0 && value.length - index <= room) {
+      out += value.slice(index);
+      break;
+    }
+
+    // The last space in reach whose run ends in a space. A run that ends
+    // in a tab is skipped so an earlier space can still be the fold.
+    let breakAt = -1;
+    const limit = Math.max(0, Math.min(room, value.length - index));
+    for (let offset = 0; offset < limit; offset += 1) {
+      const at = index + offset;
+      if (value[at] === " " && value[runLast(at)] === " ") breakAt = at;
+    }
+
+    if (breakAt !== -1 || value[index] === " ") {
+      foldOnRun(breakAt === -1 ? index : breakAt);
+      continue;
+    }
+
+    // No space between here and the target, and the next character is not a
+    // space. Emit the token whole rather than inventing a fold point.
+    const nextSpace = value.indexOf(" ", index);
+    const end = nextSpace === -1 ? value.length : nextSpace;
+    out += value.slice(index, end);
+    column += end - index;
+    index = end;
+  }
+
+  return out + CRLF;
+}
+
+/**
+ * Serialize a STRUCTURED header: an address list, a message id, a date, a
+ * content type. Folded, never encoded -- RFC 2047 encoded-words are not
+ * permitted in a structured field's tokens, so a non-ASCII address here needs
+ * SMTPUTF8 and IDNA rather than an encoding this function could apply.
+ */
 function hdr(name: string, value: string): string {
   assertNoLineBreaks(value, `${name} header`);
-  return `${name}: ${value}${CRLF}`;
+  return foldHeaderLine(name, value);
+}
+
+/** Bytes of UTF-8 per encoded-word.
+ *
+ * RFC 2047 section 2 caps an encoded-word at 75 characters. `=?UTF-8?B?` and
+ * `?=` spend 12 of them, leaving 63 for base64 -- so 45 input bytes, the
+ * largest multiple of 3 that fits, encode to 60 characters and keep every word
+ * inside the cap. A multiple of 3 also means no word carries base64 padding
+ * except the last.
+ */
+const ENCODED_WORD_PAYLOAD_BYTES = 45;
+
+function isAscii(value: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return !/[^\x00-\x7F]/.test(value);
+}
+
+/**
+ * Encode `value` as RFC 2047 encoded-words when it is not already ASCII.
+ *
+ * Base64 (`B`) rather than quoted-printable (`Q`) for every value that needs
+ * encoding at all. `Q` produces a more readable wire form for a value that is
+ * mostly ASCII, but it needs a per-character escape table whose omissions are
+ * silent, and it offers nothing a receiver can do that `B` cannot. One code
+ * path that is always correct beats two where one is prettier.
+ *
+ * Words are split on a CHARACTER boundary, never inside a multi-byte sequence:
+ * RFC 2047 section 5 requires each encoded-word to decode independently, and a
+ * sequence straddling two of them decodes to a replacement character in both.
+ */
+function encodeHeaderText(value: string): string {
+  if (isAscii(value)) return value;
+
+  const bytes = new TextEncoder().encode(value);
+  const words: string[] = [];
+  let start = 0;
+
+  while (start < bytes.length) {
+    let end = Math.min(start + ENCODED_WORD_PAYLOAD_BYTES, bytes.length);
+    // Walk back off a continuation byte (10xxxxxx) so the cut lands between
+    // characters rather than inside one.
+    while (end > start && end < bytes.length) {
+      const byte = bytes[end];
+      if (byte === undefined || (byte & 0xc0) !== 0x80) break;
+      end -= 1;
+    }
+    const chunk = bytes.subarray(start, end);
+    words.push(`=?UTF-8?B?${Buffer.from(chunk).toString("base64")}?=`);
+    start = end;
+  }
+
+  // Adjacent encoded-words are joined by whitespace, which a receiver deletes
+  // (RFC 2047 section 6.2). `foldHeaderLine` then folds at those same spaces,
+  // which is why each word has to fit a line on its own.
+  return words.join(" ");
+}
+
+/**
+ * Serialize an UNSTRUCTURED header: text a person reads, such as `Subject`.
+ *
+ * Encoded before folding, because encoding is what creates the fold points: a
+ * long non-ASCII subject has no spaces to fold at until it becomes a sequence
+ * of encoded-words.
+ */
+function hdrText(name: string, value: string): string {
+  assertNoLineBreaks(value, `${name} header`);
+  return foldHeaderLine(name, encodeHeaderText(value));
+}
+
+/**
+ * Decode RFC 2047 encoded-words in a header value that was received.
+ *
+ * Needed for interoperability rather than for our own mail: every sender that
+ * writes a non-ASCII subject encodes it, and a receiver that does not decode
+ * shows an agent `=?UTF-8?B?...?=` as the subject it is supposed to read. Both
+ * `B` and `Q` are decoded even though only `B` is produced here, because the
+ * choice belongs to whoever sent the message.
+ *
+ * Whitespace BETWEEN two encoded-words is deleted and whitespace elsewhere is
+ * kept, per RFC 2047 section 6.2. A word whose charset or encoding this cannot
+ * handle is left exactly as it arrived: showing the encoded form is a visible
+ * fault a reader can report, whereas substituting replacement characters looks
+ * like the sender's own text.
+ */
+export function decodeHeaderText(value: string): string {
+  const word = /=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g;
+  if (!word.test(value)) return value;
+  word.lastIndex = 0;
+
+  let out = "";
+  let cursor = 0;
+  let previousWasWord = false;
+
+  for (let match = word.exec(value); match !== null; match = word.exec(value)) {
+    const whole = match[0];
+    const charset = match[1];
+    const encoding = match[2];
+    const payload = match[3];
+    if (
+      charset === undefined ||
+      encoding === undefined ||
+      payload === undefined
+    ) {
+      // Unreachable: all three groups are mandatory in the pattern. Narrowed
+      // rather than asserted so a future pattern edit cannot make it a crash.
+      continue;
+    }
+    const gap = value.slice(cursor, match.index);
+
+    // Whitespace separating two encoded-words is a separator, not content.
+    if (!(previousWasWord && gap.trim() === "")) out += gap;
+
+    const decoded = decodeEncodedWord(charset, encoding, payload);
+    out += decoded ?? whole;
+    previousWasWord = decoded !== undefined;
+    cursor = match.index + whole.length;
+  }
+
+  return out + value.slice(cursor);
+}
+
+/**
+ * Decode a base64 payload only when every character is in the alphabet and
+ * the bytes re-encode to the same text. `Buffer` accepts illegal characters
+ * by ignoring them, which would turn a corrupt encoded-word into different
+ * text instead of leaving the word as it arrived.
+ */
+function decodeBase64Strict(payload: string): Uint8Array | undefined {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(payload)) return undefined;
+  if (payload.length % 4 === 1) return undefined;
+  const bytes = Buffer.from(payload, "base64");
+  const canonical = Buffer.from(bytes).toString("base64").replace(/=+$/, "");
+  const given = payload.replace(/=+$/, "");
+  if (canonical !== given) return undefined;
+  return new Uint8Array(bytes);
+}
+
+function decodeEncodedWord(
+  charset: string,
+  encoding: string,
+  payload: string,
+): string | undefined {
+  // RFC 2231 permits a language suffix (`utf-8*en`); the charset is the part
+  // before it.
+  const normalized = charset.toLowerCase().split("*")[0] ?? "";
+  // Only the charsets decoded here. An unsupported one returns undefined so the
+  // caller keeps the encoded form rather than guessing at the bytes.
+  const utf8 =
+    normalized === "utf-8" ||
+    normalized === "utf8" ||
+    normalized === "us-ascii";
+  const latin1 = normalized === "iso-8859-1" || normalized === "latin1";
+  if (!utf8 && !latin1) return undefined;
+
+  let bytes: Uint8Array;
+  if (encoding.toLowerCase() === "b") {
+    const decoded = decodeBase64Strict(payload);
+    if (decoded === undefined) return undefined;
+    bytes = decoded;
+  } else {
+    // Q: `_` is a space, `=XX` is a hex octet. Anything else is literal.
+    const octets: number[] = [];
+    for (let i = 0; i < payload.length; i += 1) {
+      const char = payload[i];
+      if (char === undefined) break;
+      if (char === "_") {
+        octets.push(0x20);
+        continue;
+      }
+      if (char === "=" && i + 2 < payload.length) {
+        const hex = payload.slice(i + 1, i + 3);
+        if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+          octets.push(parseInt(hex, 16));
+          i += 2;
+          continue;
+        }
+      }
+      octets.push(char.charCodeAt(0) & 0xff);
+    }
+    bytes = new Uint8Array(octets);
+  }
+
+  // Latin-1 needs no decoder: its code points ARE its byte values, which is the
+  // one case where that identity holds.
+  if (latin1) {
+    return Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+  }
+
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    // Bytes that are not valid UTF-8 despite the charset saying so. Keeping the
+    // encoded form reports the sender's fault; replacement characters would
+    // read as the sender's own text.
+    return undefined;
+  }
 }
 
 function serializeMessageHeaders(
@@ -358,7 +660,9 @@ function serializeMessageHeaders(
   out += hdr("Date", formatRFC2822Date(h.date));
   out += hdr("Message-ID", h.messageId);
   if (h.subject !== undefined) {
-    out += hdr("Subject", h.subject);
+    // The one unstructured header this assembler writes, and so the only one
+    // whose value is text a person chose rather than a token or an address.
+    out += hdrText("Subject", h.subject);
   }
   if (h.inReplyTo !== undefined) {
     out += hdr("In-Reply-To", h.inReplyTo);
@@ -416,7 +720,9 @@ function assertNoLineBreaks(value: string, field: string): void {
 
 /**
  * A double quote would close the `filename="..."` form, and this serializer
- * emits no escape for an inner quote.
+ * emits no escape for an inner quote. A non-ASCII octet is the same class of
+ * defect: these part headers sit inside the signed bytes and carry no
+ * transfer encoding, so an 8-bit header is one a relay may rewrite.
  */
 function assertAttachmentHeaderSafe(value: string, field: string): void {
   assertNoLineBreaks(value, field);
@@ -425,6 +731,164 @@ function assertAttachmentHeaderSafe(value: string, field: string): void {
       `${field} must not contain a double quote: ${JSON.stringify(value)}`,
     );
   }
+  if (!isAscii(value)) {
+    throw new Error(`${field} must be US-ASCII: ${JSON.stringify(value)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Text part transfer encoding (RFC 2045 §6.7)
+// ---------------------------------------------------------------------------
+//
+// A text part is labelled `7bit` only when it IS 7-bit: every octet US-ASCII,
+// and every line inside the RFC 5322 §2.1.1 limit. Anything else is
+// quoted-printable. The distinction is load-bearing once the bytes reach a real
+// relay: a part labelled `7bit` that carries 8-bit octets is rewritten by any
+// hop that does not advertise 8BITMIME, and that rewrite changes the exact
+// bytes the PGP/MIME signature covers, so the recipient reports `invalid`.
+// Encoding here keeps the part 7-bit clean, so no hop has a reason to touch it.
+
+/** The longest line quoted-printable permits, including the soft-break `=`. */
+const QP_MAX_LINE = 76;
+
+/** RFC 5322 §2.1.1: a line MUST NOT exceed 998 characters, excluding CRLF. */
+const MAX_LINE_OCTETS = 998;
+
+function hexEscape(byte: number): string {
+  return `=${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+}
+
+/**
+ * Octets RFC 2045 §6.7 rule 2 permits literally: 33-60 and 62-126. The gap at
+ * 61 is `=`, which always escapes because it introduces an escape.
+ */
+function isQuotedPrintableLiteral(byte: number): boolean {
+  return (byte >= 33 && byte <= 60) || (byte >= 62 && byte <= 126);
+}
+
+/**
+ * True when the bytes are already a legal `7bit` body: US-ASCII only, no bare
+ * CR or LF, no NUL, and no line over the RFC 5322 limit. The caller has already
+ * canonicalized line endings to CRLF, so a CR or LF outside a CRLF pair is a
+ * defect rather than a line break to measure.
+ */
+function isSevenBitClean(bytes: Uint8Array): boolean {
+  let lineOctets = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    const byte = bytes[i]!;
+    if (byte === 0x0d && bytes[i + 1] === 0x0a) {
+      i += 1;
+      lineOctets = 0;
+      continue;
+    }
+    if (byte === 0x00 || byte === 0x0d || byte === 0x0a || byte > 0x7f) {
+      return false;
+    }
+    lineOctets += 1;
+    if (lineOctets > MAX_LINE_OCTETS) return false;
+  }
+  return true;
+}
+
+/**
+ * Quoted-printable encode one hard line. Space and tab ride literally except
+ * where they would end an encoded line. RFC 2045 §6.7 rule 3 requires an
+ * escape there: a relay that strips trailing whitespace would otherwise change
+ * the signed bytes. That includes the line a soft break closes, not only the
+ * last line of the input.
+ *
+ * Soft breaks land between whole tokens, never inside an `=XX` escape, so the
+ * escape cannot be split across a line. Escaping a run of spaces writes `=20`
+ * onto the line the break opened, which can fill that line; the token that
+ * caused the break is written only after it still fits.
+ */
+function encodeQuotedPrintableLine(bytes: Uint8Array): string {
+  let out = "";
+  let column = 0;
+
+  // Leave a column for the soft-break `=`. A token is one octet or a
+  // three-octet hex escape, so it always fits once `column` is 0.
+  const fits = (length: number): boolean =>
+    column === 0 || column + length <= QP_MAX_LINE - 1;
+
+  const softBreak = (): void => {
+    out += `=${CRLF}`;
+    column = 0;
+  };
+
+  const writeToken = (token: string): void => {
+    if (!fits(token.length)) {
+      const trailing: string[] = [];
+      while (out.endsWith(" ") || out.endsWith("\t")) {
+        const last = out.at(-1);
+        if (last === undefined) break;
+        trailing.push(last);
+        out = out.slice(0, -1);
+        column -= 1;
+      }
+      softBreak();
+      for (const ws of trailing.reverse()) {
+        const escaped = ws === " " ? "=20" : "=09";
+        if (!fits(escaped.length)) softBreak();
+        out += escaped;
+        column += escaped.length;
+      }
+    }
+    // The escaped whitespace may have filled the line it was moved onto.
+    // That line ends in `0` or `9`, so one more break opens a fresh one.
+    if (!fits(token.length)) softBreak();
+    out += token;
+    column += token.length;
+  };
+
+  for (let i = 0; i < bytes.length; i++) {
+    const byte = bytes[i]!;
+    const atEnd = i === bytes.length - 1;
+    const token =
+      byte === 0x20 || byte === 0x09
+        ? atEnd
+          ? hexEscape(byte)
+          : String.fromCharCode(byte)
+        : isQuotedPrintableLiteral(byte)
+          ? String.fromCharCode(byte)
+          : hexEscape(byte);
+    writeToken(token);
+  }
+  return out;
+}
+
+function encodeQuotedPrintable(text: string): string {
+  const encoder = new TextEncoder();
+  return text
+    .split(CRLF)
+    .map((line) => encodeQuotedPrintableLine(encoder.encode(line)))
+    .join(CRLF);
+}
+
+/**
+ * Resolve a canonicalized text body to the transfer encoding that honestly
+ * describes it, and the body in that encoding. Pass `canonical` already
+ * CRLF-normalized with trailing whitespace stripped per line.
+ */
+function encodeTextBody(canonical: string): {
+  encoding: string;
+  body: string;
+} {
+  if (isSevenBitClean(new TextEncoder().encode(canonical))) {
+    return { encoding: "7bit", body: canonical };
+  }
+  return {
+    encoding: "quoted-printable",
+    body: encodeQuotedPrintable(canonical),
+  };
+}
+
+/** CRLF-normalize and strip trailing whitespace per line (MIME canonical form). */
+function canonicalizeText(text: string): string {
+  return text
+    .split(/\r\n|\r|\n/)
+    .map((line) => line.replace(/[ \t]+$/, ""))
+    .join(CRLF);
 }
 
 /**
@@ -456,29 +920,39 @@ function assembleConversationSignedPart(
 ): Uint8Array {
   const boundary = generateBoundary();
 
-  // Canonicalize the text part: CRLF line endings, strip trailing
-  // whitespace per line.
-  const lines = text.split(/\r\n|\r|\n/);
-  const canonLines = lines.map((l) => l.replace(/[ \t]+$/, ""));
-  const canonical = canonLines.join(CRLF);
+  const text7bit = encodeTextBody(canonicalizeText(text));
 
   let body = `Content-Type: multipart/mixed; boundary="${boundary}"${CRLF}${CRLF}`;
 
   // Text part (BODY[1.1])
   body += `--${boundary}${CRLF}`;
   body += `Content-Type: text/plain; charset=utf-8${CRLF}`;
-  body += `Content-Transfer-Encoding: 7bit${CRLF}`;
+  body += `Content-Transfer-Encoding: ${text7bit.encoding}${CRLF}`;
   body += `${CRLF}`;
-  body += `${canonical}${CRLF}`;
+  body += `${text7bit.body}${CRLF}`;
 
   // Attachment parts (BODY[1.2..N])
   for (const att of attachments) {
     assertAttachmentHeaderSafe(att.contentType, "attachment contentType");
     assertAttachmentHeaderSafe(att.name, "attachment name");
+    // A filename is one token, so folding cannot bring it back under the
+    // limit. Refuse it here rather than emit a line a relay must break.
+    const typeLine = `Content-Type: ${att.contentType}`;
+    const dispositionLine = `Content-Disposition: attachment; filename="${att.name}"`;
+    if (typeLine.length > MAX_LINE_OCTETS) {
+      throw new Error(
+        `attachment contentType header exceeds ${MAX_LINE_OCTETS} octets`,
+      );
+    }
+    if (dispositionLine.length > MAX_LINE_OCTETS) {
+      throw new Error(
+        `attachment name header exceeds ${MAX_LINE_OCTETS} octets`,
+      );
+    }
     body += `--${boundary}${CRLF}`;
-    body += `Content-Type: ${att.contentType}${CRLF}`;
+    body += `${typeLine}${CRLF}`;
     body += `Content-Transfer-Encoding: base64${CRLF}`;
-    body += `Content-Disposition: attachment; filename="${att.name}"${CRLF}`;
+    body += `${dispositionLine}${CRLF}`;
     body += `${CRLF}`;
     body += `${base64Lines(att.data)}${CRLF}`;
   }
@@ -497,26 +971,28 @@ function assembleStructuredSignedPart(
   summary?: string,
 ): Uint8Array {
   const boundary = generateBoundary();
-  const jsonStr = JSON.stringify(json);
+  // The payload is machine-read, so it is encoded rather than canonicalized:
+  // stripping trailing whitespace inside a JSON string literal would change the
+  // value, and JSON.stringify emits no bare CR or LF to normalize.
+  const jsonPart = encodeTextBody(JSON.stringify(json));
 
   let body = `Content-Type: multipart/mixed; boundary="${boundary}"${CRLF}${CRLF}`;
 
   // JSON payload part
   body += `--${boundary}${CRLF}`;
   body += `Content-Type: application/vnd.interchange+json; charset=utf-8${CRLF}`;
-  body += `Content-Transfer-Encoding: 7bit${CRLF}`;
+  body += `Content-Transfer-Encoding: ${jsonPart.encoding}${CRLF}`;
   body += `${CRLF}`;
-  body += `${jsonStr}${CRLF}`;
+  body += `${jsonPart.body}${CRLF}`;
 
   // Optional human-readable summary
   if (summary !== undefined) {
+    const summaryPart = encodeTextBody(canonicalizeText(summary));
     body += `--${boundary}${CRLF}`;
     body += `Content-Type: text/plain; charset=utf-8${CRLF}`;
-    body += `Content-Transfer-Encoding: 7bit${CRLF}`;
+    body += `Content-Transfer-Encoding: ${summaryPart.encoding}${CRLF}`;
     body += `${CRLF}`;
-    const lines = summary.split(/\r\n|\r|\n/);
-    const canonLines = lines.map((l) => l.replace(/[ \t]+$/, ""));
-    body += `${canonLines.join(CRLF)}${CRLF}`;
+    body += `${summaryPart.body}${CRLF}`;
   }
 
   body += `--${boundary}--${CRLF}`;
@@ -1122,7 +1598,16 @@ function decodeBodyBytes(
 
   if (cte === "quoted-printable") {
     const raw = new TextDecoder("utf-8", { fatal: false }).decode(body);
-    return { value: decodeQuotedPrintable(raw), isEncodingProblem: false };
+    // Decode to octets first, then read those octets as UTF-8. A
+    // quoted-printable escape names one OCTET, so a multi-byte character
+    // arrives as several escapes; reading each escape as a character instead
+    // yields one code point per octet, which renders as mojibake.
+    return {
+      value: new TextDecoder("utf-8", { fatal: false }).decode(
+        decodeQuotedPrintableBytes(raw),
+      ),
+      isEncodingProblem: false,
+    };
   }
 
   if (cte === "7bit" || cte === "8bit" || cte === "binary") {
@@ -1136,6 +1621,11 @@ function decodeBodyBytes(
   return { value: bytesToBinaryString(body), isEncodingProblem: true };
 }
 
+/**
+ * Undo quoted-printable into a string of one code unit per decoded OCTET. The
+ * result is an octet sequence widened into a string, not text: a caller that
+ * wants text decodes those octets under the part's charset.
+ */
 function decodeQuotedPrintable(text: string): string {
   return text
     .replace(/=\r\n/g, "")
@@ -1143,6 +1633,16 @@ function decodeQuotedPrintable(text: string): string {
     .replace(/=([0-9A-Fa-f]{2})/g, (_match, hex: string) =>
       String.fromCharCode(parseInt(hex, 16)),
     );
+}
+
+/** The octets a quoted-printable body carries, narrowed from the widened form. */
+function decodeQuotedPrintableBytes(text: string): Uint8Array {
+  const widened = decodeQuotedPrintable(text);
+  const out = new Uint8Array(widened.length);
+  for (let i = 0; i < widened.length; i++) {
+    out[i] = widened.charCodeAt(i);
+  }
+  return out;
 }
 
 /**
@@ -1309,10 +1809,13 @@ export function parseMailToEmail(raw: Uint8Array, mailId: string): JMAPEmail {
     }
   }
 
+  // The agent reads this field as text. `decodeMail` keeps the wire form.
+  const rawSubject = msgHeaders.get("subject");
+
   return {
     from: parseAddressList(msgHeaders.get("from") ?? ""),
     to: parseAddressList(msgHeaders.get("to") ?? ""),
-    subject: msgHeaders.get("subject") ?? null,
+    subject: rawSubject === undefined ? null : decodeHeaderText(rawSubject),
     sentAt: parseDateHeader(msgHeaders.get("date")),
     bodyValues: ctx.bodyValues,
     textBody: ctx.textBody,
@@ -1342,12 +1845,7 @@ export function decodePartBytes(
 
   if (cte === "quoted-printable") {
     const raw = new TextDecoder("utf-8", { fatal: false }).decode(body);
-    const decoded = decodeQuotedPrintable(raw);
-    const out = new Uint8Array(decoded.length);
-    for (let i = 0; i < decoded.length; i++) {
-      out[i] = decoded.charCodeAt(i);
-    }
-    return out;
+    return decodeQuotedPrintableBytes(raw);
   }
 
   // Identity encoding, including anything unrecognized (RFC 2045 §6.4).
@@ -1472,8 +1970,11 @@ export function buildMessageHeaders(
     result.inReplyTo = inReplyTo;
   }
 
+  // Decoded, because a subject is text to read: a sender that wrote a
+  // non-ASCII one encoded it, and the agent reading this field wants the
+  // characters rather than their RFC 2047 transport form.
   const subject = headers.get("subject");
-  if (subject !== undefined) result.subject = subject;
+  if (subject !== undefined) result.subject = decodeHeaderText(subject);
 
   const listId = headers.get("list-id");
   if (listId !== undefined) result.listId = listId;
@@ -1545,7 +2046,13 @@ function parseRawHeaders(
     if (line === "") continue;
     // Nothing to continue means no field (RFC 2822 2.2), not a field of its own.
     if (line.startsWith(" ") || line.startsWith("\t")) {
-      if (current !== null) current.value += ` ${line.trim()}`;
+      if (current !== null) {
+        // The leading whitespace is the fold, and unfolding replaces that
+        // run with one space. Trailing whitespace is content: trimming it
+        // would drop a space the fold left at the end of the line.
+        const body = line.replace(/^[ \t]+/, "");
+        current.value += ` ${body}`;
+      }
       continue;
     }
     const idx = line.indexOf(":");

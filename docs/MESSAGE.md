@@ -340,18 +340,18 @@ Every outbound message is signed with the sending agent's Ed25519 private key. T
 ### Signing Process
 
 1. The signed content is assembled — `multipart/mixed` for both conversation and structured messages
-2. Content is canonicalized: CRLF line endings, trailing whitespace removed, every attachment part base64-encoded whatever its content type
+2. Each part is encoded, and that encoding is what the signature covers. Conversation text and a structured summary are CRLF-normalized, and trailing spaces and tabs are stripped from each line, before encoding. A JSON payload is encoded without that stripping. An attachment body is base64
 3. The payload is hashed (SHA-512, as required by Ed25519's internal construction)
 4. The hash is signed with the agent's Ed25519 private key
 5. The signature is encoded as an `application/pgp-signature` part
 6. The payload and signature are wrapped in `multipart/signed`
 
-> **Planned / Not Yet Implemented.** Quoted-printable encoding of 8-bit text is not produced. `@intx/mime` decodes quoted-printable on an inbound part, but the assembler has no encoder: it labels every text part `7bit` and writes the UTF-8 bytes as they are. A body carrying characters outside US-ASCII therefore ships mislabelled.
+A text part is labelled `7bit` only when every octet is US-ASCII, no line exceeds 998 characters, and the body has no NUL or bare CR or LF. Anything else is quoted-printable. Conversation text and a structured summary are CRLF-normalized, and trailing spaces and tabs are stripped from each line, before that choice. A JSON payload is encoded without that stripping, so a space inside a string survives. The signature covers the encoded part. A space or tab that would end an encoded line, including the line a soft break closes, is written as `=20` or `=09`, so a relay that strips trailing whitespace cannot change the signed bytes.
 
 ### Verification Process
 
 1. Recipient extracts the signed content (IMAP `BODY[1]`) and the signature (`BODY[2]`)
-2. Payload is canonicalized using the same rules
+2. The signature is checked against the signed part as received. The hash covers the encoded bytes; verification does not canonicalize them again
 3. Signature is verified against the sender's Ed25519 public key
 4. Public key is resolved from the control plane's published keys. DNS OPENPGPKEY records (RFC 7929) and a previously established key exchange are the intended additional sources; neither is implemented (see below)
 
