@@ -72,14 +72,28 @@ import {
   signalName,
 } from "@intx/types";
 import { RepoId, type CredentialDelivery } from "@intx/types/sidecar";
-import type {
-  ApprovalSnapshot,
-  InferenceSource,
-  Mail,
-  MessageHeaders,
-  OutboundMessage,
+import { inboundMessageToRaw } from "@intx/mail-memory";
+import {
+  executeSearch,
+  executeThread,
+  fetchFull,
+  fetchHeaders,
+  fetchPart,
+  fetchStructure,
+  type StoredEnvelope,
+} from "@intx/mailbox";
+import {
+  isMessageTransportError,
+  type ApprovalSnapshot,
+  type InferenceSource,
+  type InboundMessage,
+  type Mail,
+  type MessageHeaders,
+  type MessagePart,
+  type MessageTransportCondition,
+  type OutboundMessage,
+  type SearchQuery,
 } from "@intx/types/runtime";
-import type { StoredEnvelope } from "@intx/mailbox";
 import type { CancelOrigin } from "@intx/workflow";
 
 import {
@@ -104,11 +118,16 @@ import { buildChildSpawnEnv } from "./spawn-env";
 import { compactRunEvents } from "./run-event-compaction";
 import { recoverInterruptedCompactions } from "./run-event-recovery";
 import { decodeMail } from "@intx/mime";
-import { commitMail, InvalidMailError } from "../adapters/mail-part-store";
+import {
+  commitMail,
+  createMailPartReader,
+  InvalidMailError,
+} from "../adapters/mail-part-store";
 import { mergeCredentialDelivery } from "../child/credential-cell";
 import {
   createSubstrateMailboxStore,
   MAILBOX_INBOX_DIR,
+  type MailboxSyncResult,
   type SubstrateMailboxStore,
 } from "../adapters/substrate-mailbox-store";
 import {
@@ -449,6 +468,255 @@ export type RecycleOpts = {
    */
   origin?: RecycleOrigin;
 };
+
+type MailboxCallRequest = Extract<
+  ControlPayload,
+  { type: "mailbox.call.request" }
+>["data"];
+
+type MailboxCallResponse = Extract<
+  ControlPayload,
+  { type: "mailbox.call.response" }
+>["data"];
+
+type MailboxCallSuccess = Extract<MailboxCallResponse, { ok: true }>;
+
+type MailboxCallSearchQuery = Extract<
+  MailboxCallRequest,
+  { op: "search" }
+>["query"];
+
+/**
+ * Search dates arrive as strings. A bad one is a failed call, reported by the
+ * handler, rather than a schema rejection of the control frame.
+ */
+function reviveSearchDates(query: MailboxCallSearchQuery): SearchQuery {
+  const revived: SearchQuery = {};
+  if (query.from !== undefined) revived.from = query.from;
+  if (query.to !== undefined) revived.to = query.to;
+  if (query.cc !== undefined) revived.cc = query.cc;
+  if (query.bcc !== undefined) revived.bcc = query.bcc;
+  if (query.header !== undefined) {
+    revived.header = {
+      field: query.header.field,
+      contains: query.header.contains,
+    };
+  }
+  if (query.before !== undefined)
+    revived.before = reviveSearchDate(query.before);
+  if (query.after !== undefined) revived.after = reviveSearchDate(query.after);
+  if (query.on !== undefined) revived.on = reviveSearchDate(query.on);
+  if (query.sentBefore !== undefined) {
+    revived.sentBefore = reviveSearchDate(query.sentBefore);
+  }
+  if (query.sentAfter !== undefined) {
+    revived.sentAfter = reviveSearchDate(query.sentAfter);
+  }
+  if (query.sentOn !== undefined)
+    revived.sentOn = reviveSearchDate(query.sentOn);
+  if (query.hasFlags !== undefined) revived.hasFlags = query.hasFlags;
+  if (query.missingFlags !== undefined)
+    revived.missingFlags = query.missingFlags;
+  if (query.body !== undefined) revived.body = query.body;
+  if (query.text !== undefined) revived.text = query.text;
+  if (query.largerThan !== undefined) revived.largerThan = query.largerThan;
+  if (query.smallerThan !== undefined) revived.smallerThan = query.smallerThan;
+  if (query.and !== undefined) revived.and = query.and.map(reviveSearchDates);
+  if (query.or !== undefined) revived.or = query.or.map(reviveSearchDates);
+  if (query.not !== undefined) revived.not = reviveSearchDates(query.not);
+  return revived;
+}
+
+function reviveSearchDate(value: string): Date {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Invalid search date ${JSON.stringify(value)}`);
+  }
+  return date;
+}
+
+function missingMailbox(name: string): string {
+  return `Mailbox "${name}" does not exist`;
+}
+
+/**
+ * The supervisor's mailbox policy. A refusal is the whole answer: the caller
+ * does not open the store. A name other than INBOX is not uniformly
+ * NONEXISTENT — creating a mailbox is CANNOT for every name, and deleting
+ * INBOX is CANNOT while deleting any other name is NONEXISTENT.
+ */
+function refuseMailboxCall(
+  data: MailboxCallRequest,
+): { condition: MessageTransportCondition; reason: string } | undefined {
+  switch (data.op) {
+    case "createMailbox":
+      return {
+        condition: "CANNOT",
+        reason: `Cannot create mailbox "${data.name}"`,
+      };
+    case "deleteMailbox":
+      if (data.name !== MAILBOX_INBOX_DIR) {
+        return { condition: "NONEXISTENT", reason: missingMailbox(data.name) };
+      }
+      return {
+        condition: "CANNOT",
+        reason: `Cannot delete mailbox "${data.name}"`,
+      };
+    case "move":
+    case "copy":
+      return refuseMoveOrCopy(data.ref.mailbox, data.toMailbox);
+    case "createList":
+    case "listMembers":
+    case "subscribe":
+    case "unsubscribe":
+      return {
+        condition: "CANNOT",
+        reason: "Distribution list management is not implemented",
+      };
+    case "search":
+    case "thread":
+    case "sync":
+    case "getMailboxStatus":
+    case "append":
+    case "watch":
+      if (data.mailbox !== MAILBOX_INBOX_DIR) {
+        return {
+          condition: "NONEXISTENT",
+          reason: missingMailbox(data.mailbox),
+        };
+      }
+      return undefined;
+    case "fetchHeaders":
+    case "fetchStructure":
+    case "fetchPart":
+    case "fetchFull":
+      if (data.ref.mailbox !== MAILBOX_INBOX_DIR) {
+        return {
+          condition: "NONEXISTENT",
+          reason: missingMailbox(data.ref.mailbox),
+        };
+      }
+      return undefined;
+    case "listMailboxes":
+    case "readMailPart":
+      return undefined;
+  }
+}
+
+function refuseMoveOrCopy(
+  fromMailbox: string,
+  toMailbox: string,
+): { condition: MessageTransportCondition; reason: string } {
+  if (fromMailbox !== MAILBOX_INBOX_DIR) {
+    return { condition: "NONEXISTENT", reason: missingMailbox(fromMailbox) };
+  }
+  if (toMailbox !== MAILBOX_INBOX_DIR) {
+    return { condition: "NONEXISTENT", reason: missingMailbox(toMailbox) };
+  }
+  return {
+    condition: "CANNOT",
+    reason: `Cannot move/copy a message within "${MAILBOX_INBOX_DIR}"`,
+  };
+}
+
+function mailboxCallFailure(
+  data: MailboxCallRequest,
+  reason: string,
+  condition?: MessageTransportCondition,
+): Extract<MailboxCallResponse, { ok: false }> {
+  if (condition === undefined) {
+    return { requestId: data.requestId, ok: false, op: data.op, reason };
+  }
+  return {
+    requestId: data.requestId,
+    ok: false,
+    op: data.op,
+    reason,
+    condition,
+  };
+}
+
+function projectFetchedMessage(
+  message: InboundMessage,
+): Extract<MailboxCallSuccess, { op: "fetchFull" }>["value"] {
+  const value: Extract<MailboxCallSuccess, { op: "fetchFull" }>["value"] = {
+    ref: message.ref,
+    headers: message.headers,
+    flags: message.flags,
+    signatureStatus: message.signatureStatus,
+  };
+  if (message.content !== undefined) value.content = message.content;
+  if (message.payload !== undefined) value.payload = message.payload;
+  if (message.attachments !== undefined) {
+    value.attachments = message.attachments.map((attachment) => {
+      const projected: {
+        name: string;
+        contentType: string;
+        dataBase64: string;
+        part?: string;
+      } = {
+        name: attachment.name,
+        contentType: attachment.contentType,
+        dataBase64: base64Encode(attachment.data),
+      };
+      if (attachment.part !== undefined) projected.part = attachment.part;
+      return projected;
+    });
+  }
+  return value;
+}
+
+/**
+ * The store reports one delta of new arrivals and flag changes together, and
+ * its flags are a `Set` (which JSON would encode as `{}`). Split on the
+ * caller's `uidNext` and copy the flags out as arrays. The caller receives
+ * the finished sync result.
+ */
+function syncResultForCaller(
+  mailbox: string,
+  uidNext: number,
+  result: MailboxSyncResult,
+): Extract<MailboxCallSuccess, { op: "sync" }>["value"] {
+  if (result.resync) {
+    return {
+      vanished: [],
+      changed: [],
+      newMessages: result.messages.map((message) => ({
+        uid: message.uid,
+        mailbox,
+      })),
+      fullResyncRequired: true,
+    };
+  }
+  const newMessages: { uid: number; mailbox: string }[] = [];
+  const changed: { uid: number; flags: string[] }[] = [];
+  for (const message of result.changed) {
+    if (message.uid >= uidNext) {
+      newMessages.push({ uid: message.uid, mailbox });
+    } else {
+      changed.push({ uid: message.uid, flags: Array.from(message.flags) });
+    }
+  }
+  return {
+    vanished: [...result.vanished],
+    changed,
+    newMessages,
+    fullResyncRequired: false,
+  };
+}
+
+function projectPart(
+  part: MessagePart,
+): Extract<MailboxCallSuccess, { op: "fetchPart" }>["value"] {
+  const value: Extract<MailboxCallSuccess, { op: "fetchPart" }>["value"] = {
+    contentType: part.contentType,
+    contentBase64: base64Encode(part.content),
+  };
+  if (part.encoding !== undefined) value.encoding = part.encoding;
+  if (part.filename !== undefined) value.filename = part.filename;
+  if (part.disposition !== undefined) value.disposition = part.disposition;
+  return value;
+}
 
 /**
  * Construct a per-deployment supervisor. All host-specific
@@ -1469,6 +1737,17 @@ export function createWorkflowSupervisor(
         });
         continue;
       }
+      if (payload.type === "mailbox.call.request") {
+        // A mailbox read, append, or refusal. Run it off the iterator so
+        // the pump keeps draining; the handler owns the
+        // `mailbox.call.response` that answers the request.
+        void handleMailboxCall(payload.data).catch((cause) => {
+          const message =
+            cause instanceof Error ? cause.message : String(cause);
+          logger.error`mailbox.call.request handler crashed: ${message}`;
+        });
+        continue;
+      }
       if (payload.type === "terminal.event") {
         // The workflow-process child mirrors every terminal-run commit
         // over the control IPC. Fan it out to the COHORT'S broadcaster
@@ -1960,6 +2239,254 @@ export function createWorkflowSupervisor(
           result: { ok: false, reason },
         },
       });
+    }
+  }
+
+  /**
+   * Answer one mailbox operation from the deployment the supervisor owns.
+   * Refusals are decided here and do not open the store. Reads, sync, status,
+   * and append run under `runMailboxExclusive` and reply after the lock, on
+   * the sender captured before it. `readMailPart` reads committed part blobs
+   * through the same principal and ref that wrote them, and does not take the
+   * mailbox lock. `fetchFull` verifies with no key, so the signature status
+   * stays `unknown`. `append` stores the shared text/plain encoding and does
+   * not notify.
+   */
+  async function handleMailboxCall(data: MailboxCallRequest): Promise<void> {
+    const controlSender = activeControlSender();
+    if (controlSender === null) {
+      logger.warn`mailbox.call.request received outside running phase; requestId=${data.requestId} dropped (child awaiter will fail on pipe close)`;
+      return;
+    }
+    const refusal = refuseMailboxCall(data);
+    if (refusal !== undefined) {
+      await controlSender.send({
+        type: "mailbox.call.response",
+        data: mailboxCallFailure(data, refusal.reason, refusal.condition),
+      });
+      return;
+    }
+    try {
+      const answer = await answerMailboxCall(data);
+      await controlSender.send({
+        type: "mailbox.call.response",
+        data: answer,
+      });
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      const condition = isMessageTransportError(cause)
+        ? cause.condition
+        : undefined;
+      await controlSender.send({
+        type: "mailbox.call.response",
+        data: mailboxCallFailure(data, reason, condition),
+      });
+    }
+  }
+
+  async function answerMailboxCall(
+    data: MailboxCallRequest,
+  ): Promise<MailboxCallSuccess> {
+    // The long-lived mirror drops a message's raw bytes on flush and cannot
+    // read them back: its committed-read snapshot was pinned when the mirror
+    // opened. A fetch or a search opens a fresh snapshot, which resolves the
+    // committed `<uid>.eml`. Pending mirror writes are flushed first so that
+    // snapshot includes them.
+    async function openCommittedMailbox(): Promise<SubstrateMailboxStore> {
+      const writer = await getMailboxStore();
+      if (writer.pendingWrites) await writer.flush();
+      return createSubstrateMailboxStore({
+        substrate: bindings.repoStore,
+        repoId: bindings.workflowRunRepoId,
+        principal: mailboxWritePrincipal,
+        ref: bindings.workflowRunRef,
+      });
+    }
+
+    switch (data.op) {
+      case "listMailboxes":
+        return {
+          requestId: data.requestId,
+          ok: true,
+          op: "listMailboxes",
+          value: [{ name: MAILBOX_INBOX_DIR }],
+        };
+      case "watch":
+        return { requestId: data.requestId, ok: true, op: "watch" };
+      case "readMailPart": {
+        // The blobs were committed under this principal and ref. A reader
+        // opened against any other identity looks at a different tree.
+        const reader = createMailPartReader({
+          substrate: bindings.repoStore,
+          repoId: bindings.workflowRunRepoId,
+          principal: mailboxWritePrincipal,
+          ref: bindings.workflowRunRef,
+        });
+        const bytes = await reader.read(data.partRef);
+        return {
+          requestId: data.requestId,
+          ok: true,
+          op: "readMailPart",
+          value: { contentBase64: base64Encode(bytes) },
+        };
+      }
+      case "search": {
+        const query = reviveSearchDates(data.query);
+        return runMailboxExclusive(async () => {
+          const store = await openCommittedMailbox();
+          const value = await executeSearch(data.mailbox, store, query);
+          const success: MailboxCallSuccess = {
+            requestId: data.requestId,
+            ok: true,
+            op: "search",
+            value,
+          };
+          return success;
+        });
+      }
+      case "thread": {
+        const query =
+          data.query === undefined ? undefined : reviveSearchDates(data.query);
+        return runMailboxExclusive(async () => {
+          const store = await openCommittedMailbox();
+          const value =
+            query === undefined
+              ? await executeThread(data.mailbox, store, data.algorithm)
+              : await executeThread(data.mailbox, store, data.algorithm, query);
+          const success: MailboxCallSuccess = {
+            requestId: data.requestId,
+            ok: true,
+            op: "thread",
+            value,
+          };
+          return success;
+        });
+      }
+      case "fetchHeaders":
+      case "fetchStructure":
+      case "fetchFull":
+      case "fetchPart": {
+        const ref = data.ref;
+        return runMailboxExclusive(async () => {
+          const store = await openCommittedMailbox();
+          if (data.op === "fetchHeaders") {
+            const value = await fetchHeaders(ref, store);
+            const success: MailboxCallSuccess = {
+              requestId: data.requestId,
+              ok: true,
+              op: "fetchHeaders",
+              value,
+            };
+            return success;
+          }
+          if (data.op === "fetchStructure") {
+            const value = await fetchStructure(ref, store);
+            const success: MailboxCallSuccess = {
+              requestId: data.requestId,
+              ok: true,
+              op: "fetchStructure",
+              value,
+            };
+            return success;
+          }
+          if (data.op === "fetchPart") {
+            const value = projectPart(
+              await fetchPart(ref, data.partPath, store),
+            );
+            const success: MailboxCallSuccess = {
+              requestId: data.requestId,
+              ok: true,
+              op: "fetchPart",
+              value,
+            };
+            return success;
+          }
+          const value = projectFetchedMessage(
+            await fetchFull(ref, store, () => undefined),
+          );
+          const success: MailboxCallSuccess = {
+            requestId: data.requestId,
+            ok: true,
+            op: "fetchFull",
+            value,
+          };
+          return success;
+        });
+      }
+      case "sync":
+        return runMailboxExclusive(async () => {
+          const store = await getMailboxStore();
+          const result = store.sync({
+            uidValidity: data.uidValidity,
+            highestModSeq: data.highestModSeq,
+          });
+          const success: MailboxCallSuccess = {
+            requestId: data.requestId,
+            ok: true,
+            op: "sync",
+            value: syncResultForCaller(data.mailbox, data.uidNext, result),
+          };
+          return success;
+        });
+      case "getMailboxStatus":
+        return runMailboxExclusive(async () => {
+          const store = await getMailboxStore();
+          const unseen = store.messages.filter(
+            (message) => !message.flags.has(MAILBOX_FLAG_SEEN),
+          ).length;
+          const success: MailboxCallSuccess = {
+            requestId: data.requestId,
+            ok: true,
+            op: "getMailboxStatus",
+            value: {
+              total: store.messages.length,
+              unseen,
+              recent: 0,
+              uidNext: store.uidNext,
+              uidValidity: store.uidValidity,
+              highestModSeq: store.highestModSeq,
+            },
+          };
+          return success;
+        });
+      case "append": {
+        const appended: {
+          headers: MessageHeaders;
+          content?: string;
+          payload?: InboundMessage["payload"];
+        } = { headers: data.headers };
+        if (data.content !== undefined) appended.content = data.content;
+        if (data.payload !== undefined) appended.payload = data.payload;
+        const flags = data.flags === undefined ? [] : data.flags;
+        // Encode before the lock. A missing Message-ID, or a missing or
+        // unparseable Date, throws here, so the message never enters the
+        // mirror. An Invalid Date that reached append would survive a failed
+        // flush and wedge every later write.
+        const stored = inboundMessageToRaw(appended);
+        return runMailboxExclusive(async () => {
+          const store = await getMailboxStore();
+          const uid = store.append(stored.raw, stored.envelope, flags);
+          await store.flush();
+          const success: MailboxCallSuccess = {
+            requestId: data.requestId,
+            ok: true,
+            op: "append",
+            value: { uid, mailbox: data.mailbox },
+          };
+          return success;
+        });
+      }
+      case "createMailbox":
+      case "deleteMailbox":
+      case "move":
+      case "copy":
+      case "createList":
+      case "listMembers":
+      case "subscribe":
+      case "unsubscribe":
+        // Refusals are sent before this switch. Reaching one means the
+        // refusal table and this switch disagree.
+        throw new Error(`mailbox call ${data.op} has no answer`);
     }
   }
 

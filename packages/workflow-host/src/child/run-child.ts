@@ -1529,6 +1529,20 @@ async function handleControlPayload(
       ctx.mailboxMutationBridge.handleResult(payload.data);
       return false;
     }
+    case "mailbox.call.request": {
+      // `mailbox.call.request` is the child->supervisor mailbox-call frame;
+      // receiving one on the child's downstream side is a protocol violation
+      // in the same shape as a downstream `mailbox.mutate.request`.
+      throw new Error(
+        "workflow-child received a `mailbox.call.request` frame on its inbound control channel; this is a child-only upstream payload",
+      );
+    }
+    case "mailbox.call.response": {
+      // The child has no consumer for a mailbox-call response. Log and drop
+      // rather than throwing so the runtime keeps progressing.
+      logger.warn`workflow-child mailbox.call.response received; requestId=${payload.data.requestId} dropped`;
+      return false;
+    }
     case "substrate.merge.request": {
       // Route the request to the substrate-write bridge if one is
       // wired. A request that lands without an active bridge means a
