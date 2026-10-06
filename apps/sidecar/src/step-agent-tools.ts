@@ -41,7 +41,11 @@ import {
 } from "@intx/agent";
 import { readDeployTree, agentDir } from "@intx/hub-agent/paths";
 import { getLogger } from "@intx/log";
-import type { HostCredentialCapability } from "@intx/harness";
+import {
+  buildCredentialCapabilities,
+  type HostCredentialCapability,
+  type StepCredentialWiring,
+} from "@intx/harness";
 import type { LoadedToolFactory } from "@intx/tool-packaging";
 import { resolveStepAddress } from "@intx/workflow-deploy";
 import { parseRunAddress } from "@intx/types";
@@ -52,10 +56,6 @@ import {
 } from "@intx/types/runtime-capabilities";
 import { baseStepId } from "@intx/workflow";
 
-import {
-  buildCredentialCapabilities,
-  type StepCredentialWiring,
-} from "./step-credential-capabilities";
 import {
   materializeToolPackages,
   type StepToolFactory,

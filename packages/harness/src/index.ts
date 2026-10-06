@@ -32,6 +32,15 @@ export type {
 } from "./credential-capability";
 
 export {
+  buildCredentialCapabilities,
+  createInferenceCredentialResolver,
+} from "./step-credential-capabilities";
+export type {
+  CredentialMaterialCell,
+  StepCredentialWiring,
+} from "./step-credential-capabilities";
+
+export {
   createConnectorRouter,
   NoActiveConnectorThreadError,
 } from "./connector-router";

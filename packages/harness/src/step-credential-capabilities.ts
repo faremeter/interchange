@@ -23,22 +23,22 @@
 //      satisfied by a handle bound for package B.
 
 import { toolConsumer } from "@intx/authz";
-import {
-  createCredentialCapability,
-  reconcileDeclaredCredentials,
-  type CredentialProviderRegistry,
-  type HostCredentialCapability,
-  type ResolvedCredentialBinding,
-} from "@intx/harness";
 import type {
   CredentialMaterial,
   CredentialMaterialResolver,
   CredentialMaterialSource,
 } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
+import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import type { CredentialDelivery } from "@intx/types/sidecar";
 
-import type { StepToolFactory } from "./tool-materialization";
+import {
+  createCredentialCapability,
+  reconcileDeclaredCredentials,
+  type HostCredentialCapability,
+  type ResolvedCredentialBinding,
+} from "./credential-capability";
+import type { CredentialProviderRegistry } from "./credential-providers";
 
 /**
  * The mutable cell the control channel writes each credential delivery into.
@@ -80,9 +80,17 @@ export interface StepCredentialWiring {
  * fails closed as "not provided by host" rather than handing back an empty
  * sub-registry. Every returned capability owns a `dispose` the caller must run
  * on teardown.
+ *
+ * The factory list is structural. The body reads only `packageName` and
+ * `declaredCredentials`. Importing `StepToolFactory` or `@intx/tool-packaging`
+ * is rejected because `bin/check-deps.ts` counts `import type`, and that
+ * dependency does not belong on this package.
  */
 export function buildCredentialCapabilities(
-  factories: readonly StepToolFactory[],
+  factories: readonly {
+    readonly packageName: string;
+    readonly declaredCredentials: readonly ToolCredentialDeclaration[];
+  }[],
   wiring: StepCredentialWiring,
 ): Map<string, HostCredentialCapability> {
   const byPackage = new Map<string, HostCredentialCapability>();

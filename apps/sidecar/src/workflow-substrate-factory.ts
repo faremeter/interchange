@@ -52,9 +52,11 @@ import {
   builtinCredentialProviders,
   createCredentialProviderRegistry,
   createHarnessRuntimeCapabilities,
+  createInferenceCredentialResolver,
   driveConnectorReplies,
   type AgentEventStream,
   type ConnectorReplyDrain,
+  type CredentialMaterialCell,
   type CredentialProviderRegistry,
 } from "@intx/harness";
 import { createSSHSignature } from "@intx/crypto";
@@ -137,10 +139,6 @@ import {
   type StepToolCacheConfig,
   type StepToolMaterialization,
 } from "./step-agent-tools";
-import {
-  createInferenceCredentialResolver,
-  type CredentialMaterialCell,
-} from "./step-credential-capabilities";
 import { readRunGrants, runGrantsPath } from "./run-grants";
 import {
   createDurableConversationRegistry,
