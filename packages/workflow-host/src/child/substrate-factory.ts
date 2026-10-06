@@ -46,7 +46,11 @@ import {
   type AdapterRegistry,
 } from "@intx/inference";
 import { loadAdapterRegistry } from "@intx/inference/providers";
-import type { AnnotatedPluginFactory, DirectorRegistry } from "@intx/agent";
+import type {
+  AnnotatedPluginFactory,
+  DirectorRegistry,
+  ToolDeclaration,
+} from "@intx/agent";
 import { createDefaultDirectorRegistry } from "@intx/agent";
 import {
   builtinCredentialProviders,
@@ -71,43 +75,6 @@ import {
 } from "@intx/hub-sessions/substrate";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import {
-  adaptHostScheduler,
-  createCredentialsBackedAuthorize,
-  createMailboxWatchRegistry,
-  createProxyWorkflowRunRepoStore,
-  createSupervisorBackedTransport,
-  createWorkflowHostScheduler,
-  createWorkflowRunBlobSubstrate,
-  createWorkflowRunRepoStore,
-  createWorkflowHostSignalChannel,
-  createInMemorySpawnChild,
-  createInMemorySpawnSuspendableChild,
-  createDurableConversationRegistry,
-  createWorkflowStepInvoker,
-  hashGrants,
-  isErrnoNotFound,
-  loadWorkflowLoopFnsFromClosure,
-  loadWorkflowPluginFactoriesFromClosure,
-  loadWorkflowPluginToolDefinitionsFromClosure,
-  readRunGrants,
-  reconstructDurableConversation,
-  runGrantsPath,
-  type ChildOutboundMailBridge,
-  type DurableConversationRegistry,
-  type CredentialsSnapshot,
-  type CredentialsSnapshotRef,
-  type GrantEvaluator,
-  type LoadParkedApproval,
-  type RunChildWorkflow,
-  type RunSuspendableChild,
-  type RunWorkflowChildBindings,
-  type SourcesSnapshotRef,
-  type StepEnvBase,
-  type SubstrateFactory,
-  type SubstrateFactoryEnv,
-  type SupervisorBackedTransportInbound,
-} from "@intx/workflow-host";
-import {
   baseStepId,
   collectDeclaredPluginNames,
   createLoopIterationHandle,
@@ -130,21 +97,63 @@ import {
   type WorkflowDefinition,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
+import { createWorkflowRunBlobSubstrate } from "../adapters/blob-substrate";
+import { createWorkflowRunRepoStore } from "../adapters/repo-store";
 import {
-  collectDeclaredResources,
-  filterGrantsToDeclaredResources,
-  type PluginToolDefinitions,
-} from "@intx/workflow-deploy";
-
+  createInMemorySpawnChild,
+  createInMemorySpawnSuspendableChild,
+  type RunChildWorkflow,
+  type RunSuspendableChild,
+} from "../adapters/spawn-child";
+import {
+  createWorkflowStepInvoker,
+  type StepEnvBase,
+} from "../adapters/step-invoker";
+import {
+  createDurableConversationRegistry,
+  reconstructDurableConversation,
+  type DurableConversationRegistry,
+} from "../conversation-state";
+import { readRunGrants, runGrantsPath } from "../run-grants";
+import {
+  adaptHostScheduler,
+  createWorkflowHostScheduler,
+  createWorkflowHostSignalChannel,
+} from "../seams/index";
+import {
+  hashGrants,
+  isErrnoNotFound,
+  type CredentialsSnapshot,
+} from "../supervisor/index";
+import {
+  loadWorkflowLoopFnsFromClosure,
+  loadWorkflowPluginFactoriesFromClosure,
+  loadWorkflowPluginToolDefinitionsFromClosure,
+} from "../workflow-definition-loader";
+import type { SubstrateFactory, SubstrateFactoryEnv } from "./from-process-env";
+import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
+import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
+import type { LoadParkedApproval } from "./parked-correlations";
+import { createProxyWorkflowRunRepoStore } from "./proxy-repo-store";
+import {
+  createCredentialsBackedAuthorize,
+  type CredentialsSnapshotRef,
+  type GrantEvaluator,
+  type RunWorkflowChildBindings,
+  type SourcesSnapshotRef,
+} from "./run-child";
 import {
   attachStepCredentialWiring,
   attachStepTools,
   createToolBearingAgentFactory,
   deriveToolMarkFloorGrants,
-  materializeStepTools,
   type StepToolCacheConfig,
   type StepToolMaterialization,
-} from "./step-agent-tools";
+} from "./step-tools";
+import {
+  createSupervisorBackedTransport,
+  type SupervisorBackedTransportInbound,
+} from "./supervisor-backed-transport";
 
 // The child does not construct a workflow-run pack-push pipeline of
 // its own. The supervisor owns the workflow-run repo's write
@@ -408,12 +417,35 @@ function hexDecode(hex: string, name: string): Uint8Array {
 }
 
 /**
- * Dependency overrides accepted by `createSidecarSubstrateFactory`.
- * Production callers omit these to get the default-disk-backed bare
- * store and the IPC-bridge-backed substrate proxy; tests inject an
- * in-memory bare store and/or an explicit substrate-write bridge.
+ * Pinned tool-package materialization. The sidecar process owns the
+ * deploy-tree read; the factory calls this only on the pinned arm.
+ */
+type MaterializeStepTools = (args: {
+  dataDir: string;
+  mailboxAddress: string;
+  stepId: string;
+  stepCount: number;
+  storeDir: string;
+  cache: StepToolCacheConfig;
+}) => Promise<StepToolMaterialization>;
+
+/**
+ * Dependencies `createSidecarSubstrateFactory` closes over. Tool
+ * materialization and the child-grant cap are required: this package does
+ * not import the modules that implement them. `createBareRepoStore` stays
+ * optional so tests can inject an in-memory store.
  */
 interface SidecarSubstrateFactoryDeps {
+  materializeStepTools: MaterializeStepTools;
+  collectDeclaredResources: (
+    definition: WorkflowDefinition,
+    directors: DirectorRegistry,
+    pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]>,
+  ) => ReadonlySet<string>;
+  filterGrantsToDeclaredResources: (
+    parentGrants: readonly unknown[],
+    declared: ReadonlySet<string>,
+  ) => readonly unknown[];
   /**
    * Override the bare-store constructor. Production callers omit this
    * to get the `createAgentRepoStore`-backed `RepoStore` against
@@ -796,6 +828,8 @@ export interface SidecarStepBuildEnvDeps {
    * packages instead, which reads no closure.
    */
   closurePackageDir?: string;
+  /** Pinned tool-package materialization. Unused when `sourceTools` is set. */
+  materializeStepTools: MaterializeStepTools;
 }
 
 /**
@@ -858,10 +892,9 @@ async function materializeSourcePluginFactories(
 interface SidecarStepCredentialContext {
   readonly materialCell: CredentialMaterialCell;
   /**
-   * The step's grants, resolved live by base step id. Typed `unknown[]` at
-   * this boundary (the run child owns no grant grammar); the sidecar casts to
-   * `GrantRule[]` here where the grammar is known, exactly as
-   * `evaluateGrantsAdapter` does.
+   * The step's grants, resolved live by base step id. The credentials
+   * snapshot types them `unknown[]`; this factory casts to `GrantRule[]`
+   * where `evaluateGrants` reads them.
    */
   readonly resolveStepGrants: (stepId: string) => readonly unknown[];
   readonly providers: CredentialProviderRegistry;
@@ -1040,7 +1073,7 @@ export function createSidecarStepBuildEnv(
             })),
             pluginFactories: await materializeSourcePluginFactories(deps, req),
           }
-        : await materializeStepTools({
+        : await deps.materializeStepTools({
             dataDir: deps.dataDir,
             mailboxAddress: deps.mailboxAddress,
             stepId,
@@ -1067,7 +1100,10 @@ export function createSidecarStepBuildEnv(
       deps.recordToolMarkFloor(
         baseStepId(stepId),
         deriveToolMarkFloorGrants(
-          materialization.factories.map((f) => f.factory),
+          materialization.factories.map((f) => ({
+            packageName: f.packageName,
+            definitions: f.factory.definitions,
+          })),
         ),
       );
     }
@@ -1160,7 +1196,7 @@ export function createSidecarStepBuildEnv(
       attachStepCredentialWiring(env, {
         materialCell: credentialContext.materialCell,
         resolveGrants: () =>
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolveStepGrants returns unknown[] at the run-child boundary; the sidecar owns the GrantRule grammar
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- resolveStepGrants returns unknown[]; evaluateGrants reads GrantRule
           credentialContext.resolveStepGrants(stepId) as readonly GrantRule[],
         providers: credentialContext.providers,
       });
@@ -1298,6 +1334,20 @@ interface SidecarRunChildDeps {
    * a monotonic counter combined with a random suffix.
    */
   newId?: (prefix: string) => string;
+  /**
+   * Collect the resources the child body declares, and narrow the parent
+   * grant array to that set. The process that boots the child supplies both.
+   * This factory persists the filter's array and does not import the walk.
+   */
+  collectDeclaredResources: (
+    definition: WorkflowDefinition,
+    directors: DirectorRegistry,
+    pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]>,
+  ) => ReadonlySet<string>;
+  filterGrantsToDeclaredResources: (
+    parentGrants: readonly unknown[],
+    declared: ReadonlySet<string>,
+  ) => readonly unknown[];
 }
 
 /**
@@ -1632,19 +1682,19 @@ async function capAndPersistChildGrants(args: {
       `sidecar runChild: parent run ${parentRunId} has no grants file at ${runGrantsPath(parentRunId)}; refusing to spawn child ${childRunId} under-authorized`,
     );
   }
-  const pluginDefs: PluginToolDefinitions =
+  const pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]> =
     deps.closurePackageDir === undefined
-      ? new Map()
+      ? new Map<string, readonly ToolDeclaration[]>()
       : await loadWorkflowPluginToolDefinitionsFromClosure({
           packageDir: deps.closurePackageDir,
           plugins: collectDeclaredPluginNames(definition),
         });
-  const declaredResources = collectDeclaredResources(
+  const declaredResources = deps.collectDeclaredResources(
     definition,
     directors,
     pluginDefs,
   );
-  const childGrants = filterGrantsToDeclaredResources(
+  const childGrants = deps.filterGrantsToDeclaredResources(
     parentGrants,
     declaredResources,
   );
@@ -1941,12 +1991,11 @@ async function buildChildRunEnv(args: {
   // the body's step invoker, capped grants, and in-memory spawnChild.
   //
   // This deliberately REPLICATES the top-level loop host in run-child.ts rather
-  // than sharing a helper. The two live in different packages and differ in the
-  // grants seam (here `capAndPersistChildGrants` is in scope and called
-  // directly; the top level injects it as a binding), and the loop-in-body
-  // crash-resume path is not yet proven identical to the top level's. Extract a
-  // shared helper only once a deployed loop-in-body resume test shows the two
-  // paths match.
+  // than sharing a helper. The two differ in the grants seam (here
+  // `capAndPersistChildGrants` is in scope and called directly; the top level
+  // injects it as a binding), and the loop-in-body crash-resume path is not
+  // yet proven identical to the top level's. Extract a shared helper only once
+  // a deployed loop-in-body resume test shows the two paths match.
   //
   // Boundary: the suspendable-child seam services APPROVAL parks only. A loop
   // iteration in a body that awaits an externally-delivered signal, or re-arms
@@ -2076,9 +2125,8 @@ function defaultNewId(prefix: string): string {
 }
 
 /**
- * Build a `SubstrateFactory` closed over the supplied dependency
- * overrides. The production export `createSubstrate` is the
- * default-deps call.
+ * Build a `SubstrateFactory` closed over the supplied dependencies.
+ * The sidecar binding passes tool materialization and the grant cap.
  *
  * Construction order:
  *   1. Narrow the `substrateConfig` record against the typed schema.
@@ -2103,7 +2151,7 @@ function defaultNewId(prefix: string): string {
  *      consumes, with the proxy store in the `substrate` slot.
  */
 export function createSidecarSubstrateFactory(
-  deps: SidecarSubstrateFactoryDeps = {},
+  deps: SidecarSubstrateFactoryDeps,
 ): SubstrateFactory {
   const createBareRepoStore =
     deps.createBareRepoStore ??
@@ -2266,6 +2314,7 @@ export function createSidecarSubstrateFactory(
       recordToolMarkFloor: (stepId, grants) => {
         toolMarkFloorByStep.set(stepId, grants);
       },
+      materializeStepTools: deps.materializeStepTools,
       // Source-ref is the only deploy lineage: the child runs each step agent's
       // own evaluated tool factories (fed from `req.agent.toolFactories`) from
       // the materialized closure, never a pinned tool-package manifest off a
@@ -2337,6 +2386,7 @@ export function createSidecarSubstrateFactory(
           "source-tools child build-env must not record a tool-mark floor",
         );
       },
+      materializeStepTools: deps.materializeStepTools,
       sourceTools: true,
       closurePackageDir: env.spawn.closurePackageDir,
     });
@@ -2524,12 +2574,10 @@ export function createSidecarSubstrateFactory(
       // step's floor.
       const floor = toolMarkFloorByStep.get(baseStepId(stepId)) ?? [];
       const result = await evaluateGrants(
-        // The credentialsSnapshot's grants are typed as
-        // `readonly unknown[]` so the workflow-host package does not
-        // depend on the sidecar's grant-rule grammar. The sidecar owns
-        // that grammar; the cast surfaces here at the boundary where
-        // the typed grant shape is known.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- credentialsSnapshot.steps[*].grants is typed unknown[] at the workflow-host boundary; the sidecar owns the GrantRule grammar
+        // The credentials snapshot types `grants` as `readonly unknown[]`.
+        // This factory imports `GrantRule` from `@intx/authz` and casts
+        // at the boundary where `evaluateGrants` reads the rows.
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- credentialsSnapshot.steps[*].grants is typed unknown[]; evaluateGrants reads GrantRule
         [...(grants as readonly GrantRule[]), ...floor],
         resource,
         action,
@@ -2559,6 +2607,8 @@ export function createSidecarSubstrateFactory(
       // The shared closure the child re-walks to cap its inherited grants at
       // its declared capabilities. Source-ref only, so always present here.
       closurePackageDir: env.spawn.closurePackageDir,
+      collectDeclaredResources: deps.collectDeclaredResources,
+      filterGrantsToDeclaredResources: deps.filterGrantsToDeclaredResources,
     };
     // Terminal childWorkflow executor. `run-child` builds the in-memory
     // resolver from this plus the lifted-body map it extracts after loading
@@ -2694,16 +2744,3 @@ export function createSidecarSubstrateFactory(
     return bindings;
   };
 }
-
-/**
- * Production substrate factory. The sidecar's
- * `bin/workflow-child` binary calls
- * `runWorkflowChildFromProcessEnv(createSubstrate, { substrateConfigKeys: SIDECAR_SUBSTRATE_CONFIG_KEYS })`
- * and the helper invokes this factory with the parsed env. The
- * factory is the default-deps variant of
- * `createSidecarSubstrateFactory`; deployments that need a recording
- * hub sink (tests, alternate hosts) construct their own via
- * `createSidecarSubstrateFactory`.
- */
-export const createSubstrate: SubstrateFactory =
-  createSidecarSubstrateFactory();

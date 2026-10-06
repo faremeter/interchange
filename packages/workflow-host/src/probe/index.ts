@@ -24,34 +24,38 @@
 // receives the materialized package directory in its fresh, minimal env
 // -- no ambient inputs, no sidecar keys.
 
-import { fileURLToPath } from "node:url";
-
 import { type } from "arktype";
 
+import type { DirectorRegistry, ToolDeclaration } from "@intx/agent";
 import { getLogger } from "@intx/log";
-import { GrantWalkSnapshot, hexDecode, hexEncode } from "@intx/types";
-import type { GrantRequirement } from "@intx/types";
+import {
+  GrantWalkSnapshot,
+  hexDecode,
+  hexEncode,
+  type GrantEffect,
+  type GrantRequirement,
+} from "@intx/types";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
 import { WorkflowProjectionDefinition } from "@intx/types/sidecar";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { collectDeclaredPluginNames, projectLiveToInert } from "@intx/workflow";
+import type { WorkflowDefinition } from "@intx/workflow/definition";
+
 import {
-  walkCapabilities,
-  type CapabilityWalkResult,
-} from "@intx/workflow-deploy";
-import {
-  DEFAULT_KILL_TIMEOUT_MS,
   MacedEnvelope,
   encodeEnvelope,
   generateChannelId,
   generateHmacKey,
-  loadWorkflowDefinitionFromClosure,
-  loadWorkflowDirectorRegistryFromClosure,
-  loadWorkflowPluginToolDefinitionsFromClosure,
   signHmac,
   verifyHmac,
   type FrameEnvelope,
-} from "@intx/workflow-host";
+} from "../ipc";
+import { DEFAULT_KILL_TIMEOUT_MS } from "../supervisor/index";
+import {
+  loadWorkflowDefinitionFromClosure,
+  loadWorkflowDirectorRegistryFromClosure,
+  loadWorkflowPluginToolDefinitionsFromClosure,
+} from "../workflow-definition-loader";
 
 const logger = getLogger(["sidecar", "workflow-probe"]);
 
@@ -81,13 +85,24 @@ const PROBE_HMAC_KEY_ENV = "PROBE_IPC_HMAC_KEY";
 const PROBE_PACKAGE_DIR_ENV = "PROBE_PACKAGE_DIR";
 
 /**
- * The child's `bin/workflow-probe-child` entry, resolved statically at
- * module load so the spawn surface does not depend on any runtime env
- * override. Mirrors the supervisor's `bin/workflow-child` resolution.
+ * Capability walk the probe child runs over the evaluated definition.
+ * The process that boots the probe passes the real walk. This module
+ * does not import it.
  */
-const DEFAULT_PROBE_CHILD_BINARY: string = fileURLToPath(
-  import.meta.resolve("../bin/workflow-probe-child"),
-);
+export type WalkCapabilities = (
+  workflow: WorkflowDefinition,
+  registry: DirectorRegistry,
+  pluginDefs: ReadonlyMap<string, readonly ToolDeclaration[]>,
+) => {
+  readonly perStep: ReadonlyMap<
+    string,
+    {
+      readonly grants: readonly string[];
+      readonly grantEffects: ReadonlyMap<string, GrantEffect>;
+    }
+  >;
+  readonly unresolvedDirectors: readonly string[];
+};
 
 // ---------------------------------------------------------------------------
 // Result payload wire (child -> host)
@@ -179,47 +194,13 @@ export interface ProbeChildHandle {
 
 /**
  * Spawner the handler invokes to launch the one-shot probe child.
- * Production injects the `Bun.spawn`-backed `defaultProbeChildSpawner`;
- * tests inject a spawner that records the spawned pid so they can assert
- * the child was reaped.
+ * The sidecar process passes a `Bun.spawn` spawner. Tests pass a spawner
+ * that records the spawned pid so they can assert the child was reaped.
  */
 export type ProbeChildSpawner = (args: {
   binaryPath: string;
   env: Record<string, string>;
 }) => ProbeChildHandle;
-
-/**
- * Real `Bun.spawn`-backed probe-child spawner. Constructs a fresh env
- * (the caller assembles it; no `process.env` spread), pipes stdout for
- * the result line, ignores stdin, and inherits stderr so child
- * diagnostics land on the sidecar's stderr.
- */
-export const defaultProbeChildSpawner: ProbeChildSpawner = ({
-  binaryPath,
-  env,
-}): ProbeChildHandle => {
-  const proc = Bun.spawn([binaryPath], {
-    stdio: ["ignore", "pipe", "inherit"],
-    env,
-  });
-  return {
-    pid: proc.pid,
-    stdout: proc.stdout,
-    kill(signal?: number | string): void {
-      if (signal === undefined) {
-        proc.kill();
-        return;
-      }
-      if (typeof signal === "number") {
-        proc.kill(signal);
-        return;
-      }
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the probe reaper passes "SIGTERM"/"SIGKILL"; Bun's runtime accepts the same "SIG*" strings, narrowed back at the boundary.
-      proc.kill(signal as NodeJS.Signals);
-    },
-    exited: proc.exited,
-  };
-};
 
 // ---------------------------------------------------------------------------
 // Executor (host side)
@@ -228,10 +209,10 @@ export const defaultProbeChildSpawner: ProbeChildSpawner = ({
 export interface WorkflowProbeExecutorOpts {
   /** Host-side materializer for the frame's frozen closure. */
   materialize: MaterializeWorkflowClosure;
-  /** Override the child spawner (defaults to the Bun.spawn-backed one). */
-  spawnProbeChild?: ProbeChildSpawner;
-  /** Override the `bin/workflow-probe-child` path. */
-  binaryPath?: string;
+  /** Child spawner. The sidecar process passes its `Bun.spawn` spawner. */
+  spawnProbeChild: ProbeChildSpawner;
+  /** Path of `bin/workflow-probe-child`. The sidecar process resolves it. */
+  binaryPath: string;
   /**
    * Self-owned deadline before the child is reaped and the probe fails.
    * Independent of the hub's `probeTimeoutMs`.
@@ -254,8 +235,8 @@ export interface WorkflowProbeExecutorOpts {
 export function createWorkflowProbeExecutor(opts: WorkflowProbeExecutorOpts): {
   probe(frame: WorkflowProbeRequestFrame): Promise<WorkflowProbeResult>;
 } {
-  const spawnProbeChild = opts.spawnProbeChild ?? defaultProbeChildSpawner;
-  const binaryPath = opts.binaryPath ?? DEFAULT_PROBE_CHILD_BINARY;
+  const spawnProbeChild = opts.spawnProbeChild;
+  const binaryPath = opts.binaryPath;
   const childTimeoutMs = opts.childTimeoutMs ?? DEFAULT_PROBE_CHILD_TIMEOUT_MS;
   const killTimeoutMs =
     opts.killTimeoutMs ?? DEFAULT_PROBE_CHILD_KILL_TIMEOUT_MS;
@@ -506,6 +487,7 @@ export interface RunProbeChildOpts {
  * bare "exited without result".
  */
 export async function runWorkflowProbeChildFromProcessEnv(
+  walkCapabilities: WalkCapabilities,
   opts: RunProbeChildOpts = {},
 ): Promise<void> {
   const rawEnv = opts.rawEnv ?? process.env;
@@ -514,7 +496,7 @@ export async function runWorkflowProbeChildFromProcessEnv(
 
   let payload: ProbeResultPayload;
   try {
-    payload = await computeProbePayload(packageDir);
+    payload = await computeProbePayload(packageDir, walkCapabilities);
   } catch (err) {
     payload = { ok: false, error: enrichProbeError(err) };
   }
@@ -527,6 +509,7 @@ export async function runWorkflowProbeChildFromProcessEnv(
 
 async function computeProbePayload(
   packageDir: string,
+  walkCapabilities: WalkCapabilities,
 ): Promise<ProbeResultPayload> {
   const definition = await loadWorkflowDefinitionFromClosure({ packageDir });
   const projection = projectLiveToInert(definition);
@@ -579,7 +562,7 @@ async function computeProbePayload(
  * grant set: the deduplicated, sorted union of every step's grant
  * strings. Sorting makes the shipped set order-independent.
  */
-function collectDeploymentGrants(walk: CapabilityWalkResult): string[] {
+function collectDeploymentGrants(walk: ReturnType<WalkCapabilities>): string[] {
   const grants = new Set<string>();
   for (const declarations of walk.perStep.values()) {
     for (const grant of declarations.grants) {
@@ -599,7 +582,7 @@ function collectDeploymentGrants(walk: CapabilityWalkResult): string[] {
  * A definition that declares no requirements snapshots an empty list.
  */
 function buildGrantWalkSnapshot(
-  walk: CapabilityWalkResult,
+  walk: ReturnType<WalkCapabilities>,
   grantRequirements: readonly GrantRequirement[] | undefined,
 ): GrantWalkSnapshot {
   const perStep = [...walk.perStep].map(([stepId, declarations]) => ({

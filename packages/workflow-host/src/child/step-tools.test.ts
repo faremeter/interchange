@@ -31,7 +31,6 @@ import path from "node:path";
 import {
   definePlugin,
   defineTool,
-  type AnnotatedToolFactory,
   type BaseEnv,
   type ToolBundle,
   type ToolDeclaration,
@@ -48,16 +47,14 @@ import {
   type RuntimeCapabilities,
 } from "@intx/types/runtime-capabilities";
 import { waitUntil } from "@intx/types/testing";
-import type { LoadedToolFactory } from "@intx/tool-packaging";
 
 import {
   attachStepTools,
   createToolBearingAgentFactory,
   deriveToolMarkFloorGrants,
   rewrapStepToolFactory,
-  stepDeployTreeDir,
   type StepToolMaterialization,
-} from "./step-agent-tools";
+} from "./step-tools";
 
 const tempDirs: string[] = [];
 
@@ -432,53 +429,6 @@ describe("createToolBearingAgentFactory plugin/LSP lifecycle", () => {
   });
 });
 
-describe("stepDeployTreeDir base-step resolution", () => {
-  const dataDir = "/data";
-  const mailboxAddress = "run_dep-map@example.com";
-
-  test("a map iteration resolves the base step's deploy tree", () => {
-    // Deploy stages one deploy tree per base step; every map iteration
-    // `<base>[<index>]` must read that one tree, not a per-iteration address
-    // that was never staged.
-    const base = stepDeployTreeDir({
-      dataDir,
-      mailboxAddress,
-      stepId: "summarize",
-      stepCount: 2,
-    });
-    const iter0 = stepDeployTreeDir({
-      dataDir,
-      mailboxAddress,
-      stepId: "summarize[0]",
-      stepCount: 2,
-    });
-    const iter1 = stepDeployTreeDir({
-      dataDir,
-      mailboxAddress,
-      stepId: "summarize[1]",
-      stepCount: 2,
-    });
-    expect(iter0).toBe(base);
-    expect(iter1).toBe(base);
-  });
-
-  test("distinct base steps still resolve distinct deploy trees", () => {
-    const a = stepDeployTreeDir({
-      dataDir,
-      mailboxAddress,
-      stepId: "alpha[0]",
-      stepCount: 2,
-    });
-    const b = stepDeployTreeDir({
-      dataDir,
-      mailboxAddress,
-      stepId: "beta[0]",
-      stepCount: 2,
-    });
-    expect(a).not.toBe(b);
-  });
-});
-
 describe("rewrapStepToolFactory", () => {
   test("preserves the source factory's static definitions on the re-wrap", () => {
     const source = defineTool({
@@ -594,26 +544,20 @@ describe("deriveToolMarkFloorGrants", () => {
   // deriver reads (`definitions`), shaped like the pinned factories the
   // child's loader hands back. Never invoked here.
   function loadedFactory(
-    id: string,
+    packageName: string,
     definitions: readonly ToolDeclaration[],
-  ): LoadedToolFactory {
-    const factory: AnnotatedToolFactory<BaseEnv> = Object.assign(
-      (_env: BaseEnv) => ({
-        definitions: [],
-        run: () =>
-          Promise.resolve({ callId: "", content: "", isError: false as const }),
-      }),
-      { id, requires: [] as readonly string[], definitions },
-    );
-    return factory;
+  ): { packageName: string; definitions: readonly ToolDeclaration[] } {
+    return { packageName, definitions };
   }
 
-  // Mirror the sidecar's grant evaluator merge: the credentials snapshot's
-  // grants plus the derived floor, resolved via `evaluateGrants`. This is
-  // the exact composition the `evaluateGrantsAdapter` performs.
+  // Mirror the factory's grant evaluator merge: the credentials snapshot's
+  // grants plus the derived floor, resolved via `evaluateGrants`.
   async function resolveWithFloor(
     toolName: string,
-    factories: readonly LoadedToolFactory[],
+    factories: readonly {
+      packageName: string;
+      definitions: readonly ToolDeclaration[];
+    }[],
     snapshotGrants: readonly GrantRule[],
   ): Promise<"allow" | "deny" | "ask" | null> {
     const floor = deriveToolMarkFloorGrants(factories);

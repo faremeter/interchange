@@ -7,7 +7,7 @@ import { runWorkflowChildFromProcessEnv } from "@intx/workflow-host";
 import {
   SIDECAR_SUBSTRATE_CONFIG_KEYS,
   createSubstrate,
-} from "../src/workflow-substrate-factory";
+} from "../src/workflow-child-bindings";
 
 await runWorkflowChildFromProcessEnv(createSubstrate, {
   substrateConfigKeys: SIDECAR_SUBSTRATE_CONFIG_KEYS,

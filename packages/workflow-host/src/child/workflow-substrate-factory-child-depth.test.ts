@@ -54,7 +54,7 @@ import {
 import {
   createSidecarRunChild,
   type SidecarChildStepInvoker,
-} from "./workflow-substrate-factory";
+} from "./substrate-factory";
 
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-child-depth";
@@ -269,6 +269,9 @@ describe("createSidecarRunChild spawn-depth ceiling", () => {
       credentialProviders: createCredentialProviderRegistry(
         builtinCredentialProviders(),
       ),
+      collectDeclaredResources: () => new Set<string>(),
+      filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
+        parentGrants,
     });
 
     // Run the top of the chain at depth 0 with the ceiling lowered to 2.

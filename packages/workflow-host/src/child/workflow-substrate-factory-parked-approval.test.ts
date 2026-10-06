@@ -32,7 +32,7 @@ import {
   readWarmParkedPendingOperations,
   stepStorageRoot,
   toParkedApprovalOps,
-} from "./workflow-substrate-factory";
+} from "./substrate-factory";
 
 const WORKFLOW_RUN_REPO_ID: RepoId = {
   kind: "workflow-run",

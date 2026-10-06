@@ -51,7 +51,7 @@ import {
   createSidecarRunChild,
   createSidecarSpawnSuspendableChild,
   type SidecarChildStepInvoker,
-} from "./workflow-substrate-factory";
+} from "./substrate-factory";
 
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-abort";
@@ -236,6 +236,9 @@ function sharedDeps(
     credentialProviders: createCredentialProviderRegistry(
       builtinCredentialProviders(),
     ),
+    collectDeclaredResources: () => new Set<string>(),
+    filterGrantsToDeclaredResources: (parentGrants: readonly unknown[]) =>
+      parentGrants,
   };
 }
 

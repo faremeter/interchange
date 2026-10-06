@@ -19,10 +19,21 @@
       "intx-src": "./src/deploy/index.ts",
       "types": "./dist/deploy/index.d.ts",
       "default": "./dist/deploy/index.js"
+    },
+    "./child": {
+      "intx-src": "./src/child/program.ts",
+      "types": "./dist/child/program.d.ts",
+      "default": "./dist/child/program.js"
+    },
+    "./probe": {
+      "intx-src": "./src/probe/index.ts",
+      "types": "./dist/probe/index.d.ts",
+      "default": "./dist/probe/index.js"
     }
   },
   "dependencies": {
     "@intx/agent": "workspace:*",
+    "@intx/authz": "workspace:*",
     "@intx/crypto": "workspace:*",
     "@intx/harness": "workspace:*",
     "@intx/hub-sessions": "workspace:*",
