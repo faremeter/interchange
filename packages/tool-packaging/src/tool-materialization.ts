@@ -1,40 +1,25 @@
-// Tool-package materialization for the sidecar.
-//
-// The deploy-tree reader, the `@intx/tool-packaging` loader
-// construction, `applyAtomic`, and the active-deploy-id persistence
-// ladder live here so the workflow-process child's substrate factory
-// (`workflow-substrate-factory.ts`) reaches this implementation without
-// the portable orchestration package depending on the sidecar's tool
-// runtime. Keeping this in `apps/sidecar` (and out of
-// `@intx/workflow-host`) preserves that package's host-agnostic
-// layering: the child IS the sidecar binary, so the sidecar's tool
-// runtime is already present in the child's address space.
-//
-// The module is deliberately free of any `@intx/harness` reactor
-// dependency so the workflow-process child's boot graph does not pull
-// in `@intx/harness`'s transport/reactor stack -- a forbidden-import
-// guard enforces that boundary.
+// Per-step tool-package apply: validate the manifest, run `applyAtomic`,
+// and persist the active deploy id. The registry map, host platform, and
+// asset root come from the caller.
 
 import fs from "node:fs";
 import path from "node:path";
 import { type } from "arktype";
 import { type AnnotatedPluginFactory } from "@intx/agent";
 import { getLogger } from "@intx/log";
-import {
-  type LoadedToolFactory,
-  type LoadedToolPackage,
-  applyAtomic,
-  createTarballCache,
-  createToolLoader,
-} from "@intx/tool-packaging";
 import { hasCode } from "@intx/types";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
 import { ToolPackageManifest } from "@intx/types/tool-packages";
 
+import { applyAtomic } from "./atomic-apply";
+import { createTarballCache } from "./cache";
 import {
-  readRegistries,
-  resolveHostPlatform,
-} from "./sidecar-materialization-config";
+  createToolLoader,
+  type HostPlatform,
+  type LoadedToolFactory,
+  type LoadedToolPackage,
+} from "./loader";
+import type { RegistryConfig } from "./resolver";
 
 const logger = getLogger(["sidecar", "harness-builder"]);
 
@@ -82,17 +67,24 @@ export async function materializeToolPackages(args: {
   storeDir: string;
   /**
    * Workspace root the loader resolves `kind: "asset"` tarball mounts
-   * against (`<assetRoot>/<mountPath>/...`). Defaults to
-   * `<storeDir>/workspace` -- the default workspace layout, where the
-   * deploy flow stages asset packs into the same dir the agent runs in.
+   * against (`<assetRoot>/<mountPath>/...`).
    *
-   * The workflow-process child overrides this: it stages assets in the
-   * step's LEGACY agent dir workspace (where the hub's asset-pack push
-   * lands them) but roots the per-step apply-state + agent `env.workdir`
-   * under a distinct per-step store dir, so the loader's asset source
-   * and the apply-state root are two different directories.
+   * The workflow-process child stages assets in the step's LEGACY agent
+   * dir workspace (where the hub's asset-pack push lands them) and roots
+   * the per-step apply-state + agent `env.workdir` under a distinct
+   * per-step store dir, so the loader's asset source and the apply-state
+   * root are two different directories.
    */
-  assetRoot?: string;
+  assetRoot: string;
+  /**
+   * Registry name → config. Parsed by the caller from
+   * `SIDECAR_TOOL_REGISTRIES` (or supplied directly by a test).
+   */
+  registries: ReadonlyMap<string, RegistryConfig>;
+  /**
+   * Host `os`/`cpu` pair the loader filters manifest entries against.
+   */
+  host: HostPlatform;
   agentAddress: string;
   cacheRoot: string;
   cacheMaxBytes: number;
@@ -204,15 +196,15 @@ export async function materializeToolPackages(args: {
   });
   const loader = createToolLoader({
     cache,
-    registries: readRegistries(),
-    host: resolveHostPlatform(),
+    registries: args.registries,
+    host: args.host,
     maxRegistryTarballBytes: args.registryMaxTarballBytes,
   });
   const result = await applyAtomic({
     manifest: validated,
     loader,
     instanceDir,
-    assetRoot: args.assetRoot ?? path.join(args.storeDir, "workspace"),
+    assetRoot: args.assetRoot,
     assetMounts: args.assetMounts,
     // Step tool packages never source from git; only workflow-definition
     // closures carry git entries.
