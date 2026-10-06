@@ -46,7 +46,11 @@ import {
   type HostCredentialCapability,
   type StepCredentialWiring,
 } from "@intx/harness";
-import type { LoadedToolFactory } from "@intx/tool-packaging";
+import {
+  materializeToolPackages,
+  type LoadedToolFactory,
+  type StepToolFactory,
+} from "@intx/tool-packaging";
 import { resolveStepAddress } from "@intx/workflow-deploy";
 import { parseRunAddress } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
@@ -57,9 +61,9 @@ import {
 import { baseStepId } from "@intx/workflow";
 
 import {
-  materializeToolPackages,
-  type StepToolFactory,
-} from "./tool-materialization";
+  readRegistries,
+  resolveHostPlatform,
+} from "./sidecar-materialization-config";
 
 const logger = getLogger(["sidecar", "workflow-child", "step-tools"]);
 
@@ -367,6 +371,8 @@ export async function materializeStepTools(args: {
     cacheRoot,
     cacheMaxBytes: args.cache.cacheMaxBytes,
     registryMaxTarballBytes: args.cache.registryMaxTarballBytes,
+    registries: readRegistries(),
+    host: resolveHostPlatform(),
   });
   return {
     factories: materialized.factories,

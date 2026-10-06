@@ -11,8 +11,8 @@
 // validated at this boundary before being returned.
 //
 // Materialization is deliberately NOT done here. `@intx/workflow-host`
-// stays free of a `@intx/tool-packaging` dependency (the sidecar owns
-// that layer, see `apps/sidecar/src/tool-materialization.ts`), so the
+// stays free of a `@intx/tool-packaging` dependency (that layer lives
+// in `packages/tool-packaging/src/tool-materialization.ts`), so the
 // caller runs the closure machinery and hands the resulting package
 // directory in. This module only performs the import + evaluate +
 // validate step, which is the part that must run inside the child's

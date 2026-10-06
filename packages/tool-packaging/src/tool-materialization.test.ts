@@ -38,6 +38,9 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
       cacheRoot: "/unused-by-manifest-invalid-gate",
       cacheMaxBytes: 1024 * 1024,
       registryMaxTarballBytes: 10 * 1024 * 1024,
+      assetRoot: "/unused-by-manifest-invalid-gate",
+      registries: new Map([["npmjs", { url: "https://registry.npmjs.org" }]]),
+      host: { os: "linux", cpu: "x64" },
     });
     expect(result.factories).toEqual([]);
     expect(result.pluginFactories).toEqual([]);
@@ -56,6 +59,9 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
         cacheRoot: "/unused-by-manifest-invalid-gate",
         cacheMaxBytes: 1024 * 1024,
         registryMaxTarballBytes: 10 * 1024 * 1024,
+        assetRoot: "/unused-by-manifest-invalid-gate",
+        registries: new Map([["npmjs", { url: "https://registry.npmjs.org" }]]),
+        host: { os: "linux", cpu: "x64" },
       });
     } catch (err) {
       caught = err;
@@ -108,6 +114,9 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
         cacheRoot: "/unused-by-manifest-invalid-gate",
         cacheMaxBytes: 1024 * 1024,
         registryMaxTarballBytes: 10 * 1024 * 1024,
+        assetRoot: "/unused-by-manifest-invalid-gate",
+        registries: new Map([["npmjs", { url: "https://registry.npmjs.org" }]]),
+        host: { os: "linux", cpu: "x64" },
       });
     } catch (err) {
       caught = err;
@@ -286,6 +295,9 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
         cacheRoot: "/unused-by-manifest-invalid-gate",
         cacheMaxBytes: 1024 * 1024,
         registryMaxTarballBytes: 10 * 1024 * 1024,
+        assetRoot: "/unused-by-manifest-invalid-gate",
+        registries: new Map([["npmjs", { url: "https://registry.npmjs.org" }]]),
+        host: { os: "linux", cpu: "x64" },
       });
     } catch (err) {
       caught = err;
@@ -320,6 +332,9 @@ describe("materializeToolPackages — manifest.invalid gate", () => {
         cacheRoot: "/unused-by-manifest-invalid-gate",
         cacheMaxBytes: 1024 * 1024,
         registryMaxTarballBytes: 10 * 1024 * 1024,
+        assetRoot: "/unused-by-manifest-invalid-gate",
+        registries: new Map([["npmjs", { url: "https://registry.npmjs.org" }]]),
+        host: { os: "linux", cpu: "x64" },
       });
     } catch (err) {
       caught = err;
