@@ -122,7 +122,11 @@ import {
   type WorkflowDefinition,
   type WorkflowRuntimeEnv,
 } from "@intx/workflow";
-import { type PluginToolDefinitions } from "@intx/workflow-deploy";
+import {
+  collectDeclaredResources,
+  filterGrantsToDeclaredResources,
+  type PluginToolDefinitions,
+} from "@intx/workflow-deploy";
 
 import {
   attachStepCredentialWiring,
@@ -138,10 +142,6 @@ import {
   type CredentialMaterialCell,
 } from "./step-credential-capabilities";
 import { readRunGrants, runGrantsPath } from "./run-grants";
-import {
-  collectDeclaredResources,
-  filterGrantsToDeclaredResources,
-} from "./child-grant-filter";
 import {
   createDurableConversationRegistry,
   isErrnoNotFound,

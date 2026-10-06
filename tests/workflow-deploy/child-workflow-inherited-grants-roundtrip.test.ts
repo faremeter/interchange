@@ -24,8 +24,8 @@
 // on-disk substrate in
 // `apps/sidecar/src/workflow-substrate-factory-child-grants.test.ts`, which
 // calls `createSidecarRunChild` with hand-seeded grants, and the filter itself
-// in `apps/sidecar/src/child-grant-filter.test.ts`. This test proves the WIRING
-// composes: that a real mail trigger's delivered grants reach
+// in `packages/workflow-deploy/src/child-grant-filter.test.ts`. This test
+// proves the WIRING composes: that a real mail trigger's delivered grants reach
 // `runs/<parentRunId>/grants.json` through the supervisor, and that the real
 // child-spawn adapter caps them against the child body during an honest
 // parent->child spawn. The fail-closed negative is not reproducible here --
