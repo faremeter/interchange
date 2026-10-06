@@ -123,24 +123,6 @@ const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 const ED25519_PUBLIC_KEY_BYTES = 32;
 
 /**
- * Project an run address into the substrate-safe id of its
- * workflow-run repo. Both deploy branches key `{ kind: "workflow-run",
- * id }` by this slug, and the supervisor principal's `anchorRunId`
- * must equal that id for the workflow-run kind handler's authz check to
- * pass. The derivation is owned by `@intx/workflow-deploy` so the hub's
- * read routes reconstruct the identical id; this thin delegator keeps
- * the sidecar's call sites readable while the rationale and the
- * substrate `SAFE_REPO_ID` contract live with the shared function.
- *
- * The name keeps "Deployment" deliberately: it derives the deploy-phase
- * routing slug (the workflow-run repo id an address projects to), not a
- * run identity, so it survives the run-first identity sweep.
- */
-export function deriveDeploymentId(agentAddress: string): string {
-  return deriveWorkflowRunRepoId(agentAddress);
-}
-
-/**
  * The durable per-deployment store the sidecar checks a source-ref deployment's
  * source assets out into. A SIBLING of the closure instance dir, not a child:
  * `materializeDeploymentClosure` reclaims the closure dir on every apply and
@@ -1458,7 +1440,7 @@ export function createSidecarDeployRouter(deps: {
   // is serial and relies on the `activeSupervisors` backstop instead.
   const reservingDeployAddresses = new Set<string>();
 
-  // Slug-collision tracking. `deriveDeploymentId` substitutes
+  // Slug-collision tracking. `deriveWorkflowRunRepoId` substitutes
   // disallowed characters with `-`, which is deterministic but lossy:
   // two distinct run addresses can collapse to the same slug, and
   // a collision would let the second deploy silently overwrite the
@@ -1472,7 +1454,7 @@ export function createSidecarDeployRouter(deps: {
     const existing = slugClaims.get(runId);
     if (existing !== undefined && existing !== agentAddress) {
       throw new Error(
-        `deriveDeploymentId collision: run addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to runId ${JSON.stringify(runId)}`,
+        `workflow-run repo id collision: run addresses ${JSON.stringify(existing)} and ${JSON.stringify(agentAddress)} both project to runId ${JSON.stringify(runId)}`,
       );
     }
     // A same-address re-claim is a defensive no-op: the `activeSupervisors`
@@ -1780,7 +1762,7 @@ export function createSidecarDeployRouter(deps: {
         `sidecar deploy router: a supervisor is already active for ${spec.agentAddress}; refusing to spawn a second`,
       );
     }
-    const runId = deriveDeploymentId(spec.agentAddress);
+    const runId = deriveWorkflowRunRepoId(spec.agentAddress);
 
     // Single-step launched-agent deploy vs. derived multi-step deploy. A
     // one-step deployment keeps the deployment's own (legacy) mail address
@@ -2341,7 +2323,7 @@ export function createSidecarDeployRouter(deps: {
       );
     }
 
-    const runId = deriveDeploymentId(frame.agentAddress);
+    const runId = deriveWorkflowRunRepoId(frame.agentAddress);
 
     // Resolve the sidecar data dir once: the run record, the materialized
     // closure, and the per-step scratch all root under it. Required for any
@@ -2618,7 +2600,7 @@ export function createSidecarDeployRouter(deps: {
         if (wired !== undefined) await wired.supervisor.shutdown();
         if (activeSupervisors.get(frame.agentAddress) === wired) {
           reclaimSelfTerminatedSupervisor({
-            runId: deriveDeploymentId(frame.agentAddress),
+            runId: deriveWorkflowRunRepoId(frame.agentAddress),
             agentAddress: frame.agentAddress,
           });
         }
@@ -2627,7 +2609,7 @@ export function createSidecarDeployRouter(deps: {
         if (stepStateDataDir !== undefined) {
           await deleteWorkflowRunRecord(
             stepStateDataDir,
-            deriveDeploymentId(frame.agentAddress),
+            deriveWorkflowRunRepoId(frame.agentAddress),
           );
         }
       });
@@ -2655,7 +2637,7 @@ export function createSidecarDeployRouter(deps: {
       // boundary rather than dispatched into a supervisor that is in
       // the middle of tearing its child down. The pattern is: drop
       // racing frames first, then unwind the underlying resource.
-      const runId = deriveDeploymentId(frame.agentAddress);
+      const runId = deriveWorkflowRunRepoId(frame.agentAddress);
       unregisterWorkflowRoutes(frame.agentAddress);
       // Shut the per-deployment supervisor down so the workflow-process
       // child, its IPC pipes, and its event-channel fd are released.
@@ -2741,7 +2723,7 @@ export function createSidecarDeployRouter(deps: {
           // record missing its source/closure/approvedWireHash is rejected
           // earlier, at the scan boundary, by the record schema's discriminated
           // union -- so no bespoke source-ref guard is needed here.)
-          const derived = deriveDeploymentId(record.agentAddress);
+          const derived = deriveWorkflowRunRepoId(record.agentAddress);
           if (derived !== runId) {
             logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${runId}`;
             continue;

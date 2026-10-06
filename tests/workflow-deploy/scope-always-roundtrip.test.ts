@@ -117,9 +117,9 @@ import {
 import {
   createApprovalSet,
   deriveRunAddress,
+  deriveWorkflowRunRepoId,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 
 import {
   SESSION_ID,
@@ -450,7 +450,7 @@ function createRegisterSignalCorrelation(db: TestDb["db"]) {
         `No live workflow run for address "${agentAddress}"; cannot register signal correlation ${correlationId}`,
       );
     }
-    const addressSlug = deriveDeploymentId(agentAddress);
+    const addressSlug = deriveWorkflowRunRepoId(agentAddress);
     if (addressSlug !== anchorRunId) {
       throw new Error(
         `Anchor run id mismatch registering signal correlation ${correlationId}: frame claims "${anchorRunId}" but address "${agentAddress}" derives the workflow-run repo slug "${addressSlug}"`,

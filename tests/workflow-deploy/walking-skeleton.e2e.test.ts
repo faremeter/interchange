@@ -68,9 +68,9 @@ import { generateId } from "@intx/hub-common";
 import {
   createApprovalSet,
   deriveRunAddress,
+  deriveWorkflowRunRepoId,
   type ApprovalSet,
 } from "@intx/workflow-deploy";
-import { deriveDeploymentId } from "@intx/sidecar-app/src/workflow-host-wiring";
 import {
   createTestDb,
   harnessDbEnvAvailable,
@@ -588,7 +588,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
     // repo, then wait for the deployment address to become routable.
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveDeploymentId(deploymentMailAddress),
+      id: deriveWorkflowRunRepoId(deploymentMailAddress),
     };
     // The live WorkflowDefinition never leaves the airlocked child, so the
     // handle carries an identity-bearing stand-in built from the inert
@@ -765,7 +765,7 @@ describe.skipIf(!harnessDbEnvAvailable())("walking skeleton e2e", () => {
 
     const workflowRunRepoId: RepoId = {
       kind: "workflow-run",
-      id: deriveDeploymentId(bodyDeploymentMailAddress),
+      id: deriveWorkflowRunRepoId(bodyDeploymentMailAddress),
     };
     env.registerDeployment({
       anchorRunId: BODY_DEPLOYMENT_ID,

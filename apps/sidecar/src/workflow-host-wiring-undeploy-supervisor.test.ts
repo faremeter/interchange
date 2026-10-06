@@ -37,11 +37,9 @@ import {
   readPayloadsOfType,
   waitForUpstreamPayload,
 } from "@intx/workflow-host/testing";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
 
-import {
-  createSidecarDeployRouter,
-  deriveDeploymentId,
-} from "./workflow-host-wiring";
+import { createSidecarDeployRouter } from "./workflow-host-wiring";
 import {
   createMultistepDrainRouter,
   createMultistepMailRouter,
@@ -339,7 +337,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       // one-per-message); a stale cold `runs/<runId>/` subtree models a
       // multi-step leftover the per-run cleanup did not drop. An unrelated
       // deployment's step-state subtree must survive the undeploy sweep.
-      const anchorRunId = deriveDeploymentId(frame.agentAddress);
+      const anchorRunId = deriveWorkflowRunRepoId(frame.agentAddress);
       const stepStateRoot = path.join(dataDir, "workflow-step-state");
       const warmWorkspaceFile = path.join(
         stepStateRoot,

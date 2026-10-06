@@ -71,8 +71,7 @@ const DEPLOYMENT_ID = "run_abc";
 
 // The sidecar's deploy router keys the workflow-run repo by the
 // sanitized deployment address, NOT the bare deployment id (see
-// `deriveDeploymentId` -> `deriveWorkflowRunRepoId` in
-// apps/sidecar/src/workflow-host-wiring.ts). The read routes must
+// `deriveWorkflowRunRepoId`). The read routes must
 // reconstruct the same id from `(anchorRunId, tenantDomain)`; the
 // run-observe tests build their on-disk repo under this derived id so a
 // passing test proves the read side addresses the same repo the write
