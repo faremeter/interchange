@@ -17,7 +17,7 @@ import type { WorkflowDefinition } from "@intx/workflow";
 import {
   walkCapabilities,
   type PluginToolDefinitions,
-} from "@intx/workflow-deploy";
+} from "./capability-walk";
 
 /**
  * The flat union of every grant-shape resource string the child body declares,
