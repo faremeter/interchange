@@ -1428,4 +1428,45 @@ describe("conversation attachments round-trip", () => {
       }),
     ).toThrow();
   });
+
+  test("rejects an attachment header that is not 7-bit or over 998 octets", () => {
+    // These headers sit inside the signed part and have no transfer
+    // encoding. An 8-bit name, or a line past 998, is one a relay can rewrite.
+    const blob = new Uint8Array([1]);
+    expect(() =>
+      assembleSignedContent({
+        kind: "conversation",
+        text: "x",
+        attachments: [
+          { name: "résumé.pdf", contentType: "application/pdf", data: blob },
+        ],
+      }),
+    ).toThrow(/US-ASCII/);
+    expect(() =>
+      assembleSignedContent({
+        kind: "conversation",
+        text: "x",
+        attachments: [
+          {
+            name: "a".repeat(1100),
+            contentType: "application/pdf",
+            data: blob,
+          },
+        ],
+      }),
+    ).toThrow(/998/);
+    expect(() =>
+      assembleSignedContent({
+        kind: "conversation",
+        text: "x",
+        attachments: [
+          {
+            name: "notes.txt",
+            contentType: `application/${"é"}`,
+            data: blob,
+          },
+        ],
+      }),
+    ).toThrow(/US-ASCII/);
+  });
 });

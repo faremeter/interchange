@@ -332,6 +332,22 @@ describe("decodeMail", () => {
     expect(mail.rawHeaders["subject"]).toEqual(["folded subject line"]);
   });
 
+  test("keeps a space parked at the end of a folded line", () => {
+    // The leading whitespace of a continuation is the fold. A space before
+    // the next fold is part of the value, so trimming the continuation
+    // would drop it.
+    const mail = decodeMail(
+      rawBytes(
+        "From: a@b\r\n" +
+          "Subject: hello\r\n" +
+          " world \r\n" +
+          " more\r\n" +
+          "Content-Type: text/plain\r\n\r\nbody",
+      ),
+    );
+    expect(mail.rawHeaders["subject"]).toEqual(["hello world  more"]);
+  });
+
   test("keeps a header named after an Object.prototype member", () => {
     // `__proto__` and `constructor` are well-formed field names (RFC 5322
     // section 3.6.8), so a peer can send them. Accumulating them into a plain
