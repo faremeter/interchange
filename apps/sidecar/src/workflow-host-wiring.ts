@@ -38,6 +38,7 @@ import {
 import {
   createWorkflowSupervisor,
   hashGrants,
+  loadWorkflowDefinitionFromClosure,
   STEP_GRANTS_PATH,
   STEP_GRANTS_REF,
   wrapHubTransportAsMailBus,
@@ -79,17 +80,25 @@ import {
   type WorkflowControlFrame,
   type WorkflowRunRefTips,
 } from "@intx/types/sidecar";
-import { STEP_ID_PATTERN, projectLiveToInert } from "@intx/workflow";
+import {
+  applyFrozenWorkflowClosure,
+  type ApplyFrozenWorkflowClosureArgs,
+  type AppliedWorkflowClosure,
+} from "@intx/tool-packaging";
+import {
+  STEP_ID_PATTERN,
+  projectLiveToInert,
+  type WorkflowDefinition,
+} from "@intx/workflow";
 import {
   deriveWorkflowRunRepoId,
   inertFlatNamespaceStepIds,
 } from "@intx/workflow-deploy";
 
 import {
-  applyFrozenWorkflowClosure,
-  type AppliedWorkflowClosure,
-} from "./workflow-closure-apply";
-import { readRegistries } from "./sidecar-materialization-config";
+  readRegistries,
+  resolveHostPlatform,
+} from "./sidecar-materialization-config";
 
 import type {
   MultistepDrainRouter,
@@ -1355,7 +1364,9 @@ export function createSidecarDeployRouter(deps: {
    * production never overrides it. A test seam so a unit test can drive the
    * deploy/restore source-ref path without a live registry.
    */
-  applyFrozenWorkflowClosure?: typeof applyFrozenWorkflowClosure;
+  applyFrozenWorkflowClosure?: (
+    args: ApplyFrozenWorkflowClosureArgs<WorkflowDefinition>,
+  ) => Promise<AppliedWorkflowClosure<WorkflowDefinition>>;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -1698,7 +1709,7 @@ export function createSidecarDeployRouter(deps: {
     dataDir: string,
     deploymentId: string,
     pin: SourceRefPin,
-  ): Promise<AppliedWorkflowClosure> {
+  ): Promise<AppliedWorkflowClosure<WorkflowDefinition>> {
     const instanceDir = pathJoin(
       dataDir,
       "workflow-definition-closures",
@@ -1727,6 +1738,8 @@ export function createSidecarDeployRouter(deps: {
         "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
       ),
       registries: readRegistries(),
+      host: resolveHostPlatform(),
+      loadDefinition: loadWorkflowDefinitionFromClosure,
       assetRoot,
       assetMounts,
       gitDirs,

@@ -1,16 +1,19 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import fsNode, { promises as fs } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import git from "isomorphic-git";
 
-import { base64Encode } from "@intx/types";
-import type { RegistryConfig, TarballFetcher } from "@intx/tool-packaging";
 import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
-import { createWorkflowClosureMaterializer } from "./workflow-closure-materialization";
+import type { TarballFetcher } from "./loader";
+import { hostPlatform } from "./materialization-config";
+import type { RegistryConfig } from "./resolver";
+import {
+  createWorkflowClosureMaterializer,
+  type WorkflowClosureMaterializerConfig,
+} from "./workflow-closure-materialization";
 
 const REGISTRY_NAME = "test-registry";
 const WORKFLOW_PACKAGE_NAME = "@fixture/wf-probe";
@@ -19,15 +22,17 @@ const DEP_PACKAGE_NAME = "@fixture/dep";
 const DEP_PACKAGE_VERSION = "1.0.0";
 const WORKFLOW_ENTRY = "index.js";
 
+type AssetDelivery = WorkflowClosureMaterializerConfig["materializeAssets"];
+
 // The pinned workflow entry writes a sentinel file as an import-time side
 // effect. The materializer lays the closure out WITHOUT importing any author
 // code, so the sentinel must never appear -- its absence proves no module was
-// evaluated on the host.
-const SENTINEL_ENV = "PROBE_MATERIALIZER_SENTINEL";
-const WORKFLOW_ENTRY_SOURCE = `
+// evaluated on the host. The path is baked into the source so the test does
+// not read the process environment.
+function workflowEntrySource(sentinelPath: string): string {
+  return `
 import { writeFileSync } from "node:fs";
-const sentinel = process.env[${JSON.stringify(SENTINEL_ENV)}];
-if (sentinel !== undefined) writeFileSync(sentinel, "imported");
+writeFileSync(${JSON.stringify(sentinelPath)}, "imported");
 export default {
   id: "probe-materializer-fixture",
   triggers: [],
@@ -35,11 +40,13 @@ export default {
   stepOrder: ["done"],
 };
 `;
+}
 
 let scratchRoot: string;
 let cacheRoot: string;
 let materializerScratch: string;
 let fixtureSourceRoot: string;
+let assetDeliveries: Parameters<AssetDelivery>[0][];
 
 beforeEach(async () => {
   scratchRoot = await fs.mkdtemp(
@@ -48,6 +55,7 @@ beforeEach(async () => {
   cacheRoot = path.join(scratchRoot, "cache");
   materializerScratch = path.join(scratchRoot, "probe-closures");
   fixtureSourceRoot = path.join(scratchRoot, "fixture-source");
+  assetDeliveries = [];
   await fs.mkdir(cacheRoot, { recursive: true });
   await fs.mkdir(materializerScratch, { recursive: true });
   await fs.mkdir(fixtureSourceRoot, { recursive: true });
@@ -105,7 +113,41 @@ function registries(): ReadonlyMap<string, RegistryConfig> {
   return new Map([[REGISTRY_NAME, { url: "https://registry.invalid" }]]);
 }
 
-function materializerConfig(fetchTarball?: TarballFetcher) {
+/** Records the call and returns empty maps. Registry closures fetch over HTTP. */
+function recordEmptyAssets(): AssetDelivery {
+  return async (args) => {
+    assetDeliveries.push(args);
+    return { assetMounts: new Map(), gitDirs: new Map() };
+  };
+}
+
+/**
+ * Records the call and places `bytes` where a tarball `kind: "asset"` entry
+ * resolves. Asset unpacking itself is owned by the caller-supplied delivery
+ * function; this stub is the mount that function returns.
+ */
+function deliverMountedTarball(
+  assetId: string,
+  mountPath: string,
+  tarballRel: string,
+  bytes: Uint8Array,
+): AssetDelivery {
+  return async (args) => {
+    assetDeliveries.push(args);
+    const dest = path.join(args.assetRoot, mountPath, tarballRel);
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.writeFile(dest, bytes);
+    return {
+      assetMounts: new Map([[assetId, mountPath]]),
+      gitDirs: new Map(),
+    };
+  };
+}
+
+function materializerConfig(
+  fetchTarball?: TarballFetcher,
+  materializeAssets: AssetDelivery = recordEmptyAssets(),
+) {
   return {
     cacheRoot,
     cacheMaxBytes: 10_000_000,
@@ -113,62 +155,10 @@ function materializerConfig(fetchTarball?: TarballFetcher) {
     maxAssetPayloadBytes: 50_000_000,
     registries: registries(),
     scratchRoot: materializerScratch,
+    host: hostPlatform("linux", "x64"),
+    materializeAssets,
     ...(fetchTarball !== undefined ? { fetchTarball } : {}),
   };
-}
-
-/**
- * Build a git packfile whose single commit's tree holds `files`, mirroring the
- * `createPack` output the hub delivers for an asset. Returns the pack bytes and
- * the commit sha the probe frame pins.
- */
-async function buildAssetPack(
-  files: Record<string, Uint8Array>,
-): Promise<{ pack: Uint8Array; commitSha: string }> {
-  const sourceDir = path.join(fixtureSourceRoot, `asset-${randomUUID()}`);
-  await fs.mkdir(sourceDir, { recursive: true });
-  await git.init({ fs: fsNode, dir: sourceDir, defaultBranch: "main" });
-  for (const [rel, content] of Object.entries(files)) {
-    const abs = path.join(sourceDir, rel);
-    await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, content);
-    await git.add({ fs: fsNode, dir: sourceDir, filepath: rel });
-  }
-  const commitSha = await git.commit({
-    fs: fsNode,
-    dir: sourceDir,
-    message: "asset",
-    author: { name: "test", email: "test@test.dev" },
-  });
-  const oids = new Set<string>([commitSha]);
-  const { commit } = await git.readCommit({
-    fs: fsNode,
-    dir: sourceDir,
-    oid: commitSha,
-  });
-  oids.add(commit.tree);
-  async function walkTree(treeOid: string): Promise<void> {
-    const { tree } = await git.readTree({
-      fs: fsNode,
-      dir: sourceDir,
-      oid: treeOid,
-    });
-    for (const entry of tree) {
-      oids.add(entry.oid);
-      if (entry.type === "tree") await walkTree(entry.oid);
-    }
-  }
-  await walkTree(commit.tree);
-  const result = await git.packObjects({
-    fs: fsNode,
-    dir: sourceDir,
-    oids: [...oids],
-    write: false,
-  });
-  if (result.packfile === undefined) {
-    throw new Error("packObjects produced no packfile");
-  }
-  return { pack: result.packfile, commitSha };
 }
 
 function probeFrame(
@@ -184,8 +174,19 @@ function probeFrame(
   };
 }
 
+function deliveredAsset(assetId: string, mountPath: string) {
+  return {
+    assetId,
+    mountPath,
+    pack: "cGFjaw==",
+    ref: "refs/heads/main",
+    commitSha: "a".repeat(40),
+  };
+}
+
 describe("createWorkflowClosureMaterializer", () => {
   test("lays out the frozen closure, resolves node_modules, and imports no author code", async () => {
+    const sentinelPath = path.join(scratchRoot, "import-sentinel");
     const workflow = await packFixture(
       {
         name: WORKFLOW_PACKAGE_NAME,
@@ -194,7 +195,7 @@ describe("createWorkflowClosureMaterializer", () => {
         interchange: { workflow: WORKFLOW_ENTRY },
         dependencies: { [DEP_PACKAGE_NAME]: DEP_PACKAGE_VERSION },
       },
-      { [WORKFLOW_ENTRY]: WORKFLOW_ENTRY_SOURCE },
+      { [WORKFLOW_ENTRY]: workflowEntrySource(sentinelPath) },
     );
     const dep = await packFixture(
       {
@@ -240,59 +241,56 @@ describe("createWorkflowClosureMaterializer", () => {
       throw new Error(`unexpected fetch for ${entry.name}@${entry.version}`);
     };
 
-    const sentinelPath = path.join(scratchRoot, "import-sentinel");
-    process.env[SENTINEL_ENV] = sentinelPath;
-    try {
-      const materialize = createWorkflowClosureMaterializer(
-        materializerConfig(fetchTarball),
-      );
-      const materialized = await materialize(
-        probeFrame(closure, WORKFLOW_ENTRY),
-      );
+    const materialize = createWorkflowClosureMaterializer(
+      materializerConfig(fetchTarball),
+    );
+    const materialized = await materialize(probeFrame(closure, WORKFLOW_ENTRY));
 
-      // The workflow package's own package.json is present in the laid-out
-      // store directory.
-      const pkgJson = JSON.parse(
-        await fs.readFile(
-          path.join(materialized.packageDir, "package.json"),
-          "utf8",
+    // The workflow package's own package.json is present in the laid-out
+    // store directory.
+    const pkgJson = JSON.parse(
+      await fs.readFile(
+        path.join(materialized.packageDir, "package.json"),
+        "utf8",
+      ),
+    );
+    expect(pkgJson.name).toBe(WORKFLOW_PACKAGE_NAME);
+    expect(pkgJson.version).toBe(WORKFLOW_PACKAGE_VERSION);
+
+    // The dependency resolves through the laid-out node_modules graph.
+    const depPkgJson = JSON.parse(
+      await fs.readFile(
+        path.join(
+          materialized.packageDir,
+          "node_modules",
+          "@fixture",
+          "dep",
+          "package.json",
         ),
-      );
-      expect(pkgJson.name).toBe(WORKFLOW_PACKAGE_NAME);
-      expect(pkgJson.version).toBe(WORKFLOW_PACKAGE_VERSION);
+        "utf8",
+      ),
+    );
+    expect(depPkgJson.name).toBe(DEP_PACKAGE_NAME);
 
-      // The dependency resolves through the laid-out node_modules graph.
-      const depPkgJson = JSON.parse(
-        await fs.readFile(
-          path.join(
-            materialized.packageDir,
-            "node_modules",
-            "@fixture",
-            "dep",
-            "package.json",
-          ),
-          "utf8",
-        ),
-      );
-      expect(depPkgJson.name).toBe(DEP_PACKAGE_NAME);
+    // Both frozen entries were fetched exactly once, at their pinned
+    // concrete versions.
+    expect(fetched.sort()).toEqual([
+      `${DEP_PACKAGE_NAME}@${DEP_PACKAGE_VERSION}`,
+      `${WORKFLOW_PACKAGE_NAME}@${WORKFLOW_PACKAGE_VERSION}`,
+    ]);
 
-      // Both frozen entries were fetched exactly once, at their pinned
-      // concrete versions.
-      expect(fetched.sort()).toEqual([
-        `${DEP_PACKAGE_NAME}@${DEP_PACKAGE_VERSION}`,
-        `${WORKFLOW_PACKAGE_NAME}@${WORKFLOW_PACKAGE_VERSION}`,
-      ]);
+    // A registry closure delivers no assets. The materializer still asks.
+    expect(assetDeliveries).toHaveLength(1);
+    expect(assetDeliveries[0]?.assets).toEqual([]);
+    expect(assetDeliveries[0]?.maxAssetPayloadBytes).toBe(50_000_000);
 
-      // No author code ran: the entry module's import-time sentinel was
-      // never written.
-      await expect(fs.stat(sentinelPath)).rejects.toThrow();
+    // No author code ran: the entry module's import-time sentinel was
+    // never written.
+    await expect(fs.stat(sentinelPath)).rejects.toThrow();
 
-      // Cleanup removes the ephemeral scratch tree.
-      await materialized.cleanup();
-      await expect(fs.stat(materialized.packageDir)).rejects.toThrow();
-    } finally {
-      Reflect.deleteProperty(process.env, SENTINEL_ENV);
-    }
+    // Cleanup removes the ephemeral scratch tree.
+    await materialized.cleanup();
+    await expect(fs.stat(materialized.packageDir)).rejects.toThrow();
   });
 
   test("fails loud when the closure pins no top-level package", async () => {
@@ -322,7 +320,7 @@ describe("createWorkflowClosureMaterializer", () => {
     ).rejects.toThrow(/exactly one top-level package/);
   });
 
-  test("materializes an asset-sourced closure from an inline-delivered pack", async () => {
+  test("materializes an asset-sourced closure from the delivered asset mount", async () => {
     const workflow = await packFixture(
       {
         name: WORKFLOW_PACKAGE_NAME,
@@ -330,14 +328,15 @@ describe("createWorkflowClosureMaterializer", () => {
         type: "module",
         interchange: { workflow: WORKFLOW_ENTRY },
       },
-      { [WORKFLOW_ENTRY]: WORKFLOW_ENTRY_SOURCE },
+      {
+        [WORKFLOW_ENTRY]: workflowEntrySource(
+          path.join(scratchRoot, "unused-sentinel"),
+        ),
+      },
     );
     const tarballPath = "tarballs/wf-probe-1.0.0.tgz";
     const assetId = "asset_probe";
     const mountPath = "package-registries/fixture/";
-    const { pack, commitSha } = await buildAssetPack({
-      [tarballPath]: workflow.bytes,
-    });
 
     const closure: ToolPackageManifest = {
       schemaVersion: "1",
@@ -361,27 +360,25 @@ describe("createWorkflowClosureMaterializer", () => {
       ],
     };
 
-    const materialize = createWorkflowClosureMaterializer(materializerConfig());
+    const asset = deliveredAsset(assetId, mountPath);
+    const materialize = createWorkflowClosureMaterializer(
+      materializerConfig(
+        undefined,
+        deliverMountedTarball(assetId, mountPath, tarballPath, workflow.bytes),
+      ),
+    );
     const materialized = await materialize({
       type: "workflow.probe.request",
       requestId: "req-asset",
       source: { kind: "asset", assetId, package: { format: "tarball" } },
       closure,
       entry: WORKFLOW_ENTRY,
-      assets: [
-        {
-          assetId,
-          mountPath,
-          pack: base64Encode(pack),
-          ref: "refs/heads/main",
-          commitSha,
-        },
-      ],
+      assets: [asset],
     });
 
     try {
-      // The workflow package was laid out from the asset-delivered tarball,
-      // SRI-verified against the frozen closure entry -- no HTTP fetch.
+      // The workflow package was laid out from the mount the delivery
+      // function returned, SRI-verified against the frozen closure entry.
       const pkgJson = JSON.parse(
         await fs.readFile(
           path.join(materialized.packageDir, "package.json"),
@@ -390,50 +387,35 @@ describe("createWorkflowClosureMaterializer", () => {
       );
       expect(pkgJson.name).toBe(WORKFLOW_PACKAGE_NAME);
       expect(pkgJson.version).toBe(WORKFLOW_PACKAGE_VERSION);
+
+      expect(assetDeliveries).toHaveLength(1);
+      const delivery = assetDeliveries[0];
+      expect(delivery?.assets).toEqual([asset]);
+      expect(delivery?.closure).toBe(closure);
+      expect(delivery?.maxAssetPayloadBytes).toBe(50_000_000);
+      expect(delivery?.assetRoot.endsWith(`${path.sep}workspace`)).toBe(true);
+      expect(delivery?.gitDirRoot.endsWith(`${path.sep}gitdirs`)).toBe(true);
     } finally {
       await materialized.cleanup();
     }
   });
 
-  test("fails loud when the inline asset payload exceeds the cap", async () => {
-    const workflow = await packFixture(
-      {
-        name: WORKFLOW_PACKAGE_NAME,
-        version: WORKFLOW_PACKAGE_VERSION,
-        type: "module",
-        interchange: { workflow: WORKFLOW_ENTRY },
-      },
-      { [WORKFLOW_ENTRY]: WORKFLOW_ENTRY_SOURCE },
-    );
+  test("forwards the asset payload cap and propagates a delivery failure", async () => {
     const assetId = "asset_probe";
-    const { pack, commitSha } = await buildAssetPack({
-      "tarballs/wf-probe-1.0.0.tgz": workflow.bytes,
-    });
-
     const closure: ToolPackageManifest = {
       schemaVersion: "1",
       topLevel: [
         { name: WORKFLOW_PACKAGE_NAME, version: WORKFLOW_PACKAGE_VERSION },
       ],
-      entries: [
-        {
-          name: WORKFLOW_PACKAGE_NAME,
-          version: WORKFLOW_PACKAGE_VERSION,
-          source: {
-            kind: "asset",
-            assetId,
-            package: {
-              format: "tarball",
-              path: "tarballs/wf-probe-1.0.0.tgz",
-              integrity: workflow.integrity,
-            },
-          },
-        },
-      ],
+      entries: [],
+    };
+    const materializeAssets: AssetDelivery = async (args) => {
+      assetDeliveries.push(args);
+      throw new Error("delivery rejected the asset payload");
     };
 
     const materialize = createWorkflowClosureMaterializer({
-      ...materializerConfig(),
+      ...materializerConfig(undefined, materializeAssets),
       maxAssetPayloadBytes: 16,
     });
     await expect(
@@ -443,17 +425,11 @@ describe("createWorkflowClosureMaterializer", () => {
         source: { kind: "asset", assetId, package: { format: "tarball" } },
         closure,
         entry: WORKFLOW_ENTRY,
-        assets: [
-          {
-            assetId,
-            mountPath: "package-registries/fixture/",
-            pack: base64Encode(pack),
-            ref: "refs/heads/main",
-            commitSha,
-          },
-        ],
+        assets: [deliveredAsset(assetId, "package-registries/fixture/")],
       }),
-    ).rejects.toThrow(/inline asset payload exceeds the 16-byte cap/);
+    ).rejects.toThrow(/delivery rejected the asset payload/);
+    expect(assetDeliveries).toHaveLength(1);
+    expect(assetDeliveries[0]?.maxAssetPayloadBytes).toBe(16);
   });
 
   test("rejects an asset-delivered tarball that fails its pinned integrity", async () => {
@@ -464,13 +440,15 @@ describe("createWorkflowClosureMaterializer", () => {
         type: "module",
         interchange: { workflow: WORKFLOW_ENTRY },
       },
-      { [WORKFLOW_ENTRY]: WORKFLOW_ENTRY_SOURCE },
+      {
+        [WORKFLOW_ENTRY]: workflowEntrySource(
+          path.join(scratchRoot, "unused-sentinel"),
+        ),
+      },
     );
     const assetId = "asset_probe";
     const tarballPath = "tarballs/wf-probe-1.0.0.tgz";
-    const { pack, commitSha } = await buildAssetPack({
-      [tarballPath]: workflow.bytes,
-    });
+    const mountPath = "package-registries/fixture/";
 
     const closure: ToolPackageManifest = {
       schemaVersion: "1",
@@ -495,7 +473,12 @@ describe("createWorkflowClosureMaterializer", () => {
       ],
     };
 
-    const materialize = createWorkflowClosureMaterializer(materializerConfig());
+    const materialize = createWorkflowClosureMaterializer(
+      materializerConfig(
+        undefined,
+        deliverMountedTarball(assetId, mountPath, tarballPath, workflow.bytes),
+      ),
+    );
     await expect(
       materialize({
         type: "workflow.probe.request",
@@ -503,15 +486,7 @@ describe("createWorkflowClosureMaterializer", () => {
         source: { kind: "asset", assetId, package: { format: "tarball" } },
         closure,
         entry: WORKFLOW_ENTRY,
-        assets: [
-          {
-            assetId,
-            mountPath: "package-registries/fixture/",
-            pack: base64Encode(pack),
-            ref: "refs/heads/main",
-            commitSha,
-          },
-        ],
+        assets: [deliveredAsset(assetId, mountPath)],
       }),
     ).rejects.toThrow(/did not match pinned integrity/);
   });
@@ -552,24 +527,8 @@ describe("createWorkflowClosureMaterializer", () => {
     ).rejects.toThrow(/was not among the delivered assets/);
   });
 
-  test("rejects a frame that delivers the same assetId twice", async () => {
-    const workflow = await packFixture(
-      {
-        name: WORKFLOW_PACKAGE_NAME,
-        version: WORKFLOW_PACKAGE_VERSION,
-        type: "module",
-        interchange: { workflow: WORKFLOW_ENTRY },
-      },
-      { [WORKFLOW_ENTRY]: WORKFLOW_ENTRY_SOURCE },
-    );
+  test("forwards a repeated asset delivery and propagates the rejection", async () => {
     const assetId = "asset_probe";
-    const { pack, commitSha } = await buildAssetPack({
-      "tarballs/wf-probe-1.0.0.tgz": workflow.bytes,
-    });
-    const encoded = base64Encode(pack);
-    // The closure references the delivered asset so the first delivery clears
-    // the "delivered but referenced by no closure entry" guard and the second
-    // delivery is what trips the duplicate-delivery guard under test.
     const closure: ToolPackageManifest = {
       schemaVersion: "1",
       topLevel: [
@@ -591,7 +550,15 @@ describe("createWorkflowClosureMaterializer", () => {
         },
       ],
     };
-    const materialize = createWorkflowClosureMaterializer(materializerConfig());
+    const first = deliveredAsset(assetId, "package-registries/a/");
+    const second = deliveredAsset(assetId, "package-registries/b/");
+    const materializeAssets: AssetDelivery = async (args) => {
+      assetDeliveries.push(args);
+      throw new Error("duplicate delivery rejected");
+    };
+    const materialize = createWorkflowClosureMaterializer(
+      materializerConfig(undefined, materializeAssets),
+    );
     await expect(
       materialize({
         type: "workflow.probe.request",
@@ -599,24 +566,11 @@ describe("createWorkflowClosureMaterializer", () => {
         source: { kind: "asset", assetId, package: { format: "tarball" } },
         closure,
         entry: WORKFLOW_ENTRY,
-        assets: [
-          {
-            assetId,
-            mountPath: "package-registries/a/",
-            pack: encoded,
-            ref: "refs/heads/main",
-            commitSha,
-          },
-          {
-            assetId,
-            mountPath: "package-registries/b/",
-            pack: encoded,
-            ref: "refs/heads/main",
-            commitSha,
-          },
-        ],
+        assets: [first, second],
       }),
-    ).rejects.toThrow(/is delivered more than once/);
+    ).rejects.toThrow(/duplicate delivery rejected/);
+    expect(assetDeliveries).toHaveLength(1);
+    expect(assetDeliveries[0]?.assets).toEqual([first, second]);
   });
 
   test("fails loud when the frame entry disagrees with interchange.workflow", async () => {
@@ -627,7 +581,11 @@ describe("createWorkflowClosureMaterializer", () => {
         type: "module",
         interchange: { workflow: WORKFLOW_ENTRY },
       },
-      { [WORKFLOW_ENTRY]: WORKFLOW_ENTRY_SOURCE },
+      {
+        [WORKFLOW_ENTRY]: workflowEntrySource(
+          path.join(scratchRoot, "unused-sentinel"),
+        ),
+      },
     );
     const closure: ToolPackageManifest = {
       schemaVersion: "1",

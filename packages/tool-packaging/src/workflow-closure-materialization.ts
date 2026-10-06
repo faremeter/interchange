@@ -1,21 +1,17 @@
 // Host-side materializer for a workflow-probe frame's frozen closure.
 //
-// The airlocked probe child (`workflow-probe-handler.ts`) evaluates a
-// code-sourced workflow's `interchange.workflow` entry, but the frozen
-// dependency closure it evaluates against is materialized on the sidecar
-// HOST first -- fetch + SRI-verify + extract + `node_modules` layout is
-// I/O, not author-code evaluation, so it stays out of the child. This
-// module builds the production `MaterializeWorkflowClosure` the probe
-// executor injects: it lays out the frame's frozen closure and returns
-// the workflow package directory the child loads from, without importing
-// any author code on the host.
+// The airlocked probe child evaluates a code-sourced workflow's
+// `interchange.workflow` entry, but the frozen dependency closure it
+// evaluates against is materialized on the sidecar host first -- fetch +
+// SRI-verify + extract + `node_modules` layout is I/O, not author-code
+// evaluation, so it stays out of the child. This module lays out the
+// frame's frozen closure and returns the workflow package directory the
+// child loads from, without importing any author code.
 //
-// Layering (greybeard): the concrete materializer lives here in
-// `apps/sidecar` so `@intx/workflow-host` stays free of a
-// `@intx/tool-packaging` dependency and `workflow-probe-handler.ts`
-// stays free of one too -- the materializer is an injected seam. The
-// portable packages only see the `MaterializeWorkflowClosure` callback
-// this module produces.
+// `host` and `materializeAssets` come from the caller. This package must
+// not import `@intx/hub-agent` or `@intx/workflow-host`: asset delivery and
+// the workflow-definition loader stay outside this package, and the probe
+// handler keeps the callback type the executor injects.
 //
 // Phases 1-2 only, no `applyAtomic`: a probe is ephemeral and inert, so
 // the durable-deploy lifecycle bookkeeping (`active-deploy-id`, the
@@ -26,37 +22,43 @@
 // only imports packages named in `topLevel`, so an empty `topLevel`
 // fetches + extracts + lays out every closure entry (the full `entries`
 // set) while importing NONE of them. That runs exactly the eval-free
-// `materializeClosure` phases the probe needs, using the loader's
-// production registry fetcher -- the tarball fetcher `@intx/tool-packaging`
-// owns is only reachable through `createToolLoader`, so the layout is
-// driven through the loader rather than by calling `materializeClosure`
-// with a fetcher this package would otherwise have to build (and thereby
-// reach for the npm-registry machinery that package exists to contain).
+// `materializeClosure` phases the probe needs. The production registry
+// fetcher is reached through `createToolLoader`, so the layout is driven
+// through the loader rather than by calling `materializeClosure` with a
+// fetcher of its own.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { type } from "arktype";
-import { materializeWorkflowAssets } from "@intx/hub-agent";
 import { getLogger } from "@intx/log";
-import {
-  type RegistryConfig,
-  type TarballFetcher,
-  createTarballCache,
-  createToolLoader,
-  storeEntryDir,
-} from "@intx/tool-packaging";
 import { PackageJSON } from "@intx/types/package-json";
-import type { WorkflowProbeRequestFrame } from "@intx/types/sidecar";
+import type {
+  WorkflowProbeRequestFrame,
+  WorkflowSourceAssetMount,
+} from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
 
-import { resolveHostPlatform } from "./sidecar-materialization-config";
-import type {
-  MaterializedWorkflowClosure,
-  MaterializeWorkflowClosure,
-} from "./workflow-probe-handler";
+import { createTarballCache } from "./cache";
+import {
+  createToolLoader,
+  type HostPlatform,
+  type TarballFetcher,
+} from "./loader";
+import type { RegistryConfig } from "./resolver";
+import { storeEntryDir } from "./store-layout";
 
 const logger = getLogger(["sidecar", "workflow-closure-materialization"]);
+
+/**
+ * Laid-out probe closure. The probe handler names this shape
+ * `MaterializedWorkflowClosure`; this module keeps its own alias so it
+ * does not import the handler.
+ */
+interface MaterializedProbeClosure {
+  readonly packageDir: string;
+  cleanup(): Promise<void>;
+}
 
 export interface WorkflowClosureMaterializerConfig {
   /** Content-addressable tarball cache root shared across materializations. */
@@ -67,9 +69,8 @@ export interface WorkflowClosureMaterializerConfig {
   readonly registryMaxTarballBytes: number;
   /**
    * Byte cap for the total base64-encoded asset payload a probe frame may
-   * deliver inline. Measured against the base64 wire length (a conservative
-   * upper bound on the decoded bytes), it is enforced before any pack is
-   * decoded so an oversized frame fails loud rather than being materialized.
+   * deliver inline. Forwarded to `materializeAssets`, which enforces it
+   * before any pack is decoded.
    */
   readonly maxAssetPayloadBytes: number;
   /** Registry identifier -> URL + credentials the loader resolves entries against. */
@@ -79,6 +80,23 @@ export interface WorkflowClosureMaterializerConfig {
    * is created (one per probe, removed by the returned `cleanup`).
    */
   readonly scratchRoot: string;
+  /** npm `os`/`cpu` pair the loader selects optional dependencies with. */
+  readonly host: HostPlatform;
+  /**
+   * Materialize the frame's inline-delivered assets into `assetRoot` and
+   * `gitDirRoot`. The caller supplies the real delivery function; this
+   * package does not import it.
+   */
+  readonly materializeAssets: (args: {
+    readonly assets: readonly WorkflowSourceAssetMount[];
+    readonly closure: ToolPackageManifest;
+    readonly assetRoot: string;
+    readonly gitDirRoot: string;
+    readonly maxAssetPayloadBytes: number;
+  }) => Promise<{
+    readonly assetMounts: ReadonlyMap<string, string>;
+    readonly gitDirs: ReadonlyMap<string, string>;
+  }>;
   /**
    * Test seam for tarball fetching, forwarded to `createToolLoader`.
    * Production omits it and the loader fetches from the configured registry.
@@ -87,24 +105,23 @@ export interface WorkflowClosureMaterializerConfig {
 }
 
 /**
- * Build the production `MaterializeWorkflowClosure` the workflow-probe
- * executor injects. The returned function lays out a probe frame's frozen
- * closure under a fresh scratch dir and returns the workflow package
- * directory plus a `cleanup` that removes the scratch dir.
+ * Build the materializer the workflow-probe executor injects. The returned
+ * function lays out a probe frame's frozen closure under a fresh scratch
+ * dir and returns the workflow package directory plus a `cleanup` that
+ * removes the scratch dir.
  *
  * @throws (from the returned materializer) if the closure does not pin
  *   exactly one top-level package, the source registry is not configured,
- *   the layout fails (fetch / integrity / extract), or the frame's `entry`
- *   disagrees with the materialized package's `interchange.workflow`.
+ *   asset delivery rejects, the layout fails (fetch / integrity / extract),
+ *   or the frame's `entry` disagrees with the materialized package's
+ *   `interchange.workflow`.
  */
 export function createWorkflowClosureMaterializer(
   config: WorkflowClosureMaterializerConfig,
-): MaterializeWorkflowClosure {
-  const host = resolveHostPlatform();
-
+): (frame: WorkflowProbeRequestFrame) => Promise<MaterializedProbeClosure> {
   return async function materialize(
     frame: WorkflowProbeRequestFrame,
-  ): Promise<MaterializedWorkflowClosure> {
+  ): Promise<MaterializedProbeClosure> {
     // Gap 1: the closure's single top-level pin IS the workflow definition
     // package (the hub resolved the closure for exactly that pin). Assert
     // the cardinality and fail loud rather than silently picking `[0]`; a 0-
@@ -162,7 +179,7 @@ export function createWorkflowClosureMaterializer(
       const loader = createToolLoader({
         cache,
         registries: config.registries,
-        host,
+        host: config.host,
         maxRegistryTarballBytes: config.registryMaxTarballBytes,
         ...(config.fetchTarball !== undefined
           ? { fetchTarball: config.fetchTarball }
@@ -176,7 +193,7 @@ export function createWorkflowClosureMaterializer(
       // HTTP.
       const assetRoot = path.join(scratchDir, "workspace");
       const gitDirRoot = path.join(scratchDir, "gitdirs");
-      const { assetMounts, gitDirs } = await materializeWorkflowAssets({
+      const { assetMounts, gitDirs } = await config.materializeAssets({
         assets: frame.assets ?? [],
         closure: frame.closure,
         assetRoot,
