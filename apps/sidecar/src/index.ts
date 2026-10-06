@@ -14,6 +14,7 @@ import {
   createInboundMailPolicyRegistry,
   createInboundMailPolicyLookup,
   createSidecarOrchestrator,
+  MAX_INLINE_ASSET_PAYLOAD_BYTES,
   type HubLink,
 } from "@intx/hub-agent";
 import { hexDecode, hexEncode } from "@intx/types";
@@ -54,7 +55,6 @@ import {
 import { createWorkflowRunPackRestorer } from "./workflow-run-pack-restore";
 import { readRegistries } from "./sidecar-materialization-config";
 import { createWorkflowClosureMaterializer } from "./workflow-closure-materialization";
-import { MAX_INLINE_ASSET_PAYLOAD_BYTES } from "./source-asset-delivery";
 import { createWorkflowProbeExecutor } from "./workflow-probe-handler";
 import { loadOrMintSidecarKeypair } from "./signing-keypair";
 import {

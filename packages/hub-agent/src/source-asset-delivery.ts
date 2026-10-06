@@ -14,14 +14,15 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 
 import { getLogger } from "@intx/log";
-import { base64Decode } from "@intx/types";
-import { applyAssetPack } from "@intx/hub-agent";
 import {
   DEFAULT_PACK_MATERIALIZATION_LIMITS,
   indexPackIntoGitDir,
 } from "@intx/storage-isogit/node";
+import { base64Decode } from "@intx/types";
 import type { WorkflowSourceAssetMount } from "@intx/types/sidecar";
 import type { ToolPackageManifest } from "@intx/types/tool-packages";
+
+import { applyAssetPack } from "./apply-asset-pack";
 
 const logger = getLogger(["sidecar", "source-asset-delivery"]);
 
