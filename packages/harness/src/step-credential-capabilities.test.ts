@@ -1,13 +1,11 @@
 import { describe, test, expect } from "bun:test";
 import { toolConsumer, type GrantRule } from "@intx/authz";
-import { defineTool, type ToolBundle } from "@intx/agent";
 import type { CredentialProvider, CredentialShapeContext } from "@intx/types";
 import type { CredentialDelivery } from "@intx/types/sidecar";
 import type { ToolCredentialDeclaration } from "@intx/types/package-json";
-import { createCredentialProviderRegistry } from "@intx/harness";
 
+import { createCredentialProviderRegistry } from "./credential-providers";
 import { buildCredentialCapabilities } from "./step-credential-capabilities";
-import type { StepToolFactory } from "./tool-materialization";
 
 // A provider that records every shape context it is handed, so a test can
 // reach the `readCurrentMaterial` closure a shaped handle reads through.
@@ -47,26 +45,12 @@ function grant(
   };
 }
 
-// A StepToolFactory whose `factory` is a never-invoked stub: the assembly reads
-// only `packageName` and `declaredCredentials`.
+// The assembly reads only `packageName` and `declaredCredentials`.
 function fac(
   packageName: string,
   declaredCredentials: ToolCredentialDeclaration[],
-): StepToolFactory {
-  return {
-    packageName,
-    declaredCredentials,
-    factory: defineTool({
-      id: `${packageName}/bundle`,
-      requires: [],
-      definitions: [],
-      factory: (): ToolBundle => ({
-        definitions: [],
-        // Never invoked: the assembly reads only packageName + declarations.
-        run: () => Promise.reject(new Error("stub tool bundle: run is unused")),
-      }),
-    }),
-  };
+) {
+  return { packageName, declaredCredentials };
 }
 
 const ORIGIN = "https://api.example.com";
