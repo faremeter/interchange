@@ -130,7 +130,10 @@ function makeMockTransport(): {
   // `MessageTransport` surface is satisfied via the double-cast pattern,
   // which the project conventions sanction for library-type test stubs.
   const stub = {
-    watch(_mailbox: unknown, callback: WatchCallback): () => void {
+    async watch(
+      _mailbox: unknown,
+      callback: WatchCallback,
+    ): Promise<() => void> {
       callbacks.push(callback);
       return () => {
         unsubscribes += 1;

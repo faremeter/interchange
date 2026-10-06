@@ -227,7 +227,10 @@ function makeMockTransport(): MockTransport {
       return { expungedUids: expungeUids };
     },
 
-    watch(_mailbox: string, callback: WatchCallback): Unsubscribe {
+    async watch(
+      _mailbox: string,
+      callback: WatchCallback,
+    ): Promise<Unsubscribe> {
       watchCallbacks.push(callback);
       return () => {
         const idx = watchCallbacks.indexOf(callback);
@@ -348,11 +351,10 @@ describe("createMailTools", () => {
     expect(result.content["error"]).toBe(`Unknown tool: "not_a_mail_tool"`);
   });
 
-  test("run wraps an error thrown from a handler path lacking its own try/catch", async () => {
-    // mail_wait registers its watch subscription inside the promise executor,
-    // outside any try/catch. A throw from transport.watch therefore rejects
-    // the handler and reaches createMailTools.run, where the top-level wrapper
-    // turns it into an isError result coded as this package's own defect.
+  test("mail_wait reports a bare watch failure as internal_error", async () => {
+    // A watch install that throws a bare error names no transport condition.
+    // mail_wait classifies that as a defect in this package. The result is
+    // internal_error, carrying the thrown message.
     const transport = makeMockTransport();
     transport.watch = () => {
       throw new Error("synthetic watch failure");

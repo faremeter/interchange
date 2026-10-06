@@ -698,8 +698,16 @@ export interface MessageTransport {
 
   // --- Real-time notification ---
 
-  /** Monitor a mailbox for new messages and flag changes (IMAP IDLE). */
-  watch(mailbox: string, callback: (event: MailboxEvent) => void): Unsubscribe;
+  /**
+   * Monitor a mailbox for new messages and flag changes (IMAP IDLE).
+   * The promise resolves once the watch is accepted. Callers await it
+   * before relying on the callback, and a refusal rejects with the
+   * transport's condition. The unsubscribe function stays synchronous.
+   */
+  watch(
+    mailbox: string,
+    callback: (event: MailboxEvent) => void,
+  ): Promise<Unsubscribe>;
 
   // --- Synchronization ---
 

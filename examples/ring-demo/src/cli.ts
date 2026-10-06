@@ -177,7 +177,7 @@ const toolRunners: {
   posix: ReturnType<typeof createPosixTools>;
 }[] = [];
 
-transportUser.watch("INBOX", (event) => {
+await transportUser.watch("INBOX", (event) => {
   if (event.type !== "exists") return;
 
   void (async () => {

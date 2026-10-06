@@ -99,7 +99,7 @@ function createStubTransport(
     async expunge(): Promise<{ expungedUids: number[] }> {
       return notDriven("expunge");
     },
-    watch(): Unsubscribe {
+    async watch(): Promise<Unsubscribe> {
       return () => {
         /* nothing to unsubscribe */
       };
@@ -156,7 +156,7 @@ describe("mail_wait always settles", () => {
     const watching = Promise.withResolvers<(event: MailboxEvent) => void>();
     let watched = false;
     const transport = createStubTransport({
-      watch(_mailbox: string, callback: (event: MailboxEvent) => void) {
+      async watch(_mailbox: string, callback: (event: MailboxEvent) => void) {
         watched = true;
         watching.resolve(callback);
         return () => {

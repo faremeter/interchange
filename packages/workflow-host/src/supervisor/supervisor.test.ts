@@ -1550,6 +1550,7 @@ describe("createWorkflowSupervisor", () => {
     expect(badMailbox.result.ok).toBe(false);
     if (badMailbox.result.ok) throw new Error("expected rejection");
     expect(badMailbox.result.reason).toMatch(/only INBOX is writable/);
+    expect(badMailbox.result.condition).toBe("NONEXISTENT");
 
     // A flag write on an unknown uid fails loudly rather than silently.
     await wired.childSender.send({

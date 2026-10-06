@@ -143,6 +143,7 @@ import {
   type LoadParkedApproval,
 } from "./parked-correlations";
 import type { ChildOutboundMailBridge } from "./outbound-mail-bridge";
+import type { ChildMailboxCallBridge } from "./mailbox-call-bridge";
 import type { ChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
 import type { MailboxWatchRegistry } from "./mailbox-watch-registry";
 import { createWarmAgentCache, type WarmAgentCache } from "./warm-agent-cache";
@@ -572,6 +573,14 @@ export interface RunWorkflowChildOpts {
    * side asked for a mutation.
    */
   mailboxMutationBridge?: ChildMailboxMutationBridge;
+  /**
+   * Optional mailbox-call bridge. The step agent's transport forwards every
+   * mailbox method that is not `send` and not a flag or expunge mutation
+   * through this bridge. The control loop routes `mailbox.call.response`
+   * to `handleResult` and `cancelAll`s it on exit. When omitted, a response
+   * is logged and dropped.
+   */
+  mailboxCallBridge?: ChildMailboxCallBridge;
   /**
    * Optional mailbox watch registry (INBOUND half of mailbox ownership,
    * design §3b). The supervisor -- the sole mail owner -- commits an arrived
@@ -1054,6 +1063,9 @@ export async function runWorkflowChild(
           ...(opts.mailboxMutationBridge !== undefined
             ? { mailboxMutationBridge: opts.mailboxMutationBridge }
             : {}),
+          ...(opts.mailboxCallBridge !== undefined
+            ? { mailboxCallBridge: opts.mailboxCallBridge }
+            : {}),
           ...(mailboxWatchRegistry !== undefined
             ? { mailboxWatchRegistry }
             : {}),
@@ -1091,6 +1103,9 @@ export async function runWorkflowChild(
       opts.mailboxMutationBridge.cancelAll(
         "workflow-child control loop exited",
       );
+    }
+    if (opts.mailboxCallBridge !== undefined) {
+      opts.mailboxCallBridge.cancelAll("workflow-child control loop exited");
     }
     // Evict the warm-agent cache (design §3b) on every exit path:
     // graceful (shutdown frame -> iterator end), dirty (thrown error),
@@ -1158,6 +1173,7 @@ async function handleControlPayload(
     substrateWriteBridge?: SubstrateWriteResponseSink;
     outboundMailBridge?: ChildOutboundMailBridge;
     mailboxMutationBridge?: ChildMailboxMutationBridge;
+    mailboxCallBridge?: ChildMailboxCallBridge;
     mailboxWatchRegistry?: MailboxWatchRegistry;
   },
 ): Promise<boolean> {
@@ -1538,9 +1554,15 @@ async function handleControlPayload(
       );
     }
     case "mailbox.call.response": {
-      // The child has no consumer for a mailbox-call response. Log and drop
-      // rather than throwing so the runtime keeps progressing.
-      logger.warn`workflow-child mailbox.call.response received; requestId=${payload.data.requestId} dropped`;
+      // Route the supervisor's answer to the mailbox-call bridge if one is
+      // wired. A response that lands without an active bridge means a stale
+      // frame for which no awaiter exists; log and drop rather than throwing
+      // so the runtime keeps progressing.
+      if (ctx.mailboxCallBridge === undefined) {
+        logger.warn`workflow-child mailbox.call.response received without a bridge wired; requestId=${payload.data.requestId} dropped`;
+        return false;
+      }
+      ctx.mailboxCallBridge.handleResult(payload.data);
       return false;
     }
     case "substrate.merge.request": {

@@ -244,6 +244,18 @@ const MailboxCallMessageRef = type({
   mailbox: "string > 0",
 });
 
+/**
+ * Caller-supplied message coordinates. They are not bounded: a frame this
+ * schema rejects crashes the child, and the supervisor is what refuses a
+ * mailbox name or a uid. Refs the supervisor emits stay on
+ * `MailboxCallMessageRef`, which admits only a positive uid and a non-empty
+ * mailbox.
+ */
+const MailboxCallRequestRef = type({
+  uid: "number",
+  mailbox: "string",
+});
+
 const MailboxCallOp = type.enumerated(
   "search",
   "thread",
@@ -336,19 +348,24 @@ const MailboxCallListInfo = type({
   createdAt: "string",
 });
 
+/**
+ * Operands the child forwards are unbounded. A frame this schema rejects
+ * crashes the child, and the supervisor refuses a mailbox, a uid, or a part
+ * it does not own. Results the supervisor emits stay bounded.
+ */
 const MailboxCallRequestData = type.or(
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'search'",
-    mailbox: "string > 0",
+    mailbox: "string",
     query: mailboxCall.SearchQuery,
   },
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'thread'",
-    mailbox: "string > 0",
+    mailbox: "string",
     algorithm: "'references' | 'orderedsubject'",
     "query?": mailboxCall.SearchQuery,
   },
@@ -356,35 +373,35 @@ const MailboxCallRequestData = type.or(
     requestId: "string > 0",
     runId: "string > 0",
     op: "'fetchHeaders' | 'fetchStructure' | 'fetchFull'",
-    ref: MailboxCallMessageRef,
+    ref: MailboxCallRequestRef,
   },
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'fetchPart'",
-    ref: MailboxCallMessageRef,
-    partPath: "string > 0",
+    ref: MailboxCallRequestRef,
+    partPath: "string",
   },
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'sync'",
-    mailbox: "string > 0",
-    uidNext: "number >= 1",
+    mailbox: "string",
+    uidNext: "number",
     uidValidity: "number",
-    highestModSeq: "number >= 0",
+    highestModSeq: "number",
   },
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'getMailboxStatus' | 'watch'",
-    mailbox: "string > 0",
+    mailbox: "string",
   },
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'append'",
-    mailbox: "string > 0",
+    mailbox: "string",
     headers: MailboxNotifyHeaders,
     "content?": "string",
     "payload?": MailboxCallStructuredPayload,
@@ -399,40 +416,40 @@ const MailboxCallRequestData = type.or(
     requestId: "string > 0",
     runId: "string > 0",
     op: "'createMailbox' | 'deleteMailbox'",
-    name: "string > 0",
+    name: "string",
   },
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'move' | 'copy'",
-    ref: MailboxCallMessageRef,
-    toMailbox: "string > 0",
+    ref: MailboxCallRequestRef,
+    toMailbox: "string",
   },
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'createList'",
-    address: "string > 0",
-    name: "string > 0",
+    address: "string",
+    name: "string",
   },
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'listMembers'",
-    address: "string > 0",
+    address: "string",
   },
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'subscribe' | 'unsubscribe'",
-    listAddress: "string > 0",
-    subscriberAddress: "string > 0",
+    listAddress: "string",
+    subscriberAddress: "string",
   },
   {
     requestId: "string > 0",
     runId: "string > 0",
     op: "'readMailPart'",
-    partRef: "string > 0",
+    partRef: "string",
   },
 );
 
@@ -918,12 +935,11 @@ export const ControlPayload = type.or(
     // deployment mailbox (INBOUND half of mailbox ownership, §3b). One-way
     // like `grants-updated`/`sources-updated`: no correlation id, no response.
     // The supervisor -- the sole mail owner -- commits the arrived message to
-    // the workflow-run substrate mailbox, then fires this frame so the child's
-    // warm-agent `watch`/`mail_wait` observes the arrival decoupled from the
-    // FIFO trigger dispatch that resolves a run's first input. `headers` rides
-    // inline so a watcher gets the `exists` `MailboxEvent`'s envelope without a
-    // substrate round-trip. The child reads the latest committed mailbox state
-    // regardless, so the frame carries no commit pin.
+    // the workflow-run substrate mailbox, then fires this frame so a registered
+    // `watch` observes the arrival decoupled from the FIFO trigger dispatch
+    // that resolves a run's first input. `headers` rides inline and is copied
+    // onto the `exists` event. The frame is not a copy of the message: a later
+    // fetch is its own mailbox call. The frame carries no commit pin.
     type: "'mailbox.notify'",
     data: {
       runId: "string > 0",
@@ -935,9 +951,8 @@ export const ControlPayload = type.or(
   {
     // Child-initiated mailbox-mutation request (INBOUND half of mailbox
     // ownership, §3b). The supervisor is the sole writer to the
-    // workflow-run mailbox: a step agent reads its INBOX locally but
-    // every mutation -- flag writes and `expunge` -- routes up here so
-    // the supervisor applies it to its owned store. A child flushing the
+    // workflow-run mailbox. Flag writes and `expunge` route up here so
+    // the supervisor applies them to its owned store. A child flushing the
     // same ref would race the supervisor's in-memory mirror and break
     // uid / modseq monotonicity.
     //
@@ -945,23 +960,25 @@ export const ControlPayload = type.or(
     // carries the target `uid` and the `flags` to change, so the wire
     // boundary rejects a flag frame that omits them; an `expunge` sweeps
     // every `\Deleted` message in the mailbox and the child constructs it
-    // with neither. `requestId` correlates the supervisor's
-    // `mailbox.mutate.response` reply.
+    // with neither. The mailbox name and the flag uid are not bounded. A
+    // frame this schema rejects crashes the child, and the supervisor
+    // refuses a mailbox other than INBOX and an unknown uid. `requestId`
+    // correlates the supervisor's `mailbox.mutate.response` reply.
     type: "'mailbox.mutate.request'",
     data: type(
       {
         requestId: "string > 0",
         runId: "string > 0",
-        mailbox: "string > 0",
+        mailbox: "string",
         op: "'addFlags' | 'removeFlags'",
-        uid: "number >= 1",
+        uid: "number",
         flags: "string[]",
       },
       "|",
       {
         requestId: "string > 0",
         runId: "string > 0",
-        mailbox: "string > 0",
+        mailbox: "string",
         op: "'expunge'",
       },
     ),
@@ -989,6 +1006,9 @@ export const ControlPayload = type.or(
         {
           ok: "false",
           reason: "string > 0",
+          // Present when the supervisor refused the mailbox itself. Absent
+          // for a failure that names no IMAP condition, such as an unknown uid.
+          "condition?": MessageTransportCondition,
         },
       ),
     },

@@ -2,6 +2,8 @@ import { describe, test, expect } from "bun:test";
 
 import { type } from "arktype";
 
+import { isMessageTransportError } from "@intx/types/runtime";
+
 import { createChildMailboxMutationBridge } from "./mailbox-mutation-bridge";
 import {
   ControlPayload,
@@ -145,7 +147,48 @@ describe("createChildMailboxMutationBridge", () => {
       requestId: "rid-2",
       result: { ok: false, reason: "message uid 1 not found" },
     });
-    await expect(submitted).rejects.toThrow(/message uid 1 not found/);
+    try {
+      await submitted;
+      throw new Error("expected the mutation to fail");
+    } catch (cause) {
+      // A failure that names no condition is the supervisor's plain error.
+      // A MessageTransportError here would tell the tool the mailbox refused.
+      expect(isMessageTransportError(cause)).toBe(false);
+      expect(cause).toBeInstanceOf(Error);
+      if (!(cause instanceof Error)) return;
+      expect(cause.message).toContain("message uid 1 not found");
+    }
+    expect(bridge.pendingCount).toBe(0);
+  });
+
+  test("a refusal that names a condition rejects with that condition", async () => {
+    const sender = createCapturingSender();
+    const bridge = createChildMailboxMutationBridge({
+      upstreamSender: sender,
+      allocateRequestId: () => "rid-cond",
+    });
+    const submitted = bridge.submit({
+      runId: "run-1",
+      mailbox: "Sent",
+      op: "expunge",
+    });
+    bridge.handleResult({
+      requestId: "rid-cond",
+      result: {
+        ok: false,
+        reason: 'unknown mailbox "Sent"; only INBOX is writable',
+        condition: "NONEXISTENT",
+      },
+    });
+    try {
+      await submitted;
+      throw new Error("expected the mutation to refuse");
+    } catch (cause) {
+      expect(isMessageTransportError(cause)).toBe(true);
+      if (!isMessageTransportError(cause)) return;
+      expect(cause.condition).toBe("NONEXISTENT");
+      expect(cause.message).toContain("only INBOX is writable");
+    }
     expect(bridge.pendingCount).toBe(0);
   });
 
