@@ -1059,6 +1059,34 @@ export interface ControlChannelSender {
 }
 
 /**
+ * JSON has no NaN or Infinity: `JSON.stringify` emits `null` for both.
+ * The receiver then rejects the frame and crashes the child. Refuse
+ * before `seq` advances. A skipped sequence is itself a crash on the
+ * next frame.
+ */
+function rejectNonFiniteNumbers(value: unknown, path: string): void {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error(
+        `control channel: cannot encode non-finite number at ${path}`,
+      );
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      rejectNonFiniteNumbers(value[index], `${path}[${String(index)}]`);
+    }
+    return;
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const [key, child] of Object.entries(value)) {
+      rejectNonFiniteNumbers(child, `${path}.${key}`);
+    }
+  }
+}
+
+/**
  * Construct the supervisor-side control-channel sender. The
  * supervisor's Ed25519 seed lives in closure. The matching public
  * key flows to the child through spawn-time env -- never the seed.
@@ -1087,6 +1115,7 @@ export function createControlChannelSender(
       return (async () => {
         await previous;
         try {
+          rejectNonFiniteNumbers(payload, "payload");
           seq += 1;
           const envelope: FrameEnvelope = {
             seq,
