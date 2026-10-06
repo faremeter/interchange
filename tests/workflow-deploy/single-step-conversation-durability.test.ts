@@ -83,15 +83,13 @@ import {
   parseSpawnTimeEnv,
   runWorkflowChild,
   discoverInFlightRuns,
+  createDurableConversationRegistry,
   createWorkflowRunRepoStore,
+  reconstructDurableConversation,
   type ChildStepInvoker,
   type RunWorkflowChildBindings,
   type StepEnvBase,
 } from "@intx/workflow-host";
-import {
-  createDurableConversationRegistry,
-  reconstructDurableConversation,
-} from "@intx/sidecar-app/src/conversation-state";
 
 const DEPLOYMENT_ID = "run_durability-deployment";
 const STEP_ID = "step-1";

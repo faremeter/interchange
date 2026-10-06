@@ -47,12 +47,12 @@ import {
   type StepInvokeResult,
   type WorkflowDefinition,
 } from "@intx/workflow";
+import { readRunGrants, runGrantsPath } from "@intx/workflow-host";
 
 import {
   createSidecarRunChild,
   type SidecarChildStepInvoker,
 } from "./workflow-substrate-factory";
-import { readRunGrants, runGrantsPath } from "./run-grants";
 
 const REF = "refs/heads/main";
 const DEPLOYMENT_ID = "deployment-child-grants";

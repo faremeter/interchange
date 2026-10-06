@@ -38,6 +38,8 @@ import {
 import {
   createWorkflowSupervisor,
   hashGrants,
+  readRunGrants,
+  runGrantsPath,
   loadWorkflowDefinitionFromClosure,
   STEP_GRANTS_PATH,
   STEP_GRANTS_REF,
@@ -114,7 +116,6 @@ import {
   writeWorkflowRunRecord,
   type WorkflowRunRecord,
 } from "./workflow-run-record";
-import { readRunGrants, runGrantsPath } from "./run-grants";
 
 const logger = getLogger(["interchange", "sidecar", "workflow-host-wiring"]);
 

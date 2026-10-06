@@ -36,6 +36,7 @@ import { createBuiltinRegistry } from "@intx/inference/providers";
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import type {
   ChildOutboundMailBridge,
+  DurableConversationRegistry,
   SourcesSnapshotRef,
   StepEnvBase,
 } from "@intx/workflow-host";
@@ -46,7 +47,6 @@ import {
   stepStorageRoot,
   type SidecarStepBuildEnvDeps,
 } from "./workflow-substrate-factory";
-import type { DurableConversationRegistry } from "./conversation-state";
 
 const STEP_ID = "step-1";
 const WORKFLOW_RUN_REPO_ID: RepoId = {

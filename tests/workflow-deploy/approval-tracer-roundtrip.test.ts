@@ -106,7 +106,7 @@ import {
   type SessionService,
 } from "@intx/hub-sessions";
 import { assertWellFormedToolSequence } from "@intx/inference";
-import { reconstructDurableConversation } from "@intx/sidecar-app/src/conversation-state";
+import { reconstructDurableConversation } from "@intx/workflow-host";
 import { signalName } from "@intx/types";
 import type { GrantRule } from "@intx/types/authz";
 import { WireGrantRule } from "@intx/types/grant-wire";

@@ -82,12 +82,18 @@ import {
   createWorkflowHostSignalChannel,
   createInMemorySpawnChild,
   createInMemorySpawnSuspendableChild,
+  createDurableConversationRegistry,
   createWorkflowStepInvoker,
   hashGrants,
+  isErrnoNotFound,
   loadWorkflowLoopFnsFromClosure,
   loadWorkflowPluginFactoriesFromClosure,
   loadWorkflowPluginToolDefinitionsFromClosure,
+  readRunGrants,
+  reconstructDurableConversation,
+  runGrantsPath,
   type ChildOutboundMailBridge,
+  type DurableConversationRegistry,
   type CredentialsSnapshot,
   type CredentialsSnapshotRef,
   type GrantEvaluator,
@@ -139,13 +145,6 @@ import {
   type StepToolCacheConfig,
   type StepToolMaterialization,
 } from "./step-agent-tools";
-import { readRunGrants, runGrantsPath } from "./run-grants";
-import {
-  createDurableConversationRegistry,
-  isErrnoNotFound,
-  reconstructDurableConversation,
-  type DurableConversationRegistry,
-} from "./conversation-state";
 
 // The child does not construct a workflow-run pack-push pipeline of
 // its own. The supervisor owns the workflow-run repo's write

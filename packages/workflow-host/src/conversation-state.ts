@@ -149,6 +149,8 @@ import {
   type SendReceipt,
 } from "@intx/types/runtime";
 
+import { isErrnoNotFound } from "./supervisor/credentials";
+
 const logger = getLogger(["sidecar", "workflow-child", "conversation-state"]);
 
 const CHECKPOINT_FILE = "checkpoint.json";
@@ -1058,10 +1060,4 @@ function parseJsonOrThrow(raw: string, label: string): unknown {
       { cause },
     );
   }
-}
-
-export function isErrnoNotFound(cause: unknown): boolean {
-  if (cause === null || typeof cause !== "object") return false;
-  const code = (cause as { code?: unknown }).code;
-  return code === "ENOENT";
 }

@@ -23,6 +23,7 @@ import type {
   RepoStore,
 } from "@intx/hub-sessions/substrate";
 import { createIsogitStore } from "@intx/storage-isogit/node";
+import { createDurableConversationStore } from "@intx/workflow-host";
 
 import {
   readColdParkedApprovalSnapshot,
@@ -32,7 +33,6 @@ import {
   stepStorageRoot,
   toParkedApprovalOps,
 } from "./workflow-substrate-factory";
-import { createDurableConversationStore } from "./conversation-state";
 
 const WORKFLOW_RUN_REPO_ID: RepoId = {
   kind: "workflow-run",

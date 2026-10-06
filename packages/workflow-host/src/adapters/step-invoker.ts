@@ -342,8 +342,9 @@ async function invokeColdStep(
 }
 
 /**
- * The connector router lives in `@intx/harness`, which this package does not
- * depend on, so its error is recognized by `name` rather than `instanceof`.
+ * The reply drain reports this cause through the structural `WarmReplyDrive`,
+ * so the harness error arrives as a value whose class is not part of that
+ * contract. Match it by name.
  */
 function describeReplyFailure(cause: unknown): string {
   if (cause instanceof Error && cause.name === "NoActiveConnectorThreadError") {
