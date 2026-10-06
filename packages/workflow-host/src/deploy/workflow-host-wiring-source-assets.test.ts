@@ -7,6 +7,14 @@ import type { SourceRefPin } from "@intx/types/sidecar";
 
 import { resolveDeploymentAssetMounts } from "./workflow-host-wiring";
 
+function workflowSourceAssetMountPath(assetId: string): string {
+  return `source-assets/${assetId}/`;
+}
+
+function sourceAssetGitDir(gitDirRoot: string, assetId: string): string {
+  return path.join(gitDirRoot, assetId);
+}
+
 // The durable source-asset store is what makes an asset-sourced deployment
 // survive a restart: the deploy checks the assets out once, and both the deploy
 // apply and the boot-time restore re-materialize from the store using mounts
@@ -108,6 +116,8 @@ describe("resolveDeploymentAssetMounts", () => {
       dataDir,
       DEPLOYMENT_ID,
       assetPin([assetId]),
+      workflowSourceAssetMountPath,
+      sourceAssetGitDir,
     );
 
     expect(assetRoot).toBe(
@@ -133,6 +143,8 @@ describe("resolveDeploymentAssetMounts", () => {
       dataDir,
       DEPLOYMENT_ID,
       assetPin([assetId, assetId]),
+      workflowSourceAssetMountPath,
+      sourceAssetGitDir,
     );
     expect(assetMounts.size).toBe(1);
   });
@@ -143,6 +155,8 @@ describe("resolveDeploymentAssetMounts", () => {
         dataDir,
         DEPLOYMENT_ID,
         assetPin(["asset_missing"]),
+        workflowSourceAssetMountPath,
+        sourceAssetGitDir,
       ),
     ).rejects.toThrow(/is not present in the durable store/);
   });
@@ -166,6 +180,8 @@ describe("resolveDeploymentAssetMounts", () => {
       dataDir,
       DEPLOYMENT_ID,
       sourcePin(assetId, [".", "packages/member-1"]),
+      workflowSourceAssetMountPath,
+      sourceAssetGitDir,
     );
 
     // No tarball entries, so no plain-file mounts.
@@ -189,6 +205,8 @@ describe("resolveDeploymentAssetMounts", () => {
         dataDir,
         DEPLOYMENT_ID,
         sourcePin("asset_missing", ["."]),
+        workflowSourceAssetMountPath,
+        sourceAssetGitDir,
       ),
     ).rejects.toThrow(/has no indexed git store/);
   });
@@ -217,6 +235,8 @@ describe("resolveDeploymentAssetMounts", () => {
       dataDir,
       DEPLOYMENT_ID,
       registryPin,
+      workflowSourceAssetMountPath,
+      sourceAssetGitDir,
     );
     expect(assetMounts.size).toBe(0);
     expect(gitDirs.size).toBe(0);

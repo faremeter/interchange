@@ -1,5 +1,5 @@
-// End-to-end exercise of the Bun.spawn-backed `defaultSubprocessSpawner`
-// the wiring module exports. The supervisor's `wireChild` consumes
+// End-to-end exercise of the Bun.spawn-backed `defaultSubprocessSpawner`.
+// The supervisor's `wireChild` consumes
 // four behaviours from the handle:
 //
 //   1. The control channel surfaces NDJSON lines the child writes
@@ -19,7 +19,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { defaultSubprocessSpawner } from "./workflow-host-wiring";
+import { defaultSubprocessSpawner } from "./workflow-child-spawner";
 
 let tmpRoot: string;
 

@@ -4,8 +4,6 @@ import type { InferenceSource } from "@intx/types/runtime";
 import type { CredentialDelivery } from "@intx/types/sidecar";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import { waitUntil } from "@intx/types/testing";
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
-
 import {
   createDeploymentAddressRegistry,
   createMultistepDrainRouter,
@@ -16,6 +14,10 @@ import {
   createWorkflowRunPackClient,
   createWorkflowRunPackPushingRepoStore,
 } from "./workflow-run-pack-client";
+
+function deriveWorkflowRunRepoId(agentAddress: string): string {
+  return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
+}
 
 function createRecordingUnderlyingRepoStore(
   refTips: Record<string, string | null> = {},
@@ -204,6 +206,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     registry.record("dep-1", "agent-1@example.com");
     const pushed: { agentAddress: string; repoId: RepoId; ref: string }[] = [];
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         async push(opts) {
@@ -253,6 +256,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     const pushOrder: string[] = [];
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         async push() {
@@ -306,6 +310,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         async push() {
@@ -356,6 +361,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     registry.record("dep-fail", "agent-fail@example.com");
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         async push() {
@@ -402,6 +408,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: { push: () => Promise.resolve() },
       registry,
@@ -417,6 +424,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     const registry = createDeploymentAddressRegistry();
     const pushed: { agentAddress: string; repoId: RepoId; ref: string }[] = [];
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         async push(opts) {
@@ -444,6 +452,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     const { store } = createRecordingUnderlyingRepoStore();
     const registry = createDeploymentAddressRegistry();
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         push: () => Promise.resolve(),
@@ -476,6 +485,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     registry.record("dep-blocked", "agent-blocked@example.com");
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         async push() {
@@ -518,6 +528,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     registry.record("dep-cancelled", "agent-cancelled@example.com");
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         async push() {
@@ -562,6 +573,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     // No registered deployment: a stop after a sidecar restart still ships
     // the history it finds on disk.
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         async push(opts) {
@@ -591,6 +603,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     });
     const pushed: { agentAddress: string; repoId: RepoId; ref: string }[] = [];
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         async push(opts) {
@@ -624,6 +637,7 @@ describe("createWorkflowRunPackPushingRepoStore", () => {
     registry.record("dep-clean", "agent-clean@example.com");
     let pushCount = 0;
     const facade = createWorkflowRunPackPushingRepoStore({
+      deriveWorkflowRunRepoId,
       underlying: store,
       packClient: {
         async push() {

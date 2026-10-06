@@ -8,7 +8,7 @@
 // per-deployment restore cost that serial spawn imposes.
 //
 // The measured operation is `SidecarDeployRouter.restoreWorkflowRuns()`
-// in `apps/sidecar/src/workflow-host-wiring.ts`. For each batch size N the
+// on the workflow host's deploy program. For each batch size N the
 // bench:
 //
 //   1. SETUP (not timed): stands up N single-step deployments through a first
@@ -65,8 +65,13 @@ import {
   type SubprocessHandle,
   type SubprocessSpawner,
 } from "@intx/workflow-host";
+import { parseRunAddress } from "@intx/types";
 import type { AgentDeployFrame } from "@intx/types/sidecar";
 import type { WorkflowDefinition } from "@intx/workflow";
+import {
+  deriveWorkflowRunRepoId,
+  inertFlatNamespaceStepIds,
+} from "@intx/workflow-deploy";
 import {
   createMemoryFrameStream,
   createMemoryNdjsonStream,
@@ -74,7 +79,7 @@ import {
 import {
   createSidecarDeployRouter,
   type SidecarDeployRouter,
-} from "@intx/sidecar-app/src/workflow-host-wiring";
+} from "@intx/workflow-host/deploy";
 
 const DEFAULT_SIZES = [1, 5, 10, 20];
 
@@ -261,6 +266,43 @@ const stubApplyFrozenWorkflowClosure: NonNullable<
   });
 };
 
+function parseAgentId(agentAddress: string): string {
+  const parsed = parseRunAddress(agentAddress);
+  if (parsed === null) {
+    throw new Error(`Invalid run address: "${agentAddress}"`);
+  }
+  return parsed.runId;
+}
+
+const resolvedInboundMailPolicy = {
+  clean: "admit",
+  error: "reject",
+  untrustedFrom: "reject",
+  mismatchedFrom: "reject",
+  absentFrom: "reject",
+  invalid: "reject",
+  missing: "reject",
+  unknown: "reject",
+} as const;
+
+function deployHostBindings() {
+  return {
+    deriveWorkflowRunRepoId,
+    inertFlatNamespaceStepIds,
+    parseAgentId,
+    workflowSourceAssetMountPath: (assetId: string) =>
+      `source-assets/${assetId}/`,
+    sourceAssetGitDir: (gitDirRoot: string, assetId: string) =>
+      path.join(gitDirRoot, assetId),
+    readRegistries: () => new Map(),
+    resolveHostPlatform: () => ({ os: "linux", cpu: "arm64" }),
+    resolveInboundMailPolicy: () => resolvedInboundMailPolicy,
+    materializeWorkflowAssets: () => Promise.resolve(undefined),
+    maxInlineAssetPayloadBytes: 32 * 1024 * 1024,
+    multistepBinaryPath: "/fake/bin/workflow-child",
+  };
+}
+
 /**
  * Build a `SidecarDeployRouter` over `dataDir` with the same stubbed
  * host bindings the wiring test's `buildMultistepFixture` uses: a stub
@@ -277,6 +319,7 @@ async function buildRouter(args: {
   const tempBase = fs.mkdtempSync(path.join(os.tmpdir(), "boot-restore-repo-"));
   const repoStore = createSpawnTestRepoStore(tempBase);
   return createSidecarDeployRouter({
+    ...deployHostBindings(),
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path never invokes provisionAgent/persistHubPublicKey; single-step uses the narrow initRepo
     sessions: {
       provisionAgent: async () => {
@@ -297,11 +340,7 @@ async function buildRouter(args: {
       forgetAgent: () => undefined,
     } as unknown as Parameters<typeof createSidecarDeployRouter>[0]["keyStore"],
     senderKeyCache: {
-      get: () => undefined,
       put: async () => undefined,
-      evict: async () => undefined,
-      addresses: () => [],
-      rotatableAddresses: () => [],
     },
     transport: args.transport,
     repoStore,

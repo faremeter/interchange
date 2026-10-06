@@ -5,8 +5,7 @@ import {
   WORKFLOW_RUN_RESTORE_REFS,
   type RepoId,
   type RepoStore,
-} from "@intx/hub-sessions";
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
+} from "@intx/hub-sessions/substrate";
 
 const RESTORABLE_REFS: readonly string[] = WORKFLOW_RUN_RESTORE_REFS;
 
@@ -116,8 +115,9 @@ async function materializeRestoredRefs(
 export function createWorkflowRunPackRestorer(args: {
   substrate: RepoStore;
   markRestored(repoId: RepoId, ref: string, commitSha: string): void;
+  deriveWorkflowRunRepoId: (agentAddress: string) => string;
 }): WorkflowRunPackRestorer {
-  const { substrate, markRestored } = args;
+  const { substrate, markRestored, deriveWorkflowRunRepoId } = args;
   const hubPrincipal = { kind: "hub" } as const;
 
   return async ({ agentAddress, repoId, pack, ref, commitSha }) => {

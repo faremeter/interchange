@@ -4,18 +4,21 @@ import os from "node:os";
 import path from "node:path";
 
 import { generateKeyPair } from "@intx/crypto";
+import { WORKFLOW_RUN_GITIGNORE_PATH } from "@intx/hub-sessions";
 import {
   createAgentRepoStore,
   enqueueInbox,
-  WORKFLOW_RUN_GITIGNORE_PATH,
   type Principal,
   type RepoId,
   type WorkflowRunSupervisorPrincipal,
-} from "@intx/hub-sessions";
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
+} from "@intx/hub-sessions/substrate";
 
 import { createWorkflowRunPackClient } from "./workflow-run-pack-client";
 import { createWorkflowRunPackRestorer } from "./workflow-run-pack-restore";
+
+function deriveWorkflowRunRepoId(agentAddress: string): string {
+  return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
+}
 
 test("restored refs survive replacement and the next sidecar commit fast-forwards the Hub", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "wfr-restore-"));
@@ -85,6 +88,7 @@ test("restored refs survive replacement and the next sidecar commit fast-forward
     const restore = createWorkflowRunPackRestorer({
       substrate: target.repoStore,
       markRestored: packClient.markRestored,
+      deriveWorkflowRunRepoId,
     });
 
     for (const ref of ["refs/heads/main", "refs/heads/events"] as const) {

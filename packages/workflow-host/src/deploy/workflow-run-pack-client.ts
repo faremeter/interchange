@@ -16,7 +16,7 @@
 import { type } from "arktype";
 
 import { getLogger } from "@intx/log";
-import { SourcesUpdatedData } from "@intx/workflow-host";
+import { SourcesUpdatedData } from "../ipc/control-channel";
 import type { InferenceSource } from "@intx/types/runtime";
 import {
   CredentialDelivery,
@@ -28,9 +28,7 @@ import {
   type RepoId,
   type RepoStore,
   type WorkflowRunSupervisorPrincipal,
-} from "@intx/hub-sessions";
-import type { HubLink } from "@intx/hub-agent";
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
+} from "@intx/hub-sessions/substrate";
 
 const logger = getLogger([
   "interchange",
@@ -62,7 +60,15 @@ export type WorkflowRunPackClient = {
 
 export type CreateWorkflowRunPackClientOpts = {
   substrate: RepoStore;
-  hubLink: Pick<HubLink, "pushWorkflowRunPack">;
+  hubLink: {
+    pushWorkflowRunPack(opts: {
+      agentAddress: string;
+      repoId: RepoId;
+      pack: Uint8Array;
+      ref: string;
+      commitSha: string;
+    }): Promise<void>;
+  };
 };
 
 export function createWorkflowRunPackClient(
@@ -628,6 +634,7 @@ export type WorkflowRunPackPushingRepoStoreOpts = {
   underlying: RepoStore;
   packClient: Pick<WorkflowRunPackClient, "push">;
   registry: DeploymentAddressRegistry;
+  deriveWorkflowRunRepoId: (agentAddress: string) => string;
 };
 
 /**
@@ -688,7 +695,7 @@ export type WorkflowRunPackPushingRepoStore = RepoStore & {
 export function createWorkflowRunPackPushingRepoStore(
   opts: WorkflowRunPackPushingRepoStoreOpts,
 ): WorkflowRunPackPushingRepoStore {
-  const { underlying, packClient, registry } = opts;
+  const { underlying, packClient, registry, deriveWorkflowRunRepoId } = opts;
 
   type Slot = {
     agentAddress: string;

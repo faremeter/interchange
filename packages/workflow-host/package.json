@@ -14,6 +14,11 @@
       "intx-src": "./src/testing/index.ts",
       "types": "./dist/testing/index.d.ts",
       "default": "./dist/testing/index.js"
+    },
+    "./deploy": {
+      "intx-src": "./src/deploy/index.ts",
+      "types": "./dist/deploy/index.d.ts",
+      "default": "./dist/deploy/index.js"
     }
   },
   "dependencies": {
