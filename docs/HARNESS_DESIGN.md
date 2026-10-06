@@ -204,7 +204,7 @@ Key rotation is not yet implemented. The architecture supports it: the sidecar w
 
 If a reconnecting sidecar's token resolves to no current probe or allocation, the Hub asks it to undeploy every incarnation it reports, then closes the socket and leaves that capacity unroutable. A reported incarnation the Hub neither routes nor keeps unrouted is undeployed instead, and the sidecar's other work stays connected. The provisioner and allocation reconciler own recovery; the worker cannot mint a new identity or claim another address.
 
-If the sidecar discovers agent repositories but has no key pairs for them (for example, keys were deleted), it skips those agents and logs a warning rather than generating a replacement identity that would break signed-content continuity.
+If a deployment the sidecar restores has no key pair on disk (for example, keys were deleted), the sidecar generates a new one without warning. The new key does not match the public key the Hub recorded at deploy, so the restored deployment loses signed-content continuity.
 
 ## Mail and Event Flow
 
