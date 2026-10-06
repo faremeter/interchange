@@ -31,7 +31,6 @@ import type {
   InferenceSource,
   MessageRef,
   MessageTransport,
-  Unsubscribe,
 } from "@intx/types/runtime";
 
 import { createConnectorRouter, type RouteDecision } from "./connector-router";
@@ -312,8 +311,8 @@ export async function createHarness<EnvReq extends MailEnv>(
 
   // From here through the final `return`, the agent is constructed
   // and the workdir lock is held. Anything that throws -- the
-  // `driveConnectorReplies` setup, `transport.watch()`,
-  // anything in the watch callback's synchronous registration -- has
+  // `driveConnectorReplies` setup, `transport.watch()` rejecting,
+  // a throw from the watch callback's registration -- has
   // to release the lock by closing the agent before re-raising; the
   // caller never sees the agent and cannot do it themselves.
   // `createAgent` covers its own internal failure paths via its
@@ -382,11 +381,12 @@ export async function createHarness<EnvReq extends MailEnv>(
       }
     }
 
-    // INBOX watch loop. Subscribe before the agent's reactor is fully
-    // settled so no message is missed in the window between subscription
-    // and the first watch callback.
+    // INBOX watch loop. The transport registers the callback before its
+    // promise resolves, so a message that arrives during acceptance is
+    // not missed. A refusal rejects inside this try, and the finally
+    // closes the agent.
     let stopped = false;
-    const unsubscribe: Unsubscribe = transport.watch("INBOX", (event) => {
+    const unsubscribe = await transport.watch("INBOX", (event) => {
       if (stopped) return;
       if (event.type !== "exists") return;
 
@@ -502,7 +502,7 @@ export async function createHarness<EnvReq extends MailEnv>(
   } finally {
     if (!harnessSucceeded) {
       // Close the agent without waiting on its shutdown timeout so a
-      // synchronous post-`createAgent` throw does not stall the
+      // throw after `createAgent` does not stall the
       // caller's failure path. The `.catch` swallows any rejection
       // from the close: the caller is already receiving the original
       // throw, and a noisier-than-original close failure here would

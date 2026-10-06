@@ -2,11 +2,13 @@ import { describe, test, expect } from "bun:test";
 
 import { type } from "arktype";
 
-import { base64Decode, deriveWorkflowRunId } from "@intx/types";
-import { createInMemoryMailboxStore } from "@intx/mailbox";
-import type { StoredEnvelope } from "@intx/mailbox";
+import { base64Decode, base64Encode, deriveWorkflowRunId } from "@intx/types";
 import type { MailboxEvent, MessageHeaders } from "@intx/types/runtime";
-import { isMessageTransportError } from "@intx/types/runtime";
+import {
+  isMessageTransportError,
+  MessageTransportError,
+  type MessageTransportCondition,
+} from "@intx/types/runtime";
 
 import { createChildOutboundMailBridge } from "./outbound-mail-bridge";
 import {
@@ -15,137 +17,19 @@ import {
 } from "./supervisor-backed-transport";
 import { createMailboxWatchRegistry } from "./mailbox-watch-registry";
 import type {
+  ChildMailboxCallBridge,
+  MailboxCall,
+  MailboxCallSuccess,
+} from "./mailbox-call-bridge";
+import type {
   ChildMailboxMutationBridge,
   MailboxMutation,
   MailboxMutationResult,
 } from "./mailbox-mutation-bridge";
-import type { ChildMailboxReader } from "./child-mailbox-reader";
-import type {
-  MailboxSyncKnownState,
-  MailboxSyncResult,
-  SubstrateMailboxStore,
-} from "../adapters/substrate-mailbox-store";
 import {
   ControlPayload,
   type ControlChannelSender,
 } from "../ipc/control-channel";
-
-/**
- * A `SubstrateMailboxStore` over an in-memory `MailboxStore`, so a transport
- * test seeds real messages without standing up a substrate. `flush` counts its
- * calls (the flag-write tests assert it ran) and `sync` mirrors the substrate
- * backing's QRESYNC delta. `open` returns this same evolving store on every
- * call, modeling committed state a later read observes.
- */
-function createSeededReader(): {
-  reader: ChildMailboxReader;
-  store: SubstrateMailboxStore;
-} {
-  const inner = createInMemoryMailboxStore();
-  let dirty = false;
-
-  const store: SubstrateMailboxStore = {
-    get uidValidity() {
-      return inner.uidValidity;
-    },
-    get uidNext() {
-      return inner.uidNext;
-    },
-    get highestModSeq() {
-      return inner.highestModSeq;
-    },
-    get messages() {
-      return inner.messages;
-    },
-    get pendingWrites() {
-      return dirty;
-    },
-    append(raw, envelope, flags) {
-      dirty = true;
-      return inner.append(raw, envelope, flags);
-    },
-    readRaw(uid) {
-      return inner.readRaw(uid);
-    },
-    find(uid) {
-      return inner.find(uid);
-    },
-    addFlags(uid, flags) {
-      dirty = true;
-      return inner.addFlags(uid, flags);
-    },
-    removeFlags(uid, flags) {
-      dirty = true;
-      return inner.removeFlags(uid, flags);
-    },
-    remove(uid) {
-      dirty = true;
-      inner.remove(uid);
-    },
-    async flush() {
-      dirty = false;
-    },
-    sync(known: MailboxSyncKnownState): MailboxSyncResult {
-      const highestModSeq = inner.highestModSeq;
-      if (known.uidValidity !== inner.uidValidity) {
-        return {
-          resync: true,
-          uidValidity: inner.uidValidity,
-          uidNext: inner.uidNext,
-          highestModSeq,
-          messages: inner.messages.slice(),
-        };
-      }
-      const changed = inner.messages
-        .filter((m) => m.modseq > known.highestModSeq)
-        .sort((a, b) => a.uid - b.uid);
-      return {
-        resync: false,
-        uidValidity: inner.uidValidity,
-        uidNext: inner.uidNext,
-        highestModSeq,
-        changed,
-        vanished: [],
-      };
-    },
-  };
-
-  return {
-    reader: { open: async () => store },
-    store,
-  };
-}
-
-/** Append a minimal RFC 2822 message to a seeded store; returns its UID. */
-function seedMessage(
-  store: SubstrateMailboxStore,
-  fields: { from: string; to: string; subject: string; messageId: string },
-  flags: string[] = [],
-): number {
-  const date = "Mon, 01 Jan 2024 00:00:00 +0000";
-  const CRLF = "\r\n";
-  const raw = new TextEncoder().encode(
-    `From: ${fields.from}${CRLF}` +
-      `To: ${fields.to}${CRLF}` +
-      `Subject: ${fields.subject}${CRLF}` +
-      `Date: ${date}${CRLF}` +
-      `Message-ID: ${fields.messageId}${CRLF}` +
-      `Content-Type: text/plain${CRLF}${CRLF}` +
-      `body of ${fields.subject}`,
-  );
-  const envelope: StoredEnvelope = {
-    messageId: fields.messageId,
-    from: fields.from,
-    to: [fields.to],
-    subject: fields.subject,
-    date: new Date(date),
-    inReplyTo: undefined,
-    references: [],
-    interchangeType: undefined,
-    interchangeCorrelationId: undefined,
-  };
-  return store.append(raw, envelope, flags);
-}
 
 /** A fresh outbound-mail bridge whose upstream frames are discarded. */
 function makeBridge() {
@@ -156,7 +40,7 @@ function makeBridge() {
 
 // The RFC 5530 condition a refusal named. A refusal naming no condition is a
 // different failure from the one under test, so it throws rather than folding
-// into the comparison the two wrappers below feed.
+// into the comparison below.
 function refusalCondition(cause: unknown): string {
   if (!isMessageTransportError(cause)) {
     throw new Error(`expected a condition, got ${String(cause)}`, { cause });
@@ -169,15 +53,6 @@ async function rejectedCondition(
 ): Promise<string | undefined> {
   try {
     await run();
-    return undefined;
-  } catch (cause) {
-    return refusalCondition(cause);
-  }
-}
-
-function thrownCondition(run: () => void): string | undefined {
-  try {
-    run();
     return undefined;
   } catch (cause) {
     return refusalCondition(cause);
@@ -213,15 +88,69 @@ function createRecordingMutationBridge(
   };
 }
 
+/**
+ * A call bridge that records every submitted call and answers with `respond`.
+ * The transport tests assert what was forwarded and what came back. They do
+ * not open a mailbox.
+ */
+function createRecordingCallBridge(
+  respond: (
+    call: MailboxCall,
+  ) => Promise<MailboxCallSuccess> | MailboxCallSuccess,
+): ChildMailboxCallBridge & { submitted: MailboxCall[] } {
+  const submitted: MailboxCall[] = [];
+  return {
+    submitted,
+    submit(call) {
+      submitted.push(call);
+      return Promise.resolve(respond(call));
+    },
+    handleResult() {
+      /* no downstream frames in this fake */
+    },
+    cancelAll() {
+      /* nothing pending */
+    },
+    get pendingCount() {
+      return 0;
+    },
+  };
+}
+
+/** A call bridge that refuses every call with one supervisor condition. */
+function refusingCallBridge(
+  condition: MessageTransportCondition,
+  reason: string,
+): ChildMailboxCallBridge & { submitted: MailboxCall[] } {
+  const submitted: MailboxCall[] = [];
+  return {
+    submitted,
+    submit(call) {
+      submitted.push(call);
+      return Promise.reject(new MessageTransportError(condition, reason));
+    },
+    handleResult() {
+      /* no downstream frames in this fake */
+    },
+    cancelAll() {
+      /* nothing pending */
+    },
+    get pendingCount() {
+      return 0;
+    },
+  };
+}
+
 /** Build the inbound wiring with test defaults, overridable per test. */
 function makeInbound(
   overrides: Partial<SupervisorBackedTransportInbound> = {},
 ): SupervisorBackedTransportInbound {
   return {
-    reader: createSeededReader().reader,
     watchRegistry: createMailboxWatchRegistry(),
-    getCrypto: () => undefined,
     mutationBridge: createRecordingMutationBridge(),
+    callBridge: createRecordingCallBridge(() => {
+      throw new Error("this test did not script a mailbox call");
+    }),
     ...overrides,
   };
 }
@@ -414,47 +343,49 @@ describe("createSupervisorBackedTransport", () => {
     await expect(
       transport.fetchFull({ uid: 1, mailbox: "INBOX" }),
     ).rejects.toThrow(/is not wired for unified-host step agent/);
-    expect(() =>
+    await expect(
       transport.watch("INBOX", () => {
         /* never reached */
       }),
-    ).toThrow(/is not wired for unified-host step agent/);
+    ).rejects.toThrow(/is not wired for unified-host step agent/);
   });
 
-  // `watch` refuses exactly when `search` refuses. Both guard with the same
-  // requireInbound + requireInbox pair, and the inbound surface is a captured
-  // constructor argument, so a watch installed after a search that answered
-  // cannot refuse. That is what keeps a transport condition out of the one
-  // place a mail tool reports a rejection without classifying it: mail_wait
-  // installs its watch after its opening search, and a refusal there arrives
-  // outside the search's own error handling. Should someone give `watch` a
-  // guard `search` does not share, this pair stops holding.
-  test("watch refuses exactly when search refuses", async () => {
+  // Search and watch both forward the mailbox name and surface whatever the
+  // supervisor answered. The child does not treat INBOX as special and does
+  // not invent a condition of its own.
+  test("search and watch surface the supervisor refusal for every mailbox", async () => {
+    const callBridge = refusingCallBridge(
+      "CANNOT",
+      "supervisor refused the mailbox",
+    );
+    const address = "run_agent@example.com";
     const transport = createSupervisorBackedTransport(
       makeBridge(),
-      "agent@example.com",
-      makeInbound(),
+      address,
+      makeInbound({ callBridge }),
     );
+    const runId = deriveWorkflowRunId(address);
+    const mailboxes = ["INBOX", "Drafts", "inbox", "", "INBOX/Sub"];
 
-    const refusals = new Map<string, string | undefined>();
-    for (const mailbox of ["INBOX", "Drafts", "inbox", "", "INBOX/Sub"]) {
+    for (const mailbox of mailboxes) {
       const searchRefusal = await rejectedCondition(() =>
         transport.search(mailbox, {}),
       );
-      const watchRefusal = thrownCondition(() => {
-        transport.watch(mailbox, () => undefined)();
-      });
-      // Labelled so a failure names the mailbox that broke the pair.
+      const watchRefusal = await rejectedCondition(() =>
+        transport.watch(mailbox, () => undefined),
+      );
       expect(`${mailbox}: ${String(watchRefusal)}`).toBe(
         `${mailbox}: ${String(searchRefusal)}`,
       );
-      refusals.set(mailbox, searchRefusal);
+      expect(searchRefusal).toBe("CANNOT");
     }
 
-    // The sweep only says something if it saw both answers: the pair holds
-    // vacuously over names that all refuse, and over names none of which do.
-    expect(refusals.get("INBOX")).toBeUndefined();
-    expect(refusals.get("Drafts")).toBe("NONEXISTENT");
+    expect(callBridge.submitted).toEqual(
+      mailboxes.flatMap((mailbox) => [
+        { runId, op: "search", mailbox, query: {} },
+        { runId, op: "watch", mailbox },
+      ]),
+    );
   });
 
   test("an unwired inbound surface refuses both with the same condition", async () => {
@@ -466,111 +397,217 @@ describe("createSupervisorBackedTransport", () => {
     const searchRefusal = await rejectedCondition(() =>
       transport.search("INBOX", {}),
     );
-    const watchRefusal = thrownCondition(() => {
-      transport.watch("INBOX", () => undefined);
-    });
+    const watchRefusal = await rejectedCondition(() =>
+      transport.watch("INBOX", () => undefined),
+    );
 
     expect(searchRefusal).toBe("SERVERBUG");
     expect(watchRefusal).toBe(searchRefusal);
   });
 
-  test("search resolves against the seeded INBOX", async () => {
-    const seeded = createSeededReader();
-    seedMessage(seeded.store, {
-      from: "alice@example.com",
-      to: "agent@example.com",
-      subject: "hello",
-      messageId: "<a-1@example.com>",
+  test("search forwards the query and returns the supervisor's refs", async () => {
+    const when = new Date("2024-01-02T03:04:05.000Z");
+    const refs = [{ uid: 3, mailbox: "Drafts" }];
+    const callBridge = createRecordingCallBridge((call) => {
+      if (call.op !== "search") throw new Error(`unexpected ${call.op}`);
+      return { ok: true, op: "search", requestId: "mc-search", value: refs };
     });
-    seedMessage(seeded.store, {
-      from: "bob@example.com",
-      to: "agent@example.com",
-      subject: "unrelated",
-      messageId: "<b-1@example.com>",
-    });
+    const address = "run_agent@example.com";
     const transport = createSupervisorBackedTransport(
       makeBridge(),
-      "agent@example.com",
-      makeInbound({ reader: seeded.reader }),
+      address,
+      makeInbound({ callBridge }),
     );
 
-    const all = await transport.search("INBOX", {});
-    expect(all).toHaveLength(2);
-
-    const fromAlice = await transport.search("INBOX", { from: "alice" });
-    expect(fromAlice).toHaveLength(1);
-    expect(fromAlice[0]?.uid).toBe(1);
-    expect(fromAlice[0]?.mailbox).toBe("INBOX");
-  });
-
-  test("fetchHeaders and fetchFull resolve against the seeded INBOX", async () => {
-    const seeded = createSeededReader();
-    const uid = seedMessage(seeded.store, {
-      from: "alice@example.com",
-      to: "agent@example.com",
-      subject: "hello",
-      messageId: "<a-1@example.com>",
+    const found = await transport.search("Drafts", {
+      from: "alice",
+      before: when,
+      and: [{ after: when }],
+      or: [{ on: when }],
+      not: { sentBefore: when, sentAfter: when, sentOn: when },
     });
-    const transport = createSupervisorBackedTransport(
-      makeBridge(),
-      "agent@example.com",
-      makeInbound({ reader: seeded.reader }),
-    );
-
-    const headers = await transport.fetchHeaders({ uid, mailbox: "INBOX" });
-    expect(headers.from).toBe("alice@example.com");
-    expect(headers.subject).toBe("hello");
-
-    const full = await transport.fetchFull({ uid, mailbox: "INBOX" });
-    expect(full.ref.uid).toBe(uid);
-    expect(full.headers.messageId).toBe("<a-1@example.com>");
-    // No sender key is wired, so the signature is reported unverifiable rather
-    // than silently trusted.
-    expect(full.signatureStatus).toBe("unknown");
-  });
-
-  test("getMailboxStatus counts the seeded INBOX", async () => {
-    const seeded = createSeededReader();
-    seedMessage(
-      seeded.store,
+    expect(found).toEqual(refs);
+    expect(callBridge.submitted).toEqual([
       {
-        from: "alice@example.com",
-        to: "agent@example.com",
-        subject: "seen",
-        messageId: "<a-1@example.com>",
+        runId: deriveWorkflowRunId(address),
+        op: "search",
+        mailbox: "Drafts",
+        query: {
+          from: "alice",
+          before: "2024-01-02T03:04:05.000Z",
+          and: [{ after: "2024-01-02T03:04:05.000Z" }],
+          or: [{ on: "2024-01-02T03:04:05.000Z" }],
+          not: {
+            sentBefore: "2024-01-02T03:04:05.000Z",
+            sentAfter: "2024-01-02T03:04:05.000Z",
+            sentOn: "2024-01-02T03:04:05.000Z",
+          },
+        },
       },
-      ["\\Seen"],
-    );
-    seedMessage(seeded.store, {
-      from: "bob@example.com",
-      to: "agent@example.com",
-      subject: "unseen",
-      messageId: "<b-1@example.com>",
+    ]);
+  });
+
+  test("an invalid search date fails before the call is sent", async () => {
+    const callBridge = createRecordingCallBridge(() => {
+      throw new Error("should not submit");
     });
     const transport = createSupervisorBackedTransport(
       makeBridge(),
-      "agent@example.com",
-      makeInbound({ reader: seeded.reader }),
+      "run_agent@example.com",
+      makeInbound({ callBridge }),
     );
-
-    const status = await transport.getMailboxStatus("INBOX");
-    expect(status.total).toBe(2);
-    expect(status.unseen).toBe(1);
+    await expect(
+      transport.search("INBOX", { before: new Date("nope") }),
+    ).rejects.toThrow(/Invalid Date/);
+    expect(callBridge.submitted).toHaveLength(0);
   });
 
-  test("watch fires when the registry delivers a mailbox event", async () => {
-    const watchRegistry = createMailboxWatchRegistry();
+  test("fetch methods project the supervisor's answer, including part bytes", async () => {
+    const headers: MessageHeaders = {
+      from: "alice@example.com",
+      to: ["agent@example.com"],
+      subject: "hello",
+      messageId: "<a-1@example.com>",
+    };
+    const data = new Uint8Array([1, 2, 3, 250]);
+    const callBridge = createRecordingCallBridge((call) => {
+      if (call.op === "fetchHeaders") {
+        return {
+          ok: true,
+          op: "fetchHeaders",
+          requestId: "mc-headers",
+          value: headers,
+        };
+      }
+      if (call.op === "fetchFull") {
+        return {
+          ok: true,
+          op: "fetchFull",
+          requestId: "mc-full",
+          value: {
+            ref: { uid: 4, mailbox: "Sent" },
+            headers,
+            flags: ["\\Seen"],
+            signatureStatus: "valid",
+            content: "body",
+            attachments: [
+              {
+                name: "f.bin",
+                contentType: "application/octet-stream",
+                dataBase64: base64Encode(data),
+                part: "1.2",
+              },
+            ],
+          },
+        };
+      }
+      if (call.op === "fetchPart") {
+        return {
+          ok: true,
+          op: "fetchPart",
+          requestId: "mc-part",
+          value: {
+            contentType: "application/octet-stream",
+            contentBase64: base64Encode(data),
+            filename: "f.bin",
+            disposition: "attachment",
+          },
+        };
+      }
+      throw new Error(`unexpected ${call.op}`);
+    });
     const transport = createSupervisorBackedTransport(
       makeBridge(),
-      "agent@example.com",
-      makeInbound({ watchRegistry }),
+      "run_agent@example.com",
+      makeInbound({ callBridge }),
+    );
+    const ref = { uid: 4, mailbox: "Sent" };
+
+    expect(await transport.fetchHeaders(ref)).toEqual(headers);
+
+    const full = await transport.fetchFull(ref);
+    expect(full.ref).toEqual(ref);
+    expect(full.headers).toEqual(headers);
+    expect(full.flags).toEqual(["\\Seen"]);
+    expect(full.signatureStatus).toBe("valid");
+    expect(full.content).toBe("body");
+    expect(full.attachments).toEqual([
+      {
+        name: "f.bin",
+        contentType: "application/octet-stream",
+        data,
+        part: "1.2",
+      },
+    ]);
+
+    const part = await transport.fetchPart(ref, "1.2");
+    expect(part).toEqual({
+      contentType: "application/octet-stream",
+      content: data,
+      filename: "f.bin",
+      disposition: "attachment",
+    });
+    expect(callBridge.submitted.map((call) => call.op)).toEqual([
+      "fetchHeaders",
+      "fetchFull",
+      "fetchPart",
+    ]);
+  });
+
+  test("getMailboxStatus returns the supervisor's counts for the named mailbox", async () => {
+    const status = {
+      total: 2,
+      unseen: 1,
+      recent: 0,
+      uidNext: 3,
+      uidValidity: 9,
+      highestModSeq: 4,
+    };
+    const callBridge = createRecordingCallBridge((call) => {
+      if (call.op !== "getMailboxStatus") throw new Error(call.op);
+      return {
+        ok: true,
+        op: "getMailboxStatus",
+        requestId: "mc-status",
+        value: status,
+      };
+    });
+    const address = "run_agent@example.com";
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      address,
+      makeInbound({ callBridge }),
+    );
+
+    expect(await transport.getMailboxStatus("Archive")).toEqual(status);
+    expect(callBridge.submitted).toEqual([
+      {
+        runId: deriveWorkflowRunId(address),
+        op: "getMailboxStatus",
+        mailbox: "Archive",
+      },
+    ]);
+  });
+
+  test("watch delivers an event that arrives before the supervisor accepts", async () => {
+    const watchRegistry = createMailboxWatchRegistry();
+    let accept: ((value: MailboxCallSuccess) => void) | undefined;
+    const callBridge = createRecordingCallBridge(
+      () =>
+        new Promise<MailboxCallSuccess>((resolve) => {
+          accept = resolve;
+        }),
+    );
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "run_agent@example.com",
+      makeInbound({ watchRegistry, callBridge }),
     );
 
     const events: MailboxEvent[] = [];
-    const unsubscribe = transport.watch("INBOX", (event) => {
+    const pending = transport.watch("INBOX", (event) => {
       events.push(event);
     });
-
     const headers: MessageHeaders = {
       from: "alice@example.com",
       to: ["agent@example.com"],
@@ -579,15 +616,69 @@ describe("createSupervisorBackedTransport", () => {
     };
     watchRegistry.fire("INBOX", { type: "exists", uid: 1, headers });
     await flushMicrotasks();
-
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual({ type: "exists", uid: 1, headers });
 
-    // After unsubscribe a later fire is not observed.
+    if (accept === undefined) throw new Error("watch was not submitted");
+    accept({ ok: true, op: "watch", requestId: "mc-watch" });
+    const unsubscribe = await pending;
+
     unsubscribe();
     watchRegistry.fire("INBOX", { type: "exists", uid: 2, headers });
     await flushMicrotasks();
     expect(events).toHaveLength(1);
+  });
+
+  test("a refused watch leaves nothing registered", async () => {
+    const watchRegistry = createMailboxWatchRegistry();
+    const callBridge = refusingCallBridge("NONEXISTENT", "no such mailbox");
+    const address = "run_agent@example.com";
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      address,
+      makeInbound({ watchRegistry, callBridge }),
+    );
+    const events: MailboxEvent[] = [];
+    const headers: MessageHeaders = {
+      from: "alice@example.com",
+      to: ["agent@example.com"],
+      date: "Mon, 01 Jan 2024 00:00:00 +0000",
+      messageId: "<a-1@example.com>",
+    };
+
+    expect(
+      await rejectedCondition(() =>
+        transport.watch("Drafts", (event) => {
+          events.push(event);
+        }),
+      ),
+    ).toBe("NONEXISTENT");
+    watchRegistry.fire("Drafts", { type: "exists", uid: 1, headers });
+    await flushMicrotasks();
+    expect(events).toHaveLength(0);
+    expect(callBridge.submitted).toEqual([
+      {
+        runId: deriveWorkflowRunId(address),
+        op: "watch",
+        mailbox: "Drafts",
+      },
+    ]);
+  });
+
+  test("a response whose op does not match the request fails", async () => {
+    const callBridge = createRecordingCallBridge(() => ({
+      ok: true,
+      op: "watch",
+      requestId: "mc-mismatch",
+    }));
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      "run_agent@example.com",
+      makeInbound({ callBridge }),
+    );
+    await expect(transport.search("INBOX", {})).rejects.toThrow(
+      /does not match/,
+    );
   });
 
   test("setFlags and clearFlags route flag mutations to the supervisor", async () => {
@@ -600,89 +691,53 @@ describe("createSupervisorBackedTransport", () => {
     );
     const runId = deriveWorkflowRunId(address);
 
-    // The write methods route to the supervisor -- the sole mailbox writer --
-    // rather than flushing a second store against the run ref.
+    // The write methods route to the supervisor, including a mailbox the
+    // child used to refuse before the supervisor could answer.
     await transport.setFlags({ uid: 4, mailbox: "INBOX" }, ["\\Seen"]);
     await transport.clearFlags({ uid: 4, mailbox: "INBOX" }, ["\\Seen"]);
+    await transport.setFlags({ uid: 4, mailbox: "Sent" }, ["\\Seen"]);
     expect(bridge.submitted).toEqual([
       { runId, mailbox: "INBOX", op: "addFlags", uid: 4, flags: ["\\Seen"] },
       { runId, mailbox: "INBOX", op: "removeFlags", uid: 4, flags: ["\\Seen"] },
+      { runId, mailbox: "Sent", op: "addFlags", uid: 4, flags: ["\\Seen"] },
     ]);
   });
 
-  test("sync splits new arrivals from flag changes against the known uidNext", async () => {
-    const seeded = createSeededReader();
-    const uid = seedMessage(seeded.store, {
-      from: "alice@example.com",
-      to: "agent@example.com",
-      subject: "hello",
-      messageId: "<a-1@example.com>",
+  test("sync forwards the known state and returns the supervisor result", async () => {
+    const canned = {
+      vanished: [2],
+      changed: [{ uid: 3, flags: ["\\Seen"] }],
+      newMessages: [{ uid: 8, mailbox: "Archive" }],
+      fullResyncRequired: true,
+    };
+    const callBridge = createRecordingCallBridge((call) => {
+      if (call.op !== "sync") throw new Error(call.op);
+      return { ok: true, op: "sync", requestId: "mc-sync", value: canned };
     });
+    const address = "run_agent@example.com";
     const transport = createSupervisorBackedTransport(
       makeBridge(),
-      "agent@example.com",
-      makeInbound({ reader: seeded.reader }),
-    );
-    const uidValidity = seeded.store.uidValidity;
-
-    // A client that has seen nothing (uidNext 1, modseq 0) observes the seeded
-    // message as a new arrival, not a flag change.
-    const fresh = await transport.sync("INBOX", {
-      uidValidity,
-      uidNext: 1,
-      highestModSeq: 0,
-    });
-    expect(fresh.fullResyncRequired).toBe(false);
-    expect(fresh.newMessages).toEqual([{ uid, mailbox: "INBOX" }]);
-    expect(fresh.changed).toHaveLength(0);
-
-    // A flag change on a message the client already holds (uid < known uidNext)
-    // reports as `changed`, not a new arrival.
-    seeded.store.addFlags(uid, ["\\Seen"]);
-    const afterFlag = await transport.sync("INBOX", {
-      uidValidity,
-      uidNext: seeded.store.uidNext,
-      highestModSeq: 1,
-    });
-    expect(afterFlag.newMessages).toHaveLength(0);
-    expect(afterFlag.changed).toEqual([{ uid, flags: ["\\Seen"] }]);
-  });
-
-  test("a mismatched uidValidity forces a full resync", async () => {
-    const seeded = createSeededReader();
-    const uid = seedMessage(seeded.store, {
-      from: "alice@example.com",
-      to: "agent@example.com",
-      subject: "hello",
-      messageId: "<a-1@example.com>",
-    });
-    const transport = createSupervisorBackedTransport(
-      makeBridge(),
-      "agent@example.com",
-      makeInbound({ reader: seeded.reader }),
+      address,
+      makeInbound({ callBridge }),
     );
 
-    const result = await transport.sync("INBOX", {
-      uidValidity: seeded.store.uidValidity + 1,
-      uidNext: 1,
-      highestModSeq: 0,
+    const result = await transport.sync("Archive", {
+      uidValidity: 9,
+      uidNext: 4,
+      highestModSeq: 5,
+      knownUids: [1, 2, 3],
     });
-    expect(result.fullResyncRequired).toBe(true);
-    expect(result.newMessages).toEqual([{ uid, mailbox: "INBOX" }]);
-  });
-
-  test("rejects a mailbox other than the agent's own INBOX", async () => {
-    const transport = createSupervisorBackedTransport(
-      makeBridge(),
-      "agent@example.com",
-      makeInbound(),
-    );
-    await expect(transport.search("Archive", {})).rejects.toThrow(
-      /owns only the "INBOX" mailbox/,
-    );
-    await expect(
-      transport.fetchFull({ uid: 1, mailbox: "Sent" }),
-    ).rejects.toThrow(/owns only the "INBOX" mailbox/);
+    expect(result).toEqual(canned);
+    expect(callBridge.submitted).toEqual([
+      {
+        runId: deriveWorkflowRunId(address),
+        op: "sync",
+        mailbox: "Archive",
+        uidNext: 4,
+        uidValidity: 9,
+        highestModSeq: 5,
+      },
+    ]);
   });
 
   test("expunge routes to the supervisor sweep and surfaces the swept uids", async () => {
@@ -694,34 +749,127 @@ describe("createSupervisorBackedTransport", () => {
       makeInbound({ mutationBridge: bridge }),
     );
     const outcome = await transport.expunge("INBOX");
+    await transport.expunge("Sent");
     expect(bridge.submitted).toEqual([
       { runId: deriveWorkflowRunId(address), mailbox: "INBOX", op: "expunge" },
+      { runId: deriveWorkflowRunId(address), mailbox: "Sent", op: "expunge" },
     ]);
     // The supervisor's swept uids pass through to the caller.
     expect(outcome).toEqual({ expungedUids: [9, 12] });
   });
 
-  test("methods for mailboxes the agent does not own stay unsupported", async () => {
+  test("expunge surfaces a supervisor refusal", async () => {
+    const mutationBridge: ChildMailboxMutationBridge = {
+      submit() {
+        return Promise.reject(
+          new MessageTransportError(
+            "NONEXISTENT",
+            'unknown mailbox "Sent"; only INBOX is writable',
+          ),
+        );
+      },
+      handleResult() {
+        /* the refusal is the submit rejection */
+      },
+      cancelAll() {
+        /* nothing pending */
+      },
+      get pendingCount() {
+        return 0;
+      },
+    };
     const transport = createSupervisorBackedTransport(
       makeBridge(),
-      "agent@example.com",
-      makeInbound(),
+      "run_agent@example.com",
+      makeInbound({ mutationBridge }),
     );
+    expect(await rejectedCondition(() => transport.expunge("Sent"))).toBe(
+      "NONEXISTENT",
+    );
+  });
+
+  test("append and move are forwarded, and an append carrying attachments is not sent", async () => {
+    const headers: MessageHeaders = {
+      from: "a@example.com",
+      to: ["agent@example.com"],
+      date: "Mon, 01 Jan 2024 00:00:00 +0000",
+      messageId: "<x@example.com>",
+    };
+    const callBridge = createRecordingCallBridge((call) => {
+      if (call.op === "append") {
+        return {
+          ok: true,
+          op: "append",
+          requestId: "mc-append",
+          value: { uid: 6, mailbox: call.mailbox },
+        };
+      }
+      if (call.op === "move") {
+        return { ok: true, op: "move", requestId: "mc-move" };
+      }
+      throw new Error(call.op);
+    });
+    const address = "run_agent@example.com";
+    const transport = createSupervisorBackedTransport(
+      makeBridge(),
+      address,
+      makeInbound({ callBridge }),
+    );
+    const runId = deriveWorkflowRunId(address);
+    const message = {
+      ref: { uid: 1, mailbox: "Archive" },
+      headers,
+      content: "hello",
+      flags: [],
+      signatureStatus: "unknown" as const,
+    };
+
+    expect(await transport.append("Archive", message, ["\\Seen"])).toEqual({
+      uid: 6,
+      mailbox: "Archive",
+    });
+    expect(
+      await transport.append("Archive", { ...message, attachments: [] }),
+    ).toEqual({
+      uid: 6,
+      mailbox: "Archive",
+    });
     await expect(
-      transport.append("INBOX", {
-        ref: { uid: 1, mailbox: "INBOX" },
-        headers: {
-          from: "a@example.com",
-          to: ["agent@example.com"],
-          date: "Mon, 01 Jan 2024 00:00:00 +0000",
-          messageId: "<x@example.com>",
-        },
-        flags: [],
-        signatureStatus: "unknown",
+      transport.append("Archive", {
+        ...message,
+        attachments: [
+          {
+            name: "a.bin",
+            contentType: "application/octet-stream",
+            data: new Uint8Array([1]),
+          },
+        ],
       }),
-    ).rejects.toThrow(/not supported for unified-host step agent/);
-    await expect(
-      transport.move({ uid: 1, mailbox: "INBOX" }, "Archive"),
-    ).rejects.toThrow(/not supported for unified-host step agent/);
+    ).rejects.toThrow(/attachments are not carried/);
+    await transport.move({ uid: 1, mailbox: "INBOX" }, "Archive");
+
+    expect(callBridge.submitted).toEqual([
+      {
+        runId,
+        op: "append",
+        mailbox: "Archive",
+        headers,
+        content: "hello",
+        flags: ["\\Seen"],
+      },
+      {
+        runId,
+        op: "append",
+        mailbox: "Archive",
+        headers,
+        content: "hello",
+      },
+      {
+        runId,
+        op: "move",
+        ref: { uid: 1, mailbox: "INBOX" },
+        toMailbox: "Archive",
+      },
+    ]);
   });
 });

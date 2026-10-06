@@ -246,10 +246,10 @@ export class InMemoryTransport implements MessageTransport, HubTransport {
     throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
-  watch(
+  async watch(
     _mailbox: string,
     _callback: (event: MailboxEvent) => void,
-  ): Unsubscribe {
+  ): Promise<Unsubscribe> {
     throw new Error("Use getTransportFor(address) for per-address operations");
   }
 
@@ -688,7 +688,13 @@ class ScopedMessageTransport implements MessageTransport {
     return { expungedUids: toExpunge.map((m) => m.uid) };
   }
 
-  watch(mailbox: string, callback: (event: MailboxEvent) => void): Unsubscribe {
+  async watch(
+    mailbox: string,
+    callback: (event: MailboxEvent) => void,
+  ): Promise<Unsubscribe> {
+    // Refuse before registering, and register before this method awaits.
+    // A missing mailbox must not arm a callback, and an acceptance that
+    // later becomes async must not miss an event delivered in the gap.
     this.#requireMailbox(mailbox);
     let callbacks = this.#entry.watchCallbacks.get(mailbox);
     if (callbacks === undefined) {

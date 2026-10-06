@@ -3,11 +3,9 @@
 //
 // The supervisor is the sole mail owner: it holds the long-lived
 // substrate mailbox store and is the only writer to the workflow-run
-// ref. A step agent reads its INBOX locally (the supervisor-backed
-// transport's read surface opens fresh committed snapshots), but every
-// MUTATION of the mailbox -- flag writes (`\Seen`, `\Deleted`, ...) and
-// `expunge` -- routes up to the supervisor through this bridge rather
-// than being flushed from the child. A second writer flushing the same
+// ref. Flag writes (`\Seen`, `\Deleted`, ...) and `expunge` route up
+// to the supervisor through this bridge rather than being flushed from
+// the child. A second writer flushing the same
 // ref from the child would race the supervisor's in-memory mirror and
 // break uid / modseq monotonicity, so the child never writes the
 // mailbox directly.
@@ -22,8 +20,8 @@
 //      operands.
 //   3. The supervisor applies the op to its owned mailbox store,
 //      flushes, and replies with `mailbox.mutate.response`. The reply is
-//      sent only after the flush, so the child's next committed read
-//      observes the mutation (the same flush-before-signal ordering
+//      sent only after the flush, so a later read of the committed
+//      mailbox observes the mutation (the same flush-before-signal ordering
 //      `mailbox.notify` relies on).
 //   4. The bridge resolves / rejects the pending awaiter; the
 //      transport method returns to the mail tool. A supervisor-side
@@ -32,6 +30,8 @@
 //      dropping the mutation.
 
 import { getLogger } from "@intx/log";
+
+import { MessageTransportError } from "@intx/types/runtime";
 
 import type {
   ControlChannelSender,
@@ -161,6 +161,12 @@ export function createChildMailboxMutationBridge(
           result.expungedUids = data.result.expungedUids;
         }
         entry.resolve(result);
+        return;
+      }
+      if (data.result.condition !== undefined) {
+        entry.reject(
+          new MessageTransportError(data.result.condition, data.result.reason),
+        );
         return;
       }
       entry.reject(pending.rejectedError(data.requestId, data.result.reason));

@@ -1021,14 +1021,15 @@ export function makeMailWaitHandler(
       let checks = Promise.resolve();
 
       // `firstMatch` classifies its own transport failures, so what reaches
-      // here is the watch install refusing -- it is called inside the chain, and
-      // it raises synchronously -- or a defect in this package. The two readings
-      // are kept apart by the condition: a cause naming one is an operational
-      // outcome the caller can act on, and `internal_error` would tell a caller
-      // whose mailbox went away to report a bug. Handing the cause straight to
-      // `transportFailureResult` would invert the error instead, because it
-      // routes a cause naming no condition to the per-operation code, which
-      // would report a genuine defect here as an ordinary search failure.
+      // here is the watch install refusing -- it is awaited inside this chain,
+      // so its rejection lands here -- or a defect in this package. The two
+      // readings are kept apart by the condition: a cause naming one is an
+      // operational outcome the caller can act on, and `internal_error` would
+      // tell a caller whose mailbox went away to report a bug. Handing the
+      // cause straight to `transportFailureResult` would invert the error
+      // instead, because it routes a cause naming no condition to the
+      // per-operation code, which would report a genuine defect here as an
+      // ordinary search failure.
       const onCheckFailure = (cause: unknown) => {
         if (isMessageTransportError(cause)) {
           settle(searchFailureResult(call.id, cause));
@@ -1043,8 +1044,8 @@ export function makeMailWaitHandler(
         );
       };
 
-      const watchArrivals = () => {
-        const unsubscribe = transport.watch(mailbox, (event) => {
+      const watchArrivals = async (): Promise<void> => {
+        const unsubscribe = await transport.watch(mailbox, (event) => {
           if (settled) return;
           if (event.type !== "exists") return;
 
@@ -1067,7 +1068,7 @@ export function makeMailWaitHandler(
             return;
           }
           if (settled) return;
-          watchArrivals();
+          await watchArrivals();
         })
         .catch(onCheckFailure);
     });

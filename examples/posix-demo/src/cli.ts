@@ -225,7 +225,7 @@ function mailFactoryFor(mailTools: typeof toolsAlphaMail) {
 let shutdownInitiated = false;
 
 // Watch the user's INBOX for Alpha's final reply.
-transportUser.watch("INBOX", (event) => {
+await transportUser.watch("INBOX", (event) => {
   if (event.type !== "exists") return;
 
   void (async () => {

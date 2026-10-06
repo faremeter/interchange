@@ -2223,6 +2223,7 @@ export function createWorkflowSupervisor(
           result: {
             ok: false,
             reason: `unknown mailbox "${data.mailbox}"; only ${MAILBOX_INBOX_DIR} is writable`,
+            condition: "NONEXISTENT",
           },
         },
       });

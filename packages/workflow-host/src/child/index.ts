@@ -36,6 +36,14 @@ export {
 } from "./mailbox-mutation-bridge";
 
 export {
+  createChildMailboxCallBridge,
+  type ChildMailboxCallBridge,
+  type CreateChildMailboxCallBridgeOpts,
+  type MailboxCall,
+  type MailboxCallSuccess,
+} from "./mailbox-call-bridge";
+
+export {
   createSupervisorBackedTransport,
   type SupervisorBackedTransportInbound,
 } from "./supervisor-backed-transport";

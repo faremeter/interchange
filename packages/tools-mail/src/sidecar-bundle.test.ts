@@ -132,10 +132,10 @@ function makeMockTransport(): MessageTransport {
     async expunge(): Promise<{ expungedUids: number[] }> {
       throw new Error("mock: expunge not called in this test");
     },
-    watch(
+    async watch(
       _mailbox: string,
       _callback: (event: MailboxEvent) => void,
-    ): Unsubscribe {
+    ): Promise<Unsubscribe> {
       throw new Error("mock: watch not called in this test");
     },
     async sync(_mailbox: string, _state: SyncState): Promise<SyncResult> {

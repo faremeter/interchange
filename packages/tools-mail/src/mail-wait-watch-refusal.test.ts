@@ -101,12 +101,12 @@ function errorContent(result: ToolResult): Record<string, unknown> {
   return result.content;
 }
 
-// The RFC 5530 condition a synchronous refusal named. A refusal naming none is
-// a different failure from the one under test, so it throws rather than
+// The RFC 5530 condition a refused watch names. A refusal naming none is a
+// different failure from the one under test, so it throws rather than
 // answering undefined and letting the comparison below read as a miss.
-function thrownCondition(run: () => void): string {
+async function refusedCondition(run: () => Promise<unknown>): Promise<string> {
   try {
-    run();
+    await run();
   } catch (cause) {
     if (!isMessageTransportError(cause)) {
       throw new Error(`expected a condition, got ${String(cause)}`, { cause });
@@ -117,14 +117,13 @@ function thrownCondition(run: () => void): string {
 }
 
 describe("the in-memory transport's watch refuses with a condition", () => {
-  // The outer assertions are only about classification if the transport really
-  // does name a condition here, and `watch` is synchronous, so mail-memory's own
-  // rejection sweeps do not cover it. Assert it rather than assume it.
+  // These two refusals are what mail_wait classifies below. Assert the
+  // condition on the rejection rather than assume the transport names one.
   test("a mailbox that is gone is NONEXISTENT", async () => {
     const { scoped } = await liveHandle();
     await scoped.deleteMailbox("INBOX");
 
-    const condition = thrownCondition(() =>
+    const condition = await refusedCondition(() =>
       scoped.watch("INBOX", () => undefined),
     );
 
@@ -135,7 +134,7 @@ describe("the in-memory transport's watch refuses with a condition", () => {
     const { root, scoped } = await liveHandle();
     root.unregister(ADDRESS);
 
-    const condition = thrownCondition(() =>
+    const condition = await refusedCondition(() =>
       scoped.watch("INBOX", () => undefined),
     );
 

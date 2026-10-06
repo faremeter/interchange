@@ -740,15 +740,13 @@ export interface SidecarStepBuildEnvDeps {
    */
   outboundMailBridge: ChildOutboundMailBridge;
   /**
-   * Inbound local IMAP surface for the step agent's supervisor-backed
-   * transport (INBOUND half of mailbox ownership, §3b). Bundles the child
-   * mailbox reader (a fresh committed snapshot of the deployment's substrate
-   * `INBOX` per read), the shared mailbox watch registry (the same instance the
-   * child's control loop fires `mailbox.notify` into), and the sender-key
-   * resolver `fetchFull` verifies signatures against. When present, the warm
-   * agent's `mail_read` / `mail_search` / `mail_wait` resolve against the
-   * committed mailbox rather than throwing "not wired". Absent for a build that
-   * owns no inbound mailbox (a spawned child or an onTrigger body), whose
+   * Inbound surface for the step agent's supervisor-backed transport
+   * (INBOUND half of mailbox ownership, §3b). Bundles the shared mailbox
+   * watch registry (the same instance the child's control loop fires
+   * `mailbox.notify` into), the mutation bridge for flag writes and expunge,
+   * and the call bridge for every other mailbox method. When present, the
+   * warm agent's mail tools ask the supervisor. Absent for a build that owns
+   * no inbound mailbox (a spawned child or an onTrigger body), whose
    * transport inbound stays inert.
    */
   inbound?: SupervisorBackedTransportInbound;
@@ -1109,11 +1107,10 @@ export function createSidecarStepBuildEnv(
     // `address` is the deployment mailbox address: the same identity the host
     // registered the agent's `CryptoProvider` against, so the outbound mail
     // carries the agent's signature with parity to the in-process path.
-    // Inbound (`deps.inbound`, present for the warm single-step agent) makes
-    // `mail_read` / `mail_search` / `mail_wait` resolve locally against a fresh
-    // committed snapshot of the deployment's substrate `INBOX`; a build that
-    // owns no inbound mailbox (a spawned child) leaves it undefined and the
-    // inbound methods stay inert. Both `transport` and `address` are the env
+    // Inbound (`deps.inbound`, present for the warm single-step agent) forwards
+    // every mailbox method other than `send` to the supervisor. A build that
+    // owns no inbound mailbox (a spawned child) leaves it undefined and those
+    // methods fail as unwired. Both `transport` and `address` are the env
     // keys `@intx/tools-mail`'s sidecar bundle declares in its `requires`.
     const transport = createSupervisorBackedTransport(
       deps.outboundMailBridge,
@@ -2201,32 +2198,25 @@ export function createSidecarSubstrateFactory(
     });
 
     // INBOUND half of mailbox ownership (§3b). One watch registry per child,
-    // created at boot and shared by BOTH the step agent's supervisor-backed
+    // created at boot and shared by the step agent's supervisor-backed
     // transport (its `watch` registers callbacks here, backing `mail_wait`) and
     // the child's control loop (which fires each `mailbox.notify` into it). The
     // registry rides out on the returned bindings so `runWorkflowChild` routes
-    // notifications to this same instance. The child mailbox reader opens a
-    // fresh committed snapshot of the deployment's substrate `INBOX` per read,
-    // over the same substrate handle / repo id / principal / ref the mail-part
-    // reader uses, so a read taken after a `mailbox.notify` observes the message
-    // the supervisor just committed.
+    // notifications to this same instance. Mail methods other than `send` ask
+    // the supervisor; this child does not open the mailbox to answer them.
+    // The reader below is only for threading a reply's References chain, which
+    // is not a `MessageTransport` method.
     const mailboxWatchRegistry = createMailboxWatchRegistry();
+    const mailboxReader = createChildMailboxReader({
+      substrate,
+      repoId: workflowRunRepoId,
+      principal,
+      ref: validated.WORKFLOW_RUN_REF,
+    });
     const transportInbound: SupervisorBackedTransportInbound = {
-      reader: createChildMailboxReader({
-        substrate,
-        repoId: workflowRunRepoId,
-        principal,
-        ref: validated.WORKFLOW_RUN_REF,
-      }),
       watchRegistry: mailboxWatchRegistry,
-      // The child holds no sender-key registry, so signature verification is not
-      // yet possible here; `fetchFull` reports every message's signature status
-      // as "unknown". A future sender-key surface would replace this resolver.
-      getCrypto: () => undefined,
-      // The write methods (setFlags / clearFlags / expunge) route through this
-      // bridge to the supervisor, the sole mailbox writer, instead of flushing
-      // the run ref from the child.
       mutationBridge: env.mailboxMutationBridge,
+      callBridge: env.mailboxCallBridge,
     };
 
     const hostScheduler = createWorkflowHostScheduler({
@@ -2320,10 +2310,9 @@ export function createSidecarSubstrateFactory(
       // The materialized closure dir the source arm materializes each step
       // agent's declared plugin packages from. Always present (source-ref only).
       closurePackageDir: env.spawn.closurePackageDir,
-      // Activate the warm agent's inbound mail surface: `mail_read` /
-      // `mail_search` / `mail_wait` resolve against the deployment's committed
-      // substrate `INBOX` through this bundle. The spawned-child build below
-      // omits it (a spawned child owns no warm inbound mailbox).
+      // Activate the warm agent's inbound mail surface. Mail tools ask the
+      // supervisor through this bundle. The spawned-child build below omits
+      // it (a spawned child owns no warm inbound mailbox).
       inbound: transportInbound,
       ...(durableConversation !== undefined ? { durableConversation } : {}),
     });
@@ -2513,7 +2502,7 @@ export function createSidecarSubstrateFactory(
               // parent miss (the first reply on a fresh thread, a malformed
               // id) returns undefined and the transport derives [inReplyTo].
               resolveReferences: (inReplyTo) =>
-                resolveMailboxReferences(transportInbound.reader, inReplyTo),
+                resolveMailboxReferences(mailboxReader, inReplyTo),
               onReplySent: (receipt) =>
                 durableConversation.get(key).onReplySent(receipt),
             })

@@ -635,7 +635,7 @@ expunge(mailbox: string): Promise<void>
 ### Real-Time Notification
 
 ```
-watch(mailbox: string, callback: (event: MailboxEvent) => void): Unsubscribe
+watch(mailbox: string, callback: (event: MailboxEvent) => void): Promise<Unsubscribe>
 ```
 
 Provides IMAP IDLE semantics. The transport monitors the specified mailbox and invokes the callback when:

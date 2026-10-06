@@ -1,10 +1,10 @@
-// Generic pending-request core shared by the three child-side control-IPC
-// bridges (substrate-write, outbound-mail, mailbox-mutation).
+// Generic pending-request core shared by the child-side control-IPC
+// bridges (substrate-write, outbound-mail, mailbox-mutation, mailbox-call).
 //
 // Every bridge runs the same request/response round-trip over the control
 // channel: `submit` mints a `requestId`, registers a pending awaiter keyed
 // by that id, emits a request frame upstream, and resolves/rejects the
-// awaiter when the supervisor's matching response frame lands. The three
+// awaiter when the supervisor's matching response frame lands. The
 // bridges differ only in the request payload they send, the value they
 // resolve, the label their error messages carry, and (for the
 // substrate-write bridge) an intermediate merge round-trip that must peek
@@ -166,7 +166,7 @@ export function createPendingRequestCore<Value, Meta = undefined>(
  * Default `requestId` allocator: a per-instance monotonic counter plus a
  * random suffix, so ids are unique across bridge instances without any
  * cross-instance coordination. The `prefix` names the owning bridge
- * (`sw-`, `om-`, `mm-`) for triage in supervisor logs.
+ * (`sw-`, `om-`, `mm-`, `mc-`) for triage in supervisor logs.
  */
 export function defaultRequestIdAllocator(prefix: string): () => string {
   let counter = 0;

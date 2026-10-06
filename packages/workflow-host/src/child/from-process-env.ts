@@ -40,6 +40,10 @@ import {
   type ChildMailboxMutationBridge,
 } from "./mailbox-mutation-bridge";
 import {
+  createChildMailboxCallBridge,
+  type ChildMailboxCallBridge,
+} from "./mailbox-call-bridge";
+import {
   createControlChannelSender,
   type FrameWriter,
   type NdjsonReader,
@@ -118,6 +122,13 @@ export interface SubstrateFactoryEnv {
    * owned store, so the child never flushes the run ref itself.
    */
   readonly mailboxMutationBridge: ChildMailboxMutationBridge;
+  /**
+   * Child-side IPC bridge for every mailbox method that is not `send` and
+   * not a flag or expunge mutation. The factory attaches it to the warm
+   * agent's transport. A build without an inbound surface does not receive
+   * it, and those methods fail as unwired.
+   */
+  readonly mailboxCallBridge: ChildMailboxCallBridge;
 }
 
 /**
@@ -217,12 +228,16 @@ export async function runWorkflowChildFromProcessEnv(
   const mailboxMutationBridge = createChildMailboxMutationBridge({
     upstreamSender,
   });
+  const mailboxCallBridge = createChildMailboxCallBridge({
+    upstreamSender,
+  });
   const bindings = await factory({
     spawn,
     substrateConfig,
     substrateWriteBridge,
     outboundMailBridge,
     mailboxMutationBridge,
+    mailboxCallBridge,
   });
   return runWorkflowChild({
     env: spawn,
@@ -241,6 +256,7 @@ export async function runWorkflowChildFromProcessEnv(
     substrateWriteBridge,
     outboundMailBridge,
     mailboxMutationBridge,
+    mailboxCallBridge,
   });
 }
 
