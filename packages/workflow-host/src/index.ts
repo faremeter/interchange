@@ -151,7 +151,6 @@ export {
 
 export {
   EVENT_CHANNEL_FD,
-  createChildMailboxReader,
   createChildMailboxCallBridge,
   createChildMailboxMutationBridge,
   createChildOutboundMailBridge,
@@ -167,7 +166,6 @@ export {
   runWorkflowChildFromProcessEnv,
   type ChildMailboxCallBridge,
   type ChildMailboxMutationBridge,
-  type ChildMailboxReader,
   type ChildOutboundMailBridge,
   type ChildStepInvoker,
   type ChildSubstrateWriteBridge,

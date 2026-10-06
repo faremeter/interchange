@@ -54,11 +54,6 @@ export {
 } from "./mailbox-watch-registry";
 
 export {
-  createChildMailboxReader,
-  type ChildMailboxReader,
-} from "./child-mailbox-reader";
-
-export {
   createProxyWorkflowRunRepoStore,
   type CreateProxyWorkflowRunRepoStoreOpts,
 } from "./proxy-repo-store";

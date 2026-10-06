@@ -251,6 +251,38 @@ describe("createChildOutboundMailBridge", () => {
     expect(bridge.pendingCount).toBe(0);
   });
 
+  test("completeReferences rides the frame only when the caller asks", async () => {
+    const sender = createCapturingSender();
+    let next = 0;
+    const bridge = createChildOutboundMailBridge({
+      upstreamSender: sender,
+      allocateRequestId: () => `rid-flag-${String(next++)}`,
+    });
+    const message = {
+      to: "recipient@example.com",
+      type: "conversation.message" as const,
+      content: "reply",
+      inReplyTo: "<parent@example.com>",
+    };
+    void bridge.submit("agent@example.com", message);
+    void bridge.submit("agent@example.com", message, {
+      completeReferences: true,
+    });
+    void bridge.submit("agent@example.com", message, {
+      completeReferences: false,
+    });
+    expect(sender.sent[0]?.completeReferences).toBeUndefined();
+    expect(sender.sent[1]?.completeReferences).toBe(true);
+    expect(sender.sent[2]?.completeReferences).toBeUndefined();
+    const flagged = sender.sent[1];
+    if (flagged === undefined) throw new Error("flagged frame missing");
+    const validated = ControlPayload({
+      type: "outbound.message",
+      data: flagged,
+    });
+    expect(validated instanceof type.errors).toBe(false);
+  });
+
   test("projects the References chain through the wire", async () => {
     const sender = createCapturingSender();
     const bridge = createChildOutboundMailBridge({

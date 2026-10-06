@@ -69,7 +69,6 @@ import {
 import { createIsogitStore } from "@intx/storage-isogit/node";
 import {
   adaptHostScheduler,
-  createChildMailboxReader,
   createCredentialsBackedAuthorize,
   createMailboxWatchRegistry,
   createProxyWorkflowRunRepoStore,
@@ -85,7 +84,6 @@ import {
   loadWorkflowLoopFnsFromClosure,
   loadWorkflowPluginFactoriesFromClosure,
   loadWorkflowPluginToolDefinitionsFromClosure,
-  type ChildMailboxReader,
   type ChildOutboundMailBridge,
   type CredentialsSnapshot,
   type CredentialsSnapshotRef,
@@ -569,29 +567,6 @@ function findApprovalSnapshot(
 ): ApprovalSnapshot | undefined {
   return pendingOperations.find((op) => op.correlationId === correlationId)
     ?.approvalSnapshot;
-}
-
-/**
- * Resolve the full RFC 5322 References chain for a reply whose parent is
- * `inReplyTo`, from the deployment's committed substrate mailbox. Opens a
- * fresh committed snapshot, locates the message whose Message-Id equals
- * `inReplyTo`, and returns that message's own References followed by its
- * Message-Id -- the complete ancestry a reply threaded onto it must carry.
- *
- * Returns `undefined` when the parent is not in the mailbox (the first reply
- * on a fresh thread, or an id that never arrived). The message identifiers are
- * carried through verbatim; the transport's send path (`buildReferences` in
- * `@intx/mail-memory`) owns filtering non-RFC identifiers out of the emitted
- * `References` header, so this reader does not pre-validate them.
- */
-async function resolveMailboxReferences(
-  reader: ChildMailboxReader,
-  inReplyTo: string,
-): Promise<string[] | undefined> {
-  const store = await reader.open();
-  const parent = store.messages.find((m) => m.envelope.messageId === inReplyTo);
-  if (parent === undefined) return undefined;
-  return [...parent.envelope.references, parent.envelope.messageId];
 }
 
 /**
@@ -2203,15 +2178,7 @@ export function createSidecarSubstrateFactory(
     // registry rides out on the returned bindings so `runWorkflowChild` routes
     // notifications to this same instance. Mail methods other than `send` ask
     // the supervisor; this child does not open the mailbox to answer them.
-    // The reader below is only for threading a reply's References chain, which
-    // is not a `MessageTransport` method.
     const mailboxWatchRegistry = createMailboxWatchRegistry();
-    const mailboxReader = createChildMailboxReader({
-      substrate,
-      repoId: workflowRunRepoId,
-      principal,
-      ref: validated.WORKFLOW_RUN_REF,
-    });
     const transportInbound: SupervisorBackedTransportInbound = {
       watchRegistry: mailboxWatchRegistry,
       mutationBridge: env.mailboxMutationBridge,
@@ -2491,17 +2458,13 @@ export function createSidecarSubstrateFactory(
                 env.outboundMailBridge.submit(
                   env.spawn.mailboxAddress,
                   message,
+                  {
+                    // Connector replies do not carry References. A bare
+                    // inReplyTo on any other send must not be completed
+                    // from this mailbox.
+                    completeReferences: true,
+                  },
                 ),
-              // Build the full RFC 5322 References chain from the deployment's
-              // committed mailbox: locate the parent by its Message-Id and
-              // return its own References plus its Message-Id, so a reply
-              // carries the whole conversational ancestry rather than a
-              // single element. The reader opens a fresh committed snapshot,
-              // so a parent committed just before this reply is visible. A
-              // parent miss (the first reply on a fresh thread, a malformed
-              // id) returns undefined and the transport derives [inReplyTo].
-              resolveReferences: (inReplyTo) =>
-                resolveMailboxReferences(mailboxReader, inReplyTo),
               onReplySent: (receipt) =>
                 durableConversation.get(key).onReplySent(receipt),
             })
