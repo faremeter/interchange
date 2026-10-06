@@ -10,7 +10,7 @@ import {
   createNoopCredentialCipher,
   generateKeyPair,
 } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+import { hexEncode, parseRunAddress } from "@intx/types";
 import { computeWireDefinitionHash } from "@intx/types/wire-definition-hash";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
@@ -32,8 +32,6 @@ import {
   createSpawnObserver,
   createChangeNotifier,
 } from "@intx/workflow-host/testing";
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
-
 import {
   assembleRunCredentialsSnapshot,
   createSidecarDeployRouter,
@@ -55,6 +53,55 @@ import {
   writeWorkflowRunRecord,
   type WorkflowRunRecord,
 } from "./workflow-run-record";
+
+function deriveWorkflowRunRepoId(agentAddress: string): string {
+  return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+function parseAgentId(agentAddress: string): string {
+  const parsed = parseRunAddress(agentAddress);
+  if (parsed === null) {
+    throw new Error(`Invalid run address: "${agentAddress}"`);
+  }
+  return parsed.runId;
+}
+
+const resolvedInboundMailPolicy = {
+  clean: "admit",
+  error: "reject",
+  untrustedFrom: "reject",
+  mismatchedFrom: "reject",
+  absentFrom: "reject",
+  invalid: "reject",
+  missing: "reject",
+  unknown: "reject",
+} as const;
+
+function deployHostBindings() {
+  return {
+    deriveWorkflowRunRepoId,
+    parseAgentId,
+    inertFlatNamespaceStepIds: (args: {
+      definition: { readonly stepOrder: readonly string[] };
+    }) => args.definition.stepOrder,
+    workflowSourceAssetMountPath: (assetId: string) =>
+      `source-assets/${assetId}/`,
+    sourceAssetGitDir: (gitDirRoot: string, assetId: string) =>
+      path.join(gitDirRoot, assetId),
+    readRegistries: () => new Map(),
+    resolveHostPlatform: () => ({ os: "linux", cpu: "arm64" }),
+    resolveInboundMailPolicy: () => resolvedInboundMailPolicy,
+    materializeWorkflowAssets: () => Promise.resolve(undefined),
+    maxInlineAssetPayloadBytes: 32 * 1024 * 1024,
+    multistepBinaryPath: "/fake/bin/workflow-child",
+    multistepSubprocessSpawner: (): never => {
+      throw new Error("workflow child spawner was not provided");
+    },
+    applyFrozenWorkflowClosure: (): never => {
+      throw new Error("frozen closure apply was not provided");
+    },
+  };
+}
 
 function createMinimalStubRepoStore(): RepoStore {
   const stub: Partial<RepoStore> = {
@@ -107,6 +154,7 @@ describe("createSidecarWorkflowSupervisor", () => {
         `${runId}-${stepId}@example.com`,
       substrateEnv: { DATA_DIR: "/tmp/wire" },
       dynamicSpawnEnv: () => ({}),
+      binaryPath: "/fake/bin/workflow-child",
       subprocessSpawner: spawner,
     });
 
@@ -144,6 +192,7 @@ describe("createSidecarWorkflowSupervisor", () => {
         `${runId}-${stepId}@example.com`,
       substrateEnv: {},
       dynamicSpawnEnv: () => ({}),
+      binaryPath: "/fake/bin/workflow-child",
       subprocessSpawner: () => {
         throw new Error("spawner not invoked in this test");
       },
@@ -210,6 +259,7 @@ describe("createSidecarWorkflowSupervisor", () => {
         `${dep}-${stepId}@example.com`,
       substrateEnv: {},
       dynamicSpawnEnv: () => ({}),
+      binaryPath: "/fake/bin/workflow-child",
       subprocessSpawner: () => {
         throw new Error("spawner not invoked in this test");
       },
@@ -247,6 +297,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
     });
 
     const router = createSidecarDeployRouter({
+      ...deployHostBindings(),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- provisionStep exercises only initRepo
       sessions: {
         initRepo: async (a: string) => {
@@ -264,11 +315,7 @@ describe("createSidecarDeployRouter provision-step (no-spawn) mode", () => {
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
       senderKeyCache: {
-        get: () => undefined,
         put: async () => undefined,
-        evict: async () => undefined,
-        addresses: () => [],
-        rotatableAddresses: () => [],
       },
       transport,
       repoStore,
@@ -810,6 +857,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
       });
     };
     const router = createSidecarDeployRouter({
+      ...deployHostBindings(),
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the workflow path never invokes provisionAgent/persistHubPublicKey (single-step uses the narrow initRepo; the child mints its own key); the stubs throw if it does. initRepo is a no-op for the single-step head repo.
       sessions: {
         provisionAgent: async () => {
@@ -839,11 +887,7 @@ describe("createSidecarDeployRouter multi-step branch", () => {
         typeof createSidecarDeployRouter
       >[0]["keyStore"],
       senderKeyCache: opts.senderKeyCache ?? {
-        get: () => undefined,
         put: async () => undefined,
-        evict: async () => undefined,
-        addresses: () => [],
-        rotatableAddresses: () => [],
       },
       transport,
       repoStore,

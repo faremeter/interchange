@@ -1,64 +1,26 @@
-// Thin wiring module that constructs `createWorkflowSupervisor` with
-// this sidecar's host-specific bindings: the existing mail-bus
-// instance, the sidecar's Ed25519 signing keypair, the substrate
-// RepoStore handle, and `Bun.spawn` as the subprocess spawner. Any
-// logic that would benefit a future alternative-sidecar
-// implementation lives inside `@intx/workflow-host`, not here.
+// Sidecar deploy program for the workflow host.
+//
+// Stages a workflow deployment onto a supervised workflow-process child:
+// materializes the frozen closure, records the run, and registers the
+// deployment's mail, signal, drain, and grants routes. The process that
+// boots this program supplies the host bindings: closure apply, asset
+// delivery, registry and platform resolution, repo-id derivation, and the
+// child spawner and binary.
 
 import { rm, stat } from "node:fs/promises";
 import { join as pathJoin } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { type } from "arktype";
 
 import { derivePublicKeyBytes, signEd25519 } from "@intx/crypto";
 import { getLogger } from "@intx/log";
 import type { HubTransport } from "@intx/mail-memory";
-import {
-  parseAgentId,
-  workflowSourceAssetMountPath,
-  type Principal,
-  type RepoId,
-  type RepoStore,
-  type WorkflowRunSupervisorPrincipal,
-} from "@intx/hub-sessions";
-import {
-  resolveInboundMailPolicy,
-  MAX_INLINE_ASSET_PAYLOAD_BYTES,
-  materializeWorkflowAssets,
-  sourceAssetGitDir,
-  type AgentKeyStore,
-  type DeployRouter,
-  type DeployRouterResult,
-  type InboundMailPolicyRegistry,
-  type SenderKeyCache,
-  type SessionManager,
-  type WorkflowControlOutcome,
-} from "@intx/hub-agent";
-import {
-  createWorkflowSupervisor,
-  hashGrants,
-  readRunGrants,
-  runGrantsPath,
-  loadWorkflowDefinitionFromClosure,
-  STEP_GRANTS_PATH,
-  STEP_GRANTS_REF,
-  wrapHubTransportAsMailBus,
-  type CredentialsSnapshot,
-  type CredentialsSnapshotStep,
-  type DeriveStepAddress,
-  type DeriveStepRepoId,
-  type DispatchTimingMark,
-  type FrameReader,
-  type HubTransportMailBusAdapter,
-  type NdjsonReader,
-  type NdjsonWriter,
-  type SpawnOpts,
-  type SubprocessHandle,
-  type SubprocessSpawner,
-  type SuspensionRegistration,
-  type WorkflowSupervisor,
-} from "@intx/workflow-host";
+import type {
+  Principal,
+  RepoId,
+  RepoStore,
+  WorkflowRunSupervisorPrincipal,
+} from "@intx/hub-sessions/substrate";
 import {
   hexDecode,
   hexEncode,
@@ -71,37 +33,52 @@ import {
   type CryptoProvider,
   type InferenceEvent,
   type InferenceSource,
+  type InboundMailOutcome,
+  type InboundMailPolicy,
   type KeyPair,
 } from "@intx/types/runtime";
 import {
   WORKFLOW_CONTROL_INITIALIZING_ERROR,
   WorkflowProjectionDefinition,
   type AgentDeployFrame,
+  type AgentUndeployFrame,
   type CredentialDelivery,
   type SourceRefPin,
   type WorkflowControlFrame,
   type WorkflowRunRefTips,
+  type WorkflowSourceAssetMount,
 } from "@intx/types/sidecar";
-import {
-  applyFrozenWorkflowClosure,
-  type ApplyFrozenWorkflowClosureArgs,
-  type AppliedWorkflowClosure,
-} from "@intx/tool-packaging";
 import {
   STEP_ID_PATTERN,
   projectLiveToInert,
   type WorkflowDefinition,
 } from "@intx/workflow";
-import {
-  deriveWorkflowRunRepoId,
-  inertFlatNamespaceStepIds,
-} from "@intx/workflow-deploy";
 
+import { loadWorkflowDefinitionFromClosure } from "../workflow-definition-loader";
+import { readRunGrants, runGrantsPath } from "../run-grants";
 import {
-  readRegistries,
-  resolveHostPlatform,
-} from "./sidecar-materialization-config";
-
+  wrapHubTransportAsMailBus,
+  type HubTransportMailBusAdapter,
+} from "../mail-bus/hub-transport-adapter";
+import {
+  hashGrants,
+  STEP_GRANTS_PATH,
+  STEP_GRANTS_REF,
+  type CredentialsSnapshot,
+  type CredentialsSnapshotStep,
+  type DeriveStepAddress,
+  type DeriveStepRepoId,
+} from "../supervisor/credentials";
+import {
+  createWorkflowSupervisor,
+  type SpawnOpts,
+  type WorkflowSupervisor,
+} from "../supervisor/supervisor";
+import type {
+  DispatchTimingMark,
+  SubprocessSpawner,
+  SuspensionRegistration,
+} from "../supervisor/types";
 import type {
   MultistepDrainRouter,
   MultistepGrantsRouter,
@@ -155,7 +132,10 @@ function deploymentSourceGitRoot(
  * mount-path helper) so deploy and restore agree without the frame's delivered
  * assets. Source-format entries resolve through `deriveSourceGitDirs` instead.
  */
-function deriveSourceAssetMounts(pin: SourceRefPin): Map<string, string> {
+function deriveSourceAssetMounts(
+  pin: SourceRefPin,
+  workflowSourceAssetMountPath: (assetId: string) => string,
+): Map<string, string> {
   const mounts = new Map<string, string>();
   for (const entry of pin.closure.entries) {
     if (
@@ -179,6 +159,7 @@ function deriveSourceAssetMounts(pin: SourceRefPin): Map<string, string> {
 function deriveSourceGitDirs(
   pin: SourceRefPin,
   gitRoot: string,
+  sourceAssetGitDir: (gitDirRoot: string, assetId: string) => string,
 ): Map<string, string> {
   const gitDirs = new Map<string, string>();
   for (const entry of pin.closure.entries) {
@@ -221,13 +202,18 @@ export async function resolveDeploymentAssetMounts(
   dataDir: string,
   deploymentId: string,
   pin: SourceRefPin,
+  workflowSourceAssetMountPath: (assetId: string) => string,
+  sourceAssetGitDir: (gitDirRoot: string, assetId: string) => string,
 ): Promise<{
   assetRoot: string;
   assetMounts: ReadonlyMap<string, string>;
   gitDirs: ReadonlyMap<string, string>;
 }> {
   const assetRoot = deploymentSourceAssetRoot(dataDir, deploymentId);
-  const assetMounts = deriveSourceAssetMounts(pin);
+  const assetMounts = deriveSourceAssetMounts(
+    pin,
+    workflowSourceAssetMountPath,
+  );
   for (const [assetId, mountPath] of assetMounts) {
     const mountDir = pathJoin(assetRoot, mountPath);
     if (!(await isExistingDir(mountDir))) {
@@ -237,7 +223,7 @@ export async function resolveDeploymentAssetMounts(
     }
   }
   const gitRoot = deploymentSourceGitRoot(dataDir, deploymentId);
-  const gitDirs = deriveSourceGitDirs(pin, gitRoot);
+  const gitDirs = deriveSourceGitDirs(pin, gitRoot, sourceAssetGitDir);
   for (const [assetId, gitDir] of gitDirs) {
     if (!(await isExistingDir(gitDir))) {
       throw new Error(
@@ -329,6 +315,7 @@ function createStepStrategy(args: {
   legacyAddress: string;
   stepOrder: readonly string[];
   multistepDeriveStepAddress: DeriveStepAddress;
+  parseAgentId: (agentAddress: string) => string;
 }): StepStrategy {
   if (args.stepOrder.length === 1) {
     return {
@@ -341,7 +328,7 @@ function createStepStrategy(args: {
       // other boundary checks.
       deriveStepRepoId: () => ({
         kind: "agent-state",
-        id: parseAgentId(args.legacyAddress),
+        id: args.parseAgentId(args.legacyAddress),
       }),
     };
   }
@@ -490,214 +477,6 @@ export async function assembleRunCredentialsSnapshot(
   return { steps };
 }
 
-// The supervisor's `binaryPath` binding resolves to the sidecar's
-// own `bin/workflow-child` script via `import.meta.resolve` against
-// the `@intx/sidecar-app` package. The script lives next to this
-// wiring module (`../bin/workflow-child`); resolving it statically
-// at wiring-module load time keeps the production spawn surface
-// independent of any runtime env override. Tests inject a sentinel
-// path via the `binaryPath` opts override; production wiring
-// closes over this constant.
-const SIDECAR_WORKFLOW_CHILD_BINARY: string = (() => {
-  const url = import.meta.resolve("../bin/workflow-child");
-  return fileURLToPath(url);
-})();
-
-/**
- * Child fd the supervisor inherits the event-channel pipe on. The
- * supervisor's spawn-time convention is:
- *
- *   fd 0 stdin  -- downstream control channel (supervisor -> child)
- *   fd 1 stdout -- upstream control channel (child -> supervisor)
- *   fd 2 stderr -- inherited so child diagnostics land on the
- *                  sidecar's stderr
- *   fd 3        -- event-channel write side (child writes
- *                  HMAC-authenticated InferenceEvent frames here;
- *                  the supervisor reads the parent end as a
- *                  `FrameReader`)
- *
- * The child opens fd 3 via `EVENT_CHANNEL_FD` in
- * `@intx/workflow-host`'s `from-process-env`. The two ends of the
- * pipe are provisioned by `Bun.spawn`'s `stdio` slot: setting
- * `stdio[3] = "pipe"` makes Bun mint a pipe pair where the child
- * inherits the write half at fd 3 and the parent receives the read
- * half as a numeric fd at `proc.stdio[3]` in its own address space.
- */
-const CHILD_EVENT_CHANNEL_FD = 3;
-
-/**
- * Wrap a Bun `FileSink` as the supervisor's `NdjsonWriter`. The
- * supervisor's control-channel sender writes one JSON line per
- * frame (already including the trailing newline); the writer is
- * responsible for passing the bytes through to the child's stdin
- * without buffering across frames so each frame surfaces on the
- * far side as soon as `write()` resolves.
- */
-function ndjsonWriterFromFileSink(sink: Bun.FileSink): NdjsonWriter {
-  return {
-    async write(line: string): Promise<void> {
-      const result = sink.write(line);
-      if (typeof result !== "number") await result;
-      const flushed = sink.flush();
-      if (typeof flushed !== "number") await flushed;
-    },
-  };
-}
-
-/**
- * Wrap a Bun stdout `ReadableStream` as the supervisor's
- * `NdjsonReader`. The pipe is a byte stream; this reader buffers
- * partial chunks and yields one complete line per iteration. The
- * receiver's iterator finalises only on EOF, which mirrors the
- * `defaultControlReader` shape the child wires for `process.stdin`.
- */
-function ndjsonReaderFromReadableStream(
-  stream: ReadableStream<Uint8Array>,
-): NdjsonReader {
-  return {
-    read(): AsyncIterableIterator<string> {
-      return (async function* () {
-        const decoder = new TextDecoder("utf-8");
-        let pending = "";
-        const reader = stream.getReader();
-        try {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (value !== undefined) {
-              pending += decoder.decode(value, { stream: true });
-              let nl = pending.indexOf("\n");
-              while (nl >= 0) {
-                const line = pending.slice(0, nl).replace(/\r$/, "");
-                pending = pending.slice(nl + 1);
-                if (line.length > 0) yield line;
-                nl = pending.indexOf("\n");
-              }
-            }
-            if (done) break;
-          }
-          if (pending.length > 0) yield pending;
-        } finally {
-          reader.releaseLock();
-        }
-      })();
-    },
-  };
-}
-
-/**
- * Wrap the parent-side read fd of the event-channel pipe as the
- * supervisor's `FrameReader`. The child publishes one HMAC-
- * authenticated envelope per `FileSink.write()` and the supervisor's
- * `receiveEventChannel` parses each yielded `Uint8Array` as one
- * complete envelope. The pipe is a byte stream; this reader yields
- * each raw chunk the kernel delivers and trusts the sender's
- * one-write-per-envelope discipline. The buffer-overflow / framing
- * discipline lives in `receiveEventChannel`'s parser.
- */
-function frameReaderFromFd(fd: number): FrameReader {
-  const stream = Bun.file(fd).stream();
-  return {
-    read(): AsyncIterableIterator<Uint8Array> {
-      return (async function* () {
-        const reader = stream.getReader();
-        try {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (value !== undefined && value.byteLength > 0) yield value;
-            if (done) break;
-          }
-        } finally {
-          reader.releaseLock();
-        }
-      })();
-    },
-  };
-}
-
-/**
- * Real `Bun.spawn`-backed subprocess spawner. Constructs a fresh env
- * carrying exactly the trust anchors and substrate-config keys the
- * supervisor passed in (no inheritance of the sidecar's process env);
- * inherits stdio 0/1/2 as control + stderr; pipes fd 3 for the event
- * channel and surfaces the parent-side read fd as the supervisor's
- * `FrameReader`.
- *
- * Failure modes flow through the returned handle's `exited` promise.
- * A `Bun.spawn` that fails to launch (binary missing, env malformed,
- * `EXEC` error) settles `exited` with a non-zero code; the
- * supervisor's `wireChild` races `exited` against `readyPromise`
- * inside `spawn()` so a spawn-time crash surfaces as a rejected
- * spawn rather than a wedged `starting` state.
- */
-export const defaultSubprocessSpawner: SubprocessSpawner = ({
-  binaryPath,
-  env,
-}): SubprocessHandle => {
-  // The child leads its own process group so a stop reaches the tool
-  // subprocesses it started, not just the child's own pid.
-  const proc = Bun.spawn([binaryPath], {
-    stdio: ["pipe", "pipe", "inherit", "pipe"],
-    env,
-    detached: true,
-  });
-  // Once the final group kill has run, the group id may be reused by an
-  // unrelated process group, so later signals must not reach it.
-  let groupReleased = false;
-  function signalGroup(signal: number | NodeJS.Signals): void {
-    if (groupReleased) return;
-    try {
-      process.kill(-proc.pid, signal);
-    } catch (err) {
-      if (!(err instanceof Error && "code" in err && err.code === "ESRCH"))
-        throw err;
-    }
-  }
-  const eventFd = proc.stdio[CHILD_EVENT_CHANNEL_FD];
-  if (typeof eventFd !== "number") {
-    throw new Error(
-      `workflow-host-wiring: Bun.spawn did not return a numeric fd at stdio[${String(CHILD_EVENT_CHANNEL_FD)}] for the event channel; got ${typeof eventFd}`,
-    );
-  }
-  return {
-    pid: proc.pid,
-    controlWriter: ndjsonWriterFromFileSink(proc.stdin),
-    controlReader: ndjsonReaderFromReadableStream(proc.stdout),
-    eventReader: frameReaderFromFd(eventFd),
-    kill(signal?: number | string): void {
-      // The supervisor's `SubprocessHandle.kill` widens the signal
-      // to `number | string`; `process.kill` accepts
-      // `number | NodeJS.Signals`. The supervisor's call sites pass
-      // `"SIGTERM"` / `"SIGKILL"` (recycle path) or no argument
-      // (shutdown path). Cast at the boundary so the inner call
-      // matches the narrower type without coercing valid input.
-      if (signal === undefined) {
-        signalGroup("SIGTERM");
-        return;
-      }
-      if (typeof signal === "number") {
-        signalGroup(signal);
-        return;
-      }
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- supervisor's kill widens to `string`; the runtime accepts the same `"SIG*"` strings, narrowed back at the boundary.
-      signalGroup(signal as NodeJS.Signals);
-    },
-    // Tool subprocesses outlive a child that exits or is killed, so the
-    // group is killed before `exited` settles. If the group was already
-    // empty when Bun reaped the child, its id could be reused before this
-    // kill lands; the window is brief, and closing it needs a process
-    // handle such as a pidfd, which Bun does not expose.
-    exited: proc.exited.then((code) => {
-      try {
-        signalGroup("SIGKILL");
-        groupReleased = true;
-      } catch (err) {
-        logger.error`Cannot stop processes left by workflow child ${String(proc.pid)}: ${err instanceof Error ? err.message : String(err)}`;
-      }
-      return code;
-    }),
-  };
-};
-
 export type CreateSidecarWorkflowSupervisorOpts = {
   /** Sidecar's hub mail transport. */
   transport: HubTransport;
@@ -755,13 +534,12 @@ export type CreateSidecarWorkflowSupervisorOpts = {
    */
   dynamicSpawnEnv: () => Record<string, string>;
   /**
-   * Override the subprocess spawner. Tests inject a deterministic
-   * mock; production defaults to the `Bun.spawn`-backed
-   * `defaultSubprocessSpawner`.
+   * Subprocess spawner. The booting process passes the Bun-backed
+   * spawner; tests pass a deterministic mock.
    */
-  subprocessSpawner?: SubprocessSpawner;
-  /** Override the `bin/workflow-child` path. */
-  binaryPath?: string;
+  subprocessSpawner: SubprocessSpawner;
+  /** Path of the workflow-child binary the spawner launches. */
+  binaryPath: string;
   /**
    * Optional per-message dispatch-timing observer, forwarded verbatim to
    * the supervisor's `onDispatchTiming` binding. Absent in production;
@@ -1008,15 +786,29 @@ async function derivePrincipalPublicKeyHex(
   return hexEncode(await derivePublicKeyBytes(signingKeySeed));
 }
 
+/** Values the link folds into the outbound deploy ack. */
+type DeployRouterResult = {
+  publicKey: string;
+};
+
+/** What a handled workflow control reports back to the hub. */
+type WorkflowControlOutcome = {
+  refTips?: WorkflowRunRefTips;
+};
+
+type ResolvedInboundMailPolicy = Record<InboundMailOutcome, "reject" | "admit">;
+
 /**
- * The sidecar's `DeployRouter` plus the boot-time restore driver. The link
- * routes `agent.deploy`/`agent.undeploy` through the `DeployRouter` surface;
- * the sidecar boot edge additionally calls `restoreWorkflowRuns` once,
- * before connecting to the hub, to re-establish the deployments a prior
- * process persisted. The extra method is sidecar-app-only, so it rides on the
- * concrete router type rather than the shared `DeployRouter` contract.
+ * The link routes `agent.deploy`, `agent.undeploy`, and `workflow.control`
+ * through `deploy`, `undeploy`, and `control`. The boot edge also calls
+ * `restoreWorkflowRuns` once before connecting to the hub, reads
+ * `activeAddresses` on each reconnect, and asks `reEmitParkedCorrelations`
+ * to recover correlations dropped during an outage.
  */
-export interface SidecarDeployRouter extends DeployRouter {
+export interface SidecarDeployRouter {
+  deploy(frame: AgentDeployFrame): Promise<DeployRouterResult>;
+  undeploy(frame: AgentUndeployFrame): Promise<void>;
+  control(frame: WorkflowControlFrame): Promise<WorkflowControlOutcome>;
   /**
    * Re-establish every persisted workflow deployment on this sidecar's local
    * substrate. Runs once at boot, before `hubLink.connect()`, so a single-step
@@ -1051,16 +843,26 @@ export interface SidecarDeployRouter extends DeployRouter {
   reEmitParkedCorrelations(address: string): void;
 }
 
-export function createSidecarDeployRouter(deps: {
-  sessions: SessionManager;
-  keyStore: AgentKeyStore;
+export function createSidecarDeployRouter<THost, TRegistries>(deps: {
+  sessions: {
+    initRepo(address: string): Promise<void>;
+  };
+  keyStore: {
+    loadOrGenerateKey(
+      address: string,
+    ): Promise<{ keyPair: KeyPair; isNew: boolean }>;
+    recordHubKey(address: string, hexHubPublicKey: string): void;
+    forgetAgent(address: string): void;
+  };
   /**
    * Cache of hub-vouched sender public keys. The grants handler writes each
    * co-delivered `senderIdentities` entry here before the run's grants land,
    * so a durable grant is never missing the key its recipient needs to verify
    * the sender's inbound mail.
    */
-  senderKeyCache: SenderKeyCache;
+  senderKeyCache: {
+    put(address: string, publicKey: Uint8Array): Promise<void>;
+  };
   transport: HubTransport;
   repoStore: RepoStore;
   signingKeySeed: Uint8Array;
@@ -1143,17 +945,15 @@ export function createSidecarDeployRouter(deps: {
   multistepSubstrateEnv?: Record<string, string>;
   /**
    * Subprocess spawner the multi-step branch hands to the supervisor.
-   * Defaults to the production `Bun.spawn`-backed
-   * `defaultSubprocessSpawner`; tests inject a deterministic mock.
+   * The booting process passes the Bun-backed spawner; tests pass a
+   * deterministic mock.
    */
-  multistepSubprocessSpawner?: SubprocessSpawner;
+  multistepSubprocessSpawner: SubprocessSpawner;
   /**
-   * Optional override for the resolved `bin/workflow-child` path the
-   * multi-step branch hands to the supervisor. Production wiring uses
-   * the package-local default; tests inject a sentinel value so the
-   * mock spawner can assert on it.
+   * Path of the workflow-child binary the spawner launches. Empty is
+   * rejected at construction.
    */
-  multistepBinaryPath?: string;
+  multistepBinaryPath: string;
   /**
    * Callback the supervisor invokes for every verified InferenceEvent
    * the workflow-process child publishes. The router threads the
@@ -1225,7 +1025,10 @@ export function createSidecarDeployRouter(deps: {
    * for the address resolves to the fully-closed default and is rejected
    * until the wiring is plumbed.
    */
-  inboundMailPolicyRegistry?: InboundMailPolicyRegistry;
+  inboundMailPolicyRegistry?: {
+    register(address: string, policy: ResolvedInboundMailPolicy): void;
+    unregister(address: string): void;
+  };
   /**
    * Per-deployment-address signal handler registry the sidecar
    * hub-link's `signal.deliver` path consults. The multi-step branch
@@ -1342,14 +1145,71 @@ export function createSidecarDeployRouter(deps: {
    */
   writeWorkflowRunRecord?: typeof writeWorkflowRunRecord;
   /**
-   * Materialize a source-ref deployment's frozen closure. Defaults to the real
-   * `applyFrozenWorkflowClosure` (registry fetch + SRI verify + layout);
-   * production never overrides it. A test seam so a unit test can drive the
-   * deploy/restore source-ref path without a live registry.
+   * Materialize a source-ref deployment's frozen closure. The booting
+   * process passes the real apply; a test passes a stub so the
+   * deploy/restore path can run without a live registry.
    */
-  applyFrozenWorkflowClosure?: (
-    args: ApplyFrozenWorkflowClosureArgs<WorkflowDefinition>,
-  ) => Promise<AppliedWorkflowClosure<WorkflowDefinition>>;
+  applyFrozenWorkflowClosure: (args: {
+    readonly source: SourceRefPin["source"];
+    readonly closure: SourceRefPin["closure"];
+    readonly instanceDir: string;
+    readonly cacheRoot: string;
+    readonly cacheMaxBytes: number;
+    readonly registryMaxTarballBytes: number;
+    readonly registries: TRegistries;
+    readonly host: THost;
+    readonly loadDefinition: (loadArgs: {
+      readonly packageDir: string;
+      readonly importCacheKey?: string;
+    }) => Promise<WorkflowDefinition>;
+    readonly assetRoot: string;
+    readonly assetMounts: ReadonlyMap<string, string>;
+    readonly gitDirs: ReadonlyMap<string, string>;
+  }) => Promise<{
+    readonly definition: WorkflowDefinition;
+    readonly packageDir: string;
+    readonly deployDir: string;
+  }>;
+  /** Registry table the closure apply selects optional dependencies against. */
+  readRegistries: () => TRegistries;
+  /** Platform pair the closure apply selects optional dependencies with. */
+  resolveHostPlatform: () => THost;
+  /**
+   * Resolve a deployment's authored inbound-mail policy into the total
+   * decision map stored beside the mail-router registration.
+   */
+  resolveInboundMailPolicy: (
+    authored: InboundMailPolicy | undefined,
+  ) => ResolvedInboundMailPolicy;
+  /**
+   * Check a frame's inline source assets out into the durable stores the
+   * closure materializes from.
+   */
+  materializeWorkflowAssets: (args: {
+    assets: readonly WorkflowSourceAssetMount[];
+    closure: SourceRefPin["closure"];
+    assetRoot: string;
+    gitDirRoot: string;
+    maxAssetPayloadBytes: number;
+  }) => Promise<unknown>;
+  /** Cap on the total inline source-asset payload of one frame. */
+  maxInlineAssetPayloadBytes: number;
+  /** Lossy address-to-repo-id substitution the workflow-run repo is keyed by. */
+  deriveWorkflowRunRepoId: (agentAddress: string) => string;
+  /**
+   * Every step id in a frozen projection's flat step-id namespace. The
+   * credentials snapshot and the grants bridge both walk this set.
+   */
+  inertFlatNamespaceStepIds: (args: {
+    definition: WorkflowProjectionDefinition;
+    context: string;
+  }) => readonly string[];
+  /** Workspace-relative mount path a tarball source asset is delivered under. */
+  workflowSourceAssetMountPath: (assetId: string) => string;
+  /** Absolute git directory a source-format asset is indexed into. */
+  sourceAssetGitDir: (gitDirRoot: string, assetId: string) => string;
+  /** Run id of an `<runId>@<domain>` address. */
+  parseAgentId: (agentAddress: string) => string;
 }): SidecarDeployRouter {
   // Validate the signing seed at construction so a malformed key fails
   // sidecar boot rather than the first multi-step deploy, where the
@@ -1392,12 +1252,15 @@ export function createSidecarDeployRouter(deps: {
   // no child ever rooted scratch and the undeploy reclaim is correctly
   // skipped.
   const stepStateDataDir = multistepSubstrateEnv.SIDECAR_DATA_DIR;
+  if (deps.multistepBinaryPath.length === 0) {
+    throw new Error(
+      "sidecar deploy router: multistepBinaryPath must name the workflow child binary",
+    );
+  }
   const persistWorkflowRunRecord =
     deps.writeWorkflowRunRecord ?? writeWorkflowRunRecord;
-  const applyClosure =
-    deps.applyFrozenWorkflowClosure ?? applyFrozenWorkflowClosure;
-  const multistepSpawner =
-    deps.multistepSubprocessSpawner ?? defaultSubprocessSpawner;
+  const applyClosure = deps.applyFrozenWorkflowClosure;
+  const multistepSpawner = deps.multistepSubprocessSpawner;
   const multistepDeriveStepAddress: DeriveStepAddress =
     deps.multistepDeriveStepAddress ??
     (({ runId, stepId }) => `${runId}-${stepId}`);
@@ -1692,7 +1555,7 @@ export function createSidecarDeployRouter(deps: {
     dataDir: string,
     deploymentId: string,
     pin: SourceRefPin,
-  ): Promise<AppliedWorkflowClosure<WorkflowDefinition>> {
+  ) {
     const instanceDir = pathJoin(
       dataDir,
       "workflow-definition-closures",
@@ -1705,7 +1568,13 @@ export function createSidecarDeployRouter(deps: {
     // store. Deriving and asserting both from the pin alone is what makes this
     // symmetric on deploy and restore.
     const { assetRoot, assetMounts, gitDirs } =
-      await resolveDeploymentAssetMounts(dataDir, deploymentId, pin);
+      await resolveDeploymentAssetMounts(
+        dataDir,
+        deploymentId,
+        pin,
+        deps.workflowSourceAssetMountPath,
+        deps.sourceAssetGitDir,
+      );
 
     return applyClosure({
       source: pin.source,
@@ -1720,8 +1589,8 @@ export function createSidecarDeployRouter(deps: {
         multistepSubstrateEnv,
         "SIDECAR_REGISTRY_MAX_TARBALL_BYTES",
       ),
-      registries: readRegistries(),
-      host: resolveHostPlatform(),
+      registries: deps.readRegistries(),
+      host: deps.resolveHostPlatform(),
       loadDefinition: loadWorkflowDefinitionFromClosure,
       assetRoot,
       assetMounts,
@@ -1762,7 +1631,7 @@ export function createSidecarDeployRouter(deps: {
         `sidecar deploy router: a supervisor is already active for ${spec.agentAddress}; refusing to spawn a second`,
       );
     }
-    const runId = deriveWorkflowRunRepoId(spec.agentAddress);
+    const runId = deps.deriveWorkflowRunRepoId(spec.agentAddress);
 
     // Single-step launched-agent deploy vs. derived multi-step deploy. A
     // one-step deployment keeps the deployment's own (legacy) mail address
@@ -1773,6 +1642,7 @@ export function createSidecarDeployRouter(deps: {
       legacyAddress: spec.agentAddress,
       stepOrder: spec.definition.stepOrder,
       multistepDeriveStepAddress,
+      parseAgentId: deps.parseAgentId,
     });
 
     // Every step id the deployment's credentials snapshot must cover. This is
@@ -1783,7 +1653,7 @@ export function createSidecarDeployRouter(deps: {
     // throws on the body's first tool call. The address/repo strategy above
     // stays on `stepOrder`, because the head/step collapse is a property of the
     // deployment's own step count, not of what a body can run.
-    const credentialStepIds = inertFlatNamespaceStepIds({
+    const credentialStepIds = deps.inertFlatNamespaceStepIds({
       definition: spec.definition,
       context: "sidecar deploy router credentials snapshot: ",
     });
@@ -1908,9 +1778,7 @@ export function createSidecarDeployRouter(deps: {
           [STEP_INFERENCE_SOURCES_ENV_KEY]: JSON.stringify(currentSources),
         }),
         subprocessSpawner: multistepSpawner,
-        ...(deps.multistepBinaryPath !== undefined
-          ? { binaryPath: deps.multistepBinaryPath }
-          : {}),
+        binaryPath: deps.multistepBinaryPath,
         ...(deps.onDispatchTiming !== undefined
           ? { onDispatchTiming: deps.onDispatchTiming }
           : {}),
@@ -2036,7 +1904,7 @@ export function createSidecarDeployRouter(deps: {
       // for this address can route.
       deps.inboundMailPolicyRegistry?.register(
         spec.agentAddress,
-        resolveInboundMailPolicy(spec.definition.inboundMailPolicy),
+        deps.resolveInboundMailPolicy(spec.definition.inboundMailPolicy),
       );
       // Register the signal-delivery handler so a hub `signal.deliver` frame
       // dispatches through the supervisor's `deliverSignal`.
@@ -2323,7 +2191,7 @@ export function createSidecarDeployRouter(deps: {
       );
     }
 
-    const runId = deriveWorkflowRunRepoId(frame.agentAddress);
+    const runId = deps.deriveWorkflowRunRepoId(frame.agentAddress);
 
     // Resolve the sidecar data dir once: the run record, the materialized
     // closure, and the per-step scratch all root under it. Required for any
@@ -2373,12 +2241,12 @@ export function createSidecarDeployRouter(deps: {
       await rm(assetStore, { recursive: true, force: true });
       await rm(gitStore, { recursive: true, force: true });
       if (projection.assets !== undefined && projection.assets.length > 0) {
-        await materializeWorkflowAssets({
+        await deps.materializeWorkflowAssets({
           assets: projection.assets,
           closure: projection.sourceRef.closure,
           assetRoot: assetStore,
           gitDirRoot: gitStore,
-          maxAssetPayloadBytes: MAX_INLINE_ASSET_PAYLOAD_BYTES,
+          maxAssetPayloadBytes: deps.maxInlineAssetPayloadBytes,
         });
       }
       // Safe to reclaim the instance dir inside the helper: this deploy is
@@ -2430,6 +2298,7 @@ export function createSidecarDeployRouter(deps: {
         legacyAddress: frame.agentAddress,
         stepOrder: effectiveDefinition.stepOrder,
         multistepDeriveStepAddress,
+        parseAgentId: deps.parseAgentId,
       });
 
       // The spec the shared spawn core consumes, and the durable record that
@@ -2496,7 +2365,7 @@ export function createSidecarDeployRouter(deps: {
       await writeStepGrants({
         repoStore: deps.repoStore,
         anchorRunId: runId,
-        stepOrder: inertFlatNamespaceStepIds({
+        stepOrder: deps.inertFlatNamespaceStepIds({
           definition: effectiveDefinition,
           context: "sidecar deploy router grants bridge: ",
         }),
@@ -2552,7 +2421,7 @@ export function createSidecarDeployRouter(deps: {
       );
     },
     async control(frame): Promise<WorkflowControlOutcome> {
-      if (parseAgentId(frame.agentAddress) !== frame.runId) {
+      if (deps.parseAgentId(frame.agentAddress) !== frame.runId) {
         throw new Error(
           "Workflow control run does not match the deployment address",
         );
@@ -2600,7 +2469,7 @@ export function createSidecarDeployRouter(deps: {
         if (wired !== undefined) await wired.supervisor.shutdown();
         if (activeSupervisors.get(frame.agentAddress) === wired) {
           reclaimSelfTerminatedSupervisor({
-            runId: deriveWorkflowRunRepoId(frame.agentAddress),
+            runId: deps.deriveWorkflowRunRepoId(frame.agentAddress),
             agentAddress: frame.agentAddress,
           });
         }
@@ -2609,7 +2478,7 @@ export function createSidecarDeployRouter(deps: {
         if (stepStateDataDir !== undefined) {
           await deleteWorkflowRunRecord(
             stepStateDataDir,
-            deriveWorkflowRunRepoId(frame.agentAddress),
+            deps.deriveWorkflowRunRepoId(frame.agentAddress),
           );
         }
       });
@@ -2637,7 +2506,7 @@ export function createSidecarDeployRouter(deps: {
       // boundary rather than dispatched into a supervisor that is in
       // the middle of tearing its child down. The pattern is: drop
       // racing frames first, then unwind the underlying resource.
-      const runId = deriveWorkflowRunRepoId(frame.agentAddress);
+      const runId = deps.deriveWorkflowRunRepoId(frame.agentAddress);
       unregisterWorkflowRoutes(frame.agentAddress);
       // Shut the per-deployment supervisor down so the workflow-process
       // child, its IPC pipes, and its event-channel fd are released.
@@ -2723,7 +2592,7 @@ export function createSidecarDeployRouter(deps: {
           // record missing its source/closure/approvedWireHash is rejected
           // earlier, at the scan boundary, by the record schema's discriminated
           // union -- so no bespoke source-ref guard is needed here.)
-          const derived = deriveWorkflowRunRepoId(record.agentAddress);
+          const derived = deps.deriveWorkflowRunRepoId(record.agentAddress);
           if (derived !== runId) {
             logger.warn`skipping workflow deployment restore: ${record.agentAddress} derives slug ${derived}, not its directory ${runId}`;
             continue;
@@ -2951,8 +2820,8 @@ export function createSidecarWorkflowSupervisor(
       return { sig, principalKind: kind };
     },
     mailBus,
-    subprocessSpawner: opts.subprocessSpawner ?? defaultSubprocessSpawner,
-    binaryPath: opts.binaryPath ?? SIDECAR_WORKFLOW_CHILD_BINARY,
+    subprocessSpawner: opts.subprocessSpawner,
+    binaryPath: opts.binaryPath,
     substrateEnv: opts.substrateEnv,
     dynamicSpawnEnv: opts.dynamicSpawnEnv,
     workflowRunRepoId: opts.workflowRunRepoId,

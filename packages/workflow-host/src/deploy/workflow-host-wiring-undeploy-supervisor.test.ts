@@ -20,7 +20,7 @@ import {
   createNoopCredentialCipher,
   generateKeyPair,
 } from "@intx/crypto";
-import { hexEncode } from "@intx/types";
+import { hexEncode, parseRunAddress } from "@intx/types";
 import { createInMemoryTransport } from "@intx/mail-memory";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
 import {
@@ -37,14 +37,61 @@ import {
   readPayloadsOfType,
   waitForUpstreamPayload,
 } from "@intx/workflow-host/testing";
-import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
-
 import { createSidecarDeployRouter } from "./workflow-host-wiring";
 import {
   createMultistepDrainRouter,
   createMultistepMailRouter,
   createMultistepSignalRouter,
 } from "./workflow-run-pack-client";
+
+function deriveWorkflowRunRepoId(agentAddress: string): string {
+  return agentAddress.replaceAll(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+function parseAgentId(agentAddress: string): string {
+  const parsed = parseRunAddress(agentAddress);
+  if (parsed === null) {
+    throw new Error(`Invalid run address: "${agentAddress}"`);
+  }
+  return parsed.runId;
+}
+
+const resolvedInboundMailPolicy = {
+  clean: "admit",
+  error: "reject",
+  untrustedFrom: "reject",
+  mismatchedFrom: "reject",
+  absentFrom: "reject",
+  invalid: "reject",
+  missing: "reject",
+  unknown: "reject",
+} as const;
+
+function deployHostBindings() {
+  return {
+    deriveWorkflowRunRepoId,
+    parseAgentId,
+    inertFlatNamespaceStepIds: (args: {
+      definition: { readonly stepOrder: readonly string[] };
+    }) => args.definition.stepOrder,
+    workflowSourceAssetMountPath: (assetId: string) =>
+      `source-assets/${assetId}/`,
+    sourceAssetGitDir: (gitDirRoot: string, assetId: string) =>
+      path.join(gitDirRoot, assetId),
+    readRegistries: () => new Map(),
+    resolveHostPlatform: () => ({ os: "linux", cpu: "arm64" }),
+    resolveInboundMailPolicy: () => resolvedInboundMailPolicy,
+    materializeWorkflowAssets: () => Promise.resolve(undefined),
+    maxInlineAssetPayloadBytes: 32 * 1024 * 1024,
+    multistepBinaryPath: "/fake/bin/workflow-child",
+    multistepSubprocessSpawner: (): never => {
+      throw new Error("workflow child spawner was not provided");
+    },
+    applyFrozenWorkflowClosure: (): never => {
+      throw new Error("frozen closure apply was not provided");
+    },
+  };
+}
 
 function createSpawnTestRepoStore(tempBase: string): RepoStore {
   const stub: Partial<RepoStore> = {
@@ -163,6 +210,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
       const drainRouter = createMultistepDrainRouter();
 
       const router = createSidecarDeployRouter({
+        ...deployHostBindings(),
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- the single-step branch invokes only initRepo (head deploy-tree repo); provisionAgent/persistHubPublicKey stay unused (the supervised child mints its own key and persists no hub-agent config)
         sessions: {
           provisionAgent: async () => {
@@ -190,11 +238,7 @@ describe("createSidecarDeployRouter multi-step undeploy shuts the supervisor dow
           typeof createSidecarDeployRouter
         >[0]["keyStore"],
         senderKeyCache: {
-          get: () => undefined,
           put: async () => undefined,
-          evict: async () => undefined,
-          addresses: () => [],
-          rotatableAddresses: () => [],
         },
         transport,
         repoStore,
