@@ -6,7 +6,13 @@ import path from "node:path";
 import { type } from "arktype";
 
 import { generateKeyPair } from "@intx/crypto";
-import { base64Encode, hexDecode, hexEncode, signalName } from "@intx/types";
+import {
+  base64Decode,
+  base64Encode,
+  hexDecode,
+  hexEncode,
+  signalName,
+} from "@intx/types";
 import type { InferenceSource } from "@intx/types/runtime";
 import { isMail } from "@intx/types/runtime";
 import type { RepoId, RepoStore } from "@intx/hub-sessions";
@@ -177,6 +183,19 @@ async function awaitMutateResponse(
   return payload.data;
 }
 
+/** Resolve with the `mailbox.call.response` frame answering `requestId`. */
+async function awaitCallResponse(
+  stream: UpstreamFrameSource,
+  requestId: string,
+): Promise<Extract<ControlPayload, { type: "mailbox.call.response" }>["data"]> {
+  const payload = await waitForUpstreamPayload(
+    stream,
+    "mailbox.call.response",
+    (frame) => frame.data.requestId === requestId,
+  );
+  return payload.data;
+}
+
 /**
  * Parse the `Mail` payload of each `trigger.fire` frame, to assert the eager
  * mailbox commit left the step-input trigger payload unchanged.
@@ -213,6 +232,62 @@ function buildInboundMail(opts: {
     "Content-Type: text/plain; charset=utf-8",
     "",
     opts.body,
+  ];
+  return new TextEncoder().encode(lines.join("\r\n"));
+}
+
+/**
+ * A signed conversation with one text body and one attachment. `fetchPart`
+ * needs a multipart body, and `fetchFull` only reports attachments on a
+ * multipart/signed conversation.
+ */
+function buildSignedConversation(opts: {
+  from: string;
+  to: string;
+  subject: string;
+  messageId: string;
+  body: string;
+  attachment: { filename: string; body: string };
+}): Uint8Array {
+  const text = [
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: 7bit",
+    "",
+    opts.body,
+  ].join("\r\n");
+  const file = [
+    "Content-Type: text/plain",
+    "Content-Transfer-Encoding: 7bit",
+    `Content-Disposition: attachment; filename="${opts.attachment.filename}"`,
+    "",
+    opts.attachment.body,
+  ].join("\r\n");
+  const mixed = [
+    `Content-Type: multipart/mixed; boundary="inner"`,
+    "",
+    "--inner",
+    text,
+    "--inner",
+    file,
+    "--inner--",
+  ].join("\r\n");
+  const lines = [
+    `From: ${opts.from}`,
+    `To: ${opts.to}`,
+    `Subject: ${opts.subject}`,
+    `Message-ID: ${opts.messageId}`,
+    "Date: Tue, 01 Jan 2030 00:00:00 +0000",
+    "Interchange-Type: conversation.message",
+    `Content-Type: multipart/signed; protocol="application/pgp-signature"; micalg=pgp-sha512; boundary="outer"`,
+    "",
+    "--outer",
+    mixed,
+    "--outer",
+    "Content-Type: application/pgp-signature",
+    "",
+    "FAKE",
+    "--outer--",
+    "",
   ];
   return new TextEncoder().encode(lines.join("\r\n"));
 }
@@ -1766,6 +1841,406 @@ describe("createWorkflowSupervisor", () => {
     const all = mailboxIndexes(writes);
     const latest = all[all.length - 1];
     expect(latest?.messages.map((m) => m.uid)).toEqual([1]);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("the supervisor answers mailbox reads, part bytes, and refusals", async () => {
+    const baseDir = await makeTempDir("supervisor-mailbox-call-");
+    const wired = await spawnWithRunStart({
+      baseDir,
+      statefulWrites: true,
+    });
+    const body = "see attached";
+    const attachment = "hello-attach";
+    const respond = (requestId: string) =>
+      awaitCallResponse(wired.supervisorToChild, requestId);
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: { requestId: "mc-list", runId: "run-x", op: "listMailboxes" },
+    });
+    const listed = await respond("mc-list");
+    expect(listed.ok).toBe(true);
+    if (!listed.ok || listed.op !== "listMailboxes") {
+      throw new Error("expected listMailboxes");
+    }
+    expect(listed.value).toEqual([{ name: "INBOX" }]);
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-create",
+        runId: "run-x",
+        op: "createMailbox",
+        name: "Sent",
+      },
+    });
+    const created = await respond("mc-create");
+    expect(created.ok).toBe(false);
+    if (created.ok) throw new Error("expected refusal");
+    expect(created.condition).toBe("CANNOT");
+    expect(created.op).toBe("createMailbox");
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-move",
+        runId: "run-x",
+        op: "move",
+        ref: { uid: 1, mailbox: "INBOX" },
+        toMailbox: "INBOX",
+      },
+    });
+    const moved = await respond("mc-move");
+    expect(moved.ok).toBe(false);
+    if (moved.ok) throw new Error("expected refusal");
+    expect(moved.condition).toBe("CANNOT");
+    expect(moved.reason).toBe('Cannot move/copy a message within "INBOX"');
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-missing",
+        runId: "run-x",
+        op: "search",
+        mailbox: "Drafts",
+        query: {},
+      },
+    });
+    const missing = await respond("mc-missing");
+    expect(missing.ok).toBe(false);
+    if (missing.ok) throw new Error("expected refusal");
+    expect(missing.condition).toBe("NONEXISTENT");
+    expect(missing.op).toBe("search");
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-watch",
+        runId: "run-x",
+        op: "watch",
+        mailbox: "INBOX",
+      },
+    });
+    const watched = await respond("mc-watch");
+    expect(watched.ok).toBe(true);
+    if (!watched.ok || watched.op !== "watch") {
+      throw new Error("expected watch");
+    }
+    expect("value" in watched).toBe(false);
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-baddate",
+        runId: "run-x",
+        op: "search",
+        mailbox: "INBOX",
+        query: { on: "not-a-date" },
+      },
+    });
+    const badDate = await respond("mc-baddate");
+    expect(badDate.ok).toBe(false);
+    if (badDate.ok) throw new Error("expected a failed call");
+    expect(badDate.condition).toBeUndefined();
+    expect(badDate.reason).toContain("not-a-date");
+
+    wired.mailBus.deliver(
+      MAILBOX_ADDRESS,
+      buildSignedConversation({
+        from: "sender@example.com",
+        to: MAILBOX_ADDRESS,
+        subject: "consume me",
+        messageId: "<part-1@example.com>",
+        body,
+        attachment: { filename: "note.txt", body: attachment },
+      }),
+    );
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-search",
+        runId: "run-x",
+        op: "search",
+        mailbox: "INBOX",
+        query: {
+          and: [
+            { from: "sender@example.com" },
+            { on: "2030-01-01T00:00:00.000Z" },
+          ],
+        },
+      },
+    });
+    const found = await respond("mc-search");
+    expect(found.ok).toBe(true);
+    if (!found.ok || found.op !== "search") throw new Error("expected search");
+    expect(found.value).toEqual([{ uid: 1, mailbox: "INBOX" }]);
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-part",
+        runId: "run-x",
+        op: "fetchPart",
+        ref: { uid: 1, mailbox: "INBOX" },
+        partPath: "1.2",
+      },
+    });
+    const part = await respond("mc-part");
+    expect(part.ok).toBe(true);
+    if (!part.ok || part.op !== "fetchPart") {
+      throw new Error("expected fetchPart");
+    }
+    expect(part.value.contentType).toBe("text/plain");
+    expect(part.value.encoding).toBeUndefined();
+    expect(
+      new TextDecoder().decode(base64Decode(part.value.contentBase64)),
+    ).toBe(attachment);
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-full",
+        runId: "run-x",
+        op: "fetchFull",
+        ref: { uid: 1, mailbox: "INBOX" },
+      },
+    });
+    const full = await respond("mc-full");
+    expect(full.ok).toBe(true);
+    if (!full.ok || full.op !== "fetchFull") {
+      throw new Error("expected fetchFull");
+    }
+    expect(full.value.signatureStatus).toBe("unknown");
+    expect(full.value.content).toBe(body);
+    expect(full.value.attachments).toEqual([
+      {
+        name: "note.txt",
+        contentType: "text/plain",
+        dataBase64: base64Encode(new TextEncoder().encode(attachment)),
+        part: "1.2",
+      },
+    ]);
+
+    await waitForUpstreamPayloads(wired.supervisorToChild, "trigger.fire", 1);
+    const payloads = parseTriggerFirePayloads(
+      wired.supervisorToChild.flushed(),
+    );
+    const mail = payloads[0];
+    if (!isMail(mail)) throw new Error("trigger payload is not mail");
+    const textPart = mail.parts.find((candidate) => candidate.text === body);
+    if (textPart === undefined) throw new Error("text part missing");
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-bytes",
+        runId: "run-x",
+        op: "readMailPart",
+        partRef: textPart.ref,
+      },
+    });
+    const bytes = await respond("mc-bytes");
+    expect(bytes.ok).toBe(true);
+    if (!bytes.ok || bytes.op !== "readMailPart") {
+      throw new Error("expected readMailPart");
+    }
+    expect(
+      new TextDecoder().decode(base64Decode(bytes.value.contentBase64)),
+    ).toBe(body);
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-badref",
+        runId: "run-x",
+        op: "readMailPart",
+        partRef: "not-a-ref",
+      },
+    });
+    const badRef = await respond("mc-badref");
+    expect(badRef.ok).toBe(false);
+    if (badRef.ok) throw new Error("expected a failed part read");
+    expect(badRef.condition).toBeUndefined();
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("a mailbox sync reports a new uid and a flag change as arrays", async () => {
+    const baseDir = await makeTempDir("supervisor-mailbox-sync-");
+    const writes: CapturedWrite[] = [];
+    const writeChanges = createChangeNotifier();
+    const wired = await spawnWithRunStart({
+      baseDir,
+      statefulWrites: true,
+      onWrite: (args) => {
+        writes.push({ preservePrefix: args.preservePrefix, files: args.files });
+        writeChanges.notify();
+      },
+    });
+    const respond = (requestId: string) =>
+      awaitCallResponse(wired.supervisorToChild, requestId);
+
+    wired.mailBus.deliver(
+      MAILBOX_ADDRESS,
+      buildInboundMail({
+        from: "sender@example.com",
+        to: MAILBOX_ADDRESS,
+        subject: "one",
+        messageId: "<sync-1@example.com>",
+        body: "one",
+      }),
+    );
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 1);
+    const latest = () => {
+      const all = mailboxIndexes(writes);
+      return all[all.length - 1];
+    };
+    await writeChanges.until(() =>
+      (latest()?.messages[0]?.flags ?? []).includes("$Processed"),
+    );
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-status",
+        runId: "run-x",
+        op: "getMailboxStatus",
+        mailbox: "INBOX",
+      },
+    });
+    const status = await respond("mc-status");
+    expect(status.ok).toBe(true);
+    if (!status.ok || status.op !== "getMailboxStatus") {
+      throw new Error("expected status");
+    }
+    expect(status.value.total).toBe(1);
+    expect(status.value.unseen).toBe(0);
+    expect(status.value.uidNext).toBe(2);
+
+    await wired.childSender.send({
+      type: "mailbox.mutate.request",
+      data: {
+        requestId: "mc-flag",
+        runId: "run-x",
+        mailbox: "INBOX",
+        op: "addFlags",
+        uid: 1,
+        flags: ["\\Flagged"],
+      },
+    });
+    expect(
+      (await awaitMutateResponse(wired.supervisorToChild, "mc-flag")).result.ok,
+    ).toBe(true);
+
+    wired.mailBus.deliver(
+      MAILBOX_ADDRESS,
+      buildInboundMail({
+        from: "sender@example.com",
+        to: MAILBOX_ADDRESS,
+        subject: "two",
+        messageId: "<sync-2@example.com>",
+        body: "two",
+      }),
+    );
+    await waitForUpstreamPayloads(wired.supervisorToChild, "mailbox.notify", 2);
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-sync",
+        runId: "run-x",
+        op: "sync",
+        mailbox: "INBOX",
+        uidNext: status.value.uidNext,
+        uidValidity: status.value.uidValidity,
+        highestModSeq: status.value.highestModSeq,
+      },
+    });
+    const synced = await respond("mc-sync");
+    expect(synced.ok).toBe(true);
+    if (!synced.ok || synced.op !== "sync") throw new Error("expected sync");
+    expect(synced.value.fullResyncRequired).toBe(false);
+    expect(synced.value.vanished).toEqual([]);
+    expect(synced.value.newMessages).toEqual([{ uid: 2, mailbox: "INBOX" }]);
+    expect(synced.value.changed).toEqual([
+      { uid: 1, flags: ["\\Seen", "$Processed", "\\Flagged"] },
+    ]);
+
+    await wired.supervisor.shutdown();
+  });
+
+  test("an append with an unparseable date does not wedge the mailbox", async () => {
+    const baseDir = await makeTempDir("supervisor-mailbox-append-date-");
+    const wired = await spawnWithRunStart({
+      baseDir,
+      statefulWrites: true,
+    });
+    const respond = (requestId: string) =>
+      awaitCallResponse(wired.supervisorToChild, requestId);
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-bad-append",
+        runId: "run-x",
+        op: "append",
+        mailbox: "INBOX",
+        headers: {
+          to: [MAILBOX_ADDRESS],
+          messageId: "<bad-date@example.com>",
+          date: "not-a-date",
+        },
+      },
+    });
+    const rejected = await respond("mc-bad-append");
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) throw new Error("expected a failed append");
+    expect(rejected.condition).toBeUndefined();
+    expect(rejected.reason).toContain("not-a-date");
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-good-append",
+        runId: "run-x",
+        op: "append",
+        mailbox: "INBOX",
+        headers: {
+          from: "sender@example.com",
+          to: [MAILBOX_ADDRESS],
+          messageId: "<good-date@example.com>",
+          date: "Tue, 01 Jan 2030 00:00:00 +0000",
+          subject: "kept",
+        },
+        content: "still here",
+      },
+    });
+    const appended = await respond("mc-good-append");
+    expect(appended.ok).toBe(true);
+    if (!appended.ok || appended.op !== "append") {
+      throw new Error("expected append");
+    }
+    expect(appended.value).toEqual({ uid: 1, mailbox: "INBOX" });
+
+    await wired.childSender.send({
+      type: "mailbox.call.request",
+      data: {
+        requestId: "mc-headers",
+        runId: "run-x",
+        op: "fetchHeaders",
+        ref: { uid: 1, mailbox: "INBOX" },
+      },
+    });
+    const headers = await respond("mc-headers");
+    expect(headers.ok).toBe(true);
+    if (!headers.ok || headers.op !== "fetchHeaders") {
+      throw new Error("expected fetchHeaders");
+    }
+    expect(headers.value.messageId).toBe("<good-date@example.com>");
 
     await wired.supervisor.shutdown();
   });

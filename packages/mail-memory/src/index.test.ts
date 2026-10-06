@@ -1106,6 +1106,30 @@ describe("append", () => {
     const headers = await alphaTransport.fetchHeaders(ref);
     expect(headers.from).toBeUndefined();
   });
+
+  test("throws for an unparseable Date header and still accepts the next append", async () => {
+    // An Invalid Date must be refused before it is stored. The mailbox index
+    // serializes dates with toISOString, so a bad one that reached the mirror
+    // would make every later flush throw.
+    const { alphaTransport } = await createTestTransport();
+    const bad = createInboundMessage({
+      to: ["alpha@test.interchange"],
+      content: "bad",
+      interchangeType: "conversation.message",
+    });
+    bad.headers.date = "not-a-date";
+    expect(alphaTransport.append("INBOX", bad)).rejects.toThrow(/not-a-date/);
+
+    const ref = await alphaTransport.append(
+      "INBOX",
+      createInboundMessage({
+        to: ["alpha@test.interchange"],
+        content: "good",
+        interchangeType: "conversation.message",
+      }),
+    );
+    expect(ref.uid).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

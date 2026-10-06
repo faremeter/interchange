@@ -42,6 +42,8 @@ import {
   ControlParkKind,
   InferenceSource,
   InterchangeType,
+  MessageTransportCondition,
+  SignatureStatus,
 } from "@intx/types/runtime";
 import { CredentialDelivery } from "@intx/types/sidecar";
 
@@ -190,6 +192,356 @@ export const MailboxNotifyHeaders = type({
 });
 
 export type MailboxNotifyHeaders = typeof MailboxNotifyHeaders.infer;
+
+/**
+ * Recursive mailbox values carried on `mailbox.call`. Date fields of a search
+ * stay strings: reviving them here would turn a bad date into a control-channel
+ * failure, and the handler revives the tree before it runs the query.
+ */
+const mailboxCall = type.module({
+  SearchQuery: {
+    "from?": "string",
+    "to?": "string",
+    "cc?": "string",
+    "bcc?": "string",
+    "header?": {
+      field: "string",
+      contains: "string",
+    },
+    "before?": "string",
+    "after?": "string",
+    "on?": "string",
+    "sentBefore?": "string",
+    "sentAfter?": "string",
+    "sentOn?": "string",
+    "hasFlags?": "string[]",
+    "missingFlags?": "string[]",
+    "body?": "string",
+    "text?": "string",
+    "largerThan?": "number",
+    "smallerThan?": "number",
+    "and?": "SearchQuery[]",
+    "or?": "SearchQuery[]",
+    "not?": "SearchQuery",
+  },
+  Thread: {
+    ref: {
+      uid: "number >= 1",
+      mailbox: "string > 0",
+    },
+    children: "Thread[]",
+  },
+  BodyStructure: {
+    contentType: "string",
+    "size?": "number",
+    "disposition?": "string",
+    "parts?": "BodyStructure[]",
+  },
+});
+
+const MailboxCallMessageRef = type({
+  uid: "number >= 1",
+  mailbox: "string > 0",
+});
+
+const MailboxCallOp = type.enumerated(
+  "search",
+  "thread",
+  "fetchHeaders",
+  "fetchStructure",
+  "fetchPart",
+  "fetchFull",
+  "sync",
+  "getMailboxStatus",
+  "append",
+  "listMailboxes",
+  "createMailbox",
+  "deleteMailbox",
+  "move",
+  "copy",
+  "createList",
+  "listMembers",
+  "subscribe",
+  "unsubscribe",
+  "watch",
+  "readMailPart",
+);
+
+const MailboxCallStructuredPayload = type({
+  type: InterchangeType,
+  version: "string",
+  body: "Record<string, unknown>",
+});
+
+/** Decoded part bytes. `encoding` is omitted when the part was 7bit. */
+const MailboxCallPart = type({
+  contentType: "string",
+  contentBase64: "string",
+  "encoding?": "string",
+  "filename?": "string",
+  "disposition?": "'inline' | 'attachment'",
+});
+
+/**
+ * A fetched attachment. `part` is the IMAP section `fetchPart` addresses, so
+ * it has to survive this schema; a header-only attachment object would drop
+ * it on the way to the caller.
+ */
+const MailboxCallAttachment = type({
+  name: "string",
+  contentType: "string",
+  dataBase64: "string",
+  "part?": "string",
+});
+
+const MailboxCallFetchedMessage = type({
+  ref: MailboxCallMessageRef,
+  headers: MailboxNotifyHeaders,
+  flags: "string[]",
+  signatureStatus: SignatureStatus,
+  "content?": "string",
+  "payload?": MailboxCallStructuredPayload,
+  "attachments?": MailboxCallAttachment.array(),
+});
+
+const MailboxCallSyncResult = type({
+  vanished: "number[]",
+  changed: type({
+    uid: "number >= 1",
+    flags: "string[]",
+  }).array(),
+  newMessages: MailboxCallMessageRef.array(),
+  fullResyncRequired: "boolean",
+});
+
+const MailboxCallStatus = type({
+  total: "number >= 0",
+  unseen: "number >= 0",
+  recent: "number >= 0",
+  uidNext: "number >= 1",
+  uidValidity: "number",
+  highestModSeq: "number >= 0",
+});
+
+const MailboxCallMailbox = type({
+  name: "string > 0",
+  "role?": "string",
+  "delimiter?": "string",
+});
+
+const MailboxCallListInfo = type({
+  address: "string",
+  name: "string",
+  memberCount: "number >= 0",
+  createdAt: "string",
+});
+
+const MailboxCallRequestData = type.or(
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'search'",
+    mailbox: "string > 0",
+    query: mailboxCall.SearchQuery,
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'thread'",
+    mailbox: "string > 0",
+    algorithm: "'references' | 'orderedsubject'",
+    "query?": mailboxCall.SearchQuery,
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'fetchHeaders' | 'fetchStructure' | 'fetchFull'",
+    ref: MailboxCallMessageRef,
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'fetchPart'",
+    ref: MailboxCallMessageRef,
+    partPath: "string > 0",
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'sync'",
+    mailbox: "string > 0",
+    uidNext: "number >= 1",
+    uidValidity: "number",
+    highestModSeq: "number >= 0",
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'getMailboxStatus' | 'watch'",
+    mailbox: "string > 0",
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'append'",
+    mailbox: "string > 0",
+    headers: MailboxNotifyHeaders,
+    "content?": "string",
+    "payload?": MailboxCallStructuredPayload,
+    "flags?": "string[]",
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'listMailboxes'",
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'createMailbox' | 'deleteMailbox'",
+    name: "string > 0",
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'move' | 'copy'",
+    ref: MailboxCallMessageRef,
+    toMailbox: "string > 0",
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'createList'",
+    address: "string > 0",
+    name: "string > 0",
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'listMembers'",
+    address: "string > 0",
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'subscribe' | 'unsubscribe'",
+    listAddress: "string > 0",
+    subscriberAddress: "string > 0",
+  },
+  {
+    requestId: "string > 0",
+    runId: "string > 0",
+    op: "'readMailPart'",
+    partRef: "string > 0",
+  },
+);
+
+/**
+ * `op` is echoed so `value` is checked under that operation. A shared value
+ * union would let a structure object match a part fetch and drop
+ * `contentBase64`. Operations with no result omit `value` rather than sending
+ * null. Part and attachment bytes are base64.
+ */
+const MailboxCallResponseData = type.or(
+  {
+    requestId: "string > 0",
+    ok: "false",
+    op: MailboxCallOp,
+    reason: "string > 0",
+    "condition?": MessageTransportCondition,
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'watch' | 'deleteMailbox' | 'move' | 'copy' | 'subscribe' | 'unsubscribe'",
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'search'",
+    value: MailboxCallMessageRef.array(),
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'thread'",
+    value: mailboxCall.Thread.array(),
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'fetchHeaders'",
+    value: MailboxNotifyHeaders,
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'fetchStructure'",
+    value: mailboxCall.BodyStructure,
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'fetchPart'",
+    value: MailboxCallPart,
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'fetchFull'",
+    value: MailboxCallFetchedMessage,
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'sync'",
+    value: MailboxCallSyncResult,
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'getMailboxStatus'",
+    value: MailboxCallStatus,
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'append'",
+    value: MailboxCallMessageRef,
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'listMailboxes'",
+    value: MailboxCallMailbox.array(),
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'createMailbox'",
+    value: MailboxCallMailbox,
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'createList'",
+    value: MailboxCallListInfo,
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'listMembers'",
+    value: "string[]",
+  },
+  {
+    requestId: "string > 0",
+    ok: "true",
+    op: "'readMailPart'",
+    value: {
+      contentBase64: "string",
+    },
+  },
+);
 
 /**
  * Discriminated union of every control-channel payload kind. The
@@ -652,6 +1004,21 @@ export const ControlPayload = type.or(
         },
       ),
     },
+  },
+  {
+    // A child asks the supervisor to answer one mailbox operation. The
+    // supervisor owns the deployment mailbox, so the answer — including a
+    // refusal — is its decision. `data` is discriminated on `op`, and each
+    // operation carries only the operands it uses. `requestId` correlates
+    // the `mailbox.call.response`.
+    type: "'mailbox.call.request'",
+    data: MailboxCallRequestData,
+  },
+  {
+    // Reply to `mailbox.call.request`, sent after the operation finishes.
+    // `op` echoes the request. See `MailboxCallResponseData`.
+    type: "'mailbox.call.response'",
+    data: MailboxCallResponseData,
   },
 );
 
