@@ -314,12 +314,15 @@ its failure modes and the open question about reply latency.
 "inbound side is a no-op" surface above was the initial cut. It has since
 been replaced by a per-workflow IMAP mailbox committed to the workflow-run
 substrate: the supervisor stays the sole mail owner and eager-commits each
-inbound message into the mailbox (durable, replicated to the hub), and the
-warm agent reads it locally through the supervisor-backed transport with no
-hub round-trip, so `mail_read` / `mail_search` / `mail_wait` work. The
-agent's `connector.reply` composes a threaded reply and sends it through the
-outbound bridge. This does not reopen the ownership decision: reading a local
-mailbox is not owning ingestion, and there is still exactly one mail owner.
+inbound message into the mailbox (durable, replicated to the hub). The warm
+agent's mail tools ask that supervisor and take its answer, with no hub
+round-trip, so `mail_read`, `mail_search`, and `mail_wait` work. Search,
+fetch, flag changes, folder operations, and attachment reads all go that
+way; the child does not open the run repo to answer them. A `connector.reply`
+goes out through the outbound bridge. When that reply carries `inReplyTo`
+and no `references`, the supervisor fills `References` from the parent it
+finds in the committed mailbox. This does not reopen the ownership decision:
+the child does not open the mailbox, and there is still exactly one mail owner.
 
 The conversational loop has two first-class shapes, both delivered:
 
